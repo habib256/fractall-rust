@@ -297,8 +297,13 @@ fn should_use_perturbation(params: &FractalParams) -> bool {
     if params.width == 0 {
         return false;
     }
-    let pixel_size = (params.xmax - params.xmin).abs() / params.width as f64;
-    pixel_size < 1e-12
+    let span_x = (params.xmax - params.xmin).abs();
+    let span_y = (params.ymax - params.ymin).abs();
+    let pixel_size = span_x.max(span_y) / params.width as f64;
+    let center_x = (params.xmin + params.xmax) / 2.0;
+    let center_y = (params.ymin + params.ymax) / 2.0;
+    let scale = center_x.abs().max(center_y.abs()).max(1.0);
+    pixel_size < 1e-12 * scale
 }
 
 #[allow(dead_code)]

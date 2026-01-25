@@ -33,7 +33,7 @@ pub fn render_mandelbrot_perturbation_cancellable_with_reuse(
         return None;
     }
 
-    let ref_orbit = compute_reference_orbit(params, Some(cancel))?;
+    let ref_orbit = compute_reference_orbit(params, Some(cancel.as_ref()))?;
     let bla_table = build_bla_table(&ref_orbit.z_ref, params);
     let gmp_params = MpcParams::from_params(params);
     let prec = gmp_params.prec;

@@ -1,5 +1,4 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 use num_complex::Complex64;
 use rug::{Complex, Float};
@@ -15,7 +14,7 @@ pub struct ReferenceOrbit {
 
 pub fn compute_reference_orbit(
     params: &FractalParams,
-    cancel: Option<&Arc<AtomicBool>>,
+    cancel: Option<&AtomicBool>,
 ) -> Option<ReferenceOrbit> {
     let prec = params.precision_bits.max(64);
     let center_x = (params.xmin + params.xmax) / 2.0;

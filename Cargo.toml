@@ -24,5 +24,9 @@ rayon = "1.11"
 # GUI avec egui
 eframe = "0.27"
 egui = "0.27"
+# GPU (wgpu) + helpers
+wgpu = "0.19"
+pollster = "0.3"
+bytemuck = { version = "1.15", features = ["derive"] }
 # Haute précision GMP/MPFR/MPC via rug (libs natives requises)
 rug = { version = "1.24", features = ["float", "complex"] }

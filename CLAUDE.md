@@ -1,108 +1,111 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guide rapide pour aider un LLM a trouver les bons fichiers et flux dans ce depot.
 
-## Build Commands
+## Commandes de build et run
 
 ```bash
-# Build both CLI and GUI binaries (release mode)
+# Build CLI + GUI (release)
 cargo build --release
 
-# Build CLI only
+# Build CLI uniquement
 cargo build --release --bin fractall-cli
 
-# Build GUI only
+# Build GUI uniquement
 cargo build --release --bin fractall-gui
 
-# Run CLI (example: Mandelbrot)
+# Run CLI (ex: Mandelbrot)
 cargo run --release --bin fractall-cli -- --type 3 --width 1920 --height 1080 --output mandelbrot.png
 
 # Run GUI
 cargo run --release --bin fractall-gui
 ```
 
-**Note:** The `rug` crate requires native GMP, MPFR, and MPC libraries installed on the system.
+**Note:** `rug` exige GMP/MPFR/MPC installes localement.
 
-## Architecture
-
-### Module Structure
+## Carte du code (chemins clefs)
 
 ```
 src/
-├── main.rs           # CLI entry (clap-based argument parsing)
-├── main_gui.rs       # GUI entry (egui/eframe)
-├── fractal/          # Core fractal computation
-│   ├── types.rs      # FractalType enum, FractalParams struct
-│   ├── definitions.rs# Default parameters per fractal type
-│   ├── iterations.rs # f64 iteration functions (escape-time fractals)
-│   ├── gmp.rs        # GMP/MPFR high-precision iterations
-│   ├── lyapunov.rs   # Lyapunov exponent fractal (Zircon City)
-│   ├── vectorial.rs  # Von Koch and Dragon vectorial fractals
-│   └── buddhabrot.rs # Buddhabrot and Nebulabrot algorithms
+├── main.rs            # CLI (clap)
+├── main_gui.rs        # GUI (egui/eframe)
+├── fractal/           # coeur des algos
+│   ├── types.rs       # FractalType, FractalParams, FractalResult
+│   ├── definitions.rs # parametres par defaut
+│   ├── iterations.rs  # escape-time en f64
+│   ├── gmp.rs         # precision arbitraire via rug
+│   ├── lyapunov.rs    # fractale de Lyapunov
+│   ├── vectorial.rs   # Von Koch, Dragon
+│   └── buddhabrot.rs  # Buddhabrot, Nebulabrot
 ├── render/
-│   └── escape_time.rs# Rendering dispatcher (f64 vs GMP vs special paths)
+│   └── escape_time.rs # dispatcher f64/GMP/special
 ├── color/
-│   └── palettes.rs   # 9 color palettes with gradient interpolation
+│   └── palettes.rs    # palettes et interpolation
 ├── gui/
-│   ├── app.rs        # Main egui application state
-│   └── texture.rs    # Texture conversion utilities
+│   ├── app.rs         # etat et UI egui
+│   ├── progressive.rs # rendu progressif
+│   └── texture.rs     # conversion image -> texture
+├── gpu/
+│   ├── mod.rs         # pipeline GPU (wgpu)
+│   └── *.wgsl         # shaders (mandelbrot, perturbation)
 └── io/
-    └── png.rs        # PNG export with parallel colorization
+    └── png.rs         # export PNG parallelise
 ```
 
-### Rendering Paths
+## Points d entree (ou aller selon la question)
 
-The renderer dispatches to different algorithms based on fractal type:
+- Ajout d un type de fractale: `fractal/types.rs`, `fractal/definitions.rs`
+- Algo special (non escape-time): `fractal/vectorial.rs`, `fractal/buddhabrot.rs`, `fractal/lyapunov.rs`
+- Escape-time standard: `fractal/iterations.rs` + `render/escape_time.rs`
+- Precision arbitraire: `fractal/gmp.rs` et `params.use_gmp`
+- Couleurs / palette: `color/palettes.rs`
+- Export PNG: `io/png.rs`
+- GUI: `gui/app.rs` + `gui/progressive.rs`
+- GPU / shaders: `gpu/mod.rs` + `gpu/*.wgsl`
 
-**Special algorithms** (custom rendering, not escape-time):
-- `VonKoch`, `Dragon` → `vectorial.rs` (L-system based vector fractals)
-- `Buddhabrot`, `Nebulabrot` → `buddhabrot.rs` (orbit density visualization)
-- `Lyapunov` → `lyapunov.rs` (Lyapunov exponent calculation)
+## Chemins de rendu
 
-**Escape-time fractals** (all other types):
-- **f64 path** (`iterations.rs`): Standard double precision, parallelized with Rayon
-- **GMP path** (`gmp.rs`): Arbitrary precision via `rug` crate, selected by `params.use_gmp`
+Le renderer choisit l algo selon `FractalType`:
 
-### Data Flow
+- **Special** (non escape-time): `vectorial.rs`, `buddhabrot.rs`, `lyapunov.rs`
+- **Escape-time**:
+  - **f64**: `iterations.rs` (Rayon)
+  - **GMP**: `gmp.rs` via `params.use_gmp`
 
-1. `FractalParams` configured with type defaults from `definitions.rs`
-2. `render_escape_time(&params)` returns `(Vec<u32>, Vec<Complex64>)` - iterations and final z values
-3. `save_png()` colorizes in parallel and writes output
+## Flux principal de donnees
 
-### Key Types
+1. `FractalParams` (defaults via `definitions.rs`)
+2. `render_escape_time(&params)` -> `(Vec<u32>, Vec<Complex64>)`
+3. `save_png()` colorise et ecrit l image
 
-- `FractalType`: Enum for 24 fractal types (VonKoch=1 through Nebulabrot=24)
-- `FractalParams`: Complete render configuration (dimensions, bounds, iterations, colors, GMP settings)
-- `FractalResult`: Iteration result with count and final z value
-
-## CLI Arguments
+## Arguments CLI
 
 | Argument | Description |
 |----------|-------------|
-| `--type N` | Fractal type (1-24) |
-| `--width`, `--height` | Output dimensions |
-| `--xmin/xmax/ymin/ymax` | Complex plane bounds |
-| `--center-x/y` | Re-center view |
-| `--iterations` | Max iteration override |
-| `--palette` | Color palette (0-8, default 6=Plasma) |
-| `--color-repeat` | Gradient repetitions (2-40) |
-| `--gmp` | Enable high-precision mode |
-| `--precision-bits` | GMP precision (default 256) |
-| `--output` | Output PNG path |
+| `--type N` | Type de fractale (1-24) |
+| `--width`, `--height` | Dimensions |
+| `--xmin/xmax/ymin/ymax` | Bornes du plan complexe |
+| `--center-x/y` | Re-centrage |
+| `--iterations` | Max iterations |
+| `--palette` | Palette (0-8, defaut 6) |
+| `--color-repeat` | Repetitions gradient (2-40) |
+| `--gmp` | Active precision arbitraire |
+| `--precision-bits` | Precision GMP (defaut 256) |
+| `--output` | Chemin PNG |
 
-## Fractal Types
+## Types de fractales
 
-**Vectorial fractals** (L-system based):
+**Vectorielles**:
 - 1: Von Koch, 2: Dragon
 
-**Escape-time fractals**:
+**Escape-time**:
 - 3: Mandelbrot, 4: Julia, 5: Julia Sin, 6: Newton, 7: Phoenix
 - 8: Buffalo, 9-10: Barnsley J/M, 11-12: Magnet J/M
 - 13: Burning Ship, 14: Tricorn, 15: Mandelbulb
 - 18: Perp. Burning Ship, 19: Celtic, 20: Alpha Mandelbrot
 - 21: Pickover Stalks, 22: Nova, 23: Multibrot
 
-**Special algorithms**:
-- 16: Buddhabrot (orbit density)
-- 17: Lyapunov Zircon City (Lyapunov exponent)
-- 24: Nebulabrot (color orbit density)
+**Speciaux**:
+- 16: Buddhabrot
+- 17: Lyapunov Zircon City
+- 24: Nebulabrot

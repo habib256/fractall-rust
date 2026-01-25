@@ -3,6 +3,7 @@ mod color;
 mod render;
 mod io;
 mod gui;
+mod gpu;
 
 use gui::FractallApp;
 

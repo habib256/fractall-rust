@@ -12,6 +12,7 @@ use crate::fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_ty
 use crate::render::render_escape_time_cancellable_with_reuse;
 use crate::gui::texture::rgb_image_to_color_image;
 use crate::gui::progressive::{ProgressiveConfig, RenderMessage, upscale_nearest};
+use crate::gpu::GpuRenderer;
 
 /// Application principale egui pour fractall.
 pub struct FractallApp {
@@ -29,6 +30,8 @@ pub struct FractallApp {
     color_repeat: u32,
     selected_lyapunov_preset: LyapunovPreset,
     render_preset: RenderPreset,
+    gpu_renderer: Option<Arc<GpuRenderer>>,
+    use_gpu: bool,
     
     // Zoom/interaction (conservés pour usage futur)
     #[allow(dead_code)]
@@ -65,7 +68,8 @@ impl FractallApp {
         let default_type = FractalType::Mandelbrot;
         let width = 1024;
         let height = 768;
-        let params = default_params_for_type(default_type, width, height);
+        let mut params = default_params_for_type(default_type, width, height);
+        apply_default_preset(&mut params, RenderPreset::Ultra);
         
         Self {
             params: params.clone(),
@@ -76,7 +80,9 @@ impl FractallApp {
             palette_index: 6, // SmoothPlasma par défaut
             color_repeat: 40,
             selected_lyapunov_preset: LyapunovPreset::default(),
-            render_preset: RenderPreset::Standard,
+            render_preset: RenderPreset::Ultra,
+            gpu_renderer: GpuRenderer::new().map(Arc::new),
+            use_gpu: false,
             center_x: 0.0,
             center_y: 0.0,
             selecting: false,
@@ -114,12 +120,17 @@ impl FractallApp {
                 | FractalType::Nebulabrot
                 | FractalType::Lyapunov
         );
-        let config = ProgressiveConfig::for_params_with_intermediate(
-            self.params.width,
-            self.params.height,
-            self.params.use_gmp,
-            allow_intermediate,
-        );
+        let use_gpu = self.use_gpu && self.gpu_renderer.is_some() && self.params.fractal_type == FractalType::Mandelbrot;
+        let config = if use_gpu {
+            ProgressiveConfig::single_pass()
+        } else {
+            ProgressiveConfig::for_params_with_intermediate(
+                self.params.width,
+                self.params.height,
+                self.params.use_gmp,
+                allow_intermediate,
+            )
+        };
 
         self.total_passes = config.passes.len() as u8;
         self.current_pass = 0;
@@ -136,6 +147,8 @@ impl FractallApp {
         let cancel = Arc::clone(&self.render_cancel);
         let full_width = self.params.width;
         let full_height = self.params.height;
+        let gpu_renderer = self.gpu_renderer.clone();
+        let use_gpu = use_gpu;
 
         // Spawner le thread de rendu progressif
         let handle = thread::spawn(move || {
@@ -160,7 +173,26 @@ impl FractallApp {
                 let reuse = previous_pass.as_ref().map(|(iter, zs, w, h)| {
                     (iter.as_slice(), zs.as_slice(), *w, *h)
                 });
-                let result = render_escape_time_cancellable_with_reuse(&pass_params, &cancel, reuse);
+                let result = if use_gpu {
+                    let gpu = gpu_renderer.as_ref().unwrap();
+                    let use_perturbation = match pass_params.algorithm_mode {
+                        AlgorithmMode::Auto => {
+                            let pixel_size = (pass_params.xmax - pass_params.xmin).abs()
+                                / pass_params.width as f64;
+                            pixel_size < 1e-12
+                        }
+                        AlgorithmMode::Perturbation => true,
+                        _ => false,
+                    };
+                    if use_perturbation {
+                        gpu.render_perturbation(&pass_params, &cancel)
+                    } else {
+                        gpu.render_mandelbrot(&pass_params, &cancel)
+                    }
+                    .or_else(|| render_escape_time_cancellable_with_reuse(&pass_params, &cancel, reuse))
+                } else {
+                    render_escape_time_cancellable_with_reuse(&pass_params, &cancel, reuse)
+                };
 
                 match result {
                     Some((iterations, zs)) => {
@@ -582,8 +614,7 @@ impl FractallApp {
                 if self.selected_type != FractalType::Mandelbrot || self.params.width == 0 {
                     return AlgorithmMode::StandardF64;
                 }
-                let pixel_size = (self.params.xmax - self.params.xmin).abs() / self.params.width as f64;
-                if pixel_size < 1e-12 {
+                if should_use_perturbation_auto(&self.params) {
                     AlgorithmMode::Perturbation
                 } else {
                     AlgorithmMode::StandardF64
@@ -609,6 +640,42 @@ impl RenderPreset {
             RenderPreset::Ultra => "Ultra (Agressive)",
         }
     }
+}
+
+fn apply_default_preset(params: &mut FractalParams, preset: RenderPreset) {
+    match preset {
+        RenderPreset::Standard => {
+            params.algorithm_mode = AlgorithmMode::Auto;
+            params.bla_threshold = 1e-8;
+            params.glitch_tolerance = 1e-4;
+            params.precision_bits = 256;
+        }
+        RenderPreset::Fast => {
+            params.algorithm_mode = AlgorithmMode::Auto;
+            params.bla_threshold = 5e-7;
+            params.glitch_tolerance = 5e-4;
+            params.precision_bits = 192;
+        }
+        RenderPreset::Ultra => {
+            params.algorithm_mode = AlgorithmMode::Auto;
+            params.bla_threshold = 1e-6;
+            params.glitch_tolerance = 1e-3;
+            params.precision_bits = 160;
+        }
+    }
+}
+
+fn should_use_perturbation_auto(params: &FractalParams) -> bool {
+    if params.width == 0 {
+        return false;
+    }
+    let span_x = (params.xmax - params.xmin).abs();
+    let span_y = (params.ymax - params.ymin).abs();
+    let pixel_size = span_x.max(span_y) / params.width as f64;
+    let center_x = (params.xmin + params.xmax) / 2.0;
+    let center_y = (params.ymin + params.ymax) / 2.0;
+    let scale = center_x.abs().max(center_y.abs()).max(1.0);
+    pixel_size < 1e-12 * scale
 }
 
 impl eframe::App for FractallApp {
@@ -896,6 +963,18 @@ impl eframe::App for FractallApp {
                                 self.start_render();
                             }
                         }
+
+                        if let Some(_gpu) = &self.gpu_renderer {
+                            ui.separator();
+                            let old_use_gpu = self.use_gpu;
+                            ui.checkbox(&mut self.use_gpu, "GPU");
+                            if old_use_gpu != self.use_gpu && !self.rendering {
+                                self.start_render();
+                            }
+                        } else {
+                            ui.separator();
+                            ui.label("GPU: indisponible");
+                        }
                     }
                 });
         });
@@ -1055,12 +1134,22 @@ impl eframe::App for FractallApp {
                     ui.label(format!("Centre: ({:.6}, {:.6})", center_x, center_y));
 
                     ui.separator();
-                    let mode_label = match self.effective_algorithm_mode() {
+                    let effective_mode = self.effective_algorithm_mode();
+                    let method_label = match effective_mode {
                         AlgorithmMode::ReferenceGmp => "GMP",
                         AlgorithmMode::Perturbation => "Perturbation",
-                        _ => "f64",
+                        _ => "Standard",
                     };
-                    ui.label(format!("Mode: {}", mode_label));
+                    if self.use_gpu && self.gpu_renderer.is_some() {
+                        let precision = self.gpu_renderer.as_ref().unwrap().precision_label();
+                        ui.label(format!("GPU {} ({})", precision, method_label));
+                    } else {
+                        let precision_label = match effective_mode {
+                            AlgorithmMode::ReferenceGmp => format!("GMP {}b", self.params.precision_bits),
+                            _ => "f64".to_string(),
+                        };
+                        ui.label(format!("CPU {} ({})", precision_label, method_label));
+                    }
                     
                     if let Some(time) = self.last_render_time {
                         ui.separator();
