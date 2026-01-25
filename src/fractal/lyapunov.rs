@@ -3,6 +3,9 @@
 //! Calcule l'exposant de Lyapunov de la carte logistique x_{n+1} = r * x * (1 - x)
 //! où r alterne entre les paramètres a et b selon une séquence prédéfinie.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use num_complex::Complex64;
 use rayon::prelude::*;
 
@@ -52,6 +55,7 @@ impl LyapunovPreset {
     }
 
     /// Retourne le nom en format CLI (minuscules avec tirets).
+    #[allow(dead_code)]
     pub fn cli_name(self) -> &'static str {
         match self {
             LyapunovPreset::Standard => "standard",
@@ -64,6 +68,7 @@ impl LyapunovPreset {
     }
 
     /// Parse un nom CLI vers un preset.
+    #[allow(dead_code)]
     pub fn from_cli_name(name: &str) -> Option<Self> {
         match name.to_lowercase().as_str() {
             "standard" => Some(LyapunovPreset::Standard),
@@ -80,6 +85,7 @@ impl LyapunovPreset {
 /// Configuration complète d'un preset Lyapunov.
 #[derive(Clone, Debug)]
 pub struct LyapunovConfig {
+    #[allow(dead_code)]
     pub name: &'static str,
     pub sequence: Vec<bool>,
     pub xmin: f64,
@@ -259,6 +265,7 @@ fn normalize_lyapunov(lyap: f64) -> f64 {
 /// - iterations[i] = valeur normalisée * iter_max (pour colorisation)
 /// - zs[i].re = valeur normalisée * 2.0 (comme en C)
 /// - zs[i].im = 0.0
+#[allow(dead_code)]
 pub fn render_lyapunov(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
     let width = params.width as usize;
     let height = params.height as usize;
@@ -297,6 +304,63 @@ pub fn render_lyapunov(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
         });
 
     (iterations, zs)
+}
+
+/// Version annulable du rendu Lyapunov.
+pub fn render_lyapunov_cancellable(
+    params: &FractalParams,
+    cancel: &Arc<AtomicBool>,
+) -> Option<(Vec<u32>, Vec<Complex64>)> {
+    let width = params.width as usize;
+    let height = params.height as usize;
+    let mut iterations = vec![0u32; width * height];
+    let mut zs = vec![Complex64::new(0.0, 0.0); width * height];
+
+    if width == 0 || height == 0 {
+        return Some((iterations, zs));
+    }
+
+    let x_step = (params.xmax - params.xmin) / params.width as f64;
+    let y_step = (params.ymax - params.ymin) / params.height as f64;
+    let iter_max = params.iteration_max;
+    let sequence: Vec<bool> = params.lyapunov_sequence.clone();
+
+    let cancelled = AtomicBool::new(false);
+
+    iterations
+        .par_chunks_mut(width)
+        .zip(zs.par_chunks_mut(width))
+        .enumerate()
+        .for_each(|(j, (iter_row, z_row))| {
+            // Vérifier l'annulation toutes les 16 lignes
+            if j % 16 == 0 {
+                if cancel.load(Ordering::Relaxed) {
+                    cancelled.store(true, Ordering::Relaxed);
+                    return;
+                }
+            }
+            if cancelled.load(Ordering::Relaxed) {
+                return;
+            }
+
+            let b = params.ymin + j as f64 * y_step;
+
+            for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
+                let a = params.xmin + i as f64 * x_step;
+
+                let lyap = compute_lyapunov_exponent(a, b, iter_max, &sequence);
+                let norm = normalize_lyapunov(lyap);
+
+                *iter = (norm * iter_max as f64) as u32;
+                *z = Complex64::new(norm * 2.0, 0.0);
+            }
+        });
+
+    if cancelled.load(Ordering::Relaxed) {
+        None
+    } else {
+        Some((iterations, zs))
+    }
 }
 
 #[cfg(test)]

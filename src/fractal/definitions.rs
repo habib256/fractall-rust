@@ -230,6 +230,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 100.0;
             params.iteration_max = 1000;
+            params.color_repeat = 2;
         }
         FractalType::Nova => {
             // Nova_def

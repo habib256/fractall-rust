@@ -1,4 +1,5 @@
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Instant;
 
@@ -8,8 +9,9 @@ use num_complex::Complex64;
 
 use crate::color::{color_for_pixel, color_for_nebulabrot_pixel, color_for_buddhabrot_pixel};
 use crate::fractal::{default_params_for_type, apply_lyapunov_preset, FractalParams, FractalType, LyapunovPreset};
-use crate::render::render_escape_time;
+use crate::render::render_escape_time_cancellable;
 use crate::gui::texture::rgb_image_to_color_image;
+use crate::gui::progressive::{ProgressiveConfig, RenderMessage, upscale_nearest};
 
 /// Application principale egui pour fractall.
 pub struct FractallApp {
@@ -38,15 +40,19 @@ pub struct FractallApp {
     select_start: Option<egui::Pos2>,
     select_current: Option<egui::Pos2>,
     
-    // Rendu en cours
+    // Rendu progressif
     rendering: bool,
     render_thread: Option<thread::JoinHandle<()>>,
-    render_result: Arc<Mutex<Option<(Vec<u32>, Vec<Complex64>)>>>,
-    
+    render_cancel: Arc<AtomicBool>,
+    render_receiver: Option<mpsc::Receiver<RenderMessage>>,
+    current_pass: u8,
+    total_passes: u8,
+    is_preview: bool,
+
     // Métriques
     last_render_time: Option<f64>, // en secondes
     render_start_time: Option<Instant>,
-    
+
     // Dimensions de la fenêtre (pour calculer le viewport)
     window_width: u32,
     window_height: u32,
@@ -76,7 +82,11 @@ impl FractallApp {
             select_current: None,
             rendering: false,
             render_thread: None,
-            render_result: Arc::new(Mutex::new(None)),
+            render_cancel: Arc::new(AtomicBool::new(false)),
+            render_receiver: None,
+            current_pass: 0,
+            total_passes: 0,
+            is_preview: false,
             last_render_time: None,
             render_start_time: None,
             window_width: width,
@@ -85,57 +95,157 @@ impl FractallApp {
         }
     }
     
-    /// Lance le rendu de la fractale dans un thread séparé.
+    /// Lance le rendu progressif de la fractale dans un thread séparé.
     fn start_render(&mut self) {
-        if self.rendering {
-            return; // Déjà en cours
-        }
-        
+        // Annuler tout rendu en cours
+        self.render_cancel.store(true, Ordering::Relaxed);
+
+        // Créer un nouveau flag d'annulation
+        self.render_cancel = Arc::new(AtomicBool::new(false));
+
+        // Configuration progressive selon les paramètres
+        let config = ProgressiveConfig::for_params(
+            self.params.width,
+            self.params.height,
+            self.params.use_gmp,
+        );
+
+        self.total_passes = config.passes.len() as u8;
+        self.current_pass = 0;
         self.rendering = true;
+        self.is_preview = true;
         self.render_start_time = Some(Instant::now());
+
+        // Créer le channel de communication
+        let (sender, receiver) = mpsc::channel();
+        self.render_receiver = Some(receiver);
+
+        // Paramètres pour le thread
         let params = self.params.clone();
-        let result = Arc::clone(&self.render_result);
-        
+        let cancel = Arc::clone(&self.render_cancel);
+        let full_width = self.params.width;
+        let full_height = self.params.height;
+
+        // Spawner le thread de rendu progressif
         let handle = thread::spawn(move || {
-            let (iterations, zs) = render_escape_time(&params);
-            *result.lock().unwrap() = Some((iterations, zs));
+            for (pass_index, &scale_divisor) in config.passes.iter().enumerate() {
+                // Vérifier l'annulation
+                if cancel.load(Ordering::Relaxed) {
+                    let _ = sender.send(RenderMessage::Cancelled);
+                    return;
+                }
+
+                // Calculer les dimensions pour cette passe
+                let pass_width = (full_width / scale_divisor as u32).max(1);
+                let pass_height = (full_height / scale_divisor as u32).max(1);
+
+                // Créer les params pour cette passe
+                let mut pass_params = params.clone();
+                pass_params.width = pass_width;
+                pass_params.height = pass_height;
+
+                // Rendre cette passe
+                let result = render_escape_time_cancellable(&pass_params, &cancel);
+
+                match result {
+                    Some((iterations, zs)) => {
+                        let _ = sender.send(RenderMessage::PassComplete {
+                            pass_index: pass_index as u8,
+                            scale_divisor,
+                            iterations,
+                            zs,
+                            width: pass_width,
+                            height: pass_height,
+                        });
+                    }
+                    None => {
+                        let _ = sender.send(RenderMessage::Cancelled);
+                        return;
+                    }
+                }
+            }
+
+            let _ = sender.send(RenderMessage::AllComplete);
         });
-        
+
         self.render_thread = Some(handle);
     }
-    
-    /// Vérifie si le rendu est terminé et met à jour l'affichage.
+
+    /// Vérifie si des passes de rendu sont terminées et met à jour l'affichage.
+    /// Ne traite qu'un seul message PassComplete par frame pour permettre l'affichage progressif.
     fn check_render_complete(&mut self, ctx: &Context) {
         if !self.rendering {
             return;
         }
-        
-        // Vérifier si le thread est terminé
-        let finished = self.render_thread.as_ref().map(|h| h.is_finished()).unwrap_or(false);
-        if finished {
-            // Récupérer le résultat
-            let render_data = self.render_result.lock().unwrap().take();
-            if let Some((iterations, zs)) = render_data {
-                // Si un redimensionnement est en attente, ignorer ce rendu et relancer
-                if let Some((new_width, new_height)) = self.pending_resize.take() {
-                    self.rendering = false;
-                    self.render_thread = None;
-                    self.apply_resize(new_width, new_height);
-                    return;
+
+        // Récupérer un seul message pour permettre l'affichage de chaque passe
+        let msg = {
+            let receiver = match &self.render_receiver {
+                Some(r) => r,
+                None => return,
+            };
+            receiver.try_recv().ok()
+        };
+
+        let Some(msg) = msg else {
+            return;
+        };
+
+        match msg {
+            RenderMessage::PassComplete {
+                pass_index,
+                scale_divisor,
+                iterations,
+                zs,
+                width,
+                height,
+            } => {
+                self.current_pass = pass_index + 1;
+
+                // Upscale si pas à pleine résolution
+                if scale_divisor > 1 {
+                    let (upscaled_iter, upscaled_zs) = upscale_nearest(
+                        &iterations,
+                        &zs,
+                        width,
+                        height,
+                        self.params.width,
+                        self.params.height,
+                    );
+                    self.iterations = upscaled_iter;
+                    self.zs = upscaled_zs;
+                    self.is_preview = true;
+                } else {
+                    self.iterations = iterations;
+                    self.zs = zs;
+                    self.is_preview = false;
                 }
 
-                self.iterations = iterations;
-                self.zs = zs;
                 self.update_texture(ctx);
-                
-                // Calculer le temps de rendu
-                if let Some(start) = self.render_start_time {
+                ctx.request_repaint();
+            }
+
+            RenderMessage::AllComplete => {
+                self.rendering = false;
+                self.is_preview = false;
+                self.render_thread = None;
+                self.render_receiver = None;
+
+                if let Some(start) = self.render_start_time.take() {
                     self.last_render_time = Some(start.elapsed().as_secs_f64());
-                    self.render_start_time = None;
                 }
-                
+
+                // Gérer le redimensionnement en attente
+                if let Some((w, h)) = self.pending_resize.take() {
+                    self.apply_resize(w, h);
+                }
+            }
+
+            RenderMessage::Cancelled => {
                 self.rendering = false;
                 self.render_thread = None;
+                self.render_receiver = None;
+                // Garder la dernière texture valide affichée
             }
         }
     }
@@ -390,6 +500,7 @@ impl FractallApp {
     }
 
     /// Change le type de fractale.
+    /// Réinitialise toujours la position au domaine par défaut de la nouvelle fractale.
     fn change_fractal_type(&mut self, new_type: FractalType) {
         if new_type == self.selected_type {
             return;
@@ -401,42 +512,15 @@ impl FractallApp {
 
         // Obtenir les paramètres par défaut pour le nouveau type
         let mut new_params = default_params_for_type(new_type, width, height);
+
+        // Conserver les paramètres de rendu (GMP, palette, etc.)
         new_params.use_gmp = self.params.use_gmp;
         new_params.precision_bits = self.params.precision_bits;
+        new_params.color_mode = self.params.color_mode;
+        new_params.color_repeat = self.params.color_repeat;
 
-        // Types spéciaux qui ont des domaines incompatibles avec les autres fractales
-        // On doit TOUJOURS utiliser leur domaine par défaut
-        let special_domain_types = matches!(
-            new_type,
-            FractalType::Lyapunov
-                | FractalType::VonKoch
-                | FractalType::Dragon
-                | FractalType::Buddhabrot
-                | FractalType::Nebulabrot
-        );
-
-        if special_domain_types {
-            // Toujours utiliser le domaine par défaut pour ces types
-            self.params = new_params;
-        } else {
-            // Pour les autres types, essayer de conserver le viewport si raisonnable
-            let current_span_x = self.params.xmax - self.params.xmin;
-            let default_span_x = new_params.xmax - new_params.xmin;
-
-            // Si le zoom actuel est significativement différent des defaults, le conserver
-            if (current_span_x / default_span_x).abs() < 0.1 || (current_span_x / default_span_x).abs() > 10.0 {
-                self.params = new_params;
-            } else {
-                // Conserver le viewport mais mettre à jour les autres paramètres
-                new_params.xmin = self.params.xmin;
-                new_params.xmax = self.params.xmax;
-                new_params.ymin = self.params.ymin;
-                new_params.ymax = self.params.ymax;
-                self.params = new_params;
-            }
-        }
-
-        self.params.fractal_type = new_type;
+        // Toujours utiliser le domaine par défaut pour bien centrer la fractale
+        self.params = new_params;
         self.start_render();
     }
 }
@@ -478,9 +562,9 @@ impl eframe::App for FractallApp {
                 }
             }
             
-            // R pour color_repeat (2-40, par pas de 2)
+            // R pour color_repeat (1-60, par pas de 1)
             if i.key_pressed(egui::Key::R) {
-                self.color_repeat = if self.color_repeat >= 40 { 2 } else { self.color_repeat + 2 };
+                self.color_repeat = if self.color_repeat >= 60 { 1 } else { self.color_repeat + 1 };
                 self.params.color_repeat = self.color_repeat;
                 if !self.iterations.is_empty() {
                     self.update_texture(ctx);
@@ -696,7 +780,7 @@ impl eframe::App for FractallApp {
                     
                     ui.label("Itérations:");
                     let old_iter = self.params.iteration_max;
-                    ui.add(egui::Slider::new(&mut self.params.iteration_max, 100..=10000));
+                    ui.add(egui::Slider::new(&mut self.params.iteration_max, 100..=500000).logarithmic(true));
                     if old_iter != self.params.iteration_max && !self.iterations.is_empty() {
                         self.start_render();
                     }
@@ -705,7 +789,7 @@ impl eframe::App for FractallApp {
                     
                     ui.label("Color Repeat:");
                     let old_repeat = self.color_repeat;
-                    ui.add(egui::Slider::new(&mut self.color_repeat, 2..=40));
+                    ui.add(egui::Slider::new(&mut self.color_repeat, 1..=60));
                     if old_repeat != self.color_repeat {
                         self.params.color_repeat = self.color_repeat;
                         if !self.iterations.is_empty() {
@@ -738,10 +822,8 @@ impl eframe::App for FractallApp {
                 let target_height = available_size.y.max(1.0).floor() as u32;
                 self.queue_resize(target_width, target_height);
 
-                if self.rendering {
-                    ui.spinner();
-                    ui.label("Rendu en cours...");
-                } else if let Some(texture) = &self.texture {
+                // Afficher la texture si elle existe (même pendant le rendu progressif)
+                if let Some(texture) = &self.texture {
                     let image_size = egui::Vec2::new(
                         self.params.width as f32,
                         self.params.height as f32,
@@ -851,11 +933,13 @@ impl eframe::App for FractallApp {
                     if response.secondary_clicked() && !self.selecting {
                         self.zoom_out(2.0);
                     }
+                } else if self.rendering {
+                    // Pas encore de texture, afficher le spinner
+                    ui.spinner();
+                    ui.label("Rendu en cours...");
                 } else {
                     // Premier rendu
-                    if !self.rendering {
-                        self.start_render();
-                    }
+                    self.start_render();
                 }
             });
         });
@@ -885,6 +969,15 @@ impl eframe::App for FractallApp {
                     if let Some(time) = self.last_render_time {
                         ui.separator();
                         ui.label(format!("Temps: {:.2}s", time));
+                    }
+
+                    // Afficher le statut du rendu progressif
+                    if self.rendering {
+                        ui.separator();
+                        ui.label(format!("Rendu pass {}/{}", self.current_pass, self.total_passes));
+                    } else if self.is_preview {
+                        ui.separator();
+                        ui.label("Preview");
                     }
                 });
         });
