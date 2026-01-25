@@ -28,21 +28,23 @@ pub fn iterate_pixel(
 
     while n < max_iter {
         let mut stepped = false;
+        let mut delta_norm_sqr = 0.0;
 
         if !bla_table.levels.is_empty() && !is_burning_ship {
+            delta_norm_sqr = delta.norm_sqr_approx();
             for level in (0..bla_table.levels.len()).rev() {
                 let level_nodes = &bla_table.levels[level];
                 if (n as usize) >= level_nodes.len() {
                     continue;
                 }
                 let node = &level_nodes[n as usize];
-                let delta_norm_sqr = delta.norm_sqr_approx();
                 if delta_norm_sqr < node.validity_radius * node.validity_radius {
                     let mut next_delta = delta.mul_complex64(node.a);
                     if !is_julia {
                         next_delta = next_delta.add(dc.mul_complex64(node.b));
                     }
                     delta = next_delta;
+                    delta_norm_sqr = delta.norm_sqr_approx();
                     n += 1u32 << level;
                     stepped = true;
                     break;
@@ -75,6 +77,7 @@ pub fn iterate_pixel(
                 } else {
                     delta = linear.add(nonlinear).add(dc);
                 }
+                delta_norm_sqr = delta.norm_sqr_approx();
                 n += 1;
             }
         }
@@ -101,7 +104,8 @@ pub fn iterate_pixel(
         }
 
         let z_ref_norm_sqr = z_ref.norm_sqr();
-        if z_ref_norm_sqr > 0.0 && delta.norm_sqr_approx() > glitch_tolerance_sqr * z_ref_norm_sqr {
+        let glitch_scale = z_ref_norm_sqr + 1.0;
+        if !delta_norm_sqr.is_finite() || delta_norm_sqr > glitch_tolerance_sqr * glitch_scale {
             return DeltaResult {
                 iteration: n,
                 z_final: z_curr,

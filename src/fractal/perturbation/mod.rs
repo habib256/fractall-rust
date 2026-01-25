@@ -53,6 +53,36 @@ fn build_reuse<'a>(
     })
 }
 
+fn compute_perturbation_precision_bits(params: &FractalParams) -> u32 {
+    if params.width == 0 || params.height == 0 {
+        return params.precision_bits.max(64);
+    }
+    let span_x = (params.xmax - params.xmin).abs();
+    let span_y = (params.ymax - params.ymin).abs();
+    let pixel_size = span_x.max(span_y) / params.width as f64;
+    if !pixel_size.is_finite() || pixel_size <= 0.0 {
+        return params.precision_bits.max(64);
+    }
+    let center_x = (params.xmin + params.xmax) / 2.0;
+    let center_y = (params.ymin + params.ymax) / 2.0;
+    let scale = center_x.abs().max(center_y.abs()).max(1.0);
+    let zoom = (scale / pixel_size).abs();
+    let zoom_threshold = 1e13;
+    if !zoom.is_finite() || zoom <= zoom_threshold {
+        return params.precision_bits.max(64);
+    }
+    let needed_bits = if zoom > 0.0 {
+        zoom.log2().ceil() as i32 + 32
+    } else {
+        0
+    };
+    let needed_bits = needed_bits.max(64) as u32;
+    params
+        .precision_bits
+        .max(needed_bits)
+        .min(4096)
+}
+
 #[allow(dead_code)]
 pub fn render_mandelbrot_perturbation(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
     let cancel = Arc::new(AtomicBool::new(false));
@@ -88,9 +118,13 @@ pub fn render_perturbation_with_cache(
         return None;
     }
 
+    let mut orbit_params = params.clone();
+    orbit_params.precision_bits = compute_perturbation_precision_bits(params);
+
     // Use cached orbit/BLA or compute fresh
-    let cache = compute_reference_orbit_cached(params, Some(cancel.as_ref()), orbit_cache)?;
-    let gmp_params = MpcParams::from_params(params);
+    let cache =
+        compute_reference_orbit_cached(&orbit_params, Some(cancel.as_ref()), orbit_cache)?;
+    let gmp_params = MpcParams::from_params(&orbit_params);
     let prec = gmp_params.prec;
 
     let width = params.width as usize;
