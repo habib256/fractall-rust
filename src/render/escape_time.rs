@@ -18,7 +18,7 @@ use crate::fractal::buddhabrot::{
     render_buddhabrot_mpc_cancellable,
     render_nebulabrot_mpc_cancellable,
 };
-use crate::fractal::perturbation::render_mandelbrot_perturbation_cancellable_with_reuse;
+use crate::fractal::perturbation::render_perturbation_cancellable_with_reuse;
 
 /// Calcule la matrice d'itérations et la matrice des valeurs finales de z
 /// pour une fractale escape-time (ou algorithme spécial).
@@ -58,12 +58,15 @@ pub fn render_escape_time(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
         _ => {}
     }
 
-    if params.fractal_type == FractalType::Mandelbrot {
+    if matches!(
+        params.fractal_type,
+        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
+    ) {
         match params.algorithm_mode {
             AlgorithmMode::ReferenceGmp => return render_escape_time_gmp(params),
             AlgorithmMode::StandardF64 => return render_escape_time_f64(params),
             AlgorithmMode::Perturbation => {
-                return render_mandelbrot_perturbation_cancellable_with_reuse(
+                return render_perturbation_cancellable_with_reuse(
                     params,
                     &Arc::new(AtomicBool::new(false)),
                     None,
@@ -71,8 +74,8 @@ pub fn render_escape_time(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
                 .unwrap_or_else(|| (Vec::new(), Vec::new()));
             }
             AlgorithmMode::Auto => {
-                if should_use_perturbation(params) {
-                    return render_mandelbrot_perturbation_cancellable_with_reuse(
+                if should_use_perturbation(params, false) {
+                    return render_perturbation_cancellable_with_reuse(
                         params,
                         &Arc::new(AtomicBool::new(false)),
                         None,
@@ -265,7 +268,10 @@ pub fn render_escape_time_cancellable_with_reuse(
         _ => {}
     }
 
-    if params.fractal_type == FractalType::Mandelbrot {
+    if matches!(
+        params.fractal_type,
+        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
+    ) {
         match params.algorithm_mode {
             AlgorithmMode::ReferenceGmp => {
                 let reuse = build_reuse(params, reuse);
@@ -276,11 +282,11 @@ pub fn render_escape_time_cancellable_with_reuse(
                 return render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse);
             }
             AlgorithmMode::Perturbation => {
-                return render_mandelbrot_perturbation_cancellable_with_reuse(params, cancel, reuse);
+                return render_perturbation_cancellable_with_reuse(params, cancel, reuse);
             }
             AlgorithmMode::Auto => {
-                if should_use_perturbation(params) {
-                    return render_mandelbrot_perturbation_cancellable_with_reuse(params, cancel, reuse);
+                if should_use_perturbation(params, false) {
+                    return render_perturbation_cancellable_with_reuse(params, cancel, reuse);
                 }
             }
         }
@@ -293,8 +299,14 @@ pub fn render_escape_time_cancellable_with_reuse(
     render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse)
 }
 
-fn should_use_perturbation(params: &FractalParams) -> bool {
-    if params.width == 0 {
+pub fn should_use_perturbation(params: &FractalParams, gpu_f32: bool) -> bool {
+    if params.width == 0 || params.height == 0 {
+        return false;
+    }
+    if !matches!(
+        params.fractal_type,
+        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
+    ) {
         return false;
     }
     let span_x = (params.xmax - params.xmin).abs();
@@ -303,7 +315,8 @@ fn should_use_perturbation(params: &FractalParams) -> bool {
     let center_x = (params.xmin + params.xmax) / 2.0;
     let center_y = (params.ymin + params.ymax) / 2.0;
     let scale = center_x.abs().max(center_y.abs()).max(1.0);
-    pixel_size < 1e-12 * scale
+    let threshold = if gpu_f32 { 1e-6 } else { 1e-12 };
+    pixel_size < threshold * scale
 }
 
 #[allow(dead_code)]

@@ -1,18 +1,14 @@
-enable f64;
-
 struct Params {
-    xmin: f64,
-    xmax: f64,
-    ymin: f64,
-    ymax: f64,
-    seed_re: f64,
-    seed_im: f64,
+    xmin: f32,
+    xmax: f32,
+    ymin: f32,
+    ymax: f32,
     width: u32,
     height: u32,
     iter_max: u32,
     _pad: u32,
-    bailout: f64,
-    _pad2: f64,
+    bailout: f32,
+    _pad2: vec3<f32>,
 };
 
 struct PixelOut {
@@ -32,8 +28,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let idx = gid.y * params.width + gid.x;
-    let fx = f64(gid.x) / f64(params.width);
-    let fy = f64(gid.y) / f64(params.height);
+    let fx = f32(gid.x) / f32(params.width);
+    let fy = f32(gid.y) / f32(params.height);
     let x = params.xmin + (params.xmax - params.xmin) * fx;
     let y = params.ymin + (params.ymax - params.ymin) * fy;
 
@@ -46,12 +42,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (i >= params.iter_max) {
             break;
         }
-        let z_re_sq = z_re * z_re;
-        let z_im_sq = z_im * z_im;
+        let z_re_abs = abs(z_re);
+        let z_im_abs = abs(z_im);
+        let z_re_sq = z_re_abs * z_re_abs;
+        let z_im_sq = z_im_abs * z_im_abs;
         if (z_re_sq + z_im_sq > bailout_sqr) {
             break;
         }
-        let z_im_new = 2.0 * z_re * z_im + y;
+        let z_im_new = 2.0 * z_re_abs * z_im_abs + y;
         let z_re_new = z_re_sq - z_im_sq + x;
         z_re = z_re_new;
         z_im = z_im_new;
@@ -59,7 +57,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     out_pixels[idx].iter = i;
-    out_pixels[idx].z_re = f32(z_re);
-    out_pixels[idx].z_im = f32(z_im);
+    out_pixels[idx].z_re = z_re;
+    out_pixels[idx].z_im = z_im;
     out_pixels[idx]._pad = 0u;
 }

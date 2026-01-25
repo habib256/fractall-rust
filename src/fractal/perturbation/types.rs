@@ -200,3 +200,36 @@ fn pow2i(exp: i32) -> f64 {
     }
     f64::from_bits(((exp + 1023) as u64) << 52)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{ComplexExp, FloatExp};
+    use num_complex::Complex64;
+
+    #[test]
+    fn floatexp_roundtrip() {
+        let value = 1.5f64;
+        let fx = FloatExp::from_f64(value);
+        let back = fx.to_f64();
+        let diff = (back - value).abs();
+        assert!(diff < 1e-12);
+    }
+
+    #[test]
+    fn floatexp_add_ignores_tiny() {
+        let big = FloatExp::new(1.0, 40);
+        let tiny = FloatExp::new(1.0, -80);
+        let sum = big + tiny;
+        let diff = (sum.to_f64() - big.to_f64()).abs();
+        assert!(diff < 1e-9);
+    }
+
+    #[test]
+    fn complexexp_mul_matches_f64() {
+        let a = ComplexExp::from_complex64(Complex64::new(1.0, 2.0));
+        let b = ComplexExp::from_complex64(Complex64::new(3.0, 4.0));
+        let out = a.mul(b).to_complex64_approx();
+        assert!((out.re + 5.0).abs() < 1e-9);
+        assert!((out.im - 10.0).abs() < 1e-9);
+    }
+}

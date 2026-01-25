@@ -1,6 +1,6 @@
 use num_complex::Complex64;
 
-use crate::fractal::FractalParams;
+use crate::fractal::{FractalParams, FractalType};
 
 #[derive(Clone, Copy, Debug)]
 pub struct BlaNode {
@@ -21,6 +21,11 @@ impl BlaTable {
 }
 
 pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTable {
+    let supports_bla = matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia);
+    if !supports_bla {
+        return BlaTable::empty();
+    }
+
     let base_len = ref_orbit.len().saturating_sub(1);
     if base_len == 0 {
         return BlaTable::empty();
@@ -28,11 +33,23 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
 
     let mut levels: Vec<Vec<BlaNode>> = Vec::new();
     let mut level0 = Vec::with_capacity(base_len);
+    let base_threshold = params.bla_threshold.max(1e-16);
     for &z in ref_orbit.iter().take(base_len) {
+        let a = z * 2.0;
+        let a_norm = a.norm();
+        let mut validity = base_threshold / (1.0 + a_norm);
+        if !validity.is_finite() {
+            validity = base_threshold;
+        }
+        validity = validity.min(base_threshold);
         level0.push(BlaNode {
-            a: z * 2.0,
-            b: Complex64::new(1.0, 0.0),
-            validity_radius: params.bla_threshold,
+            a,
+            b: if params.fractal_type == FractalType::Julia {
+                Complex64::new(0.0, 0.0)
+            } else {
+                Complex64::new(1.0, 0.0)
+            },
+            validity_radius: validity,
         });
     }
     levels.push(level0);
@@ -50,10 +67,12 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
             let node2 = prev[i + step];
             let a_new = node2.a * node1.a;
             let b_new = node2.a * node1.b + node2.b;
+            let a_norm = node1.a.norm();
+            let scaled = node2.validity_radius / (1.0 + a_norm);
             current.push(BlaNode {
                 a: a_new,
                 b: b_new,
-                validity_radius: node1.validity_radius.min(node2.validity_radius),
+                validity_radius: node1.validity_radius.min(scaled),
             });
         }
         levels.push(current);

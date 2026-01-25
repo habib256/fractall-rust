@@ -5,8 +5,6 @@ struct Params {
     xmax: f64,
     ymin: f64,
     ymax: f64,
-    seed_re: f64,
-    seed_im: f64,
     width: u32,
     height: u32,
     iter_max: u32,
@@ -46,12 +44,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (i >= params.iter_max) {
             break;
         }
-        let z_re_sq = z_re * z_re;
-        let z_im_sq = z_im * z_im;
+        let z_re_abs = abs(z_re);
+        let z_im_abs = abs(z_im);
+        let z_re_sq = z_re_abs * z_re_abs;
+        let z_im_sq = z_im_abs * z_im_abs;
         if (z_re_sq + z_im_sq > bailout_sqr) {
             break;
         }
-        let z_im_new = 2.0 * z_re * z_im + y;
+        let z_im_new = 2.0 * z_re_abs * z_im_abs + y;
         let z_re_new = z_re_sq - z_im_sq + x;
         z_re = z_re_new;
         z_im = z_im_new;

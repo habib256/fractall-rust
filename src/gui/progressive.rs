@@ -13,6 +13,8 @@ pub enum RenderMessage {
     PassComplete {
         pass_index: u8,
         scale_divisor: u8,
+        effective_mode: crate::fractal::AlgorithmMode,
+        precision_label: String,
         iterations: Vec<u32>,
         zs: Vec<Complex64>,
         width: u32,

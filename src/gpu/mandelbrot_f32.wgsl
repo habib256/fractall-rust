@@ -3,6 +3,8 @@ struct Params {
     xmax: f32,
     ymin: f32,
     ymax: f32,
+    seed_re: f32,
+    seed_im: f32,
     width: u32,
     height: u32,
     iter_max: u32,

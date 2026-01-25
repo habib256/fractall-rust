@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use num_complex::Complex64;
 use rug::{Complex, Float};
 
-use crate::fractal::FractalParams;
+use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::gmp::complex_to_complex64;
 
 #[derive(Clone, Debug)]
@@ -21,14 +21,21 @@ pub fn compute_reference_orbit(
     let center_y = (params.ymin + params.ymax) / 2.0;
     let cref = Complex::with_val(prec, (center_x, center_y));
     let cref_f64 = Complex64::new(center_x, center_y);
-    let mut z = Complex::with_val(prec, (0.0, 0.0));
+    let mut z = match params.fractal_type {
+        FractalType::Mandelbrot | FractalType::BurningShip => {
+            Complex::with_val(prec, (params.seed.re, params.seed.im))
+        }
+        FractalType::Julia => Complex::with_val(prec, (center_x, center_y)),
+        _ => return None,
+    };
+    let seed = Complex::with_val(prec, (params.seed.re, params.seed.im));
 
     let bailout = Float::with_val(prec, params.bailout);
     let mut bailout_sqr = bailout.clone();
     bailout_sqr *= &bailout;
 
     let mut z_ref = Vec::with_capacity(params.iteration_max as usize + 1);
-    z_ref.push(Complex64::new(0.0, 0.0));
+    z_ref.push(complex_to_complex64(&z));
 
     for i in 0..params.iteration_max {
         if let Some(cancel) = cancel {
@@ -39,10 +46,29 @@ pub fn compute_reference_orbit(
         if complex_norm_sqr(&z, prec) > bailout_sqr {
             break;
         }
-        let mut z_sq = z.clone();
-        z_sq *= &z;
-        z_sq += &cref;
-        z = z_sq;
+        z = match params.fractal_type {
+            FractalType::Mandelbrot => {
+                let mut z_sq = z.clone();
+                z_sq *= &z;
+                z_sq += &cref;
+                z_sq
+            }
+            FractalType::Julia => {
+                let mut z_sq = z.clone();
+                z_sq *= &z;
+                z_sq += &seed;
+                z_sq
+            }
+            FractalType::BurningShip => {
+                let re_abs = z.real().clone().abs();
+                let im_abs = z.imag().clone().abs();
+                let mut z_abs = Complex::with_val(prec, (re_abs, im_abs));
+                z_abs *= z_abs.clone();
+                z_abs += &cref;
+                z_abs
+            }
+            _ => return None,
+        };
         z_ref.push(complex_to_complex64(&z));
     }
 

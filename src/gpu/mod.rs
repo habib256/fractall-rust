@@ -4,7 +4,8 @@ use bytemuck::{Pod, Zeroable};
 use num_complex::Complex64;
 use wgpu::util::DeviceExt;
 
-use crate::fractal::FractalParams;
+use crate::fractal::{FractalParams, FractalType};
+use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
 use crate::fractal::perturbation::bla::build_bla_table;
 use crate::fractal::perturbation::orbit::compute_reference_orbit;
 
@@ -15,7 +16,9 @@ pub struct GpuRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline_f32: wgpu::ComputePipeline,
-    pipeline_f64: Option<wgpu::ComputePipeline>,
+    pipeline_f64: Option<PipelinesF64>,
+    pipeline_julia_f32: wgpu::ComputePipeline,
+    pipeline_burning_ship_f32: wgpu::ComputePipeline,
     pipeline_perturbation: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     bind_group_layout_perturb: wgpu::BindGroupLayout,
@@ -98,17 +101,82 @@ impl GpuRenderer {
                 entry_point: "main",
             });
 
+            let shader_julia_f32 = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("julia-f32"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("julia_f32.wgsl").into()),
+            });
+
+            let pipeline_julia_f32 = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("julia-pipeline-f32"),
+                layout: Some(&pipeline_layout),
+                module: &shader_julia_f32,
+                entry_point: "main",
+            });
+
+            let shader_burning_ship_f32 =
+                device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("burning-ship-f32"),
+                    source: wgpu::ShaderSource::Wgsl(
+                        include_str!("burning_ship_f32.wgsl").into(),
+                    ),
+                });
+
+            let pipeline_burning_ship_f32 =
+                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("burning-ship-pipeline-f32"),
+                    layout: Some(&pipeline_layout),
+                    module: &shader_burning_ship_f32,
+                    entry_point: "main",
+                });
+
             let pipeline_f64 = if supports_f64 {
                 let shader_f64 = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("mandelbrot-f64"),
                     source: wgpu::ShaderSource::Wgsl(include_str!("mandelbrot_f64.wgsl").into()),
                 });
-                Some(device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("mandelbrot-pipeline-f64"),
-                    layout: Some(&pipeline_layout),
-                    module: &shader_f64,
-                    entry_point: "main",
-                }))
+
+                let pipeline_mandelbrot_f64 =
+                    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                        label: Some("mandelbrot-pipeline-f64"),
+                        layout: Some(&pipeline_layout),
+                        module: &shader_f64,
+                        entry_point: "main",
+                    });
+
+                let shader_julia_f64 = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("julia-f64"),
+                    source: wgpu::ShaderSource::Wgsl(include_str!("julia_f64.wgsl").into()),
+                });
+
+                let pipeline_julia_f64 =
+                    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                        label: Some("julia-pipeline-f64"),
+                        layout: Some(&pipeline_layout),
+                        module: &shader_julia_f64,
+                        entry_point: "main",
+                    });
+
+                let shader_burning_ship_f64 =
+                    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                        label: Some("burning-ship-f64"),
+                        source: wgpu::ShaderSource::Wgsl(
+                            include_str!("burning_ship_f64.wgsl").into(),
+                        ),
+                    });
+
+                let pipeline_burning_ship_f64 =
+                    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                        label: Some("burning-ship-pipeline-f64"),
+                        layout: Some(&pipeline_layout),
+                        module: &shader_burning_ship_f64,
+                        entry_point: "main",
+                    });
+
+                Some(PipelinesF64 {
+                    mandelbrot: pipeline_mandelbrot_f64,
+                    julia: pipeline_julia_f64,
+                    burning_ship: pipeline_burning_ship_f64,
+                })
             } else {
                 None
             };
@@ -169,6 +237,16 @@ impl GpuRenderer {
                             },
                             count: None,
                         },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 5,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
                     ],
                 });
 
@@ -197,6 +275,8 @@ impl GpuRenderer {
                 queue,
                 pipeline_f32,
                 pipeline_f64,
+                pipeline_julia_f32,
+                pipeline_burning_ship_f32,
                 pipeline_perturbation,
                 bind_group_layout,
                 bind_group_layout_perturb,
@@ -220,6 +300,36 @@ impl GpuRenderer {
         }
     }
 
+    pub fn render_julia(
+        &self,
+        params: &FractalParams,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Option<(Vec<u32>, Vec<Complex64>)> {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        if self.supports_f64 {
+            self.render_julia_f64(params, cancel)
+        } else {
+            self.render_julia_f32(params, cancel)
+        }
+    }
+
+    pub fn render_burning_ship(
+        &self,
+        params: &FractalParams,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Option<(Vec<u32>, Vec<Complex64>)> {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        if self.supports_f64 {
+            self.render_burning_ship_f64(params, cancel)
+        } else {
+            self.render_burning_ship_f32(params, cancel)
+        }
+    }
+
     pub fn precision_label(&self) -> &'static str {
         if self.supports_f64 {
             "f64"
@@ -232,13 +342,26 @@ impl GpuRenderer {
         &self,
         params: &FractalParams,
         cancel: &std::sync::atomic::AtomicBool,
+        reuse: Option<(&[u32], &[Complex64], u32, u32)>,
     ) -> Option<(Vec<u32>, Vec<Complex64>)> {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return None;
         }
+        let supports = matches!(
+            params.fractal_type,
+            FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
+        );
+        if !supports {
+            return None;
+        }
         let ref_orbit = compute_reference_orbit(params, Some(cancel))?;
         let bla_table = build_bla_table(&ref_orbit.z_ref, params);
-        let bla_levels = bla_table.levels.len().min(MAX_LEVELS);
+        let supports_bla = matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia);
+        let bla_levels = if supports_bla {
+            bla_table.levels.len().min(MAX_LEVELS)
+        } else {
+            0
+        };
         let mut level_offsets = [0u32; MAX_LEVELS];
         let mut level_lengths = [0u32; MAX_LEVELS];
 
@@ -266,6 +389,9 @@ impl GpuRenderer {
                 im: z.im as f32,
             })
             .collect();
+        let iter_max = params
+            .iteration_max
+            .min(ref_orbit.z_ref.len().saturating_sub(1) as u32);
 
         let width = params.width as usize;
         let height = params.height as usize;
@@ -276,11 +402,48 @@ impl GpuRenderer {
         let output_count = width * height;
         let output_size = (output_count * std::mem::size_of::<PixelOut>()) as u64;
 
-        let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+        let reuse = build_reuse(params, reuse);
+        let mut mask: Vec<u32> = vec![1u32; output_count];
+        let mut initial_output = vec![
+            PixelOut {
+                iter: 0,
+                z_re: 0.0,
+                z_im: 0.0,
+                flags: 0,
+            };
+            output_count
+        ];
+        if let Some(reuse) = reuse.as_ref() {
+            let ratio = reuse.ratio as usize;
+            for y in 0..height {
+                if y % ratio != 0 {
+                    continue;
+                }
+                let src_y = y / ratio;
+                for x in 0..width {
+                    if x % ratio != 0 {
+                        continue;
+                    }
+                    let src_x = x / ratio;
+                    let src_idx = src_y * reuse.width as usize + src_x;
+                    if src_idx < reuse.iterations.len() {
+                        let dst_idx = y * width + x;
+                        mask[dst_idx] = 0;
+                        initial_output[dst_idx] = PixelOut {
+                            iter: reuse.iterations[src_idx],
+                            z_re: reuse.zs[src_idx].re as f32,
+                            z_im: reuse.zs[src_idx].im as f32,
+                            flags: 0,
+                        };
+                    }
+                }
+            }
+        }
+
+        let output_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("perturb-output"),
-            size: output_size,
+            contents: bytemuck::cast_slice(&initial_output),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
         });
 
         let readback_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -301,12 +464,19 @@ impl GpuRenderer {
                 cref_y: ref_orbit.cref.im as f32,
                 width: params.width,
                 height: params.height,
-                iter_max: params.iteration_max,
+                iter_max,
                 bailout: params.bailout as f32,
                 bla_levels: bla_levels as u32,
-                _pad: 0,
-                _pad2: [0.0; 3],
-                _pad3: 0,
+                fractal_kind: match params.fractal_type {
+                    FractalType::Mandelbrot => 0,
+                    FractalType::Julia => 1,
+                    FractalType::BurningShip => 2,
+                    _ => 0,
+                },
+                glitch_tolerance: params.glitch_tolerance as f32,
+                _pad_align: [0; 3],
+                _pad0: [0; 4],
+                _pad: [0; 4],
             }),
             usage: wgpu::BufferUsages::UNIFORM,
         });
@@ -333,6 +503,12 @@ impl GpuRenderer {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
+        let mask_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("perturb-reuse-mask"),
+            contents: bytemuck::cast_slice(&mask),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("perturb-bind-group"),
             layout: &self.bind_group_layout_perturb,
@@ -356,6 +532,10 @@ impl GpuRenderer {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: zref_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: mask_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -406,12 +586,39 @@ impl GpuRenderer {
         let pixels: &[PixelOut] = bytemuck::cast_slice(&data);
         let mut iterations = Vec::with_capacity(output_count);
         let mut zs = Vec::with_capacity(output_count);
-        for p in pixels {
+        let mut glitched_indices = Vec::new();
+        for (idx, p) in pixels.iter().enumerate() {
+            if p.flags != 0 {
+                glitched_indices.push(idx as u32);
+            }
             iterations.push(p.iter);
             zs.push(Complex64::new(p.z_re as f64, p.z_im as f64));
         }
         drop(data);
         readback_buffer.unmap();
+
+        if !glitched_indices.is_empty() {
+            let gmp_params = MpcParams::from_params(params);
+            let prec = gmp_params.prec;
+            let x_range = params.xmax - params.xmin;
+            let y_range = params.ymax - params.ymin;
+            let x_step = x_range / params.width as f64;
+            let y_step = y_range / params.height as f64;
+            for idx in glitched_indices {
+                let x = (idx % params.width) as f64;
+                let y = (idx / params.width) as f64;
+                let xg = x_step * x + params.xmin;
+                let yg = y_step * y + params.ymin;
+                let z_pixel = complex_from_xy(
+                    prec,
+                    rug::Float::with_val(prec, xg),
+                    rug::Float::with_val(prec, yg),
+                );
+                let (iter_val, z_final) = iterate_point_mpc(&gmp_params, &z_pixel);
+                iterations[idx as usize] = iter_val;
+                zs[idx as usize] = complex_to_complex64(&z_final);
+            }
+        }
 
         Some((iterations, zs))
     }
@@ -420,6 +627,96 @@ impl GpuRenderer {
         &self,
         params: &FractalParams,
         cancel: &std::sync::atomic::AtomicBool,
+    ) -> Option<(Vec<u32>, Vec<Complex64>)> {
+        self.render_escape_f32(
+            params,
+            cancel,
+            &self.pipeline_f32,
+            ParamsF32::from_params(params, None),
+            "mandelbrot",
+        )
+    }
+
+    fn render_mandelbrot_f64(
+        &self,
+        params: &FractalParams,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Option<(Vec<u32>, Vec<Complex64>)> {
+        let pipelines = self.pipeline_f64.as_ref()?;
+        self.render_escape_f64(
+            params,
+            cancel,
+            &pipelines.mandelbrot,
+            ParamsF64::from_params(params, None),
+            "mandelbrot",
+        )
+    }
+
+    fn render_julia_f32(
+        &self,
+        params: &FractalParams,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Option<(Vec<u32>, Vec<Complex64>)> {
+        self.render_escape_f32(
+            params,
+            cancel,
+            &self.pipeline_julia_f32,
+            ParamsF32::from_params(params, Some(params.seed)),
+            "julia",
+        )
+    }
+
+    fn render_burning_ship_f32(
+        &self,
+        params: &FractalParams,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Option<(Vec<u32>, Vec<Complex64>)> {
+        self.render_escape_f32(
+            params,
+            cancel,
+            &self.pipeline_burning_ship_f32,
+            ParamsF32::from_params(params, None),
+            "burning-ship",
+        )
+    }
+
+    fn render_julia_f64(
+        &self,
+        params: &FractalParams,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Option<(Vec<u32>, Vec<Complex64>)> {
+        let pipelines = self.pipeline_f64.as_ref()?;
+        self.render_escape_f64(
+            params,
+            cancel,
+            &pipelines.julia,
+            ParamsF64::from_params(params, Some(params.seed)),
+            "julia",
+        )
+    }
+
+    fn render_burning_ship_f64(
+        &self,
+        params: &FractalParams,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Option<(Vec<u32>, Vec<Complex64>)> {
+        let pipelines = self.pipeline_f64.as_ref()?;
+        self.render_escape_f64(
+            params,
+            cancel,
+            &pipelines.burning_ship,
+            ParamsF64::from_params(params, None),
+            "burning-ship",
+        )
+    }
+
+    fn render_escape_f32(
+        &self,
+        params: &FractalParams,
+        cancel: &std::sync::atomic::AtomicBool,
+        pipeline: &wgpu::ComputePipeline,
+        params_value: ParamsF32,
+        label: &str,
     ) -> Option<(Vec<u32>, Vec<Complex64>)> {
         let width = params.width as usize;
         let height = params.height as usize;
@@ -430,39 +727,27 @@ impl GpuRenderer {
         let output_size = (output_count * std::mem::size_of::<PixelOut>()) as u64;
 
         let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mandelbrot-output"),
+            label: Some(&format!("{label}-output-f32")),
             size: output_size,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
         let readback_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mandelbrot-readback"),
+            label: Some(&format!("{label}-readback-f32")),
             size: output_size,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         let params_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("mandelbrot-params-f32"),
-            contents: bytemuck::bytes_of(&ParamsF32 {
-                xmin: params.xmin as f32,
-                xmax: params.xmax as f32,
-                ymin: params.ymin as f32,
-                ymax: params.ymax as f32,
-                width: params.width,
-                height: params.height,
-                iter_max: params.iteration_max,
-                _pad: 0,
-                bailout: params.bailout as f32,
-                _pad2: [0.0; 3],
-                _pad3: [0; 4],
-            }),
+            label: Some(&format!("{label}-params-f32")),
+            contents: bytemuck::bytes_of(&params_value),
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("mandelbrot-bind-group-f32"),
+            label: Some(&format!("{label}-bind-group-f32")),
             layout: &self.bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -483,14 +768,14 @@ impl GpuRenderer {
         let mut encoder =
             self.device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("mandelbrot-encoder-f32"),
+                    label: Some(&format!("{label}-encoder-f32")),
                 });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("mandelbrot-pass-f32"),
+                label: Some(&format!("{label}-pass-f32")),
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&self.pipeline_f32);
+            pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             let dispatch_x = (params.width + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
             let dispatch_y = (params.height + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
@@ -532,12 +817,14 @@ impl GpuRenderer {
         Some((iterations, zs))
     }
 
-    fn render_mandelbrot_f64(
+    fn render_escape_f64(
         &self,
         params: &FractalParams,
         cancel: &std::sync::atomic::AtomicBool,
+        pipeline: &wgpu::ComputePipeline,
+        params_value: ParamsF64,
+        label: &str,
     ) -> Option<(Vec<u32>, Vec<Complex64>)> {
-        let pipeline = self.pipeline_f64.as_ref()?;
         let width = params.width as usize;
         let height = params.height as usize;
         if width == 0 || height == 0 {
@@ -547,38 +834,27 @@ impl GpuRenderer {
         let output_size = (output_count * std::mem::size_of::<PixelOut>()) as u64;
 
         let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mandelbrot-output-f64"),
+            label: Some(&format!("{label}-output-f64")),
             size: output_size,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
         let readback_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mandelbrot-readback-f64"),
+            label: Some(&format!("{label}-readback-f64")),
             size: output_size,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         let params_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("mandelbrot-params-f64"),
-            contents: bytemuck::bytes_of(&ParamsF64 {
-                xmin: params.xmin,
-                xmax: params.xmax,
-                ymin: params.ymin,
-                ymax: params.ymax,
-                width: params.width,
-                height: params.height,
-                iter_max: params.iteration_max,
-                _pad: 0,
-                bailout: params.bailout,
-                _pad2: 0.0,
-            }),
+            label: Some(&format!("{label}-params-f64")),
+            contents: bytemuck::bytes_of(&params_value),
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("mandelbrot-bind-group-f64"),
+            label: Some(&format!("{label}-bind-group-f64")),
             layout: &self.bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -599,11 +875,11 @@ impl GpuRenderer {
         let mut encoder =
             self.device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("mandelbrot-encoder-f64"),
+                    label: Some(&format!("{label}-encoder-f64")),
                 });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("mandelbrot-pass-f64"),
+                label: Some(&format!("{label}-pass-f64")),
                 timestamp_writes: None,
             });
             pass.set_pipeline(pipeline);
@@ -649,6 +925,12 @@ impl GpuRenderer {
     }
 }
 
+struct PipelinesF64 {
+    mandelbrot: wgpu::ComputePipeline,
+    julia: wgpu::ComputePipeline,
+    burning_ship: wgpu::ComputePipeline,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ParamsF32 {
@@ -656,6 +938,8 @@ struct ParamsF32 {
     xmax: f32,
     ymin: f32,
     ymax: f32,
+    seed_re: f32,
+    seed_im: f32,
     width: u32,
     height: u32,
     iter_max: u32,
@@ -672,6 +956,8 @@ struct ParamsF64 {
     xmax: f64,
     ymin: f64,
     ymax: f64,
+    seed_re: f64,
+    seed_im: f64,
     width: u32,
     height: u32,
     iter_max: u32,
@@ -680,13 +966,54 @@ struct ParamsF64 {
     _pad2: f64,
 }
 
+impl ParamsF32 {
+    fn from_params(params: &FractalParams, seed: Option<Complex64>) -> Self {
+        let seed = seed.unwrap_or(Complex64::new(0.0, 0.0));
+        Self {
+            xmin: params.xmin as f32,
+            xmax: params.xmax as f32,
+            ymin: params.ymin as f32,
+            ymax: params.ymax as f32,
+            seed_re: seed.re as f32,
+            seed_im: seed.im as f32,
+            width: params.width,
+            height: params.height,
+            iter_max: params.iteration_max,
+            _pad: 0,
+            bailout: params.bailout as f32,
+            _pad2: [0.0; 3],
+            _pad3: [0; 4],
+        }
+    }
+}
+
+impl ParamsF64 {
+    fn from_params(params: &FractalParams, seed: Option<Complex64>) -> Self {
+        let seed = seed.unwrap_or(Complex64::new(0.0, 0.0));
+        Self {
+            xmin: params.xmin,
+            xmax: params.xmax,
+            ymin: params.ymin,
+            ymax: params.ymax,
+            seed_re: seed.re,
+            seed_im: seed.im,
+            width: params.width,
+            height: params.height,
+            iter_max: params.iteration_max,
+            _pad: 0,
+            bailout: params.bailout,
+            _pad2: 0.0,
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct PixelOut {
     iter: u32,
     z_re: f32,
     z_im: f32,
-    _pad: u32,
+    flags: u32,
 }
 
 #[repr(C)]
@@ -729,7 +1056,44 @@ struct PerturbParams {
     iter_max: u32,
     bailout: f32,
     bla_levels: u32,
-    _pad: u32,
-    _pad2: [f32; 3],
-    _pad3: u32,
+    fractal_kind: u32,
+    glitch_tolerance: f32,
+    _pad_align: [u32; 3],
+    _pad0: [u32; 4],
+    _pad: [u32; 4],
+}
+
+struct ReuseData<'a> {
+    iterations: &'a [u32],
+    zs: &'a [Complex64],
+    width: u32,
+    ratio: u32,
+}
+
+fn build_reuse<'a>(
+    params: &FractalParams,
+    reuse: Option<(&'a [u32], &'a [Complex64], u32, u32)>,
+) -> Option<ReuseData<'a>> {
+    let (iterations, zs, width, height) = reuse?;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let expected_len = (width * height) as usize;
+    if iterations.len() != expected_len || zs.len() != expected_len {
+        return None;
+    }
+    if params.width % width != 0 || params.height % height != 0 {
+        return None;
+    }
+    let ratio_x = params.width / width;
+    let ratio_y = params.height / height;
+    if ratio_x < 2 || ratio_y < 2 || ratio_x != ratio_y {
+        return None;
+    }
+    Some(ReuseData {
+        iterations,
+        zs,
+        width,
+        ratio: ratio_x,
+    })
 }

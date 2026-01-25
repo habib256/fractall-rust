@@ -37,8 +37,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = params.xmin + (params.xmax - params.xmin) * fx;
     let y = params.ymin + (params.ymax - params.ymin) * fy;
 
-    var z_re = 0.0;
-    var z_im = 0.0;
+    var z_re = x;
+    var z_im = y;
     var i: u32 = 0u;
     let bailout_sqr = params.bailout * params.bailout;
 
@@ -51,8 +51,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (z_re_sq + z_im_sq > bailout_sqr) {
             break;
         }
-        let z_im_new = 2.0 * z_re * z_im + y;
-        let z_re_new = z_re_sq - z_im_sq + x;
+        let z_im_new = 2.0 * z_re * z_im + params.seed_im;
+        let z_re_new = z_re_sq - z_im_sq + params.seed_re;
         z_re = z_re_new;
         z_im = z_im_new;
         i = i + 1u;
