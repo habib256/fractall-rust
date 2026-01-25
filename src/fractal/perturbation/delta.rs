@@ -4,11 +4,13 @@ use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::perturbation::bla::BlaTable;
 use crate::fractal::perturbation::orbit::ReferenceOrbit;
 use crate::fractal::perturbation::types::ComplexExp;
+use crate::fractal::perturbation::series::{SeriesConfig, should_use_series, estimate_series_error};
 
 pub struct DeltaResult {
     pub iteration: u32,
     pub z_final: Complex64,
     pub glitched: bool,
+    pub suspect: bool,
 }
 
 pub fn iterate_pixel(
@@ -25,6 +27,8 @@ pub fn iterate_pixel(
     let glitch_tolerance_sqr = params.glitch_tolerance * params.glitch_tolerance;
     let is_julia = params.fractal_type == FractalType::Julia;
     let is_burning_ship = params.fractal_type == FractalType::BurningShip;
+    let series_config = SeriesConfig::from_params(params);
+    let mut suspect = false;
 
     while n < max_iter {
         let mut stepped = false;
@@ -39,11 +43,25 @@ pub fn iterate_pixel(
                 }
                 let node = &level_nodes[n as usize];
                 if delta_norm_sqr < node.validity_radius * node.validity_radius {
-                    let mut next_delta = delta.mul_complex64(node.a);
-                    if !is_julia {
-                        next_delta = next_delta.add(dc.mul_complex64(node.b));
+                    if should_use_series(series_config, delta_norm_sqr, node.validity_radius) {
+                        let delta_sq = delta.mul(delta);
+                        let mut next_delta = delta.mul_complex64(node.a);
+                        if !is_julia {
+                            next_delta = next_delta.add(dc.mul_complex64(node.b));
+                        }
+                        next_delta = next_delta.add(delta_sq.mul_complex64(node.c));
+                        let err = estimate_series_error(delta_norm_sqr, series_config.order);
+                        if err > series_config.error_tolerance {
+                            suspect = true;
+                        }
+                        delta = next_delta;
+                    } else {
+                        let mut next_delta = delta.mul_complex64(node.a);
+                        if !is_julia {
+                            next_delta = next_delta.add(dc.mul_complex64(node.b));
+                        }
+                        delta = next_delta;
                     }
-                    delta = next_delta;
                     delta_norm_sqr = delta.norm_sqr_approx();
                     n += 1u32 << level;
                     stepped = true;
@@ -93,6 +111,7 @@ pub fn iterate_pixel(
                 iteration: n,
                 z_final: z_curr,
                 glitched: true,
+                suspect,
             };
         }
         if z_curr.norm_sqr() > bailout_sqr {
@@ -100,6 +119,7 @@ pub fn iterate_pixel(
                 iteration: n,
                 z_final: z_curr,
                 glitched: false,
+                suspect,
             };
         }
 
@@ -110,6 +130,7 @@ pub fn iterate_pixel(
                 iteration: n,
                 z_final: z_curr,
                 glitched: true,
+                suspect,
             };
         }
     }
@@ -121,5 +142,6 @@ pub fn iterate_pixel(
         iteration: final_index,
         z_final: z_curr,
         glitched: false,
+        suspect,
     }
 }

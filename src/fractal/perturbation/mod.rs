@@ -15,8 +15,40 @@ pub mod types;
 pub mod orbit;
 pub mod bla;
 pub mod delta;
+pub mod series;
 
 pub use orbit::ReferenceOrbitCache;
+
+pub fn mark_neighbor_glitches(
+    iterations: &[u32],
+    width: u32,
+    height: u32,
+    threshold: u32,
+) -> Vec<bool> {
+    let size = (width * height) as usize;
+    let mut mask = vec![false; size];
+    if width < 3 || height < 3 || iterations.len() != size {
+        return mask;
+    }
+    for y in 1..(height - 1) {
+        for x in 1..(width - 1) {
+            let idx = (y * width + x) as usize;
+            let center = iterations[idx];
+            let left = iterations[(y * width + (x - 1)) as usize];
+            let right = iterations[(y * width + (x + 1)) as usize];
+            let up = iterations[((y - 1) * width + x) as usize];
+            let down = iterations[((y + 1) * width + x) as usize];
+            let mut max_diff = center.abs_diff(left);
+            max_diff = max_diff.max(center.abs_diff(right));
+            max_diff = max_diff.max(center.abs_diff(up));
+            max_diff = max_diff.max(center.abs_diff(down));
+            if max_diff > threshold {
+                mask[idx] = true;
+            }
+        }
+    }
+    mask
+}
 
 struct ReuseData<'a> {
     iterations: &'a [u32],
@@ -55,32 +87,33 @@ fn build_reuse<'a>(
 
 pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32 {
     if params.width == 0 || params.height == 0 {
-        return params.precision_bits.max(64);
+        return params.precision_bits.max(128);
     }
     let span_x = (params.xmax - params.xmin).abs();
     let span_y = (params.ymax - params.ymin).abs();
     let pixel_size = span_x.max(span_y) / params.width as f64;
     if !pixel_size.is_finite() || pixel_size <= 0.0 {
-        return params.precision_bits.max(64);
+        return params.precision_bits.max(128);
     }
-    let center_x = (params.xmin + params.xmax) / 2.0;
-    let center_y = (params.ymin + params.ymax) / 2.0;
-    let scale = center_x.abs().max(center_y.abs()).max(1.0);
-    let zoom = (scale / pixel_size).abs();
-    let zoom_threshold = 1e13;
-    if !zoom.is_finite() || zoom <= zoom_threshold {
-        return params.precision_bits.max(64);
+
+    // Compute zoom level from pixel size (base range ~4.0 for Mandelbrot)
+    let base_range = 4.0;
+    let zoom = base_range / pixel_size;
+    if !zoom.is_finite() || zoom <= 1.0 {
+        return params.precision_bits.max(128);
     }
-    let needed_bits = if zoom > 0.0 {
-        zoom.log2().ceil() as i32 + 32
-    } else {
-        0
-    };
-    let needed_bits = needed_bits.max(64) as u32;
+
+    // Bits needed = log2(zoom) + safety margin
+    // For deep zooms: need ~3.32 bits per decimal digit of zoom
+    // Add 64 bits safety margin for intermediate calculations
+    let zoom_bits = zoom.log2().ceil() as i32;
+    let needed_bits = (zoom_bits + 64).max(128) as u32;
+
+    // Clamp to reasonable range: 128 minimum, 8192 maximum
     params
         .precision_bits
         .max(needed_bits)
-        .min(4096)
+        .clamp(128, 8192)
 }
 
 #[allow(dead_code)]
@@ -124,13 +157,13 @@ pub fn render_perturbation_with_cache(
     // Use cached orbit/BLA or compute fresh
     let cache =
         compute_reference_orbit_cached(&orbit_params, Some(cancel.as_ref()), orbit_cache)?;
-    let gmp_params = MpcParams::from_params(&orbit_params);
-    let prec = gmp_params.prec;
-
     let width = params.width as usize;
     let height = params.height as usize;
     let mut iterations = vec![0u32; width * height];
     let mut zs = vec![Complex64::new(0.0, 0.0); width * height];
+    let glitch_mask: Vec<AtomicBool> = (0..width * height)
+        .map(|_| AtomicBool::new(false))
+        .collect();
 
     if width == 0 || height == 0 {
         return Some(((iterations, zs), cache));
@@ -142,8 +175,6 @@ pub fn render_perturbation_with_cache(
     let y_step = y_range / params.height as f64;
     let x_half = x_range * 0.5;
     let y_half = y_range * 0.5;
-    let center_x = (params.xmin + params.xmax) * 0.5;
-    let center_y = (params.ymin + params.ymax) * 0.5;
 
     let cancelled = AtomicBool::new(false);
     let reuse = build_reuse(params, reuse);
@@ -188,21 +219,17 @@ pub fn render_perturbation_with_cache(
                     (ComplexExp::zero(), dc)
                 };
 
-                let result = iterate_pixel(params, &cache_ref.orbit, &cache_ref.bla_table, delta0, dc_term);
-                if result.glitched {
-                    let xg = center_x + dx;
-                    let yg = center_y + dy;
-                    let z_pixel_mpc = complex_from_xy(
-                        prec,
-                        Float::with_val(prec, xg),
-                        Float::with_val(prec, yg),
-                    );
-                    let (iter_val, z_final) = iterate_point_mpc(&gmp_params, &z_pixel_mpc);
-                    *iter = iter_val;
-                    *z = complex_to_complex64(&z_final);
-                } else {
-                    *iter = result.iteration;
-                    *z = result.z_final;
+                let result = iterate_pixel(
+                    params,
+                    &cache_ref.orbit,
+                    &cache_ref.bla_table,
+                    delta0,
+                    dc_term,
+                );
+                *iter = result.iteration;
+                *z = result.z_final;
+                if result.glitched || result.suspect {
+                    glitch_mask[j * width + i].store(true, Ordering::Relaxed);
                 }
             }
         });
@@ -210,6 +237,69 @@ pub fn render_perturbation_with_cache(
     if cancelled.load(Ordering::Relaxed) {
         None
     } else {
+        let mut glitch_mask: Vec<bool> = glitch_mask
+            .iter()
+            .map(|flag| flag.load(Ordering::Relaxed))
+            .collect();
+
+        if params.glitch_neighbor_pass {
+            let neighbor_threshold = (params.iteration_max / 50).max(8);
+            let neighbor_mask = mark_neighbor_glitches(
+                &iterations,
+                params.width,
+                params.height,
+                neighbor_threshold,
+            );
+            for (idx, flagged) in neighbor_mask.into_iter().enumerate() {
+                if flagged {
+                    glitch_mask[idx] = true;
+                }
+            }
+        }
+
+        let glitched_indices: Vec<usize> = glitch_mask
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, flagged)| if *flagged { Some(idx) } else { None })
+            .collect();
+        if !glitched_indices.is_empty() {
+            let gmp_params = MpcParams::from_params(&orbit_params);
+            let prec = gmp_params.prec;
+            let width_u32 = params.width;
+            let x_range = params.xmax - params.xmin;
+            let y_range = params.ymax - params.ymin;
+            let x_step = x_range / params.width as f64;
+            let y_step = y_range / params.height as f64;
+            let x_half = x_range * 0.5;
+            let y_half = y_range * 0.5;
+            let center_x = (params.xmin + params.xmax) * 0.5;
+            let center_y = (params.ymin + params.ymax) * 0.5;
+
+            let corrections: Vec<_> = glitched_indices
+                .par_iter()
+                .map(|&idx| {
+                    let x = (idx as u32 % width_u32) as f64;
+                    let y = (idx as u32 / width_u32) as f64;
+                    let dx = x_step * x - x_half;
+                    let dy = y_step * y - y_half;
+                    let xg = center_x + dx;
+                    let yg = center_y + dy;
+                    let z_pixel = complex_from_xy(
+                        prec,
+                        Float::with_val(prec, xg),
+                        Float::with_val(prec, yg),
+                    );
+                    let (iter_val, z_final) = iterate_point_mpc(&gmp_params, &z_pixel);
+                    (idx, iter_val, complex_to_complex64(&z_final))
+                })
+                .collect();
+
+            for (idx, iter_val, z_final) in corrections {
+                iterations[idx] = iter_val;
+                zs[idx] = z_final;
+            }
+        }
+
         Some(((iterations, zs), cache))
     }
 }
@@ -242,6 +332,10 @@ mod tests {
             algorithm_mode: AlgorithmMode::Perturbation,
             bla_threshold: 1e-6,
             glitch_tolerance: 1e-4,
+            series_order: 2,
+            series_threshold: 1e-6,
+            series_error_tolerance: 1e-9,
+            glitch_neighbor_pass: false,
             lyapunov_preset: Default::default(),
             lyapunov_sequence: Vec::new(),
         }
@@ -288,5 +382,15 @@ mod tests {
         params.ymin = -2.0;
         params.ymax = 2.0;
         assert_close_iterations(&params, &[(0, 4), (2, 2), (4, 0)]);
+    }
+
+    #[test]
+    fn neighbor_glitch_detection_marks_outliers() {
+        let width = 5;
+        let height = 5;
+        let mut iterations = vec![10u32; (width * height) as usize];
+        iterations[(2 * width + 2) as usize] = 200;
+        let mask = super::mark_neighbor_glitches(&iterations, width, height, 50);
+        assert!(mask[(2 * width + 2) as usize]);
     }
 }

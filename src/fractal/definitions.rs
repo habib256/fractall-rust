@@ -25,6 +25,10 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         algorithm_mode: AlgorithmMode::Auto,
         bla_threshold: 1e-8,
         glitch_tolerance: 1e-4,
+        series_order: 2,
+        series_threshold: 1e-6,
+        series_error_tolerance: 1e-9,
+        glitch_neighbor_pass: true,
         lyapunov_preset: LyapunovPreset::default(),
         lyapunov_sequence: Vec::new(),
     };

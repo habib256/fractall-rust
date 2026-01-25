@@ -19,10 +19,10 @@ pub struct ReferenceOrbit {
 pub struct ReferenceOrbitCache {
     pub orbit: ReferenceOrbit,
     pub bla_table: BlaTable,
-    /// Center X as string for arbitrary precision comparison
-    pub center_x: String,
-    /// Center Y as string for arbitrary precision comparison
-    pub center_y: String,
+    /// Center X in GMP precision (stored as string for Clone/Debug)
+    pub center_x_gmp: String,
+    /// Center Y in GMP precision (stored as string for Clone/Debug)
+    pub center_y_gmp: String,
     pub fractal_type: FractalType,
     pub precision_bits: u32,
     pub iteration_max: u32,
@@ -35,18 +35,28 @@ pub struct ReferenceOrbitCache {
 
 impl ReferenceOrbitCache {
     /// Check if the cache is valid for the given parameters.
-    /// The cache is valid if: same center, same type, same precision, iteration_max <= cached.
+    /// The cache is valid if: same center (GMP precision), same type, precision >= required, iteration_max >= required.
     pub fn is_valid_for(&self, params: &FractalParams) -> bool {
-        let center_x = (params.xmin + params.xmax) / 2.0;
-        let center_y = (params.ymin + params.ymax) / 2.0;
+        // Compute center in GMP precision for exact comparison
+        let prec = params.precision_bits.max(self.precision_bits).max(128);
+        let xmin = Float::with_val(prec, params.xmin);
+        let xmax = Float::with_val(prec, params.xmax);
+        let ymin = Float::with_val(prec, params.ymin);
+        let ymax = Float::with_val(prec, params.ymax);
+        let mut center_x = xmin.clone();
+        center_x += &xmax;
+        center_x /= 2.0;
+        let mut center_y = ymin.clone();
+        center_y += &ymax;
+        center_y /= 2.0;
 
-        // Compare center as strings for exact matching
-        let cx_str = format!("{:.16e}", center_x);
-        let cy_str = format!("{:.16e}", center_y);
+        // Compare as GMP strings with full precision
+        let cx_str = center_x.to_string_radix(10, None);
+        let cy_str = center_y.to_string_radix(10, None);
 
         self.fractal_type == params.fractal_type
-            && self.center_x == cx_str
-            && self.center_y == cy_str
+            && self.center_x_gmp == cx_str
+            && self.center_y_gmp == cy_str
             && self.precision_bits >= params.precision_bits
             && self.iteration_max >= params.iteration_max
             && (self.seed_re - params.seed.re).abs() < 1e-15
@@ -59,15 +69,14 @@ impl ReferenceOrbitCache {
         orbit: ReferenceOrbit,
         bla_table: BlaTable,
         params: &FractalParams,
+        center_x_gmp: String,
+        center_y_gmp: String,
     ) -> Self {
-        let center_x = (params.xmin + params.xmax) / 2.0;
-        let center_y = (params.ymin + params.ymax) / 2.0;
-
         Self {
             orbit,
             bla_table,
-            center_x: format!("{:.16e}", center_x),
-            center_y: format!("{:.16e}", center_y),
+            center_x_gmp,
+            center_y_gmp,
             fractal_type: params.fractal_type,
             precision_bits: params.precision_bits,
             iteration_max: params.iteration_max,
@@ -92,26 +101,50 @@ pub fn compute_reference_orbit_cached(
     }
 
     // Compute fresh orbit and BLA table
-    let orbit = compute_reference_orbit(params, cancel)?;
+    let (orbit, center_x_gmp, center_y_gmp) = compute_reference_orbit(params, cancel)?;
     let bla_table = build_bla_table(&orbit.z_ref, params);
 
-    Some(Arc::new(ReferenceOrbitCache::new(orbit, bla_table, params)))
+    Some(Arc::new(ReferenceOrbitCache::new(
+        orbit,
+        bla_table,
+        params,
+        center_x_gmp,
+        center_y_gmp,
+    )))
 }
 
+/// Compute reference orbit in GMP precision.
+/// Returns (orbit, center_x_gmp_string, center_y_gmp_string).
 pub fn compute_reference_orbit(
     params: &FractalParams,
     cancel: Option<&AtomicBool>,
-) -> Option<ReferenceOrbit> {
-    let prec = params.precision_bits.max(64);
-    let center_x = (params.xmin + params.xmax) / 2.0;
-    let center_y = (params.ymin + params.ymax) / 2.0;
-    let cref = Complex::with_val(prec, (center_x, center_y));
-    let cref_f64 = Complex64::new(center_x, center_y);
+) -> Option<(ReferenceOrbit, String, String)> {
+    let prec = params.precision_bits.max(128);
+
+    // Compute center in GMP precision to avoid f64 truncation
+    let xmin = Float::with_val(prec, params.xmin);
+    let xmax = Float::with_val(prec, params.xmax);
+    let ymin = Float::with_val(prec, params.ymin);
+    let ymax = Float::with_val(prec, params.ymax);
+    let mut center_x_gmp = xmin.clone();
+    center_x_gmp += &xmax;
+    center_x_gmp /= 2.0;
+    let mut center_y_gmp = ymin.clone();
+    center_y_gmp += &ymax;
+    center_y_gmp /= 2.0;
+
+    // Store GMP strings for cache validation
+    let cx_str = center_x_gmp.to_string_radix(10, None);
+    let cy_str = center_y_gmp.to_string_radix(10, None);
+
+    let cref = Complex::with_val(prec, (&center_x_gmp, &center_y_gmp));
+    let cref_f64 = Complex64::new(center_x_gmp.to_f64(), center_y_gmp.to_f64());
+
     let mut z = match params.fractal_type {
         FractalType::Mandelbrot | FractalType::BurningShip => {
             Complex::with_val(prec, (params.seed.re, params.seed.im))
         }
-        FractalType::Julia => Complex::with_val(prec, (center_x, center_y)),
+        FractalType::Julia => cref.clone(),
         _ => return None,
     };
     let seed = Complex::with_val(prec, (params.seed.re, params.seed.im));
@@ -158,7 +191,7 @@ pub fn compute_reference_orbit(
         z_ref.push(complex_to_complex64(&z));
     }
 
-    Some(ReferenceOrbit { cref: cref_f64, z_ref })
+    Some((ReferenceOrbit { cref: cref_f64, z_ref }, cx_str, cy_str))
 }
 
 fn complex_norm_sqr(value: &Complex, prec: u32) -> Float {

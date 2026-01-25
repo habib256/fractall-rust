@@ -202,6 +202,14 @@ pub struct FractalParams {
     pub bla_threshold: f64,
     /// Tolérance de glitch (Pauldelbrot).
     pub glitch_tolerance: f64,
+    /// Ordre de la série (0=off, 1=linéaire, 2=quadratique).
+    pub series_order: u8,
+    /// Seuil de delta pour activer la série.
+    pub series_threshold: f64,
+    /// Tolérance d'erreur estimée pour la série.
+    pub series_error_tolerance: f64,
+    /// Active la passe voisinage pour détecter les glitches.
+    pub glitch_neighbor_pass: bool,
 
     /// Preset Lyapunov sélectionné.
     pub lyapunov_preset: LyapunovPreset,

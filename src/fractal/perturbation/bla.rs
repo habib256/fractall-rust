@@ -6,6 +6,7 @@ use crate::fractal::{FractalParams, FractalType};
 pub struct BlaNode {
     pub a: Complex64,
     pub b: Complex64,
+    pub c: Complex64,
     pub validity_radius: f64,
 }
 
@@ -49,6 +50,7 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
             } else {
                 Complex64::new(1.0, 0.0)
             },
+            c: Complex64::new(1.0, 0.0),
             validity_radius: validity,
         });
     }
@@ -67,11 +69,13 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
             let node2 = prev[i + step];
             let a_new = node2.a * node1.a;
             let b_new = node2.a * node1.b + node2.b;
+            let c_new = node2.a * node1.c + node2.c * (node1.a * node1.a);
             let a_norm = node1.a.norm();
             let scaled = node2.validity_radius / (1.0 + a_norm);
             current.push(BlaNode {
                 a: a_new,
                 b: b_new,
+                c: c_new,
                 validity_radius: node1.validity_radius.min(scaled),
             });
         }

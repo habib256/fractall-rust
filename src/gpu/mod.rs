@@ -10,7 +10,7 @@ use wgpu::util::DeviceExt;
 
 use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
-use crate::fractal::perturbation::compute_perturbation_precision_bits;
+use crate::fractal::perturbation::{compute_perturbation_precision_bits, mark_neighbor_glitches};
 use crate::fractal::perturbation::orbit::{compute_reference_orbit_cached, ReferenceOrbitCache};
 
 const WORKGROUP_SIZE: u32 = 16;
@@ -389,6 +389,8 @@ impl GpuRenderer {
                 a_im: node.a.im as f32,
                 b_re: node.b.re as f32,
                 b_im: node.b.im as f32,
+                c_re: node.c.re as f32,
+                c_im: node.c.im as f32,
                 validity: node.validity_radius as f32,
                 _pad: 0.0,
             }));
@@ -466,13 +468,18 @@ impl GpuRenderer {
             mapped_at_creation: false,
         });
 
+        let span_x = params.xmax - params.xmin;
+        let span_y = params.ymax - params.ymin;
+        let center_x = (params.xmin + params.xmax) * 0.5;
+        let center_y = (params.ymin + params.ymax) * 0.5;
+
         let params_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("perturb-params"),
             contents: bytemuck::bytes_of(&PerturbParams {
-                xmin: params.xmin as f32,
-                xmax: params.xmax as f32,
-                ymin: params.ymin as f32,
-                ymax: params.ymax as f32,
+                center_x: center_x as f32,
+                center_y: center_y as f32,
+                span_x: span_x as f32,
+                span_y: span_y as f32,
                 cref_x: ref_orbit.cref.re as f32,
                 cref_y: ref_orbit.cref.im as f32,
                 width: params.width,
@@ -487,9 +494,9 @@ impl GpuRenderer {
                     _ => 0,
                 },
                 glitch_tolerance: params.glitch_tolerance as f32,
-                _pad_align: [0; 3],
-                _pad0: [0; 4],
-                _pad: [0; 4],
+                series_order: params.series_order as u32,
+                series_threshold: params.series_threshold as f32,
+                _pad_align: 0,
             }),
             usage: wgpu::BufferUsages::UNIFORM,
         });
@@ -608,16 +615,33 @@ impl GpuRenderer {
         let pixels: &[PixelOut] = bytemuck::cast_slice(&data);
         let mut iterations = Vec::with_capacity(output_count);
         let mut zs = Vec::with_capacity(output_count);
-        let mut glitched_indices = Vec::new();
+        let mut glitch_mask = vec![false; output_count];
         for (idx, p) in pixels.iter().enumerate() {
             if p.flags != 0 {
-                glitched_indices.push(idx as u32);
+                glitch_mask[idx] = true;
             }
             iterations.push(p.iter);
             zs.push(Complex64::new(p.z_re as f64, p.z_im as f64));
         }
         drop(data);
         readback_buffer.unmap();
+
+        if params.glitch_neighbor_pass {
+            let neighbor_threshold = (params.iteration_max / 50).max(8);
+            let neighbor_mask =
+                mark_neighbor_glitches(&iterations, params.width, params.height, neighbor_threshold);
+            for (idx, flagged) in neighbor_mask.into_iter().enumerate() {
+                if flagged {
+                    glitch_mask[idx] = true;
+                }
+            }
+        }
+
+        let glitched_indices: Vec<u32> = glitch_mask
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, flagged)| if *flagged { Some(idx as u32) } else { None })
+            .collect();
 
         // Parallel glitch correction using Rayon
         if !glitched_indices.is_empty() {
@@ -628,8 +652,10 @@ impl GpuRenderer {
             let x_step = x_range / params.width as f64;
             let y_step = y_range / params.height as f64;
             let width = params.width;
-            let xmin = params.xmin;
-            let ymin = params.ymin;
+            let x_half = x_range * 0.5;
+            let y_half = y_range * 0.5;
+            let center_x = (params.xmin + params.xmax) * 0.5;
+            let center_y = (params.ymin + params.ymax) * 0.5;
 
             // Collect results in parallel
             let corrections: Vec<_> = glitched_indices
@@ -637,8 +663,10 @@ impl GpuRenderer {
                 .map(|&idx| {
                     let x = (idx % width) as f64;
                     let y = (idx / width) as f64;
-                    let xg = x_step * x + xmin;
-                    let yg = y_step * y + ymin;
+                    let dx = x_step * x - x_half;
+                    let dy = y_step * y - y_half;
+                    let xg = center_x + dx;
+                    let yg = center_y + dy;
                     let z_pixel = complex_from_xy(
                         prec,
                         rug::Float::with_val(prec, xg),
@@ -1084,6 +1112,8 @@ struct BlaNode {
     a_im: f32,
     b_re: f32,
     b_im: f32,
+    c_re: f32,
+    c_im: f32,
     validity: f32,
     _pad: f32,
 }
@@ -1099,10 +1129,10 @@ struct BlaMeta {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct PerturbParams {
-    xmin: f32,
-    xmax: f32,
-    ymin: f32,
-    ymax: f32,
+    center_x: f32,
+    center_y: f32,
+    span_x: f32,
+    span_y: f32,
     cref_x: f32,
     cref_y: f32,
     width: u32,
@@ -1112,9 +1142,9 @@ struct PerturbParams {
     bla_levels: u32,
     fractal_kind: u32,
     glitch_tolerance: f32,
-    _pad_align: [u32; 3],
-    _pad0: [u32; 4],
-    _pad: [u32; 4],
+    series_order: u32,
+    series_threshold: f32,
+    _pad_align: u32,
 }
 
 struct ReuseData<'a> {

@@ -731,18 +731,30 @@ impl FractallApp {
                 self.params.bla_threshold = 1e-6;
                 self.params.glitch_tolerance = 1e-4;
                 self.params.precision_bits = 256;
+            self.params.series_order = 2;
+            self.params.series_threshold = 1e-6;
+            self.params.series_error_tolerance = 1e-9;
+            self.params.glitch_neighbor_pass = true;
             }
             RenderPreset::Fast => {
                 self.params.algorithm_mode = AlgorithmMode::Auto;
                 self.params.bla_threshold = 5e-6;
                 self.params.glitch_tolerance = 5e-4;
                 self.params.precision_bits = 192;
+            self.params.series_order = 2;
+            self.params.series_threshold = 3e-6;
+            self.params.series_error_tolerance = 5e-9;
+            self.params.glitch_neighbor_pass = true;
             }
             RenderPreset::Ultra => {
                 self.params.algorithm_mode = AlgorithmMode::Auto;
                 self.params.bla_threshold = 1e-5;
                 self.params.glitch_tolerance = 1e-3;
                 self.params.precision_bits = 160;
+            self.params.series_order = 2;
+            self.params.series_threshold = 1e-5;
+            self.params.series_error_tolerance = 1e-8;
+            self.params.glitch_neighbor_pass = true;
             }
         }
     }
@@ -793,18 +805,30 @@ fn apply_default_preset(params: &mut FractalParams, preset: RenderPreset) {
             params.bla_threshold = 1e-6;
             params.glitch_tolerance = 1e-4;
             params.precision_bits = 256;
+            params.series_order = 2;
+            params.series_threshold = 1e-6;
+            params.series_error_tolerance = 1e-9;
+            params.glitch_neighbor_pass = true;
         }
         RenderPreset::Fast => {
             params.algorithm_mode = AlgorithmMode::Auto;
             params.bla_threshold = 5e-6;
             params.glitch_tolerance = 5e-4;
             params.precision_bits = 192;
+            params.series_order = 2;
+            params.series_threshold = 3e-6;
+            params.series_error_tolerance = 5e-9;
+            params.glitch_neighbor_pass = true;
         }
         RenderPreset::Ultra => {
             params.algorithm_mode = AlgorithmMode::Auto;
             params.bla_threshold = 1e-5;
             params.glitch_tolerance = 1e-3;
             params.precision_bits = 160;
+            params.series_order = 2;
+            params.series_threshold = 1e-5;
+            params.series_error_tolerance = 1e-8;
+            params.glitch_neighbor_pass = true;
         }
     }
 }
@@ -1254,9 +1278,9 @@ impl eframe::App for FractallApp {
         // Barre d'état en bas
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(format!("Type: {}", self.selected_type.name()));
+                    ui.label(self.selected_type.name());
                     ui.separator();
-                    ui.label(format!("Iterations: {}", self.params.iteration_max));
+                    ui.label(format!("Iter. {}", self.params.iteration_max));
                     ui.separator();
                     ui.label(format!("Color Repeat: {}", self.color_repeat));
                     ui.separator();
@@ -1300,11 +1324,15 @@ impl eframe::App for FractallApp {
                             ui.label(format!("{} ({})", precision_label, method_label));
                         }
                     }
-                    
-                    if let Some(time) = self.last_render_time {
+
+                    // Show effective GMP precision for perturbation mode
+                    let effective_mode = self.effective_algorithm_mode();
+                    if effective_mode == AlgorithmMode::Perturbation {
+                        let effective_prec = crate::fractal::perturbation::compute_perturbation_precision_bits(&self.params);
                         ui.separator();
-                        ui.label(format!("Temps: {:.2}s", time));
+                        ui.label(format!("GMP: {}b", effective_prec));
                     }
+                    
 
                     // Afficher le statut du rendu progressif
                     if self.rendering {
