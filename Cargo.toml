@@ -1,0 +1,28 @@
+[package]
+name = "fractall-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Version en ligne de commande de fractall (visualiseur de fractales)"
+
+[[bin]]
+name = "fractall-cli"
+path = "src/main.rs"
+
+[[bin]]
+name = "fractall-gui"
+path = "src/main_gui.rs"
+
+[dependencies]
+# CLI avec derive pour simplifier la définition des arguments
+clap = { version = "4.5", features = ["derive"] }
+# Image avec support PNG natif (détection automatique du format)
+image = "0.25"
+# Nombres complexes pour les calculs de fractales
+num-complex = "0.4"
+# Parallélisation multi-cœurs pour le rendu et la colorisation
+rayon = "1.11"
+# GUI avec egui
+eframe = "0.27"
+egui = "0.27"
+# Haute précision GMP/MPFR/MPC via rug (libs natives requises)
+rug = { version = "1.24", features = ["float", "complex"] }
