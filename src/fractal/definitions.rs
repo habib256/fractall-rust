@@ -1,6 +1,6 @@
 use num_complex::Complex64;
 
-use crate::fractal::{FractalParams, FractalType};
+use crate::fractal::{AlgorithmMode, FractalParams, FractalType};
 use crate::fractal::lyapunov::{LyapunovConfig, LyapunovPreset};
 
 /// Construit des paramètres avec les valeurs par défaut du type,
@@ -22,6 +22,9 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         color_repeat: 40,
         use_gmp: false,
         precision_bits: 256,
+        algorithm_mode: AlgorithmMode::Auto,
+        bla_threshold: 1e-8,
+        glitch_tolerance: 1e-4,
         lyapunov_preset: LyapunovPreset::default(),
         lyapunov_sequence: Vec::new(),
     };

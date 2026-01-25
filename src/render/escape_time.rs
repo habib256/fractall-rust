@@ -5,7 +5,7 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 use rug::Float;
 
-use crate::fractal::{FractalParams, FractalResult, FractalType};
+use crate::fractal::{AlgorithmMode, FractalParams, FractalResult, FractalType};
 use crate::fractal::iterations::iterate_point;
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
 use crate::fractal::{render_lyapunov, render_von_koch, render_dragon, render_buddhabrot, render_nebulabrot};
@@ -18,6 +18,7 @@ use crate::fractal::buddhabrot::{
     render_buddhabrot_mpc_cancellable,
     render_nebulabrot_mpc_cancellable,
 };
+use crate::fractal::perturbation::render_mandelbrot_perturbation_cancellable_with_reuse;
 
 /// Calcule la matrice d'itérations et la matrice des valeurs finales de z
 /// pour une fractale escape-time (ou algorithme spécial).
@@ -55,6 +56,31 @@ pub fn render_escape_time(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
             };
         }
         _ => {}
+    }
+
+    if params.fractal_type == FractalType::Mandelbrot {
+        match params.algorithm_mode {
+            AlgorithmMode::ReferenceGmp => return render_escape_time_gmp(params),
+            AlgorithmMode::StandardF64 => return render_escape_time_f64(params),
+            AlgorithmMode::Perturbation => {
+                return render_mandelbrot_perturbation_cancellable_with_reuse(
+                    params,
+                    &Arc::new(AtomicBool::new(false)),
+                    None,
+                )
+                .unwrap_or_else(|| (Vec::new(), Vec::new()));
+            }
+            AlgorithmMode::Auto => {
+                if should_use_perturbation(params) {
+                    return render_mandelbrot_perturbation_cancellable_with_reuse(
+                        params,
+                        &Arc::new(AtomicBool::new(false)),
+                        None,
+                    )
+                    .unwrap_or_else(|| (Vec::new(), Vec::new()));
+                }
+            }
+        }
     }
 
     if params.use_gmp {
@@ -239,11 +265,40 @@ pub fn render_escape_time_cancellable_with_reuse(
         _ => {}
     }
 
+    if params.fractal_type == FractalType::Mandelbrot {
+        match params.algorithm_mode {
+            AlgorithmMode::ReferenceGmp => {
+                let reuse = build_reuse(params, reuse);
+                return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse);
+            }
+            AlgorithmMode::StandardF64 => {
+                let reuse = build_reuse(params, reuse);
+                return render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse);
+            }
+            AlgorithmMode::Perturbation => {
+                return render_mandelbrot_perturbation_cancellable_with_reuse(params, cancel, reuse);
+            }
+            AlgorithmMode::Auto => {
+                if should_use_perturbation(params) {
+                    return render_mandelbrot_perturbation_cancellable_with_reuse(params, cancel, reuse);
+                }
+            }
+        }
+    }
+
     let reuse = build_reuse(params, reuse);
     if params.use_gmp {
         return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse);
     }
     render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse)
+}
+
+fn should_use_perturbation(params: &FractalParams) -> bool {
+    if params.width == 0 {
+        return false;
+    }
+    let pixel_size = (params.xmax - params.xmin).abs() / params.width as f64;
+    pixel_size < 1e-12
 }
 
 #[allow(dead_code)]

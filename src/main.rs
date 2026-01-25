@@ -7,7 +7,7 @@ mod color;
 mod render;
 mod io;
 
-use fractal::{default_params_for_type, apply_lyapunov_preset, FractalType, LyapunovPreset};
+use fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalType, LyapunovPreset};
 use render::render_escape_time;
 use io::png::save_png;
 
@@ -78,6 +78,18 @@ struct Cli {
     /// Précision GMP en bits (ex. 128, 256, 512)
     #[arg(long, default_value_t = 256)]
     precision_bits: u32,
+
+    /// Mode d'algorithme (auto, f64, perturbation, gmp)
+    #[arg(long)]
+    algorithm: Option<String>,
+
+    /// Seuil delta pour activer BLA (ex: 1e-8)
+    #[arg(long)]
+    bla_threshold: Option<f64>,
+
+    /// Tolérance de glitch (ex: 1e-4)
+    #[arg(long)]
+    glitch_tolerance: Option<f64>,
 
     /// Preset Lyapunov (standard, zircon-city, jellyfish, asymmetric, spaceship, heavy-blocks)
     #[arg(long)]
@@ -151,6 +163,39 @@ fn main() {
     // GMP haute précision.
     params.use_gmp = cli.gmp;
     params.precision_bits = cli.precision_bits.max(64);
+
+    // Mode d'algorithme.
+    if let Some(mode) = &cli.algorithm {
+        match AlgorithmMode::from_cli_name(mode) {
+            Some(parsed) => {
+                params.algorithm_mode = parsed;
+            }
+            None => {
+                eprintln!(
+                    "Mode d'algorithme invalide: '{}'. Options: auto, f64, perturbation, gmp",
+                    mode
+                );
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(bla_threshold) = cli.bla_threshold {
+        if bla_threshold > 0.0 {
+            params.bla_threshold = bla_threshold;
+        }
+    }
+    if let Some(glitch_tolerance) = cli.glitch_tolerance {
+        if glitch_tolerance > 0.0 {
+            params.glitch_tolerance = glitch_tolerance;
+        }
+    }
+
+    match params.algorithm_mode {
+        AlgorithmMode::ReferenceGmp => params.use_gmp = true,
+        AlgorithmMode::StandardF64 => params.use_gmp = false,
+        _ => {}
+    }
 
     // Preset Lyapunov (si applicable).
     if fractal_type == FractalType::Lyapunov {

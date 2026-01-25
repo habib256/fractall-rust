@@ -132,6 +132,38 @@ impl FractalType {
     }
 }
 
+/// Mode d'algorithme pour le rendu escape-time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlgorithmMode {
+    Auto,
+    StandardF64,
+    Perturbation,
+    ReferenceGmp,
+}
+
+impl AlgorithmMode {
+    #[allow(dead_code)]
+    pub fn name(self) -> &'static str {
+        match self {
+            AlgorithmMode::Auto => "Auto",
+            AlgorithmMode::StandardF64 => "Standard f64",
+            AlgorithmMode::Perturbation => "Perturbation",
+            AlgorithmMode::ReferenceGmp => "Reference GMP",
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn from_cli_name(value: &str) -> Option<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "auto" => Some(AlgorithmMode::Auto),
+            "f64" | "standard" | "standardf64" => Some(AlgorithmMode::StandardF64),
+            "perturbation" | "perturb" => Some(AlgorithmMode::Perturbation),
+            "gmp" | "referencegmp" | "reference-gmp" => Some(AlgorithmMode::ReferenceGmp),
+            _ => None,
+        }
+    }
+}
+
 use crate::fractal::lyapunov::LyapunovPreset;
 
 /// Paramètres d'une fractale pour le rendu escape-time.
@@ -163,6 +195,13 @@ pub struct FractalParams {
     pub use_gmp: bool,
     /// Précision GMP en bits (ex. 128, 256, 512).
     pub precision_bits: u32,
+
+    /// Mode d'algorithme pour Mandelbrot (auto/f64/perturbation/GMP).
+    pub algorithm_mode: AlgorithmMode,
+    /// Seuil delta pour activer BLA.
+    pub bla_threshold: f64,
+    /// Tolérance de glitch (Pauldelbrot).
+    pub glitch_tolerance: f64,
 
     /// Preset Lyapunov sélectionné.
     pub lyapunov_preset: LyapunovPreset,

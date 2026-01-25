@@ -8,7 +8,7 @@ use image::RgbImage;
 use num_complex::Complex64;
 
 use crate::color::{color_for_pixel, color_for_nebulabrot_pixel, color_for_buddhabrot_pixel};
-use crate::fractal::{default_params_for_type, apply_lyapunov_preset, FractalParams, FractalType, LyapunovPreset};
+use crate::fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalParams, FractalType, LyapunovPreset};
 use crate::render::render_escape_time_cancellable_with_reuse;
 use crate::gui::texture::rgb_image_to_color_image;
 use crate::gui::progressive::{ProgressiveConfig, RenderMessage, upscale_nearest};
@@ -28,6 +28,7 @@ pub struct FractallApp {
     palette_index: u8,
     color_repeat: u32,
     selected_lyapunov_preset: LyapunovPreset,
+    render_preset: RenderPreset,
     
     // Zoom/interaction (conservés pour usage futur)
     #[allow(dead_code)]
@@ -75,6 +76,7 @@ impl FractallApp {
             palette_index: 6, // SmoothPlasma par défaut
             color_repeat: 40,
             selected_lyapunov_preset: LyapunovPreset::default(),
+            render_preset: RenderPreset::Standard,
             center_x: 0.0,
             center_y: 0.0,
             selecting: false,
@@ -538,10 +540,74 @@ impl FractallApp {
         new_params.precision_bits = self.params.precision_bits;
         new_params.color_mode = self.params.color_mode;
         new_params.color_repeat = self.params.color_repeat;
+        new_params.algorithm_mode = self.params.algorithm_mode;
+        new_params.bla_threshold = self.params.bla_threshold;
+        new_params.glitch_tolerance = self.params.glitch_tolerance;
 
         // Toujours utiliser le domaine par défaut pour bien centrer la fractale
         self.params = new_params;
+        if self.selected_type == FractalType::Mandelbrot {
+            self.apply_render_preset(self.render_preset);
+        }
         self.start_render();
+    }
+
+    fn apply_render_preset(&mut self, preset: RenderPreset) {
+        self.render_preset = preset;
+        match preset {
+            RenderPreset::Standard => {
+                self.params.algorithm_mode = AlgorithmMode::Auto;
+                self.params.bla_threshold = 1e-8;
+                self.params.glitch_tolerance = 1e-4;
+                self.params.precision_bits = 256;
+            }
+            RenderPreset::Fast => {
+                self.params.algorithm_mode = AlgorithmMode::Auto;
+                self.params.bla_threshold = 5e-7;
+                self.params.glitch_tolerance = 5e-4;
+                self.params.precision_bits = 192;
+            }
+            RenderPreset::Ultra => {
+                self.params.algorithm_mode = AlgorithmMode::Auto;
+                self.params.bla_threshold = 1e-6;
+                self.params.glitch_tolerance = 1e-3;
+                self.params.precision_bits = 160;
+            }
+        }
+    }
+
+    fn effective_algorithm_mode(&self) -> AlgorithmMode {
+        match self.params.algorithm_mode {
+            AlgorithmMode::Auto => {
+                if self.selected_type != FractalType::Mandelbrot || self.params.width == 0 {
+                    return AlgorithmMode::StandardF64;
+                }
+                let pixel_size = (self.params.xmax - self.params.xmin).abs() / self.params.width as f64;
+                if pixel_size < 1e-12 {
+                    AlgorithmMode::Perturbation
+                } else {
+                    AlgorithmMode::StandardF64
+                }
+            }
+            other => other,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RenderPreset {
+    Standard,
+    Fast,
+    Ultra,
+}
+
+impl RenderPreset {
+    fn name(self) -> &'static str {
+        match self {
+            RenderPreset::Standard => "Standard (Légère)",
+            RenderPreset::Fast => "Fast (Modérée)",
+            RenderPreset::Ultra => "Ultra (Agressive)",
+        }
     }
 }
 
@@ -808,16 +874,27 @@ impl eframe::App for FractallApp {
 
                     ui.separator();
 
-                    let old_use_gmp = self.params.use_gmp;
-                    let old_prec = self.params.precision_bits;
-                    ui.checkbox(&mut self.params.use_gmp, "GMP");
-                    if self.params.use_gmp {
-                        ui.label("Precision bits:");
-                        ui.add(egui::Slider::new(&mut self.params.precision_bits, 64..=2048));
-                    }
-                    if old_use_gmp != self.params.use_gmp || old_prec != self.params.precision_bits {
-                        if !self.rendering {
-                            self.start_render();
+                    if self.selected_type == FractalType::Mandelbrot {
+                        ui.separator();
+
+                        let old_preset = self.render_preset;
+                        ui.label("Preset:");
+                        egui::ComboBox::from_id_source("render_preset")
+                            .selected_text(self.render_preset.name())
+                            .show_ui(ui, |ui| {
+                                for preset in [
+                                    RenderPreset::Standard,
+                                    RenderPreset::Fast,
+                                    RenderPreset::Ultra,
+                                ] {
+                                    ui.selectable_value(&mut self.render_preset, preset, preset.name());
+                                }
+                            });
+                        if old_preset != self.render_preset {
+                            self.apply_render_preset(self.render_preset);
+                            if !self.rendering {
+                                self.start_render();
+                            }
                         }
                     }
                 });
@@ -958,8 +1035,6 @@ impl eframe::App for FractallApp {
                 ui.horizontal(|ui| {
                     ui.label(format!("Type: {}", self.selected_type.name()));
                     ui.separator();
-                    ui.label(format!("Palette: {}", self.palette_index));
-                    ui.separator();
                     ui.label(format!("Iterations: {}", self.params.iteration_max));
                     ui.separator();
                     ui.label(format!("Color Repeat: {}", self.color_repeat));
@@ -968,12 +1043,24 @@ impl eframe::App for FractallApp {
                     let span_x = self.params.xmax - self.params.xmin;
                     let base_range = 4.0;
                     let zoom_factor = base_range / span_x;
-                    ui.label(format!("Zoom: {:.2}x", zoom_factor));
+                    if zoom_factor.is_finite() && zoom_factor > 0.0 {
+                        ui.label(format!("Zoom: {:.2e}", zoom_factor));
+                    } else {
+                        ui.label("Zoom: n/a");
+                    }
                     
                     ui.separator();
                     let center_x = (self.params.xmin + self.params.xmax) / 2.0;
                     let center_y = (self.params.ymin + self.params.ymax) / 2.0;
                     ui.label(format!("Centre: ({:.6}, {:.6})", center_x, center_y));
+
+                    ui.separator();
+                    let mode_label = match self.effective_algorithm_mode() {
+                        AlgorithmMode::ReferenceGmp => "GMP",
+                        AlgorithmMode::Perturbation => "Perturbation",
+                        _ => "f64",
+                    };
+                    ui.label(format!("Mode: {}", mode_label));
                     
                     if let Some(time) = self.last_render_time {
                         ui.separator();
