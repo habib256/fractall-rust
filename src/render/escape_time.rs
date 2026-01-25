@@ -315,7 +315,7 @@ pub fn should_use_perturbation(params: &FractalParams, gpu_f32: bool) -> bool {
     let center_x = (params.xmin + params.xmax) / 2.0;
     let center_y = (params.ymin + params.ymax) / 2.0;
     let scale = center_x.abs().max(center_y.abs()).max(1.0);
-    let threshold = if gpu_f32 { 1e-6 } else { 1e-12 };
+    let threshold = if gpu_f32 { 1e-6 } else { 1e-14 };
     pixel_size < threshold * scale
 }
 

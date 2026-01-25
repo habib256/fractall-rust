@@ -1,13 +1,16 @@
 use std::num::NonZeroU64;
+use std::sync::Arc;
+use std::sync::mpsc::RecvTimeoutError;
+use std::time::Duration;
 
 use bytemuck::{Pod, Zeroable};
 use num_complex::Complex64;
+use rayon::prelude::*;
 use wgpu::util::DeviceExt;
 
 use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
-use crate::fractal::perturbation::bla::build_bla_table;
-use crate::fractal::perturbation::orbit::compute_reference_orbit;
+use crate::fractal::perturbation::orbit::{compute_reference_orbit_cached, ReferenceOrbitCache};
 
 const WORKGROUP_SIZE: u32 = 16;
 const MAX_LEVELS: usize = 17;
@@ -338,12 +341,15 @@ impl GpuRenderer {
         }
     }
 
-    pub fn render_perturbation(
+    /// Render perturbation with optional orbit cache support.
+    /// Returns the result and the updated cache for reuse in subsequent frames.
+    pub fn render_perturbation_with_cache(
         &self,
         params: &FractalParams,
         cancel: &std::sync::atomic::AtomicBool,
         reuse: Option<(&[u32], &[Complex64], u32, u32)>,
-    ) -> Option<(Vec<u32>, Vec<Complex64>)> {
+        orbit_cache: Option<&Arc<ReferenceOrbitCache>>,
+    ) -> Option<((Vec<u32>, Vec<Complex64>), Arc<ReferenceOrbitCache>)> {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return None;
         }
@@ -354,8 +360,11 @@ impl GpuRenderer {
         if !supports {
             return None;
         }
-        let ref_orbit = compute_reference_orbit(params, Some(cancel))?;
-        let bla_table = build_bla_table(&ref_orbit.z_ref, params);
+
+        // Use cached orbit/BLA or compute fresh
+        let cache = compute_reference_orbit_cached(params, Some(cancel), orbit_cache)?;
+        let ref_orbit = &cache.orbit;
+        let bla_table = &cache.bla_table;
         let supports_bla = matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia);
         let bla_levels = if supports_bla {
             bla_table.levels.len().min(MAX_LEVELS)
@@ -396,7 +405,7 @@ impl GpuRenderer {
         let width = params.width as usize;
         let height = params.height as usize;
         if width == 0 || height == 0 {
-            return Some((Vec::new(), Vec::new()));
+            return Some(((Vec::new(), Vec::new()), cache));
         }
 
         let output_count = width * height;
@@ -564,22 +573,31 @@ impl GpuRenderer {
         encoder.copy_buffer_to_buffer(&output_buffer, 0, &readback_buffer, 0, output_size);
         self.queue.submit(Some(encoder.finish()));
 
+        // Improved GPU readback with channel notification instead of busy-wait
         let buffer_slice = readback_buffer.slice(..);
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         buffer_slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = sender.send(r);
         });
+        self.device.poll(wgpu::Maintain::Poll);
+
         loop {
-            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                readback_buffer.unmap();
-                return None;
+            match receiver.recv_timeout(Duration::from_millis(10)) {
+                Ok(result) => {
+                    result.ok()?;
+                    break;
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        readback_buffer.unmap();
+                        return None;
+                    }
+                    self.device.poll(wgpu::Maintain::Poll);
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return None;
+                }
             }
-            if let Ok(result) = receiver.try_recv() {
-                result.ok()?;
-                break;
-            }
-            self.device.poll(wgpu::Maintain::Poll);
-            std::thread::sleep(std::time::Duration::from_millis(1));
         }
 
         let data = buffer_slice.get_mapped_range();
@@ -597,6 +615,7 @@ impl GpuRenderer {
         drop(data);
         readback_buffer.unmap();
 
+        // Parallel glitch correction using Rayon
         if !glitched_indices.is_empty() {
             let gmp_params = MpcParams::from_params(params);
             let prec = gmp_params.prec;
@@ -604,23 +623,36 @@ impl GpuRenderer {
             let y_range = params.ymax - params.ymin;
             let x_step = x_range / params.width as f64;
             let y_step = y_range / params.height as f64;
-            for idx in glitched_indices {
-                let x = (idx % params.width) as f64;
-                let y = (idx / params.width) as f64;
-                let xg = x_step * x + params.xmin;
-                let yg = y_step * y + params.ymin;
-                let z_pixel = complex_from_xy(
-                    prec,
-                    rug::Float::with_val(prec, xg),
-                    rug::Float::with_val(prec, yg),
-                );
-                let (iter_val, z_final) = iterate_point_mpc(&gmp_params, &z_pixel);
-                iterations[idx as usize] = iter_val;
-                zs[idx as usize] = complex_to_complex64(&z_final);
+            let width = params.width;
+            let xmin = params.xmin;
+            let ymin = params.ymin;
+
+            // Collect results in parallel
+            let corrections: Vec<_> = glitched_indices
+                .par_iter()
+                .map(|&idx| {
+                    let x = (idx % width) as f64;
+                    let y = (idx / width) as f64;
+                    let xg = x_step * x + xmin;
+                    let yg = y_step * y + ymin;
+                    let z_pixel = complex_from_xy(
+                        prec,
+                        rug::Float::with_val(prec, xg),
+                        rug::Float::with_val(prec, yg),
+                    );
+                    let (iter_val, z_final) = iterate_point_mpc(&gmp_params, &z_pixel);
+                    (idx as usize, iter_val, complex_to_complex64(&z_final))
+                })
+                .collect();
+
+            // Apply corrections
+            for (idx, iter_val, z_final) in corrections {
+                iterations[idx] = iter_val;
+                zs[idx] = z_final;
             }
         }
 
-        Some((iterations, zs))
+        Some(((iterations, zs), cache))
     }
 
     fn render_mandelbrot_f32(
@@ -785,22 +817,31 @@ impl GpuRenderer {
         encoder.copy_buffer_to_buffer(&output_buffer, 0, &readback_buffer, 0, output_size);
         self.queue.submit(Some(encoder.finish()));
 
+        // Improved GPU readback with channel notification
         let buffer_slice = readback_buffer.slice(..);
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         buffer_slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = sender.send(r);
         });
+        self.device.poll(wgpu::Maintain::Poll);
+
         loop {
-            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                readback_buffer.unmap();
-                return None;
+            match receiver.recv_timeout(Duration::from_millis(10)) {
+                Ok(result) => {
+                    result.ok()?;
+                    break;
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        readback_buffer.unmap();
+                        return None;
+                    }
+                    self.device.poll(wgpu::Maintain::Poll);
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return None;
+                }
             }
-            if let Ok(result) = receiver.try_recv() {
-                result.ok()?;
-                break;
-            }
-            self.device.poll(wgpu::Maintain::Poll);
-            std::thread::sleep(std::time::Duration::from_millis(1));
         }
 
         let data = buffer_slice.get_mapped_range();
@@ -892,22 +933,31 @@ impl GpuRenderer {
         encoder.copy_buffer_to_buffer(&output_buffer, 0, &readback_buffer, 0, output_size);
         self.queue.submit(Some(encoder.finish()));
 
+        // Improved GPU readback with channel notification
         let buffer_slice = readback_buffer.slice(..);
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         buffer_slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = sender.send(r);
         });
+        self.device.poll(wgpu::Maintain::Poll);
+
         loop {
-            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                readback_buffer.unmap();
-                return None;
+            match receiver.recv_timeout(Duration::from_millis(10)) {
+                Ok(result) => {
+                    result.ok()?;
+                    break;
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        readback_buffer.unmap();
+                        return None;
+                    }
+                    self.device.poll(wgpu::Maintain::Poll);
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return None;
+                }
             }
-            if let Ok(result) = receiver.try_recv() {
-                result.ok()?;
-                break;
-            }
-            self.device.poll(wgpu::Maintain::Poll);
-            std::thread::sleep(std::time::Duration::from_millis(1));
         }
 
         let data = buffer_slice.get_mapped_range();

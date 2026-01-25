@@ -7,15 +7,16 @@ use rug::Float;
 
 use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
-use crate::fractal::perturbation::bla::build_bla_table;
 use crate::fractal::perturbation::delta::iterate_pixel;
-use crate::fractal::perturbation::orbit::compute_reference_orbit;
+use crate::fractal::perturbation::orbit::compute_reference_orbit_cached;
 use crate::fractal::perturbation::types::ComplexExp;
 
 pub mod types;
 pub mod orbit;
 pub mod bla;
 pub mod delta;
+
+pub use orbit::ReferenceOrbitCache;
 
 struct ReuseData<'a> {
     iterations: &'a [u32],
@@ -64,6 +65,18 @@ pub fn render_perturbation_cancellable_with_reuse(
     cancel: &Arc<AtomicBool>,
     reuse: Option<(&[u32], &[Complex64], u32, u32)>,
 ) -> Option<(Vec<u32>, Vec<Complex64>)> {
+    let (result, _cache) = render_perturbation_with_cache(params, cancel, reuse, None)?;
+    Some(result)
+}
+
+/// Render perturbation with optional orbit cache support.
+/// Returns the result and the updated cache for reuse in subsequent frames.
+pub fn render_perturbation_with_cache(
+    params: &FractalParams,
+    cancel: &Arc<AtomicBool>,
+    reuse: Option<(&[u32], &[Complex64], u32, u32)>,
+    orbit_cache: Option<&Arc<ReferenceOrbitCache>>,
+) -> Option<((Vec<u32>, Vec<Complex64>), Arc<ReferenceOrbitCache>)> {
     if cancel.load(Ordering::Relaxed) {
         return None;
     }
@@ -75,8 +88,8 @@ pub fn render_perturbation_cancellable_with_reuse(
         return None;
     }
 
-    let ref_orbit = compute_reference_orbit(params, Some(cancel.as_ref()))?;
-    let bla_table = build_bla_table(&ref_orbit.z_ref, params);
+    // Use cached orbit/BLA or compute fresh
+    let cache = compute_reference_orbit_cached(params, Some(cancel.as_ref()), orbit_cache)?;
     let gmp_params = MpcParams::from_params(params);
     let prec = gmp_params.prec;
 
@@ -86,7 +99,7 @@ pub fn render_perturbation_cancellable_with_reuse(
     let mut zs = vec![Complex64::new(0.0, 0.0); width * height];
 
     if width == 0 || height == 0 {
-        return Some((iterations, zs));
+        return Some(((iterations, zs), cache));
     }
 
     let x_range = params.xmax - params.xmin;
@@ -95,9 +108,10 @@ pub fn render_perturbation_cancellable_with_reuse(
     let y_step = y_range / params.height as f64;
 
     let cancelled = AtomicBool::new(false);
-    let ref_orbit = Arc::new(ref_orbit);
-    let bla_table = Arc::new(bla_table);
     let reuse = build_reuse(params, reuse);
+
+    // Clone cache for use in parallel iteration
+    let cache_ref = Arc::clone(&cache);
 
     iterations
         .par_chunks_mut(width)
@@ -130,14 +144,14 @@ pub fn render_perturbation_cancellable_with_reuse(
                 }
                 let xg = x_step * i as f64 + params.xmin;
                 let z_pixel = Complex64::new(xg, yg);
-                let dc = ComplexExp::from_complex64(z_pixel - ref_orbit.cref);
+                let dc = ComplexExp::from_complex64(z_pixel - cache_ref.orbit.cref);
                 let (delta0, dc_term) = if params.fractal_type == FractalType::Julia {
                     (dc, ComplexExp::zero())
                 } else {
                     (ComplexExp::zero(), dc)
                 };
 
-                let result = iterate_pixel(params, &ref_orbit, &bla_table, delta0, dc_term);
+                let result = iterate_pixel(params, &cache_ref.orbit, &cache_ref.bla_table, delta0, dc_term);
                 if result.glitched {
                     let z_pixel_mpc = complex_from_xy(
                         prec,
@@ -157,7 +171,7 @@ pub fn render_perturbation_cancellable_with_reuse(
     if cancelled.load(Ordering::Relaxed) {
         None
     } else {
-        Some((iterations, zs))
+        Some(((iterations, zs), cache))
     }
 }
 

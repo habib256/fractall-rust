@@ -9,6 +9,7 @@ use num_complex::Complex64;
 
 use crate::color::{color_for_pixel, color_for_nebulabrot_pixel, color_for_buddhabrot_pixel};
 use crate::fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalParams, FractalType, LyapunovPreset};
+use crate::fractal::perturbation::ReferenceOrbitCache;
 use crate::render::render_escape_time_cancellable_with_reuse;
 use crate::gui::texture::rgb_image_to_color_image;
 use crate::gui::progressive::{ProgressiveConfig, RenderMessage, upscale_nearest};
@@ -63,6 +64,9 @@ pub struct FractallApp {
     window_width: u32,
     window_height: u32,
     pending_resize: Option<(u32, u32)>,
+
+    // Cache for orbit/BLA to accelerate deep zoom re-renders
+    orbit_cache: Option<Arc<ReferenceOrbitCache>>,
 }
 
 impl FractallApp {
@@ -104,6 +108,7 @@ impl FractallApp {
             window_width: width,
             window_height: height,
             pending_resize: None,
+            orbit_cache: None,
         }
     }
     
@@ -156,10 +161,13 @@ impl FractallApp {
         let full_height = self.params.height;
         let gpu_renderer = self.gpu_renderer.clone();
         let use_gpu = use_gpu;
+        let orbit_cache = self.orbit_cache.clone();
 
         // Spawner le thread de rendu progressif
         let handle = thread::spawn(move || {
             let mut previous_pass: Option<(Vec<u32>, Vec<Complex64>, u32, u32)> = None;
+            let mut current_orbit_cache = orbit_cache;
+
             for (pass_index, &scale_divisor) in config.passes.iter().enumerate() {
                 // Vérifier l'annulation
                 if cancel.load(Ordering::Relaxed) {
@@ -183,7 +191,7 @@ impl FractallApp {
                 let result = if use_gpu {
                     let gpu = gpu_renderer.as_ref().unwrap();
                     let use_perturbation = match pass_params.algorithm_mode {
-                        AlgorithmMode::Auto => should_use_perturbation_auto(&pass_params),
+                        AlgorithmMode::Auto => crate::render::escape_time::should_use_perturbation(&pass_params, true),
                         AlgorithmMode::Perturbation => true,
                         _ => false,
                     };
@@ -191,7 +199,12 @@ impl FractallApp {
                         FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
                             if use_perturbation =>
                         {
-                            gpu.render_perturbation(&pass_params, &cancel, reuse)
+                            // Use cache-aware GPU rendering
+                            gpu.render_perturbation_with_cache(&pass_params, &cancel, reuse, current_orbit_cache.as_ref())
+                                .map(|(result, cache)| {
+                                    current_orbit_cache = Some(cache);
+                                    result
+                                })
                         }
                         FractalType::Mandelbrot => gpu.render_mandelbrot(&pass_params, &cancel),
                         FractalType::Julia => gpu.render_julia(&pass_params, &cancel),
@@ -210,9 +223,71 @@ impl FractallApp {
                             format!("GPU {}", precision),
                         ))
                     } else {
-                        let cpu_result =
-                            render_escape_time_cancellable_with_reuse(&pass_params, &cancel, reuse);
-                        cpu_result.map(|r| {
+                        // GPU fallback to CPU: check if we should use perturbation with cache
+                        let fallback_use_perturbation = match pass_params.algorithm_mode {
+                            AlgorithmMode::Auto => crate::render::escape_time::should_use_perturbation(&pass_params, false),
+                            AlgorithmMode::Perturbation => true,
+                            _ => false,
+                        };
+
+                        if fallback_use_perturbation && matches!(pass_params.fractal_type,
+                            FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip)
+                        {
+                            // Use cache-aware CPU perturbation rendering for GPU fallback
+                            use crate::fractal::perturbation::render_perturbation_with_cache;
+                            render_perturbation_with_cache(&pass_params, &cancel, reuse, current_orbit_cache.as_ref())
+                                .map(|(result, cache)| {
+                                    current_orbit_cache = Some(cache);
+                                    (result, AlgorithmMode::Perturbation, "CPU f64".to_string())
+                                })
+                        } else {
+                            let cpu_result =
+                                render_escape_time_cancellable_with_reuse(&pass_params, &cancel, reuse);
+                            cpu_result.map(|r| {
+                                let effective_mode = match pass_params.algorithm_mode {
+                                    AlgorithmMode::ReferenceGmp => AlgorithmMode::ReferenceGmp,
+                                    AlgorithmMode::Perturbation => AlgorithmMode::Perturbation,
+                                    AlgorithmMode::StandardF64 => AlgorithmMode::StandardF64,
+                                    AlgorithmMode::Auto => {
+                                        if crate::render::escape_time::should_use_perturbation(
+                                            &pass_params,
+                                            false,
+                                        ) {
+                                            AlgorithmMode::Perturbation
+                                        } else {
+                                            AlgorithmMode::StandardF64
+                                        }
+                                    }
+                                };
+                                let precision_label = match effective_mode {
+                                    AlgorithmMode::ReferenceGmp => {
+                                        format!("CPU GMP {}b", pass_params.precision_bits)
+                                    }
+                                    AlgorithmMode::Perturbation => "CPU f64".to_string(),
+                                    _ => "CPU f64".to_string(),
+                                };
+                                (r, effective_mode, precision_label)
+                            })
+                        }
+                    }
+                } else {
+                    // CPU rendering with cache support for perturbation
+                    let use_perturbation = match pass_params.algorithm_mode {
+                        AlgorithmMode::Auto => crate::render::escape_time::should_use_perturbation(&pass_params, false),
+                        AlgorithmMode::Perturbation => true,
+                        _ => false,
+                    };
+
+                    if use_perturbation && matches!(pass_params.fractal_type, FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip) {
+                        // Use cache-aware CPU perturbation rendering
+                        use crate::fractal::perturbation::render_perturbation_with_cache;
+                        render_perturbation_with_cache(&pass_params, &cancel, reuse, current_orbit_cache.as_ref())
+                            .map(|(result, cache)| {
+                                current_orbit_cache = Some(cache);
+                                (result, AlgorithmMode::Perturbation, "CPU f64".to_string())
+                            })
+                    } else {
+                        render_escape_time_cancellable_with_reuse(&pass_params, &cancel, reuse).map(|r| {
                             let effective_mode = match pass_params.algorithm_mode {
                                 AlgorithmMode::ReferenceGmp => AlgorithmMode::ReferenceGmp,
                                 AlgorithmMode::Perturbation => AlgorithmMode::Perturbation,
@@ -238,32 +313,6 @@ impl FractallApp {
                             (r, effective_mode, precision_label)
                         })
                     }
-                } else {
-                    render_escape_time_cancellable_with_reuse(&pass_params, &cancel, reuse).map(|r| {
-                        let effective_mode = match pass_params.algorithm_mode {
-                            AlgorithmMode::ReferenceGmp => AlgorithmMode::ReferenceGmp,
-                            AlgorithmMode::Perturbation => AlgorithmMode::Perturbation,
-                            AlgorithmMode::StandardF64 => AlgorithmMode::StandardF64,
-                            AlgorithmMode::Auto => {
-                                if crate::render::escape_time::should_use_perturbation(
-                                    &pass_params,
-                                    false,
-                                ) {
-                                    AlgorithmMode::Perturbation
-                                } else {
-                                    AlgorithmMode::StandardF64
-                                }
-                            }
-                        };
-                        let precision_label = match effective_mode {
-                            AlgorithmMode::ReferenceGmp => {
-                                format!("CPU GMP {}b", pass_params.precision_bits)
-                            }
-                            AlgorithmMode::Perturbation => "CPU f64".to_string(),
-                            _ => "CPU f64".to_string(),
-                        };
-                        (r, effective_mode, precision_label)
-                    })
                 };
 
                 match result {
@@ -293,7 +342,7 @@ impl FractallApp {
                 }
             }
 
-            let _ = sender.send(RenderMessage::AllComplete);
+            let _ = sender.send(RenderMessage::AllComplete { orbit_cache: current_orbit_cache });
         });
 
         self.render_thread = Some(handle);
@@ -361,11 +410,16 @@ impl FractallApp {
                 ctx.request_repaint();
             }
 
-            RenderMessage::AllComplete => {
+            RenderMessage::AllComplete { orbit_cache } => {
                 self.rendering = false;
                 self.is_preview = false;
                 self.render_thread = None;
                 self.render_receiver = None;
+
+                // Store the updated orbit cache for future renders
+                if orbit_cache.is_some() {
+                    self.orbit_cache = orbit_cache;
+                }
 
                 if let Some(start) = self.render_start_time.take() {
                     self.last_render_time = Some(start.elapsed().as_secs_f64());
@@ -664,6 +718,8 @@ impl FractallApp {
             self.apply_render_preset(self.render_preset);
         }
         self.use_gpu = false;
+        // Invalidate orbit cache when changing fractal type
+        self.orbit_cache = None;
         self.start_render();
     }
 
@@ -700,7 +756,9 @@ impl FractallApp {
                 ) || self.params.width == 0 {
                     return AlgorithmMode::StandardF64;
                 }
-                if should_use_perturbation_auto(&self.params) {
+                // Use appropriate threshold based on GPU/CPU mode
+                let gpu_mode = self.use_gpu && self.gpu_renderer.is_some();
+                if crate::render::escape_time::should_use_perturbation(&self.params, gpu_mode) {
                     AlgorithmMode::Perturbation
                 } else {
                     AlgorithmMode::StandardF64
@@ -751,9 +809,6 @@ fn apply_default_preset(params: &mut FractalParams, preset: RenderPreset) {
     }
 }
 
-fn should_use_perturbation_auto(params: &FractalParams) -> bool {
-    crate::render::escape_time::should_use_perturbation(params, true)
-}
 
 impl eframe::App for FractallApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {

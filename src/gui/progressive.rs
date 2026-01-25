@@ -4,10 +4,12 @@
 //! progressivement: d'abord une vue basse résolution, puis des passes
 //! de plus en plus détaillées.
 
+use std::sync::Arc;
 use num_complex::Complex64;
 
+use crate::fractal::perturbation::ReferenceOrbitCache;
+
 /// Message envoyé du thread de rendu vers le GUI.
-#[derive(Debug)]
 pub enum RenderMessage {
     /// Une passe de rendu est terminée.
     PassComplete {
@@ -21,7 +23,10 @@ pub enum RenderMessage {
         height: u32,
     },
     /// Toutes les passes sont terminées.
-    AllComplete,
+    AllComplete {
+        /// Updated orbit cache for reuse in subsequent renders.
+        orbit_cache: Option<Arc<ReferenceOrbitCache>>,
+    },
     /// Le rendu a été annulé.
     Cancelled,
 }

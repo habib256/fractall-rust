@@ -15,7 +15,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         ymin: 0.0,
         ymax: 0.0,
         seed: Complex64::new(0.0, 0.0),
-        iteration_max: 5000,
+        iteration_max: 2500,
         bailout: 4.0,
         fractal_type,
         color_mode: 6,   // SmoothPlasma (défaut dans le projet C)
@@ -58,7 +58,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.ymax = 1.5;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
-            params.iteration_max = 5000;
+            params.iteration_max = 2500;
         }
         FractalType::Julia => {
             // Julia_def
@@ -68,7 +68,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.ymax = 1.5;
             params.seed = Complex64::new(0.36228, -0.0777);
             params.bailout = 4.0;
-            params.iteration_max = 5000;
+            params.iteration_max = 2500;
         }
         FractalType::JuliaSin => {
             // JuliaSin_def
@@ -78,7 +78,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.ymax = 2.0;
             params.seed = Complex64::new(1.0, 0.1);
             params.bailout = 4.0;
-            params.iteration_max = 5000;
+            params.iteration_max = 2500;
         }
         FractalType::Newton => {
             // Newton_def
@@ -97,7 +97,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.ymin = -1.5;
             params.ymax = 1.5;
             params.bailout = 4.0;
-            params.iteration_max = 5000;
+            params.iteration_max = 2500;
         }
         FractalType::BarnsleyJulia => {
             // Barnsley1j_def
@@ -107,7 +107,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.ymax = 3.0;
             params.seed = Complex64::new(1.1, 0.6);
             params.bailout = 4.0;
-            params.iteration_max = 5000;
+            params.iteration_max = 2500;
         }
         FractalType::BarnsleyMandelbrot => {
             // Barnsley1m_def
@@ -116,7 +116,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.ymin = -2.0;
             params.ymax = 2.0;
             params.bailout = 4.0;
-            params.iteration_max = 5000;
+            params.iteration_max = 2500;
         }
         FractalType::MagnetJulia => {
             // Magnet1j_def
@@ -126,7 +126,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.ymin = -2.0;
             params.ymax = 2.0;
             params.bailout = 4.0;
-            params.iteration_max = 5000;
+            params.iteration_max = 2500;
         }
         FractalType::MagnetMandelbrot => {
             // Magnet1m_def
@@ -135,7 +135,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.ymin = -2.0;
             params.ymax = 2.0;
             params.bailout = 4.0;
-            params.iteration_max = 5000;
+            params.iteration_max = 2500;
         }
         FractalType::BurningShip => {
             // BurningShip_def
@@ -145,7 +145,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.ymax = 2.0;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
-            params.iteration_max = 5000;
+            params.iteration_max = 2500;
         }
         FractalType::Buffalo => {
             // Buffalo_def
@@ -155,7 +155,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.ymax = 2.0;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
-            params.iteration_max = 5000;
+            params.iteration_max = 2500;
         }
         FractalType::Tricorn => {
             // Tricorn_def
@@ -165,7 +165,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.ymax = 1.5;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
-            params.iteration_max = 5000;
+            params.iteration_max = 2500;
         }
         FractalType::Mandelbulb => {
             // Mandelbulb_def
@@ -175,7 +175,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.ymax = 1.5;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
-            params.iteration_max = 5000;
+            params.iteration_max = 2500;
         }
         FractalType::Buddhabrot => {
             // Buddhabrot_def - densité de trajectoires
@@ -202,7 +202,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.ymax = 1.5;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
-            params.iteration_max = 5000;
+            params.iteration_max = 2500;
         }
         FractalType::Celtic => {
             // Celtic_def
@@ -212,7 +212,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.ymax = 1.5;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
-            params.iteration_max = 5000;
+            params.iteration_max = 2500;
         }
         FractalType::AlphaMandelbrot => {
             // AlphaMandelbrot_def
@@ -253,7 +253,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.ymax = 1.5;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
-            params.iteration_max = 5000;
+            params.iteration_max = 2500;
         }
         FractalType::Nebulabrot => {
             // Nebulabrot_def - RGB densité (R=50, G=500, B=5000 iter)
@@ -263,7 +263,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.ymax = 1.5;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
-            params.iteration_max = 5000;
+            params.iteration_max = 2500;
         }
     }
 
