@@ -1,15 +1,18 @@
 use num_complex::Complex64;
+use rug::Complex;
 use rug::Float;
 use rug::ops::Pow;
 
 use crate::fractal::{FractalParams, FractalType};
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct ComplexF {
     pub re: Float,
     pub im: Float,
 }
 
+#[allow(dead_code)]
 impl ComplexF {
     pub fn with_val(prec: u32, re: f64, im: f64) -> Self {
         Self {
@@ -150,6 +153,7 @@ impl ComplexF {
     }
 }
 
+#[allow(dead_code)]
 pub struct GmpParams {
     pub prec: u32,
     pub iteration_max: u32,
@@ -158,6 +162,7 @@ pub struct GmpParams {
     pub fractal_type: FractalType,
 }
 
+#[allow(dead_code)]
 impl GmpParams {
     pub fn from_params(params: &FractalParams) -> Self {
         let prec = params.precision_bits.max(64);
@@ -174,6 +179,120 @@ impl GmpParams {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct MpcParams {
+    pub prec: u32,
+    pub iteration_max: u32,
+    pub bailout_sqr: Float,
+    pub seed: Complex,
+    pub fractal_type: FractalType,
+}
+
+impl MpcParams {
+    pub fn from_params(params: &FractalParams) -> Self {
+        let prec = params.precision_bits.max(64);
+        let bailout = Float::with_val(prec, params.bailout);
+        let mut bailout_sqr = bailout.clone();
+        bailout_sqr *= &bailout;
+        Self {
+            prec,
+            iteration_max: params.iteration_max,
+            bailout_sqr,
+            seed: Complex::with_val(prec, (params.seed.re, params.seed.im)),
+            fractal_type: params.fractal_type,
+        }
+    }
+}
+
+pub fn complex_from_xy(prec: u32, re: Float, im: Float) -> Complex {
+    Complex::with_val(prec, (re, im))
+}
+
+#[allow(dead_code)]
+pub fn complex_from_f64(prec: u32, re: f64, im: f64) -> Complex {
+    Complex::with_val(prec, (re, im))
+}
+
+pub fn complex_to_complex64(value: &Complex) -> Complex64 {
+    Complex64::new(value.real().to_f64(), value.imag().to_f64())
+}
+
+fn complex_norm_sqr(value: &Complex, prec: u32) -> Float {
+    let mut re2 = value.real().clone();
+    re2 *= value.real();
+    let mut im2 = value.imag().clone();
+    im2 *= value.imag();
+    let mut sum = Float::with_val(prec, re2);
+    sum += im2;
+    sum
+}
+
+fn pow_u32_mpc(value: &Complex, mut exp: u32, prec: u32) -> Complex {
+    let mut result = Complex::with_val(prec, (1, 0));
+    let mut base = value.clone();
+    while exp > 0 {
+        if exp & 1 == 1 {
+            result *= &base;
+        }
+        exp >>= 1;
+        if exp > 0 {
+            base *= base.clone();
+        }
+    }
+    result
+}
+
+fn pow_f64_mpc(value: &Complex, exp: f64, prec: u32) -> Complex {
+    let r = complex_norm_sqr(value, prec).sqrt();
+    if r == 0 {
+        return Complex::with_val(prec, (0, 0));
+    }
+    let theta = value.imag().clone().atan2(value.real());
+    let exp_f = Float::with_val(prec, exp);
+    let r_pow = r.pow(&exp_f);
+    let angle = theta * exp_f;
+    let cos_a = angle.clone().cos();
+    let sin_a = angle.sin();
+    Complex::with_val(prec, (r_pow.clone() * cos_a, r_pow * sin_a))
+}
+
+pub fn iterate_point_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    match g.fractal_type {
+        FractalType::VonKoch | FractalType::Dragon => {
+            panic!("Les fractales vectorielles doivent être rendues via render_von_koch/render_dragon")
+        }
+        FractalType::Mandelbrot => mandelbrot_mpc(g, z_pixel),
+        FractalType::Julia => julia_mpc(g, z_pixel),
+        FractalType::JuliaSin => julia_sin_mpc(g, z_pixel),
+        FractalType::Newton => newton_mpc(g, z_pixel),
+        FractalType::Phoenix => phoenix_mpc(g, z_pixel),
+        FractalType::Buffalo => buffalo_mpc(g, z_pixel),
+        FractalType::BarnsleyJulia => barnsley_julia_mpc(g, z_pixel),
+        FractalType::BarnsleyMandelbrot => barnsley_mandelbrot_mpc(g, z_pixel),
+        FractalType::MagnetJulia => magnet_julia_mpc(g, z_pixel),
+        FractalType::MagnetMandelbrot => magnet_mandelbrot_mpc(g, z_pixel),
+        FractalType::BurningShip => burning_ship_mpc(g, z_pixel),
+        FractalType::Tricorn => tricorn_mpc(g, z_pixel),
+        FractalType::Mandelbulb => mandelbulb_mpc(g, z_pixel),
+        FractalType::PerpendicularBurningShip => perpendicular_burning_ship_mpc(g, z_pixel),
+        FractalType::Celtic => celtic_mpc(g, z_pixel),
+        FractalType::AlphaMandelbrot => alpha_mandelbrot_mpc(g, z_pixel),
+        FractalType::PickoverStalks => pickover_stalks_mpc(g, z_pixel),
+        FractalType::Nova => nova_mpc(g, z_pixel),
+        FractalType::Multibrot => multibrot_mpc(g, z_pixel),
+        FractalType::Buddhabrot => {
+            panic!("Buddhabrot doit être rendu via render_buddhabrot(), pas iterate_point_mpc()")
+        }
+        FractalType::Lyapunov => {
+            panic!("Lyapunov doit être rendu via render_lyapunov(), pas iterate_point_mpc()")
+        }
+        FractalType::Nebulabrot => {
+            panic!("Nebulabrot doit être rendu via render_nebulabrot(), pas iterate_point_mpc()")
+        }
+    }
+}
+
+#[allow(dead_code)]
 pub fn iterate_point_gmp(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     match g.fractal_type {
         FractalType::VonKoch | FractalType::Dragon => {
@@ -210,6 +329,7 @@ pub fn iterate_point_gmp(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     }
 }
 
+#[allow(dead_code)]
 fn mandelbrot(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let mut z = g.seed.clone();
     let mut i = 0u32;
@@ -220,6 +340,7 @@ fn mandelbrot(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     (i, z)
 }
 
+#[allow(dead_code)]
 fn julia(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let mut z = z_pixel.clone();
     let mut i = 0u32;
@@ -230,6 +351,7 @@ fn julia(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     (i, z)
 }
 
+#[allow(dead_code)]
 fn julia_sin(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let mut z = z_pixel.clone();
     let mut i = 0u32;
@@ -241,6 +363,7 @@ fn julia_sin(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     (i, z)
 }
 
+#[allow(dead_code)]
 fn newton(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let mut z = z_pixel.clone();
     let mut i = 0u32;
@@ -269,6 +392,7 @@ fn newton(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     (i, z)
 }
 
+#[allow(dead_code)]
 fn phoenix(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let mut z = z_pixel.clone();
     let mut y = ComplexF::with_val(g.prec, 0.0, 0.0);
@@ -295,6 +419,7 @@ fn phoenix(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     (i, z)
 }
 
+#[allow(dead_code)]
 fn barnsley_julia(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let mut z = z_pixel.clone();
     let mut i = 0u32;
@@ -310,6 +435,7 @@ fn barnsley_julia(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     (i, z)
 }
 
+#[allow(dead_code)]
 fn barnsley_mandelbrot(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let mut z = z_pixel.clone();
     let c = z_pixel;
@@ -326,6 +452,7 @@ fn barnsley_mandelbrot(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     (i, z)
 }
 
+#[allow(dead_code)]
 fn magnet_julia(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let mut z = z_pixel.clone();
     let mut i = 0u32;
@@ -345,6 +472,7 @@ fn magnet_julia(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     (i, z)
 }
 
+#[allow(dead_code)]
 fn magnet_mandelbrot(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let c = z_pixel;
     let mut z = ComplexF::with_val(g.prec, 0.0, 0.0);
@@ -365,6 +493,7 @@ fn magnet_mandelbrot(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     (i, z)
 }
 
+#[allow(dead_code)]
 fn burning_ship(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let mut z = g.seed.clone();
     let mut i = 0u32;
@@ -379,6 +508,7 @@ fn burning_ship(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     (i, z)
 }
 
+#[allow(dead_code)]
 fn buffalo(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let mut z = g.seed.clone();
     let mut i = 0u32;
@@ -392,6 +522,7 @@ fn buffalo(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     (i, z)
 }
 
+#[allow(dead_code)]
 fn tricorn(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let mut z = g.seed.clone();
     let mut i = 0u32;
@@ -404,6 +535,7 @@ fn tricorn(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     (i, z)
 }
 
+#[allow(dead_code)]
 fn mandelbulb(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let mut z = g.seed.clone();
     let mut i = 0u32;
@@ -415,6 +547,7 @@ fn mandelbulb(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     (i, z)
 }
 
+#[allow(dead_code)]
 fn perpendicular_burning_ship(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let mut z = g.seed.clone();
     let mut i = 0u32;
@@ -441,6 +574,7 @@ fn perpendicular_burning_ship(g: &GmpParams, z_pixel: &ComplexF) -> (u32, Comple
     (i, z)
 }
 
+#[allow(dead_code)]
 fn celtic(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let mut z = g.seed.clone();
     let mut i = 0u32;
@@ -465,6 +599,7 @@ fn celtic(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     (i, z)
 }
 
+#[allow(dead_code)]
 fn alpha_mandelbrot(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let mut z = g.seed.clone();
     let mut i = 0u32;
@@ -478,6 +613,7 @@ fn alpha_mandelbrot(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     (i, z)
 }
 
+#[allow(dead_code)]
 fn pickover_stalks(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let mut z = g.seed.clone();
     let mut i = 0u32;
@@ -506,6 +642,7 @@ fn pickover_stalks(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     (iter_value, z)
 }
 
+#[allow(dead_code)]
 fn nova(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let mut z = ComplexF::with_val(g.prec, 1.0, 0.0);
     let mut i = 0u32;
@@ -552,12 +689,420 @@ fn nova(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     (i, z)
 }
 
+#[allow(dead_code)]
 fn multibrot(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let mut z = g.seed.clone();
     let mut i = 0u32;
     while i < g.iteration_max && z.norm_sqr() < g.bailout_sqr {
         let z_pow = z.pow_f64(2.5, g.prec);
         z = z_pow.add(z_pixel);
+        i += 1;
+    }
+    (i, z)
+}
+
+fn mandelbrot_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = g.seed.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let mut z_sq = z.clone();
+        z_sq *= &z;
+        z_sq += z_pixel;
+        z = z_sq;
+        i += 1;
+    }
+    (i, z)
+}
+
+fn julia_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = z_pixel.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let mut z_sq = z.clone();
+        z_sq *= &z;
+        z_sq += &g.seed;
+        z = z_sq;
+        i += 1;
+    }
+    (i, z)
+}
+
+fn julia_sin_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = z_pixel.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let mut sin_z = z.clone().sin();
+        sin_z *= &g.seed;
+        z = sin_z;
+        i += 1;
+    }
+    (i, z)
+}
+
+fn newton_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = z_pixel.clone();
+    let mut i = 0u32;
+    let degree = g.seed.real().to_f64().round() as i32;
+    let degree = if degree <= 0 { 3 } else { degree } as u32;
+    let degree_f = Float::with_val(g.prec, degree);
+    let epsilon = Float::with_val(g.prec, 1e-12f64);
+    let mut epsilon_sqr = epsilon.clone();
+    epsilon_sqr *= &epsilon;
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let z_pow = pow_u32_mpc(&z, degree, g.prec);
+        let z_pow_deriv = pow_u32_mpc(&z, degree - 1, g.prec);
+        let mut numerator = z_pow.clone();
+        numerator -= Complex::with_val(g.prec, (1, 0));
+        let mut denom_re = z_pow_deriv.real().clone();
+        denom_re *= &degree_f;
+        let mut denom_im = z_pow_deriv.imag().clone();
+        denom_im *= &degree_f;
+        let denominator = complex_from_xy(g.prec, denom_re, denom_im);
+        if complex_norm_sqr(&denominator, g.prec) < epsilon_sqr {
+            break;
+        }
+        let z_quot = numerator / denominator;
+        z -= &z_quot;
+        i += 1;
+    }
+    (i, z)
+}
+
+fn phoenix_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = z_pixel.clone();
+    let mut y = Complex::with_val(g.prec, (0, 0));
+    let mut i = 0u32;
+    let p1 = Float::with_val(g.prec, 0.56667);
+    let p2 = Float::with_val(g.prec, -0.5);
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let mut z_sq = z.clone();
+        z_sq *= &z;
+        let mut re = z_sq.real().clone();
+        re += &p1;
+        let im = z_sq.imag().clone();
+        let mut z_temp = complex_from_xy(g.prec, re, im);
+        let mut zp_re = y.real().clone();
+        zp_re *= &p2;
+        let mut zp_im = y.imag().clone();
+        zp_im *= &p2;
+        let zp_temp = complex_from_xy(g.prec, zp_re, zp_im);
+        z_temp += zp_temp;
+        y = z;
+        z = z_temp;
+        i += 1;
+    }
+    (i, z)
+}
+
+fn barnsley_julia_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = z_pixel.clone();
+    let mut i = 0u32;
+    let one = Float::with_val(g.prec, 1.0);
+    let zero = Float::with_val(g.prec, 0.0);
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let mut re = z.real().clone();
+        if re >= zero {
+            re -= &one;
+        } else {
+            re += &one;
+        }
+        let im = z.imag().clone();
+        let mut z_adj = complex_from_xy(g.prec, re, im);
+        z_adj *= &g.seed;
+        z = z_adj;
+        i += 1;
+    }
+    (i, z)
+}
+
+fn barnsley_mandelbrot_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = z_pixel.clone();
+    let c = z_pixel;
+    let mut i = 0u32;
+    let one = Float::with_val(g.prec, 1.0);
+    let zero = Float::with_val(g.prec, 0.0);
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let mut re = z.real().clone();
+        if re >= zero {
+            re -= &one;
+        } else {
+            re += &one;
+        }
+        let im = z.imag().clone();
+        let mut z_adj = complex_from_xy(g.prec, re, im);
+        z_adj *= c;
+        z = z_adj;
+        i += 1;
+    }
+    (i, z)
+}
+
+fn magnet_julia_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = z_pixel.clone();
+    let mut i = 0u32;
+    let mut seed_minus_one_re = g.seed.real().clone();
+    seed_minus_one_re -= Float::with_val(g.prec, 1.0);
+    let seed_minus_one = complex_from_xy(g.prec, seed_minus_one_re, g.seed.imag().clone());
+    let mut seed_minus_two_re = g.seed.real().clone();
+    seed_minus_two_re -= Float::with_val(g.prec, 2.0);
+    let seed_minus_two = complex_from_xy(g.prec, seed_minus_two_re, g.seed.imag().clone());
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let mut n = z.clone();
+        n *= &z;
+        n += &seed_minus_one;
+        let mut n_sq = n.clone();
+        n_sq *= &n;
+        let mut q = z.clone();
+        q *= Complex::with_val(g.prec, (2, 0));
+        q += &seed_minus_two;
+        z = n_sq / q;
+        i += 1;
+    }
+    (i, z)
+}
+
+fn magnet_mandelbrot_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let c = z_pixel;
+    let mut z = Complex::with_val(g.prec, (0, 0));
+    let mut i = 0u32;
+    let mut c_minus_one_re = c.real().clone();
+    c_minus_one_re -= Float::with_val(g.prec, 1.0);
+    let c_minus_one = complex_from_xy(g.prec, c_minus_one_re, c.imag().clone());
+    let mut c_minus_two_re = c.real().clone();
+    c_minus_two_re -= Float::with_val(g.prec, 2.0);
+    let c_minus_two = complex_from_xy(g.prec, c_minus_two_re, c.imag().clone());
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let mut n = z.clone();
+        n *= &z;
+        n += &c_minus_one;
+        let mut n_sq = n.clone();
+        n_sq *= &n;
+        let mut q = z.clone();
+        q *= Complex::with_val(g.prec, (2, 0));
+        q += &c_minus_two;
+        z = n_sq / q;
+        i += 1;
+    }
+    (i, z)
+}
+
+fn burning_ship_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = g.seed.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let re = z.real().clone().abs();
+        let im = z.imag().clone().abs();
+        let mut z_temp = complex_from_xy(g.prec, re, im);
+        z_temp *= z_temp.clone();
+        z_temp += z_pixel;
+        z = z_temp;
+        i += 1;
+    }
+    (i, z)
+}
+
+fn buffalo_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = g.seed.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let mut z_sq = z.clone();
+        z_sq *= &z;
+        let re_sq = z_sq.real().clone().abs();
+        let im_sq = z_sq.imag().clone().abs();
+        let mut re = re_sq;
+        re += z_pixel.real();
+        let mut im = im_sq;
+        im += z_pixel.imag();
+        z = complex_from_xy(g.prec, re, im);
+        i += 1;
+    }
+    (i, z)
+}
+
+fn tricorn_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = g.seed.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let z_conj = z.clone().conj();
+        let mut z_temp = z_conj.clone();
+        z_temp *= &z_conj;
+        z_temp += z_pixel;
+        z = z_temp;
+        i += 1;
+    }
+    (i, z)
+}
+
+fn mandelbulb_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = g.seed.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let z_pow = pow_u32_mpc(&z, 8, g.prec);
+        let mut z_next = z_pow;
+        z_next += z_pixel;
+        z = z_next;
+        i += 1;
+    }
+    (i, z)
+}
+
+fn perpendicular_burning_ship_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = g.seed.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let x = z.real().clone();
+        let y = z.imag().clone();
+        let y_abs = y.clone().abs();
+        let mut x2 = x.clone();
+        x2 *= &x;
+        let mut y2 = y_abs.clone();
+        y2 *= &y_abs;
+        let mut re = x2;
+        re -= y2;
+        re += z_pixel.real();
+
+        let mut im = x;
+        im *= y_abs;
+        im *= Float::with_val(g.prec, -2.0);
+        im += z_pixel.imag();
+
+        z = complex_from_xy(g.prec, re, im);
+        i += 1;
+    }
+    (i, z)
+}
+
+fn celtic_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = g.seed.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let x = z.real().clone();
+        let y = z.imag().clone();
+        let mut u = x.clone();
+        u *= &x;
+        let mut y2 = y.clone();
+        y2 *= &y;
+        u -= y2;
+        let mut v = x;
+        v *= y;
+        v *= Float::with_val(g.prec, 2.0);
+        let mut re = u.abs();
+        re += z_pixel.real();
+        let mut im = v;
+        im += z_pixel.imag();
+        z = complex_from_xy(g.prec, re, im);
+        i += 1;
+    }
+    (i, z)
+}
+
+fn alpha_mandelbrot_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = g.seed.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let mut z_sq = z.clone();
+        z_sq *= &z;
+        let mut m = z_sq.clone();
+        m += z_pixel;
+        let mut m_sq = m.clone();
+        m_sq *= &m;
+        let mut z_next = z_sq;
+        z_next += &m_sq;
+        z_next += z_pixel;
+        z = z_next;
+        i += 1;
+    }
+    (i, z)
+}
+
+fn pickover_stalks_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = g.seed.clone();
+    let mut i = 0u32;
+    let mut trap_min = Float::with_val(g.prec, 1e10f64);
+    let trap_divisor = Float::with_val(g.prec, 0.03f64);
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let mut z_next = z.clone();
+        z_next *= &z;
+        z_next += z_pixel;
+        z = z_next;
+        let re_abs = z.real().clone().abs();
+        let im_abs = z.imag().clone().abs();
+        let trap_distance = if re_abs < im_abs { re_abs } else { im_abs };
+        if trap_distance < trap_min {
+            trap_min = trap_distance;
+        }
+        i += 1;
+    }
+    let mut iter_value: u32;
+    if trap_min > Float::with_val(g.prec, 1e-10f64) {
+        let log_trap = -(&trap_min / trap_divisor).ln();
+        iter_value = (log_trap.to_f64() * 100.0) as u32;
+        if iter_value >= g.iteration_max {
+            iter_value = g.iteration_max.saturating_sub(1);
+        }
+    } else {
+        iter_value = g.iteration_max.saturating_sub(1);
+    }
+    (iter_value, z)
+}
+
+fn nova_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = Complex::with_val(g.prec, (1.0, 0.0));
+    let mut i = 0u32;
+    let a_relax = Complex::with_val(g.prec, (1.0, 0.0));
+    let p_poly = 3u32;
+    let conv_epsilon = Float::with_val(g.prec, 1e-7f64);
+    let mut conv_epsilon_sq = conv_epsilon.clone();
+    conv_epsilon_sq *= &conv_epsilon;
+    while i < g.iteration_max {
+        let z_pow = pow_u32_mpc(&z, p_poly, g.prec);
+        let z_pow_deriv = pow_u32_mpc(&z, p_poly - 1, g.prec);
+        let mut numerator = z_pow.clone();
+        numerator -= Complex::with_val(g.prec, (1.0, 0.0));
+        let p_poly_f = Float::with_val(g.prec, p_poly);
+        let mut denom_re = z_pow_deriv.real().clone();
+        denom_re *= &p_poly_f;
+        let mut denom_im = z_pow_deriv.imag().clone();
+        denom_im *= &p_poly_f;
+        let denominator = complex_from_xy(g.prec, denom_re, denom_im);
+        let denom_epsilon = Float::with_val(g.prec, 1e-10f64);
+        let mut denom_epsilon_sqr = denom_epsilon.clone();
+        denom_epsilon_sqr *= &denom_epsilon;
+        if complex_norm_sqr(&denominator, g.prec) < denom_epsilon_sqr {
+            break;
+        }
+        let mut newton_step = numerator / denominator;
+        newton_step *= &a_relax;
+        let z_prev = z.clone();
+        let mut z_next = z - &newton_step;
+        z_next += z_pixel;
+        z = z_next;
+        let diff = z.clone() - z_prev;
+        let diff_sq = complex_norm_sqr(&diff, g.prec);
+        let z_sq = complex_norm_sqr(&z, g.prec);
+        let one = Float::with_val(g.prec, 1.0);
+        let denom = if z_sq < one { one } else { z_sq };
+        let mut ratio = diff_sq;
+        ratio /= &denom;
+        if ratio < conv_epsilon_sq {
+            break;
+        }
+        if complex_norm_sqr(&z, g.prec) > g.bailout_sqr {
+            break;
+        }
+        i += 1;
+    }
+    (i, z)
+}
+
+fn multibrot_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = g.seed.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let z_pow = pow_f64_mpc(&z, 2.5, g.prec);
+        let mut z_next = z_pow;
+        z_next += z_pixel;
+        z = z_next;
         i += 1;
     }
     (i, z)

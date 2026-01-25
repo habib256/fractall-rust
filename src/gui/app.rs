@@ -778,31 +778,20 @@ impl eframe::App for FractallApp {
                 
                 ui.horizontal(|ui| {
                     ui.label("Palette:");
-                    for i in 0..9u8 {
-                        let is_selected = self.palette_index == i;
-                        let label = format!("{}", i);
-                        let button = if is_selected {
-                            ui.selectable_label(true, label)
-                        } else {
-                            ui.selectable_label(false, label)
-                        };
-                        
-                        if button.clicked() {
-                            self.palette_index = i;
-                            self.params.color_mode = i;
-                            if !self.iterations.is_empty() {
-                                self.update_texture(ctx);
-                            }
+                    if ui.button("<").clicked() {
+                        self.palette_index = if self.palette_index == 0 { 8 } else { self.palette_index - 1 };
+                        self.params.color_mode = self.palette_index;
+                        if !self.iterations.is_empty() {
+                            self.update_texture(ctx);
                         }
                     }
-                    
-                    ui.separator();
-                    
-                    ui.label("Itérations:");
-                    let old_iter = self.params.iteration_max;
-                    ui.add(egui::Slider::new(&mut self.params.iteration_max, 100..=500000).logarithmic(true));
-                    if old_iter != self.params.iteration_max && !self.iterations.is_empty() {
-                        self.start_render();
+                    ui.label(format!("{}", self.palette_index));
+                    if ui.button(">").clicked() {
+                        self.palette_index = (self.palette_index + 1) % 9;
+                        self.params.color_mode = self.palette_index;
+                        if !self.iterations.is_empty() {
+                            self.update_texture(ctx);
+                        }
                     }
                     
                     ui.separator();
@@ -949,8 +938,8 @@ impl eframe::App for FractallApp {
                         }
                     }
                     
-                    // Clic droit : dézoom (seulement si pas de sélection)
-                    if response.secondary_clicked() && !self.selecting {
+                    // Clic droit : dézoom
+                    if response.secondary_clicked() {
                         self.zoom_out(2.0);
                     }
                 } else if self.rendering {

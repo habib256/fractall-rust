@@ -7,10 +7,17 @@ use rug::Float;
 
 use crate::fractal::{FractalParams, FractalResult, FractalType};
 use crate::fractal::iterations::iterate_point;
-use crate::fractal::gmp::{ComplexF, GmpParams, iterate_point_gmp};
+use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
 use crate::fractal::{render_lyapunov, render_von_koch, render_dragon, render_buddhabrot, render_nebulabrot};
-use crate::fractal::lyapunov::render_lyapunov_cancellable;
-use crate::fractal::buddhabrot::{render_buddhabrot_cancellable, render_nebulabrot_cancellable};
+use crate::fractal::lyapunov::{render_lyapunov_cancellable, render_lyapunov_mpc_cancellable, render_lyapunov_mpc};
+use crate::fractal::buddhabrot::{
+    render_buddhabrot_cancellable,
+    render_nebulabrot_cancellable,
+    render_buddhabrot_mpc,
+    render_nebulabrot_mpc,
+    render_buddhabrot_mpc_cancellable,
+    render_nebulabrot_mpc_cancellable,
+};
 
 /// Calcule la matrice d'itérations et la matrice des valeurs finales de z
 /// pour une fractale escape-time (ou algorithme spécial).
@@ -26,9 +33,27 @@ pub fn render_escape_time(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
     match params.fractal_type {
         FractalType::VonKoch => return render_von_koch(params),
         FractalType::Dragon => return render_dragon(params),
-        FractalType::Buddhabrot => return render_buddhabrot(params),
-        FractalType::Lyapunov => return render_lyapunov(params),
-        FractalType::Nebulabrot => return render_nebulabrot(params),
+        FractalType::Buddhabrot => {
+            return if params.use_gmp {
+                render_buddhabrot_mpc(params)
+            } else {
+                render_buddhabrot(params)
+            };
+        }
+        FractalType::Lyapunov => {
+            return if params.use_gmp {
+                render_lyapunov_mpc(params)
+            } else {
+                render_lyapunov(params)
+            };
+        }
+        FractalType::Nebulabrot => {
+            return if params.use_gmp {
+                render_nebulabrot_mpc(params)
+            } else {
+                render_nebulabrot(params)
+            };
+        }
         _ => {}
     }
 
@@ -88,7 +113,7 @@ fn render_escape_time_gmp(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
         return (iterations, zs);
     }
 
-    let gmp = GmpParams::from_params(params);
+    let gmp = MpcParams::from_params(params);
     let prec = gmp.prec;
 
     let xmin = Float::with_val(prec, params.xmin);
@@ -107,19 +132,24 @@ fn render_escape_time_gmp(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
     let mut y_step = y_range;
     y_step /= &height_f;
 
-    let mut yg = ymin.clone();
-    for j in 0..height {
-        let mut xg = xmin.clone();
-        for i in 0..width {
-            let idx = j * width + i;
-            let z_pixel = ComplexF::new(xg.clone(), yg.clone());
-            let (iter, z_final) = iterate_point_gmp(&gmp, &z_pixel);
-            iterations[idx] = iter;
-            zs[idx] = z_final.to_complex64();
-            xg += &x_step;
-        }
-        yg += &y_step;
-    }
+    iterations
+        .par_chunks_mut(width)
+        .zip(zs.par_chunks_mut(width))
+        .enumerate()
+        .for_each(|(j, (iter_row, z_row))| {
+            let mut yg = y_step.clone();
+            yg *= j as u32;
+            yg += &ymin;
+            for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
+                let mut xg = x_step.clone();
+                xg *= i as u32;
+                xg += &xmin;
+                let z_pixel = complex_from_xy(prec, xg, yg.clone());
+                let (iter_val, z_final) = iterate_point_mpc(&gmp, &z_pixel);
+                *iter = iter_val;
+                *z = complex_to_complex64(&z_final);
+            }
+        });
 
     (iterations, zs)
 }
@@ -185,9 +215,27 @@ pub fn render_escape_time_cancellable_with_reuse(
     match params.fractal_type {
         FractalType::VonKoch => return Some(render_von_koch(params)),
         FractalType::Dragon => return Some(render_dragon(params)),
-        FractalType::Buddhabrot => return render_buddhabrot_cancellable(params, cancel),
-        FractalType::Lyapunov => return render_lyapunov_cancellable(params, cancel),
-        FractalType::Nebulabrot => return render_nebulabrot_cancellable(params, cancel),
+        FractalType::Buddhabrot => {
+            return if params.use_gmp {
+                render_buddhabrot_mpc_cancellable(params, cancel)
+            } else {
+                render_buddhabrot_cancellable(params, cancel)
+            };
+        }
+        FractalType::Lyapunov => {
+            return if params.use_gmp {
+                render_lyapunov_mpc_cancellable(params, cancel)
+            } else {
+                render_lyapunov_cancellable(params, cancel)
+            };
+        }
+        FractalType::Nebulabrot => {
+            return if params.use_gmp {
+                render_nebulabrot_mpc_cancellable(params, cancel)
+            } else {
+                render_nebulabrot_cancellable(params, cancel)
+            };
+        }
         _ => {}
     }
 
@@ -299,7 +347,7 @@ fn render_escape_time_gmp_cancellable_with_reuse(
         return Some((iterations, zs));
     }
 
-    let gmp = GmpParams::from_params(params);
+    let gmp = MpcParams::from_params(params);
     let prec = gmp.prec;
 
     let xmin = Float::with_val(prec, params.xmin);
@@ -318,41 +366,55 @@ fn render_escape_time_gmp_cancellable_with_reuse(
     let mut y_step = y_range;
     y_step /= &height_f;
 
-    let mut yg = ymin.clone();
-    for j in 0..height {
-        // Vérifier l'annulation à chaque ligne (GMP est déjà lent)
-        if cancel.load(Ordering::Relaxed) {
-            return None;
-        }
+    let cancelled = AtomicBool::new(false);
 
-        let mut xg = xmin.clone();
-        for i in 0..width {
-            let idx = j * width + i;
-            let mut reused = false;
-            if let Some(reuse) = &reuse {
-                let ratio = reuse.ratio as usize;
-                if j % ratio == 0 && i % ratio == 0 {
-                    let src_x = i / ratio;
-                    let src_y = j / ratio;
-                    let src_idx = (src_y * reuse.width as usize + src_x) as usize;
-                    if src_idx < reuse.iterations.len() {
-                        iterations[idx] = reuse.iterations[src_idx];
-                        zs[idx] = reuse.zs[src_idx];
-                        reused = true;
-                    }
+    iterations
+        .par_chunks_mut(width)
+        .zip(zs.par_chunks_mut(width))
+        .enumerate()
+        .for_each(|(j, (iter_row, z_row))| {
+            let reuse_row = reuse.as_ref();
+            if j % 8 == 0 {
+                if cancel.load(Ordering::Relaxed) {
+                    cancelled.store(true, Ordering::Relaxed);
+                    return;
                 }
             }
-            if !reused {
-                let z_pixel = ComplexF::new(xg.clone(), yg.clone());
-                let (iter, z_final) = iterate_point_gmp(&gmp, &z_pixel);
-                iterations[idx] = iter;
-                zs[idx] = z_final.to_complex64();
+            if cancelled.load(Ordering::Relaxed) {
+                return;
             }
-            xg += &x_step;
-        }
-        yg += &y_step;
-    }
 
-    Some((iterations, zs))
+            let mut yg = y_step.clone();
+            yg *= j as u32;
+            yg += &ymin;
+            for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
+                if let Some(reuse) = reuse_row {
+                    let ratio = reuse.ratio as usize;
+                    if j % ratio == 0 && i % ratio == 0 {
+                        let src_x = i / ratio;
+                        let src_y = j / ratio;
+                        let src_idx = (src_y * reuse.width as usize + src_x) as usize;
+                        if src_idx < reuse.iterations.len() {
+                            *iter = reuse.iterations[src_idx];
+                            *z = reuse.zs[src_idx];
+                            continue;
+                        }
+                    }
+                }
+                let mut xg = x_step.clone();
+                xg *= i as u32;
+                xg += &xmin;
+                let z_pixel = complex_from_xy(prec, xg, yg.clone());
+                let (iter_val, z_final) = iterate_point_mpc(&gmp, &z_pixel);
+                *iter = iter_val;
+                *z = complex_to_complex64(&z_final);
+            }
+        });
+
+    if cancelled.load(Ordering::Relaxed) {
+        None
+    } else {
+        Some((iterations, zs))
+    }
 }
 

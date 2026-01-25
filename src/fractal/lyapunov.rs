@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use num_complex::Complex64;
 use rayon::prelude::*;
+use rug::Float;
 
 use crate::fractal::FractalParams;
 
@@ -259,6 +260,91 @@ fn normalize_lyapunov(lyap: f64) -> f64 {
     }
 }
 
+fn compute_lyapunov_exponent_mpc(
+    a: &Float,
+    b: &Float,
+    iter_max: u32,
+    sequence: &[bool],
+    prec: u32,
+) -> Float {
+    let seq = if sequence.is_empty() { ZIRCON_SEQUENCE } else { sequence };
+    let seq_len = seq.len();
+    let mut x = Float::with_val(prec, 0.5);
+    let one = Float::with_val(prec, 1.0);
+    let two = Float::with_val(prec, 2.0);
+    let min_x = Float::with_val(prec, MIN_X);
+    let max_x = Float::with_val(prec, MAX_X);
+    let min_deriv = Float::with_val(prec, MIN_DERIV);
+
+    let warmup_cycles = WARMUP_ITERATIONS / seq_len as u32;
+    for _ in 0..warmup_cycles {
+        for &is_a in seq {
+            let r = if is_a { a } else { b };
+            let mut one_minus_x = one.clone();
+            one_minus_x -= &x;
+            let mut x_next = x.clone();
+            x_next *= &one_minus_x;
+            x_next *= r;
+            x = x_next;
+
+            if x < min_x || x > max_x || x.is_nan() {
+                x = Float::with_val(prec, 0.5);
+            }
+        }
+    }
+
+    let mut lyap = Float::with_val(prec, 0.0);
+    let mut product = Float::with_val(prec, 1.0);
+    let mut count_in_block = 0u32;
+    let mut seq_idx = 0usize;
+
+    for _ in 0..iter_max {
+        let is_a = seq[seq_idx];
+        let r = if is_a { a } else { b };
+
+        let mut one_minus_x = one.clone();
+        one_minus_x -= &x;
+        let mut x_next = x.clone();
+        x_next *= &one_minus_x;
+        x_next *= r;
+        x = x_next;
+
+        let mut two_x = x.clone();
+        two_x *= &two;
+        let mut term = one.clone();
+        term -= two_x;
+        term *= r;
+        let deriv = term.abs();
+
+        if deriv > min_deriv {
+            product *= deriv;
+        }
+        count_in_block += 1;
+
+        if count_in_block >= BLOCK_SIZE {
+            if product > 0.0 {
+                lyap += product.clone().ln();
+            }
+            product = Float::with_val(prec, 1.0);
+            count_in_block = 0;
+        }
+
+        if x < min_x || x > max_x || x.is_nan() {
+            x = Float::with_val(prec, 0.5);
+        }
+
+        seq_idx = (seq_idx + 1) % seq_len;
+    }
+
+    if count_in_block > 0 && product > 0.0 {
+        lyap += product.clone().ln();
+    }
+
+    let denom = Float::with_val(prec, iter_max);
+    lyap /= &denom;
+    lyap
+}
+
 /// Rendu de la fractale de Lyapunov.
 ///
 /// Retourne (iterations, zs) où:
@@ -298,6 +384,60 @@ pub fn render_lyapunov(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
                 let norm = normalize_lyapunov(lyap);
 
                 // Stockage compatible avec le système de colorisation
+                *iter = (norm * iter_max as f64) as u32;
+                *z = Complex64::new(norm * 2.0, 0.0);
+            }
+        });
+
+    (iterations, zs)
+}
+
+/// Rendu MPC de la fractale de Lyapunov.
+pub fn render_lyapunov_mpc(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
+    let width = params.width as usize;
+    let height = params.height as usize;
+    let mut iterations = vec![0u32; width * height];
+    let mut zs = vec![Complex64::new(0.0, 0.0); width * height];
+
+    if width == 0 || height == 0 {
+        return (iterations, zs);
+    }
+
+    let prec = params.precision_bits.max(64);
+    let xmin = Float::with_val(prec, params.xmin);
+    let xmax = Float::with_val(prec, params.xmax);
+    let ymin = Float::with_val(prec, params.ymin);
+    let ymax = Float::with_val(prec, params.ymax);
+
+    let mut x_range = xmax.clone();
+    x_range -= &xmin;
+    let mut y_range = ymax.clone();
+    y_range -= &ymin;
+    let width_f = Float::with_val(prec, params.width);
+    let height_f = Float::with_val(prec, params.height);
+    let mut x_step = x_range;
+    x_step /= &width_f;
+    let mut y_step = y_range;
+    y_step /= &height_f;
+    let iter_max = params.iteration_max;
+    let sequence: Vec<bool> = params.lyapunov_sequence.clone();
+
+    iterations
+        .par_chunks_mut(width)
+        .zip(zs.par_chunks_mut(width))
+        .enumerate()
+        .for_each(|(j, (iter_row, z_row))| {
+            let mut b = y_step.clone();
+            b *= j as u32;
+            b += &ymin;
+            for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
+                let mut a = x_step.clone();
+                a *= i as u32;
+                a += &xmin;
+
+                let lyap = compute_lyapunov_exponent_mpc(&a, &b, iter_max, &sequence, prec);
+                let norm = normalize_lyapunov(lyap.to_f64());
+
                 *iter = (norm * iter_max as f64) as u32;
                 *z = Complex64::new(norm * 2.0, 0.0);
             }
@@ -350,6 +490,80 @@ pub fn render_lyapunov_cancellable(
 
                 let lyap = compute_lyapunov_exponent(a, b, iter_max, &sequence);
                 let norm = normalize_lyapunov(lyap);
+
+                *iter = (norm * iter_max as f64) as u32;
+                *z = Complex64::new(norm * 2.0, 0.0);
+            }
+        });
+
+    if cancelled.load(Ordering::Relaxed) {
+        None
+    } else {
+        Some((iterations, zs))
+    }
+}
+
+/// Version annulable du rendu MPC Lyapunov.
+pub fn render_lyapunov_mpc_cancellable(
+    params: &FractalParams,
+    cancel: &Arc<AtomicBool>,
+) -> Option<(Vec<u32>, Vec<Complex64>)> {
+    let width = params.width as usize;
+    let height = params.height as usize;
+    let mut iterations = vec![0u32; width * height];
+    let mut zs = vec![Complex64::new(0.0, 0.0); width * height];
+
+    if width == 0 || height == 0 {
+        return Some((iterations, zs));
+    }
+
+    let prec = params.precision_bits.max(64);
+    let xmin = Float::with_val(prec, params.xmin);
+    let xmax = Float::with_val(prec, params.xmax);
+    let ymin = Float::with_val(prec, params.ymin);
+    let ymax = Float::with_val(prec, params.ymax);
+
+    let mut x_range = xmax.clone();
+    x_range -= &xmin;
+    let mut y_range = ymax.clone();
+    y_range -= &ymin;
+    let width_f = Float::with_val(prec, params.width);
+    let height_f = Float::with_val(prec, params.height);
+    let mut x_step = x_range;
+    x_step /= &width_f;
+    let mut y_step = y_range;
+    y_step /= &height_f;
+
+    let iter_max = params.iteration_max;
+    let sequence: Vec<bool> = params.lyapunov_sequence.clone();
+    let cancelled = AtomicBool::new(false);
+
+    iterations
+        .par_chunks_mut(width)
+        .zip(zs.par_chunks_mut(width))
+        .enumerate()
+        .for_each(|(j, (iter_row, z_row))| {
+            if j % 16 == 0 {
+                if cancel.load(Ordering::Relaxed) {
+                    cancelled.store(true, Ordering::Relaxed);
+                    return;
+                }
+            }
+            if cancelled.load(Ordering::Relaxed) {
+                return;
+            }
+
+            let mut b = y_step.clone();
+            b *= j as u32;
+            b += &ymin;
+
+            for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
+                let mut a = x_step.clone();
+                a *= i as u32;
+                a += &xmin;
+
+                let lyap = compute_lyapunov_exponent_mpc(&a, &b, iter_max, &sequence, prec);
+                let norm = normalize_lyapunov(lyap.to_f64());
 
                 *iter = (norm * iter_max as f64) as u32;
                 *z = Complex64::new(norm * 2.0, 0.0);
