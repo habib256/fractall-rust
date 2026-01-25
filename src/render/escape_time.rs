@@ -124,11 +124,57 @@ fn render_escape_time_gmp(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
     (iterations, zs)
 }
 
+struct ReuseData<'a> {
+    iterations: &'a [u32],
+    zs: &'a [Complex64],
+    width: u32,
+    ratio: u32,
+}
+
+fn build_reuse<'a>(
+    params: &FractalParams,
+    reuse: Option<(&'a [u32], &'a [Complex64], u32, u32)>,
+) -> Option<ReuseData<'a>> {
+    let (iterations, zs, width, height) = reuse?;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let expected_len = (width * height) as usize;
+    if iterations.len() != expected_len || zs.len() != expected_len {
+        return None;
+    }
+    if params.width % width != 0 || params.height % height != 0 {
+        return None;
+    }
+    let ratio_x = params.width / width;
+    let ratio_y = params.height / height;
+    if ratio_x < 2 || ratio_y < 2 || ratio_x != ratio_y {
+        return None;
+    }
+    Some(ReuseData {
+        iterations,
+        zs,
+        width,
+        ratio: ratio_x,
+    })
+}
+
 /// Version annulable du rendu escape-time.
 /// Retourne None si annulé, Some(...) sinon.
+#[allow(dead_code)]
 pub fn render_escape_time_cancellable(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
+) -> Option<(Vec<u32>, Vec<Complex64>)> {
+    render_escape_time_cancellable_with_reuse(params, cancel, None)
+}
+
+/// Version annulable du rendu escape-time avec réutilisation d'une passe précédente.
+/// Les points déjà calculés sont réutilisés quand les résolutions s'alignent.
+pub fn render_escape_time_cancellable_with_reuse(
+    params: &FractalParams,
+    cancel: &Arc<AtomicBool>,
+    reuse: Option<(&[u32], &[Complex64], u32, u32)>,
 ) -> Option<(Vec<u32>, Vec<Complex64>)> {
     // Vérifier l'annulation avant de commencer
     if cancel.load(Ordering::Relaxed) {
@@ -145,15 +191,25 @@ pub fn render_escape_time_cancellable(
         _ => {}
     }
 
+    let reuse = build_reuse(params, reuse);
     if params.use_gmp {
-        return render_escape_time_gmp_cancellable(params, cancel);
+        return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse);
     }
-    render_escape_time_f64_cancellable(params, cancel)
+    render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse)
 }
 
+#[allow(dead_code)]
 fn render_escape_time_f64_cancellable(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
+) -> Option<(Vec<u32>, Vec<Complex64>)> {
+    render_escape_time_f64_cancellable_with_reuse(params, cancel, None)
+}
+
+fn render_escape_time_f64_cancellable_with_reuse(
+    params: &FractalParams,
+    cancel: &Arc<AtomicBool>,
+    reuse: Option<ReuseData<'_>>,
 ) -> Option<(Vec<u32>, Vec<Complex64>)> {
     let width = params.width as usize;
     let height = params.height as usize;
@@ -178,6 +234,7 @@ fn render_escape_time_f64_cancellable(
         .zip(zs.par_chunks_mut(width))
         .enumerate()
         .for_each(|(j, (iter_row, z_row))| {
+            let reuse_row = reuse.as_ref();
             // Vérifier l'annulation toutes les 16 lignes
             if j % 16 == 0 {
                 if cancel.load(Ordering::Relaxed) {
@@ -192,6 +249,19 @@ fn render_escape_time_f64_cancellable(
 
             let yg = y_step * j as f64 + params.ymin;
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
+                if let Some(reuse) = reuse_row {
+                    let ratio = reuse.ratio as usize;
+                    if j % ratio == 0 && i % ratio == 0 {
+                        let src_x = i / ratio;
+                        let src_y = j / ratio;
+                        let src_idx = (src_y * reuse.width as usize + src_x) as usize;
+                        if src_idx < reuse.iterations.len() {
+                            *iter = reuse.iterations[src_idx];
+                            *z = reuse.zs[src_idx];
+                            continue;
+                        }
+                    }
+                }
                 let xg = x_step * i as f64 + params.xmin;
                 let z_pixel = Complex64::new(xg, yg);
                 let FractalResult { iteration, z: z_final } = iterate_point(params, z_pixel);
@@ -207,9 +277,18 @@ fn render_escape_time_f64_cancellable(
     }
 }
 
+#[allow(dead_code)]
 fn render_escape_time_gmp_cancellable(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
+) -> Option<(Vec<u32>, Vec<Complex64>)> {
+    render_escape_time_gmp_cancellable_with_reuse(params, cancel, None)
+}
+
+fn render_escape_time_gmp_cancellable_with_reuse(
+    params: &FractalParams,
+    cancel: &Arc<AtomicBool>,
+    reuse: Option<ReuseData<'_>>,
 ) -> Option<(Vec<u32>, Vec<Complex64>)> {
     let width = params.width as usize;
     let height = params.height as usize;
@@ -249,10 +328,26 @@ fn render_escape_time_gmp_cancellable(
         let mut xg = xmin.clone();
         for i in 0..width {
             let idx = j * width + i;
-            let z_pixel = ComplexF::new(xg.clone(), yg.clone());
-            let (iter, z_final) = iterate_point_gmp(&gmp, &z_pixel);
-            iterations[idx] = iter;
-            zs[idx] = z_final.to_complex64();
+            let mut reused = false;
+            if let Some(reuse) = &reuse {
+                let ratio = reuse.ratio as usize;
+                if j % ratio == 0 && i % ratio == 0 {
+                    let src_x = i / ratio;
+                    let src_y = j / ratio;
+                    let src_idx = (src_y * reuse.width as usize + src_x) as usize;
+                    if src_idx < reuse.iterations.len() {
+                        iterations[idx] = reuse.iterations[src_idx];
+                        zs[idx] = reuse.zs[src_idx];
+                        reused = true;
+                    }
+                }
+            }
+            if !reused {
+                let z_pixel = ComplexF::new(xg.clone(), yg.clone());
+                let (iter, z_final) = iterate_point_gmp(&gmp, &z_pixel);
+                iterations[idx] = iter;
+                zs[idx] = z_final.to_complex64();
+            }
             xg += &x_step;
         }
         yg += &y_step;

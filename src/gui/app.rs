@@ -9,7 +9,7 @@ use num_complex::Complex64;
 
 use crate::color::{color_for_pixel, color_for_nebulabrot_pixel, color_for_buddhabrot_pixel};
 use crate::fractal::{default_params_for_type, apply_lyapunov_preset, FractalParams, FractalType, LyapunovPreset};
-use crate::render::render_escape_time_cancellable;
+use crate::render::render_escape_time_cancellable_with_reuse;
 use crate::gui::texture::rgb_image_to_color_image;
 use crate::gui::progressive::{ProgressiveConfig, RenderMessage, upscale_nearest};
 
@@ -104,10 +104,19 @@ impl FractallApp {
         self.render_cancel = Arc::new(AtomicBool::new(false));
 
         // Configuration progressive selon les paramètres
-        let config = ProgressiveConfig::for_params(
+        let allow_intermediate = !matches!(
+            self.params.fractal_type,
+            FractalType::VonKoch
+                | FractalType::Dragon
+                | FractalType::Buddhabrot
+                | FractalType::Nebulabrot
+                | FractalType::Lyapunov
+        );
+        let config = ProgressiveConfig::for_params_with_intermediate(
             self.params.width,
             self.params.height,
             self.params.use_gmp,
+            allow_intermediate,
         );
 
         self.total_passes = config.passes.len() as u8;
@@ -128,6 +137,7 @@ impl FractallApp {
 
         // Spawner le thread de rendu progressif
         let handle = thread::spawn(move || {
+            let mut previous_pass: Option<(Vec<u32>, Vec<Complex64>, u32, u32)> = None;
             for (pass_index, &scale_divisor) in config.passes.iter().enumerate() {
                 // Vérifier l'annulation
                 if cancel.load(Ordering::Relaxed) {
@@ -144,11 +154,21 @@ impl FractallApp {
                 pass_params.width = pass_width;
                 pass_params.height = pass_height;
 
-                // Rendre cette passe
-                let result = render_escape_time_cancellable(&pass_params, &cancel);
+                // Rendre cette passe (réutiliser la passe précédente si possible)
+                let reuse = previous_pass.as_ref().map(|(iter, zs, w, h)| {
+                    (iter.as_slice(), zs.as_slice(), *w, *h)
+                });
+                let result = render_escape_time_cancellable_with_reuse(&pass_params, &cancel, reuse);
 
                 match result {
                     Some((iterations, zs)) => {
+                        // Garder une copie pour la passe suivante afin d'éviter le recalcul
+                        if pass_index + 1 < config.passes.len() {
+                            previous_pass = Some((iterations.clone(), zs.clone(), pass_width, pass_height));
+                        } else {
+                            previous_pass = None;
+                        }
+
                         let _ = sender.send(RenderMessage::PassComplete {
                             pass_index: pass_index as u8,
                             scale_divisor,

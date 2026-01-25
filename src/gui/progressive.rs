@@ -32,8 +32,13 @@ pub struct ProgressiveConfig {
 }
 
 impl ProgressiveConfig {
-    /// Configuration standard: 3 passes (1/8, 1/2, pleine résolution).
+    /// Configuration standard: 4 passes (1/8, 1/4, 1/2, pleine résolution).
     pub fn standard() -> Self {
+        Self { passes: vec![8, 4, 2, 1] }
+    }
+
+    /// Configuration standard sans passe intermédiaire.
+    pub fn standard_basic() -> Self {
         Self { passes: vec![8, 2, 1] }
     }
 
@@ -44,6 +49,11 @@ impl ProgressiveConfig {
 
     /// Configuration pour petites images (<256px).
     pub fn fast() -> Self {
+        Self { passes: vec![4, 2, 1] }
+    }
+
+    /// Configuration rapide sans passe intermédiaire.
+    pub fn fast_basic() -> Self {
         Self { passes: vec![4, 1] }
     }
 
@@ -53,7 +63,18 @@ impl ProgressiveConfig {
     }
 
     /// Choisit la configuration appropriée selon les paramètres.
+    #[allow(dead_code)]
     pub fn for_params(width: u32, height: u32, use_gmp: bool) -> Self {
+        Self::for_params_with_intermediate(width, height, use_gmp, true)
+    }
+
+    /// Choisit la configuration en optionnant la passe intermédiaire.
+    pub fn for_params_with_intermediate(
+        width: u32,
+        height: u32,
+        use_gmp: bool,
+        allow_intermediate: bool,
+    ) -> Self {
         if width < 64 || height < 64 {
             // Image trop petite pour le progressif
             Self::single_pass()
@@ -62,10 +83,18 @@ impl ProgressiveConfig {
             Self::gmp_mode()
         } else if width < 256 || height < 256 {
             // Petite image
-            Self::fast()
+            if allow_intermediate {
+                Self::fast()
+            } else {
+                Self::fast_basic()
+            }
         } else {
             // Configuration standard
-            Self::standard()
+            if allow_intermediate {
+                Self::standard()
+            } else {
+                Self::standard_basic()
+            }
         }
     }
 }
@@ -141,7 +170,7 @@ mod tests {
     fn test_progressive_config_selection() {
         // Large image, no GMP -> standard
         let config = ProgressiveConfig::for_params(1024, 768, false);
-        assert_eq!(config.passes, vec![8, 2, 1]);
+        assert_eq!(config.passes, vec![8, 4, 2, 1]);
 
         // Large image, GMP -> gmp_mode
         let config = ProgressiveConfig::for_params(1024, 768, true);
@@ -149,7 +178,7 @@ mod tests {
 
         // Small image -> fast
         let config = ProgressiveConfig::for_params(200, 200, false);
-        assert_eq!(config.passes, vec![4, 1]);
+        assert_eq!(config.passes, vec![4, 2, 1]);
 
         // Very small image -> single pass
         let config = ProgressiveConfig::for_params(32, 32, false);
