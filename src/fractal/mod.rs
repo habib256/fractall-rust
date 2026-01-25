@@ -7,8 +7,8 @@ pub mod vectorial;
 pub mod buddhabrot;
 
 pub use types::{FractalParams, FractalResult, FractalType};
-pub use definitions::default_params_for_type;
-pub use lyapunov::render_lyapunov;
+pub use definitions::{default_params_for_type, apply_lyapunov_preset};
+pub use lyapunov::{render_lyapunov, LyapunovPreset, LyapunovConfig};
 pub use vectorial::{render_von_koch, render_dragon};
 pub use buddhabrot::{render_buddhabrot, render_nebulabrot};
 

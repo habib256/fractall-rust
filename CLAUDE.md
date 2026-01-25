@@ -34,10 +34,13 @@ src/
 ├── fractal/          # Core fractal computation
 │   ├── types.rs      # FractalType enum, FractalParams struct
 │   ├── definitions.rs# Default parameters per fractal type
-│   ├── iterations.rs # f64 iteration functions (19 fractal types)
-│   └── gmp.rs        # GMP/MPFR high-precision iterations
+│   ├── iterations.rs # f64 iteration functions (escape-time fractals)
+│   ├── gmp.rs        # GMP/MPFR high-precision iterations
+│   ├── lyapunov.rs   # Lyapunov exponent fractal (Zircon City)
+│   ├── vectorial.rs  # Von Koch and Dragon vectorial fractals
+│   └── buddhabrot.rs # Buddhabrot and Nebulabrot algorithms
 ├── render/
-│   └── escape_time.rs# Rendering dispatcher (f64 vs GMP path)
+│   └── escape_time.rs# Rendering dispatcher (f64 vs GMP vs special paths)
 ├── color/
 │   └── palettes.rs   # 9 color palettes with gradient interpolation
 ├── gui/
@@ -47,11 +50,18 @@ src/
     └── png.rs        # PNG export with parallel colorization
 ```
 
-### Dual Precision Paths
+### Rendering Paths
 
-The renderer has two paths selected by `params.use_gmp`:
+The renderer dispatches to different algorithms based on fractal type:
+
+**Special algorithms** (custom rendering, not escape-time):
+- `VonKoch`, `Dragon` → `vectorial.rs` (L-system based vector fractals)
+- `Buddhabrot`, `Nebulabrot` → `buddhabrot.rs` (orbit density visualization)
+- `Lyapunov` → `lyapunov.rs` (Lyapunov exponent calculation)
+
+**Escape-time fractals** (all other types):
 - **f64 path** (`iterations.rs`): Standard double precision, parallelized with Rayon
-- **GMP path** (`gmp.rs`): Arbitrary precision via `rug` crate, sequential execution
+- **GMP path** (`gmp.rs`): Arbitrary precision via `rug` crate, selected by `params.use_gmp`
 
 ### Data Flow
 
@@ -61,7 +71,7 @@ The renderer has two paths selected by `params.use_gmp`:
 
 ### Key Types
 
-- `FractalType`: Enum for 19 fractal types (Mandelbrot=3, Julia=4, etc.)
+- `FractalType`: Enum for 24 fractal types (VonKoch=1 through Nebulabrot=24)
 - `FractalParams`: Complete render configuration (dimensions, bounds, iterations, colors, GMP settings)
 - `FractalResult`: Iteration result with count and final z value
 
@@ -69,7 +79,7 @@ The renderer has two paths selected by `params.use_gmp`:
 
 | Argument | Description |
 |----------|-------------|
-| `--type N` | Fractal type (3-23) |
+| `--type N` | Fractal type (1-24) |
 | `--width`, `--height` | Output dimensions |
 | `--xmin/xmax/ymin/ymax` | Complex plane bounds |
 | `--center-x/y` | Re-center view |
@@ -82,10 +92,17 @@ The renderer has two paths selected by `params.use_gmp`:
 
 ## Fractal Types
 
-Types 1-2 are vector fractals (not implemented in Rust yet). Types 3-23 are escape-time or special:
+**Vectorial fractals** (L-system based):
+- 1: Von Koch, 2: Dragon
+
+**Escape-time fractals**:
 - 3: Mandelbrot, 4: Julia, 5: Julia Sin, 6: Newton, 7: Phoenix
 - 8: Buffalo, 9-10: Barnsley J/M, 11-12: Magnet J/M
 - 13: Burning Ship, 14: Tricorn, 15: Mandelbulb
-- 17: Lyapunov Zircon City (special algorithm, not escape-time)
 - 18: Perp. Burning Ship, 19: Celtic, 20: Alpha Mandelbrot
 - 21: Pickover Stalks, 22: Nova, 23: Multibrot
+
+**Special algorithms**:
+- 16: Buddhabrot (orbit density)
+- 17: Lyapunov Zircon City (Lyapunov exponent)
+- 24: Nebulabrot (color orbit density)

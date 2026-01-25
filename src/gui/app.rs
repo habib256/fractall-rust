@@ -7,7 +7,7 @@ use image::RgbImage;
 use num_complex::Complex64;
 
 use crate::color::{color_for_pixel, color_for_nebulabrot_pixel, color_for_buddhabrot_pixel};
-use crate::fractal::{default_params_for_type, FractalParams, FractalType};
+use crate::fractal::{default_params_for_type, apply_lyapunov_preset, FractalParams, FractalType, LyapunovPreset};
 use crate::render::render_escape_time;
 use crate::gui::texture::rgb_image_to_color_image;
 
@@ -25,6 +25,7 @@ pub struct FractallApp {
     selected_type: FractalType,
     palette_index: u8,
     color_repeat: u32,
+    selected_lyapunov_preset: LyapunovPreset,
     
     // Zoom/interaction (conservés pour usage futur)
     #[allow(dead_code)]
@@ -67,6 +68,7 @@ impl FractallApp {
             selected_type: default_type,
             palette_index: 6, // SmoothPlasma par défaut
             color_repeat: 40,
+            selected_lyapunov_preset: LyapunovPreset::default(),
             center_x: 0.0,
             center_y: 0.0,
             selecting: false,
@@ -366,6 +368,27 @@ impl FractallApp {
         self.start_render();
     }
     
+    /// Change le preset Lyapunov.
+    fn change_lyapunov_preset(&mut self, preset: LyapunovPreset) {
+        if self.selected_lyapunov_preset == preset && self.selected_type == FractalType::Lyapunov {
+            return;
+        }
+
+        self.selected_lyapunov_preset = preset;
+
+        // Si on n'est pas déjà sur Lyapunov, changer le type
+        if self.selected_type != FractalType::Lyapunov {
+            self.selected_type = FractalType::Lyapunov;
+            let width = self.params.width;
+            let height = self.params.height;
+            self.params = default_params_for_type(FractalType::Lyapunov, width, height);
+        }
+
+        // Appliquer le preset
+        apply_lyapunov_preset(&mut self.params, preset);
+        self.start_render();
+    }
+
     /// Change le type de fractale.
     fn change_fractal_type(&mut self, new_type: FractalType) {
         if new_type == self.selected_type {
@@ -491,8 +514,6 @@ impl eframe::App for FractallApp {
 
 
                     let density_types = [(16, "Buddhabrot"), (24, "Nebulabrot")];
-
-                    let lyapunov_types = [(17, "Lyapunov Zircon City")];
 
                     // Helper pour déterminer la catégorie actuelle
                     let current_category = match self.selected_type {
@@ -631,19 +652,19 @@ impl eframe::App for FractallApp {
                         }
                     });
 
-                    // Menu Lyapunov
+                    // Menu Lyapunov avec presets
                     let lyapunov_label = if current_category == "Lyapunov" {
-                        format!("▼ {}", self.selected_type.name())
+                        format!("▼ Lyapunov: {}", self.selected_lyapunov_preset.name())
                     } else {
                         "Lyapunov".to_string()
                     };
                     ui.menu_button(&lyapunov_label, |ui| {
-                        for (id, label) in lyapunov_types.iter() {
-                            if let Some(fractal_type) = FractalType::from_id(*id) {
-                                if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
-                                    self.change_fractal_type(fractal_type);
-                                    ui.close_menu();
-                                }
+                        for preset in LyapunovPreset::all() {
+                            let is_selected = self.selected_type == FractalType::Lyapunov
+                                && self.selected_lyapunov_preset == *preset;
+                            if ui.selectable_label(is_selected, preset.name()).clicked() {
+                                self.change_lyapunov_preset(*preset);
+                                ui.close_menu();
                             }
                         }
                     });

@@ -132,6 +132,8 @@ impl FractalType {
     }
 }
 
+use crate::fractal::lyapunov::LyapunovPreset;
+
 /// Paramètres d'une fractale pour le rendu escape-time.
 ///
 /// Cette structure est une version simplifiée de `struct fractal` en C,
@@ -161,6 +163,11 @@ pub struct FractalParams {
     pub use_gmp: bool,
     /// Précision GMP en bits (ex. 128, 256, 512).
     pub precision_bits: u32,
+
+    /// Preset Lyapunov sélectionné.
+    pub lyapunov_preset: LyapunovPreset,
+    /// Séquence Lyapunov (true=A, false=B). Si vide, utilise la séquence par défaut.
+    pub lyapunov_sequence: Vec<bool>,
 }
 
 /// Résultat du calcul d'un point de fractale.

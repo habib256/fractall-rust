@@ -7,7 +7,7 @@ mod color;
 mod render;
 mod io;
 
-use fractal::{default_params_for_type, FractalType};
+use fractal::{default_params_for_type, apply_lyapunov_preset, FractalType, LyapunovPreset};
 use render::render_escape_time;
 use io::png::save_png;
 
@@ -79,6 +79,10 @@ struct Cli {
     #[arg(long, default_value_t = 256)]
     precision_bits: u32,
 
+    /// Preset Lyapunov (standard, zircon-city, jellyfish, asymmetric, spaceship, heavy-blocks)
+    #[arg(long)]
+    lyapunov_preset: Option<String>,
+
     /// Fichier de sortie PNG
     #[arg(long, value_name = "FICHIER")]
     output: PathBuf,
@@ -147,6 +151,24 @@ fn main() {
     // GMP haute précision.
     params.use_gmp = cli.gmp;
     params.precision_bits = cli.precision_bits.max(64);
+
+    // Preset Lyapunov (si applicable).
+    if fractal_type == FractalType::Lyapunov {
+        if let Some(preset_name) = &cli.lyapunov_preset {
+            match LyapunovPreset::from_cli_name(preset_name) {
+                Some(preset) => {
+                    apply_lyapunov_preset(&mut params, preset);
+                }
+                None => {
+                    eprintln!(
+                        "Preset Lyapunov invalide: '{}'. Options: standard, zircon-city, jellyfish, asymmetric, spaceship, heavy-blocks",
+                        preset_name
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
 
     // Calcul escape-time.
     let (iterations, zs) = render_escape_time(&params);

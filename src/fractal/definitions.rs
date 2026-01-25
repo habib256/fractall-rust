@@ -1,6 +1,7 @@
 use num_complex::Complex64;
 
 use crate::fractal::{FractalParams, FractalType};
+use crate::fractal::lyapunov::{LyapunovConfig, LyapunovPreset};
 
 /// Construit des paramètres avec les valeurs par défaut du type,
 /// en reprenant la logique de `fractal_definitions.c`.
@@ -21,6 +22,8 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         color_repeat: 40,
         use_gmp: false,
         precision_bits: 256,
+        lyapunov_preset: LyapunovPreset::default(),
+        lyapunov_sequence: Vec::new(),
     };
 
     match fractal_type {
@@ -182,12 +185,8 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.iteration_max = 220;
         }
         FractalType::Lyapunov => {
-            // Lyapunov_def - Zircon City
-            // Domaine: a ∈ [2.5, 3.4], b ∈ [3.4, 4.0]
-            params.xmin = 2.5;
-            params.xmax = 3.4;
-            params.ymin = 3.4;
-            params.ymax = 4.0;
+            // Lyapunov_def - Zircon City par défaut
+            apply_lyapunov_preset(&mut params, LyapunovPreset::ZirconCity);
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
             params.iteration_max = 2000;
@@ -265,5 +264,17 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
     }
 
     params
+}
+
+/// Applique un preset Lyapunov aux paramètres.
+/// Met à jour les bornes du domaine et la séquence.
+pub fn apply_lyapunov_preset(params: &mut FractalParams, preset: LyapunovPreset) {
+    let config = LyapunovConfig::from_preset(preset);
+    params.lyapunov_preset = preset;
+    params.lyapunov_sequence = config.sequence;
+    params.xmin = config.xmin;
+    params.xmax = config.xmax;
+    params.ymin = config.ymin;
+    params.ymax = config.ymax;
 }
 
