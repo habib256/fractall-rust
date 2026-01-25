@@ -140,6 +140,10 @@ pub fn render_perturbation_with_cache(
     let y_range = params.ymax - params.ymin;
     let x_step = x_range / params.width as f64;
     let y_step = y_range / params.height as f64;
+    let x_half = x_range * 0.5;
+    let y_half = y_range * 0.5;
+    let center_x = (params.xmin + params.xmax) * 0.5;
+    let center_y = (params.ymin + params.ymax) * 0.5;
 
     let cancelled = AtomicBool::new(false);
     let reuse = build_reuse(params, reuse);
@@ -161,7 +165,7 @@ pub fn render_perturbation_with_cache(
                 return;
             }
 
-            let yg = y_step * j as f64 + params.ymin;
+            let dy = y_step * j as f64 - y_half;
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
                 if let Some(reuse) = reuse_row {
                     let ratio = reuse.ratio as usize;
@@ -176,9 +180,8 @@ pub fn render_perturbation_with_cache(
                         }
                     }
                 }
-                let xg = x_step * i as f64 + params.xmin;
-                let z_pixel = Complex64::new(xg, yg);
-                let dc = ComplexExp::from_complex64(z_pixel - cache_ref.orbit.cref);
+                let dx = x_step * i as f64 - x_half;
+                let dc = ComplexExp::from_complex64(Complex64::new(dx, dy));
                 let (delta0, dc_term) = if params.fractal_type == FractalType::Julia {
                     (dc, ComplexExp::zero())
                 } else {
@@ -187,6 +190,8 @@ pub fn render_perturbation_with_cache(
 
                 let result = iterate_pixel(params, &cache_ref.orbit, &cache_ref.bla_table, delta0, dc_term);
                 if result.glitched {
+                    let xg = center_x + dx;
+                    let yg = center_y + dy;
                     let z_pixel_mpc = complex_from_xy(
                         prec,
                         Float::with_val(prec, xg),
