@@ -10,6 +10,7 @@ use wgpu::util::DeviceExt;
 
 use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
+use crate::fractal::perturbation::compute_perturbation_precision_bits;
 use crate::fractal::perturbation::orbit::{compute_reference_orbit_cached, ReferenceOrbitCache};
 
 const WORKGROUP_SIZE: u32 = 16;
@@ -361,8 +362,11 @@ impl GpuRenderer {
             return None;
         }
 
+        let mut orbit_params = params.clone();
+        orbit_params.precision_bits = compute_perturbation_precision_bits(params);
+
         // Use cached orbit/BLA or compute fresh
-        let cache = compute_reference_orbit_cached(params, Some(cancel), orbit_cache)?;
+        let cache = compute_reference_orbit_cached(&orbit_params, Some(cancel), orbit_cache)?;
         let ref_orbit = &cache.orbit;
         let bla_table = &cache.bla_table;
         let supports_bla = matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia);
@@ -617,7 +621,7 @@ impl GpuRenderer {
 
         // Parallel glitch correction using Rayon
         if !glitched_indices.is_empty() {
-            let gmp_params = MpcParams::from_params(params);
+            let gmp_params = MpcParams::from_params(&orbit_params);
             let prec = gmp_params.prec;
             let x_range = params.xmax - params.xmin;
             let y_range = params.ymax - params.ymin;

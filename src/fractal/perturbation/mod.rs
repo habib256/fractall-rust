@@ -53,7 +53,7 @@ fn build_reuse<'a>(
     })
 }
 
-fn compute_perturbation_precision_bits(params: &FractalParams) -> u32 {
+pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32 {
     if params.width == 0 || params.height == 0 {
         return params.precision_bits.max(64);
     }
