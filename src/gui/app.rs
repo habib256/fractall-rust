@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use egui::{Context, TextureHandle, TextureOptions};
 use image::RgbImage;
 use num_complex::Complex64;
+use rug::Float;
 
 use crate::color::{color_for_pixel, color_for_nebulabrot_pixel, color_for_buddhabrot_pixel};
 use crate::fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalParams, FractalType, LyapunovPreset};
@@ -14,6 +15,9 @@ use crate::render::render_escape_time_cancellable_with_reuse;
 use crate::gui::texture::rgb_image_to_color_image;
 use crate::gui::progressive::{ProgressiveConfig, RenderMessage, upscale_nearest};
 use crate::gpu::GpuRenderer;
+
+/// Précision par défaut pour les calculs de coordonnées haute précision (en bits).
+const HP_PRECISION: u32 = 256;
 
 /// Application principale egui pour fractall.
 pub struct FractallApp {
@@ -34,11 +38,12 @@ pub struct FractallApp {
     gpu_renderer: Option<Arc<GpuRenderer>>,
     use_gpu: bool,
     
-    // Zoom/interaction (conservés pour usage futur)
-    #[allow(dead_code)]
-    center_x: f64,
-    #[allow(dead_code)]
-    center_y: f64,
+    // Coordonnées haute précision (représentation décimale exacte)
+    // Permettent des zooms au-delà de la limite f64 (~1e-15)
+    center_x_hp: String,
+    center_y_hp: String,
+    span_x_hp: String,
+    span_y_hp: String,
     
     // Sélection rectangulaire pour zoom
     selecting: bool,
