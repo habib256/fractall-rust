@@ -89,9 +89,7 @@ pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32
     if params.width == 0 || params.height == 0 {
         return params.precision_bits.max(128);
     }
-    let span_x = (params.xmax - params.xmin).abs();
-    let span_y = (params.ymax - params.ymin).abs();
-    let pixel_size = span_x.max(span_y) / params.width as f64;
+    let pixel_size = params.span_x.abs().max(params.span_y.abs()) / params.width as f64;
     if !pixel_size.is_finite() || pixel_size <= 0.0 {
         return params.precision_bits.max(128);
     }
@@ -169,12 +167,13 @@ pub fn render_perturbation_with_cache(
         return Some(((iterations, zs), cache));
     }
 
-    let x_range = params.xmax - params.xmin;
-    let y_range = params.ymax - params.ymin;
-    let x_step = x_range / params.width as f64;
-    let y_step = y_range / params.height as f64;
-    let x_half = x_range * 0.5;
-    let y_half = y_range * 0.5;
+    // Compute dc directly as offset from center to avoid precision loss.
+    // Formula: dc = (pixel_index/dimension - 0.5) * range
+    // This avoids subtracting large close values (xmin vs center_x).
+    let x_range = params.span_x;
+    let y_range = params.span_y;
+    let inv_width = 1.0 / params.width as f64;
+    let inv_height = 1.0 / params.height as f64;
 
     let cancelled = AtomicBool::new(false);
     let reuse = build_reuse(params, reuse);
@@ -196,7 +195,10 @@ pub fn render_perturbation_with_cache(
                 return;
             }
 
-            let dy = y_step * j as f64 - y_half;
+            // dc_im = (j/height - 0.5) * y_range
+            // This computes the offset from center directly without subtracting large values.
+            let dc_im = (j as f64 * inv_height - 0.5) * y_range;
+
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
                 if let Some(reuse) = reuse_row {
                     let ratio = reuse.ratio as usize;
@@ -211,8 +213,12 @@ pub fn render_perturbation_with_cache(
                         }
                     }
                 }
-                let dx = x_step * i as f64 - x_half;
-                let dc = ComplexExp::from_complex64(Complex64::new(dx, dy));
+
+                // dc_re = (i/width - 0.5) * x_range
+                // This computes the offset from center directly without subtracting large values.
+                let dc_re = (i as f64 * inv_width - 0.5) * x_range;
+
+                let dc = ComplexExp::from_complex64(Complex64::new(dc_re, dc_im));
                 let (delta0, dc_term) = if params.fractal_type == FractalType::Julia {
                     (dc, ComplexExp::zero())
                 } else {
@@ -262,18 +268,66 @@ pub fn render_perturbation_with_cache(
             .enumerate()
             .filter_map(|(idx, flagged)| if *flagged { Some(idx) } else { None })
             .collect();
-        if !glitched_indices.is_empty() {
+        
+        // Fallback complet vers GMP si trop de glitches (>10% des pixels)
+        // Cela indique que la perturbation n'est pas adaptée au niveau de zoom
+        let total_pixels = width * height;
+        let glitch_ratio = glitched_indices.len() as f64 / total_pixels as f64;
+        const GLITCH_FALLBACK_THRESHOLD: f64 = 0.10; // 10%
+        
+        if glitch_ratio > GLITCH_FALLBACK_THRESHOLD {
+            // Trop de glitches: recalculer tous les pixels en GMP
             let gmp_params = MpcParams::from_params(&orbit_params);
             let prec = gmp_params.prec;
-            let width_u32 = params.width;
-            let x_range = params.xmax - params.xmin;
-            let y_range = params.ymax - params.ymin;
+            let x_range = params.span_x;
+            let y_range = params.span_y;
             let x_step = x_range / params.width as f64;
             let y_step = y_range / params.height as f64;
             let x_half = x_range * 0.5;
             let y_half = y_range * 0.5;
-            let center_x = (params.xmin + params.xmax) * 0.5;
-            let center_y = (params.ymin + params.ymax) * 0.5;
+            let center_x = params.center_x;
+            let center_y = params.center_y;
+            let width_u32 = params.width;
+
+            let all_corrections: Vec<_> = (0..total_pixels)
+                .into_par_iter()
+                .map(|idx| {
+                    let x = (idx as u32 % width_u32) as f64;
+                    let y = (idx as u32 / width_u32) as f64;
+                    let dx = x_step * x - x_half;
+                    let dy = y_step * y - y_half;
+                    let xg = center_x + dx;
+                    let yg = center_y + dy;
+                    let z_pixel = complex_from_xy(
+                        prec,
+                        Float::with_val(prec, xg),
+                        Float::with_val(prec, yg),
+                    );
+                    let (iter_val, z_final) = iterate_point_mpc(&gmp_params, &z_pixel);
+                    (idx, iter_val, complex_to_complex64(&z_final))
+                })
+                .collect();
+
+            for (idx, iter_val, z_final) in all_corrections {
+                iterations[idx] = iter_val;
+                zs[idx] = z_final;
+            }
+
+            return Some(((iterations, zs), cache));
+        }
+        
+        if !glitched_indices.is_empty() {
+            let gmp_params = MpcParams::from_params(&orbit_params);
+            let prec = gmp_params.prec;
+            let width_u32 = params.width;
+            let x_range = params.span_x;
+            let y_range = params.span_y;
+            let x_step = x_range / params.width as f64;
+            let y_step = y_range / params.height as f64;
+            let x_half = x_range * 0.5;
+            let y_half = y_range * 0.5;
+            let center_x = params.center_x;
+            let center_y = params.center_y;
 
             let corrections: Vec<_> = glitched_indices
                 .par_iter()
@@ -314,13 +368,14 @@ mod tests {
     use std::sync::Arc;
 
     fn base_params(fractal_type: FractalType) -> FractalParams {
+        // center=(0,0), span=(4,3) -> xmin=-2, xmax=2, ymin=-1.5, ymax=1.5
         FractalParams {
             width: 5,
             height: 5,
-            xmin: -2.0,
-            xmax: 2.0,
-            ymin: -1.5,
-            ymax: 1.5,
+            center_x: 0.0,
+            center_y: 0.0,
+            span_x: 4.0,
+            span_y: 3.0,
             seed: Complex64::new(0.0, 0.0),
             iteration_max: 64,
             bailout: 4.0,
@@ -347,12 +402,15 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(false));
         let (iters, _) =
             render_perturbation_cancellable_with_reuse(params, &cancel, None).unwrap();
-        let x_step = (params.xmax - params.xmin) / params.width as f64;
-        let y_step = (params.ymax - params.ymin) / params.height as f64;
+        let x_step = params.span_x / params.width as f64;
+        let y_step = params.span_y / params.height as f64;
         for &(x, y) in indices {
             let idx = (y * params.width + x) as usize;
-            let xg = x_step * x as f64 + params.xmin;
-            let yg = y_step * y as f64 + params.ymin;
+            // Utiliser center+span directement pour éviter les problèmes de précision
+            let x_ratio = x as f64 / params.width as f64;
+            let y_ratio = y as f64 / params.height as f64;
+            let xg = params.center_x + (x_ratio - 0.5) * params.span_x;
+            let yg = params.center_y + (y_ratio - 0.5) * params.span_y;
             let z_pixel = Complex64::new(xg, yg);
             let ref_iter = iterate_point(params, z_pixel).iteration;
             let got = iters[idx];
@@ -364,8 +422,9 @@ mod tests {
     #[test]
     fn perturbation_matches_f64_mandelbrot() {
         let mut params = base_params(FractalType::Mandelbrot);
-        params.xmin = -2.5;
-        params.xmax = 1.5;
+        // xmin=-2.5, xmax=1.5 -> center=-0.5, span=4.0
+        params.center_x = -0.5;
+        params.span_x = 4.0;
         assert_close_iterations(&params, &[(0, 0), (2, 2), (4, 4)]);
     }
 
@@ -379,10 +438,11 @@ mod tests {
     #[test]
     fn perturbation_matches_f64_burning_ship() {
         let mut params = base_params(FractalType::BurningShip);
-        params.xmin = -2.5;
-        params.xmax = 1.5;
-        params.ymin = -2.0;
-        params.ymax = 2.0;
+        // xmin=-2.5, xmax=1.5, ymin=-2.0, ymax=2.0 -> center=(-0.5, 0), span=(4, 4)
+        params.center_x = -0.5;
+        params.center_y = 0.0;
+        params.span_x = 4.0;
+        params.span_y = 4.0;
         assert_close_iterations(&params, &[(0, 4), (2, 2), (4, 0)]);
     }
 

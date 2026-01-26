@@ -362,8 +362,7 @@ pub fn render_lyapunov(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
         return (iterations, zs);
     }
 
-    let x_step = (params.xmax - params.xmin) / params.width as f64;
-    let y_step = (params.ymax - params.ymin) / params.height as f64;
+    // Utiliser span directement au lieu de xmax-xmin pour éviter les problèmes de précision
     let iter_max = params.iteration_max;
 
     // Utiliser la séquence personnalisée ou la séquence par défaut Zircon City
@@ -375,10 +374,13 @@ pub fn render_lyapunov(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
         .zip(zs.par_chunks_mut(width))
         .enumerate()
         .for_each(|(j, (iter_row, z_row))| {
-            let b = params.ymin + j as f64 * y_step;
+            // Utiliser center+span directement
+            let y_ratio = j as f64 / params.height as f64;
+            let b = params.center_y + (y_ratio - 0.5) * params.span_y;
 
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
-                let a = params.xmin + i as f64 * x_step;
+                let x_ratio = i as f64 / params.width as f64;
+                let a = params.center_x + (x_ratio - 0.5) * params.span_x;
 
                 let lyap = compute_lyapunov_exponent(a, b, iter_max, &sequence);
                 let norm = normalize_lyapunov(lyap);
@@ -404,21 +406,15 @@ pub fn render_lyapunov_mpc(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>)
     }
 
     let prec = params.precision_bits.max(64);
-    let xmin = Float::with_val(prec, params.xmin);
-    let xmax = Float::with_val(prec, params.xmax);
-    let ymin = Float::with_val(prec, params.ymin);
-    let ymax = Float::with_val(prec, params.ymax);
+    // Utiliser center+span directement pour éviter les problèmes de précision
+    let center_x = Float::with_val(prec, params.center_x);
+    let center_y = Float::with_val(prec, params.center_y);
+    let span_x = Float::with_val(prec, params.span_x);
+    let span_y = Float::with_val(prec, params.span_y);
 
-    let mut x_range = xmax.clone();
-    x_range -= &xmin;
-    let mut y_range = ymax.clone();
-    y_range -= &ymin;
     let width_f = Float::with_val(prec, params.width);
     let height_f = Float::with_val(prec, params.height);
-    let mut x_step = x_range;
-    x_step /= &width_f;
-    let mut y_step = y_range;
-    y_step /= &height_f;
+    let half = Float::with_val(prec, 0.5);
     let iter_max = params.iteration_max;
     let sequence: Vec<bool> = params.lyapunov_sequence.clone();
 
@@ -427,13 +423,21 @@ pub fn render_lyapunov_mpc(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>)
         .zip(zs.par_chunks_mut(width))
         .enumerate()
         .for_each(|(j, (iter_row, z_row))| {
-            let mut b = y_step.clone();
-            b *= j as u32;
-            b += &ymin;
+            let j_f = Float::with_val(prec, j as u32);
+            let mut y_ratio = j_f.clone();
+            y_ratio /= &height_f;
+            y_ratio -= &half;
+            let mut b = span_y.clone();
+            b *= &y_ratio;
+            b += &center_y;
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
-                let mut a = x_step.clone();
-                a *= i as u32;
-                a += &xmin;
+                let i_f = Float::with_val(prec, i as u32);
+                let mut x_ratio = i_f;
+                x_ratio /= &width_f;
+                x_ratio -= &half;
+                let mut a = span_x.clone();
+                a *= &x_ratio;
+                a += &center_x;
 
                 let lyap = compute_lyapunov_exponent_mpc(&a, &b, iter_max, &sequence, prec);
                 let norm = normalize_lyapunov(lyap.to_f64());
@@ -460,8 +464,7 @@ pub fn render_lyapunov_cancellable(
         return Some((iterations, zs));
     }
 
-    let x_step = (params.xmax - params.xmin) / params.width as f64;
-    let y_step = (params.ymax - params.ymin) / params.height as f64;
+    // Utiliser span directement au lieu de xmax-xmin pour éviter les problèmes de précision
     let iter_max = params.iteration_max;
     let sequence: Vec<bool> = params.lyapunov_sequence.clone();
 
@@ -483,10 +486,13 @@ pub fn render_lyapunov_cancellable(
                 return;
             }
 
-            let b = params.ymin + j as f64 * y_step;
+            // Utiliser center+span directement
+            let y_ratio = j as f64 / params.height as f64;
+            let b = params.center_y + (y_ratio - 0.5) * params.span_y;
 
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
-                let a = params.xmin + i as f64 * x_step;
+                let x_ratio = i as f64 / params.width as f64;
+                let a = params.center_x + (x_ratio - 0.5) * params.span_x;
 
                 let lyap = compute_lyapunov_exponent(a, b, iter_max, &sequence);
                 let norm = normalize_lyapunov(lyap);
@@ -518,21 +524,15 @@ pub fn render_lyapunov_mpc_cancellable(
     }
 
     let prec = params.precision_bits.max(64);
-    let xmin = Float::with_val(prec, params.xmin);
-    let xmax = Float::with_val(prec, params.xmax);
-    let ymin = Float::with_val(prec, params.ymin);
-    let ymax = Float::with_val(prec, params.ymax);
+    // Utiliser center+span directement pour éviter les problèmes de précision
+    let center_x = Float::with_val(prec, params.center_x);
+    let center_y = Float::with_val(prec, params.center_y);
+    let span_x = Float::with_val(prec, params.span_x);
+    let span_y = Float::with_val(prec, params.span_y);
 
-    let mut x_range = xmax.clone();
-    x_range -= &xmin;
-    let mut y_range = ymax.clone();
-    y_range -= &ymin;
     let width_f = Float::with_val(prec, params.width);
     let height_f = Float::with_val(prec, params.height);
-    let mut x_step = x_range;
-    x_step /= &width_f;
-    let mut y_step = y_range;
-    y_step /= &height_f;
+    let half = Float::with_val(prec, 0.5);
 
     let iter_max = params.iteration_max;
     let sequence: Vec<bool> = params.lyapunov_sequence.clone();
@@ -553,14 +553,22 @@ pub fn render_lyapunov_mpc_cancellable(
                 return;
             }
 
-            let mut b = y_step.clone();
-            b *= j as u32;
-            b += &ymin;
+            let j_f = Float::with_val(prec, j as u32);
+            let mut y_ratio = j_f.clone();
+            y_ratio /= &height_f;
+            y_ratio -= &half;
+            let mut b = span_y.clone();
+            b *= &y_ratio;
+            b += &center_y;
 
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
-                let mut a = x_step.clone();
-                a *= i as u32;
-                a += &xmin;
+                let i_f = Float::with_val(prec, i as u32);
+                let mut x_ratio = i_f;
+                x_ratio /= &width_f;
+                x_ratio -= &half;
+                let mut a = span_x.clone();
+                a *= &x_ratio;
+                a += &center_x;
 
                 let lyap = compute_lyapunov_exponent_mpc(&a, &b, iter_max, &sequence, prec);
                 let norm = normalize_lyapunov(lyap.to_f64());

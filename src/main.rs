@@ -126,35 +126,32 @@ fn main() {
     // Paramètres par défaut pour ce type.
     let mut params = default_params_for_type(fractal_type, cli.width, cli.height);
 
-    // Override des coordonnées si demandé.
-    if let Some(xmin) = cli.xmin {
-        params.xmin = xmin;
-    }
-    if let Some(xmax) = cli.xmax {
-        params.xmax = xmax;
-    }
-    if let Some(ymin) = cli.ymin {
-        params.ymin = ymin;
-    }
-    if let Some(ymax) = cli.ymax {
-        params.ymax = ymax;
+    // Override des coordonnées si demandé (bornes xmin/xmax/ymin/ymax).
+    // Les bornes CLI sont converties en centre + span.
+    // Utiliser center+span comme source de vérité au lieu de xmin/xmax/ymin/ymax
+    let has_bounds = cli.xmin.is_some() || cli.xmax.is_some() || cli.ymin.is_some() || cli.ymax.is_some();
+    if has_bounds {
+        // Calculer les bornes depuis center+span pour les valeurs par défaut
+        let default_xmin = params.center_x - params.span_x * 0.5;
+        let default_xmax = params.center_x + params.span_x * 0.5;
+        let default_ymin = params.center_y - params.span_y * 0.5;
+        let default_ymax = params.center_y + params.span_y * 0.5;
+        
+        let xmin = cli.xmin.unwrap_or(default_xmin);
+        let xmax = cli.xmax.unwrap_or(default_xmax);
+        let ymin = cli.ymin.unwrap_or(default_ymin);
+        let ymax = cli.ymax.unwrap_or(default_ymax);
+        params.set_bounds(xmin, xmax, ymin, ymax);
     }
 
-    // Recentrage éventuel.
+    // Recentrage éventuel (prioritaire sur les bornes).
     if cli.center_x.is_some() || cli.center_y.is_some() {
-        let span_x = params.xmax - params.xmin;
-        let span_y = params.ymax - params.ymin;
-        let cx = cli
-            .center_x
-            .unwrap_or((params.xmin + params.xmax) / 2.0);
-        let cy = cli
-            .center_y
-            .unwrap_or((params.ymin + params.ymax) / 2.0);
-
-        params.xmin = cx - span_x / 2.0;
-        params.xmax = cx + span_x / 2.0;
-        params.ymin = cy - span_y / 2.0;
-        params.ymax = cy + span_y / 2.0;
+        if let Some(cx) = cli.center_x {
+            params.center_x = cx;
+        }
+        if let Some(cy) = cli.center_y {
+            params.center_y = cy;
+        }
     }
 
     // Override des itérations si fourni.

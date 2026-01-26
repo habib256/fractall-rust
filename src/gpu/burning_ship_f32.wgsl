@@ -1,8 +1,8 @@
 struct Params {
-    xmin: f32,
-    xmax: f32,
-    ymin: f32,
-    ymax: f32,
+    center_x: f32,
+    center_y: f32,
+    span_x: f32,
+    span_y: f32,
     width: u32,
     height: u32,
     iter_max: u32,
@@ -30,8 +30,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.y * params.width + gid.x;
     let fx = f32(gid.x) / f32(params.width);
     let fy = f32(gid.y) / f32(params.height);
-    let x = params.xmin + (params.xmax - params.xmin) * fx;
-    let y = params.ymin + (params.ymax - params.ymin) * fy;
+    // Compute offset from center directly to avoid precision loss
+    let x = params.center_x + (fx - 0.5) * params.span_x;
+    let y = params.center_y + (fy - 0.5) * params.span_y;
 
     var z_re = 0.0;
     var z_im = 0.0;

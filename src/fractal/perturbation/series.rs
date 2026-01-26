@@ -35,7 +35,7 @@ pub fn should_use_series(config: SeriesConfig, delta_norm_sqr: f64, validity_rad
 ///
 /// # Arguments
 /// * `delta_norm_sqr` - |δ|² of the current delta
-/// * `order` - Series order (2 or 3)
+/// * `order` - Series order (2, 3, 4, 5, or 6)
 /// * `bla_level` - BLA level (0-16), higher levels skip more iterations
 /// * `coeff_a_norm` - |A| coefficient norm from BLA node
 ///
@@ -55,10 +55,14 @@ pub fn estimate_series_error(
     let delta_abs = delta_norm_sqr.sqrt();
 
     // Base error according to series order
+    // L'erreur est O(δ^(order+1))
     let base_error = match order {
-        2 => delta_abs * delta_norm_sqr,      // O(δ³)
-        3 => delta_norm_sqr * delta_norm_sqr, // O(δ⁴)
-        _ => delta_abs * delta_norm_sqr,
+        2 => delta_abs * delta_norm_sqr,                        // O(δ³)
+        3 => delta_norm_sqr * delta_norm_sqr,                   // O(δ⁴)
+        4 => delta_norm_sqr * delta_norm_sqr * delta_abs,       // O(δ⁵)
+        5 => delta_norm_sqr * delta_norm_sqr * delta_norm_sqr,  // O(δ⁶)
+        6 => delta_norm_sqr * delta_norm_sqr * delta_norm_sqr * delta_abs, // O(δ⁷)
+        _ => delta_abs * delta_norm_sqr,  // Fallback to order 2
     };
 
     // Amplification factor based on BLA level

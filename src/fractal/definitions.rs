@@ -10,10 +10,10 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
     let mut params = FractalParams {
         width,
         height,
-        xmin: 0.0,
-        xmax: 0.0,
-        ymin: 0.0,
-        ymax: 0.0,
+        center_x: 0.0,
+        center_y: 0.0,
+        span_x: 0.0,
+        span_y: 0.0,
         seed: Complex64::new(0.0, 0.0),
         iteration_max: 2500,
         bailout: 4.0,
@@ -38,157 +38,157 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
     match fractal_type {
         FractalType::VonKoch => {
             // Von Koch - flocon de neige (vectoriel)
-            params.xmin = 0.0;
-            params.xmax = 1.0;
-            params.ymin = 0.0;
-            params.ymax = 1.0;
+            params.center_x = 0.5;
+            params.center_y = 0.5;
+            params.span_x = 1.0;
+            params.span_y = 1.0;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
             params.iteration_max = 8; // Profondeur de récursion max
         }
         FractalType::Dragon => {
             // Courbe du dragon (vectoriel)
-            params.xmin = 0.0;
-            params.xmax = 1.0;
-            params.ymin = 0.0;
-            params.ymax = 1.0;
+            params.center_x = 0.5;
+            params.center_y = 0.5;
+            params.span_x = 1.0;
+            params.span_y = 1.0;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
             params.iteration_max = 20; // Profondeur de récursion max
         }
         FractalType::Mandelbrot => {
-            // Mendelbrot_def
-            params.xmin = -2.5;
-            params.xmax = 1.5;
-            params.ymin = -1.5;
-            params.ymax = 1.5;
+            // Mendelbrot_def: xmin=-2.5, xmax=1.5, ymin=-1.5, ymax=1.5
+            params.center_x = -0.5;
+            params.center_y = 0.0;
+            params.span_x = 4.0;
+            params.span_y = 3.0;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
             params.iteration_max = 2500;
         }
         FractalType::Julia => {
-            // Julia_def
-            params.xmin = -2.0;
-            params.xmax = 2.0;
-            params.ymin = -1.5;
-            params.ymax = 1.5;
+            // Julia_def: xmin=-2.0, xmax=2.0, ymin=-1.5, ymax=1.5
+            params.center_x = 0.0;
+            params.center_y = 0.0;
+            params.span_x = 4.0;
+            params.span_y = 3.0;
             params.seed = Complex64::new(0.36228, -0.0777);
             params.bailout = 4.0;
             params.iteration_max = 2500;
         }
         FractalType::JuliaSin => {
-            // JuliaSin_def
-            params.xmin = -std::f64::consts::PI;
-            params.xmax = std::f64::consts::PI;
-            params.ymin = -2.0;
-            params.ymax = 2.0;
+            // JuliaSin_def: xmin=-PI, xmax=PI, ymin=-2.0, ymax=2.0
+            params.center_x = 0.0;
+            params.center_y = 0.0;
+            params.span_x = 2.0 * std::f64::consts::PI;
+            params.span_y = 4.0;
             params.seed = Complex64::new(1.0, 0.1);
             params.bailout = 4.0;
             params.iteration_max = 2500;
         }
         FractalType::Newton => {
-            // Newton_def
+            // Newton_def: xmin=-3.0, xmax=3.0, ymin=-2.0, ymax=2.0
             params.seed = Complex64::new(8.0, 0.0);
-            params.xmin = -3.0;
-            params.xmax = 3.0;
-            params.ymin = -2.0;
-            params.ymax = 2.0;
+            params.center_x = 0.0;
+            params.center_y = 0.0;
+            params.span_x = 6.0;
+            params.span_y = 4.0;
             params.bailout = 4.0;
             params.iteration_max = 1000;
         }
         FractalType::Phoenix => {
-            // Phoenix_def
-            params.xmin = -2.0;
-            params.xmax = 2.0;
-            params.ymin = -1.5;
-            params.ymax = 1.5;
+            // Phoenix_def: xmin=-2.0, xmax=2.0, ymin=-1.5, ymax=1.5
+            params.center_x = 0.0;
+            params.center_y = 0.0;
+            params.span_x = 4.0;
+            params.span_y = 3.0;
             params.bailout = 4.0;
             params.iteration_max = 2500;
         }
         FractalType::BarnsleyJulia => {
-            // Barnsley1j_def
-            params.xmin = -4.0;
-            params.xmax = 4.0;
-            params.ymin = -3.0;
-            params.ymax = 3.0;
+            // Barnsley1j_def: xmin=-4.0, xmax=4.0, ymin=-3.0, ymax=3.0
+            params.center_x = 0.0;
+            params.center_y = 0.0;
+            params.span_x = 8.0;
+            params.span_y = 6.0;
             params.seed = Complex64::new(1.1, 0.6);
             params.bailout = 4.0;
             params.iteration_max = 2500;
         }
         FractalType::BarnsleyMandelbrot => {
-            // Barnsley1m_def
-            params.xmin = -3.0;
-            params.xmax = 3.0;
-            params.ymin = -2.0;
-            params.ymax = 2.0;
+            // Barnsley1m_def: xmin=-3.0, xmax=3.0, ymin=-2.0, ymax=2.0
+            params.center_x = 0.0;
+            params.center_y = 0.0;
+            params.span_x = 6.0;
+            params.span_y = 4.0;
             params.bailout = 4.0;
             params.iteration_max = 2500;
         }
         FractalType::MagnetJulia => {
-            // Magnet1j_def
+            // Magnet1j_def: xmin=-2.0, xmax=2.0, ymin=-2.0, ymax=2.0
             params.seed = Complex64::new(1.625458, -0.306159);
-            params.xmin = -2.0;
-            params.xmax = 2.0;
-            params.ymin = -2.0;
-            params.ymax = 2.0;
+            params.center_x = 0.0;
+            params.center_y = 0.0;
+            params.span_x = 4.0;
+            params.span_y = 4.0;
             params.bailout = 4.0;
             params.iteration_max = 2500;
         }
         FractalType::MagnetMandelbrot => {
-            // Magnet1m_def
-            params.xmin = -3.0;
-            params.xmax = 2.0;
-            params.ymin = -2.0;
-            params.ymax = 2.0;
+            // Magnet1m_def: xmin=-3.0, xmax=2.0, ymin=-2.0, ymax=2.0
+            params.center_x = -0.5;
+            params.center_y = 0.0;
+            params.span_x = 5.0;
+            params.span_y = 4.0;
             params.bailout = 4.0;
             params.iteration_max = 2500;
         }
         FractalType::BurningShip => {
-            // BurningShip_def
-            params.xmin = -2.5;
-            params.xmax = 1.5;
-            params.ymin = -2.0;
-            params.ymax = 2.0;
+            // BurningShip_def: xmin=-2.5, xmax=1.5, ymin=-2.0, ymax=2.0
+            params.center_x = -0.5;
+            params.center_y = 0.0;
+            params.span_x = 4.0;
+            params.span_y = 4.0;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
             params.iteration_max = 2500;
         }
         FractalType::Buffalo => {
-            // Buffalo_def
-            params.xmin = -2.5;
-            params.xmax = 1.5;
-            params.ymin = -2.0;
-            params.ymax = 2.0;
+            // Buffalo_def: xmin=-2.5, xmax=1.5, ymin=-2.0, ymax=2.0
+            params.center_x = -0.5;
+            params.center_y = 0.0;
+            params.span_x = 4.0;
+            params.span_y = 4.0;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
             params.iteration_max = 2500;
         }
         FractalType::Tricorn => {
-            // Tricorn_def
-            params.xmin = -2.5;
-            params.xmax = 1.5;
-            params.ymin = -1.5;
-            params.ymax = 1.5;
+            // Tricorn_def: xmin=-2.5, xmax=1.5, ymin=-1.5, ymax=1.5
+            params.center_x = -0.5;
+            params.center_y = 0.0;
+            params.span_x = 4.0;
+            params.span_y = 3.0;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
             params.iteration_max = 2500;
         }
         FractalType::Mandelbulb => {
-            // Mandelbulb_def
-            params.xmin = -1.5;
-            params.xmax = 1.5;
-            params.ymin = -1.5;
-            params.ymax = 1.5;
+            // Mandelbulb_def: xmin=-1.5, xmax=1.5, ymin=-1.5, ymax=1.5
+            params.center_x = 0.0;
+            params.center_y = 0.0;
+            params.span_x = 3.0;
+            params.span_y = 3.0;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
             params.iteration_max = 2500;
         }
         FractalType::Buddhabrot => {
-            // Buddhabrot_def - densité de trajectoires
-            params.xmin = -2.5;
-            params.xmax = 1.5;
-            params.ymin = -1.5;
-            params.ymax = 1.5;
+            // Buddhabrot_def: xmin=-2.5, xmax=1.5, ymin=-1.5, ymax=1.5
+            params.center_x = -0.5;
+            params.center_y = 0.0;
+            params.span_x = 4.0;
+            params.span_y = 3.0;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
             params.iteration_max = 220;
@@ -201,72 +201,72 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.iteration_max = 2000;
         }
         FractalType::PerpendicularBurningShip => {
-            // PerpendicularBurningShip_def
-            params.xmin = -2.5;
-            params.xmax = 1.5;
-            params.ymin = -1.5;
-            params.ymax = 1.5;
+            // PerpendicularBurningShip_def: xmin=-2.5, xmax=1.5, ymin=-1.5, ymax=1.5
+            params.center_x = -0.5;
+            params.center_y = 0.0;
+            params.span_x = 4.0;
+            params.span_y = 3.0;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
             params.iteration_max = 2500;
         }
         FractalType::Celtic => {
-            // Celtic_def
-            params.xmin = -2.0;
-            params.xmax = 1.0;
-            params.ymin = -1.5;
-            params.ymax = 1.5;
+            // Celtic_def: xmin=-2.0, xmax=1.0, ymin=-1.5, ymax=1.5
+            params.center_x = -0.5;
+            params.center_y = 0.0;
+            params.span_x = 3.0;
+            params.span_y = 3.0;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
             params.iteration_max = 2500;
         }
         FractalType::AlphaMandelbrot => {
-            // AlphaMandelbrot_def
-            params.xmin = -2.5;
-            params.xmax = 1.5;
-            params.ymin = -1.5;
-            params.ymax = 1.5;
+            // AlphaMandelbrot_def: xmin=-2.5, xmax=1.5, ymin=-1.5, ymax=1.5
+            params.center_x = -0.5;
+            params.center_y = 0.0;
+            params.span_x = 4.0;
+            params.span_y = 3.0;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
             params.iteration_max = 2000;
         }
         FractalType::PickoverStalks => {
-            // PickoverStalks_def
-            params.xmin = -2.0;
-            params.xmax = 1.0;
-            params.ymin = -1.5;
-            params.ymax = 1.5;
+            // PickoverStalks_def: xmin=-2.0, xmax=1.0, ymin=-1.5, ymax=1.5
+            params.center_x = -0.5;
+            params.center_y = 0.0;
+            params.span_x = 3.0;
+            params.span_y = 3.0;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 100.0;
             params.iteration_max = 1000;
             params.color_repeat = 2;
         }
         FractalType::Nova => {
-            // Nova_def
-            params.xmin = -3.0;
-            params.xmax = 3.0;
-            params.ymin = -2.0;
-            params.ymax = 2.0;
+            // Nova_def: xmin=-3.0, xmax=3.0, ymin=-2.0, ymax=2.0
+            params.center_x = 0.0;
+            params.center_y = 0.0;
+            params.span_x = 6.0;
+            params.span_y = 4.0;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 20.0;
             params.iteration_max = 500;
         }
         FractalType::Multibrot => {
-            // Multibrot_def
-            params.xmin = -2.5;
-            params.xmax = 1.5;
-            params.ymin = -1.5;
-            params.ymax = 1.5;
+            // Multibrot_def: xmin=-2.5, xmax=1.5, ymin=-1.5, ymax=1.5
+            params.center_x = -0.5;
+            params.center_y = 0.0;
+            params.span_x = 4.0;
+            params.span_y = 3.0;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
             params.iteration_max = 2500;
         }
         FractalType::Nebulabrot => {
-            // Nebulabrot_def - RGB densité (R=50, G=500, B=5000 iter)
-            params.xmin = -2.5;
-            params.xmax = 1.5;
-            params.ymin = -1.5;
-            params.ymax = 1.5;
+            // Nebulabrot_def: xmin=-2.5, xmax=1.5, ymin=-1.5, ymax=1.5
+            params.center_x = -0.5;
+            params.center_y = 0.0;
+            params.span_x = 4.0;
+            params.span_y = 3.0;
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
             params.iteration_max = 2500;
@@ -282,9 +282,9 @@ pub fn apply_lyapunov_preset(params: &mut FractalParams, preset: LyapunovPreset)
     let config = LyapunovConfig::from_preset(preset);
     params.lyapunov_preset = preset;
     params.lyapunov_sequence = config.sequence;
-    params.xmin = config.xmin;
-    params.xmax = config.xmax;
-    params.ymin = config.ymin;
-    params.ymax = config.ymax;
+    params.center_x = (config.xmin + config.xmax) * 0.5;
+    params.center_y = (config.ymin + config.ymax) * 0.5;
+    params.span_x = config.xmax - config.xmin;
+    params.span_y = config.ymax - config.ymin;
 }
 

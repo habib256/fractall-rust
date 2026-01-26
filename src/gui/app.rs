@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use egui::{Context, TextureHandle, TextureOptions};
 use image::RgbImage;
@@ -195,16 +195,22 @@ impl FractallApp {
                         AlgorithmMode::Perturbation => true,
                         _ => false,
                     };
+                    let use_ds = pass_params.algorithm_mode == AlgorithmMode::StandardDS;
+                    
                     let gpu_result = match pass_params.fractal_type {
                         FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
                             if use_perturbation =>
                         {
-                            // Use cache-aware GPU rendering
+                            // Use cache-aware GPU rendering for perturbation
                             gpu.render_perturbation_with_cache(&pass_params, &cancel, reuse, current_orbit_cache.as_ref())
                                 .map(|(result, cache)| {
                                     current_orbit_cache = Some(cache);
                                     result
                                 })
+                        }
+                        FractalType::Mandelbrot if use_ds => {
+                            // Mode DS standard (sans perturbation)
+                            gpu.render_mandelbrot_ds(&pass_params, &cancel)
                         }
                         FractalType::Mandelbrot => gpu.render_mandelbrot(&pass_params, &cancel),
                         FractalType::Julia => gpu.render_julia(&pass_params, &cancel),
@@ -212,14 +218,27 @@ impl FractallApp {
                         _ => None,
                     };
                     if let Some(result) = gpu_result {
-                        let precision = gpu.precision_label();
+                        let base_precision = gpu.precision_label();
+                        // Détecter le mode de précision utilisé
+                        let pixel_size = pass_params.span_x / pass_params.width as f64;
+                        let uses_ds_perturb = use_perturbation && pixel_size < 1e-6;
+                        let precision = if use_ds {
+                            "f32 DS".to_string()
+                        } else if uses_ds_perturb {
+                            format!("{} DS", base_precision)
+                        } else {
+                            base_precision.to_string()
+                        };
+                        let effective_mode = if use_perturbation {
+                            AlgorithmMode::Perturbation
+                        } else if use_ds {
+                            AlgorithmMode::StandardDS
+                        } else {
+                            AlgorithmMode::StandardF64
+                        };
                         Some((
                             result,
-                            if use_perturbation {
-                                AlgorithmMode::Perturbation
-                            } else {
-                                AlgorithmMode::StandardF64
-                            },
+                            effective_mode,
                             format!("GPU {}", precision),
                         ))
                     } else {
@@ -247,7 +266,7 @@ impl FractallApp {
                                 let effective_mode = match pass_params.algorithm_mode {
                                     AlgorithmMode::ReferenceGmp => AlgorithmMode::ReferenceGmp,
                                     AlgorithmMode::Perturbation => AlgorithmMode::Perturbation,
-                                    AlgorithmMode::StandardF64 => AlgorithmMode::StandardF64,
+                                    AlgorithmMode::StandardF64 | AlgorithmMode::StandardDS => AlgorithmMode::StandardF64,
                                     AlgorithmMode::Auto => {
                                         if crate::render::escape_time::should_use_perturbation(
                                             &pass_params,
@@ -261,7 +280,8 @@ impl FractallApp {
                                 };
                                 let precision_label = match effective_mode {
                                     AlgorithmMode::ReferenceGmp => {
-                                        format!("CPU GMP {}b", pass_params.precision_bits)
+                                        let effective_prec = crate::fractal::perturbation::compute_perturbation_precision_bits(&pass_params);
+                                        format!("CPU GMP {}b", effective_prec)
                                     }
                                     AlgorithmMode::Perturbation => "CPU f64".to_string(),
                                     _ => "CPU f64".to_string(),
@@ -291,7 +311,7 @@ impl FractallApp {
                             let effective_mode = match pass_params.algorithm_mode {
                                 AlgorithmMode::ReferenceGmp => AlgorithmMode::ReferenceGmp,
                                 AlgorithmMode::Perturbation => AlgorithmMode::Perturbation,
-                                AlgorithmMode::StandardF64 => AlgorithmMode::StandardF64,
+                                AlgorithmMode::StandardF64 | AlgorithmMode::StandardDS => AlgorithmMode::StandardF64,
                                 AlgorithmMode::Auto => {
                                     if crate::render::escape_time::should_use_perturbation(
                                         &pass_params,
@@ -305,7 +325,8 @@ impl FractallApp {
                             };
                             let precision_label = match effective_mode {
                                 AlgorithmMode::ReferenceGmp => {
-                                    format!("CPU GMP {}b", pass_params.precision_bits)
+                                    let effective_prec = crate::fractal::perturbation::compute_perturbation_precision_bits(&pass_params);
+                                    format!("CPU GMP {}b", effective_prec)
                                 }
                                 AlgorithmMode::Perturbation => "CPU f64".to_string(),
                                 _ => "CPU f64".to_string(),
@@ -334,6 +355,13 @@ impl FractallApp {
                             width: pass_width,
                             height: pass_height,
                         });
+                        
+                        // Délai pour laisser l'UI afficher cette passe avant de continuer
+                        // Sans ce délai, les passes rapides s'empilent et l'affichage progressif
+                        // ne fonctionne pas (ex: passe 3 et 4 quasi simultanées)
+                        if pass_index + 1 < config.passes.len() {
+                            thread::sleep(Duration::from_millis(16)); // ~1 frame à 60fps
+                        }
                     }
                     None => {
                         let _ = sender.send(RenderMessage::Cancelled);
@@ -381,8 +409,9 @@ impl FractallApp {
             } => {
                 self.current_pass = pass_index + 1;
                 self.last_render_device_label = Some(precision_label);
+                // Note: pour GMP, le label est déjà dans precision_label, pas besoin de répéter
                 self.last_render_method_label = Some(match effective_mode {
-                    AlgorithmMode::ReferenceGmp => "GMP".to_string(),
+                    AlgorithmMode::ReferenceGmp => String::new(), // Évite "CPU GMP 160b GMP"
                     AlgorithmMode::Perturbation => "Perturbation".to_string(),
                     _ => "Standard".to_string(),
                 });
@@ -457,25 +486,19 @@ impl FractallApp {
 
     /// Applique le redimensionnement et relance un rendu.
     fn apply_resize(&mut self, new_width: u32, new_height: u32) {
-        let center_x = (self.params.xmin + self.params.xmax) / 2.0;
-        let center_y = (self.params.ymin + self.params.ymax) / 2.0;
-        let span_x = self.params.xmax - self.params.xmin;
-        let span_y = self.params.ymax - self.params.ymin;
-        let current_aspect = span_x / span_y;
+        let current_aspect = self.params.span_x / self.params.span_y;
         let target_aspect = new_width as f64 / new_height as f64;
 
         let (new_span_x, new_span_y) = if current_aspect > target_aspect {
             // Élargir la hauteur pour éviter toute déformation.
-            (span_x, span_x / target_aspect)
+            (self.params.span_x, self.params.span_x / target_aspect)
         } else {
             // Élargir la largeur pour éviter toute déformation.
-            (span_y * target_aspect, span_y)
+            (self.params.span_y * target_aspect, self.params.span_y)
         };
 
-        self.params.xmin = center_x - new_span_x / 2.0;
-        self.params.xmax = center_x + new_span_x / 2.0;
-        self.params.ymin = center_y - new_span_y / 2.0;
-        self.params.ymax = center_y + new_span_y / 2.0;
+        self.params.span_x = new_span_x;
+        self.params.span_y = new_span_y;
         self.window_width = new_width;
         self.window_height = new_height;
         self.params.width = new_width;
@@ -552,118 +575,141 @@ impl FractallApp {
         let x_ratio = pixel_x as f64 / viewport_width as f64;
         let y_ratio = pixel_y as f64 / viewport_height as f64;
         
-        let x = self.params.xmin + x_ratio * (self.params.xmax - self.params.xmin);
-        let y = self.params.ymax - y_ratio * (self.params.ymax - self.params.ymin); // Inverser Y
+        // Utiliser center+span directement pour éviter les problèmes de précision
+        // x = center_x + (ratio - 0.5) * span_x
+        let x = self.params.center_x + (x_ratio - 0.5) * self.params.span_x;
+        // y = center_y + (ratio - 0.5) * span_y (même convention que le rendu)
+        let y = self.params.center_y + (y_ratio - 0.5) * self.params.span_y;
         
         Complex64::new(x, y)
     }
     
     /// Zoom au point spécifié avec un facteur donné.
     fn zoom_at_point(&mut self, point: Complex64, factor: f64) {
-        let span_x = self.params.xmax - self.params.xmin;
-        let span_y = self.params.ymax - self.params.ymin;
+        // Nouveau centre = point cliqué
+        self.params.center_x = point.re;
+        self.params.center_y = point.im;
         
-        let new_span_x = span_x / factor;
-        let new_span_y = span_y / factor;
+        // Maintenir le ratio d'aspect lors du zoom
+        let target_aspect = self.params.width as f64 / self.params.height as f64;
         
-        self.params.xmin = point.re - new_span_x / 2.0;
-        self.params.xmax = point.re + new_span_x / 2.0;
-        self.params.ymin = point.im - new_span_y / 2.0;
-        self.params.ymax = point.im + new_span_y / 2.0;
+        // Réduire l'étendue par le facteur de zoom en maintenant le ratio
+        // On utilise span_y comme référence et on calcule span_x pour maintenir le ratio
+        self.params.span_y /= factor;
+        self.params.span_x = self.params.span_y * target_aspect;
+        
+        // Invalider le cache d'orbite car le centre a changé
+        self.orbit_cache = None;
         
         self.start_render();
     }
     
     /// Zoom sur une zone rectangulaire sélectionnée.
     /// Les coordonnées sont en pixels dans l'image affichée.
+    /// L'image affichée représente déjà une zone zoomée définie par center+span.
     fn zoom_to_rectangle(&mut self, rect_min: egui::Pos2, rect_max: egui::Pos2, image_rect: egui::Rect) {
-        // Convertir les coordonnées du rectangle de sélection en coordonnées pixels de l'image
-        let image_width = self.params.width as f32;
-        let image_height = self.params.height as f32;
+        // Calculer les ratios relatifs dans l'image affichée (0.0 à 1.0)
+        // Ces ratios correspondent directement à la position dans la zone visible du plan complexe
+        let x_ratio1 = ((rect_min.x - image_rect.min.x) / image_rect.width()) as f64;
+        let y_ratio1 = ((rect_min.y - image_rect.min.y) / image_rect.height()) as f64;
+        let x_ratio2 = ((rect_max.x - image_rect.min.x) / image_rect.width()) as f64;
+        let y_ratio2 = ((rect_max.y - image_rect.min.y) / image_rect.height()) as f64;
         
-        // Coordonnées relatives dans l'image (0.0 à 1.0)
-        let rel_x1 = (rect_min.x - image_rect.min.x) / image_rect.width();
-        let rel_y1 = (rect_min.y - image_rect.min.y) / image_rect.height();
-        let rel_x2 = (rect_max.x - image_rect.min.x) / image_rect.width();
-        let rel_y2 = (rect_max.y - image_rect.min.y) / image_rect.height();
+        // Clamper les ratios entre 0.0 et 1.0
+        let x_ratio1 = x_ratio1.max(0.0).min(1.0);
+        let y_ratio1 = y_ratio1.max(0.0).min(1.0);
+        let x_ratio2 = x_ratio2.max(0.0).min(1.0);
+        let y_ratio2 = y_ratio2.max(0.0).min(1.0);
         
-        // Coordonnées pixels dans l'image
-        let pixel_x1 = (rel_x1 * image_width).max(0.0).min(image_width - 1.0);
-        let pixel_y1 = (rel_y1 * image_height).max(0.0).min(image_height - 1.0);
-        let pixel_x2 = (rel_x2 * image_width).max(0.0).min(image_width - 1.0);
-        let pixel_y2 = (rel_y2 * image_height).max(0.0).min(image_height - 1.0);
-        
-        // S'assurer que x1 < x2 et y1 < y2
-        let (x1, x2) = if pixel_x1 < pixel_x2 {
-            (pixel_x1, pixel_x2)
+        // S'assurer que x1 < x2 et y1 < y2 dans les ratios
+        let (xr1, xr2) = if x_ratio1 < x_ratio2 {
+            (x_ratio1, x_ratio2)
         } else {
-            (pixel_x2, pixel_x1)
+            (x_ratio2, x_ratio1)
         };
-        let (y1, y2) = if pixel_y1 < pixel_y2 {
-            (pixel_y1, pixel_y2)
+        let (yr1, yr2) = if y_ratio1 < y_ratio2 {
+            (y_ratio1, y_ratio2)
         } else {
-            (pixel_y2, pixel_y1)
+            (y_ratio2, y_ratio1)
         };
         
         // Vérifier que le rectangle a une taille minimale
-        let width = x2 - x1;
-        let height = y2 - y1;
-        if width < 5.0 || height < 5.0 {
-            return; // Rectangle trop petit
+        if (xr2 - xr1) < 0.01 || (yr2 - yr1) < 0.01 {
+            return; // Rectangle trop petit (moins de 1% de l'image)
         }
         
-        // Convertir en coordonnées complexes
-        let xmin_old = self.params.xmin;
-        let xmax_old = self.params.xmax;
-        let ymin_old = self.params.ymin;
-        let ymax_old = self.params.ymax;
+        // Calculer le nouveau centre et span directement à partir des ratios
+        // IMPORTANT: éviter la soustraction de grandes valeurs proches (cx_max - cx_min)
+        // qui perd toute précision aux zooms profonds (>1e15).
+        // 
+        // Formules directes:
+        //   new_center = center + ((r1 + r2)/2 - 0.5) * span
+        //   new_span = (r2 - r1) * span
+        // 
+        // Ces formules utilisent uniquement des ratios (0-1) et le span actuel,
+        // évitant ainsi les erreurs de soustraction.
         
-        let range_x_old = xmax_old - xmin_old;
-        let range_y_old = ymax_old - ymin_old;
-        let complex_aspect_ratio = range_x_old / range_y_old;
+        let selection_span_x = (xr2 - xr1) * self.params.span_x;
+        let selection_span_y = (yr2 - yr1) * self.params.span_y;
         
-        // Conversion pixel -> complexe
-        let pixel_to_x = range_x_old / image_width as f64;
-        let pixel_to_y = range_y_old / image_height as f64;
+        // S'assurer que le span n'est pas trop petit (éviter division par zéro)
+        if selection_span_x <= 0.0 || selection_span_y <= 0.0 {
+            return;
+        }
         
-        // Centre du rectangle sélectionné en coordonnées complexes
-        let center_x_complex = xmin_old + ((x1 + x2) / 2.0) as f64 * pixel_to_x;
-        let center_y_complex = ymin_old + ((y1 + y2) / 2.0) as f64 * pixel_to_y;
+        // Nouveau centre: center + ((r1+r2)/2 - 0.5) * span
+        let new_center_x = self.params.center_x + ((xr1 + xr2) * 0.5 - 0.5) * self.params.span_x;
+        let new_center_y = self.params.center_y + ((yr1 + yr2) * 0.5 - 0.5) * self.params.span_y;
         
-        // Taille du rectangle sélectionné dans l'espace complexe
-        let selected_range_x = width as f64 * pixel_to_x;
-        let selected_range_y = height as f64 * pixel_to_y;
-        let selected_aspect_ratio = selected_range_x / selected_range_y;
+        // Ajuster les spans pour maintenir le ratio d'aspect de la fenêtre
+        // tout en contenant entièrement la zone sélectionnée
+        let target_aspect = self.params.width as f64 / self.params.height as f64;
+        let selection_aspect = selection_span_x / selection_span_y;
         
-        // Ajuster pour préserver le rapport d'aspect dans l'espace complexe
-        let (new_range_x, new_range_y) = if selected_aspect_ratio > complex_aspect_ratio {
-            // Rectangle sélectionné trop large, ajuster la hauteur
-            (selected_range_x, selected_range_x / complex_aspect_ratio)
+        let (new_span_x, new_span_y) = if selection_aspect > target_aspect {
+            // Sélection plus large que la fenêtre : élargir span_y
+            (selection_span_x, selection_span_x / target_aspect)
         } else {
-            // Rectangle sélectionné trop haut, ajuster la largeur
-            (selected_range_y * complex_aspect_ratio, selected_range_y)
+            // Sélection plus haute que la fenêtre : élargir span_x
+            (selection_span_y * target_aspect, selection_span_y)
         };
         
-        // Calculer les nouvelles bornes centrées sur le centre du rectangle sélectionné
-        self.params.xmin = center_x_complex - new_range_x / 2.0;
-        self.params.xmax = center_x_complex + new_range_x / 2.0;
-        self.params.ymin = center_y_complex - new_range_y / 2.0;
-        self.params.ymax = center_y_complex + new_range_y / 2.0;
+        // Mettre à jour les paramètres (centre + span)
+        self.params.center_x = new_center_x;
+        self.params.center_y = new_center_y;
+        self.params.span_x = new_span_x;
+        self.params.span_y = new_span_y;
+        
+        // Invalider le cache d'orbite car le centre a changé
+        self.orbit_cache = None;
         
         self.start_render();
     }
     
     /// Dézoom avec un facteur donné.
     fn zoom_out(&mut self, factor: f64) {
-        let center_x = (self.params.xmin + self.params.xmax) / 2.0;
-        let center_y = (self.params.ymin + self.params.ymax) / 2.0;
-        let span_x = self.params.xmax - self.params.xmin;
-        let span_y = self.params.ymax - self.params.ymin;
+        // Maintenir le ratio d'aspect lors du dézoom
+        let target_aspect = self.params.width as f64 / self.params.height as f64;
         
-        self.params.xmin = center_x - span_x * factor / 2.0;
-        self.params.xmax = center_x + span_x * factor / 2.0;
-        self.params.ymin = center_y - span_y * factor / 2.0;
-        self.params.ymax = center_y + span_y * factor / 2.0;
+        // Multiplier l'étendue par le facteur de dézoom en maintenant le ratio
+        // On utilise span_y comme référence et on calcule span_x pour maintenir le ratio
+        self.params.span_y *= factor;
+        self.params.span_x = self.params.span_y * target_aspect;
+        
+        self.start_render();
+    }
+    
+    /// Dézoom au point spécifié avec un facteur donné.
+    fn zoom_out_at_point(&mut self, _point: Complex64, factor: f64) {
+        // Maintenir le ratio d'aspect lors du dézoom
+        let target_aspect = self.params.width as f64 / self.params.height as f64;
+        
+        // Multiplier l'étendue par le facteur de dézoom en maintenant le ratio
+        self.params.span_y *= factor;
+        self.params.span_x = self.params.span_y * target_aspect;
+        
+        // Le centre reste le même (contrairement au zoom qui déplace le centre vers le point)
+        // Cela permet de dézoomer tout en gardant la vue centrée sur le point actuel
         
         self.start_render();
     }
@@ -895,6 +941,36 @@ impl eframe::App for FractallApp {
                     println!("Screenshot sauvegardé: {}", filename);
                 }
             }
+            
+            // + ou = pour zoom au centre
+            let zoom_in_pressed = i.events.iter().any(|e| {
+                matches!(e, egui::Event::Text(text) if text == "+" || text == "=")
+            });
+            if zoom_in_pressed {
+                let center = Complex64::new(self.params.center_x, self.params.center_y);
+                self.zoom_at_point(center, 1.5);
+            }
+            
+            // - pour dézoom au centre
+            if i.key_pressed(egui::Key::Minus) {
+                let center = Complex64::new(self.params.center_x, self.params.center_y);
+                self.zoom_out_at_point(center, 1.0 / 1.5);
+            }
+            
+            // 0 pour reset zoom
+            if i.key_pressed(egui::Key::Num0) {
+                use crate::fractal::default_params_for_type;
+                let width = self.params.width;
+                let height = self.params.height;
+                let mut new_params = default_params_for_type(self.selected_type, width, height);
+                // Conserver certains paramètres
+                new_params.use_gmp = self.params.use_gmp;
+                new_params.precision_bits = self.params.precision_bits;
+                new_params.color_mode = self.params.color_mode;
+                new_params.color_repeat = self.params.color_repeat;
+                self.params = new_params;
+                self.start_render();
+            }
         });
         
         // Panneau de contrôle en haut
@@ -1095,41 +1171,114 @@ impl eframe::App for FractallApp {
                         }
                     }
 
-                    ui.separator();
+                    // Afficher les contrôles de mode de calcul pour les fractales escape-time supportées
+                    let supports_advanced_modes = matches!(
+                        self.selected_type,
+                        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
+                    );
 
-                    if self.selected_type == FractalType::Mandelbrot {
+                    if supports_advanced_modes {
                         ui.separator();
 
-                        let old_preset = self.render_preset;
-                        ui.label("Preset:");
-                        egui::ComboBox::from_id_source("render_preset")
-                            .selected_text(self.render_preset.name())
+                        // ═══════════════════════════════════════════════════════════════
+                        // SECTION CALCUL - Organisation logique des modes
+                        // ═══════════════════════════════════════════════════════════════
+                        
+                        // 1. Device: CPU ou GPU
+                        let gpu_available = self.gpu_renderer.is_some();
+                        let old_use_gpu = self.use_gpu;
+                        
+                        ui.label("Device:");
+                        egui::ComboBox::from_id_source("device_selector")
+                            .selected_text(if self.use_gpu && gpu_available { "GPU" } else { "CPU" })
                             .show_ui(ui, |ui| {
-                                for preset in [
-                                    RenderPreset::Standard,
-                                    RenderPreset::Fast,
-                                    RenderPreset::Ultra,
-                                ] {
-                                    ui.selectable_value(&mut self.render_preset, preset, preset.name());
+                                ui.selectable_value(&mut self.use_gpu, false, "CPU");
+                                if gpu_available {
+                                    ui.selectable_value(&mut self.use_gpu, true, "GPU");
+                                } else {
+                                    ui.add_enabled(false, egui::SelectableLabel::new(false, "GPU (N/A)"));
                                 }
                             });
-                        if old_preset != self.render_preset {
-                            self.apply_render_preset(self.render_preset);
+                        
+                        // Si on passe de GPU à CPU ou vice-versa, ajuster l'algo si nécessaire
+                        if old_use_gpu != self.use_gpu {
+                            // GMP n'est pas supporté sur GPU
+                            if self.use_gpu && self.params.algorithm_mode == AlgorithmMode::ReferenceGmp {
+                                self.params.algorithm_mode = AlgorithmMode::Auto;
+                            }
+                            self.orbit_cache = None;
                             if !self.rendering {
                                 self.start_render();
                             }
                         }
 
-                        if let Some(_gpu) = &self.gpu_renderer {
-                            ui.separator();
-                            let old_use_gpu = self.use_gpu;
-                            ui.checkbox(&mut self.use_gpu, "GPU");
-                            if old_use_gpu != self.use_gpu && !self.rendering {
-                                self.start_render();
+                        ui.separator();
+
+                        // 2. Algorithme - options différentes selon CPU/GPU
+                        let old_mode = self.params.algorithm_mode;
+                        
+                        // Texte descriptif du mode actuel
+                        let mode_text = if self.use_gpu && gpu_available {
+                            match self.params.algorithm_mode {
+                                AlgorithmMode::Auto => "Auto",
+                                AlgorithmMode::StandardF64 => "Standard f32",
+                                AlgorithmMode::StandardDS => "Standard f32 DS",
+                                AlgorithmMode::Perturbation => "Perturbation f32/DS",
+                                AlgorithmMode::ReferenceGmp => "Auto", // GMP pas sur GPU
                             }
                         } else {
+                            self.params.algorithm_mode.name()
+                        };
+                        
+                        ui.label("Algo:");
+                        egui::ComboBox::from_id_source("algorithm_mode")
+                            .selected_text(mode_text)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.params.algorithm_mode, AlgorithmMode::Auto, "Auto");
+                                
+                                if self.use_gpu && gpu_available {
+                                    // Options GPU (perturbation utilise GMP pour l'orbite de référence en interne)
+                                    ui.selectable_value(&mut self.params.algorithm_mode, AlgorithmMode::StandardF64, "Standard f32");
+                                    ui.selectable_value(&mut self.params.algorithm_mode, AlgorithmMode::StandardDS, "Standard f32 DS");
+                                    ui.selectable_value(&mut self.params.algorithm_mode, AlgorithmMode::Perturbation, "Perturbation f32/DS");
+                                } else {
+                                    // Options CPU
+                                    ui.selectable_value(&mut self.params.algorithm_mode, AlgorithmMode::StandardF64, "Standard f64");
+                                    ui.selectable_value(&mut self.params.algorithm_mode, AlgorithmMode::Perturbation, "Perturbation f64");
+                                    ui.selectable_value(&mut self.params.algorithm_mode, AlgorithmMode::ReferenceGmp, "GMP (haute précision)");
+                                }
+                            });
+                        
+                        if old_mode != self.params.algorithm_mode {
+                            self.orbit_cache = None;
+                            if !self.rendering {
+                                self.start_render();
+                            }
+                        }
+
+                        // 3. Tolérance (perturbation uniquement)
+                        let show_tolerance = matches!(
+                            self.params.algorithm_mode, 
+                            AlgorithmMode::Auto | AlgorithmMode::Perturbation
+                        );
+                        
+                        if show_tolerance {
                             ui.separator();
-                            ui.label("GPU: indisponible");
+                            let old_preset = self.render_preset;
+                            ui.label("Qualité:");
+                            egui::ComboBox::from_id_source("render_preset")
+                                .selected_text(self.render_preset.name())
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.render_preset, RenderPreset::Ultra, "Ultra (rapide)");
+                                    ui.selectable_value(&mut self.render_preset, RenderPreset::Fast, "Fast (équilibré)");
+                                    ui.selectable_value(&mut self.render_preset, RenderPreset::Standard, "Standard (précis)");
+                                });
+                            if old_preset != self.render_preset {
+                                self.apply_render_preset(self.render_preset);
+                                if !self.rendering {
+                                    self.start_render();
+                                }
+                            }
                         }
                     }
                 });
@@ -1250,15 +1399,28 @@ impl eframe::App for FractallApp {
                         }
                     }
                     
-                    // Clic droit : dézoom
+                    // Clic droit : dézoom centré sur la position de la souris
                     if response.secondary_clicked() {
-                        self.zoom_out(2.0);
+                        if let Some(pos) = response.interact_pointer_pos() {
+                            let local_pos = pos - image_rect.min;
+                            let pixel_x = (local_pos.x / image_rect.width()) * self.params.width as f32;
+                            let pixel_y = (local_pos.y / image_rect.height()) * self.params.height as f32;
+                            let point = self.pixel_to_complex(pixel_x, pixel_y, self.params.width as f32, self.params.height as f32);
+                            self.zoom_out_at_point(point, 2.0);
+                        } else {
+                            // Fallback si pas de position : dézoom au centre
+                            self.zoom_out(2.0);
+                        }
                     } else {
                         ctx.input(|i| {
                             if i.pointer.secondary_clicked() {
                                 if let Some(pos) = i.pointer.interact_pos() {
                                     if image_rect.contains(pos) {
-                                        self.zoom_out(2.0);
+                                        let local_pos = pos - image_rect.min;
+                                        let pixel_x = (local_pos.x / image_rect.width()) * self.params.width as f32;
+                                        let pixel_y = (local_pos.y / image_rect.height()) * self.params.height as f32;
+                                        let point = self.pixel_to_complex(pixel_x, pixel_y, self.params.width as f32, self.params.height as f32);
+                                        self.zoom_out_at_point(point, 2.0);
                                     }
                                 }
                             }
@@ -1278,16 +1440,11 @@ impl eframe::App for FractallApp {
         // Barre d'état en bas
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(self.selected_type.name());
-                    ui.separator();
                     ui.label(format!("Iter. {}", self.params.iteration_max));
                     ui.separator();
-                    ui.label(format!("Color Repeat: {}", self.color_repeat));
-                    ui.separator();
                     
-                    let span_x = self.params.xmax - self.params.xmin;
                     let base_range = 4.0;
-                    let zoom_factor = base_range / span_x;
+                    let zoom_factor = base_range / self.params.span_x;
                     if zoom_factor.is_finite() && zoom_factor > 0.0 {
                         ui.label(format!("Zoom: {:.2e}", zoom_factor));
                     } else {
@@ -1295,53 +1452,112 @@ impl eframe::App for FractallApp {
                     }
                     
                     ui.separator();
-                    let center_x = (self.params.xmin + self.params.xmax) / 2.0;
-                    let center_y = (self.params.ymin + self.params.ymax) / 2.0;
-                    ui.label(format!("Centre: ({:.6}, {:.6})", center_x, center_y));
+                    ui.label(format!("Centre: ({:.6}, {:.6})", self.params.center_x, self.params.center_y));
 
                     ui.separator();
-                    if let (Some(device_label), Some(method_label)) =
+                    
+                    // ═══════════════════════════════════════════════════════════════
+                    // Affichage du mode de calcul effectif
+                    // Format: [Device] [Precision] [Algorithme]
+                    // Ex: "GPU f32 DS Perturbation" ou "CPU f64 Standard"
+                    // ═══════════════════════════════════════════════════════════════
+                    
+                    let pixel_size = self.params.span_x / self.params.width as f64;
+                    let effective_mode = self.effective_algorithm_mode();
+                    let gpu_active = self.use_gpu && self.gpu_renderer.is_some();
+                    
+                    // Déterminer si DS (Double-Single) est actif sur GPU
+                    // DS s'active automatiquement quand pixel_size < 1e-6 en mode perturbation
+                    let uses_ds = gpu_active && pixel_size < 1e-6 && effective_mode == AlgorithmMode::Perturbation;
+                    
+                    let mode_display = if let (Some(device_label), Some(method_label)) =
                         (&self.last_render_device_label, &self.last_render_method_label)
                     {
-                        ui.label(format!("{} ({})", device_label, method_label));
-                    } else {
-                        let effective_mode = self.effective_algorithm_mode();
-                        let method_label = match effective_mode {
-                            AlgorithmMode::ReferenceGmp => "GMP",
-                            AlgorithmMode::Perturbation => "Perturbation",
-                            _ => "Standard",
-                        };
-                        if self.use_gpu && self.gpu_renderer.is_some() {
-                            let precision = self.gpu_renderer.as_ref().unwrap().precision_label();
-                            ui.label(format!("GPU {} ({})", precision, method_label));
+                        if method_label.is_empty() {
+                            device_label.clone()
                         } else {
-                            let precision_label = match effective_mode {
-                                AlgorithmMode::ReferenceGmp => {
-                                    format!("CPU GMP {}b", self.params.precision_bits)
-                                }
-                                _ => "CPU f64".to_string(),
-                            };
-                            ui.label(format!("{} ({})", precision_label, method_label));
+                            format!("{} {}", device_label, method_label)
                         }
-                    }
+                    } else {
+                        let device = if gpu_active { "GPU" } else { "CPU" };
+                        
+                        let (precision, algo) = match (gpu_active, effective_mode) {
+                            // GPU modes
+                            (true, AlgorithmMode::Perturbation) => {
+                                let prec = if uses_ds { "f32 DS" } else { "f32" };
+                                (prec, "Perturbation")
+                            }
+                            (true, AlgorithmMode::StandardDS) => ("f32 DS", "Standard"),
+                            (true, AlgorithmMode::StandardF64) => ("f32", "Standard"),
+                            (true, _) => ("f32", "Standard"), // Fallback GPU
+                            
+                            // CPU modes
+                            (false, AlgorithmMode::ReferenceGmp) => {
+                                // GMP avec bits affichés séparément plus bas
+                                ("GMP", "")
+                            }
+                            (false, AlgorithmMode::Perturbation) => ("f64", "Perturbation"),
+                            (false, AlgorithmMode::StandardF64) => ("f64", "Standard"),
+                            (false, AlgorithmMode::StandardDS) => ("f64", "Standard"), // DS n'existe pas sur CPU
+                            (false, AlgorithmMode::Auto) => ("f64", "Standard"),
+                        };
+                        
+                        // Cas spécial pour GMP: afficher les bits (précision effective selon le zoom)
+                        if effective_mode == AlgorithmMode::ReferenceGmp && !gpu_active {
+                            let effective_prec = crate::fractal::perturbation::compute_perturbation_precision_bits(&self.params);
+                            format!("{} GMP {}b", device, effective_prec)
+                        } else {
+                            format!("{} {} {}", device, precision, algo)
+                        }
+                    };
+                    
+                    ui.label(mode_display);
 
-                    // Show effective GMP precision for perturbation mode
-                    let effective_mode = self.effective_algorithm_mode();
+                    // Afficher la précision GMP effective pour le mode perturbation
                     if effective_mode == AlgorithmMode::Perturbation {
                         let effective_prec = crate::fractal::perturbation::compute_perturbation_precision_bits(&self.params);
                         ui.separator();
                         ui.label(format!("GMP: {}b", effective_prec));
                     }
-                    
 
                     // Afficher le statut du rendu progressif
                     if self.rendering {
                         ui.separator();
-                        ui.label(format!("Rendu pass {}/{}", self.current_pass, self.total_passes));
+                        ui.label(format!("Rendu {}/{}", self.current_pass, self.total_passes));
                     } else if self.is_preview {
                         ui.separator();
                         ui.label("Preview");
                     }
+
+                    // ═══════════════════════════════════════════════════════════════
+                    // Temps de rendu aligné à droite
+                    // ═══════════════════════════════════════════════════════════════
+                    
+                    // Espace flexible pour pousser le temps à droite
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if let Some(render_time) = self.last_render_time {
+                            let time_str = if render_time < 1.0 {
+                                format!("{:.0} ms", render_time * 1000.0)
+                            } else if render_time < 60.0 {
+                                format!("{:.2} s", render_time)
+                            } else {
+                                let mins = (render_time / 60.0).floor() as u32;
+                                let secs = render_time % 60.0;
+                                format!("{}m {:.1}s", mins, secs)
+                            };
+                            ui.label(format!("⏱ {}", time_str));
+                        } else if self.rendering {
+                            if let Some(start) = self.render_start_time {
+                                let elapsed = start.elapsed().as_secs_f64();
+                                let time_str = if elapsed < 1.0 {
+                                    format!("{:.0} ms", elapsed * 1000.0)
+                                } else {
+                                    format!("{:.1} s", elapsed)
+                                };
+                                ui.label(format!("⏱ {}...", time_str));
+                            }
+                        }
+                    });
                 });
         });
         

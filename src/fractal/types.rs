@@ -137,6 +137,8 @@ impl FractalType {
 pub enum AlgorithmMode {
     Auto,
     StandardF64,
+    /// Double-Single: émule f64 avec deux f32, pour zooms profonds sur GPU sans f64 natif
+    StandardDS,
     Perturbation,
     ReferenceGmp,
 }
@@ -147,6 +149,7 @@ impl AlgorithmMode {
         match self {
             AlgorithmMode::Auto => "Auto",
             AlgorithmMode::StandardF64 => "Standard f64",
+            AlgorithmMode::StandardDS => "Standard DS",
             AlgorithmMode::Perturbation => "Perturbation",
             AlgorithmMode::ReferenceGmp => "Reference GMP",
         }
@@ -157,6 +160,7 @@ impl AlgorithmMode {
         match value.trim().to_lowercase().as_str() {
             "auto" => Some(AlgorithmMode::Auto),
             "f64" | "standard" | "standardf64" => Some(AlgorithmMode::StandardF64),
+            "ds" | "standardds" | "double-single" => Some(AlgorithmMode::StandardDS),
             "perturbation" | "perturb" => Some(AlgorithmMode::Perturbation),
             "gmp" | "referencegmp" | "reference-gmp" => Some(AlgorithmMode::ReferenceGmp),
             _ => None,
@@ -170,15 +174,23 @@ use crate::fractal::lyapunov::LyapunovPreset;
 ///
 /// Cette structure est une version simplifiée de `struct fractal` en C,
 /// adaptée au mode non interactif/CLI.
+///
+/// Les coordonnées du plan complexe sont représentées par centre + étendue
+/// (center_x/center_y + span_x/span_y) plutôt que par bornes (xmin/xmax/ymin/ymax).
+/// Cela permet des zooms profonds (> 1e15) sans perte de précision f64.
 #[derive(Clone, Debug)]
 pub struct FractalParams {
     pub width: u32,
     pub height: u32,
 
-    pub xmin: f64,
-    pub xmax: f64,
-    pub ymin: f64,
-    pub ymax: f64,
+    /// Centre X du plan complexe.
+    pub center_x: f64,
+    /// Centre Y du plan complexe.
+    pub center_y: f64,
+    /// Étendue (largeur) du plan complexe.
+    pub span_x: f64,
+    /// Étendue (hauteur) du plan complexe.
+    pub span_y: f64,
 
     pub seed: Complex64,
     pub iteration_max: u32,
@@ -220,6 +232,63 @@ pub struct FractalParams {
     pub lyapunov_preset: LyapunovPreset,
     /// Séquence Lyapunov (true=A, false=B). Si vide, utilise la séquence par défaut.
     pub lyapunov_sequence: Vec<bool>,
+}
+
+impl FractalParams {
+    /// Borne minimale X (calculée à la demande).
+    /// Conservée pour compatibilité, mais le code utilise maintenant center+span directement.
+    #[inline]
+    #[allow(dead_code)]
+    pub fn xmin(&self) -> f64 {
+        self.center_x - self.span_x * 0.5
+    }
+
+    /// Borne maximale X (calculée à la demande).
+    /// Conservée pour compatibilité, mais le code utilise maintenant center+span directement.
+    #[inline]
+    #[allow(dead_code)]
+    pub fn xmax(&self) -> f64 {
+        self.center_x + self.span_x * 0.5
+    }
+
+    /// Borne minimale Y (calculée à la demande).
+    /// Conservée pour compatibilité, mais le code utilise maintenant center+span directement.
+    #[inline]
+    #[allow(dead_code)]
+    pub fn ymin(&self) -> f64 {
+        self.center_y - self.span_y * 0.5
+    }
+
+    /// Borne maximale Y (calculée à la demande).
+    /// Conservée pour compatibilité, mais le code utilise maintenant center+span directement.
+    #[inline]
+    #[allow(dead_code)]
+    pub fn ymax(&self) -> f64 {
+        self.center_y + self.span_y * 0.5
+    }
+
+    /// Étendue X (identique à span_x, pour compatibilité).
+    #[inline]
+    #[allow(dead_code)]
+    pub fn x_range(&self) -> f64 {
+        self.span_x
+    }
+
+    /// Étendue Y (identique à span_y, pour compatibilité).
+    #[inline]
+    #[allow(dead_code)]
+    pub fn y_range(&self) -> f64 {
+        self.span_y
+    }
+
+    /// Définit les bornes à partir de xmin/xmax/ymin/ymax (pour compatibilité CLI).
+    #[allow(dead_code)]
+    pub fn set_bounds(&mut self, xmin: f64, xmax: f64, ymin: f64, ymax: f64) {
+        self.center_x = (xmin + xmax) * 0.5;
+        self.center_y = (ymin + ymax) * 0.5;
+        self.span_x = xmax - xmin;
+        self.span_y = ymax - ymin;
+    }
 }
 
 /// Résultat du calcul d'un point de fractale.

@@ -1,6 +1,7 @@
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::sync::mpsc::RecvTimeoutError;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use bytemuck::{Pod, Zeroable};
@@ -16,10 +17,37 @@ use crate::fractal::perturbation::orbit::{compute_reference_orbit_cached, Refere
 const WORKGROUP_SIZE: u32 = 16;
 const MAX_LEVELS: usize = 17;
 
+/// Cache pour les buffers GPU de perturbation.
+/// Permet d'éviter de re-uploader les données d'orbite quand elles n'ont pas changé.
+struct PerturbationBufferCache {
+    /// Buffer contenant l'orbite de référence z_ref
+    zref_buffer: wgpu::Buffer,
+    /// Buffer contenant les noeuds BLA aplatis
+    bla_buffer: wgpu::Buffer,
+    /// Buffer contenant les métadonnées BLA
+    meta_buffer: wgpu::Buffer,
+    /// Identifiant unique de l'orbite (center_x_gmp + center_y_gmp + iteration_max)
+    orbit_id: String,
+}
+
+impl PerturbationBufferCache {
+    /// Génère un identifiant unique pour une orbite basé sur le cache.
+    fn generate_orbit_id(cache: &ReferenceOrbitCache) -> String {
+        format!(
+            "{}_{}_{}_{:?}",
+            cache.center_x_gmp,
+            cache.center_y_gmp,
+            cache.iteration_max,
+            cache.fractal_type
+        )
+    }
+}
+
 pub struct GpuRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline_f32: wgpu::ComputePipeline,
+    pipeline_ds: wgpu::ComputePipeline,
     pipeline_f64: Option<PipelinesF64>,
     pipeline_julia_f32: wgpu::ComputePipeline,
     pipeline_burning_ship_f32: wgpu::ComputePipeline,
@@ -27,6 +55,9 @@ pub struct GpuRenderer {
     bind_group_layout: wgpu::BindGroupLayout,
     bind_group_layout_perturb: wgpu::BindGroupLayout,
     supports_f64: bool,
+    /// Cache des buffers GPU pour la perturbation (zref, bla, meta)
+    /// Utilise Mutex pour permettre l'accès mutable depuis &self (interior mutability)
+    perturbation_cache: Mutex<Option<PerturbationBufferCache>>,
 }
 
 impl GpuRenderer {
@@ -102,6 +133,19 @@ impl GpuRenderer {
                 label: Some("mandelbrot-pipeline-f32"),
                 layout: Some(&pipeline_layout),
                 module: &shader_f32,
+                entry_point: "main",
+            });
+
+            // Pipeline Double-Single (DS) - émule f64 avec deux f32
+            let shader_ds = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("mandelbrot-ds"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("mandelbrot_ds.wgsl").into()),
+            });
+
+            let pipeline_ds = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("mandelbrot-pipeline-ds"),
+                layout: Some(&pipeline_layout),
+                module: &shader_ds,
                 entry_point: "main",
             });
 
@@ -278,6 +322,7 @@ impl GpuRenderer {
                 device,
                 queue,
                 pipeline_f32,
+                pipeline_ds,
                 pipeline_f64,
                 pipeline_julia_f32,
                 pipeline_burning_ship_f32,
@@ -285,6 +330,7 @@ impl GpuRenderer {
                 bind_group_layout,
                 bind_group_layout_perturb,
                 supports_f64,
+                perturbation_cache: Mutex::new(None),
             })
         })
     }
@@ -302,6 +348,26 @@ impl GpuRenderer {
         } else {
             self.render_mandelbrot_f32(params, cancel)
         }
+    }
+
+    /// Render Mandelbrot using Double-Single (DS) precision.
+    /// Emulates f64 precision using two f32 values, allowing deeper zooms
+    /// on GPUs that don't support native f64.
+    pub fn render_mandelbrot_ds(
+        &self,
+        params: &FractalParams,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Option<(Vec<u32>, Vec<Complex64>)> {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        self.render_escape_f32(
+            params,
+            cancel,
+            &self.pipeline_ds,
+            ParamsF32::from_params(params, None),
+            "mandelbrot-ds",
+        )
     }
 
     pub fn render_julia(
@@ -344,6 +410,7 @@ impl GpuRenderer {
 
     /// Render perturbation with optional orbit cache support.
     /// Returns the result and the updated cache for reuse in subsequent frames.
+    /// Uses GPU buffer caching to avoid re-uploading orbit data when unchanged.
     pub fn render_perturbation_with_cache(
         &self,
         params: &FractalParams,
@@ -375,9 +442,13 @@ impl GpuRenderer {
         } else {
             0
         };
+
+        // Check if we can reuse GPU buffers from the cache
+        let current_orbit_id = PerturbationBufferCache::generate_orbit_id(&cache);
+        
+        // Prepare buffer data outside the lock
         let mut level_offsets = [0u32; MAX_LEVELS];
         let mut level_lengths = [0u32; MAX_LEVELS];
-
         let mut flattened = Vec::new();
         let mut offset = 0u32;
         for (idx, level) in bla_table.levels.iter().enumerate().take(MAX_LEVELS) {
@@ -396,7 +467,7 @@ impl GpuRenderer {
             }));
         }
 
-        let z_ref: Vec<ZRef> = ref_orbit
+        let z_ref_data: Vec<ZRef> = ref_orbit
             .z_ref
             .iter()
             .map(|z| ZRef {
@@ -404,6 +475,54 @@ impl GpuRenderer {
                 im: z.im as f32,
             })
             .collect();
+
+        // Access the cache with interior mutability via Mutex
+        let mut cache_guard = self.perturbation_cache.lock().unwrap();
+        
+        // Check if we can reuse existing buffers
+        let can_reuse = cache_guard.as_ref()
+            .map(|c| c.orbit_id == current_orbit_id)
+            .unwrap_or(false);
+        
+        if !can_reuse {
+            // Need to create new buffers
+            let zref_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("perturb-zref-cached"),
+                contents: bytemuck::cast_slice(&z_ref_data),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+
+            let bla_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("perturb-bla-nodes-cached"),
+                contents: bytemuck::cast_slice(&flattened),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+
+            let meta_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("perturb-bla-meta-cached"),
+                contents: bytemuck::bytes_of(&BlaMeta {
+                    level_offsets,
+                    level_lengths,
+                    _pad: [0; 2],
+                }),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+
+            // Store in cache for next frame
+            *cache_guard = Some(PerturbationBufferCache {
+                zref_buffer,
+                bla_buffer,
+                meta_buffer,
+                orbit_id: current_orbit_id,
+            });
+        }
+        
+        // Get references to cached buffers
+        let cached = cache_guard.as_ref().unwrap();
+        let zref_buffer = &cached.zref_buffer;
+        let bla_buffer = &cached.bla_buffer;
+        let meta_buffer = &cached.meta_buffer;
+
         let iter_max = params
             .iteration_max
             .min(ref_orbit.z_ref.len().saturating_sub(1) as u32);
@@ -468,10 +587,10 @@ impl GpuRenderer {
             mapped_at_creation: false,
         });
 
-        let span_x = params.xmax - params.xmin;
-        let span_y = params.ymax - params.ymin;
-        let center_x = (params.xmin + params.xmax) * 0.5;
-        let center_y = (params.ymin + params.ymax) * 0.5;
+        let span_x = params.span_x;
+        let span_y = params.span_y;
+        let center_x = params.center_x;
+        let center_y = params.center_y;
 
         let params_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("perturb-params"),
@@ -499,28 +618,6 @@ impl GpuRenderer {
                 _pad_align: 0,
             }),
             usage: wgpu::BufferUsages::UNIFORM,
-        });
-
-        let meta_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("perturb-bla-meta"),
-            contents: bytemuck::bytes_of(&BlaMeta {
-                level_offsets,
-                level_lengths,
-                _pad: [0; 2],
-            }),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-
-        let bla_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("perturb-bla-nodes"),
-            contents: bytemuck::cast_slice(&flattened),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-
-        let zref_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("perturb-zref"),
-            contents: bytemuck::cast_slice(&z_ref),
-            usage: wgpu::BufferUsages::STORAGE,
         });
 
         let mask_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -647,15 +744,15 @@ impl GpuRenderer {
         if !glitched_indices.is_empty() {
             let gmp_params = MpcParams::from_params(&orbit_params);
             let prec = gmp_params.prec;
-            let x_range = params.xmax - params.xmin;
-            let y_range = params.ymax - params.ymin;
+            let x_range = params.span_x;
+            let y_range = params.span_y;
             let x_step = x_range / params.width as f64;
             let y_step = y_range / params.height as f64;
             let width = params.width;
             let x_half = x_range * 0.5;
             let y_half = y_range * 0.5;
-            let center_x = (params.xmin + params.xmax) * 0.5;
-            let center_y = (params.ymin + params.ymax) * 0.5;
+            let center_x = params.center_x;
+            let center_y = params.center_y;
 
             // Collect results in parallel
             let corrections: Vec<_> = glitched_indices
@@ -1016,10 +1113,10 @@ struct PipelinesF64 {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ParamsF32 {
-    xmin: f32,
-    xmax: f32,
-    ymin: f32,
-    ymax: f32,
+    center_x: f32,
+    center_y: f32,
+    span_x: f32,
+    span_y: f32,
     seed_re: f32,
     seed_im: f32,
     width: u32,
@@ -1034,10 +1131,10 @@ struct ParamsF32 {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ParamsF64 {
-    xmin: f64,
-    xmax: f64,
-    ymin: f64,
-    ymax: f64,
+    center_x: f64,
+    center_y: f64,
+    span_x: f64,
+    span_y: f64,
     seed_re: f64,
     seed_im: f64,
     width: u32,
@@ -1052,10 +1149,10 @@ impl ParamsF32 {
     fn from_params(params: &FractalParams, seed: Option<Complex64>) -> Self {
         let seed = seed.unwrap_or(Complex64::new(0.0, 0.0));
         Self {
-            xmin: params.xmin as f32,
-            xmax: params.xmax as f32,
-            ymin: params.ymin as f32,
-            ymax: params.ymax as f32,
+            center_x: params.center_x as f32,
+            center_y: params.center_y as f32,
+            span_x: params.span_x as f32,
+            span_y: params.span_y as f32,
             seed_re: seed.re as f32,
             seed_im: seed.im as f32,
             width: params.width,
@@ -1073,10 +1170,10 @@ impl ParamsF64 {
     fn from_params(params: &FractalParams, seed: Option<Complex64>) -> Self {
         let seed = seed.unwrap_or(Complex64::new(0.0, 0.0));
         Self {
-            xmin: params.xmin,
-            xmax: params.xmax,
-            ymin: params.ymin,
-            ymax: params.ymax,
+            center_x: params.center_x,
+            center_y: params.center_y,
+            span_x: params.span_x,
+            span_y: params.span_y,
             seed_re: seed.re,
             seed_im: seed.im,
             width: params.width,

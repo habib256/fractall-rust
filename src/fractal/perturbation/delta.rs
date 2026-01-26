@@ -13,6 +13,46 @@ pub struct DeltaResult {
     pub suspect: bool,
 }
 
+/// Calcule la tolérance de glitch adaptative basée sur le niveau de zoom.
+///
+/// Plus le zoom est profond, plus la tolérance peut être relaxée car les erreurs
+/// numériques sont plus importantes mais moins visibles à grande échelle.
+///
+/// # Arguments
+/// * `pixel_size` - Taille d'un pixel dans l'espace complexe
+/// * `user_tolerance` - Tolérance définie par l'utilisateur (1e-4 par défaut)
+///
+/// # Returns
+/// La tolérance adaptative à utiliser pour la détection des glitches.
+pub fn compute_adaptive_glitch_tolerance(pixel_size: f64, user_tolerance: f64) -> f64 {
+    // Si l'utilisateur a défini une tolérance personnalisée (différente de 1e-4),
+    // respecter son choix
+    const DEFAULT_TOLERANCE: f64 = 1e-4;
+    if (user_tolerance - DEFAULT_TOLERANCE).abs() > 1e-10 {
+        return user_tolerance;
+    }
+
+    // Calculer le niveau de zoom: log10(4 / pixel_size)
+    // À pixel_size = 4.0 (vue complète), zoom_level ≈ 0
+    // À pixel_size = 4e-14, zoom_level ≈ 14
+    let zoom_level = if pixel_size > 0.0 && pixel_size.is_finite() {
+        (4.0 / pixel_size).log10().max(0.0)
+    } else {
+        0.0
+    };
+
+    // Tolérance adaptative selon le niveau de zoom
+    // Tolerances resserrées pour mieux détecter les glitches aux zooms profonds
+    // et les recalculer en GMP plutôt que d'accumuler des erreurs numériques
+    match zoom_level as u32 {
+        0..=6 => 1e-6,    // Zoom peu profond : très strict
+        7..=14 => 1e-5,   // Moyen : strict
+        15..=30 => 1e-4,  // Profond : standard (resserré de 1e-3)
+        31..=50 => 1e-3,  // Très profond : relaxé (resserré de 1e-2)
+        _ => 1e-2,        // Extrême (>50) : tolérant mais contrôlé (resserré de 1e-1)
+    }
+}
+
 pub fn iterate_pixel(
     params: &FractalParams,
     ref_orbit: &ReferenceOrbit,
@@ -24,7 +64,11 @@ pub fn iterate_pixel(
     let mut delta = delta0;
     let max_iter = params.iteration_max.min(ref_orbit.z_ref.len().saturating_sub(1) as u32);
     let bailout_sqr = params.bailout * params.bailout;
-    let glitch_tolerance_sqr = params.glitch_tolerance * params.glitch_tolerance;
+    
+    // Calculer le pixel_size pour la tolérance adaptative
+    let pixel_size = params.span_x / params.width as f64;
+    let adaptive_tolerance = compute_adaptive_glitch_tolerance(pixel_size, params.glitch_tolerance);
+    let glitch_tolerance_sqr = adaptive_tolerance * adaptive_tolerance;
     let is_julia = params.fractal_type == FractalType::Julia;
     let is_burning_ship = params.fractal_type == FractalType::BurningShip;
     let is_multibrot = params.fractal_type == FractalType::Multibrot;
@@ -36,7 +80,8 @@ pub fn iterate_pixel(
         let mut stepped = false;
         let mut delta_norm_sqr = 0.0;
 
-        if !bla_table.levels.is_empty() && !is_burning_ship {
+        // Le BLA est maintenant supporté pour Burning Ship quand le quadrant est stable
+        if !bla_table.levels.is_empty() {
             delta_norm_sqr = delta.norm_sqr_approx();
             for level in (0..bla_table.levels.len()).rev() {
                 let level_nodes = &bla_table.levels[level];
@@ -44,6 +89,10 @@ pub fn iterate_pixel(
                     continue;
                 }
                 let node = &level_nodes[n as usize];
+                // Pour Burning Ship, vérifier que le BLA est valide (quadrant stable)
+                if is_burning_ship && !node.burning_ship_valid {
+                    continue;
+                }
                 if delta_norm_sqr < node.validity_radius * node.validity_radius {
                     if should_use_series(series_config, delta_norm_sqr, node.validity_radius) {
                         let delta_sq = delta.mul(delta);
@@ -51,7 +100,24 @@ pub fn iterate_pixel(
                         if !is_julia {
                             next_delta = next_delta.add(dc.mul_complex64(node.b));
                         }
+                        // Terme quadratique (ordre 2)
                         next_delta = next_delta.add(delta_sq.mul_complex64(node.c));
+                        
+                        // Termes d'ordre supérieur pour Multibrot (ordre 4-6)
+                        if series_config.order >= 4 && is_multibrot {
+                            // Terme cubique δ³
+                            let delta_cube = delta_sq.mul(delta);
+                            if node.d.norm() > 1e-20 {
+                                next_delta = next_delta.add(delta_cube.mul_complex64(node.d));
+                            }
+                            
+                            // Terme quartique δ⁴ (ordre 5-6)
+                            if series_config.order >= 5 && node.e.norm() > 1e-20 {
+                                let delta_4 = delta_sq.mul(delta_sq);
+                                next_delta = next_delta.add(delta_4.mul_complex64(node.e));
+                            }
+                        }
+                        
                         let coeff_a_norm = node.a.norm();
                         let err = estimate_series_error(
                             delta_norm_sqr,

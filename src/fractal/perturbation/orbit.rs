@@ -41,16 +41,8 @@ impl ReferenceOrbitCache {
     pub fn is_valid_for(&self, params: &FractalParams) -> bool {
         // Compute center in GMP precision for exact comparison
         let prec = params.precision_bits.max(self.precision_bits).max(128);
-        let xmin = Float::with_val(prec, params.xmin);
-        let xmax = Float::with_val(prec, params.xmax);
-        let ymin = Float::with_val(prec, params.ymin);
-        let ymax = Float::with_val(prec, params.ymax);
-        let mut center_x = xmin.clone();
-        center_x += &xmax;
-        center_x /= 2.0;
-        let mut center_y = ymin.clone();
-        center_y += &ymax;
-        center_y /= 2.0;
+        let center_x = Float::with_val(prec, params.center_x);
+        let center_y = Float::with_val(prec, params.center_y);
 
         // Compare as GMP strings with full precision
         let cx_str = center_x.to_string_radix(10, None);
@@ -125,17 +117,9 @@ pub fn compute_reference_orbit(
 ) -> Option<(ReferenceOrbit, String, String)> {
     let prec = params.precision_bits.max(128);
 
-    // Compute center in GMP precision to avoid f64 truncation
-    let xmin = Float::with_val(prec, params.xmin);
-    let xmax = Float::with_val(prec, params.xmax);
-    let ymin = Float::with_val(prec, params.ymin);
-    let ymax = Float::with_val(prec, params.ymax);
-    let mut center_x_gmp = xmin.clone();
-    center_x_gmp += &xmax;
-    center_x_gmp /= 2.0;
-    let mut center_y_gmp = ymin.clone();
-    center_y_gmp += &ymax;
-    center_y_gmp /= 2.0;
+    // Use center directly (no need to compute from xmin/xmax anymore)
+    let center_x_gmp = Float::with_val(prec, params.center_x);
+    let center_y_gmp = Float::with_val(prec, params.center_y);
 
     // Store GMP strings for cache validation
     let cx_str = center_x_gmp.to_string_radix(10, None);

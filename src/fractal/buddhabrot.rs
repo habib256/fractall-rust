@@ -58,12 +58,9 @@ pub fn render_buddhabrot(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
         return (vec![0; size], vec![Complex64::new(0.0, 0.0); size]);
     }
 
-    let xmin = params.xmin;
-    let xmax = params.xmax;
-    let ymin = params.ymin;
-    let ymax = params.ymax;
-    let xrange = xmax - xmin;
-    let yrange = ymax - ymin;
+    // Utiliser span directement au lieu de xmax-xmin pour éviter les problèmes de précision
+    let xrange = params.span_x;
+    let yrange = params.span_y;
     let iter_max = params.iteration_max;
     let bailout_sq = params.bailout * params.bailout;
 
@@ -89,9 +86,10 @@ pub fn render_buddhabrot(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
     (0..num_samples).into_par_iter().for_each(|sample_idx| {
         let mut rng = Rng::new(42 + sample_idx as u32 * 12345);
 
-        // Point aléatoire dans le domaine
-        let xg = rng.next_f64() * xrange + xmin;
-        let yg = rng.next_f64() * yrange + ymin;
+        // Point aléatoire dans le domaine : utiliser center+span directement
+        // xg = center_x + (random - 0.5) * span_x
+        let xg = params.center_x + (rng.next_f64() - 0.5) * xrange;
+        let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
         let c = Complex64::new(xg, yg);
 
         // Trajectoire
@@ -132,8 +130,10 @@ pub fn render_buddhabrot(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
                     continue;
                 }
 
-                let px = ((point.re - xmin) * scale_x) as i32;
-                let py = ((point.im - ymin) * scale_y) as i32;
+                // Convertir en pixels en utilisant center+span directement
+                // px = ((point.re - center_x + span_x/2) / span_x) * width
+                let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
+                let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
 
                 if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
                     let idx = py as usize * width + px as usize;
@@ -196,12 +196,9 @@ pub fn render_buddhabrot_mpc_cancellable(
     }
 
     let prec = params.precision_bits.max(64);
-    let xmin_f = params.xmin;
-    let xmax_f = params.xmax;
-    let ymin_f = params.ymin;
-    let ymax_f = params.ymax;
-    let xrange = xmax_f - xmin_f;
-    let yrange = ymax_f - ymin_f;
+    // Utiliser span directement au lieu de xmax-xmin pour éviter les problèmes de précision
+    let xrange = params.span_x;
+    let yrange = params.span_y;
     let iter_max = params.iteration_max;
     let bailout = Float::with_val(prec, params.bailout);
     let mut bailout_sq = bailout.clone();
@@ -235,8 +232,9 @@ pub fn render_buddhabrot_mpc_cancellable(
         }
 
         let mut rng = Rng::new(42 + sample_idx as u32 * 12345);
-        let xg = rng.next_f64() * xrange + xmin_f;
-        let yg = rng.next_f64() * yrange + ymin_f;
+        // Point aléatoire : utiliser center+span directement
+        let xg = params.center_x + (rng.next_f64() - 0.5) * xrange;
+        let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
         let c = Complex::with_val(prec, (xg, yg));
 
         let mut trajectory: Vec<Complex64> = Vec::with_capacity(iter_max as usize);
@@ -275,8 +273,9 @@ pub fn render_buddhabrot_mpc_cancellable(
                     continue;
                 }
 
-                let px = ((point.re - xmin_f) * scale_x) as i32;
-                let py = ((point.im - ymin_f) * scale_y) as i32;
+                // Convertir en pixels en utilisant center+span directement
+                let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
+                let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
 
                 if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
                     let idx = py as usize * width + px as usize;
@@ -337,12 +336,9 @@ pub fn render_nebulabrot(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
         return (vec![0; size], vec![Complex64::new(0.0, 0.0); size]);
     }
 
-    let xmin = params.xmin;
-    let xmax = params.xmax;
-    let ymin = params.ymin;
-    let ymax = params.ymax;
-    let xrange = xmax - xmin;
-    let yrange = ymax - ymin;
+    // Utiliser span directement au lieu de xmax-xmin pour éviter les problèmes de précision
+    let xrange = params.span_x;
+    let yrange = params.span_y;
     let bailout_sq = params.bailout * params.bailout;
 
     // Limites d'itérations pour RGB
@@ -372,8 +368,9 @@ pub fn render_nebulabrot(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
     (0..num_samples).into_par_iter().for_each(|sample_idx| {
         let mut rng = Rng::new(42 + sample_idx as u32 * 12345);
 
-        let xg = rng.next_f64() * xrange + xmin;
-        let yg = rng.next_f64() * yrange + ymin;
+        // Point aléatoire : utiliser center+span directement
+        let xg = params.center_x + (rng.next_f64() - 0.5) * xrange;
+        let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
         let c = Complex64::new(xg, yg);
 
         let mut trajectory = Vec::with_capacity(ITER_MAX as usize);
@@ -406,8 +403,9 @@ pub fn render_nebulabrot(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
             let contribute_b = escape_iter <= ITER_B;
 
             for point in trajectory {
-                let px = ((point.re - xmin) * scale_x) as i32;
-                let py = ((point.im - ymin) * scale_y) as i32;
+                // Convertir en pixels en utilisant center+span directement
+                let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
+                let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
 
                 if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
                     let idx = py as usize * width + px as usize;
@@ -496,12 +494,9 @@ pub fn render_nebulabrot_mpc_cancellable(
     }
 
     let prec = params.precision_bits.max(64);
-    let xmin_f = params.xmin;
-    let xmax_f = params.xmax;
-    let ymin_f = params.ymin;
-    let ymax_f = params.ymax;
-    let xrange = xmax_f - xmin_f;
-    let yrange = ymax_f - ymin_f;
+    // Utiliser span directement au lieu de xmax-xmin pour éviter les problèmes de précision
+    let xrange = params.span_x;
+    let yrange = params.span_y;
     let bailout = Float::with_val(prec, params.bailout);
     let mut bailout_sq = bailout.clone();
     bailout_sq *= &bailout;
@@ -539,8 +534,9 @@ pub fn render_nebulabrot_mpc_cancellable(
         }
 
         let mut rng = Rng::new(42 + sample_idx as u32 * 12345);
-        let xg = rng.next_f64() * xrange + xmin_f;
-        let yg = rng.next_f64() * yrange + ymin_f;
+        // Point aléatoire : utiliser center+span directement
+        let xg = params.center_x + (rng.next_f64() - 0.5) * xrange;
+        let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
         let c = Complex::with_val(prec, (xg, yg));
 
         let mut trajectory: Vec<Complex64> = Vec::with_capacity(ITER_MAX as usize);
@@ -576,8 +572,9 @@ pub fn render_nebulabrot_mpc_cancellable(
             let contribute_b = escape_iter <= ITER_B;
 
             for point in trajectory {
-                let px = ((point.re - xmin_f) * scale_x) as i32;
-                let py = ((point.im - ymin_f) * scale_y) as i32;
+                // Convertir en pixels en utilisant center+span directement
+                let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
+                let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
 
                 if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
                     let idx = py as usize * width + px as usize;
@@ -658,12 +655,9 @@ pub fn render_buddhabrot_cancellable(
         return Some((vec![0; size], vec![Complex64::new(0.0, 0.0); size]));
     }
 
-    let xmin = params.xmin;
-    let xmax = params.xmax;
-    let ymin = params.ymin;
-    let ymax = params.ymax;
-    let xrange = xmax - xmin;
-    let yrange = ymax - ymin;
+    // Utiliser span directement au lieu de xmax-xmin pour éviter les problèmes de précision
+    let xrange = params.span_x;
+    let yrange = params.span_y;
     let iter_max = params.iteration_max;
     let bailout_sq = params.bailout * params.bailout;
 
@@ -695,8 +689,9 @@ pub fn render_buddhabrot_cancellable(
         }
 
         let mut rng = Rng::new(42 + sample_idx as u32 * 12345);
-        let xg = rng.next_f64() * xrange + xmin;
-        let yg = rng.next_f64() * yrange + ymin;
+        // Point aléatoire : utiliser center+span directement
+        let xg = params.center_x + (rng.next_f64() - 0.5) * xrange;
+        let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
         let c = Complex64::new(xg, yg);
 
         let mut trajectory = Vec::with_capacity(iter_max as usize);
@@ -731,8 +726,9 @@ pub fn render_buddhabrot_cancellable(
                     continue;
                 }
 
-                let px = ((point.re - xmin) * scale_x) as i32;
-                let py = ((point.im - ymin) * scale_y) as i32;
+                // Convertir en pixels en utilisant center+span directement
+                let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
+                let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
 
                 if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
                     let idx = py as usize * width + px as usize;
@@ -789,12 +785,9 @@ pub fn render_nebulabrot_cancellable(
         return Some((vec![0; size], vec![Complex64::new(0.0, 0.0); size]));
     }
 
-    let xmin = params.xmin;
-    let xmax = params.xmax;
-    let ymin = params.ymin;
-    let ymax = params.ymax;
-    let xrange = xmax - xmin;
-    let yrange = ymax - ymin;
+    // Utiliser span directement au lieu de xmax-xmin pour éviter les problèmes de précision
+    let xrange = params.span_x;
+    let yrange = params.span_y;
     let bailout_sq = params.bailout * params.bailout;
 
     const ITER_R: u32 = 50;
@@ -830,8 +823,9 @@ pub fn render_nebulabrot_cancellable(
         }
 
         let mut rng = Rng::new(42 + sample_idx as u32 * 12345);
-        let xg = rng.next_f64() * xrange + xmin;
-        let yg = rng.next_f64() * yrange + ymin;
+        // Point aléatoire : utiliser center+span directement
+        let xg = params.center_x + (rng.next_f64() - 0.5) * xrange;
+        let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
         let c = Complex64::new(xg, yg);
 
         let mut trajectory = Vec::with_capacity(ITER_MAX as usize);
@@ -864,8 +858,9 @@ pub fn render_nebulabrot_cancellable(
             let contribute_b = escape_iter <= ITER_B;
 
             for point in trajectory {
-                let px = ((point.re - xmin) * scale_x) as i32;
-                let py = ((point.im - ymin) * scale_y) as i32;
+                // Convertir en pixels en utilisant center+span directement
+                let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
+                let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
 
                 if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
                     let idx = py as usize * width + px as usize;

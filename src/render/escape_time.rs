@@ -64,7 +64,10 @@ pub fn render_escape_time(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
     ) {
         match params.algorithm_mode {
             AlgorithmMode::ReferenceGmp => return render_escape_time_gmp(params),
-            AlgorithmMode::StandardF64 => return render_escape_time_f64(params),
+            AlgorithmMode::StandardF64 | AlgorithmMode::StandardDS => {
+                // StandardDS n'existe que sur GPU, sur CPU on utilise f64
+                return render_escape_time_f64(params);
+            }
             AlgorithmMode::Perturbation => {
                 return render_perturbation_cancellable_with_reuse(
                     params,
@@ -102,15 +105,13 @@ fn render_escape_time_f64(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
     // Même mapping que Fractal_CalculateMatrix en C :
     // xg = ((xmax - xmin) / xpixel) * i + xmin
     // yg = ((ymax - ymin) / ypixel) * j + ymin
-    let x_range = params.xmax - params.xmin;
-    let y_range = params.ymax - params.ymin;
-
     if width == 0 || height == 0 {
         return (iterations, zs);
     }
 
-    let x_step = x_range / params.width as f64;
-    let y_step = y_range / params.height as f64;
+    // Utiliser center+span directement pour éviter les problèmes de précision
+    // xg = center_x + (i/width - 0.5) * span_x
+    // yg = center_y + (j/height - 0.5) * span_y
 
     // Parallélisation par lignes avec rayon (beaucoup plus élégant que std::thread)
     iterations
@@ -118,9 +119,11 @@ fn render_escape_time_f64(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
         .zip(zs.par_chunks_mut(width))
         .enumerate()
         .for_each(|(j, (iter_row, z_row))| {
-            let yg = y_step * j as f64 + params.ymin;
+            let y_ratio = j as f64 / params.height as f64;
+            let yg = params.center_y + (y_ratio - 0.5) * params.span_y;
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
-                let xg = x_step * i as f64 + params.xmin;
+                let x_ratio = i as f64 / params.width as f64;
+                let xg = params.center_x + (x_ratio - 0.5) * params.span_x;
                 let z_pixel = Complex64::new(xg, yg);
                 let FractalResult { iteration, z: z_final } = iterate_point(params, z_pixel);
                 *iter = iteration;
@@ -145,34 +148,36 @@ fn render_escape_time_gmp(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
     let gmp = MpcParams::from_params(params);
     let prec = gmp.prec;
 
-    let xmin = Float::with_val(prec, params.xmin);
-    let xmax = Float::with_val(prec, params.xmax);
-    let ymin = Float::with_val(prec, params.ymin);
-    let ymax = Float::with_val(prec, params.ymax);
+    // Utiliser center+span directement pour éviter les problèmes de précision
+    let center_x = Float::with_val(prec, params.center_x);
+    let center_y = Float::with_val(prec, params.center_y);
+    let span_x = Float::with_val(prec, params.span_x);
+    let span_y = Float::with_val(prec, params.span_y);
 
-    let mut x_range = xmax.clone();
-    x_range -= &xmin;
-    let mut y_range = ymax.clone();
-    y_range -= &ymin;
     let width_f = Float::with_val(prec, params.width);
     let height_f = Float::with_val(prec, params.height);
-    let mut x_step = x_range;
-    x_step /= &width_f;
-    let mut y_step = y_range;
-    y_step /= &height_f;
+    let half = Float::with_val(prec, 0.5);
 
     iterations
         .par_chunks_mut(width)
         .zip(zs.par_chunks_mut(width))
         .enumerate()
         .for_each(|(j, (iter_row, z_row))| {
-            let mut yg = y_step.clone();
-            yg *= j as u32;
-            yg += &ymin;
+            let j_f = Float::with_val(prec, j as u32);
+            let mut y_ratio = j_f.clone();
+            y_ratio /= &height_f;
+            y_ratio -= &half;
+            let mut yg = span_y.clone();
+            yg *= &y_ratio;
+            yg += &center_y;
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
-                let mut xg = x_step.clone();
-                xg *= i as u32;
-                xg += &xmin;
+                let i_f = Float::with_val(prec, i as u32);
+                let mut x_ratio = i_f;
+                x_ratio /= &width_f;
+                x_ratio -= &half;
+                let mut xg = span_x.clone();
+                xg *= &x_ratio;
+                xg += &center_x;
                 let z_pixel = complex_from_xy(prec, xg, yg.clone());
                 let (iter_val, z_final) = iterate_point_mpc(&gmp, &z_pixel);
                 *iter = iter_val;
@@ -277,7 +282,8 @@ pub fn render_escape_time_cancellable_with_reuse(
                 let reuse = build_reuse(params, reuse);
                 return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse);
             }
-            AlgorithmMode::StandardF64 => {
+            AlgorithmMode::StandardF64 | AlgorithmMode::StandardDS => {
+                // StandardDS n'existe que sur GPU, sur CPU on utilise f64
                 let reuse = build_reuse(params, reuse);
                 return render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse);
             }
@@ -309,12 +315,16 @@ pub fn should_use_perturbation(params: &FractalParams, gpu_f32: bool) -> bool {
     ) {
         return false;
     }
-    let span_x = (params.xmax - params.xmin).abs();
-    let span_y = (params.ymax - params.ymin).abs();
-    let pixel_size = span_x.max(span_y) / params.width as f64;
-    let center_x = (params.xmin + params.xmax) / 2.0;
-    let center_y = (params.ymin + params.ymax) / 2.0;
-    let scale = center_x.abs().max(center_y.abs()).max(1.0);
+    let pixel_size = params.span_x.abs().max(params.span_y.abs()) / params.width as f64;
+    
+    // Seuil maximum: au-delà de zoom ~4e15, la précision de ComplexExp (mantisse f64)
+    // n'est plus suffisante. Forcer GMP pour ces zooms extrêmes.
+    const MAX_ZOOM_THRESHOLD: f64 = 1e-15;
+    if pixel_size < MAX_ZOOM_THRESHOLD {
+        return false;
+    }
+    
+    let scale = params.center_x.abs().max(params.center_y.abs()).max(1.0);
     let threshold = if gpu_f32 { 1e-6 } else { 1e-14 };
     pixel_size < threshold * scale
 }
@@ -337,15 +347,13 @@ fn render_escape_time_f64_cancellable_with_reuse(
     let mut iterations = vec![0u32; width * height];
     let mut zs = vec![Complex64::new(0.0, 0.0); width * height];
 
-    let x_range = params.xmax - params.xmin;
-    let y_range = params.ymax - params.ymin;
-
     if width == 0 || height == 0 {
         return Some((iterations, zs));
     }
 
-    let x_step = x_range / params.width as f64;
-    let y_step = y_range / params.height as f64;
+    // Utiliser center+span directement pour éviter les problèmes de précision
+    // xg = center_x + (i/width - 0.5) * span_x
+    // yg = center_y + (j/height - 0.5) * span_y
 
     // Flag interne pour propager l'annulation aux threads Rayon
     let cancelled = AtomicBool::new(false);
@@ -368,7 +376,9 @@ fn render_escape_time_f64_cancellable_with_reuse(
                 return;
             }
 
-            let yg = y_step * j as f64 + params.ymin;
+            // Utiliser center+span directement
+            let y_ratio = j as f64 / params.height as f64;
+            let yg = params.center_y + (y_ratio - 0.5) * params.span_y;
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
                 if let Some(reuse) = reuse_row {
                     let ratio = reuse.ratio as usize;
@@ -383,7 +393,8 @@ fn render_escape_time_f64_cancellable_with_reuse(
                         }
                     }
                 }
-                let xg = x_step * i as f64 + params.xmin;
+                let x_ratio = i as f64 / params.width as f64;
+                let xg = params.center_x + (x_ratio - 0.5) * params.span_x;
                 let z_pixel = Complex64::new(xg, yg);
                 let FractalResult { iteration, z: z_final } = iterate_point(params, z_pixel);
                 *iter = iteration;
@@ -423,21 +434,15 @@ fn render_escape_time_gmp_cancellable_with_reuse(
     let gmp = MpcParams::from_params(params);
     let prec = gmp.prec;
 
-    let xmin = Float::with_val(prec, params.xmin);
-    let xmax = Float::with_val(prec, params.xmax);
-    let ymin = Float::with_val(prec, params.ymin);
-    let ymax = Float::with_val(prec, params.ymax);
+    // Utiliser center+span directement pour éviter les problèmes de précision
+    let center_x = Float::with_val(prec, params.center_x);
+    let center_y = Float::with_val(prec, params.center_y);
+    let span_x = Float::with_val(prec, params.span_x);
+    let span_y = Float::with_val(prec, params.span_y);
 
-    let mut x_range = xmax.clone();
-    x_range -= &xmin;
-    let mut y_range = ymax.clone();
-    y_range -= &ymin;
     let width_f = Float::with_val(prec, params.width);
     let height_f = Float::with_val(prec, params.height);
-    let mut x_step = x_range;
-    x_step /= &width_f;
-    let mut y_step = y_range;
-    y_step /= &height_f;
+    let half = Float::with_val(prec, 0.5);
 
     let cancelled = AtomicBool::new(false);
 
@@ -457,9 +462,13 @@ fn render_escape_time_gmp_cancellable_with_reuse(
                 return;
             }
 
-            let mut yg = y_step.clone();
-            yg *= j as u32;
-            yg += &ymin;
+            let j_f = Float::with_val(prec, j as u32);
+            let mut y_ratio = j_f.clone();
+            y_ratio /= &height_f;
+            y_ratio -= &half;
+            let mut yg = span_y.clone();
+            yg *= &y_ratio;
+            yg += &center_y;
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
                 if let Some(reuse) = reuse_row {
                     let ratio = reuse.ratio as usize;
@@ -474,9 +483,13 @@ fn render_escape_time_gmp_cancellable_with_reuse(
                         }
                     }
                 }
-                let mut xg = x_step.clone();
-                xg *= i as u32;
-                xg += &xmin;
+                let i_f = Float::with_val(prec, i as u32);
+                let mut x_ratio = i_f;
+                x_ratio /= &width_f;
+                x_ratio -= &half;
+                let mut xg = span_x.clone();
+                xg *= &x_ratio;
+                xg += &center_x;
                 let z_pixel = complex_from_xy(prec, xg, yg.clone());
                 let (iter_val, z_final) = iterate_point_mpc(&gmp, &z_pixel);
                 *iter = iter_val;

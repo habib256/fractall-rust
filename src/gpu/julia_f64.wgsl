@@ -1,10 +1,10 @@
 enable f64;
 
 struct Params {
-    xmin: f64,
-    xmax: f64,
-    ymin: f64,
-    ymax: f64,
+    center_x: f64,
+    center_y: f64,
+    span_x: f64,
+    span_y: f64,
     seed_re: f64,
     seed_im: f64,
     width: u32,
@@ -34,8 +34,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.y * params.width + gid.x;
     let fx = f64(gid.x) / f64(params.width);
     let fy = f64(gid.y) / f64(params.height);
-    let x = params.xmin + (params.xmax - params.xmin) * fx;
-    let y = params.ymin + (params.ymax - params.ymin) * fy;
+    // Compute offset from center directly to avoid precision loss
+    let x = params.center_x + (fx - 0.5) * params.span_x;
+    let y = params.center_y + (fy - 0.5) * params.span_y;
 
     var z_re = x;
     var z_im = y;
