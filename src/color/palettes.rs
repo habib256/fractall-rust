@@ -194,7 +194,18 @@ fn smooth_iteration(iteration: u32, z: Complex64, iter_max: u32) -> f64 {
     let iter = iteration as f64;
     let max = iter_max as f64;
 
+    // Vérifier que z est fini avant de calculer sa norme
+    // Si z est NaN ou infini, retourner une valeur par défaut
+    if !z.re.is_finite() || !z.im.is_finite() {
+        return iter / max;
+    }
+
     let mag = z.norm();
+
+    // Vérifier que la norme est finie et valide
+    if !mag.is_finite() || mag <= 0.0 {
+        return iter / max;
+    }
 
     // Même logique que Colorization_SmoothIteration (sans cas Lyapunov)
     if iteration >= iter_max || mag < 7.4 {
@@ -202,6 +213,10 @@ fn smooth_iteration(iteration: u32, z: Complex64, iter_max: u32) -> f64 {
     }
 
     let log_zn = mag.ln() / 2.0;
+    if !log_zn.is_finite() {
+        return iter / max;
+    }
+
     let nu = (log_zn / 2.0_f64.ln()).ln() / 2.0_f64.ln();
 
     if !nu.is_finite() {

@@ -218,7 +218,12 @@ pub fn complex_from_f64(prec: u32, re: f64, im: f64) -> Complex {
 }
 
 pub fn complex_to_complex64(value: &Complex) -> Complex64 {
-    Complex64::new(value.real().to_f64(), value.imag().to_f64())
+    let re = value.real().to_f64();
+    let im = value.imag().to_f64();
+    // S'assurer que les valeurs sont finies, sinon utiliser 0.0
+    let re_finite = if re.is_finite() { re } else { 0.0 };
+    let im_finite = if im.is_finite() { im } else { 0.0 };
+    Complex64::new(re_finite, im_finite)
 }
 
 pub fn complex_norm_sqr(value: &Complex, prec: u32) -> Float {

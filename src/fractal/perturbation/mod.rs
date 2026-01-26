@@ -103,15 +103,22 @@ pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32
 
     // Bits needed = log2(zoom) + safety margin
     // For deep zooms: need ~3.32 bits per decimal digit of zoom
-    // Add 64 bits safety margin for intermediate calculations
+    // Add safety margin for intermediate calculations
+    // Pour les très grands zooms (>1e10), augmenter la marge pour éviter les erreurs
     let zoom_bits = zoom.log2().ceil() as i32;
-    let needed_bits = (zoom_bits + 64).max(128) as u32;
+    let safety_margin = if zoom > 1e10 {
+        96  // Marge plus grande pour les très grands zooms
+    } else if zoom > 1e6 {
+        80  // Marge moyenne pour les zooms moyens
+    } else {
+        64  // Marge standard pour les zooms faibles
+    };
+    let needed_bits = (zoom_bits + safety_margin).max(128) as u32;
 
+    // Ajustement automatique basé sur le zoom : utiliser la précision calculée
+    // Le preset (params.precision_bits) est ignoré pour permettre l'ajustement automatique
     // Clamp to reasonable range: 128 minimum, 8192 maximum
-    params
-        .precision_bits
-        .max(needed_bits)
-        .clamp(128, 8192)
+    needed_bits.clamp(128, 8192)
 }
 
 #[allow(dead_code)]
@@ -247,6 +254,17 @@ pub fn render_perturbation_with_cache(
             .iter()
             .map(|flag| flag.load(Ordering::Relaxed))
             .collect();
+
+        // Détecter les pixels avec itération 0 ou 1 comme suspects
+        // Ces pixels peuvent être des erreurs de calcul, surtout avec des tolérances élevées
+        // qui ne les détectent pas comme glitched. Les recalculer en GMP pour être sûr.
+        // Note: itération 0 = divergence immédiate (peut être correct, mais vérifions en GMP)
+        for (idx, &iter) in iterations.iter().enumerate() {
+            if iter <= 1 {
+                // Pixel qui diverge immédiatement : suspect, recalculer en GMP pour vérifier
+                glitch_mask[idx] = true;
+            }
+        }
 
         if params.glitch_neighbor_pass {
             let neighbor_threshold = (params.iteration_max / 50).max(8);

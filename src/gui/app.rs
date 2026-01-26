@@ -80,7 +80,7 @@ impl FractallApp {
         let width = 1024;
         let height = 768;
         let mut params = default_params_for_type(default_type, width, height);
-        apply_default_preset(&mut params, RenderPreset::Ultra);
+        apply_default_preset(&mut params, RenderPreset::Standard);
         
         Self {
             params: params.clone(),
@@ -91,11 +91,14 @@ impl FractallApp {
             palette_index: 6, // SmoothPlasma par défaut
             color_repeat: 40,
             selected_lyapunov_preset: LyapunovPreset::default(),
-            render_preset: RenderPreset::Ultra,
+            render_preset: RenderPreset::Standard,
             gpu_renderer: GpuRenderer::new().map(Arc::new),
             use_gpu: false,
-            center_x: 0.0,
-            center_y: 0.0,
+            // Initialiser les coordonnées haute précision depuis les params f64
+            center_x_hp: params.center_x.to_string(),
+            center_y_hp: params.center_y.to_string(),
+            span_x_hp: params.span_x.to_string(),
+            span_y_hp: params.span_y.to_string(),
             selecting: false,
             select_start: None,
             select_current: None,
@@ -117,10 +120,168 @@ impl FractallApp {
         }
     }
     
+    /// Synchronise les coordonnées haute précision vers les params f64.
+    /// Appelé après chaque modification des coordonnées HP.
+    fn sync_hp_to_params(&mut self) {
+        // Parser les strings HP vers rug::Float puis convertir en f64
+        let prec = HP_PRECISION;
+        
+        if let Ok(cx) = Float::parse(&self.center_x_hp) {
+            self.params.center_x = Float::with_val(prec, cx).to_f64();
+        }
+        if let Ok(cy) = Float::parse(&self.center_y_hp) {
+            self.params.center_y = Float::with_val(prec, cy).to_f64();
+        }
+        if let Ok(sx) = Float::parse(&self.span_x_hp) {
+            self.params.span_x = Float::with_val(prec, sx).to_f64();
+        }
+        if let Ok(sy) = Float::parse(&self.span_y_hp) {
+            self.params.span_y = Float::with_val(prec, sy).to_f64();
+        }
+    }
+    
+    /// Met à jour les coordonnées HP depuis les params f64.
+    /// Appelé quand on change de type de fractale ou reset.
+    fn sync_params_to_hp(&mut self) {
+        self.center_x_hp = format!("{:.20e}", self.params.center_x);
+        self.center_y_hp = format!("{:.20e}", self.params.center_y);
+        self.span_x_hp = format!("{:.20e}", self.params.span_x);
+        self.span_y_hp = format!("{:.20e}", self.params.span_y);
+    }
+    
+    /// Effectue un zoom en haute précision.
+    /// `ratio_x`, `ratio_y` : position relative dans l'image (0.0-1.0)
+    /// `zoom_factor` : facteur de zoom (>1 = zoom in, <1 = zoom out)
+    fn zoom_hp(&mut self, ratio_x: f64, ratio_y: f64, zoom_factor: f64) {
+        let prec = HP_PRECISION;
+        
+        // Parser les coordonnées actuelles
+        let center_x = Float::parse(&self.center_x_hp)
+            .map(|p| Float::with_val(prec, p))
+            .unwrap_or_else(|_| Float::with_val(prec, self.params.center_x));
+        let center_y = Float::parse(&self.center_y_hp)
+            .map(|p| Float::with_val(prec, p))
+            .unwrap_or_else(|_| Float::with_val(prec, self.params.center_y));
+        let span_x = Float::parse(&self.span_x_hp)
+            .map(|p| Float::with_val(prec, p))
+            .unwrap_or_else(|_| Float::with_val(prec, self.params.span_x));
+        let span_y = Float::parse(&self.span_y_hp)
+            .map(|p| Float::with_val(prec, p))
+            .unwrap_or_else(|_| Float::with_val(prec, self.params.span_y));
+        
+        // Calculer le nouveau centre: center + (ratio - 0.5) * span
+        let offset_x = Float::with_val(prec, ratio_x - 0.5) * &span_x;
+        let offset_y = Float::with_val(prec, ratio_y - 0.5) * &span_y;
+        let new_center_x = center_x + offset_x;
+        let new_center_y = center_y + offset_y;
+        
+        // Nouveaux spans (divisés par le facteur de zoom)
+        let target_aspect = self.params.width as f64 / self.params.height as f64;
+        let new_span_y = span_y / Float::with_val(prec, zoom_factor);
+        let new_span_x = Float::with_val(prec, target_aspect) * &new_span_y;
+        
+        // Sauvegarder en strings avec précision maximale
+        self.center_x_hp = new_center_x.to_string();
+        self.center_y_hp = new_center_y.to_string();
+        self.span_x_hp = new_span_x.to_string();
+        self.span_y_hp = new_span_y.to_string();
+        
+        // Synchroniser vers f64 pour le rendu
+        self.sync_hp_to_params();
+    }
+    
+    /// Effectue un zoom rectangulaire en haute précision.
+    fn zoom_rect_hp(&mut self, xr1: f64, yr1: f64, xr2: f64, yr2: f64) {
+        let prec = HP_PRECISION;
+        
+        // Parser les coordonnées actuelles
+        let center_x = Float::parse(&self.center_x_hp)
+            .map(|p| Float::with_val(prec, p))
+            .unwrap_or_else(|_| Float::with_val(prec, self.params.center_x));
+        let center_y = Float::parse(&self.center_y_hp)
+            .map(|p| Float::with_val(prec, p))
+            .unwrap_or_else(|_| Float::with_val(prec, self.params.center_y));
+        let span_x = Float::parse(&self.span_x_hp)
+            .map(|p| Float::with_val(prec, p))
+            .unwrap_or_else(|_| Float::with_val(prec, self.params.span_x));
+        let span_y = Float::parse(&self.span_y_hp)
+            .map(|p| Float::with_val(prec, p))
+            .unwrap_or_else(|_| Float::with_val(prec, self.params.span_y));
+        
+        // Nouveau centre: center + ((r1+r2)/2 - 0.5) * span
+        let mid_ratio_x = (xr1 + xr2) * 0.5 - 0.5;
+        let mid_ratio_y = (yr1 + yr2) * 0.5 - 0.5;
+        let new_center_x = &center_x + Float::with_val(prec, mid_ratio_x) * &span_x;
+        let new_center_y = &center_y + Float::with_val(prec, mid_ratio_y) * &span_y;
+        
+        // Nouveaux spans: (r2 - r1) * span
+        let selection_span_x = Float::with_val(prec, xr2 - xr1) * &span_x;
+        let selection_span_y = Float::with_val(prec, yr2 - yr1) * &span_y;
+        
+        // Ajuster pour le ratio d'aspect
+        let target_aspect = self.params.width as f64 / self.params.height as f64;
+        let selection_aspect = selection_span_x.to_f64() / selection_span_y.to_f64();
+        
+        let (new_span_x, new_span_y) = if selection_aspect > target_aspect {
+            // Sélection plus large : élargir span_y
+            let sy = &selection_span_x / Float::with_val(prec, target_aspect);
+            (selection_span_x, sy)
+        } else {
+            // Sélection plus haute : élargir span_x
+            let sx = &selection_span_y * Float::with_val(prec, target_aspect);
+            (sx, selection_span_y)
+        };
+        
+        // Sauvegarder en strings
+        self.center_x_hp = new_center_x.to_string();
+        self.center_y_hp = new_center_y.to_string();
+        self.span_x_hp = new_span_x.to_string();
+        self.span_y_hp = new_span_y.to_string();
+        
+        // Synchroniser vers f64
+        self.sync_hp_to_params();
+    }
+    
+    /// Dézoom en haute précision.
+    fn zoom_out_hp(&mut self, factor: f64) {
+        let prec = HP_PRECISION;
+        
+        let span_y = Float::parse(&self.span_y_hp)
+            .map(|p| Float::with_val(prec, p))
+            .unwrap_or_else(|_| Float::with_val(prec, self.params.span_y));
+        
+        let target_aspect = self.params.width as f64 / self.params.height as f64;
+        let new_span_y = span_y * Float::with_val(prec, factor);
+        let new_span_x = Float::with_val(prec, target_aspect) * &new_span_y;
+        
+        self.span_x_hp = new_span_x.to_string();
+        self.span_y_hp = new_span_y.to_string();
+        
+        self.sync_hp_to_params();
+    }
+    
     /// Lance le rendu progressif de la fractale dans un thread séparé.
     fn start_render(&mut self) {
         // Annuler tout rendu en cours
-        self.render_cancel.store(true, Ordering::Relaxed);
+        if self.rendering {
+            self.render_cancel.store(true, Ordering::Relaxed);
+            
+            // Vider tous les messages en attente du receiver pour éviter de traiter des messages obsolètes
+            if let Some(receiver) = &self.render_receiver {
+                while receiver.try_recv().is_ok() {
+                    // Vider tous les messages
+                }
+            }
+            
+            // Nettoyer l'ancien thread et receiver
+            if let Some(handle) = self.render_thread.take() {
+                // On ne peut pas attendre le thread ici (bloquerait l'UI), mais on le marque pour nettoyage
+                // Le thread se terminera de lui-même quand il verra le flag cancel
+                drop(handle);
+            }
+            self.render_receiver = None;
+            self.rendering = false;
+        }
 
         // Créer un nouveau flag d'annulation
         self.render_cancel = Arc::new(AtomicBool::new(false));
@@ -388,17 +549,20 @@ impl FractallApp {
             return;
         }
 
+        // Toujours demander un repaint pour animer le spinner pendant le rendu
+        ctx.request_repaint();
+
         // Récupérer un seul message pour permettre l'affichage de chaque passe
         let msg = {
             let receiver = match &self.render_receiver {
                 Some(r) => r,
-                None => return,
+                None => return, // Pas de receiver, mais on a déjà demandé le repaint
             };
             receiver.try_recv().ok()
         };
 
         let Some(msg) = msg else {
-            return;
+            return; // Pas de message, mais on a déjà demandé le repaint
         };
 
         match msg {
@@ -591,17 +755,14 @@ impl FractallApp {
     
     /// Zoom au point spécifié avec un facteur donné.
     fn zoom_at_point(&mut self, point: Complex64, factor: f64) {
-        // Nouveau centre = point cliqué
-        self.params.center_x = point.re;
-        self.params.center_y = point.im;
+        // Calculer le ratio du point dans l'image
+        // point = center + (ratio - 0.5) * span
+        // => ratio = (point - center) / span + 0.5
+        let ratio_x = (point.re - self.params.center_x) / self.params.span_x + 0.5;
+        let ratio_y = (point.im - self.params.center_y) / self.params.span_y + 0.5;
         
-        // Maintenir le ratio d'aspect lors du zoom
-        let target_aspect = self.params.width as f64 / self.params.height as f64;
-        
-        // Réduire l'étendue par le facteur de zoom en maintenant le ratio
-        // On utilise span_y comme référence et on calcule span_x pour maintenir le ratio
-        self.params.span_y /= factor;
-        self.params.span_x = self.params.span_y * target_aspect;
+        // Utiliser le zoom haute précision
+        self.zoom_hp(ratio_x, ratio_y, factor);
         
         // Invalider le cache d'orbite car le centre a changé
         self.orbit_cache = None;
@@ -614,76 +775,28 @@ impl FractallApp {
     /// L'image affichée représente déjà une zone zoomée définie par center+span.
     fn zoom_to_rectangle(&mut self, rect_min: egui::Pos2, rect_max: egui::Pos2, image_rect: egui::Rect) {
         // Calculer les ratios relatifs dans l'image affichée (0.0 à 1.0)
-        // Ces ratios correspondent directement à la position dans la zone visible du plan complexe
         let x_ratio1 = ((rect_min.x - image_rect.min.x) / image_rect.width()) as f64;
         let y_ratio1 = ((rect_min.y - image_rect.min.y) / image_rect.height()) as f64;
         let x_ratio2 = ((rect_max.x - image_rect.min.x) / image_rect.width()) as f64;
         let y_ratio2 = ((rect_max.y - image_rect.min.y) / image_rect.height()) as f64;
         
         // Clamper les ratios entre 0.0 et 1.0
-        let x_ratio1 = x_ratio1.max(0.0).min(1.0);
-        let y_ratio1 = y_ratio1.max(0.0).min(1.0);
-        let x_ratio2 = x_ratio2.max(0.0).min(1.0);
-        let y_ratio2 = y_ratio2.max(0.0).min(1.0);
+        let x_ratio1 = x_ratio1.clamp(0.0, 1.0);
+        let y_ratio1 = y_ratio1.clamp(0.0, 1.0);
+        let x_ratio2 = x_ratio2.clamp(0.0, 1.0);
+        let y_ratio2 = y_ratio2.clamp(0.0, 1.0);
         
-        // S'assurer que x1 < x2 et y1 < y2 dans les ratios
-        let (xr1, xr2) = if x_ratio1 < x_ratio2 {
-            (x_ratio1, x_ratio2)
-        } else {
-            (x_ratio2, x_ratio1)
-        };
-        let (yr1, yr2) = if y_ratio1 < y_ratio2 {
-            (y_ratio1, y_ratio2)
-        } else {
-            (y_ratio2, y_ratio1)
-        };
+        // S'assurer que r1 < r2
+        let (xr1, xr2) = if x_ratio1 < x_ratio2 { (x_ratio1, x_ratio2) } else { (x_ratio2, x_ratio1) };
+        let (yr1, yr2) = if y_ratio1 < y_ratio2 { (y_ratio1, y_ratio2) } else { (y_ratio2, y_ratio1) };
         
         // Vérifier que le rectangle a une taille minimale
         if (xr2 - xr1) < 0.01 || (yr2 - yr1) < 0.01 {
             return; // Rectangle trop petit (moins de 1% de l'image)
         }
         
-        // Calculer le nouveau centre et span directement à partir des ratios
-        // IMPORTANT: éviter la soustraction de grandes valeurs proches (cx_max - cx_min)
-        // qui perd toute précision aux zooms profonds (>1e15).
-        // 
-        // Formules directes:
-        //   new_center = center + ((r1 + r2)/2 - 0.5) * span
-        //   new_span = (r2 - r1) * span
-        // 
-        // Ces formules utilisent uniquement des ratios (0-1) et le span actuel,
-        // évitant ainsi les erreurs de soustraction.
-        
-        let selection_span_x = (xr2 - xr1) * self.params.span_x;
-        let selection_span_y = (yr2 - yr1) * self.params.span_y;
-        
-        // S'assurer que le span n'est pas trop petit (éviter division par zéro)
-        if selection_span_x <= 0.0 || selection_span_y <= 0.0 {
-            return;
-        }
-        
-        // Nouveau centre: center + ((r1+r2)/2 - 0.5) * span
-        let new_center_x = self.params.center_x + ((xr1 + xr2) * 0.5 - 0.5) * self.params.span_x;
-        let new_center_y = self.params.center_y + ((yr1 + yr2) * 0.5 - 0.5) * self.params.span_y;
-        
-        // Ajuster les spans pour maintenir le ratio d'aspect de la fenêtre
-        // tout en contenant entièrement la zone sélectionnée
-        let target_aspect = self.params.width as f64 / self.params.height as f64;
-        let selection_aspect = selection_span_x / selection_span_y;
-        
-        let (new_span_x, new_span_y) = if selection_aspect > target_aspect {
-            // Sélection plus large que la fenêtre : élargir span_y
-            (selection_span_x, selection_span_x / target_aspect)
-        } else {
-            // Sélection plus haute que la fenêtre : élargir span_x
-            (selection_span_y * target_aspect, selection_span_y)
-        };
-        
-        // Mettre à jour les paramètres (centre + span)
-        self.params.center_x = new_center_x;
-        self.params.center_y = new_center_y;
-        self.params.span_x = new_span_x;
-        self.params.span_y = new_span_y;
+        // Utiliser le zoom rectangulaire haute précision
+        self.zoom_rect_hp(xr1, yr1, xr2, yr2);
         
         // Invalider le cache d'orbite car le centre a changé
         self.orbit_cache = None;
@@ -693,29 +806,14 @@ impl FractallApp {
     
     /// Dézoom avec un facteur donné.
     fn zoom_out(&mut self, factor: f64) {
-        // Maintenir le ratio d'aspect lors du dézoom
-        let target_aspect = self.params.width as f64 / self.params.height as f64;
-        
-        // Multiplier l'étendue par le facteur de dézoom en maintenant le ratio
-        // On utilise span_y comme référence et on calcule span_x pour maintenir le ratio
-        self.params.span_y *= factor;
-        self.params.span_x = self.params.span_y * target_aspect;
-        
+        self.zoom_out_hp(factor);
         self.start_render();
     }
     
     /// Dézoom au point spécifié avec un facteur donné.
     fn zoom_out_at_point(&mut self, _point: Complex64, factor: f64) {
-        // Maintenir le ratio d'aspect lors du dézoom
-        let target_aspect = self.params.width as f64 / self.params.height as f64;
-        
-        // Multiplier l'étendue par le facteur de dézoom en maintenant le ratio
-        self.params.span_y *= factor;
-        self.params.span_x = self.params.span_y * target_aspect;
-        
-        // Le centre reste le même (contrairement au zoom qui déplace le centre vers le point)
-        // Cela permet de dézoomer tout en gardant la vue centrée sur le point actuel
-        
+        // Le centre reste le même, on élargit juste le span
+        self.zoom_out_hp(factor);
         self.start_render();
     }
     
@@ -737,6 +835,8 @@ impl FractallApp {
 
         // Appliquer le preset
         apply_lyapunov_preset(&mut self.params, preset);
+        // Synchroniser les coordonnées HP
+        self.sync_params_to_hp();
         self.start_render();
     }
 
@@ -768,6 +868,8 @@ impl FractallApp {
         if self.selected_type == FractalType::Mandelbrot {
             self.apply_render_preset(self.render_preset);
         }
+        // Synchroniser les coordonnées HP depuis les nouvelles params
+        self.sync_params_to_hp();
         self.use_gpu = false;
         // Invalidate orbit cache when changing fractal type
         self.orbit_cache = None;
@@ -974,6 +1076,9 @@ impl eframe::App for FractallApp {
                 new_params.color_mode = self.params.color_mode;
                 new_params.color_repeat = self.params.color_repeat;
                 self.params = new_params;
+                // Synchroniser les coordonnées HP
+                self.sync_params_to_hp();
+                self.orbit_cache = None;
                 self.start_render();
             }
         });
@@ -1211,10 +1316,12 @@ impl eframe::App for FractallApp {
                             if self.use_gpu && self.params.algorithm_mode == AlgorithmMode::ReferenceGmp {
                                 self.params.algorithm_mode = AlgorithmMode::Auto;
                             }
-                            self.orbit_cache = None;
-                            if !self.rendering {
-                                self.start_render();
+                            // StandardDS est supprimé, basculer vers StandardF64 si nécessaire
+                            if self.params.algorithm_mode == AlgorithmMode::StandardDS {
+                                self.params.algorithm_mode = AlgorithmMode::StandardF64;
                             }
+                            self.orbit_cache = None;
+                            self.start_render();
                         }
 
                         ui.separator();
@@ -1227,13 +1334,18 @@ impl eframe::App for FractallApp {
                             match self.params.algorithm_mode {
                                 AlgorithmMode::Auto => "Auto",
                                 AlgorithmMode::StandardF64 => "Standard f32",
-                                AlgorithmMode::StandardDS => "Standard f32 DS",
+                                AlgorithmMode::StandardDS => "Standard f32", // StandardDS supprimé, afficher comme StandardF64
                                 AlgorithmMode::Perturbation => "Perturbation f32/DS",
                                 AlgorithmMode::ReferenceGmp => "Auto", // GMP pas sur GPU
                             }
                         } else {
                             self.params.algorithm_mode.name()
                         };
+                        
+                        // Si StandardDS est sélectionné, le basculer vers StandardF64
+                        if self.params.algorithm_mode == AlgorithmMode::StandardDS {
+                            self.params.algorithm_mode = AlgorithmMode::StandardF64;
+                        }
                         
                         ui.label("Algo:");
                         egui::ComboBox::from_id_source("algorithm_mode")
@@ -1244,7 +1356,7 @@ impl eframe::App for FractallApp {
                                 if self.use_gpu && gpu_available {
                                     // Options GPU (perturbation utilise GMP pour l'orbite de référence en interne)
                                     ui.selectable_value(&mut self.params.algorithm_mode, AlgorithmMode::StandardF64, "Standard f32");
-                                    ui.selectable_value(&mut self.params.algorithm_mode, AlgorithmMode::StandardDS, "Standard f32 DS");
+                                    // StandardDS supprimé - la perturbation utilise déjà DS automatiquement si nécessaire
                                     ui.selectable_value(&mut self.params.algorithm_mode, AlgorithmMode::Perturbation, "Perturbation f32/DS");
                                 } else {
                                     // Options CPU
@@ -1256,9 +1368,7 @@ impl eframe::App for FractallApp {
                         
                         if old_mode != self.params.algorithm_mode {
                             self.orbit_cache = None;
-                            if !self.rendering {
-                                self.start_render();
-                            }
+                            self.start_render();
                         }
 
                         // 3. Tolérance (perturbation uniquement)
@@ -1280,9 +1390,7 @@ impl eframe::App for FractallApp {
                                 });
                             if old_preset != self.render_preset {
                                 self.apply_render_preset(self.render_preset);
-                                if !self.rendering {
-                                    self.start_render();
-                                }
+                                self.start_render();
                             }
                         }
                     }
@@ -1290,7 +1398,12 @@ impl eframe::App for FractallApp {
         });
         
         // Interface principale - zone d'affichage de la fractale
-        egui::CentralPanel::default().show(ctx, |ui| {
+        // Désactiver la sélection de texte pour éviter que le curseur devienne un curseur de texte
+        egui::CentralPanel::default()
+            .frame(egui::Frame::default().fill(egui::Color32::TRANSPARENT))
+            .show(ctx, |ui| {
+                // Désactiver la sélection de texte dans cette zone
+                ui.style_mut().interaction.selectable_labels = false;
             ui.vertical_centered(|ui| {
                 let available_size = ui.available_size();
                 let target_width = available_size.x.max(1.0).floor() as u32;
@@ -1309,8 +1422,18 @@ impl eframe::App for FractallApp {
                     let display_size = image_size * scale;
                     
                     // Gestion des interactions sur l'image
-                    let response = ui.add(egui::Image::new(texture).fit_to_exact_size(display_size));
+                    // Désactiver la sélection de texte pour forcer le curseur à rester un pointeur
+                    let response = ui.add(
+                        egui::Image::new(texture)
+                            .fit_to_exact_size(display_size)
+                            .sense(egui::Sense::click_and_drag())
+                    );
                     let image_rect = response.rect;
+                    
+                    // Forcer le curseur à rester un pointeur (pas un curseur de texte) quand on survole l'image
+                    if response.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
+                    }
                     
                     // Détecter le début d'une sélection rectangulaire (drag avec bouton gauche)
                     ctx.input(|i| {
@@ -1528,7 +1651,19 @@ impl eframe::App for FractallApp {
                     // Afficher le statut du rendu progressif
                     if self.rendering {
                         ui.separator();
-                        ui.label(format!("Rendu {}/{}", self.current_pass, self.total_passes));
+                        if let Some(start) = self.render_start_time {
+                            let elapsed = start.elapsed().as_secs_f64();
+                            let time_str = if elapsed < 60.0 {
+                                format!("{:.1}s", elapsed)
+                            } else {
+                                let mins = (elapsed / 60.0).floor() as u32;
+                                let secs = elapsed % 60.0;
+                                format!("{}m {:.0}s", mins, secs)
+                            };
+                            ui.label(format!("Calcul en cours... ({}) - Passe {}/{}", time_str, self.current_pass, self.total_passes));
+                        } else {
+                            ui.label(format!("Calcul en cours... - Passe {}/{}", self.current_pass, self.total_passes));
+                        }
                     } else if self.is_preview {
                         ui.separator();
                         ui.label("Preview");
