@@ -87,9 +87,17 @@ struct Cli {
     #[arg(long)]
     bla_threshold: Option<f64>,
 
+    /// Multiplicateur du rayon de validité BLA (1.0 = conservateur, >1 = agressif, ex: 2.0)
+    #[arg(long)]
+    bla_validity_scale: Option<f64>,
+
     /// Tolérance de glitch (ex: 1e-4)
     #[arg(long)]
     glitch_tolerance: Option<f64>,
+
+    /// Puissance pour Multibrot (z^d + c), défaut 2.5
+    #[arg(long)]
+    multibrot_power: Option<f64>,
 
     /// Preset Lyapunov (standard, zircon-city, jellyfish, asymmetric, spaceship, heavy-blocks)
     #[arg(long)]
@@ -185,9 +193,19 @@ fn main() {
             params.bla_threshold = bla_threshold;
         }
     }
+    if let Some(bla_validity_scale) = cli.bla_validity_scale {
+        if bla_validity_scale > 0.0 {
+            params.bla_validity_scale = bla_validity_scale;
+        }
+    }
     if let Some(glitch_tolerance) = cli.glitch_tolerance {
         if glitch_tolerance > 0.0 {
             params.glitch_tolerance = glitch_tolerance;
+        }
+    }
+    if let Some(multibrot_power) = cli.multibrot_power {
+        if multibrot_power > 0.0 {
+            params.multibrot_power = multibrot_power;
         }
     }
 

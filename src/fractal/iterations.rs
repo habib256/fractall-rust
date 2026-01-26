@@ -398,10 +398,10 @@ fn nova(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
 }
 
 fn multibrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
-    // Multibrot_Iteration (puissance non entière 2.5)
+    // Multibrot_Iteration (puissance configurable, défaut 2.5)
     let mut z = p.seed;
     let mut i = 0u32;
-    let d = 2.5f64;
+    let d = p.multibrot_power;
 
     while i < p.iteration_max && z.norm() < p.bailout {
         let z_pow = z.powf(d);

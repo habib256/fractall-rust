@@ -331,11 +331,13 @@ mod tests {
             precision_bits: 192,
             algorithm_mode: AlgorithmMode::Perturbation,
             bla_threshold: 1e-6,
+            bla_validity_scale: 1.0,
             glitch_tolerance: 1e-4,
             series_order: 2,
             series_threshold: 1e-6,
             series_error_tolerance: 1e-9,
             glitch_neighbor_pass: false,
+            multibrot_power: 2.5,
             lyapunov_preset: Default::default(),
             lyapunov_sequence: Vec::new(),
         }

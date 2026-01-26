@@ -160,6 +160,7 @@ pub struct GmpParams {
     pub bailout_sqr: Float,
     pub seed: ComplexF,
     pub fractal_type: FractalType,
+    pub multibrot_power: f64,
 }
 
 #[allow(dead_code)]
@@ -175,6 +176,7 @@ impl GmpParams {
             bailout_sqr,
             seed: ComplexF::with_val(prec, params.seed.re, params.seed.im),
             fractal_type: params.fractal_type,
+            multibrot_power: params.multibrot_power,
         }
     }
 }
@@ -186,6 +188,7 @@ pub struct MpcParams {
     pub bailout_sqr: Float,
     pub seed: Complex,
     pub fractal_type: FractalType,
+    pub multibrot_power: f64,
 }
 
 impl MpcParams {
@@ -200,6 +203,7 @@ impl MpcParams {
             bailout_sqr,
             seed: Complex::with_val(prec, (params.seed.re, params.seed.im)),
             fractal_type: params.fractal_type,
+            multibrot_power: params.multibrot_power,
         }
     }
 }
@@ -217,7 +221,7 @@ pub fn complex_to_complex64(value: &Complex) -> Complex64 {
     Complex64::new(value.real().to_f64(), value.imag().to_f64())
 }
 
-fn complex_norm_sqr(value: &Complex, prec: u32) -> Float {
+pub fn complex_norm_sqr(value: &Complex, prec: u32) -> Float {
     let mut re2 = value.real().clone();
     re2 *= value.real();
     let mut im2 = value.imag().clone();
@@ -242,7 +246,7 @@ fn pow_u32_mpc(value: &Complex, mut exp: u32, prec: u32) -> Complex {
     result
 }
 
-fn pow_f64_mpc(value: &Complex, exp: f64, prec: u32) -> Complex {
+pub fn pow_f64_mpc(value: &Complex, exp: f64, prec: u32) -> Complex {
     let r = complex_norm_sqr(value, prec).sqrt();
     if r == 0 {
         return Complex::with_val(prec, (0, 0));
@@ -693,8 +697,9 @@ fn nova(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
 fn multibrot(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let mut z = g.seed.clone();
     let mut i = 0u32;
+    let d = g.multibrot_power;
     while i < g.iteration_max && z.norm_sqr() < g.bailout_sqr {
-        let z_pow = z.pow_f64(2.5, g.prec);
+        let z_pow = z.pow_f64(d, g.prec);
         z = z_pow.add(z_pixel);
         i += 1;
     }
@@ -1098,8 +1103,9 @@ fn nova_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
 fn multibrot_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     let mut z = g.seed.clone();
     let mut i = 0u32;
+    let d = g.multibrot_power;
     while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
-        let z_pow = pow_f64_mpc(&z, 2.5, g.prec);
+        let z_pow = pow_f64_mpc(&z, d, g.prec);
         let mut z_next = z_pow;
         z_next += z_pixel;
         z = z_next;

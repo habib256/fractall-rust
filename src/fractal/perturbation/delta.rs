@@ -27,6 +27,8 @@ pub fn iterate_pixel(
     let glitch_tolerance_sqr = params.glitch_tolerance * params.glitch_tolerance;
     let is_julia = params.fractal_type == FractalType::Julia;
     let is_burning_ship = params.fractal_type == FractalType::BurningShip;
+    let is_multibrot = params.fractal_type == FractalType::Multibrot;
+    let multibrot_power = params.multibrot_power;
     let series_config = SeriesConfig::from_params(params);
     let mut suspect = false;
 
@@ -50,7 +52,13 @@ pub fn iterate_pixel(
                             next_delta = next_delta.add(dc.mul_complex64(node.b));
                         }
                         next_delta = next_delta.add(delta_sq.mul_complex64(node.c));
-                        let err = estimate_series_error(delta_norm_sqr, series_config.order);
+                        let coeff_a_norm = node.a.norm();
+                        let err = estimate_series_error(
+                            delta_norm_sqr,
+                            series_config.order,
+                            level,
+                            coeff_a_norm,
+                        );
                         if err > series_config.error_tolerance {
                             suspect = true;
                         }
@@ -87,7 +95,27 @@ pub fn iterate_pixel(
                 let z_ref_next = ref_orbit.z_ref[next_index];
                 delta = ComplexExp::from_complex64(z_next - z_ref_next);
                 n += 1;
+            } else if is_multibrot {
+                // Multibrot: z^d + c
+                // δ' ≈ d·z_ref^(d-1)·δ + d(d-1)/2·z_ref^(d-2)·δ²
+                let d = multibrot_power;
+                let z_norm = z_ref.norm();
+                if z_norm > 1e-15 {
+                    let a = z_ref.powf(d - 1.0) * d;
+                    let linear = delta.mul_complex64(a);
+                    let c_coeff = d * (d - 1.0) / 2.0;
+                    let c = z_ref.powf(d - 2.0) * c_coeff;
+                    let nonlinear = delta.mul(delta).mul_complex64(c);
+                    delta = linear.add(nonlinear).add(dc);
+                } else {
+                    // Near origin, use simpler formula
+                    delta = dc;
+                }
+                delta_norm_sqr = delta.norm_sqr_approx();
+                n += 1;
             } else {
+                // Standard Mandelbrot/Julia: z² + c
+                // δ' = 2·z_ref·δ + δ²
                 let linear = delta.mul_complex64(z_ref * 2.0);
                 let nonlinear = delta.mul(delta);
                 if is_julia {

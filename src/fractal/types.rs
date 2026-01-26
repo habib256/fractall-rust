@@ -120,7 +120,7 @@ impl FractalType {
             FractalType::Tricorn => "Tricorn",
             FractalType::Mandelbulb => "Mandelbulb (2D power 8)",
             FractalType::Buddhabrot => "Buddhabrot",
-            FractalType::Lyapunov => "Lyapunov Zircon City",
+            FractalType::Lyapunov => "Lyapunov",
             FractalType::PerpendicularBurningShip => "Perpendicular Burning Ship",
             FractalType::Celtic => "Celtic",
             FractalType::AlphaMandelbrot => "Alpha Mandelbrot",
@@ -200,6 +200,8 @@ pub struct FractalParams {
     pub algorithm_mode: AlgorithmMode,
     /// Seuil delta pour activer BLA.
     pub bla_threshold: f64,
+    /// Multiplicateur du rayon de validité BLA (1.0 = conservateur, >1 = agressif).
+    pub bla_validity_scale: f64,
     /// Tolérance de glitch (Pauldelbrot).
     pub glitch_tolerance: f64,
     /// Ordre de la série (0=off, 1=linéaire, 2=quadratique).
@@ -210,6 +212,9 @@ pub struct FractalParams {
     pub series_error_tolerance: f64,
     /// Active la passe voisinage pour détecter les glitches.
     pub glitch_neighbor_pass: bool,
+
+    /// Puissance pour Multibrot (z^d + c), défaut 2.5. Utilisé aussi pour le calcul BLA.
+    pub multibrot_power: f64,
 
     /// Preset Lyapunov sélectionné.
     pub lyapunov_preset: LyapunovPreset,

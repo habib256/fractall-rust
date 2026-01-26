@@ -5,7 +5,7 @@ use num_complex::Complex64;
 use rug::{Complex, Float};
 
 use crate::fractal::{FractalParams, FractalType};
-use crate::fractal::gmp::complex_to_complex64;
+use crate::fractal::gmp::{complex_to_complex64, pow_f64_mpc};
 use crate::fractal::perturbation::bla::{BlaTable, build_bla_table};
 
 #[derive(Clone, Debug)]
@@ -31,6 +31,8 @@ pub struct ReferenceOrbitCache {
     pub seed_im: f64,
     /// BLA threshold used when building the table
     pub bla_threshold: f64,
+    /// BLA validity scale used when building the table
+    pub bla_validity_scale: f64,
 }
 
 impl ReferenceOrbitCache {
@@ -62,6 +64,7 @@ impl ReferenceOrbitCache {
             && (self.seed_re - params.seed.re).abs() < 1e-15
             && (self.seed_im - params.seed.im).abs() < 1e-15
             && (self.bla_threshold - params.bla_threshold).abs() < 1e-20
+            && (self.bla_validity_scale - params.bla_validity_scale).abs() < 1e-10
     }
 
     /// Create a new cache from computed orbit and BLA table.
@@ -83,6 +86,7 @@ impl ReferenceOrbitCache {
             seed_re: params.seed.re,
             seed_im: params.seed.im,
             bla_threshold: params.bla_threshold,
+            bla_validity_scale: params.bla_validity_scale,
         }
     }
 }
@@ -141,7 +145,7 @@ pub fn compute_reference_orbit(
     let cref_f64 = Complex64::new(center_x_gmp.to_f64(), center_y_gmp.to_f64());
 
     let mut z = match params.fractal_type {
-        FractalType::Mandelbrot | FractalType::BurningShip => {
+        FractalType::Mandelbrot | FractalType::BurningShip | FractalType::Multibrot => {
             Complex::with_val(prec, (params.seed.re, params.seed.im))
         }
         FractalType::Julia => cref.clone(),
@@ -185,6 +189,11 @@ pub fn compute_reference_orbit(
                 z_abs *= z_abs.clone();
                 z_abs += &cref;
                 z_abs
+            }
+            FractalType::Multibrot => {
+                let mut z_pow = pow_f64_mpc(&z, params.multibrot_power, prec);
+                z_pow += &cref;
+                z_pow
             }
             _ => return None,
         };
