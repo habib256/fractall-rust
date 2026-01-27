@@ -8,7 +8,7 @@ use rug::Float;
 use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
 use crate::fractal::perturbation::delta::iterate_pixel;
-use crate::fractal::perturbation::orbit::compute_reference_orbit_cached;
+use crate::fractal::perturbation::orbit::{compute_reference_orbit_cached, compute_reference_orbit};
 use crate::fractal::perturbation::types::ComplexExp;
 
 pub mod types;
@@ -16,8 +16,10 @@ pub mod orbit;
 pub mod bla;
 pub mod delta;
 pub mod series;
+pub mod glitch;
 
 pub use orbit::ReferenceOrbitCache;
+pub use glitch::{detect_glitch_clusters, select_secondary_reference_points};
 
 pub fn mark_neighbor_glitches(
     iterations: &[u32],
@@ -236,6 +238,7 @@ pub fn render_perturbation_with_cache(
                     params,
                     &cache_ref.orbit,
                     &cache_ref.bla_table,
+                    cache_ref.series_table.as_ref(),
                     delta0,
                     dc_term,
                 );
@@ -281,18 +284,90 @@ pub fn render_perturbation_with_cache(
             }
         }
 
+        // Multi-reference glitch correction: use secondary reference points
+        // to fix glitch clusters before falling back to GMP
+        if params.max_secondary_refs > 0 {
+            let clusters = detect_glitch_clusters(
+                &glitch_mask,
+                params.width,
+                params.height,
+                params,
+                params.min_glitch_cluster_size as usize,
+            );
+
+            let secondary_refs = select_secondary_reference_points(
+                &clusters,
+                params.max_secondary_refs as usize,
+            );
+
+            // Process each secondary reference
+            for cluster in secondary_refs {
+                // Create params with new center for secondary orbit
+                let mut sec_params = orbit_params.clone();
+                sec_params.center_x = cluster.center_x;
+                sec_params.center_y = cluster.center_y;
+
+                // Compute secondary reference orbit
+                if let Some((sec_orbit, _, _)) = compute_reference_orbit(&sec_params, Some(cancel.as_ref())) {
+                    let sec_bla = bla::build_bla_table(&sec_orbit.z_ref_f64, &sec_params);
+                    let sec_series = if params.series_standalone
+                        && matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia)
+                    {
+                        Some(series::build_series_table(&sec_orbit.z_ref_f64))
+                    } else {
+                        None
+                    };
+
+                    // Re-render cluster pixels with secondary reference
+                    for &idx in &cluster.pixel_indices {
+                        let px = idx % width;
+                        let py = idx / width;
+
+                        // Compute dc relative to secondary center
+                        let dc_re = (px as f64 * inv_width - 0.5) * x_range
+                            - (cluster.center_x - params.center_x);
+                        let dc_im = (py as f64 * inv_height - 0.5) * y_range
+                            - (cluster.center_y - params.center_y);
+
+                        let dc = ComplexExp::from_complex64(Complex64::new(dc_re, dc_im));
+                        let (delta0, dc_term) = if params.fractal_type == FractalType::Julia {
+                            (dc, ComplexExp::zero())
+                        } else {
+                            (ComplexExp::zero(), dc)
+                        };
+
+                        let result = iterate_pixel(
+                            params,
+                            &sec_orbit,
+                            &sec_bla,
+                            sec_series.as_ref(),
+                            delta0,
+                            dc_term,
+                        );
+
+                        // Only update if the secondary reference gave a good result
+                        if !result.glitched && !result.suspect {
+                            iterations[idx] = result.iteration;
+                            zs[idx] = result.z_final;
+                            glitch_mask[idx] = false;
+                        }
+                    }
+                }
+            }
+        }
+
         let glitched_indices: Vec<usize> = glitch_mask
             .iter()
             .enumerate()
             .filter_map(|(idx, flagged)| if *flagged { Some(idx) } else { None })
             .collect();
-        
+
         // Fallback complet vers GMP si trop de glitches (>10% des pixels)
         // Cela indique que la perturbation n'est pas adaptée au niveau de zoom
         let total_pixels = width * height;
         let glitch_ratio = glitched_indices.len() as f64 / total_pixels as f64;
         const GLITCH_FALLBACK_THRESHOLD: f64 = 0.10; // 10%
-        
+
         if glitch_ratio > GLITCH_FALLBACK_THRESHOLD {
             // Trop de glitches: recalculer tous les pixels en GMP
             let gmp_params = MpcParams::from_params(&orbit_params);
@@ -410,6 +485,9 @@ mod tests {
             series_threshold: 1e-6,
             series_error_tolerance: 1e-9,
             glitch_neighbor_pass: false,
+            series_standalone: false,
+            max_secondary_refs: 3,
+            min_glitch_cluster_size: 100,
             multibrot_power: 2.5,
             lyapunov_preset: Default::default(),
             lyapunov_sequence: Vec::new(),

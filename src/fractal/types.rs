@@ -225,6 +225,18 @@ pub struct FractalParams {
     /// Active la passe voisinage pour détecter les glitches.
     pub glitch_neighbor_pass: bool,
 
+    /// Active l'approximation par série standalone (sans BLA).
+    /// Permet de sauter des itérations initiales en utilisant une série de Taylor.
+    pub series_standalone: bool,
+
+    /// Nombre maximum de références secondaires pour la correction de glitchs.
+    /// 0 = désactivé, 3 = valeur recommandée pour un bon compromis performance/qualité.
+    pub max_secondary_refs: u8,
+
+    /// Taille minimale d'un cluster de glitchs pour justifier une référence secondaire.
+    /// Les petits clusters sont recalculés en GMP directement.
+    pub min_glitch_cluster_size: u32,
+
     /// Puissance pour Multibrot (z^d + c), défaut 2.5. Utilisé aussi pour le calcul BLA.
     pub multibrot_power: f64,
 

@@ -324,9 +324,15 @@ pub fn should_use_perturbation(params: &FractalParams, gpu_f32: bool) -> bool {
         return false;
     }
     
-    let scale = params.center_x.abs().max(params.center_y.abs()).max(1.0);
-    let threshold = if gpu_f32 { 1e-6 } else { 1e-14 };
-    pixel_size < threshold * scale
+    if gpu_f32 {
+        // En mode GPU fp32: basculer sur perturbation pour zoom > e5 (pixel_size < 1e-5)
+        const GPU_PERTURBATION_THRESHOLD: f64 = 1e-5;
+        return pixel_size < GPU_PERTURBATION_THRESHOLD;
+    } else {
+        // En mode CPU fp64: basculer sur perturbation pour zoom > e13 (pixel_size < 1e-13)
+        const CPU_PERTURBATION_THRESHOLD: f64 = 1e-13;
+        return pixel_size < CPU_PERTURBATION_THRESHOLD;
+    }
 }
 
 #[allow(dead_code)]

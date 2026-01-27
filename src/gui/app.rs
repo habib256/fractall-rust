@@ -77,10 +77,18 @@ pub struct FractallApp {
 impl FractallApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let default_type = FractalType::Mandelbrot;
-        let width = 1024;
-        let height = 768;
+        let width = 800;
+        let height = 600;
         let mut params = default_params_for_type(default_type, width, height);
         apply_default_preset(&mut params, RenderPreset::Standard);
+        
+        // Initialiser le GPU renderer (peut échouer silencieusement si GPU indisponible)
+        let gpu_renderer = GpuRenderer::new().map(Arc::new);
+        let use_gpu_default = gpu_renderer.is_some();
+        if gpu_renderer.is_none() {
+            eprintln!("⚠️  GPU non disponible - le rendu GPU sera désactivé");
+            eprintln!("   L'application fonctionnera en mode CPU uniquement");
+        }
         
         Self {
             params: params.clone(),
@@ -92,8 +100,8 @@ impl FractallApp {
             color_repeat: 40,
             selected_lyapunov_preset: LyapunovPreset::default(),
             render_preset: RenderPreset::Standard,
-            gpu_renderer: GpuRenderer::new().map(Arc::new),
-            use_gpu: false,
+            gpu_renderer,
+            use_gpu: use_gpu_default,
             // Initialiser les coordonnées haute précision depuis les params f64
             center_x_hp: params.center_x.to_string(),
             center_y_hp: params.center_y.to_string(),
@@ -1291,55 +1299,23 @@ impl eframe::App for FractallApp {
                         ui.separator();
 
                         // ═══════════════════════════════════════════════════════════════
-                        // SECTION CALCUL - Organisation logique des modes
+                        // SECTION CALCUL - Menu Render avec sous-menus hiérarchiques
                         // ═══════════════════════════════════════════════════════════════
                         
-                        // 1. Device: CPU ou GPU
                         let gpu_available = self.gpu_renderer.is_some();
                         let old_use_gpu = self.use_gpu;
-                        
-                        ui.label("Device:");
-                        egui::ComboBox::from_id_source("device_selector")
-                            .selected_text(if self.use_gpu && gpu_available { "GPU" } else { "CPU" })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.use_gpu, false, "CPU");
-                                if gpu_available {
-                                    ui.selectable_value(&mut self.use_gpu, true, "GPU");
-                                } else {
-                                    ui.add_enabled(false, egui::SelectableLabel::new(false, "GPU (N/A)"));
-                                }
-                            });
-                        
-                        // Si on passe de GPU à CPU ou vice-versa, ajuster l'algo si nécessaire
-                        if old_use_gpu != self.use_gpu {
-                            // GMP n'est pas supporté sur GPU
-                            if self.use_gpu && self.params.algorithm_mode == AlgorithmMode::ReferenceGmp {
-                                self.params.algorithm_mode = AlgorithmMode::Auto;
-                            }
-                            // StandardDS est supprimé, basculer vers StandardF64 si nécessaire
-                            if self.params.algorithm_mode == AlgorithmMode::StandardDS {
-                                self.params.algorithm_mode = AlgorithmMode::StandardF64;
-                            }
-                            self.orbit_cache = None;
-                            self.start_render();
-                        }
-
-                        ui.separator();
-
-                        // 2. Algorithme - options différentes selon CPU/GPU
                         let old_mode = self.params.algorithm_mode;
                         
-                        // Texte descriptif du mode actuel
-                        let mode_text = if self.use_gpu && gpu_available {
-                            match self.params.algorithm_mode {
-                                AlgorithmMode::Auto => "Auto",
-                                AlgorithmMode::StandardF64 => "Standard f32",
-                                AlgorithmMode::StandardDS => "Standard f32", // StandardDS supprimé, afficher comme StandardF64
-                                AlgorithmMode::Perturbation => "Perturbation f32/DS",
-                                AlgorithmMode::ReferenceGmp => "Auto", // GMP pas sur GPU
-                            }
-                        } else {
-                            self.params.algorithm_mode.name()
+                        // Texte du menu Render selon la sélection actuelle
+                        let render_text = match (self.use_gpu && gpu_available, self.params.algorithm_mode) {
+                            (_, AlgorithmMode::Auto) => "Auto".to_string(),
+                            (false, AlgorithmMode::StandardF64) => "CPU > fp64".to_string(),
+                            (false, AlgorithmMode::Perturbation) => "CPU > fp64 Perturbation".to_string(),
+                            (false, AlgorithmMode::ReferenceGmp) => "CPU > GMP Reference".to_string(),
+                            (true, AlgorithmMode::StandardF64) => "GPU > fp32".to_string(),
+                            (true, AlgorithmMode::Perturbation) => "GPU > fp32 Perturbation".to_string(),
+                            (true, AlgorithmMode::ReferenceGmp) => "Auto".to_string(), // GMP pas sur GPU, fallback Auto
+                            (_, AlgorithmMode::StandardDS) => "Auto".to_string(), // StandardDS supprimé
                         };
                         
                         // Si StandardDS est sélectionné, le basculer vers StandardF64
@@ -1347,24 +1323,83 @@ impl eframe::App for FractallApp {
                             self.params.algorithm_mode = AlgorithmMode::StandardF64;
                         }
                         
-                        ui.label("Algo:");
-                        egui::ComboBox::from_id_source("algorithm_mode")
-                            .selected_text(mode_text)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.params.algorithm_mode, AlgorithmMode::Auto, "Auto");
+                        ui.menu_button(&render_text, |ui| {
+                            // Option Auto
+                            if ui.selectable_label(
+                                self.params.algorithm_mode == AlgorithmMode::Auto,
+                                "Auto"
+                            ).clicked() {
+                                self.params.algorithm_mode = AlgorithmMode::Auto;
+                                ui.close_menu();
+                            }
+                            
+                            ui.separator();
+                            
+                            // Sous-menu CPU
+                            ui.menu_button("CPU", |ui| {
+                                if ui.selectable_label(
+                                    !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::StandardF64,
+                                    "fp64"
+                                ).clicked() {
+                                    self.use_gpu = false;
+                                    self.params.algorithm_mode = AlgorithmMode::StandardF64;
+                                    ui.close_menu();
+                                }
                                 
-                                if self.use_gpu && gpu_available {
-                                    // Options GPU (perturbation utilise GMP pour l'orbite de référence en interne)
-                                    ui.selectable_value(&mut self.params.algorithm_mode, AlgorithmMode::StandardF64, "Standard f32");
-                                    // StandardDS supprimé - la perturbation utilise déjà DS automatiquement si nécessaire
-                                    ui.selectable_value(&mut self.params.algorithm_mode, AlgorithmMode::Perturbation, "Perturbation f32/DS");
-                                } else {
-                                    // Options CPU
-                                    ui.selectable_value(&mut self.params.algorithm_mode, AlgorithmMode::StandardF64, "Standard f64");
-                                    ui.selectable_value(&mut self.params.algorithm_mode, AlgorithmMode::Perturbation, "Perturbation f64");
-                                    ui.selectable_value(&mut self.params.algorithm_mode, AlgorithmMode::ReferenceGmp, "GMP (haute précision)");
+                                if ui.selectable_label(
+                                    !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::Perturbation,
+                                    "fp64 Perturbation"
+                                ).clicked() {
+                                    self.use_gpu = false;
+                                    self.params.algorithm_mode = AlgorithmMode::Perturbation;
+                                    ui.close_menu();
+                                }
+                                
+                                if ui.selectable_label(
+                                    !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::ReferenceGmp,
+                                    "GMP Reference"
+                                ).clicked() {
+                                    self.use_gpu = false;
+                                    self.params.algorithm_mode = AlgorithmMode::ReferenceGmp;
+                                    ui.close_menu();
                                 }
                             });
+                            
+                            // Sous-menu GPU
+                            if gpu_available {
+                                ui.menu_button("GPU", |ui| {
+                                    if ui.selectable_label(
+                                        self.use_gpu && self.params.algorithm_mode == AlgorithmMode::StandardF64,
+                                        "fp32"
+                                    ).clicked() {
+                                        self.use_gpu = true;
+                                        self.params.algorithm_mode = AlgorithmMode::StandardF64;
+                                        ui.close_menu();
+                                    }
+                                    
+                                    if ui.selectable_label(
+                                        self.use_gpu && self.params.algorithm_mode == AlgorithmMode::Perturbation,
+                                        "fp32 Perturbation"
+                                    ).clicked() {
+                                        self.use_gpu = true;
+                                        self.params.algorithm_mode = AlgorithmMode::Perturbation;
+                                        ui.close_menu();
+                                    }
+                                });
+                            } else {
+                                ui.add_enabled(false, egui::Label::new("GPU (N/A)"));
+                            }
+                        });
+                        
+                        // Si on passe de GPU à CPU ou vice-versa, ajuster l'algo si nécessaire
+                        if old_use_gpu != self.use_gpu {
+                            // GMP n'est pas supporté sur GPU
+                            if self.use_gpu && self.params.algorithm_mode == AlgorithmMode::ReferenceGmp {
+                                self.params.algorithm_mode = AlgorithmMode::Auto;
+                            }
+                            self.orbit_cache = None;
+                            self.start_render();
+                        }
                         
                         if old_mode != self.params.algorithm_mode {
                             self.orbit_cache = None;

@@ -19,6 +19,10 @@ pub struct BlaNode {
     pub validity_radius: f64,
     /// Pour Burning Ship: indique si le BLA est valide (z_ref reste dans le même quadrant)
     pub burning_ship_valid: bool,
+    /// Pour Burning Ship optimisé: signe du quadrant Re (1.0 si Re >= 0, -1.0 sinon)
+    pub sign_re: f64,
+    /// Pour Burning Ship optimisé: signe du quadrant Im (1.0 si Im >= 0, -1.0 sinon)
+    pub sign_im: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -204,6 +208,8 @@ fn compute_bla_coefficients(
     }
 }
 
+/// Build BLA table from the f64 reference orbit.
+/// Note: Use z_ref_f64 from ReferenceOrbit, not z_ref (which is Vec<ComplexExp>).
 pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTable {
     let supports_bla = matches!(
         params.fractal_type,
@@ -257,6 +263,10 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
             validity = 0.0;
         }
 
+        // Calculate quadrant signs for Burning Ship optimization
+        let sign_re = if z.re >= 0.0 { 1.0 } else { -1.0 };
+        let sign_im = if z.im >= 0.0 { 1.0 } else { -1.0 };
+
         level0.push(BlaNode {
             a: coeffs.a,
             b: coeffs.b,
@@ -265,6 +275,8 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
             e: coeffs.e,
             validity_radius: validity,
             burning_ship_valid: bs_valid,
+            sign_re,
+            sign_im,
         });
     }
     levels.push(level0);
@@ -325,7 +337,9 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
             // Valider les coefficients d'ordre supérieur
             let d_new = if d_new.re.is_finite() && d_new.im.is_finite() { d_new } else { zero };
             let e_new = if e_new.re.is_finite() && e_new.im.is_finite() { e_new } else { zero };
-            
+
+            // Propagate signs from starting node (node1)
+            // For multi-step BLA, the starting quadrant determines the sign
             current.push(BlaNode {
                 a: a_new,
                 b: b_new,
@@ -334,6 +348,8 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
                 e: e_new,
                 validity_radius: validity,
                 burning_ship_valid: bs_valid,
+                sign_re: node1.sign_re,
+                sign_im: node1.sign_im,
             });
         }
         levels.push(current);

@@ -7,11 +7,16 @@ use rug::{Complex, Float};
 use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::gmp::{complex_to_complex64, pow_f64_mpc};
 use crate::fractal::perturbation::bla::{BlaTable, build_bla_table};
+use crate::fractal::perturbation::types::ComplexExp;
+use crate::fractal::perturbation::series::{SeriesTable, build_series_table};
 
 #[derive(Clone, Debug)]
 pub struct ReferenceOrbit {
     pub cref: Complex64,
-    pub z_ref: Vec<Complex64>,
+    /// High precision reference orbit (extended exponent range via FloatExp)
+    pub z_ref: Vec<ComplexExp>,
+    /// Fast path: f64 version of reference orbit for shallow zooms
+    pub z_ref_f64: Vec<Complex64>,
 }
 
 /// Cache for reference orbit and BLA table to avoid recomputation between frames.
@@ -19,6 +24,8 @@ pub struct ReferenceOrbit {
 pub struct ReferenceOrbitCache {
     pub orbit: ReferenceOrbit,
     pub bla_table: BlaTable,
+    /// Standalone series table for iteration skipping (optional)
+    pub series_table: Option<SeriesTable>,
     /// Center X in GMP precision (stored as string for Clone/Debug)
     pub center_x_gmp: String,
     /// Center Y in GMP precision (stored as string for Clone/Debug)
@@ -63,6 +70,7 @@ impl ReferenceOrbitCache {
     pub fn new(
         orbit: ReferenceOrbit,
         bla_table: BlaTable,
+        series_table: Option<SeriesTable>,
         params: &FractalParams,
         center_x_gmp: String,
         center_y_gmp: String,
@@ -70,6 +78,7 @@ impl ReferenceOrbitCache {
         Self {
             orbit,
             bla_table,
+            series_table,
             center_x_gmp,
             center_y_gmp,
             fractal_type: params.fractal_type,
@@ -98,11 +107,23 @@ pub fn compute_reference_orbit_cached(
 
     // Compute fresh orbit and BLA table
     let (orbit, center_x_gmp, center_y_gmp) = compute_reference_orbit(params, cancel)?;
-    let bla_table = build_bla_table(&orbit.z_ref, params);
+    // Use z_ref_f64 for BLA table building (BLA works with f64 coefficients)
+    let bla_table = build_bla_table(&orbit.z_ref_f64, params);
+
+    // Build series table for standalone series approximation (if enabled)
+    // Only for Mandelbrot and Julia; Burning Ship has abs() which breaks series
+    let series_table = if params.series_standalone
+        && matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia)
+    {
+        Some(build_series_table(&orbit.z_ref_f64))
+    } else {
+        None
+    };
 
     Some(Arc::new(ReferenceOrbitCache::new(
         orbit,
         bla_table,
+        series_table,
         params,
         center_x_gmp,
         center_y_gmp,
@@ -142,7 +163,10 @@ pub fn compute_reference_orbit(
     bailout_sqr *= &bailout;
 
     let mut z_ref = Vec::with_capacity(params.iteration_max as usize + 1);
-    z_ref.push(complex_to_complex64(&z));
+    let mut z_ref_f64 = Vec::with_capacity(params.iteration_max as usize + 1);
+    // Store both high-precision and f64 versions
+    z_ref.push(ComplexExp::from_gmp(&z));
+    z_ref_f64.push(complex_to_complex64(&z));
 
     for i in 0..params.iteration_max {
         if let Some(cancel) = cancel {
@@ -181,10 +205,12 @@ pub fn compute_reference_orbit(
             }
             _ => return None,
         };
-        z_ref.push(complex_to_complex64(&z));
+        // Store both high-precision and f64 versions
+        z_ref.push(ComplexExp::from_gmp(&z));
+        z_ref_f64.push(complex_to_complex64(&z));
     }
 
-    Some((ReferenceOrbit { cref: cref_f64, z_ref }, cx_str, cy_str))
+    Some((ReferenceOrbit { cref: cref_f64, z_ref, z_ref_f64 }, cx_str, cy_str))
 }
 
 fn complex_norm_sqr(value: &Complex, prec: u32) -> Float {

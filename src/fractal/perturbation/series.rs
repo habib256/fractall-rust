@@ -1,4 +1,220 @@
+use num_complex::Complex64;
+
 use crate::fractal::FractalParams;
+use crate::fractal::perturbation::types::ComplexExp;
+
+/// Coefficients de série de Taylor pour une itération.
+/// Pour z' = z² + c, la série est: δ'_n = A_n·δ + B_n·δ² + C_n·δ³
+/// où les coefficients évoluent selon les récurrences:
+/// - A_{n+1} = 2·z_n·A_n (init A_0 = 1)
+/// - B_{n+1} = 2·z_n·B_n + A_n² (init B_0 = 0)
+/// - C_{n+1} = 2·z_n·C_n + 2·A_n·B_n (init C_0 = 0)
+#[derive(Clone, Copy, Debug)]
+pub struct SeriesCoefficients {
+    /// Coefficient linéaire A: δ'_n ≈ A·δ
+    pub a: Complex64,
+    /// Coefficient quadratique B: δ'_n ≈ A·δ + B·δ²
+    pub b: Complex64,
+    /// Coefficient cubique C: δ'_n ≈ A·δ + B·δ² + C·δ³
+    pub c: Complex64,
+}
+
+impl Default for SeriesCoefficients {
+    fn default() -> Self {
+        Self {
+            a: Complex64::new(1.0, 0.0),
+            b: Complex64::new(0.0, 0.0),
+            c: Complex64::new(0.0, 0.0),
+        }
+    }
+}
+
+/// Table de coefficients de série pour toutes les itérations.
+/// Permet de sauter des itérations initiales en utilisant l'approximation par série.
+#[derive(Clone, Debug)]
+pub struct SeriesTable {
+    /// Coefficients pour chaque itération (index = numéro d'itération)
+    pub coeffs: Vec<SeriesCoefficients>,
+    /// Rayon de validité estimé pour chaque itération
+    pub validity_radii: Vec<f64>,
+}
+
+impl SeriesTable {
+    pub fn empty() -> Self {
+        Self {
+            coeffs: Vec::new(),
+            validity_radii: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.coeffs.is_empty()
+    }
+}
+
+/// Construit la table de série à partir de l'orbite de référence.
+///
+/// Les coefficients évoluent selon les récurrences:
+/// - A_{n+1} = 2·z_n·A_n
+/// - B_{n+1} = 2·z_n·B_n + A_n²
+/// - C_{n+1} = 2·z_n·C_n + 2·A_n·B_n
+pub fn build_series_table(z_ref: &[Complex64]) -> SeriesTable {
+    if z_ref.is_empty() {
+        return SeriesTable::empty();
+    }
+
+    let mut coeffs = Vec::with_capacity(z_ref.len());
+    let mut validity_radii = Vec::with_capacity(z_ref.len());
+
+    // Initial coefficients: A_0 = 1, B_0 = 0, C_0 = 0
+    let mut a = Complex64::new(1.0, 0.0);
+    let mut b = Complex64::new(0.0, 0.0);
+    let mut c = Complex64::new(0.0, 0.0);
+
+    for (i, &z_n) in z_ref.iter().enumerate() {
+        // Store current coefficients
+        coeffs.push(SeriesCoefficients { a, b, c });
+
+        // Estimate validity radius based on coefficient growth
+        // When |A| grows too large, the series becomes unreliable
+        let a_norm = a.norm();
+        let b_norm = b.norm();
+        let validity = if a_norm > 1e-10 {
+            // Validity radius is approximately 1/|A| scaled by error tolerance
+            // We want |B·δ²| << |A·δ|, so |δ| << |A|/|B|
+            if b_norm > 1e-10 {
+                (a_norm / b_norm).min(1.0) * 0.1
+            } else {
+                1.0
+            }
+        } else {
+            1.0
+        };
+        validity_radii.push(validity.min(1.0).max(1e-20));
+
+        // Early termination if coefficients explode
+        if !a.re.is_finite() || !a.im.is_finite() || a_norm > 1e100 {
+            break;
+        }
+
+        // Skip the last iteration (no z_{n+1})
+        if i >= z_ref.len() - 1 {
+            break;
+        }
+
+        // Recurrence relations for next iteration
+        let two_z = z_n * 2.0;
+        let a_sq = a * a;
+        let two_ab = a * b * 2.0;
+
+        // A_{n+1} = 2·z_n·A_n
+        let a_next = two_z * a;
+        // B_{n+1} = 2·z_n·B_n + A_n²
+        let b_next = two_z * b + a_sq;
+        // C_{n+1} = 2·z_n·C_n + 2·A_n·B_n
+        let c_next = two_z * c + two_ab;
+
+        a = a_next;
+        b = b_next;
+        c = c_next;
+    }
+
+    SeriesTable { coeffs, validity_radii }
+}
+
+/// Résultat du calcul de saut de série
+pub struct SeriesSkipResult {
+    /// Itération jusqu'à laquelle on peut sauter
+    pub skip_to: usize,
+    /// Delta après le saut
+    pub delta: ComplexExp,
+    /// Erreur estimée de l'approximation
+    pub estimated_error: f64,
+}
+
+/// Calcule le nombre d'itérations que l'on peut sauter avec l'approximation par série.
+///
+/// # Arguments
+/// * `table` - Table de coefficients de série
+/// * `delta_norm` - Norme du delta initial |δ|
+/// * `error_tolerance` - Tolérance d'erreur maximale acceptée
+/// * `dc` - Offset du pixel par rapport au centre (pour Mandelbrot)
+/// * `is_julia` - true si c'est un ensemble de Julia
+///
+/// # Returns
+/// Option contenant le résultat du saut si possible, None sinon
+pub fn compute_series_skip(
+    table: &SeriesTable,
+    delta: ComplexExp,
+    dc: ComplexExp,
+    error_tolerance: f64,
+    is_julia: bool,
+) -> Option<SeriesSkipResult> {
+    if table.is_empty() || error_tolerance <= 0.0 {
+        return None;
+    }
+
+    let delta_norm = delta.norm_sqr_approx().sqrt();
+    if delta_norm <= 0.0 || !delta_norm.is_finite() {
+        return None;
+    }
+
+    // Find the maximum iteration we can skip to
+    let mut best_skip = 0usize;
+    let mut best_delta = delta;
+    let mut best_error = f64::MAX;
+
+    for (n, (coeffs, &validity)) in table.coeffs.iter().zip(table.validity_radii.iter()).enumerate() {
+        // Check if delta is within validity radius
+        if delta_norm > validity {
+            break;
+        }
+
+        // Compute approximated delta at iteration n:
+        // δ_n ≈ A_n·δ + B_n·δ² + C_n·δ³
+        let delta_f64 = delta.to_complex64_approx();
+        let delta_sq = delta_f64 * delta_f64;
+        let delta_cube = delta_sq * delta_f64;
+
+        let mut approx = coeffs.a * delta_f64 + coeffs.b * delta_sq + coeffs.c * delta_cube;
+
+        // For Mandelbrot, add contribution from dc
+        // This is a simplified model; full integration would need dc coefficients
+        if !is_julia && n > 0 {
+            // Accumulate dc contribution: sum of A_k for k=0..n-1
+            let dc_f64 = dc.to_complex64_approx();
+            // Approximate dc contribution as A_n * dc (simplified)
+            approx += coeffs.a * dc_f64 * (n as f64);
+        }
+
+        // Estimate error: O(δ^4) for cubic approximation
+        let delta_4 = delta_norm * delta_norm * delta_norm * delta_norm;
+        let a_norm = coeffs.a.norm();
+        let error = delta_4 * (1.0 + a_norm);
+
+        if error < error_tolerance && error < best_error {
+            best_skip = n;
+            best_delta = ComplexExp::from_complex64(approx);
+            best_error = error;
+        }
+
+        // Stop if error is growing too fast
+        if error > error_tolerance * 100.0 {
+            break;
+        }
+    }
+
+    // Only return if we can skip at least 1 iteration
+    if best_skip > 0 {
+        Some(SeriesSkipResult {
+            skip_to: best_skip,
+            delta: best_delta,
+            estimated_error: best_error,
+        })
+    } else {
+        None
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct SeriesConfig {

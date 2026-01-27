@@ -1,4 +1,4 @@
-enable f64;
+// f64 support is enabled via SHADER_F64 feature on the device
 
 struct Params {
     center_x: f64,
@@ -32,28 +32,28 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let idx = gid.y * params.width + gid.x;
-    let fx = f64(gid.x) / f64(params.width);
-    let fy = f64(gid.y) / f64(params.height);
+    let fx: f64 = f64(gid.x) / f64(params.width);
+    let fy: f64 = f64(gid.y) / f64(params.height);
     // Compute offset from center directly to avoid precision loss
-    let x = params.center_x + (fx - 0.5) * params.span_x;
-    let y = params.center_y + (fy - 0.5) * params.span_y;
+    let x: f64 = params.center_x + (fx - f64(0.5)) * params.span_x;
+    let y: f64 = params.center_y + (fy - f64(0.5)) * params.span_y;
 
-    var z_re = 0.0;
-    var z_im = 0.0;
+    var z_re: f64 = f64(0.0);
+    var z_im: f64 = f64(0.0);
     var i: u32 = 0u;
-    let bailout_sqr = params.bailout * params.bailout;
+    let bailout_sqr: f64 = params.bailout * params.bailout;
 
     loop {
         if (i >= params.iter_max) {
             break;
         }
-        let z_re_sq = z_re * z_re;
-        let z_im_sq = z_im * z_im;
+        let z_re_sq: f64 = z_re * z_re;
+        let z_im_sq: f64 = z_im * z_im;
         if (z_re_sq + z_im_sq > bailout_sqr) {
             break;
         }
-        let z_im_new = 2.0 * z_re * z_im + y;
-        let z_re_new = z_re_sq - z_im_sq + x;
+        let z_im_new: f64 = f64(2.0) * z_re * z_im + y;
+        let z_re_new: f64 = z_re_sq - z_im_sq + x;
         z_re = z_re_new;
         z_im = z_im_new;
         i = i + 1u;

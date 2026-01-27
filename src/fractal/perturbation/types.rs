@@ -1,4 +1,5 @@
 use num_complex::Complex64;
+use rug::{Complex, Float};
 use std::ops::{Add, Mul, Sub};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -39,6 +40,25 @@ impl FloatExp {
             mantissa: self.mantissa.abs(),
             exponent: self.exponent,
         }
+    }
+
+    /// Create a FloatExp from a GMP Float, preserving the extended exponent range.
+    /// This allows storing values that would overflow or underflow f64.
+    pub fn from_gmp(value: &Float) -> Self {
+        if value.is_zero() {
+            return Self::zero();
+        }
+        // Get exponent directly from GMP (avoids precision loss)
+        let exp = value.get_exp().unwrap_or(0);
+        // Get mantissa by scaling: mantissa = value * 2^(-exp)
+        // For normalized floats, mantissa is in [0.5, 1.0)
+        let mut mantissa_float = value.clone();
+        // Scale to get mantissa in [0.5, 1.0)
+        if exp != 0 {
+            mantissa_float >>= exp;
+        }
+        let mantissa = mantissa_float.to_f64();
+        Self { mantissa, exponent: exp }
     }
 
     pub fn to_f64(self) -> f64 {
@@ -135,6 +155,15 @@ impl ComplexExp {
         }
     }
 
+    /// Create a ComplexExp from a GMP Complex, preserving the extended exponent range.
+    /// This allows storing values that would overflow or underflow f64.
+    pub fn from_gmp(value: &Complex) -> Self {
+        Self {
+            re: FloatExp::from_gmp(value.real()),
+            im: FloatExp::from_gmp(value.imag()),
+        }
+    }
+
     pub fn add(self, rhs: Self) -> Self {
         Self {
             re: self.re + rhs.re,
@@ -162,6 +191,17 @@ impl ComplexExp {
 
     pub fn to_complex64_approx(self) -> Complex64 {
         Complex64::new(self.re.to_f64(), self.im.to_f64())
+    }
+
+    /// Multiply with sign adjustment for Burning Ship perturbation.
+    /// Used when the quadrant is stable and we can apply signed perturbation.
+    /// result.re = sign_re * self.re
+    /// result.im = sign_im * self.im
+    pub fn mul_signed(self, sign_re: f64, sign_im: f64) -> Self {
+        Self {
+            re: FloatExp::new(self.re.mantissa * sign_re, self.re.exponent),
+            im: FloatExp::new(self.im.mantissa * sign_im, self.im.exponent),
+        }
     }
 }
 

@@ -48,12 +48,16 @@ pub struct GpuRenderer {
     queue: wgpu::Queue,
     pipeline_f32: wgpu::ComputePipeline,
     pipeline_ds: wgpu::ComputePipeline,
+    #[allow(dead_code)]
     pipeline_f64: Option<PipelinesF64>,
     pipeline_julia_f32: wgpu::ComputePipeline,
     pipeline_burning_ship_f32: wgpu::ComputePipeline,
     pipeline_perturbation: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
+    #[allow(dead_code)]
+    bind_group_layout_f64: Option<wgpu::BindGroupLayout>,
     bind_group_layout_perturb: wgpu::BindGroupLayout,
+    #[allow(dead_code)]
     supports_f64: bool,
     /// Cache des buffers GPU pour la perturbation (zref, bla, meta)
     /// Utilise Mutex pour permettre l'accès mutable depuis &self (interior mutability)
@@ -62,8 +66,15 @@ pub struct GpuRenderer {
 
 impl GpuRenderer {
     pub fn new() -> Option<Self> {
-        pollster::block_on(async {
-            let instance = wgpu::Instance::default();
+        // Capturer les panics de wgpu lors de l'initialisation EGL
+        // pour permettre à l'application de démarrer sans GPU
+        std::panic::catch_unwind(|| {
+            pollster::block_on(async {
+            // Forcer Vulkan en priorité pour éviter les problèmes EGL sur NVIDIA
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
+                ..Default::default()
+            });
             let adapter = instance
                 .request_adapter(&wgpu::RequestAdapterOptions {
                     power_preference: wgpu::PowerPreference::HighPerformance,
@@ -72,13 +83,13 @@ impl GpuRenderer {
                 })
                 .await?;
 
-            let adapter_features = adapter.features();
-            let supports_f64 = adapter_features.contains(wgpu::Features::SHADER_F64);
-            let required_features = if supports_f64 {
-                wgpu::Features::SHADER_F64
-            } else {
-                wgpu::Features::empty()
-            };
+            // Afficher les infos de l'adaptateur GPU
+            let info = adapter.get_info();
+            eprintln!("GPU détecté: {} ({:?}), Driver: {}", info.name, info.backend, info.driver);
+
+            // Ne plus utiliser f64 en mode GPU, toujours utiliser f32
+            let supports_f64 = false;
+            let required_features = wgpu::Features::empty();
 
             let (device, queue) = adapter
                 .request_device(
@@ -123,6 +134,10 @@ impl GpuRenderer {
                 bind_group_layouts: &[&bind_group_layout],
                 push_constant_ranges: &[],
             });
+
+            // Ne plus créer les layouts f64 car on utilise uniquement f32
+            let bind_group_layout_f64: Option<wgpu::BindGroupLayout> = None;
+            let _pipeline_layout_f64: Option<wgpu::PipelineLayout> = None;
 
             let shader_f32 = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("mandelbrot-f32"),
@@ -177,57 +192,8 @@ impl GpuRenderer {
                     entry_point: "main",
                 });
 
-            let pipeline_f64 = if supports_f64 {
-                let shader_f64 = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("mandelbrot-f64"),
-                    source: wgpu::ShaderSource::Wgsl(include_str!("mandelbrot_f64.wgsl").into()),
-                });
-
-                let pipeline_mandelbrot_f64 =
-                    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                        label: Some("mandelbrot-pipeline-f64"),
-                        layout: Some(&pipeline_layout),
-                        module: &shader_f64,
-                        entry_point: "main",
-                    });
-
-                let shader_julia_f64 = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("julia-f64"),
-                    source: wgpu::ShaderSource::Wgsl(include_str!("julia_f64.wgsl").into()),
-                });
-
-                let pipeline_julia_f64 =
-                    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                        label: Some("julia-pipeline-f64"),
-                        layout: Some(&pipeline_layout),
-                        module: &shader_julia_f64,
-                        entry_point: "main",
-                    });
-
-                let shader_burning_ship_f64 =
-                    device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                        label: Some("burning-ship-f64"),
-                        source: wgpu::ShaderSource::Wgsl(
-                            include_str!("burning_ship_f64.wgsl").into(),
-                        ),
-                    });
-
-                let pipeline_burning_ship_f64 =
-                    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                        label: Some("burning-ship-pipeline-f64"),
-                        layout: Some(&pipeline_layout),
-                        module: &shader_burning_ship_f64,
-                        entry_point: "main",
-                    });
-
-                Some(PipelinesF64 {
-                    mandelbrot: pipeline_mandelbrot_f64,
-                    julia: pipeline_julia_f64,
-                    burning_ship: pipeline_burning_ship_f64,
-                })
-            } else {
-                None
-            };
+            // Ne plus créer les pipelines f64 car on utilise uniquement f32
+            let pipeline_f64: Option<PipelinesF64> = None;
 
             let bind_group_layout_perturb =
                 device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -328,11 +294,13 @@ impl GpuRenderer {
                 pipeline_burning_ship_f32,
                 pipeline_perturbation,
                 bind_group_layout,
+                bind_group_layout_f64,
                 bind_group_layout_perturb,
                 supports_f64,
                 perturbation_cache: Mutex::new(None),
             })
         })
+        }).ok().flatten()
     }
 
     pub fn render_mandelbrot(
@@ -343,11 +311,8 @@ impl GpuRenderer {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return None;
         }
-        if self.supports_f64 {
-            self.render_mandelbrot_f64(params, cancel)
-        } else {
-            self.render_mandelbrot_f32(params, cancel)
-        }
+        // Toujours utiliser f32 en mode GPU
+        self.render_mandelbrot_f32(params, cancel)
     }
 
     /// Render Mandelbrot using Double-Single (DS) precision.
@@ -378,11 +343,8 @@ impl GpuRenderer {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return None;
         }
-        if self.supports_f64 {
-            self.render_julia_f64(params, cancel)
-        } else {
-            self.render_julia_f32(params, cancel)
-        }
+        // Toujours utiliser f32 en mode GPU
+        self.render_julia_f32(params, cancel)
     }
 
     pub fn render_burning_ship(
@@ -393,19 +355,13 @@ impl GpuRenderer {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return None;
         }
-        if self.supports_f64 {
-            self.render_burning_ship_f64(params, cancel)
-        } else {
-            self.render_burning_ship_f32(params, cancel)
-        }
+        // Toujours utiliser f32 en mode GPU
+        self.render_burning_ship_f32(params, cancel)
     }
 
     pub fn precision_label(&self) -> &'static str {
-        if self.supports_f64 {
-            "f64"
-        } else {
-            "f32"
-        }
+        // Toujours utiliser f32 en mode GPU
+        "f32"
     }
 
     /// Render perturbation with optional orbit cache support.
@@ -468,7 +424,7 @@ impl GpuRenderer {
         }
 
         let z_ref_data: Vec<ZRef> = ref_orbit
-            .z_ref
+            .z_ref_f64
             .iter()
             .map(|z| ZRef {
                 re: z.re as f32,
@@ -525,7 +481,7 @@ impl GpuRenderer {
 
         let iter_max = params
             .iteration_max
-            .min(ref_orbit.z_ref.len().saturating_sub(1) as u32);
+            .min(ref_orbit.z_ref_f64.len().saturating_sub(1) as u32);
 
         let width = params.width as usize;
         let height = params.height as usize;
@@ -798,6 +754,7 @@ impl GpuRenderer {
         )
     }
 
+    #[allow(dead_code)]
     fn render_mandelbrot_f64(
         &self,
         params: &FractalParams,
@@ -841,6 +798,7 @@ impl GpuRenderer {
         )
     }
 
+    #[allow(dead_code)]
     fn render_julia_f64(
         &self,
         params: &FractalParams,
@@ -856,6 +814,7 @@ impl GpuRenderer {
         )
     }
 
+    #[allow(dead_code)]
     fn render_burning_ship_f64(
         &self,
         params: &FractalParams,
@@ -987,6 +946,7 @@ impl GpuRenderer {
         Some((iterations, zs))
     }
 
+    #[allow(dead_code)]
     fn render_escape_f64(
         &self,
         params: &FractalParams,
@@ -1023,9 +983,10 @@ impl GpuRenderer {
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
+        let bind_group_layout_f64 = self.bind_group_layout_f64.as_ref()?;
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(&format!("{label}-bind-group-f64")),
-            layout: &self.bind_group_layout,
+            layout: bind_group_layout_f64,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -1104,6 +1065,7 @@ impl GpuRenderer {
     }
 }
 
+#[allow(dead_code)]
 struct PipelinesF64 {
     mandelbrot: wgpu::ComputePipeline,
     julia: wgpu::ComputePipeline,
@@ -1167,6 +1129,7 @@ impl ParamsF32 {
 }
 
 impl ParamsF64 {
+    #[allow(dead_code)]
     fn from_params(params: &FractalParams, seed: Option<Complex64>) -> Self {
         let seed = seed.unwrap_or(Complex64::new(0.0, 0.0));
         Self {
