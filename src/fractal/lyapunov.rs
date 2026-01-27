@@ -32,6 +32,7 @@ pub enum LyapunovPreset {
 
 impl LyapunovPreset {
     /// Retourne tous les presets disponibles.
+    #[allow(dead_code)]
     pub fn all() -> &'static [LyapunovPreset] {
         &[
             LyapunovPreset::Standard,
@@ -44,6 +45,7 @@ impl LyapunovPreset {
     }
 
     /// Retourne le nom lisible du preset.
+    #[allow(dead_code)]
     pub fn name(self) -> &'static str {
         match self {
             LyapunovPreset::Standard => "Standard (Swallow)",

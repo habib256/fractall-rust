@@ -231,12 +231,25 @@ fn main() {
     }
 
     // Calcul escape-time.
+    let start_time = std::time::Instant::now();
     let (iterations, zs) = render_escape_time(&params);
+    let render_time = start_time.elapsed();
 
     // Export PNG.
+    let save_start = std::time::Instant::now();
     if let Err(e) = save_png(&params, &iterations, &zs, &cli.output) {
         eprintln!("Erreur lors de l'écriture du PNG: {e}");
         std::process::exit(1);
     }
+    let save_time = save_start.elapsed();
+    let total_time = start_time.elapsed();
+
+    // Affichage du temps de génération.
+    println!(
+        "Génération terminée en {:.2}s (rendu: {:.2}s, sauvegarde: {:.2}s)",
+        total_time.as_secs_f64(),
+        render_time.as_secs_f64(),
+        save_time.as_secs_f64()
+    );
 }
 
