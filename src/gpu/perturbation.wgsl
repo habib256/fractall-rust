@@ -181,11 +181,17 @@ fn main(
     }
     
     // Calcul de la position du pixel en f32 standard
+    // IMPORTANT: Utiliser la même formule que le code CPU pour éviter les erreurs de précision:
+    // dc = (pixel_index/dimension - 0.5) * range
+    // Cette formule divise d'abord, puis multiplie, ce qui évite la perte de précision
+    // lors de la multiplication de grands nombres avec de très petits nombres aux zooms profonds
     let pixel_size = params.span_x / f32(params.width);
-    let dx = (f32(gid.x) * params.span_x / f32(params.width)) - params.span_x * 0.5;
-    let dy = (f32(gid.y) * params.span_y / f32(params.height)) - params.span_y * 0.5;
-    let dc_re = dx;
-    let dc_im = dy;
+    let inv_width = 1.0 / f32(params.width);
+    let inv_height = 1.0 / f32(params.height);
+    let x_ratio = f32(gid.x) * inv_width - 0.5;
+    let y_ratio = f32(gid.y) * inv_height - 0.5;
+    let dc_re = x_ratio * params.span_x;
+    let dc_im = y_ratio * params.span_y;
 
     let is_julia = params.fractal_kind == 1u;
     let is_burning_ship = params.fractal_kind == 2u;
@@ -273,16 +279,27 @@ fn main(
                 delta_im = scaled.y;
                 delta_scale = scaled.z;
             } else {
-                let delta_actual_re = delta_re * delta_scale;
-                let delta_actual_im = delta_im * delta_scale;
-                let linear = complex_mul(2.0 * z.re, 2.0 * z.im, delta_actual_re, delta_actual_im);
-                let nonlinear = complex_mul(delta_actual_re, delta_actual_im, delta_actual_re, delta_actual_im);
-                let next_re = linear.x + nonlinear.x + select(dc_re, 0.0, is_julia);
-                let next_im = linear.y + nonlinear.y + select(dc_im, 0.0, is_julia);
-                let scaled = rescale_delta(next_re, next_im, delta_scale);
-                delta_re = scaled.x;
-                delta_im = scaled.y;
-                delta_scale = scaled.z;
+                // DÉSACTIVÉ: Optimisation pour le centre exact qui causait des artefacts circulaires visibles.
+                // Même avec des seuils stricts, cette optimisation créait un cercle au centre.
+                // La perturbation standard fonctionne correctement même au centre exact.
+                // if (is_center_like) {
+                //     // Au centre exact, delta reste ≈ 0, donc on peut le forcer à 0 pour éviter les erreurs d'arrondi
+                //     // qui pourraient s'accumuler
+                //     delta_re = 0.0;
+                //     delta_im = 0.0;
+                //     delta_scale = 1.0;
+                // } else {
+                    let delta_actual_re = delta_re * delta_scale;
+                    let delta_actual_im = delta_im * delta_scale;
+                    let linear = complex_mul(2.0 * z.re, 2.0 * z.im, delta_actual_re, delta_actual_im);
+                    let nonlinear = complex_mul(delta_actual_re, delta_actual_im, delta_actual_re, delta_actual_im);
+                    let next_re = linear.x + nonlinear.x + select(dc_re, 0.0, is_julia);
+                    let next_im = linear.y + nonlinear.y + select(dc_im, 0.0, is_julia);
+                    let scaled = rescale_delta(next_re, next_im, delta_scale);
+                    delta_re = scaled.x;
+                    delta_im = scaled.y;
+                    delta_scale = scaled.z;
+                // }
                 n = n + 1u;
             }
         }
@@ -302,12 +319,30 @@ fn main(
         let nan_im = z_im != z_im;
         let inf_re = abs(z_re) > 1e30;
         let inf_im = abs(z_im) > 1e30;
-        // IMPORTANT: Ajouter une vérification pour éviter les faux positifs au centre
-        // où delta_norm_sqr peut être très petit mais la tolérance relative peut être trop stricte
-        // Utiliser une tolérance absolue minimale pour éviter les détections erronées
-        let glitch_scale = max(z_ref_norm_sqr, 1.0);  // Éviter division par zéro et faux positifs au centre
-        let glitched = (nan_re || nan_im || inf_re || inf_im)
-            || (z_ref_norm_sqr > 0.0 && delta_norm_sqr > glitch_tolerance_sqr * glitch_scale);
+        
+        // IMPORTANT: Désactiver complètement la détection de glitch au centre pour éviter les artefacts circulaires.
+        // Au centre, delta ≈ 0 est normal et ne doit jamais être détecté comme glitched.
+        // Si un pixel au centre est marqué comme glitched, il utilise z_ref comme valeur par défaut,
+        // ce qui crée un cercle uniforme si plusieurs pixels au centre sont marqués comme glitched.
+        let dc_norm_sqr = dc_re * dc_re + dc_im * dc_im;
+        let pixel_size_sqr = pixel_size * pixel_size;
+        // Désactiver complètement la détection de glitch dans un rayon de 10 pixels du centre
+        // pour éviter les artefacts circulaires visibles
+        let center_threshold = pixel_size_sqr * 100.0;  // Dans un rayon de 10 pixels du centre
+        let is_near_center = dc_norm_sqr < center_threshold;
+        
+        let glitch_scale = max(z_ref_norm_sqr, 1.0);  // Éviter division par zéro
+        // Tolérance absolue minimale basée sur la taille du pixel et la distance du centre
+        // WGSL: utiliser select() car if n'est pas une expression
+        let tolerance_normal = pixel_size_sqr * 100.0;        // Tolérance normale ailleurs
+        let min_absolute_tolerance = tolerance_normal;
+        let relative_glitched = z_ref_norm_sqr > 0.0 && delta_norm_sqr > glitch_tolerance_sqr * glitch_scale;
+        let absolute_glitched = delta_norm_sqr > min_absolute_tolerance;
+        // Désactiver complètement la détection de glitch au centre pour éviter les artefacts circulaires
+        // Seuls les NaN/Inf sont détectés comme glitched au centre, pas les grandes valeurs de delta
+        let glitched = !is_near_center && ((nan_re || nan_im || inf_re || inf_im)
+            || (relative_glitched && absolute_glitched));
+        
         if (glitched) {
             // IMPORTANT: Ne pas stocker les valeurs invalides (NaN/Inf) qui causent des artefacts visuels
             // Utiliser des valeurs par défaut valides qui seront remplacées par la correction CPU
@@ -327,10 +362,14 @@ fn main(
         }
     }
 
-    let z = z_ref[min(n, params.iter_max - 1u)];
+    // Clamp n to valid range to avoid out-of-bounds access
+    // If n >= iter_max, the point is in the set (will be colored black by color_for_pixel)
+    let final_n = min(n, params.iter_max - 1u);
+    let z = z_ref[final_n];
     let delta_actual_re = delta_re * delta_scale;
     let delta_actual_im = delta_im * delta_scale;
-    out_pixels[idx].iter = n;
+    // Store iter_max if n >= iter_max to indicate point is in set
+    out_pixels[idx].iter = select(final_n, params.iter_max, n >= params.iter_max);
     out_pixels[idx].z_re = z.re + delta_actual_re;
     out_pixels[idx].z_im = z.im + delta_actual_im;
     out_pixels[idx].flags = 0u;

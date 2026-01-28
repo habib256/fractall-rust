@@ -114,16 +114,14 @@ Pipeline:
 - Calcul direct en GMP: `dc = (i/width - 0.5) * span_x` (idem pour y)
 
 **Précision GMP automatique** (`compute_perturbation_precision_bits()`):
-- Calcule la précision nécessaire basée sur le zoom: `log2(zoom) + safety_margin`
-- Marges de sécurité adaptatives:
-  - Zoom >10^30: 200 bits
-  - Zoom >10^20: 160 bits
-  - Zoom >10^15: 128 bits (CRITIQUE pour éviter bugs)
-  - Zoom >10^10: 96 bits
-  - Zoom >10^6: 80 bits
-  - Sinon: 64 bits
-- Plage: 128-8192 bits
-- Utilisée partout au lieu du preset `precision_bits`
+- Par défaut (aligné référence C++ Fraktaler-3): `bits = max(24, 24 + floor(log2(zoom * height)))`, puis clamp 128..8192 (équivalent de  
+  `prec = max(24, 24 + (par.zoom * par.p.image.height).exp)` dans Fraktaler-3 `param.cc`).
+- Option politique conservative (`use_reference_precision_formula = false`): `log2(zoom) + safety_margin`, plage 128–8192 bits.
+
+**Référence et alignement C++ (Fraktaler-3):**
+- **Référence:** Code C++ Fraktaler-3 (`fraktaler-3-3.1/src`) — comportement cible pour la perturbation.
+- **Aligné:** Rebasing (condition, fin d’orbite, phase), formule de fusion BLA avec `cref_norm` = |c| (équivalent du scalaire `c` dans `merge(..., c)` C++), limites séparées `max_perturb_iterations` / `max_bla_steps` (PerturbIterations / BLASteps).
+- **Écarts assumés:** Précision par défaut = formule C++ (alignée référence). Calcul de dc peut utiliser GMP aux zooms extrêmes (référence C++ reste en précision limitée).
 
 **Cache** (`ReferenceOrbitCache`): orbite + BLA reutilises si meme centre (comparaison en String GMP)/type/precision.
 
@@ -142,6 +140,9 @@ Pipeline:
 | `max_secondary_refs` | nombre max references secondaires (0=off, 3=recom) | 3 |
 | `min_glitch_cluster_size` | taille min cluster pour reference secondaire | 100 |
 | `multibrot_power` | puissance z^d + c | 2.5 |
+| `max_perturb_iterations` | cap itérations perturbation (0 = illimité; aligné C++ PerturbIterations) | 1024 |
+| `max_bla_steps` | cap pas BLA (0 = illimité; aligné C++ BLASteps) | 1024 |
+| `use_reference_precision_formula` | précision = formule C++ (24 + exp(zoom*height)) | true |
 
 ## Types de fractales (--type N)
 

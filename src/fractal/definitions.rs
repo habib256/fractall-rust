@@ -40,6 +40,9 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         max_secondary_refs: 3,
         min_glitch_cluster_size: 100,
         multibrot_power: 2.5,
+        max_perturb_iterations: 1024,
+        max_bla_steps: 1024,
+        use_reference_precision_formula: true,
         lyapunov_preset: LyapunovPreset::default(),
         lyapunov_sequence: Vec::new(),
         // Enable distance estimation and interior detection by default for better rendering

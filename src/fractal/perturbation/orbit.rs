@@ -316,7 +316,7 @@ fn build_hybrid_bla_references(
             };
             
             // Build BLA table for this phase reference (one BLA table per reference)
-            let phase_bla = build_bla_table(&phase_orbit.z_ref_f64, params);
+            let phase_bla = build_bla_table(&phase_orbit.z_ref_f64, params, phase_orbit.cref);
             
             phases.push(phase_orbit);
             phase_bla_tables.push(phase_bla);
@@ -353,7 +353,7 @@ pub fn compute_reference_orbit_cached(
     // Compute fresh orbit and BLA table
     let (orbit, center_x_gmp, center_y_gmp) = compute_reference_orbit(params, cancel)?;
     // Use z_ref_f64 for BLA table building (BLA works with f64 coefficients)
-    let bla_table = build_bla_table(&orbit.z_ref_f64, params);
+    let bla_table = build_bla_table(&orbit.z_ref_f64, params, orbit.cref);
 
     // Build series table for standalone series approximation (if enabled)
     // Only for Mandelbrot and Julia; Burning Ship has abs() which breaks series

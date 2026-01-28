@@ -272,7 +272,7 @@ fn compute_bla_coefficients(
 /// The resulting table has `O(M)` elements.
 ///
 /// Note: Use z_ref_f64 from ReferenceOrbit, not z_ref (which is Vec<ComplexExp>).
-pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTable {
+pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Complex64) -> BlaTable {
     // Note: Tricorn support in BLA would require non-conformal matrices (see nonconformal.rs)
     // For now, Tricorn uses perturbation without BLA acceleration
     let supports_bla = matches!(
@@ -425,8 +425,10 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
             // - A_{m_x, l_x + l_y} = A_z = A_y·A_x
             // - B_{m_x, l_x + l_y} = B_z = A_y·B_x + B_y
             //
-            // Composition des coefficients:
-            let a_new = node2.a * node1.a;  // A_z = A_y·A_x
+            // Composition des coefficients (merge order: y∘x where y=node2, x=node1):
+            // C++: merge(y, x, c) where A = y.A * x.A, B = y.A * x.B + y.B
+            // Rust: node2 corresponds to y (later BLA), node1 corresponds to x (earlier BLA)
+            let a_new = node2.a * node1.a;  // A_z = A_y·A_x (composition: y∘x)
             let b_new = node2.a * node1.b + node2.b;  // B_z = A_y·B_x + B_y
             let a1_sq = node1.a * node1.a;
             let c_new = node2.a * node1.c + node2.c * a1_sq;
@@ -458,13 +460,13 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
             // - R_y = node2.validity_radius (validity radius of T_y)
             // - |A_x| = |node1.a| (norm of A_x coefficient)
             // - |B_x| = |node1.b| (norm of B_x coefficient)
-            // - |c| = |cref| (norm of reference point C)
+            // - |c| = cref_norm = |cref| (norm of reference C; équivalent du scalaire c en C++ merge(..., c))
             let a1_norm = node1.a.norm();  // |A_x|
             let is_julia = params.fractal_type == FractalType::Julia;
             let validity = if a1_norm > 1e-20 && !is_julia {
-                // For Mandelbrot: R_z = max{0, min{R_x, R_y - |B_x|·|c| / |A_x|}}
+                // For Mandelbrot: R_z = max{0, min{R_x, R_y - |B_x|·|c| / |A_x|}} (référence C++ Fraktaler-3)
                 let b1_norm = node1.b.norm();  // |B_x|
-                let cref_norm = params.center_x.hypot(params.center_y);  // |c|
+                let cref_norm = cref.norm();  // |c| = paramètre merge(..., c) de la référence C++
                 let adjustment = b1_norm * cref_norm / a1_norm;  // |B_x|·|c| / |A_x|
                 node1.validity_radius.min((node2.validity_radius - adjustment).max(0.0)).max(0.0)
             } else {
@@ -507,7 +509,7 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
 
     // Build non-conformal table for Tricorn if applicable
     let nonconformal_levels = if params.fractal_type == FractalType::Tricorn {
-        build_bla_table_nonconformal(ref_orbit, params)
+        build_bla_table_nonconformal(ref_orbit, params, cref)
     } else {
         None
     };
@@ -520,7 +522,7 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
 
 /// Build non-conformal BLA table from the f64 reference orbit for Tricorn.
 /// Uses 2×2 real matrices instead of complex numbers for coefficients.
-pub fn build_bla_table_nonconformal(ref_orbit: &[Complex64], params: &FractalParams) -> Option<Vec<Vec<BlaNodeNonConformal>>> {
+pub fn build_bla_table_nonconformal(ref_orbit: &[Complex64], params: &FractalParams, cref: Complex64) -> Option<Vec<Vec<BlaNodeNonConformal>>> {
     if params.fractal_type != FractalType::Tricorn {
         return None;
     }
@@ -533,7 +535,7 @@ pub fn build_bla_table_nonconformal(ref_orbit: &[Complex64], params: &FractalPar
     let base_threshold = params.bla_threshold.max(1e-16);
     let validity_scale = params.bla_validity_scale.clamp(0.1, 100.0);
     let max_validity = base_threshold * validity_scale * 10.0;
-    let cref_norm = params.center_x.hypot(params.center_y);
+    let cref_norm = cref.norm();  // |c| où c est le paramètre C réel
 
     let mut levels: Vec<Vec<BlaNodeNonConformal>> = Vec::new();
     let mut level0 = Vec::with_capacity(base_len);
@@ -599,43 +601,20 @@ pub fn build_bla_table_nonconformal(ref_orbit: &[Complex64], params: &FractalPar
 #[cfg(test)]
 mod nonconformal_tests {
     use super::*;
+    use crate::fractal::definitions::default_params_for_type;
     use crate::fractal::{AlgorithmMode, FractalType};
     use num_complex::Complex64;
 
     fn test_tricorn_params() -> FractalParams {
-        FractalParams {
-            width: 100,
-            height: 100,
-            center_x: 0.0,
-            center_y: 0.0,
-            span_x: 4.0,
-            span_y: 4.0,
-            seed: Complex64::new(0.0, 0.0),
-            iteration_max: 100,
-            bailout: 4.0,
-            fractal_type: FractalType::Tricorn,
-            color_mode: 0,
-            color_repeat: 2,
-            use_gmp: false,
-            precision_bits: 192,
-            algorithm_mode: AlgorithmMode::Perturbation,
-            bla_threshold: 1e-6,
-            bla_validity_scale: 1.0,
-            glitch_tolerance: 1e-4,
-            series_order: 2,
-            series_threshold: 1e-6,
-            series_error_tolerance: 1e-9,
-            glitch_neighbor_pass: false,
-            series_standalone: false,
-            max_secondary_refs: 3,
-            min_glitch_cluster_size: 100,
-            multibrot_power: 2.5,
-            lyapunov_preset: Default::default(),
-            lyapunov_sequence: Vec::new(),
-            enable_distance_estimation: false,
-            enable_interior_detection: false,
-            interior_threshold: 0.001,
-        }
+        let mut p = default_params_for_type(FractalType::Tricorn, 100, 100);
+        p.span_x = 4.0;
+        p.span_y = 4.0;
+        p.iteration_max = 100;
+        p.precision_bits = 192;
+        p.algorithm_mode = AlgorithmMode::Perturbation;
+        p.bla_threshold = 1e-6;
+        p.glitch_neighbor_pass = false;
+        p
     }
 
     #[test]
@@ -647,7 +626,8 @@ mod nonconformal_tests {
             Complex64::new(1.0, 0.0),
             Complex64::new(2.0, 0.0),
         ];
-        let table = build_bla_table_nonconformal(&ref_orbit, &params);
+        let cref = Complex64::new(params.center_x, params.center_y);
+        let table = build_bla_table_nonconformal(&ref_orbit, &params, cref);
         assert!(table.is_some());
         let levels = table.unwrap();
         assert!(!levels.is_empty());
@@ -660,7 +640,8 @@ mod nonconformal_tests {
         let ref_orbit: Vec<Complex64> = (0..10)
             .map(|i| Complex64::new(i as f64 * 0.1, 0.0))
             .collect();
-        let table = build_bla_table_nonconformal(&ref_orbit, &params);
+        let cref = Complex64::new(params.center_x, params.center_y);
+        let table = build_bla_table_nonconformal(&ref_orbit, &params, cref);
         assert!(table.is_some());
         let levels = table.unwrap();
         // Should have multiple levels after merging

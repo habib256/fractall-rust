@@ -152,40 +152,20 @@ pub fn select_secondary_reference_points(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fractal::definitions::default_params_for_type;
     use crate::fractal::{AlgorithmMode, FractalType};
     use num_complex::Complex64;
 
     fn test_params() -> FractalParams {
-        FractalParams {
-            width: 10,
-            height: 10,
-            center_x: 0.0,
-            center_y: 0.0,
-            span_x: 4.0,
-            span_y: 4.0,
-            seed: Complex64::new(0.0, 0.0),
-            iteration_max: 100,
-            bailout: 4.0,
-            fractal_type: FractalType::Mandelbrot,
-            color_mode: 0,
-            color_repeat: 2,
-            use_gmp: false,
-            precision_bits: 192,
-            algorithm_mode: AlgorithmMode::Perturbation,
-            bla_threshold: 1e-6,
-            bla_validity_scale: 1.0,
-            glitch_tolerance: 1e-4,
-            series_order: 2,
-            series_threshold: 1e-6,
-            series_error_tolerance: 1e-9,
-            glitch_neighbor_pass: false,
-            series_standalone: false,
-            max_secondary_refs: 3,
-            min_glitch_cluster_size: 100,
-            multibrot_power: 2.5,
-            lyapunov_preset: Default::default(),
-            lyapunov_sequence: Vec::new(),
-        }
+        let mut p = default_params_for_type(FractalType::Mandelbrot, 10, 10);
+        p.span_x = 4.0;
+        p.span_y = 4.0;
+        p.iteration_max = 100;
+        p.precision_bits = 192;
+        p.algorithm_mode = AlgorithmMode::Perturbation;
+        p.bla_threshold = 1e-6;
+        p.glitch_neighbor_pass = false;
+        p
     }
 
     #[test]

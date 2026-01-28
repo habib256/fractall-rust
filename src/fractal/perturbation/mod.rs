@@ -133,6 +133,8 @@ fn iterate_pixel_hybrid_bla(
             series_table,
             delta0,
             dc,
+            None, // No phase change for single reference
+            None, // No hybrid refs for single reference
         );
     }
     
@@ -141,14 +143,11 @@ fn iterate_pixel_hybrid_bla(
     // The current phase is determined by the total iteration count: phase = (iteration - cycle_start) % cycle_period
     let mut delta = delta0;
     let mut total_iterations = 0u32;
+    let mut current_phase = hybrid_refs.get_current_phase(total_iterations);
     
     // Iterate through phases until bailout or max iterations
     // Rebasing switches to the reference for the current phase (determined by iteration count)
     while total_iterations < params.iteration_max {
-        // Determine current phase based on total iteration count
-        // For Hybrid BLA: rebasing switches to the reference for the current phase
-        let current_phase = hybrid_refs.get_current_phase(total_iterations);
-        
         // Get reference and BLA table for current phase
         let ref_orbit = hybrid_refs.get_reference(current_phase);
         let bla_table = hybrid_refs.get_bla_table(current_phase);
@@ -159,8 +158,7 @@ fn iterate_pixel_hybrid_bla(
         phase_params.iteration_max = (params.iteration_max - total_iterations).min(effective_len);
         
         // Iterate with current phase reference
-        // When rebasing occurs (reaching end of effective orbit), iterate_pixel resets n to 0
-        // In Hybrid BLA, we detect this by checking if we completed the effective orbit
+        // Pass current_phase and hybrid_refs to iterate_pixel() so it can update phase on rebasing
         let result = iterate_pixel(
             &phase_params,
             ref_orbit,
@@ -168,6 +166,8 @@ fn iterate_pixel_hybrid_bla(
             series_table,
             delta,
             dc,
+            Some(&mut current_phase),
+            Some(hybrid_refs),
         );
         
         total_iterations += result.iteration;
@@ -183,7 +183,16 @@ fn iterate_pixel_hybrid_bla(
                 suspect: result.suspect,
                 distance: result.distance,
                 is_interior: result.is_interior,
+                phase_changed: result.phase_changed,
             };
+        }
+        
+        // Check if phase changed during rebasing
+        if result.phase_changed {
+            // Phase changed: update delta and continue with new phase
+            // The current_phase has already been updated by iterate_pixel()
+            delta = ComplexExp::from_complex64(result.z_final);
+            continue;
         }
         
         // Check if rebasing occurred (completed effective orbit for this phase)
@@ -194,6 +203,8 @@ fn iterate_pixel_hybrid_bla(
             // Rebasing occurred: update delta and continue with next iteration
             // The phase will be recalculated based on the new total_iterations count
             delta = ComplexExp::from_complex64(result.z_final);
+            // Recalculate phase based on new total_iterations (in case iterate_pixel didn't update it)
+            current_phase = hybrid_refs.get_current_phase(total_iterations);
             continue;
         } else {
             // Normal iteration: return result with accumulated iterations
@@ -204,6 +215,7 @@ fn iterate_pixel_hybrid_bla(
                 suspect: result.suspect,
                 distance: result.distance,
                 is_interior: result.is_interior,
+                phase_changed: result.phase_changed,
             };
         }
     }
@@ -216,6 +228,8 @@ fn iterate_pixel_hybrid_bla(
         series_table,
         delta0,
         dc,
+        None, // No phase change for fallback
+        None, // No hybrid refs for fallback
     )
 }
 
@@ -230,9 +244,29 @@ pub fn mark_neighbor_glitches(
     if width < 3 || height < 3 || iterations.len() != size {
         return mask;
     }
+    
+    // Calculer le centre de l'image pour éviter de marquer les pixels au centre comme glitched
+    let center_x = width as f64 / 2.0;
+    let center_y = height as f64 / 2.0;
+    // Rayon autour du centre où on désactive la détection de glitch par voisinage
+    // pour éviter les artefacts circulaires (rayon de 20 pixels)
+    let center_radius_sqr = 20.0 * 20.0;
+    
     for y in 1..(height - 1) {
         for x in 1..(width - 1) {
             let idx = (y * width + x) as usize;
+            
+            // Vérifier si le pixel est proche du centre
+            let dx = x as f64 - center_x;
+            let dy = y as f64 - center_y;
+            let dist_sqr = dx * dx + dy * dy;
+            let is_near_center = dist_sqr < center_radius_sqr;
+            
+            // Ne pas marquer comme glitched si proche du centre pour éviter les artefacts circulaires
+            if is_near_center {
+                continue;
+            }
+            
             let center = iterations[idx];
             let left = iterations[(y * width + (x - 1)) as usize];
             let right = iterations[(y * width + (x + 1)) as usize];
@@ -285,6 +319,14 @@ fn build_reuse<'a>(
     })
 }
 
+/// Calcule la précision GMP en bits pour l'orbite de référence et le cache perturbation.
+///
+/// Deux politiques (référence C++ Fraktaler-3 vs conservative Rust):
+/// - **Formule référence C++** (`use_reference_precision_formula = true`):  
+///   `prec = max(24, 24 + exp(zoom * height))` (param.cc), équivalent bits  
+///   `bits = max(24, 24 + floor(log2(zoom * height)))`, puis clamp 128..8192.
+/// - **Politique conservative** (défaut): `bits = log2(zoom) + marge_par_palier`, 128..8192.  
+///   Choix délibéré plus conservateur pour éviter les glitches aux zooms extrêmes.
 pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32 {
     if params.width == 0 || params.height == 0 {
         return params.precision_bits.max(128);
@@ -301,43 +343,50 @@ pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32
         return params.precision_bits.max(128);
     }
 
-    // Bits needed = log2(zoom) + safety margin
-    // For deep zooms: need ~3.32 bits per decimal digit of zoom
-    // Add safety margin for intermediate calculations
-    // Pour les très grands zooms, augmenter la marge pour éviter les erreurs
-    let zoom_bits = zoom.log2().ceil() as i32;
-    let safety_margin = if zoom > 1e30 {
-        200  // Marge très grande pour les zooms extrêmes (>10^30)
-    } else if zoom > 1e20 {
-        160  // Marge grande pour les zooms très profonds (>10^20)
-    } else if zoom > 1e15 {
-        128  // Marge importante pour zooms profonds (>10^15) - CRITIQUE pour éviter bugs
-    } else if zoom > 1e10 {
-        96   // Marge plus grande pour les très grands zooms (>10^10)
-    } else if zoom > 1e6 {
-        80   // Marge moyenne pour les zooms moyens
+    let final_bits = if params.use_reference_precision_formula {
+        // Formule référence C++ Fraktaler-3: prec = max(24, 24 + (par.zoom * par.p.image.height).exp)
+        // .exp est l'exposant binaire du floatexp, donc équivalent à floor(log2(zoom * height))
+        let zoom_height = zoom * params.height as f64;
+        let exp = if zoom_height > 0.0 && zoom_height.is_finite() {
+            zoom_height.log2().floor() as i32
+        } else {
+            0
+        };
+        let bits = (24 + exp).max(24) as u32;
+        bits.clamp(128, 8192)
     } else {
-        64   // Marge standard pour les zooms faibles
+        // Politique conservative Rust: log2(zoom) + marge par palier (choix délibéré)
+        let zoom_bits = zoom.log2().ceil() as i32;
+        let safety_margin = if zoom > 1e30 {
+            200  // Marge très grande pour les zooms extrêmes (>10^30)
+        } else if zoom > 1e20 {
+            160  // Marge grande pour les zooms très profonds (>10^20)
+        } else if zoom > 1e15 {
+            128  // Marge importante pour zooms profonds (>10^15) - CRITIQUE pour éviter bugs
+        } else if zoom > 1e10 {
+            96   // Marge plus grande pour les très grands zooms (>10^10)
+        } else if zoom > 1e6 {
+            80   // Marge moyenne pour les zooms moyens
+        } else {
+            64   // Marge standard pour les zooms faibles
+        };
+        let needed_bits = (zoom_bits + safety_margin).max(128) as u32;
+        needed_bits.clamp(128, 8192)
     };
-    let needed_bits = (zoom_bits + safety_margin).max(128) as u32;
-    let final_bits = needed_bits.clamp(128, 8192);
 
     // Log de diagnostic pour zoom profond (une seule fois par appel avec un cache statique)
     if zoom > 1e15 {
         use std::sync::atomic::{AtomicU64, Ordering};
         static LAST_LOGGED_ZOOM: AtomicU64 = AtomicU64::new(0);
-        let zoom_bits_u64 = (zoom_bits as u64) << 32 | (final_bits as u64);
+        let zoom_bits_u64 = (final_bits as u64) << 32 | (zoom.to_bits() >> 32);
         let last_logged = LAST_LOGGED_ZOOM.load(Ordering::Relaxed);
         if zoom_bits_u64 != last_logged {
             LAST_LOGGED_ZOOM.store(zoom_bits_u64, Ordering::Relaxed);
-            eprintln!("[PRECISION DEBUG] zoom={:.2e}, pixel_size={:.2e}, zoom_bits={}, safety_margin={}, needed_bits={}, final_bits={}, preset_bits={}",
-                zoom, pixel_size, zoom_bits, safety_margin, needed_bits, final_bits, params.precision_bits);
+            eprintln!("[PRECISION DEBUG] zoom={:.2e}, pixel_size={:.2e}, final_bits={}, preset_bits={}, reference_formula={}",
+                zoom, pixel_size, final_bits, params.precision_bits, params.use_reference_precision_formula);
         }
     }
 
-    // Ajustement automatique basé sur le zoom : utiliser la précision calculée
-    // Le preset (params.precision_bits) est ignoré pour permettre l'ajustement automatique
-    // Clamp to reasonable range: 128 minimum, 8192 maximum
     final_bits
 }
 
@@ -493,7 +542,7 @@ pub fn render_perturbation_cancellable_with_reuse(
 pub fn render_perturbation_with_cache(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
-    reuse: Option<(&[u32], &[Complex64], u32, u32)>,
+    _reuse: Option<(&[u32], &[Complex64], u32, u32)>,
     orbit_cache: Option<&Arc<ReferenceOrbitCache>>,
 ) -> Option<((Vec<u32>, Vec<Complex64>), Arc<ReferenceOrbitCache>)> {
     if cancel.load(Ordering::Relaxed) {
@@ -506,6 +555,16 @@ pub fn render_perturbation_with_cache(
     if !supports {
         return None;
     }
+    
+    // IMPORTANT: Ne pas réutiliser les résultats de pixels entre passes progressives pour la perturbation.
+    // Chaque pixel doit être recalculé avec le bon dc (offset) pour sa position exacte dans la nouvelle résolution.
+    // La réutilisation des pixels cause des artefacts (comme un cercle au centre) car les pixels réutilisés
+    // ont été calculés avec un dc incorrect pour leur nouvelle position.
+    // Seule la référence et la BLA sont réutilisées (via orbit_cache), comme dans fraktaler-3.
+    // Référence: fraktaler-3 réutilise seulement reference_can_be_reused() et bla_can_be_reused(),
+    // mais recalcule toujours tous les pixels à chaque passe.
+    // Désactiver la réutilisation des pixels pour la perturbation
+    let reuse_for_pixels: Option<(&[u32], &[Complex64], u32, u32)> = None;
 
     let mut orbit_params = params.clone();
     orbit_params.precision_bits = compute_perturbation_precision_bits(params);
@@ -530,7 +589,8 @@ pub fn render_perturbation_with_cache(
 
     // For very deep zooms, use full GMP perturbation path
     if use_full_gmp {
-        return render_perturbation_gmp_path(params, cancel, reuse, &cache, iterations, zs);
+        // Ne pas réutiliser les pixels pour GMP non plus
+        return render_perturbation_gmp_path(params, cancel, None, &cache, iterations, zs);
     }
 
     // Compute dc (pixel offset from center) directly to avoid precision loss.
@@ -551,7 +611,8 @@ pub fn render_perturbation_with_cache(
     let inv_height = 1.0 / params.height as f64;
 
     let cancelled = AtomicBool::new(false);
-    let reuse = build_reuse(params, reuse);
+    // Ne pas réutiliser les pixels pour la perturbation (voir commentaire ci-dessus)
+    let reuse = build_reuse(params, reuse_for_pixels);
 
     // Clone cache for use in parallel iteration
     let cache_ref = Arc::clone(&cache);
@@ -629,6 +690,8 @@ pub fn render_perturbation_with_cache(
                         cache_ref.series_table.as_ref(),
                         delta0,
                         dc_term,
+                        None, // No phase change for single reference
+                        None, // No hybrid refs for single reference
                     )
                 };
                 
@@ -731,7 +794,7 @@ pub fn render_perturbation_with_cache(
                 // Compute secondary reference orbit (one reference per phase)
                 if let Some((sec_orbit, _, _)) = compute_reference_orbit(&sec_params, Some(cancel.as_ref())) {
                     // Build BLA table for this reference (one BLA table per reference)
-                    let sec_bla = bla::build_bla_table(&sec_orbit.z_ref_f64, &sec_params);
+                    let sec_bla = bla::build_bla_table(&sec_orbit.z_ref_f64, &sec_params, sec_orbit.cref);
                     let sec_series = if params.series_standalone
                         && matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia)
                     {
@@ -765,6 +828,8 @@ pub fn render_perturbation_with_cache(
                             sec_series.as_ref(),
                             delta0,
                             dc_term,
+                            None, // No phase change for secondary reference
+                            None, // No hybrid refs for secondary reference
                         );
 
                         // Only update if the secondary reference gave a good result
@@ -958,6 +1023,11 @@ fn render_perturbation_gmp_path(
     }
     
     let cancelled = AtomicBool::new(false);
+    // IMPORTANT: Ne pas réutiliser les résultats de pixels entre passes progressives pour la perturbation.
+    // Chaque pixel doit être recalculé avec le bon dc (offset) pour sa position exacte.
+    // La réutilisation cause des artefacts (comme un cercle au centre) car les pixels réutilisés
+    // ont été calculés avec un dc incorrect pour leur nouvelle position.
+    // Note: reuse est déjà None (passé depuis render_perturbation_with_cache), donc reuse_data sera None.
     let reuse_data = build_reuse(params, reuse);
     
     // Clone cache for use in parallel iteration
@@ -1076,6 +1146,7 @@ fn render_perturbation_gmp_path(
 #[cfg(test)]
 mod tests {
     use super::render_perturbation_cancellable_with_reuse;
+    use crate::fractal::definitions::default_params_for_type;
     use crate::fractal::iterations::iterate_point;
     use crate::fractal::{AlgorithmMode, FractalParams, FractalType};
     use num_complex::Complex64;
@@ -1084,36 +1155,15 @@ mod tests {
 
     fn base_params(fractal_type: FractalType) -> FractalParams {
         // center=(0,0), span=(4,3) -> xmin=-2, xmax=2, ymin=-1.5, ymax=1.5
-        FractalParams {
-            width: 5,
-            height: 5,
-            center_x: 0.0,
-            center_y: 0.0,
-            span_x: 4.0,
-            span_y: 3.0,
-            seed: Complex64::new(0.0, 0.0),
-            iteration_max: 64,
-            bailout: 4.0,
-            fractal_type,
-            color_mode: 0,
-            color_repeat: 2,
-            use_gmp: false,
-            precision_bits: 192,
-            algorithm_mode: AlgorithmMode::Perturbation,
-            bla_threshold: 1e-6,
-            bla_validity_scale: 1.0,
-            glitch_tolerance: 1e-4,
-            series_order: 2,
-            series_threshold: 1e-6,
-            series_error_tolerance: 1e-9,
-            glitch_neighbor_pass: false,
-            series_standalone: false,
-            max_secondary_refs: 3,
-            min_glitch_cluster_size: 100,
-            multibrot_power: 2.5,
-            lyapunov_preset: Default::default(),
-            lyapunov_sequence: Vec::new(),
-        }
+        let mut p = default_params_for_type(fractal_type, 5, 5);
+        p.span_x = 4.0;
+        p.span_y = 3.0;
+        p.iteration_max = 64;
+        p.precision_bits = 192;
+        p.algorithm_mode = AlgorithmMode::Perturbation;
+        p.bla_threshold = 1e-6;
+        p.glitch_neighbor_pass = false;
+        p
     }
 
     fn assert_close_iterations(params: &FractalParams, indices: &[(u32, u32)]) {

@@ -590,6 +590,16 @@ pub struct FractalParams {
     /// Puissance pour Multibrot (z^d + c), défaut 2.5. Utilisé aussi pour le calcul BLA.
     pub multibrot_power: f64,
 
+    /// Nombre maximum d'itérations de perturbation par pixel (aligné C++ Fraktaler-3: PerturbIterations).
+    /// 0 = illimité (comportement historique). Défaut 1024.
+    pub max_perturb_iterations: u32,
+    /// Nombre maximum de pas BLA par pixel (aligné C++ Fraktaler-3: BLASteps).
+    /// 0 = illimité. Défaut 1024.
+    pub max_bla_steps: u32,
+    /// Utiliser la formule de précision de la référence C++ (prec = max(24, 24 + exp(zoom*height))).
+    /// Si true (défaut), utilise la formule C++ Fraktaler-3. Si false, utilise une politique plus conservative (log2(zoom) + marge par palier).
+    pub use_reference_precision_formula: bool,
+
     /// Preset Lyapunov sélectionné.
     pub lyapunov_preset: LyapunovPreset,
     /// Séquence Lyapunov (true=A, false=B). Si vide, utilise la séquence par défaut.

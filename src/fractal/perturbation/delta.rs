@@ -3,7 +3,7 @@ use rug::{Complex, Float};
 
 use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::perturbation::bla::BlaTable;
-use crate::fractal::perturbation::orbit::ReferenceOrbit;
+use crate::fractal::perturbation::orbit::{ReferenceOrbit, HybridBlaReferences};
 use crate::fractal::perturbation::types::ComplexExp;
 use crate::fractal::gmp::complex_norm_sqr;
 use crate::fractal::perturbation::series::{
@@ -23,6 +23,48 @@ pub struct DeltaResult {
     /// Whether the point is in the interior of the set. Only valid if interior detection was enabled.
     /// Can be used for interior coloring (e.g., black for interior points).
     pub is_interior: bool,
+    /// Whether the phase changed during rebasing (for Hybrid BLA).
+    /// If true, the caller should switch to the new phase reference.
+    pub phase_changed: bool,
+}
+
+/// Calcule diffabs(c, d) = d/dd |c + d|
+/// 
+/// Cette fonction calcule la dérivée de |c + d| par rapport à d.
+/// Utilisée pour Burning Ship où on a besoin de la dérivée de |x|.
+/// 
+/// # Arguments
+/// * `c` - Valeur de référence (haute précision)
+/// * `d` - Delta (basse précision)
+/// 
+/// # Returns
+/// La dérivée de |c + d| par rapport à d
+/// 
+/// # Formule
+/// ```
+/// diffabs(c, d) = {
+///   d        si c >= 0 et c + d >= 0
+///   -(2c + d) si c >= 0 et c + d < 0
+///   2c + d    si c < 0 et c + d > 0
+///   -d       si c < 0 et c + d <= 0
+/// }
+/// ```
+pub fn diffabs(c: f64, d: f64) -> f64 {
+    let cd = c + d;
+    let c2d = 2.0 * c + d;
+    if c >= 0.0 {
+        if cd >= 0.0 {
+            d
+        } else {
+            -c2d
+        }
+    } else {
+        if cd > 0.0 {
+            c2d
+        } else {
+            -d
+        }
+    }
 }
 
 /// Calcule la tolérance de glitch adaptative basée sur le niveau de zoom.
@@ -117,6 +159,11 @@ pub fn compute_adaptive_glitch_tolerance(pixel_size: f64, user_tolerance: f64) -
 ///
 /// For a hybrid loop with multiple phases, this function is called with the reference
 /// for the current phase. Rebasing switches to the reference for the current phase.
+///
+/// # Parameters
+///
+/// * `current_phase` - Current phase (for Hybrid BLA). Updated when rebasing occurs.
+/// * `hybrid_refs` - Hybrid BLA references (for Hybrid BLA). Used to calculate new phase on rebasing.
 pub fn iterate_pixel(
     params: &FractalParams,
     ref_orbit: &ReferenceOrbit,
@@ -124,6 +171,8 @@ pub fn iterate_pixel(
     series_table: Option<&SeriesTable>,
     delta0: ComplexExp,
     dc: ComplexExp,
+    mut current_phase: Option<&mut u32>,
+    hybrid_refs: Option<&HybridBlaReferences>,
 ) -> DeltaResult {
     // If distance estimation or interior detection is enabled, use dual numbers version
     // Note: pixel coordinates need to be passed from caller - for now, estimate from dc
@@ -155,20 +204,37 @@ pub fn iterate_pixel(
             pixel_y.max(0.0).min(params.height as f64),
             params.enable_distance_estimation,
             params.enable_interior_detection,
+            current_phase,
+            hybrid_refs,
         );
     }
     
     // Standard path without dual numbers
+    // Compteurs alignés C++ Fraktaler-3: iters_ptb (itérations perturbation), steps_bla (pas BLA).
+    // Limites séparées max_perturb_iterations / max_bla_steps (0 = illimité).
     let mut n = 0u32;
+    let mut iters_ptb = 1u32;  // C++: iters_ptb = 1 au départ
+    let mut steps_bla = 0u32;  // C++: steps_bla = 0 au départ
     let mut delta = delta0;
     // Use z_ref_f64 for fast path iteration (z_ref is high-precision Vec<ComplexExp>)
     // Hybrid BLA: account for phase offset in effective length
     let effective_len = ref_orbit.effective_len() as u32;
     let max_iter = params.iteration_max.min(effective_len.saturating_sub(1));
     let bailout_sqr = params.bailout * params.bailout;
+    let mut phase_changed = false;
 
     // Calculer le pixel_size pour la tolérance adaptative
     let pixel_size = params.span_x / params.width as f64;
+    
+    // DÉSACTIVÉ: Optimisation pour le centre exact qui causait des artefacts circulaires visibles.
+    // La perturbation standard fonctionne correctement même au centre exact.
+    // Variables conservées pour référence future mais non utilisées:
+    // let dc_norm_sqr = dc.norm_sqr_approx();
+    // let delta_norm_sqr_initial = delta.norm_sqr_approx();
+    // let pixel_size_sqr = pixel_size * pixel_size;
+    // let center_threshold = pixel_size_sqr * 0.01;
+    // let delta_threshold = pixel_size_sqr * 1e-8;
+    // let is_center_like = dc_norm_sqr < center_threshold && delta_norm_sqr_initial < delta_threshold;
     let adaptive_tolerance = compute_adaptive_glitch_tolerance(pixel_size, params.glitch_tolerance);
     let glitch_tolerance_sqr = adaptive_tolerance * adaptive_tolerance;
     let is_julia = params.fractal_type == FractalType::Julia;
@@ -204,153 +270,240 @@ pub fn iterate_pixel(
     }
 
     // Main iteration loop: BLA Table Lookup algorithm
+    // Based on fraktaler-3 implementation with nested BLA loop for consecutive steps
     // For each iteration:
-    // 1. Find the BLA starting from iteration m (n) that has the largest skip l satisfying |z| < R
-    // 2. If there is none, do a perturbation iteration
-    // 3. Check for rebasing opportunities after each BLA application or perturbation step
-    while n < max_iter {
-        let mut stepped = false;  // Track if a BLA was applied
-        let mut delta_norm_sqr = 0.0;
-
-        // Try non-conformal BLA first for Tricorn
-        if is_tricorn {
-            if let Some(ref nonconformal_levels) = bla_table.nonconformal_levels {
-                if !nonconformal_levels.is_empty() {
-                    // Convert delta to (re, im) vector
-                    let delta_approx = delta.to_complex64_approx();
-                    let delta_vec = (delta_approx.re, delta_approx.im);
-                    let delta_norm_sqr_check = delta_vec.0 * delta_vec.0 + delta_vec.1 * delta_vec.1;
+    // 1. Nested BLA loop: apply consecutive BLA steps until no more valid BLA is found
+    //    - Check rebasing at each BLA iteration
+    // 2. If no BLA was applied, do a perturbation iteration
+    // 3. Check for rebasing opportunities after perturbation step
+    // Limites séparées (C++: iters_ptb < PerturbIterations && steps_bla < BLASteps)
+    let limit_ptb = params.max_perturb_iterations;
+    let limit_bla = params.max_bla_steps;
+    while n < max_iter
+        && (limit_ptb == 0 || iters_ptb < limit_ptb)
+        && (limit_bla == 0 || steps_bla < limit_bla)
+    {
+        // Nested BLA loop: apply consecutive BLA steps (like C++ do...while(b))
+        // This allows multiple BLA steps to be applied in sequence, improving performance
+        let mut bla_applied = false;
+        loop {
+            // C++: break if limits exceeded (lines 293-294)
+            if limit_ptb != 0 && iters_ptb >= limit_ptb {
+                break;
+            }
+            if limit_bla != 0 && steps_bla >= limit_bla {
+                break;
+            }
+            // Check rebasing at the start of each BLA iteration (like C++ line 296-308)
+            // This ensures we catch rebasing opportunities even during BLA steps
+            if n >= effective_len {
+                // Reached end of effective orbit: rebase
+                let last_idx = effective_len.saturating_sub(1) as usize;
+                let z_ref = ref_orbit.get_z_ref_f64(last_idx as u32).unwrap_or_else(|| {
+                    ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+                });
+                let delta_approx = delta.to_complex64_approx();
+                let z_curr = z_ref + delta_approx;
+                delta = ComplexExp::from_complex64(z_curr);
+                
+                // Hybrid BLA: change phase on rebasing: phase = (phase + n) % cycle_period
+                if let Some(ref mut phase) = current_phase {
+                    if let Some(refs) = hybrid_refs {
+                        if refs.cycle_period > 0 {
+                            **phase = (**phase + n) % refs.cycle_period;
+                            phase_changed = true;
+                        }
+                    }
+                }
+                n = 0;
+            } else {
+                // Check rebasing condition: |Z_m + z_n| < |z_n|
+                let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
+                    ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+                });
+                let delta_approx = delta.to_complex64_approx();
+                let z_curr = z_ref + delta_approx;
+                let z_curr_norm_sqr = z_curr.norm_sqr();
+                let delta_norm_sqr_check = delta.norm_sqr_approx();
+                
+                if z_curr_norm_sqr > 0.0 && delta_norm_sqr_check > 0.0 && z_curr_norm_sqr < delta_norm_sqr_check {
+                    // Rebasing: replace z_n with Z_m + z_n and reset m to 0
+                    delta = ComplexExp::from_complex64(z_curr);
                     
-                    for level in (0..nonconformal_levels.len()).rev() {
-                        let level_nodes = &nonconformal_levels[level];
-                        if (n as usize) >= level_nodes.len() {
-                            continue;
+                    // Hybrid BLA: change phase on rebasing: phase = (phase + n) % cycle_period
+                    if let Some(ref mut phase) = current_phase {
+                        if let Some(refs) = hybrid_refs {
+                            if refs.cycle_period > 0 {
+                                **phase = (**phase + n) % refs.cycle_period;
+                                phase_changed = true;
+                            }
                         }
-                        let node = &level_nodes[n as usize];
+                    }
+                    n = 0;
+                    continue; // Continue BLA loop with rebased delta
+                }
+            }
+            
+            // Try to find and apply a BLA step
+            let mut stepped = false;
+
+            // Try non-conformal BLA first for Tricorn
+            if is_tricorn {
+                if let Some(ref nonconformal_levels) = bla_table.nonconformal_levels {
+                    if !nonconformal_levels.is_empty() {
+                        // Convert delta to (re, im) vector
+                        let delta_approx = delta.to_complex64_approx();
+                        let delta_vec = (delta_approx.re, delta_approx.im);
+                        let delta_norm_sqr_check = delta_vec.0 * delta_vec.0 + delta_vec.1 * delta_vec.1;
                         
-                        if delta_norm_sqr_check < node.validity_radius * node.validity_radius {
-                            // Apply non-conformal BLA: z_{n+l} = A_{n,l}·z_n + B_{n,l}·c
-                            // For non-conformal fractals (Tricorn), A and B are 2×2 real matrices
-                            // instead of complex numbers, as angles are not preserved.
-                            let dc_approx = dc.to_complex64_approx();
-                            let dc_vec = (dc_approx.re, dc_approx.im);
+                        for level in (0..nonconformal_levels.len()).rev() {
+                            let level_nodes = &nonconformal_levels[level];
+                            if (n as usize) >= level_nodes.len() {
+                                continue;
+                            }
+                            let node = &level_nodes[n as usize];
                             
-                            // Linear term: A_{n,l}·z_n
-                            let linear_vec = node.a.mul_vector(delta_vec.0, delta_vec.1);
-                            
-                            // Add dc term: B_{n,l}·c
-                            let dc_term_vec = node.b.mul_vector(dc_vec.0, dc_vec.1);
-                            
-                            let next_vec = (linear_vec.0 + dc_term_vec.0, linear_vec.1 + dc_term_vec.1);
-                            
-                            // Convert back to ComplexExp
-                            delta = ComplexExp::from_complex64(Complex64::new(next_vec.0, next_vec.1));
-                            delta_norm_sqr = delta.norm_sqr_approx();
-                            n += 1u32 << level;  // Skip l = 2^level iterations
-                            stepped = true;
-                            break;
+                            if delta_norm_sqr_check < node.validity_radius * node.validity_radius {
+                                // Apply non-conformal BLA: z_{n+l} = A_{n,l}·z_n + B_{n,l}·c
+                                // For non-conformal fractals (Tricorn), A and B are 2×2 real matrices
+                                // instead of complex numbers, as angles are not preserved.
+                                let dc_approx = dc.to_complex64_approx();
+                                let dc_vec = (dc_approx.re, dc_approx.im);
+                                
+                                // Linear term: A_{n,l}·z_n
+                                let linear_vec = node.a.mul_vector(delta_vec.0, delta_vec.1);
+                                
+                                // Add dc term: B_{n,l}·c
+                                let dc_term_vec = node.b.mul_vector(dc_vec.0, dc_vec.1);
+                                
+                                let next_vec = (linear_vec.0 + dc_term_vec.0, linear_vec.1 + dc_term_vec.1);
+                                
+                                // Convert back to ComplexExp
+                                delta = ComplexExp::from_complex64(Complex64::new(next_vec.0, next_vec.1));
+                                n += 1u32 << level;  // Skip l = 2^level iterations
+                                stepped = true;
+                                bla_applied = true;
+                                steps_bla += 1;  // C++: steps_bla++ après chaque pas BLA
+                                break; // Found a BLA step, continue nested loop to try another
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // BLA Table Lookup:
-        // Find the BLA starting from iteration m (n in our code) that has the largest skip l
-        // satisfying |z| < R. If there is none, do a perturbation iteration.
-        // Check for rebasing opportunities after each BLA application or perturbation step.
-        //
-        // Bivariate Linear Approximation (BLA):
-        // Sometimes, l iterations starting at n can be approximated by bivariate linear function:
-        // z_{n+l} = A_{n,l}·z_n + B_{n,l}·c
-        // This is valid when the non-linear part of the full perturbation iterations is so small
-        // that omitting it would cause fewer problems than the rounding error of the low precision data type.
-        //
-        // Note: BLA is automatically disabled for very deep zooms (>10^15) where f64 precision
-        // is insufficient. In such cases, the BLA table will be empty and full GMP perturbation is used.
-        //
-        // Search strategy: iterate levels in reverse order (largest skip first) to find the largest
-        // valid skip l = 2^level satisfying |z_n| < R_{n,l}.
-        if !stepped && !bla_table.levels.is_empty() {
-            delta_norm_sqr = delta.norm_sqr_approx();
-            // Search from highest level (largest skip) to lowest level (smallest skip)
-            for level in (0..bla_table.levels.len()).rev() {
-                let level_nodes = &bla_table.levels[level];
-                if (n as usize) >= level_nodes.len() {
-                    continue;
-                }
-                let node = &level_nodes[n as usize];
-                // Pour Burning Ship, vérifier que le BLA est valide (quadrant stable)
-                if is_burning_ship && !node.burning_ship_valid {
-                    continue;
-                }
-                // Single Step BLA validity condition: |z_n| < R_{n,l}
-                // Derived from: |z_n²| << |2·Z_n·z_n + c|
-                // Assuming negligibility of c: |z_n| << |2·Z_n| = |A_{n,1}|
-                // Therefore: |z_n| < R_{n,l} where R_{n,l} = ε·|A_{n,l}|
-                if delta_norm_sqr < node.validity_radius * node.validity_radius {
-                    // For Burning Ship, apply sign transformation to delta
-                    let work_delta = if is_burning_ship && node.burning_ship_valid {
-                        delta.mul_signed(node.sign_re, node.sign_im)
-                    } else {
-                        delta
-                    };
-
-                    if should_use_series(series_config, delta_norm_sqr, node.validity_radius) {
-                        // Use series approximation with higher-order terms
-                        let delta_sq = work_delta.mul(work_delta);
-                        let mut next_delta = work_delta.mul_complex64(node.a);  // A_{n,l}·z_n
-                        if !is_julia {
-                            next_delta = next_delta.add(dc.mul_complex64(node.b));  // + B_{n,l}·c
-                        }
-                        // Terme quadratique (ordre 2): C·z_n²
-                        next_delta = next_delta.add(delta_sq.mul_complex64(node.c));
-
-                        // Termes d'ordre supérieur pour Multibrot (ordre 4-6)
-                        if series_config.order >= 4 && is_multibrot {
-                            // Terme cubique δ³
-                            let delta_cube = delta_sq.mul(work_delta);
-                            if node.d.norm() > 1e-20 {
-                                next_delta = next_delta.add(delta_cube.mul_complex64(node.d));
-                            }
-
-                            // Terme quartique δ⁴ (ordre 5-6)
-                            if series_config.order >= 5 && node.e.norm() > 1e-20 {
-                                let delta_4 = delta_sq.mul(delta_sq);
-                                next_delta = next_delta.add(delta_4.mul_complex64(node.e));
-                            }
-                        }
-
-                        let coeff_a_norm = node.a.norm();
-                        let err = estimate_series_error(
-                            delta_norm_sqr,
-                            series_config.order,
-                            level,
-                            coeff_a_norm,
-                        );
-                        if err > series_config.error_tolerance {
-                            suspect = true;
-                        }
-                        delta = next_delta;
-                    } else {
-                        // Apply BLA: z_{n+l} = A_{n,l}·z_n + B_{n,l}·c
-                        let mut next_delta = work_delta.mul_complex64(node.a);  // A_{n,l}·z_n
-                        if !is_julia {
-                            next_delta = next_delta.add(dc.mul_complex64(node.b));  // + B_{n,l}·c
-                        }
-                        delta = next_delta;
+            // BLA Table Lookup:
+            // Find the BLA starting from iteration m (n in our code) that has the largest skip l
+            // satisfying |z| < R. If there is none, do a perturbation iteration.
+            // Check for rebasing opportunities after each BLA application or perturbation step.
+            //
+            // Bivariate Linear Approximation (BLA):
+            // Sometimes, l iterations starting at n can be approximated by bivariate linear function:
+            // z_{n+l} = A_{n,l}·z_n + B_{n,l}·c
+            // This is valid when the non-linear part of the full perturbation iterations is so small
+            // that omitting it would cause fewer problems than the rounding error of the low precision data type.
+            //
+            // Note: BLA is automatically disabled for very deep zooms (>10^15) where f64 precision
+            // is insufficient. In such cases, the BLA table will be empty and full GMP perturbation is used.
+            //
+            // Search strategy: iterate levels in reverse order (largest skip first) to find the largest
+            // valid skip l = 2^level satisfying |z_n| < R_{n,l}.
+            if !stepped && !bla_table.levels.is_empty() {
+                let delta_norm_sqr = delta.norm_sqr_approx();
+                // Search from highest level (largest skip) to lowest level (smallest skip)
+                for level in (0..bla_table.levels.len()).rev() {
+                    let level_nodes = &bla_table.levels[level];
+                    if (n as usize) >= level_nodes.len() {
+                        continue;
                     }
-                    delta_norm_sqr = delta.norm_sqr_approx();
-                    // Skip l = 2^level iterations: z_{n+l} has been computed
-                    n += 1u32 << level;
-                    stepped = true;
-                    break;
+                    let node = &level_nodes[n as usize];
+                    // Pour Burning Ship, vérifier que le BLA est valide (quadrant stable)
+                    if is_burning_ship && !node.burning_ship_valid {
+                        continue;
+                    }
+                    // Single Step BLA validity condition: |z_n| < R_{n,l}
+                    // Derived from: |z_n²| << |2·Z_n·z_n + c|
+                    // Assuming negligibility of c: |z_n| << |2·Z_n| = |A_{n,1}|
+                    // Therefore: |z_n| < R_{n,l} where R_{n,l} = ε·|A_{n,l}|
+                    if delta_norm_sqr < node.validity_radius * node.validity_radius {
+                        // For Burning Ship, apply sign transformation to delta
+                        let work_delta = if is_burning_ship && node.burning_ship_valid {
+                            delta.mul_signed(node.sign_re, node.sign_im)
+                        } else {
+                            delta
+                        };
+
+                        if should_use_series(series_config, delta_norm_sqr, node.validity_radius) {
+                            // Use series approximation with higher-order terms
+                            let delta_sq = work_delta.mul(work_delta);
+                            let mut next_delta = work_delta.mul_complex64(node.a);  // A_{n,l}·z_n
+                            if !is_julia {
+                                next_delta = next_delta.add(dc.mul_complex64(node.b));  // + B_{n,l}·c
+                            }
+                            // Terme quadratique (ordre 2): C·z_n²
+                            next_delta = next_delta.add(delta_sq.mul_complex64(node.c));
+
+                            // Termes d'ordre supérieur pour Multibrot (ordre 4-6)
+                            if series_config.order >= 4 && is_multibrot {
+                                // Terme cubique δ³
+                                let delta_cube = delta_sq.mul(work_delta);
+                                if node.d.norm() > 1e-20 {
+                                    next_delta = next_delta.add(delta_cube.mul_complex64(node.d));
+                                }
+
+                                // Terme quartique δ⁴ (ordre 5-6)
+                                if series_config.order >= 5 && node.e.norm() > 1e-20 {
+                                    let delta_4 = delta_sq.mul(delta_sq);
+                                    next_delta = next_delta.add(delta_4.mul_complex64(node.e));
+                                }
+                            }
+
+                            let coeff_a_norm = node.a.norm();
+                            let err = estimate_series_error(
+                                delta_norm_sqr,
+                                series_config.order,
+                                level,
+                                coeff_a_norm,
+                            );
+                            if err > series_config.error_tolerance {
+                                suspect = true;
+                            }
+                            delta = next_delta;
+                        } else {
+                            // Apply BLA: z_{n+l} = A_{n,l}·z_n + B_{n,l}·c
+                            let mut next_delta = work_delta.mul_complex64(node.a);  // A_{n,l}·z_n
+                            if !is_julia {
+                                next_delta = next_delta.add(dc.mul_complex64(node.b));  // + B_{n,l}·c
+                            }
+                            delta = next_delta;
+                        }
+                        // Skip l = 2^level iterations: z_{n+l} has been computed
+                        n += 1u32 << level;
+                        stepped = true;
+                        bla_applied = true;
+                        steps_bla += 1;  // C++: steps_bla++ après chaque pas BLA
+                        break; // Found a BLA step, continue nested loop to try another
+                    }
                 }
+            }
+            
+            // If no BLA step was found, exit the nested loop
+            if !stepped {
+                break;
             }
         }
 
-        // If no BLA was found (stepped == false), do a perturbation iteration
-        if !stepped {
+        // If no BLA was applied, do a perturbation iteration
+        if !bla_applied {
+            // DÉSACTIVÉ: Optimisation pour le centre exact qui causait des artefacts circulaires visibles.
+            // Même avec des seuils stricts, cette optimisation créait un cercle au centre.
+            // La perturbation standard fonctionne correctement même au centre exact.
+            // if is_center_like && !is_burning_ship && !is_multibrot && !is_tricorn {
+            //     // Au centre exact, delta reste ≈ 0, donc on peut le forcer à 0 pour éviter les erreurs d'arrondi
+            //     // qui pourraient s'accumuler. Cela garantit que le pixel suit exactement l'orbite de référence.
+            //     delta = ComplexExp::zero();
+            //     n += 1;
+            //     // Skip to rebasing check after perturbation
+            // } else 
             if is_burning_ship {
                 let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
                     ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
@@ -368,21 +521,27 @@ pub fn iterate_pixel(
 
                 if quadrant_stable {
                     // Optimized Burning Ship perturbation when quadrant is stable:
-                    // δ' = 2·(s_re·|Re(z_ref)|, s_im·|Im(z_ref)|)·δ_signed + δ_signed² + dc
-                    // where δ_signed = (s_re·δ_re, s_im·δ_im)
+                    // Use diffabs for correct derivative calculation: d/dδ |z_ref + δ|
+                    // δ' = diffabs(Re(z_ref), δ_re) + i·diffabs(Im(z_ref), δ_im)
+                    // Then: δ' = 2·z_abs·δ_diffabs + δ_diffabs² + dc
+                    // where z_abs = (|Re(z_ref)|, |Im(z_ref)|) and δ_diffabs uses diffabs
 
-                    // Apply signs to delta
-                    let delta_signed = delta.mul_signed(ref_sign_re, ref_sign_im);
+                    let delta_approx = delta.to_complex64_approx();
+                    
+                    // Calculate diffabs for real and imaginary parts
+                    let delta_diffabs_re = diffabs(z_ref.re, delta_approx.re);
+                    let delta_diffabs_im = diffabs(z_ref.im, delta_approx.im);
+                    let delta_diffabs = ComplexExp::from_complex64(Complex64::new(delta_diffabs_re, delta_diffabs_im));
 
                     // z_abs = (|Re(z_ref)|, |Im(z_ref)|)
                     let z_abs = Complex64::new(z_ref.re.abs(), z_ref.im.abs());
 
-                    // Linear term: 2·z_abs·δ_signed (component-wise for Burning Ship)
-                    // For Burning Ship: d/dδ of (|z_re + δ_re|, |z_im + δ_im|)² = 2·(s_re·|z_re|, s_im·|z_im|)
-                    let linear = delta_signed.mul_complex64(z_abs * 2.0);
+                    // Linear term: 2·z_abs·δ_diffabs
+                    // For Burning Ship: d/dδ of (|z_re + δ_re|, |z_im + δ_im|)² = 2·(diffabs(z_re, δ_re), diffabs(z_im, δ_im))
+                    let linear = delta_diffabs.mul_complex64(z_abs * 2.0);
 
-                    // Quadratic term: δ_signed²
-                    let nonlinear = delta_signed.mul(delta_signed);
+                    // Quadratic term: δ_diffabs²
+                    let nonlinear = delta_diffabs.mul(delta_diffabs);
 
                     delta = linear.add(nonlinear).add(dc);
                 } else {
@@ -400,7 +559,6 @@ pub fn iterate_pixel(
                     };
                     delta = ComplexExp::from_complex64(z_next - z_ref_next);
                 }
-                delta_norm_sqr = delta.norm_sqr_approx();
                 n += 1;
             } else if is_multibrot {
                 // Multibrot: z^d + c
@@ -421,7 +579,6 @@ pub fn iterate_pixel(
                     // Near origin, use simpler formula
                     delta = dc;
                 }
-                delta_norm_sqr = delta.norm_sqr_approx();
                 n += 1;
             } else if is_tricorn {
                 // Tricorn: z' = conj(z)² + c
@@ -455,7 +612,6 @@ pub fn iterate_pixel(
                 
                 // Convert back to ComplexExp
                 delta = ComplexExp::from_complex64(Complex64::new(next_vec.0, next_vec.1));
-                delta_norm_sqr = delta.norm_sqr_approx();
                 n += 1;
             } else if use_high_precision {
                 // High-precision path: use ComplexExp for z_ref multiplication
@@ -481,7 +637,6 @@ pub fn iterate_pixel(
                 } else {
                     delta = linear.add(nonlinear).add(dc);
                 }
-                delta_norm_sqr = delta.norm_sqr_approx();
                 n += 1;
             } else {
                 // Section 2: Perturbation
@@ -512,38 +667,14 @@ pub fn iterate_pixel(
                     // Mandelbrot: z_{n+1} = 2·Z_m·z_n + z_n² + c
                     delta = linear.add(nonlinear).add(dc);
                 }
-                delta_norm_sqr = delta.norm_sqr_approx();
                 n += 1;  // Incrémenter m et n simultanément (m = n dans notre implémentation)
             }
+            iters_ptb += 1;  // C++: iters_ptb++ après chaque itération de perturbation
         }
 
-        // Rebasing quand on atteint la fin de l'orbite de référence (amélioration de Zhuoran)
-        //
-        // Hybrid BLA: For a hybrid loop with multiple phases, rebasing switches to the reference
-        // for the current phase. You need one BLA table per reference.
-        //
-        // When reaching the end of the effective orbit:
-        // - If Hybrid BLA is enabled and a cycle is detected, switch to the reference for the next phase
-        // - Otherwise, reset delta and reuse the same orbit in a loop (Zhuoran's method)
-        let effective_len = ref_orbit.effective_len() as u32;
-        if n >= effective_len {
-            // Calculer z_curr en utilisant le dernier point de référence valide
-            let last_idx = effective_len.saturating_sub(1) as usize;
-            let z_ref = ref_orbit.get_z_ref_f64(last_idx as u32).unwrap_or_else(|| {
-                ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
-            });
-            let delta_approx = delta.to_complex64_approx();
-            let z_curr = z_ref + delta_approx;
-            
-            // Rebasing: delta = z_curr
-            // In Hybrid BLA, if hybrid_refs is provided, we would switch to the reference
-            // for the next phase. For now, we reset n to 0 and continue with the same reference.
-            // Full Hybrid BLA implementation would switch references here.
-            delta = ComplexExp::from_complex64(z_curr);
-            n = 0;
-            continue;
-        }
-
+        // Check rebasing after perturbation iteration
+        // Note: Rebasing is also checked at the start of the BLA loop, but we check again here
+        // after a perturbation step to ensure we catch all rebasing opportunities
         // For high-precision path, use ComplexExp for z_curr calculation
         let (z_curr, z_ref_norm_sqr) = if use_high_precision && !is_burning_ship && !is_multibrot && !is_tricorn {
             let z_ref_hp = ref_orbit.get_z_ref(n).unwrap_or_else(|| {
@@ -580,11 +711,8 @@ pub fn iterate_pixel(
         //   * delta ← z_curr (replace z_n with Z_m + z_n)
         //   * n ← 0 (reset m to 0, car m = n dans notre implémentation)
         let z_curr_norm_sqr = z_curr.norm_sqr();
-        // Recalculer delta_norm_sqr si pas déjà calculé (ex: après un saut BLA)
-        if !stepped {
-            delta_norm_sqr = delta.norm_sqr_approx();
-        }
-        let delta_norm_sqr_check = delta_norm_sqr;
+        // Recalculer delta_norm_sqr pour la vérification de rebasing
+        let delta_norm_sqr_check = delta.norm_sqr_approx();
         
         // Vérifier la condition de rebasing: |Z_m + z_n| < |z_n|
         // Équivalent à: |z_curr| < |delta|
@@ -592,6 +720,17 @@ pub fn iterate_pixel(
         if z_curr_norm_sqr > 0.0 && delta_norm_sqr_check > 0.0 && z_curr_norm_sqr < delta_norm_sqr_check {
             // Rebasing: replace z_n with Z_m + z_n and reset m to 0
             delta = ComplexExp::from_complex64(z_curr);  // replace z_n with Z_m + z_n
+            
+            // Hybrid BLA: change phase on rebasing: phase = (phase + n) % cycle_period
+            // This must be done for all rebasing, not just in the BLA loop
+            if let Some(ref mut phase) = current_phase {
+                if let Some(refs) = hybrid_refs {
+                    if refs.cycle_period > 0 {
+                        **phase = (**phase + n) % refs.cycle_period;
+                        phase_changed = true;
+                    }
+                }
+            }
             n = 0;  // reset m to 0 (car m = n)
             continue;
         }
@@ -604,6 +743,7 @@ pub fn iterate_pixel(
                 suspect,
                 distance: f64::INFINITY,
                 is_interior: false,
+                phase_changed,
             };
         }
         if z_curr.norm_sqr() > bailout_sqr {
@@ -614,11 +754,12 @@ pub fn iterate_pixel(
                 suspect,
                 distance: f64::INFINITY, // Distance estimation not computed for escaped points
                 is_interior: false,
+                phase_changed,
             };
         }
 
         let glitch_scale = z_ref_norm_sqr + 1.0;
-        if !delta_norm_sqr.is_finite() || delta_norm_sqr > glitch_tolerance_sqr * glitch_scale {
+        if !delta_norm_sqr_check.is_finite() || delta_norm_sqr_check > glitch_tolerance_sqr * glitch_scale {
             return DeltaResult {
                 iteration: n,
                 z_final: z_curr,
@@ -626,6 +767,7 @@ pub fn iterate_pixel(
                 suspect,
                 distance: f64::INFINITY,
                 is_interior: false,
+                phase_changed,
             };
         }
     }
@@ -650,6 +792,7 @@ pub fn iterate_pixel(
         suspect,
         distance: f64::INFINITY, // Distance estimation not computed by default
         is_interior: false, // Interior detection not computed by default
+        phase_changed,
     }
 }
 
@@ -711,27 +854,39 @@ pub fn iterate_pixel_gmp(
         // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision prec
         // Créer de nouvelles valeurs avec la précision explicite pour garantir la cohérence
         
-        // Créer des copies avec la précision explicite pour toutes les valeurs
-        let delta_prec = Complex::with_val(prec, (delta.real(), delta.imag()));
-        let z_ref_prec = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
-        
-        let mut delta_sq = delta_prec.clone();
-        delta_sq *= &delta_prec;
-        
-        let mut linear_term = z_ref_prec.clone();
-        linear_term *= &delta_prec;
-        let two = Float::with_val(prec, 2.0);
-        linear_term *= &two;
-        
-        let mut next_delta = Complex::with_val(prec, (linear_term.real(), linear_term.imag()));
-        next_delta += &delta_sq;
-        
-        if !is_julia {
-            // Mandelbrot: add dc term - créer une copie avec la précision explicite
-            let dc_gmp_prec = Complex::with_val(prec, (dc_gmp.real(), dc_gmp.imag()));
-            next_delta += &dc_gmp_prec;
+        // DÉSACTIVÉ: Optimisation pour le centre exact qui causait des artefacts circulaires visibles.
+        // Même avec des seuils stricts, cette optimisation créait un cercle au centre.
+        // La perturbation standard fonctionne correctement même au centre exact.
+        // if is_center_like && !is_burning_ship {
+        //     // Au centre exact, delta reste ≈ 0, donc on peut le forcer à 0 pour éviter les erreurs d'arrondi
+        //     // qui pourraient s'accumuler. Cela garantit que le pixel suit exactement l'orbite de référence.
+        //     delta = Complex::with_val(prec, (0, 0));
+        // } else {
+        {
+            // Créer des copies avec la précision explicite pour toutes les valeurs
+            let delta_prec = Complex::with_val(prec, (delta.real(), delta.imag()));
+            let z_ref_prec = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
+            
+            let mut delta_sq = delta_prec.clone();
+            delta_sq *= &delta_prec;
+            
+            let mut linear_term = z_ref_prec.clone();
+            linear_term *= &delta_prec;
+            let two = Float::with_val(prec, 2.0);
+            linear_term *= &two;
+            
+            let mut next_delta = Complex::with_val(prec, (linear_term.real(), linear_term.imag()));
+            next_delta += &delta_sq;
+            
+            if !is_julia {
+                // Mandelbrot: add dc term - créer une copie avec la précision explicite
+                let dc_gmp_prec = Complex::with_val(prec, (dc_gmp.real(), dc_gmp.imag()));
+                next_delta += &dc_gmp_prec;
+            }
+            // Julia: dc is already incorporated in initial delta
+            
+            delta = next_delta;
         }
-        // Julia: dc is already incorporated in initial delta
         
         // Handle special cases
         if is_burning_ship {
@@ -810,15 +965,14 @@ pub fn iterate_pixel_gmp(
             let z_ref_next_prec = Complex::with_val(prec, (z_ref_next.real(), z_ref_next.imag()));
             delta = z_temp_prec - z_ref_next_prec;
         } else {
-            // Standard Mandelbrot/Julia: use computed next_delta
-            delta = next_delta;
+            // Standard Mandelbrot/Julia: delta already computed above in the else block
         }
         
         // Check bailout
         // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision prec
         let z_ref_prec = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
         let delta_prec = Complex::with_val(prec, (delta.real(), delta.imag()));
-        let mut z_curr = z_ref_prec;
+        let mut z_curr = z_ref_prec.clone();
         z_curr += &delta_prec;
         let z_curr_norm_sqr = complex_norm_sqr(&z_curr, prec);
         
@@ -830,6 +984,7 @@ pub fn iterate_pixel_gmp(
                 suspect: false,
                 distance: f64::INFINITY,
                 is_interior: false,
+                phase_changed: false,
             };
         }
         
@@ -841,6 +996,7 @@ pub fn iterate_pixel_gmp(
                 suspect: false,
                 distance: f64::INFINITY,
                 is_interior: false,
+                phase_changed: false,
             };
         }
         
@@ -857,6 +1013,30 @@ pub fn iterate_pixel_gmp(
             continue;
         }
         
+        // Check for glitch: delta is too large relative to z_ref
+        // Use adaptive glitch tolerance based on zoom level
+        let pixel_size = params.span_x / params.width as f64;
+        let adaptive_tolerance = compute_adaptive_glitch_tolerance(pixel_size, params.glitch_tolerance);
+        let glitch_tolerance_sqr = Float::with_val(prec, adaptive_tolerance * adaptive_tolerance);
+        let z_ref_norm_sqr = complex_norm_sqr(&z_ref_prec, prec);
+        let mut glitch_scale = z_ref_norm_sqr.clone();
+        glitch_scale += Float::with_val(prec, 1.0);
+        let mut glitch_threshold = glitch_tolerance_sqr.clone();
+        glitch_threshold *= &glitch_scale;
+        
+        // Check if delta_norm_sqr is too large (glitch detected)
+        if !delta_norm_sqr.is_finite() || delta_norm_sqr > glitch_threshold {
+            return DeltaResult {
+                iteration: n,
+                z_final: crate::fractal::gmp::complex_to_complex64(&z_curr),
+                glitched: true,
+                suspect: false,
+                distance: f64::INFINITY,
+                is_interior: false,
+                phase_changed: false,
+            };
+        }
+        
         n += 1;
     }
     
@@ -869,16 +1049,29 @@ pub fn iterate_pixel_gmp(
     };
     let z_ref_prec = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
     let delta_prec = Complex::with_val(prec, (delta.real(), delta.imag()));
-    let mut z_curr = z_ref_prec;
+    let mut z_curr = z_ref_prec.clone();
     z_curr += &delta_prec;
+    
+    // Final glitch check: verify delta is reasonable
+    let pixel_size = params.span_x / params.width as f64;
+    let adaptive_tolerance = compute_adaptive_glitch_tolerance(pixel_size, params.glitch_tolerance);
+    let glitch_tolerance_sqr = Float::with_val(prec, adaptive_tolerance * adaptive_tolerance);
+    let z_ref_norm_sqr = complex_norm_sqr(&z_ref_prec, prec);
+    let delta_norm_sqr = complex_norm_sqr(&delta_prec, prec);
+    let mut glitch_scale = z_ref_norm_sqr.clone();
+    glitch_scale += Float::with_val(prec, 1.0);
+    let mut glitch_threshold = glitch_tolerance_sqr.clone();
+    glitch_threshold *= &glitch_scale;
+    let is_glitched = !delta_norm_sqr.is_finite() || delta_norm_sqr > glitch_threshold;
     
     DeltaResult {
         iteration: final_index,
         z_final: crate::fractal::gmp::complex_to_complex64(&z_curr),
-        glitched: false,
+        glitched: is_glitched,
         suspect: false,
         distance: f64::INFINITY,
         is_interior: false,
+        phase_changed: false,
     }
 }
 
@@ -895,6 +1088,8 @@ pub fn iterate_pixel_gmp(
 /// * `pixel_y` - Coordonnée Y du pixel (0..height)
 /// * `enable_distance` - Activer distance estimation
 /// * `enable_interior` - Activer interior detection
+/// * `current_phase` - Current phase (for Hybrid BLA, not used in this function)
+/// * `hybrid_refs` - Hybrid BLA references (for Hybrid BLA, not used in this function)
 pub(crate) fn iterate_pixel_with_duals(
     params: &FractalParams,
     ref_orbit: &ReferenceOrbit,
@@ -906,6 +1101,8 @@ pub(crate) fn iterate_pixel_with_duals(
     pixel_y: f64,
     enable_distance: bool,
     enable_interior: bool,
+    _current_phase: Option<&mut u32>,
+    _hybrid_refs: Option<&HybridBlaReferences>,
 ) -> DeltaResult {
     let mut n = 0u32;
     // Hybrid BLA: account for phase offset in effective length
@@ -978,6 +1175,7 @@ pub(crate) fn iterate_pixel_with_duals(
                     suspect,
                     distance: f64::INFINITY,
                     is_interior: true,
+                    phase_changed: false,
                 };
             }
         }
@@ -1210,6 +1408,7 @@ pub(crate) fn iterate_pixel_with_duals(
                 suspect,
                 distance: f64::INFINITY,
                 is_interior: false,
+                phase_changed: false,
             };
         }
         
@@ -1234,6 +1433,7 @@ pub(crate) fn iterate_pixel_with_duals(
                 suspect,
                 distance,
                 is_interior: false,
+                phase_changed: false,
             };
         }
         
@@ -1249,6 +1449,7 @@ pub(crate) fn iterate_pixel_with_duals(
                 suspect,
                 distance: f64::INFINITY,
                 is_interior: false,
+                phase_changed: false,
             };
         }
     }
@@ -1285,47 +1486,26 @@ pub(crate) fn iterate_pixel_with_duals(
         suspect,
         distance,
         is_interior: is_interior_result,
+        phase_changed: false,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fractal::definitions::default_params_for_type;
     use crate::fractal::{AlgorithmMode, FractalParams, FractalType};
-    use crate::fractal::perturbation::orbit::ReferenceOrbit;
-    use crate::fractal::perturbation::bla::BlaTable;
 
     fn test_params() -> FractalParams {
-        FractalParams {
-            width: 100,
-            height: 100,
-            center_x: 0.0,
-            center_y: 0.0,
-            span_x: 4.0,
-            span_y: 4.0,
-            seed: num_complex::Complex64::new(0.0, 0.0),
-            iteration_max: 100,
-            bailout: 4.0,
-            fractal_type: FractalType::Mandelbrot,
-            color_mode: 0,
-            color_repeat: 2,
-            use_gmp: false,
-            precision_bits: 192,
-            algorithm_mode: AlgorithmMode::Perturbation,
-            bla_threshold: 1e-6,
-            bla_validity_scale: 1.0,
-            glitch_tolerance: 1e-4,
-            series_order: 2,
-            series_threshold: 1e-6,
-            series_error_tolerance: 1e-9,
-            glitch_neighbor_pass: false,
-            series_standalone: false,
-            max_secondary_refs: 3,
-            min_glitch_cluster_size: 100,
-            multibrot_power: 2.5,
-            lyapunov_preset: Default::default(),
-            lyapunov_sequence: Vec::new(),
-        }
+        let mut p = default_params_for_type(FractalType::Mandelbrot, 100, 100);
+        p.span_x = 4.0;
+        p.span_y = 4.0;
+        p.iteration_max = 100;
+        p.precision_bits = 192;
+        p.algorithm_mode = AlgorithmMode::Perturbation;
+        p.bla_threshold = 1e-6;
+        p.glitch_neighbor_pass = false;
+        p
     }
 
     #[test]
@@ -1337,10 +1517,12 @@ mod tests {
             suspect: false,
             distance: f64::INFINITY,
             is_interior: false,
+            phase_changed: false,
         };
         assert_eq!(result.iteration, 10);
         assert_eq!(result.distance, f64::INFINITY);
         assert_eq!(result.is_interior, false);
+        assert_eq!(result.phase_changed, false);
     }
 }
 
