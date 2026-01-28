@@ -25,6 +25,7 @@ pub struct FractallApp {
     params: FractalParams,
     iterations: Vec<u32>,
     zs: Vec<Complex64>,
+    distances: Vec<f64>,
     orbits: Vec<Option<crate::fractal::orbit_traps::OrbitData>>,
     
     // Texture egui pour l'affichage
@@ -77,6 +78,11 @@ pub struct FractallApp {
 
     // Cache for orbit/BLA to accelerate deep zoom re-renders
     orbit_cache: Option<Arc<ReferenceOrbitCache>>,
+
+    // Distance estimation et interior detection
+    enable_distance_estimation: bool,
+    enable_interior_detection: bool,
+    interior_threshold: f64,
 }
 
 impl FractallApp {
@@ -100,6 +106,7 @@ impl FractallApp {
             params: params.clone(),
             iterations: Vec::new(),
             zs: Vec::new(),
+            distances: Vec::new(),
             orbits: Vec::new(),
             texture: None,
             palette_preview_textures: [
@@ -138,6 +145,9 @@ impl FractallApp {
             window_height: height,
             pending_resize: None,
             orbit_cache: None,
+            enable_distance_estimation: false,
+            enable_interior_detection: false,
+            interior_threshold: 0.001,
         }
     }
     
@@ -411,19 +421,22 @@ impl FractallApp {
                         FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
                             if use_perturbation =>
                         {
-                            // Use cache-aware GPU rendering for perturbation
+                            // Use cache-aware GPU rendering for perturbation (no distance estimation on GPU)
                             gpu.render_perturbation_with_cache(&pass_params, &cancel, reuse, current_orbit_cache.as_ref())
-                                .map(|(result, cache)| {
+                                .map(|((iterations, zs), cache)| {
                                     current_orbit_cache = Some(cache);
-                                    result
+                                    (iterations, zs, Vec::new()) // GPU doesn't compute distances
                                 })
                         }
-                        FractalType::Mandelbrot => gpu.render_mandelbrot(&pass_params, &cancel),
-                        FractalType::Julia => gpu.render_julia(&pass_params, &cancel),
-                        FractalType::BurningShip => gpu.render_burning_ship(&pass_params, &cancel),
+                        FractalType::Mandelbrot => gpu.render_mandelbrot(&pass_params, &cancel)
+                            .map(|(i, z)| (i, z, Vec::new())),
+                        FractalType::Julia => gpu.render_julia(&pass_params, &cancel)
+                            .map(|(i, z)| (i, z, Vec::new())),
+                        FractalType::BurningShip => gpu.render_burning_ship(&pass_params, &cancel)
+                            .map(|(i, z)| (i, z, Vec::new())),
                         _ => None,
                     };
-                    if let Some(result) = gpu_result {
+                    if let Some((iterations, zs, distances)) = gpu_result {
                         let base_precision = gpu.precision_label();
                         let precision = base_precision.to_string();
                         let effective_mode = if use_perturbation {
@@ -432,7 +445,7 @@ impl FractallApp {
                             AlgorithmMode::StandardF64
                         };
                         Some((
-                            result,
+                            (iterations, zs, distances),
                             effective_mode,
                             format!("GPU {}", precision),
                         ))
@@ -452,14 +465,14 @@ impl FractallApp {
                             // Use cache-aware CPU perturbation rendering for GPU fallback
                             use crate::fractal::perturbation::render_perturbation_with_cache;
                             render_perturbation_with_cache(&pass_params, &cancel, reuse, current_orbit_cache.as_ref())
-                                .map(|(result, cache)| {
+                                .map(|((iterations, zs, distances), cache)| {
                                     current_orbit_cache = Some(cache);
-                                    (result, AlgorithmMode::Perturbation, "CPU f64".to_string())
+                                    ((iterations, zs, distances), AlgorithmMode::Perturbation, "CPU f64".to_string())
                                 })
                         } else {
                             let cpu_result =
                                 render_escape_time_cancellable_with_reuse(&pass_params, &cancel, reuse);
-                            cpu_result.map(|r| {
+                            cpu_result.map(|(iterations, zs)| {
                                 let effective_mode = match pass_params.algorithm_mode {
                                     AlgorithmMode::ReferenceGmp => AlgorithmMode::ReferenceGmp,
                                     AlgorithmMode::Perturbation => AlgorithmMode::Perturbation,
@@ -483,7 +496,7 @@ impl FractallApp {
                                     AlgorithmMode::Perturbation => "CPU f64".to_string(),
                                     _ => "CPU f64".to_string(),
                                 };
-                                (r, effective_mode, precision_label)
+                                ((iterations, zs, Vec::new()), effective_mode, precision_label)
                             })
                         }
                     }
@@ -502,12 +515,12 @@ impl FractallApp {
                         // Use cache-aware CPU perturbation rendering
                         use crate::fractal::perturbation::render_perturbation_with_cache;
                         render_perturbation_with_cache(&pass_params, &cancel, reuse, current_orbit_cache.as_ref())
-                            .map(|(result, cache)| {
+                            .map(|((iterations, zs, distances), cache)| {
                                 current_orbit_cache = Some(cache);
-                                (result, AlgorithmMode::Perturbation, "CPU f64".to_string())
+                                ((iterations, zs, distances), AlgorithmMode::Perturbation, "CPU f64".to_string())
                             })
                     } else {
-                        render_escape_time_cancellable_with_reuse(&pass_params, &cancel, reuse).map(|r| {
+                        render_escape_time_cancellable_with_reuse(&pass_params, &cancel, reuse).map(|(iterations, zs)| {
                             let effective_mode = match pass_params.algorithm_mode {
                                 AlgorithmMode::ReferenceGmp => AlgorithmMode::ReferenceGmp,
                                 AlgorithmMode::Perturbation => AlgorithmMode::Perturbation,
@@ -531,13 +544,13 @@ impl FractallApp {
                                 AlgorithmMode::Perturbation => "CPU f64".to_string(),
                                 _ => "CPU f64".to_string(),
                             };
-                            (r, effective_mode, precision_label)
+                            ((iterations, zs, Vec::new()), effective_mode, precision_label)
                         })
                     }
                 };
 
                 match result {
-                    Some(((iterations, zs), effective_mode, precision_label)) => {
+                    Some(((iterations, zs, distances), effective_mode, precision_label)) => {
                         // Garder une copie pour la passe suivante afin d'éviter le recalcul
                         if pass_index + 1 < config.passes.len() {
                             previous_pass = Some((iterations.clone(), zs.clone(), pass_width, pass_height));
@@ -552,6 +565,7 @@ impl FractallApp {
                             precision_label,
                             iterations,
                             zs,
+                            distances,
                             width: pass_width,
                             height: pass_height,
                         });
@@ -607,6 +621,7 @@ impl FractallApp {
                 precision_label,
                 iterations,
                 zs,
+                distances,
                 width,
                 height,
             } => {
@@ -631,10 +646,12 @@ impl FractallApp {
                     );
                     self.iterations = upscaled_iter;
                     self.zs = upscaled_zs;
+                    self.distances = Vec::new(); // No upscaling for distances in preview
                     self.is_preview = true;
                 } else {
                     self.iterations = iterations;
                     self.zs = zs;
+                    self.distances = distances;
                     self.is_preview = false;
                 }
 
@@ -755,6 +772,10 @@ impl FractallApp {
                             color_for_buddhabrot_pixel(z, palette_idx, color_rep)
                         } else {
                             let orbit = self.orbits.get(idx).and_then(|o| o.as_ref());
+                            // Get distance if available (only from perturbation rendering)
+                            let distance = self.distances.get(idx).copied();
+                            let interior_flag_encoded =
+                                self.params.enable_interior_detection && !self.distances.is_empty();
                             color_for_pixel(
                                 iter,
                                 z,
@@ -764,6 +785,8 @@ impl FractallApp {
                                 out_mode,
                                 self.params.color_space,
                                 orbit,
+                                distance,
+                                interior_flag_encoded,
                             )
                         };
 
@@ -1453,6 +1476,41 @@ impl eframe::App for FractallApp {
                             self.start_render();
                         }
                     }
+
+                    // Advanced: Distance Estimation et Interior Detection
+                    ui.separator();
+                    ui.collapsing("Avancé", |ui| {
+                        // Distance estimation checkbox
+                        let old_dist = self.enable_distance_estimation;
+                        ui.checkbox(&mut self.enable_distance_estimation, "Distance Estimation");
+                        if old_dist != self.enable_distance_estimation {
+                            self.params.enable_distance_estimation = self.enable_distance_estimation;
+                            self.orbit_cache = None;
+                            self.start_render();
+                        }
+
+                        // Interior detection checkbox
+                        let old_interior = self.enable_interior_detection;
+                        ui.checkbox(&mut self.enable_interior_detection, "Interior Detection");
+                        if old_interior != self.enable_interior_detection {
+                            self.params.enable_interior_detection = self.enable_interior_detection;
+                            self.orbit_cache = None;
+                            self.start_render();
+                        }
+
+                        // Interior threshold slider (only show if interior detection enabled)
+                        if self.enable_interior_detection {
+                            ui.horizontal(|ui| {
+                                ui.label("Threshold:");
+                                let old_threshold = self.interior_threshold;
+                                ui.add(egui::Slider::new(&mut self.interior_threshold, 0.0001..=0.1).logarithmic(true));
+                                if (old_threshold - self.interior_threshold).abs() > 1e-8 {
+                                    self.params.interior_threshold = self.interior_threshold;
+                                    self.start_render();
+                                }
+                            });
+                        }
+                    });
                 });
                 
                 ui.separator();

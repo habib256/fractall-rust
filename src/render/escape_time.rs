@@ -83,6 +83,7 @@ pub fn render_escape_time(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
                     &Arc::new(AtomicBool::new(false)),
                     None,
                 )
+                .map(|(i, z, _d)| (i, z))
                 .unwrap_or_else(|| (Vec::new(), Vec::new()));
             }
             AlgorithmMode::Auto => {
@@ -356,7 +357,8 @@ pub fn render_escape_time_cancellable_with_reuse(
                 return render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse);
             }
             AlgorithmMode::Perturbation => {
-                return render_perturbation_cancellable_with_reuse(params, cancel, reuse);
+                return render_perturbation_cancellable_with_reuse(params, cancel, reuse)
+                    .map(|(i, z, _d)| (i, z));
             }
             AlgorithmMode::Auto => {
                 // La perturbation f64 est trop lente comparée aux autres méthodes.

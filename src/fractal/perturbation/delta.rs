@@ -1,5 +1,6 @@
 use num_complex::Complex64;
 use rug::{Complex, Float};
+use std::sync::OnceLock;
 
 use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::perturbation::bla::BlaTable;
@@ -11,6 +12,17 @@ use crate::fractal::perturbation::series::{
 };
 use crate::fractal::perturbation::distance::{DualComplex, compute_distance_estimate, transform_pixel_to_complex};
 use crate::fractal::perturbation::interior::{ExtendedDualComplex, is_interior};
+
+fn rebase_stride() -> u32 {
+    static STRIDE: OnceLock<u32> = OnceLock::new();
+    *STRIDE.get_or_init(|| {
+        let raw = std::env::var("FRACTALL_PERTURB_REBASE_STRIDE")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .unwrap_or(1);
+        raw.clamp(1, 64)
+    })
+}
 
 pub struct DeltaResult {
     pub iteration: u32,
@@ -174,6 +186,7 @@ pub fn iterate_pixel(
     mut current_phase: Option<&mut u32>,
     hybrid_refs: Option<&HybridBlaReferences>,
 ) -> DeltaResult {
+    let rebase_stride = rebase_stride();
     // If distance estimation or interior detection is enabled, use dual numbers version
     // Note: pixel coordinates need to be passed from caller - for now, estimate from dc
     // This is a limitation: ideally iterate_pixel() should accept pixel coordinates
@@ -369,7 +382,7 @@ pub fn iterate_pixel(
                                 delta_norm_sqr_cached = delta.norm_sqr_approx();
                                 
                                 // Optimisation 4: Vérifier rebasing après application BLA
-                                if n < effective_len {
+                                if n < effective_len && (rebase_stride == 1 || (n % rebase_stride) == 0) {
                                     let z_ref_check = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
                                         ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
                                     });
@@ -498,7 +511,7 @@ pub fn iterate_pixel(
                         delta_norm_sqr_cached = delta.norm_sqr_approx();
                         
                         // Optimisation 4: Vérifier rebasing après application BLA (plus efficace que à chaque itération)
-                        if n < effective_len {
+                        if n < effective_len && (rebase_stride == 1 || (n % rebase_stride) == 0) {
                             let z_ref_check = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
                                 ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
                             });

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Mutex;
 use std::time::Duration;
+use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
 use num_complex::Complex64;
@@ -11,11 +12,18 @@ use wgpu::util::DeviceExt;
 
 use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
-use crate::fractal::perturbation::{compute_perturbation_precision_bits, mark_neighbor_glitches};
+use crate::fractal::perturbation::{compute_perturbation_precision_bits, compute_dc_gmp, mark_neighbor_glitches};
 use crate::fractal::perturbation::orbit::{compute_reference_orbit_cached, ReferenceOrbitCache};
 
 const WORKGROUP_SIZE: u32 = 16;
 const MAX_LEVELS: usize = 17;
+
+fn env_flag(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        Err(_) => false,
+    }
+}
 
 /// Sélectionne les backends wgpu appropriés selon l'OS détecté.
 /// 
@@ -365,6 +373,8 @@ impl GpuRenderer {
         reuse: Option<(&[u32], &[Complex64], u32, u32)>,
         orbit_cache: Option<&Arc<ReferenceOrbitCache>>,
     ) -> Option<((Vec<u32>, Vec<Complex64>), Arc<ReferenceOrbitCache>)> {
+        let stats = env_flag("FRACTALL_GPU_PERTURB_STATS") || env_flag("FRACTALL_PERTURB_STATS");
+        let t_all = Instant::now();
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return None;
         }
@@ -380,7 +390,9 @@ impl GpuRenderer {
         orbit_params.precision_bits = compute_perturbation_precision_bits(params);
 
         // Use cached orbit/BLA or compute fresh
+        let t_ref = Instant::now();
         let cache = compute_reference_orbit_cached(&orbit_params, Some(cancel), orbit_cache)?;
+        let dt_ref = t_ref.elapsed();
         let ref_orbit = &cache.orbit;
         let bla_table = &cache.bla_table;
         let supports_bla = matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia);
@@ -483,7 +495,11 @@ impl GpuRenderer {
         let output_count = width * height;
         let output_size = (output_count * std::mem::size_of::<PixelOut>()) as u64;
 
-        let reuse = build_reuse(params, reuse);
+        // IMPORTANT: La perturbation ne supporte pas la réutilisation des pixels entre passes (dc change).
+        // Le CPU désactive déjà cette réutilisation pour éviter des artefacts. On fait pareil côté GPU.
+        // Pour debug, on peut forcer l'activation avec FRACTALL_GPU_PERTURB_ENABLE_REUSE=1.
+        let enable_reuse = env_flag("FRACTALL_GPU_PERTURB_ENABLE_REUSE");
+        let reuse = if enable_reuse { build_reuse(params, reuse) } else { None };
         let mut mask: Vec<u32> = vec![1u32; output_count];
         let mut initial_output = vec![
             PixelOut {
@@ -519,6 +535,28 @@ impl GpuRenderer {
                     }
                 }
             }
+        }
+        if stats && enable_reuse {
+            let mut zero_count = 0usize;
+            let mut min_x = width;
+            let mut min_y = height;
+            let mut max_x = 0usize;
+            let mut max_y = 0usize;
+            for (idx, &m) in mask.iter().enumerate() {
+                if m == 0 {
+                    zero_count += 1;
+                    let x = idx % width;
+                    let y = idx / width;
+                    min_x = min_x.min(x);
+                    min_y = min_y.min(y);
+                    max_x = max_x.max(x);
+                    max_y = max_y.max(y);
+                }
+            }
+            eprintln!(
+                "[GPU PERTURB] reuse_enabled=1 mask_zero={} bbox=({},{})-({},{})",
+                zero_count, min_x, min_y, max_x, max_y
+            );
         }
 
         let output_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -608,6 +646,7 @@ impl GpuRenderer {
             return None;
         }
 
+        let t_gpu = Instant::now();
         let mut encoder =
             self.device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -660,17 +699,112 @@ impl GpuRenderer {
         let mut iterations = Vec::with_capacity(output_count);
         let mut zs = Vec::with_capacity(output_count);
         let mut glitch_mask = vec![false; output_count];
+
+        // Stats de diagnostic: détecter les zones non calculées (iter=0, flags=0, z=0)
+        let mut count_iter0 = 0usize;
+        let mut count_flags = 0usize;
+        let mut count_z0 = 0usize;
+        let mut count_unwritten = 0usize;
+        let mut min_x = width;
+        let mut min_y = height;
+        let mut max_x = 0usize;
+        let mut max_y = 0usize;
+
+        // Échantillonner quelques pixels pour vérifier la variation
+        let sample_indices = if stats && output_count > 100 {
+            vec![0, output_count / 4, output_count / 2, 3 * output_count / 4, output_count - 1]
+        } else {
+            vec![]
+        };
+        
         for (idx, p) in pixels.iter().enumerate() {
             if p.flags != 0 {
                 glitch_mask[idx] = true;
             }
             iterations.push(p.iter);
             zs.push(Complex64::new(p.z_re as f64, p.z_im as f64));
+            
+            if stats && sample_indices.contains(&idx) {
+                let x = idx % width;
+                let y = idx / width;
+                eprintln!(
+                    "[GPU PERTURB] sample pixel({},{}) idx={} iter={} z=({:.6e},{:.6e})",
+                    x, y, idx, p.iter, p.z_re as f64, p.z_im as f64
+                );
+            }
+
+            if stats {
+                if p.iter == 0 {
+                    count_iter0 += 1;
+                }
+                if p.flags != 0 {
+                    count_flags += 1;
+                }
+                if p.z_re == 0.0 && p.z_im == 0.0 {
+                    count_z0 += 1;
+                }
+                if p.iter == 0 && p.flags == 0 && p.z_re == 0.0 && p.z_im == 0.0 {
+                    count_unwritten += 1;
+                    let x = idx % width;
+                    let y = idx / width;
+                    min_x = min_x.min(x);
+                    min_y = min_y.min(y);
+                    max_x = max_x.max(x);
+                    max_y = max_y.max(y);
+                }
+            }
         }
         drop(data);
         readback_buffer.unmap();
 
-        if params.glitch_neighbor_pass {
+        let dt_gpu = t_gpu.elapsed();
+        if stats {
+            // Analyser la distribution des itérations pour détecter des zones uniformes
+            let mut iter_counts = std::collections::HashMap::new();
+            for &iter_val in &iterations {
+                *iter_counts.entry(iter_val).or_insert(0) += 1;
+            }
+            let max_iter_count = iter_counts.values().max().copied().unwrap_or(0);
+            let most_common_iter = iter_counts.iter()
+                .max_by_key(|(_, &count)| count)
+                .map(|(iter, _)| *iter)
+                .unwrap_or(0);
+            
+            // Échantillonner quelques pixels au centre pour voir leurs valeurs
+            let center_x = width / 2;
+            let center_y = height / 2;
+            let center_idx = center_y * width + center_x;
+            let center_iter = if center_idx < iterations.len() { iterations[center_idx] } else { 0 };
+            let center_z_re = if center_idx < zs.len() { zs[center_idx].re } else { 0.0 };
+            let center_z_im = if center_idx < zs.len() { zs[center_idx].im } else { 0.0 };
+            
+            eprintln!(
+                "[GPU PERTURB] {}x{} enable_reuse={} ref={:.3}s gpu+readback={:.3}s iter0={} flags!=0={} z0={} unwritten={} bbox=({},{})-({},{}) total={:.3}s",
+                params.width,
+                params.height,
+                enable_reuse as u8,
+                dt_ref.as_secs_f64(),
+                dt_gpu.as_secs_f64(),
+                count_iter0,
+                count_flags,
+                count_z0,
+                count_unwritten,
+                min_x,
+                min_y,
+                max_x,
+                max_y,
+                t_all.elapsed().as_secs_f64(),
+            );
+            eprintln!(
+                "[GPU PERTURB] stats: max_iter_count={} (iter={}), center({},{}) iter={} z=({:.6e},{:.6e})",
+                max_iter_count, most_common_iter, center_x, center_y, center_iter, center_z_re, center_z_im
+            );
+        }
+
+        // Fast-path petites images: éviter le post-traitement voisinage (coût fixe non négligeable)
+        // Comme côté CPU, désactiver neighbor_pass pour petites images
+        let small_image = params.width.max(params.height) <= 512;
+        if !small_image && params.glitch_neighbor_pass {
             let neighbor_threshold = (params.iteration_max / 50).max(8);
             let neighbor_mask =
                 mark_neighbor_glitches(&iterations, params.width, params.height, neighbor_threshold);
@@ -686,6 +820,76 @@ impl GpuRenderer {
             .enumerate()
             .filter_map(|(idx, flagged)| if *flagged { Some(idx as u32) } else { None })
             .collect();
+
+        // Fallback complet vers GMP si trop de glitches (>30% des pixels)
+        // Augmenté de 10% à 30% pour éviter de recalculer toute l'image trop souvent.
+        // La correction individuelle avec perturbation GMP est maintenant plus efficace.
+        let total_pixels = output_count as f64;
+        let glitch_ratio = glitched_indices.len() as f64 / total_pixels;
+        const GLITCH_FALLBACK_THRESHOLD: f64 = 0.30; // 30%
+
+        if glitch_ratio > GLITCH_FALLBACK_THRESHOLD {
+            // Trop de glitches: recalculer tous les pixels en GMP
+            let gmp_params = MpcParams::from_params(&orbit_params);
+            let prec = compute_perturbation_precision_bits(params);
+            let width_u32 = params.width;
+            
+            // Utiliser compute_dc_gmp pour calculer directement en GMP (comme fallback CPU)
+            let center_x_gmp = if let Some(ref cx_hp) = params.center_x_hp {
+                match rug::Float::parse(cx_hp) {
+                    Ok(parse_result) => rug::Float::with_val(prec, parse_result),
+                    Err(_) => rug::Float::with_val(prec, params.center_x),
+                }
+            } else {
+                rug::Float::with_val(prec, params.center_x)
+            };
+            let center_y_gmp = if let Some(ref cy_hp) = params.center_y_hp {
+                match rug::Float::parse(cy_hp) {
+                    Ok(parse_result) => rug::Float::with_val(prec, parse_result),
+                    Err(_) => rug::Float::with_val(prec, params.center_y),
+                }
+            } else {
+                rug::Float::with_val(prec, params.center_y)
+            };
+            
+            // Recalculer tous les pixels en GMP (comme fallback CPU)
+            let width_usize = width_u32 as usize;
+            let all_corrections: Vec<_> = (0..output_count)
+                .par_bridge()
+                .map(|idx| {
+                    let i = idx % width_usize;
+                    let j = idx / width_usize;
+                    
+                    // Calculer dc en GMP directement avec compute_dc_gmp
+                    let dc_gmp = compute_dc_gmp(i, j, params, &center_x_gmp, &center_y_gmp, prec);
+                    
+                    // Calculer le point pixel = center + dc en GMP
+                    let mut z_pixel_re = center_x_gmp.clone();
+                    z_pixel_re += dc_gmp.real();
+                    let mut z_pixel_im = center_y_gmp.clone();
+                    z_pixel_im += dc_gmp.imag();
+                    let z_pixel = complex_from_xy(prec, z_pixel_re, z_pixel_im);
+                    
+                    let (iter_val, z_final) = iterate_point_mpc(&gmp_params, &z_pixel);
+                    (idx, iter_val, complex_to_complex64(&z_final))
+                })
+                .collect();
+            
+            // Remplacer tous les résultats
+            for (idx, iter_val, z_final) in all_corrections {
+                iterations[idx] = iter_val;
+                zs[idx] = z_final;
+            }
+            
+            if stats {
+                eprintln!(
+                    "[GPU PERTURB] fallback_gmp: glitch_ratio={:.3} > {:.3}, recalculé {} pixels",
+                    glitch_ratio, GLITCH_FALLBACK_THRESHOLD, output_count
+                );
+            }
+            
+            return Some(((iterations, zs), cache));
+        }
 
         // Parallel glitch correction using Rayon
         if !glitched_indices.is_empty() {

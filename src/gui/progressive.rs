@@ -19,6 +19,7 @@ pub enum RenderMessage {
         precision_label: String,
         iterations: Vec<u32>,
         zs: Vec<Complex64>,
+        distances: Vec<f64>,
         width: u32,
         height: u32,
     },

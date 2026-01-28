@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use num_complex::Complex64;
 use rug::{Complex, Float};
@@ -343,31 +344,85 @@ pub fn compute_reference_orbit_cached(
     cancel: Option<&AtomicBool>,
     cache: Option<&Arc<ReferenceOrbitCache>>,
 ) -> Option<Arc<ReferenceOrbitCache>> {
+    let perf = crate::fractal::perturbation::perf_enabled();
+    let t_all = Instant::now();
+
     // Check if cache is valid
     if let Some(cached) = cache {
         if cached.is_valid_for(params) {
+            if perf {
+                eprintln!(
+                    "[PERTURB PERF] reference_cache=hit prec={} iters={} type={:?} total={:.3}s",
+                    cached.precision_bits,
+                    cached.iteration_max,
+                    cached.fractal_type,
+                    t_all.elapsed().as_secs_f64()
+                );
+            }
             return Some(Arc::clone(cached));
         }
     }
 
     // Compute fresh orbit and BLA table
+    let t_orbit = Instant::now();
     let (orbit, center_x_gmp, center_y_gmp) = compute_reference_orbit(params, cancel)?;
+    let dt_orbit = t_orbit.elapsed();
+
     // Use z_ref_f64 for BLA table building (BLA works with f64 coefficients)
+    let t_bla = Instant::now();
     let bla_table = build_bla_table(&orbit.z_ref_f64, params, orbit.cref);
+    let dt_bla = t_bla.elapsed();
 
     // Build series table for standalone series approximation (if enabled)
     // Only for Mandelbrot and Julia; Burning Ship has abs() which breaks series
-    let series_table = if params.series_standalone
-        && matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia)
-    {
+    let pixel_count = (params.width as u64).saturating_mul(params.height as u64);
+    let small_image = params.width.max(params.height) <= 512;
+    let disable_series = match std::env::var("FRACTALL_PERTURB_DISABLE_SERIES") {
+        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        Err(_) => false,
+    };
+    let force_series = match std::env::var("FRACTALL_PERTURB_FORCE_SERIES") {
+        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        Err(_) => false,
+    };
+    let should_build_series = !disable_series
+        && (force_series
+            || (params.series_standalone
+                && matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia)
+                // Heuristique: sur petites images, éviter de payer un coût fixe si iters faibles
+                && (!small_image || params.iteration_max >= 5000)
+                && (pixel_count >= 16_384 || params.iteration_max >= 10_000)));
+
+    let t_series = Instant::now();
+    let series_table = if should_build_series {
         Some(build_series_table(&orbit.z_ref_f64))
     } else {
         None
     };
+    let dt_series = t_series.elapsed();
 
     // Build Hybrid BLA references (detect cycles and create references for each phase)
     // For Hybrid BLA: you need one BLA table per reference
+    let t_hybrid = Instant::now();
     let hybrid_refs = build_hybrid_bla_references(&orbit, &bla_table, params, cancel);
+    let dt_hybrid = t_hybrid.elapsed();
+
+    if perf {
+        eprintln!(
+            "[PERTURB PERF] reference_cache=miss size={}x{} pixels={} small_image={} type={:?} iters={} orbit={:.3}s bla={:.3}s series={:.3}s hybrid={:.3}s total={:.3}s",
+            params.width,
+            params.height,
+            pixel_count,
+            small_image,
+            params.fractal_type,
+            params.iteration_max,
+            dt_orbit.as_secs_f64(),
+            dt_bla.as_secs_f64(),
+            dt_series.as_secs_f64(),
+            dt_hybrid.as_secs_f64(),
+            t_all.elapsed().as_secs_f64(),
+        );
+    }
 
     Some(Arc::new(ReferenceOrbitCache::new(
         orbit,

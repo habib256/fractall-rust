@@ -18,28 +18,33 @@ src/
 ├── main_gui.rs          # GUI (egui/eframe)
 ├── fractal/
 │   ├── mod.rs           # exports + default_params_for_type()
-│   ├── types.rs         # FractalType, FractalParams, AlgorithmMode
-│   ├── definitions.rs   # constantes par type
+│   ├── types.rs         # FractalType, FractalParams, AlgorithmMode, ColorSpace
+│   ├── definitions.rs   # constantes par type + LyapunovPreset
 │   ├── iterations.rs    # escape-time f64
 │   ├── gmp.rs           # precision arbitraire (rug/mpc)
-│   ├── lyapunov.rs      # Lyapunov + LyapunovPreset
+│   ├── lyapunov.rs      # Lyapunov exponent
 │   ├── buddhabrot.rs    # Buddhabrot/Nebulabrot
 │   ├── vectorial.rs     # Von Koch, Dragon
+│   ├── orbit_traps.rs   # Orbit trap detection (Point, Line, Cross, Circle)
 │   └── perturbation/
 │       ├── mod.rs       # render_perturbation_cancellable_with_reuse()
-│       ├── types.rs     # ComplexExp (mantisse f64 + exposant)
+│       ├── types.rs     # ComplexExp, FloatExp (mantisse + exposant)
 │       ├── orbit.rs     # ReferenceOrbitCache
 │       ├── bla.rs       # BlaTable (Bilinear Approximation)
 │       ├── delta.rs     # iterate_pixel()
-│       └── series.rs    # approximation par series
+│       ├── series.rs    # Taylor series approximation
+│       ├── distance.rs  # Distance estimation (dual numbers)
+│       ├── interior.rs  # Interior detection (ExtendedDualComplex)
+│       ├── nonconformal.rs # Non-conformal BLA (Tricorn, Burning Ship)
+│       └── glitch.rs    # Glitch cluster detection
 ├── render/
 │   ├── mod.rs
-│   └── escape_time.rs   # dispatcher + should_use_perturbation()
+│   └── escape_time.rs   # dispatcher + should_use_gmp_reference()
 ├── gpu/
 │   ├── mod.rs           # GpuRenderer (wgpu)
-│   ├── mandelbrot_f32/f64/ds.wgsl
-│   ├── julia_f32/f64.wgsl
-│   ├── burning_ship_f32/f64.wgsl
+│   ├── mandelbrot_f32.wgsl / mandelbrot_f64.wgsl
+│   ├── julia_f32.wgsl / julia_f64.wgsl
+│   ├── burning_ship_f32.wgsl / burning_ship_f64.wgsl
 │   └── perturbation.wgsl
 ├── gui/
 │   ├── mod.rs
@@ -48,7 +53,8 @@ src/
 │   └── texture.rs
 ├── color/
 │   ├── mod.rs
-│   └── palettes.rs
+│   ├── palettes.rs      # 8+ palettes predefinies
+│   └── color_models.rs  # RGB, HSB, LCH conversions
 └── io/
     ├── mod.rs
     └── png.rs
@@ -59,164 +65,129 @@ src/
 Le code utilise **center + span** au lieu de xmin/xmax/ymin/ymax:
 ```rust
 pub struct FractalParams {
-    pub center_x: f64,  // centre X (pour compatibilité GPU/CPU standard)
-    pub center_y: f64,  // centre Y (pour compatibilité GPU/CPU standard)
-    pub span_x: f64,    // largeur totale (pour compatibilité GPU/CPU standard)
-    pub span_y: f64,    // hauteur totale (pour compatibilité GPU/CPU standard)
-    
-    // Coordonnées haute précision (String) pour préserver la précision arbitraire
-    // Utilisées pour les calculs GMP aux zooms profonds (>10^15)
-    // Si None, les valeurs f64 sont utilisées (compatibilité GPU/CPU standard)
+    pub center_x: f64,              // centre X (GPU/CPU standard)
+    pub center_y: f64,              // centre Y
+    pub span_x: f64,                // largeur totale
+    pub span_y: f64,                // hauteur totale
+
+    // Haute precision (String) pour zooms >10^15
     pub center_x_hp: Option<String>,
     pub center_y_hp: Option<String>,
     pub span_x_hp: Option<String>,
     pub span_y_hp: Option<String>,
 }
 ```
-Avantage: evite la soustraction de grands nombres proches lors de zooms profonds (>1e15).
-Les coordonnées haute précision en String préservent la précision arbitraire pour les calculs GMP,
-évitant les pertes de précision lors de la conversion f64 → GMP aux zooms très profonds (>10^16).
+Avantage: evite la soustraction de grands nombres proches lors de zooms profonds.
 
 ## Dispatch rendu (escape_time.rs)
 
 ```
-AlgorithmMode::Auto → 
-  - Pour zooms de e1 à e16 (10^1 à 10^16): CPU f64 standard (rapide et précis)
-  - Pour zooms > 10^16: GMP reference (précision nécessaire)
-  - La perturbation f64 est désactivée en mode Auto car trop lente comparée aux autres méthodes
+AlgorithmMode::Auto:
+  - Zooms 1e1 - 1e16: CPU f64 standard (rapide)
+  - Zooms > 1e16: GMP reference (precision necessaire)
+  - Perturbation f64 desactivee en Auto (trop lente)
 
-Modes forces: StandardF64 | StandardDS | Perturbation | ReferenceGmp
+Modes forces: StandardF64 | Perturbation | ReferenceGmp
 
-Note: La perturbation f64 peut toujours être utilisée en mode forcé (AlgorithmMode::Perturbation),
-mais elle n'est pas recommandée pour les performances (beaucoup plus lente que CPU f64 standard ou GMP reference).
-
-Précision GMP:
-  - Calcul automatique via compute_perturbation_precision_bits() pour perturbation
-  - Utilise les String haute précision (center_x_hp, etc.) si disponibles
-  - Toutes les opérations GMP utilisent la même précision calculée (pas le preset)
-  - Propagation de précision garantie dans iterate_pixel_gmp() via Complex::with_val(prec, ...)
-  - Les valeurs GMP sont créées explicitement avec la précision calculée pour éviter les incohérences
+Precision GMP:
+  - Calcul auto via compute_perturbation_precision_bits()
+  - Utilise les String HP si disponibles
+  - Propagation precision via Complex::with_val(prec, ...)
 ```
 
 ## Perturbation (deep zoom)
 
 **Supporte**: Mandelbrot, Julia, BurningShip, Tricorn
 
-Pipeline:
-1. Orbite de reference au centre (GMP, precision auto-calculee via `compute_perturbation_precision_bits()`)
-2. Table BLA precalculee pour sauter des iterations (desactivee pour zoom >10^15)
-3. Pixels = delta par rapport a reference:
-   - Zooms moyens: ComplexExp (mantisse f64 + exposant)
-   - Zooms profonds (>10^15): GMP complet (`iterate_pixel_gmp()`)
-4. Detection glitchs + correction en GMP
+**Pipeline**:
+1. Orbite reference au centre (GMP, precision auto)
+2. Table BLA pour sauter des iterations
+3. Pixels = delta par rapport a reference (ComplexExp ou GMP)
+4. Detection glitchs + correction
 
-**Calcul dc** (offset pixel vs centre) - `perturbation/mod.rs:compute_dc_gmp()`:
-- Utilise les String haute précision (`span_x_hp`, `span_y_hp`) si disponibles
-- Sinon fallback sur f64 pour compatibilité
-- Calcul direct en GMP: `dc = (i/width - 0.5) * span_x` (idem pour y)
+**Modules specialises**:
+- `distance.rs`: Estimation distance via DualComplex (differentiation auto)
+- `interior.rs`: Detection interieur via ExtendedDualComplex (5 composantes)
+- `nonconformal.rs`: BLA matriciel pour Tricorn/Burning Ship (valeurs singulieres)
+- `glitch.rs`: Clustering de pixels glitches (flood-fill) + references secondaires
 
-**Précision GMP automatique** (`compute_perturbation_precision_bits()`):
-- Par défaut (aligné référence C++ Fraktaler-3): `bits = max(24, 24 + floor(log2(zoom * height)))`, puis clamp 128..8192 (équivalent de  
-  `prec = max(24, 24 + (par.zoom * par.p.image.height).exp)` dans Fraktaler-3 `param.cc`).
-- Option politique conservative (`use_reference_precision_formula = false`): `log2(zoom) + safety_margin`, plage 128–8192 bits.
+**Precision GMP** (`compute_perturbation_precision_bits()`):
+- Formule C++ Fraktaler-3: `bits = max(24, 24 + floor(log2(zoom * height)))`, clamp 128..8192
+- Option conservative: `log2(zoom) + margin`
 
-**Référence et alignement C++ (Fraktaler-3):**
-- **Référence:** Code C++ Fraktaler-3 (`fraktaler-3-3.1/src`) — comportement cible pour la perturbation.
-- **Aligné:** Rebasing (condition, fin d’orbite, phase), formule de fusion BLA avec `cref_norm` = |c| (équivalent du scalaire `c` dans `merge(..., c)` C++), limites séparées `max_perturb_iterations` / `max_bla_steps` (PerturbIterations / BLASteps).
-- **Écarts assumés:** Précision par défaut = formule C++ (alignée référence). Calcul de dc peut utiliser GMP aux zooms extrêmes (référence C++ reste en précision limitée).
+**Cache** (`ReferenceOrbitCache`): orbite + BLA reutilises si meme centre/type/precision.
 
-**Cache** (`ReferenceOrbitCache`): orbite + BLA reutilises si meme centre (comparaison en String GMP)/type/precision.
-
-## Parametres perturbation (FractalParams)
+## Parametres perturbation
 
 | Champ | Description | Defaut |
 |-------|-------------|--------|
-| `bla_threshold` | seuil delta pour activer BLA | 1e-8 |
-| `bla_validity_scale` | multiplicateur rayon BLA (>1 = agressif) | 1.0 |
+| `bla_threshold` | seuil delta BLA | 1e-8 |
+| `bla_validity_scale` | multiplicateur rayon BLA | 1.0 |
 | `glitch_tolerance` | tolerance Pauldelbrot | 1e-4 |
-| `series_order` | ordre serie (0=off, 1=lin, 2=quad) | 0 |
-| `series_threshold` | seuil delta pour serie | 1e-6 |
-| `series_error_tolerance` | erreur max serie | 1e-10 |
-| `series_standalone` | approximation serie standalone (sans BLA) | false |
-| `glitch_neighbor_pass` | detection voisinage | true |
-| `max_secondary_refs` | nombre max references secondaires (0=off, 3=recom) | 3 |
-| `min_glitch_cluster_size` | taille min cluster pour reference secondaire | 100 |
-| `multibrot_power` | puissance z^d + c | 2.5 |
-| `max_perturb_iterations` | cap itérations perturbation (0 = illimité; aligné C++ PerturbIterations) | 1024 |
-| `max_bla_steps` | cap pas BLA (0 = illimité; aligné C++ BLASteps) | 1024 |
-| `use_reference_precision_formula` | précision = formule C++ (24 + exp(zoom*height)) | true |
+| `series_order` | ordre serie (0=off) | 0 |
+| `max_secondary_refs` | references secondaires (0=off) | 3 |
+| `min_glitch_cluster_size` | taille min cluster | 100 |
+| `max_perturb_iterations` | cap iterations | 1024 |
+| `max_bla_steps` | cap pas BLA | 1024 |
+| `use_reference_precision_formula` | formule C++ | true |
+
+## Couleur
+
+**Espaces couleur** (color_models.rs):
+- RGB: standard
+- HSB: Teinte-Saturation-Luminosite (interpolation circulaire)
+- LCH: Luminance-Chroma-Hue via CIE Lab (perceptuellement uniforme)
+
+**Orbit traps** (orbit_traps.rs):
+- Types: Point, Line, Cross, Circle
+- Tracking distance minimale sur l'orbite
 
 ## Types de fractales (--type N)
 
 | ID | Type | Algo |
 |----|------|------|
-| 1 | Von Koch | vectoriel |
-| 2 | Dragon | vectoriel |
+| 1-2 | Von Koch, Dragon | vectoriel |
 | 3 | Mandelbrot | escape-time + perturbation |
 | 4 | Julia | escape-time + perturbation |
-| 5 | Julia Sin | f64/GMP |
-| 6 | Newton | f64/GMP |
-| 7 | Phoenix | f64/GMP |
-| 8 | Buffalo | f64/GMP |
-| 9 | Barnsley Julia | f64/GMP |
-| 10 | Barnsley Mandelbrot | f64/GMP |
-| 11 | Magnet Julia | f64/GMP |
-| 12 | Magnet Mandelbrot | f64/GMP |
+| 5-12 | Julia Sin, Newton, Phoenix, Buffalo, Barnsley, Magnet | f64/GMP |
 | 13 | Burning Ship | escape-time + perturbation |
-| 14 | Tricorn | f64/GMP |
-| 15 | Mandelbulb (2D power 8) | f64/GMP |
-| 16 | Buddhabrot | special |
-| 17 | Lyapunov | special (presets) |
-| 18 | Perpendicular Burning Ship | f64/GMP |
-| 19 | Celtic | f64/GMP |
-| 20 | Alpha Mandelbrot | f64/GMP |
-| 21 | Pickover Stalks | f64/GMP |
-| 22 | Nova | f64/GMP |
-| 23 | Multibrot | f64/GMP |
-| 24 | Nebulabrot | special |
+| 14 | Tricorn | escape-time + perturbation |
+| 15-23 | Mandelbulb, Celtic, Alpha, Pickover, Nova, Multibrot... | f64/GMP |
+| 16, 24 | Buddhabrot, Nebulabrot | special |
+| 17 | Lyapunov | special (6 presets) |
 
 ## CLI
 
 ```
 --type N              # type fractale (1-24)
---width/height        # dimensions image
---center_x/center_y   # centre plan complexe
---xmin/xmax/ymin/ymax # bornes (convertis en center+span)
+--width/height        # dimensions
+--center_x/center_y   # centre
 --iterations          # max iterations
---palette 0-8         # palette couleurs
---color_repeat        # repetitions gradient (2-40)
---gmp                 # force precision arbitraire
+--palette 0-8         # palette
+--color_repeat        # repetitions gradient
+--algorithm           # auto|f64|perturbation|gmp
 --precision-bits      # bits GMP (defaut 256)
---algorithm           # auto|f64|standard|ds|double-single|perturbation|perturb|gmp|referencegmp|reference-gmp
---bla_threshold       # seuil BLA (ex: 1e-8)
---bla_validity_scale  # scale BLA (ex: 2.0)
---glitch_tolerance    # tolerance glitch (ex: 1e-4)
---multibrot_power     # puissance Multibrot (defaut 2.5, ex: 3.0)
+--bla_threshold       # seuil BLA
+--glitch_tolerance    # tolerance glitch
+--multibrot_power     # puissance Multibrot
 --lyapunov_preset     # standard|zircon-city|jellyfish|asymmetric|spaceship|heavy-blocks
---output FILE         # fichier PNG sortie
+--output FILE         # PNG sortie
 ```
 
 ## GPU (wgpu)
 
-Shaders disponibles:
-- `mandelbrot_f32.wgsl` / `julia_f32.wgsl` / `burning_ship_f32.wgsl`: precision simple
-- `mandelbrot_f64.wgsl` / `julia_f64.wgsl` / `burning_ship_f64.wgsl`: double (si supporte)
-- `mandelbrot_ds.wgsl`: Double-Single (emule f64 avec 2x f32)
-- `perturbation.wgsl`: perturbation GPU
+Shaders:
+- `mandelbrot_f32/f64.wgsl`, `julia_f32/f64.wgsl`, `burning_ship_f32/f64.wgsl`
+- `perturbation.wgsl`
 
 Selection automatique selon zoom et support materiel.
 
 ## GUI (FractallApp)
 
-- Rendu progressif multi-passes (preview → full)
-- Coordonnees haute precision:
-  - Stockees en String (`center_x_hp`, `center_y_hp`, `span_x_hp`, `span_y_hp`)
-  - Synchronisees vers `FractalParams` via `sync_hp_to_params()`
-  - Les String sont stockees directement dans `FractalParams` pour preserver la precision
-  - Conversion String → rug::Float pour calculs GMP aux zooms profonds (>10^15)
-  - Conversion String → f64 pour compatibilite GPU/CPU standard
+- Rendu progressif multi-passes (preview -> full)
+- Coordonnees HP en String, sync vers FractalParams
 - Selection rectangulaire pour zoom
 - Cache orbite/BLA entre re-rendus
 - Switch CPU/GPU
-- Affichage stats (centre, iterations, zoom) sous la barre de menu
-- Selection palette avec apercu visuel (image gradient)
+- Stats: centre, iterations, zoom
+- Apercu palettes

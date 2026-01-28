@@ -52,6 +52,8 @@ pub fn save_png(
                             params.out_coloring_mode,
                             params.color_space,
                             None, // Orbit data not stored in PNG export yet
+                            None, // Distance not stored in PNG export yet
+                            false, // Interior flag not encoded in PNG export
                         )
                     };
 

@@ -393,7 +393,10 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
     levels.push(level0);
 
     let zero = Complex64::new(0.0, 0.0);
-    let max_level = 16usize;
+    // Heuristique petites images: limiter la profondeur de merge pour réduire le coût fixe.
+    // Utile surtout quand width*height est faible et que l'orbite de référence est longue.
+    let pixel_count = (params.width as usize).saturating_mul(params.height as usize);
+    let max_level = if pixel_count <= 65_536 { 12usize } else { 16usize };
     for level in 1..=max_level {
         let step = 1usize << (level - 1);
         let prev = &levels[level - 1];
@@ -561,7 +564,8 @@ pub fn build_bla_table_nonconformal(ref_orbit: &[Complex64], params: &FractalPar
     levels.push(level0);
 
     // Merge levels: start from iteration 1 (iteration 0 is always non-linear)
-    let max_level = 16usize;
+    let pixel_count = (params.width as usize).saturating_mul(params.height as usize);
+    let max_level = if pixel_count <= 65_536 { 12usize } else { 16usize };
     for level in 1..=max_level {
         let step = 1usize << (level - 1);
         let prev = &levels[level - 1];

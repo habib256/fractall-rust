@@ -763,6 +763,59 @@ fn compute_wings(orbit: Option<&OrbitData>, iteration: u32, iter_max: u32) -> f6
     }
 }
 
+/// Distance field gradient coloring.
+/// Closer to boundary = higher value (brighter).
+fn compute_distance_gradient(distance: f64, iteration: u32, iter_max: u32) -> f64 {
+    if !distance.is_finite() || distance <= 0.0 || distance == f64::INFINITY {
+        // Fall back to iteration-based coloring
+        return iteration as f64 / iter_max as f64;
+    }
+
+    // Normalize distance (log scale works well for fractals)
+    // Smaller distance = closer to boundary = higher value
+    let log_dist = distance.ln();
+    let normalized = (-log_dist / 10.0).clamp(0.0, 1.0);
+
+    // Mix with iteration for variation
+    let iter_factor = iteration as f64 / iter_max as f64;
+    (normalized * 0.7 + iter_factor * 0.3).min(1.0)
+}
+
+/// Ambient occlusion style coloring.
+/// Darker near edges (small distance), brighter further away.
+fn compute_distance_ao(distance: f64, iteration: u32, iter_max: u32) -> f64 {
+    if !distance.is_finite() || distance <= 0.0 || distance == f64::INFINITY {
+        return iteration as f64 / iter_max as f64;
+    }
+
+    // AO factor: e^(-k/distance) where k is a scale factor
+    let ao_scale = 0.5;
+    let ao_factor = (1.0 - (-ao_scale / distance).exp()).clamp(0.0, 1.0);
+
+    let iter_factor = iteration as f64 / iter_max as f64;
+    (ao_factor * 0.6 + iter_factor * 0.4).min(1.0)
+}
+
+/// 3D shading effect using distance and z angle.
+/// Simulates a light source from top-left.
+fn compute_distance_3d(distance: f64, z: Complex64, iteration: u32, iter_max: u32) -> f64 {
+    if !distance.is_finite() || distance <= 0.0 || distance == f64::INFINITY {
+        return iteration as f64 / iter_max as f64;
+    }
+
+    // Simulate a light source from top-left (like traditional 3D shading)
+    let angle = z.im.atan2(z.re);
+    let light_angle = std::f64::consts::PI * 0.75; // Top-left light
+    let dot = ((angle - light_angle).cos() + 1.0) / 2.0;
+
+    // Combine with distance for depth
+    let depth_factor = 1.0 / (1.0 + distance * 0.1);
+    let shading = (dot * depth_factor * 0.5 + 0.5).clamp(0.0, 1.0);
+
+    let iter_factor = iteration as f64 / iter_max as f64;
+    (shading * 0.6 + iter_factor * 0.4).min(1.0)
+}
+
 /// Calcule la couleur RGB pour un pixel à partir de:
 /// - son nombre d'itérations,
 /// - la valeur finale de z,
@@ -782,27 +835,19 @@ pub fn color_for_pixel(
     out_coloring_mode: OutColoringMode,
     color_space: ColorSpace,
     orbit: Option<&OrbitData>,
+    distance: Option<f64>,
+    interior_flag_encoded: bool,
 ) -> (u8, u8, u8) {
     // Points dans l'ensemble : noir
     if iteration >= iter_max {
         return (0, 0, 0);
     }
 
-    // For BinaryDecomposition, we need the original z.im sign
-    // Note: Interior detection via z.im < 0 is only valid when enable_interior_detection is true
-    // and the flag is explicitly encoded. For normal escape-time fractals, z.im can be negative
-    // naturally, so we should NOT use this as a signal unless interior detection is enabled.
-    // Since color_for_pixel doesn't have access to params.enable_interior_detection,
-    // we disable this check to avoid false positives that create black checkerboard patterns.
     let original_z_im_negative = z.im < 0.0;
-    
-    // DISABLED: Interior detection check removed to prevent false positives
-    // The interior detection flag should only be used when explicitly enabled via
-    // enable_interior_detection in FractalParams, and should be passed separately
-    // rather than encoded in z.im sign to avoid conflicts with normal negative z.im values.
-    // if is_interior && out_coloring_mode != OutColoringMode::BinaryDecomposition {
-    //     return (0, 0, 0);
-    // }
+    let is_interior = interior_flag_encoded && z.im < 0.0;
+    if is_interior && out_coloring_mode != OutColoringMode::BinaryDecomposition {
+        return (0, 0, 0);
+    }
 
     // Restore z with positive im for calculations (except for sign check)
     let z_positive = Complex64::new(z.re, z.im.abs());
@@ -821,6 +866,19 @@ pub fn color_for_pixel(
         OutColoringMode::Smooth => smooth_iteration(iteration, z_positive, iter_max, 2.0), // Default bailout
         OutColoringMode::OrbitTraps => compute_orbit_traps(orbit, iteration, iter_max),
         OutColoringMode::Wings => compute_wings(orbit, iteration, iter_max),
+        // Distance modes - require distance estimation to be enabled
+        OutColoringMode::Distance => match distance {
+            Some(d) => compute_distance_gradient(d, iteration, iter_max),
+            None => smooth_iteration(iteration, z_positive, iter_max, 2.0),
+        },
+        OutColoringMode::DistanceAO => match distance {
+            Some(d) => compute_distance_ao(d, iteration, iter_max),
+            None => smooth_iteration(iteration, z_positive, iter_max, 2.0),
+        },
+        OutColoringMode::Distance3D => match distance {
+            Some(d) => compute_distance_3d(d, z_positive, iteration, iter_max),
+            None => smooth_iteration(iteration, z_positive, iter_max, 2.0),
+        },
     };
 
     // Clamp t dans [0, 1) pour éviter les problèmes aux limites

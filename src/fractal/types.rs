@@ -223,6 +223,12 @@ pub enum OutColoringMode {
     OrbitTraps,
     /// Technique Wings utilisant sinh() sur l'orbite pour motifs en ailes
     Wings,
+    /// Distance field gradient (smooth distance-based coloring)
+    Distance,
+    /// Distance with ambient occlusion effect (darker near edges)
+    DistanceAO,
+    /// 3D shading effect using distance gradient
+    Distance3D,
 }
 
 impl OutColoringMode {
@@ -242,6 +248,9 @@ impl OutColoringMode {
             OutColoringMode::Smooth,
             OutColoringMode::OrbitTraps,
             OutColoringMode::Wings,
+            OutColoringMode::Distance,
+            OutColoringMode::DistanceAO,
+            OutColoringMode::Distance3D,
         ]
     }
 
@@ -261,6 +270,9 @@ impl OutColoringMode {
             OutColoringMode::Smooth => "Smooth",
             OutColoringMode::OrbitTraps => "Orbit Traps",
             OutColoringMode::Wings => "Wings",
+            OutColoringMode::Distance => "Distance",
+            OutColoringMode::DistanceAO => "Distance AO",
+            OutColoringMode::Distance3D => "Distance 3D",
         }
     }
 
@@ -280,6 +292,9 @@ impl OutColoringMode {
             OutColoringMode::Smooth => 9,
             OutColoringMode::OrbitTraps => 10,
             OutColoringMode::Wings => 11,
+            OutColoringMode::Distance => 12,
+            OutColoringMode::DistanceAO => 13,
+            OutColoringMode::Distance3D => 14,
         }
     }
 
@@ -299,6 +314,9 @@ impl OutColoringMode {
             9 => Some(OutColoringMode::Smooth),
             10 => Some(OutColoringMode::OrbitTraps),
             11 => Some(OutColoringMode::Wings),
+            12 => Some(OutColoringMode::Distance),
+            13 => Some(OutColoringMode::DistanceAO),
+            14 => Some(OutColoringMode::Distance3D),
             _ => None,
         }
     }
@@ -319,6 +337,9 @@ impl OutColoringMode {
             OutColoringMode::Smooth => "smooth",
             OutColoringMode::OrbitTraps => "orbit-traps",
             OutColoringMode::Wings => "wings",
+            OutColoringMode::Distance => "distance",
+            OutColoringMode::DistanceAO => "distance-ao",
+            OutColoringMode::Distance3D => "distance-3d",
         }
     }
 
@@ -336,6 +357,11 @@ impl OutColoringMode {
             "potential" | "7" => Some(OutColoringMode::Potential),
             "color-decomp" | "colordecomp" | "decomp" | "8" => Some(OutColoringMode::ColorDecomposition),
             "smooth" | "9" => Some(OutColoringMode::Smooth),
+            "orbit-traps" | "orbittraps" | "10" => Some(OutColoringMode::OrbitTraps),
+            "wings" | "11" => Some(OutColoringMode::Wings),
+            "distance" | "12" => Some(OutColoringMode::Distance),
+            "distance-ao" | "distanceao" | "13" => Some(OutColoringMode::DistanceAO),
+            "distance-3d" | "distance3d" | "14" => Some(OutColoringMode::Distance3D),
             _ => None,
         }
     }

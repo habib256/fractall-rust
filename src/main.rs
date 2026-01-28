@@ -112,6 +112,18 @@ struct Cli {
     #[arg(long, default_value = "0")]
     plane: String,
 
+    /// Active l'estimation de distance (dual numbers, overhead supplementaire)
+    #[arg(long)]
+    enable_distance_estimation: bool,
+
+    /// Active la detection de l'interieur (extended dual numbers)
+    #[arg(long)]
+    enable_interior_detection: bool,
+
+    /// Seuil de detection interieur (defaut 0.001)
+    #[arg(long, default_value_t = 0.001)]
+    interior_threshold: f64,
+
     /// Fichier de sortie PNG
     #[arg(long, value_name = "FICHIER")]
     output: PathBuf,
@@ -213,6 +225,13 @@ fn main() {
         if multibrot_power > 0.0 {
             params.multibrot_power = multibrot_power;
         }
+    }
+
+    // Distance estimation et interior detection
+    params.enable_distance_estimation = cli.enable_distance_estimation;
+    params.enable_interior_detection = cli.enable_interior_detection;
+    if cli.interior_threshold > 0.0 {
+        params.interior_threshold = cli.interior_threshold;
     }
 
     match params.algorithm_mode {

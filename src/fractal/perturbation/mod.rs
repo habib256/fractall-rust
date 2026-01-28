@@ -82,7 +82,8 @@
 //! - **Détection de glitches**: Recalcule en GMP les pixels suspects
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 
 use num_complex::Complex64;
 use rayon::prelude::*;
@@ -91,7 +92,7 @@ use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
 use crate::fractal::perturbation::delta::{iterate_pixel, iterate_pixel_gmp};
 use crate::fractal::perturbation::orbit::{compute_reference_orbit_cached, compute_reference_orbit};
-use crate::fractal::perturbation::types::ComplexExp;
+use crate::fractal::perturbation::types::{ComplexExp, FloatExp};
 use rug::{Complex, Float};
 
 pub mod types;
@@ -106,6 +107,20 @@ pub mod interior;
 
 pub use orbit::{ReferenceOrbitCache, HybridBlaReferences};
 pub use glitch::{detect_glitch_clusters, select_secondary_reference_points};
+
+fn env_flag(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        Err(_) => false,
+    }
+}
+
+/// Active l'instrumentation de performance (timings + compteurs) via env var.
+/// Exemple: `FRACTALL_PERTURB_STATS=1`.
+pub(crate) fn perf_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag("FRACTALL_PERTURB_STATS"))
+}
 
 /// Iterate a pixel using Hybrid BLA with multiple references (one per phase).
 ///
@@ -495,17 +510,17 @@ pub fn compute_dc_gmp(
 }
 
 #[allow(dead_code)]
-pub fn render_mandelbrot_perturbation(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
+pub fn render_mandelbrot_perturbation(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>, Vec<f64>) {
     let cancel = Arc::new(AtomicBool::new(false));
     render_perturbation_cancellable_with_reuse(params, &cancel, None)
-        .unwrap_or_else(|| (Vec::new(), Vec::new()))
+        .unwrap_or_else(|| (Vec::new(), Vec::new(), Vec::new()))
 }
 
 pub fn render_perturbation_cancellable_with_reuse(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
     reuse: Option<(&[u32], &[Complex64], u32, u32)>,
-) -> Option<(Vec<u32>, Vec<Complex64>)> {
+) -> Option<(Vec<u32>, Vec<Complex64>, Vec<f64>)> {
     let (result, _cache) = render_perturbation_with_cache(params, cancel, reuse, None)?;
     Some(result)
 }
@@ -544,7 +559,10 @@ pub fn render_perturbation_with_cache(
     cancel: &Arc<AtomicBool>,
     _reuse: Option<(&[u32], &[Complex64], u32, u32)>,
     orbit_cache: Option<&Arc<ReferenceOrbitCache>>,
-) -> Option<((Vec<u32>, Vec<Complex64>), Arc<ReferenceOrbitCache>)> {
+) -> Option<((Vec<u32>, Vec<Complex64>, Vec<f64>), Arc<ReferenceOrbitCache>)> {
+    let perf = perf_enabled();
+    let t_all_start = Instant::now();
+    let t_orbit_start = Instant::now();
     if cancel.load(Ordering::Relaxed) {
         return None;
     }
@@ -575,22 +593,27 @@ pub fn render_perturbation_with_cache(
     // Use cached orbit/BLA or compute fresh
     let cache =
         compute_reference_orbit_cached(&orbit_params, Some(cancel.as_ref()), orbit_cache)?;
+    let t_orbit = t_orbit_start.elapsed();
     let width = params.width as usize;
     let height = params.height as usize;
+    let pixel_count = width.saturating_mul(height);
+    // Heuristique "petite image": privilégier le coût/pixel (moins de post-traitements).
+    let small_image = params.width.max(params.height) <= 512;
     let mut iterations = vec![0u32; width * height];
     let mut zs = vec![Complex64::new(0.0, 0.0); width * height];
+    let mut distances = vec![f64::INFINITY; width * height];
     let glitch_mask: Vec<AtomicBool> = (0..width * height)
         .map(|_| AtomicBool::new(false))
         .collect();
 
     if width == 0 || height == 0 {
-        return Some(((iterations, zs), cache));
+        return Some(((iterations, zs, distances), cache));
     }
 
     // For very deep zooms, use full GMP perturbation path
     if use_full_gmp {
         // Ne pas réutiliser les pixels pour GMP non plus
-        return render_perturbation_gmp_path(params, cancel, None, &cache, iterations, zs);
+        return render_perturbation_gmp_path(params, cancel, None, &cache, iterations, zs, distances);
     }
 
     // Compute dc (pixel offset from center) directly to avoid precision loss.
@@ -617,11 +640,22 @@ pub fn render_perturbation_with_cache(
     // Clone cache for use in parallel iteration
     let cache_ref = Arc::clone(&cache);
 
+    // Pré-calcul dc pour amortir le coût par pixel (surtout utile sur petites images).
+    // Stocker directement en FloatExp pour éviter les conversions via Complex64.
+    let dc_re_fexp: Vec<FloatExp> = (0..width)
+        .map(|i| FloatExp::from_f64((i as f64 * inv_width - 0.5) * x_range))
+        .collect();
+    let dc_im_fexp: Vec<FloatExp> = (0..height)
+        .map(|j| FloatExp::from_f64((j as f64 * inv_height - 0.5) * y_range))
+        .collect();
+
+    let t_pixels_start = Instant::now();
     iterations
         .par_chunks_mut(width)
         .zip(zs.par_chunks_mut(width))
+        .zip(distances.par_chunks_mut(width))
         .enumerate()
-        .for_each(|(j, (iter_row, z_row))| {
+        .for_each(|(j, ((iter_row, z_row), dist_row))| {
             let reuse_row = reuse.as_ref();
             if j % 16 == 0 && cancel.load(Ordering::Relaxed) {
                 cancelled.store(true, Ordering::Relaxed);
@@ -630,12 +664,9 @@ pub fn render_perturbation_with_cache(
             if cancelled.load(Ordering::Relaxed) {
                 return;
             }
+            let dc_im = dc_im_fexp[j];
 
-            // dc_im = (j/height - 0.5) * y_range
-            // This computes the offset from center directly without subtracting large values.
-            let dc_im = (j as f64 * inv_height - 0.5) * y_range;
-
-            for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
+            for (i, ((iter, z), dist)) in iter_row.iter_mut().zip(z_row.iter_mut()).zip(dist_row.iter_mut()).enumerate() {
                 if let Some(reuse) = reuse_row {
                     let ratio = reuse.ratio as usize;
                     if j % ratio == 0 && i % ratio == 0 {
@@ -650,12 +681,10 @@ pub fn render_perturbation_with_cache(
                     }
                 }
 
-                // Calcul de dc (offset du pixel par rapport au centre)
-                // dc_re = (i/width - 0.5) * x_range
-                // Cette formule calcule l'offset directement sans soustraire de grands nombres.
-                let dc_re = (i as f64 * inv_width - 0.5) * x_range;
-
-                let dc = ComplexExp::from_complex64(Complex64::new(dc_re, dc_im));
+                let dc = ComplexExp {
+                    re: dc_re_fexp[i],
+                    im: dc_im,
+                };
                 
                 // Initialisation du delta selon le type de fractale:
                 // - Mandelbrot: z_0 = 0, donc delta0 = 0, et c = dc dans la formule
@@ -714,27 +743,37 @@ pub fn render_perturbation_with_cache(
                 
                 *iter = result.iteration;
                 *z = z_value;
-                
-                if result.glitched || result.suspect {
+                *dist = result.distance;
+
+                // Fast-path petites images: corriger seulement les vrais glitches (pas "suspect")
+                if small_image {
+                    if result.glitched {
+                        glitch_mask[j * width + i].store(true, Ordering::Relaxed);
+                    }
+                } else if result.glitched || result.suspect {
                     glitch_mask[j * width + i].store(true, Ordering::Relaxed);
                 }
             }
         });
+    let t_pixels = t_pixels_start.elapsed();
 
     if cancelled.load(Ordering::Relaxed) {
         None
     } else {
+        let t_post_start = Instant::now();
         let mut glitch_mask: Vec<bool> = glitch_mask
             .iter()
             .map(|flag| flag.load(Ordering::Relaxed))
             .collect();
+        let glitched_initial = glitch_mask.iter().filter(|v| **v).count();
 
         // Ne pas marquer automatiquement les pixels avec itération <= 1 comme suspects.
         // Ces pixels peuvent être corrects (divergence immédiate réelle).
         // La détection de glitch basée sur la tolérance et le voisinage est suffisante.
         // Marquer seulement si déjà détecté comme glitched/suspect par iterate_pixel.
 
-        if params.glitch_neighbor_pass {
+        // Fast-path petites images: éviter le post-traitement voisinage (coût fixe non négligeable)
+        if !small_image && params.glitch_neighbor_pass {
             let neighbor_threshold = (params.iteration_max / 50).max(8);
             let neighbor_mask = mark_neighbor_glitches(
                 &iterations,
@@ -762,7 +801,8 @@ pub fn render_perturbation_with_cache(
         // Note: The current rebasing implementation (in iterate_pixel) resets n to 0 with the
         // same reference. A full Hybrid BLA implementation would switch to a different reference
         // corresponding to the current phase when rebasing.
-        if params.max_secondary_refs > 0 {
+        // Fast-path petites images: désactiver références secondaires (coût fixe + peu de pixels)
+        if !small_image && params.max_secondary_refs > 0 {
             let clusters = detect_glitch_clusters(
                 &glitch_mask,
                 params.width,
@@ -842,6 +882,7 @@ pub fn render_perturbation_with_cache(
             .enumerate()
             .filter_map(|(idx, flagged)| if *flagged { Some(idx) } else { None })
             .collect();
+        let corrections_requested = glitched_indices.len();
 
         // Fallback complet vers GMP si trop de glitches (>30% des pixels)
         // Augmenté de 10% à 30% pour éviter de recalculer toute l'image trop souvent.
@@ -900,9 +941,9 @@ pub fn render_perturbation_with_cache(
                 zs[idx] = z_final;
             }
 
-            return Some(((iterations, zs), cache));
+            return Some(((iterations, zs, distances), cache));
         }
-        
+
         if !glitched_indices.is_empty() {
             // Utiliser perturbation GMP au lieu de recalcul complet pour corriger les glitches.
             // C'est beaucoup plus rapide car on réutilise l'orbite de référence déjà calculée.
@@ -955,8 +996,33 @@ pub fn render_perturbation_with_cache(
                 zs[idx] = z_final;
             }
         }
+        let t_post = t_post_start.elapsed();
 
-        Some(((iterations, zs), cache))
+        if perf {
+            let pixel_size = params.span_x.abs().max(params.span_y.abs()) / params.width.max(1) as f64;
+            let zoom = if pixel_size.is_finite() && pixel_size > 0.0 {
+                4.0 / pixel_size
+            } else {
+                0.0
+            };
+            eprintln!(
+                "[PERTURB PERF] {}x{} pixels={} zoom={:.2e} small_image={} orbit={:.3}s pixels={:.3}s post={:.3}s total={:.3}s glitched_initial={} corrections={} fallback_ratio={:.3}",
+                params.width,
+                params.height,
+                pixel_count,
+                zoom,
+                small_image,
+                t_orbit.as_secs_f64(),
+                t_pixels.as_secs_f64(),
+                t_post.as_secs_f64(),
+                t_all_start.elapsed().as_secs_f64(),
+                glitched_initial,
+                corrections_requested,
+                glitch_ratio,
+            );
+        }
+
+        Some(((iterations, zs, distances), cache))
     }
 }
 
@@ -969,7 +1035,8 @@ fn render_perturbation_gmp_path(
     cache: &Arc<ReferenceOrbitCache>,
     mut iterations: Vec<u32>,
     mut zs: Vec<Complex64>,
-) -> Option<((Vec<u32>, Vec<Complex64>), Arc<ReferenceOrbitCache>)> {
+    distances: Vec<f64>,
+) -> Option<((Vec<u32>, Vec<Complex64>, Vec<f64>), Arc<ReferenceOrbitCache>)> {
     // Utiliser la précision calculée au lieu du preset
     let prec = compute_perturbation_precision_bits(params);
     let width = params.width as usize;
@@ -1137,7 +1204,7 @@ fn render_perturbation_gmp_path(
             }
         }
         
-        Some(((iterations, zs), Arc::clone(cache)))
+        Some(((iterations, zs, distances), Arc::clone(cache)))
     }
 }
 
@@ -1166,7 +1233,7 @@ mod tests {
 
     fn assert_close_iterations(params: &FractalParams, indices: &[(u32, u32)]) {
         let cancel = Arc::new(AtomicBool::new(false));
-        let (iters, _) =
+        let (iters, _, _) =
             render_perturbation_cancellable_with_reuse(params, &cancel, None).unwrap();
         for &(x, y) in indices {
             let idx = (y * params.width + x) as usize;

@@ -176,6 +176,10 @@ fn main(
     }
 
     let idx = gid.y * params.width + gid.x;
+    // IMPORTANT: Si reuse_mask est rempli de 1 partout (reuse désactivé), cette vérification
+    // est toujours vraie et ne skip rien. Mais si le buffer n'est pas correctement initialisé,
+    // tous les pixels seraient skippés. Pour debug, on peut commenter cette ligne temporairement.
+    // En production, on garde cette vérification pour supporter le reuse quand activé.
     if (reuse_mask[idx] == 0u) {
         return;
     }
@@ -234,15 +238,19 @@ fn main(
                     if (params.series_order >= 2u && delta_norm_sqr < params.series_threshold * params.series_threshold) {
                         let delta_sq = complex_mul(delta_actual_re, delta_actual_im, delta_actual_re, delta_actual_im);
                         let mul3 = complex_mul(node.c_re, node.c_im, delta_sq.x, delta_sq.y);
-                        let next_re = mul1.x + select(mul2.x, 0.0, is_julia) + mul3.x;
-                        let next_im = mul1.y + select(mul2.y, 0.0, is_julia) + mul3.y;
+                        // BLA: mul2 contient le terme dc. Pour Mandelbrot, on doit l'ajouter. Pour Julia, non.
+                        // WGSL: select(false_val, true_val, cond) => cond ? true_val : false_val
+                        let next_re = mul1.x + select(0.0, mul2.x, !is_julia) + mul3.x;
+                        let next_im = mul1.y + select(0.0, mul2.y, !is_julia) + mul3.y;
                         let scaled = rescale_delta(next_re, next_im, delta_scale);
                         delta_re = scaled.x;
                         delta_im = scaled.y;
                         delta_scale = scaled.z;
                     } else {
-                        let next_re = mul1.x + select(mul2.x, 0.0, is_julia);
-                        let next_im = mul1.y + select(mul2.y, 0.0, is_julia);
+                        // BLA: mul2 contient le terme dc. Pour Mandelbrot, on doit l'ajouter. Pour Julia, non.
+                        // WGSL: select(false_val, true_val, cond) => cond ? true_val : false_val
+                        let next_re = mul1.x + select(0.0, mul2.x, !is_julia);
+                        let next_im = mul1.y + select(0.0, mul2.y, !is_julia);
                         let scaled = rescale_delta(next_re, next_im, delta_scale);
                         delta_re = scaled.x;
                         delta_im = scaled.y;
@@ -293,8 +301,11 @@ fn main(
                     let delta_actual_im = delta_im * delta_scale;
                     let linear = complex_mul(2.0 * z.re, 2.0 * z.im, delta_actual_re, delta_actual_im);
                     let nonlinear = complex_mul(delta_actual_re, delta_actual_im, delta_actual_re, delta_actual_im);
-                    let next_re = linear.x + nonlinear.x + select(dc_re, 0.0, is_julia);
-                    let next_im = linear.y + nonlinear.y + select(dc_im, 0.0, is_julia);
+                    // IMPORTANT: Pour Mandelbrot, on ajoute dc à chaque itération. Pour Julia, dc est déjà dans delta initial.
+                    // WGSL: select(false_val, true_val, cond) => cond ? true_val : false_val
+                    // Donc ici on veut dc si !is_julia, sinon 0.
+                    let next_re = linear.x + nonlinear.x + select(0.0, dc_re, !is_julia);
+                    let next_im = linear.y + nonlinear.y + select(0.0, dc_im, !is_julia);
                     let scaled = rescale_delta(next_re, next_im, delta_scale);
                     delta_re = scaled.x;
                     delta_im = scaled.y;
@@ -319,29 +330,12 @@ fn main(
         let nan_im = z_im != z_im;
         let inf_re = abs(z_re) > 1e30;
         let inf_im = abs(z_im) > 1e30;
-        
-        // IMPORTANT: Désactiver complètement la détection de glitch au centre pour éviter les artefacts circulaires.
-        // Au centre, delta ≈ 0 est normal et ne doit jamais être détecté comme glitched.
-        // Si un pixel au centre est marqué comme glitched, il utilise z_ref comme valeur par défaut,
-        // ce qui crée un cercle uniforme si plusieurs pixels au centre sont marqués comme glitched.
-        let dc_norm_sqr = dc_re * dc_re + dc_im * dc_im;
-        let pixel_size_sqr = pixel_size * pixel_size;
-        // Désactiver complètement la détection de glitch dans un rayon de 10 pixels du centre
-        // pour éviter les artefacts circulaires visibles
-        let center_threshold = pixel_size_sqr * 100.0;  // Dans un rayon de 10 pixels du centre
-        let is_near_center = dc_norm_sqr < center_threshold;
-        
-        let glitch_scale = max(z_ref_norm_sqr, 1.0);  // Éviter division par zéro
-        // Tolérance absolue minimale basée sur la taille du pixel et la distance du centre
-        // WGSL: utiliser select() car if n'est pas une expression
-        let tolerance_normal = pixel_size_sqr * 100.0;        // Tolérance normale ailleurs
-        let min_absolute_tolerance = tolerance_normal;
-        let relative_glitched = z_ref_norm_sqr > 0.0 && delta_norm_sqr > glitch_tolerance_sqr * glitch_scale;
-        let absolute_glitched = delta_norm_sqr > min_absolute_tolerance;
-        // Désactiver complètement la détection de glitch au centre pour éviter les artefacts circulaires
-        // Seuls les NaN/Inf sont détectés comme glitched au centre, pas les grandes valeurs de delta
-        let glitched = !is_near_center && ((nan_re || nan_im || inf_re || inf_im)
-            || (relative_glitched && absolute_glitched));
+
+        // IMPORTANT (GPU f32): la détection de glitch basée sur |delta| est trop instable et
+        // provoque des zones massives "flagged" (carrés/rectangles magenta). On ne marque
+        // donc glitched que les cas réellement invalides (NaN/Inf), et on laisse le rendu
+        // normal gérer le reste.
+        let glitched = (nan_re || nan_im || inf_re || inf_im);
         
         if (glitched) {
             // IMPORTANT: Ne pas stocker les valeurs invalides (NaN/Inf) qui causent des artefacts visuels
