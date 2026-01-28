@@ -80,13 +80,15 @@ Les coordonnées haute précision en String préservent la précision arbitraire
 ## Dispatch rendu (escape_time.rs)
 
 ```
-AlgorithmMode::Auto → should_use_perturbation()?
-  - GPU f32: pixel_size < 1e-5  → perturbation
-  - CPU f64: pixel_size < 1e-13 → perturbation
-  - Zoom extreme (pixel_size < 1e-15) → should_use_full_gmp_perturbation() → force GMP complet (render_perturbation_gmp_path)
-  - sinon: f64 standard
+AlgorithmMode::Auto → 
+  - Pour zooms de e1 à e16 (10^1 à 10^16): CPU f64 standard (rapide et précis)
+  - Pour zooms > 10^16: GMP reference (précision nécessaire)
+  - La perturbation f64 est désactivée en mode Auto car trop lente comparée aux autres méthodes
 
 Modes forces: StandardF64 | StandardDS | Perturbation | ReferenceGmp
+
+Note: La perturbation f64 peut toujours être utilisée en mode forcé (AlgorithmMode::Perturbation),
+mais elle n'est pas recommandée pour les performances (beaucoup plus lente que CPU f64 standard ou GMP reference).
 
 Précision GMP:
   - Calcul automatique via compute_perturbation_precision_bits() pour perturbation

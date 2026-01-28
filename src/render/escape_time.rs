@@ -86,14 +86,14 @@ pub fn render_escape_time(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
                 .unwrap_or_else(|| (Vec::new(), Vec::new()));
             }
             AlgorithmMode::Auto => {
-                if should_use_perturbation(params, false) {
-                    return render_perturbation_cancellable_with_reuse(
-                        params,
-                        &Arc::new(AtomicBool::new(false)),
-                        None,
-                    )
-                    .unwrap_or_else(|| (Vec::new(), Vec::new()));
+                // La perturbation f64 est trop lente comparée aux autres méthodes.
+                // Utiliser CPU f64 standard jusqu'à zoom ~10^16, puis GMP reference au-delà.
+                // Pour des zooms de e1 à e16, utiliser CPU f64 standard (rapide et précis)
+                // Au-delà de 10^16, basculer sur GMP reference (précision nécessaire)
+                if should_use_gmp_reference(params) {
+                    return render_escape_time_gmp(params);
                 }
+                return render_escape_time_f64(params);
             }
         }
     }
@@ -359,9 +359,15 @@ pub fn render_escape_time_cancellable_with_reuse(
                 return render_perturbation_cancellable_with_reuse(params, cancel, reuse);
             }
             AlgorithmMode::Auto => {
-                if should_use_perturbation(params, false) {
-                    return render_perturbation_cancellable_with_reuse(params, cancel, reuse);
+                // La perturbation f64 est trop lente comparée aux autres méthodes.
+                // Utiliser CPU f64 standard jusqu'à zoom ~10^16, puis GMP reference au-delà.
+                // Pour des zooms de e1 à e16, utiliser CPU f64 standard (rapide et précis)
+                // Au-delà de 10^16, basculer sur GMP reference (précision nécessaire)
+                let reuse = build_reuse(params, reuse);
+                if should_use_gmp_reference(params) {
+                    return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse);
                 }
+                return render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse);
             }
         }
     }
@@ -371,6 +377,36 @@ pub fn render_escape_time_cancellable_with_reuse(
         return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse);
     }
     render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse)
+}
+
+/// Calcule le niveau de zoom à partir des paramètres.
+/// Le zoom est calculé comme base_range / pixel_size où base_range = 4.0 (plage standard Mandelbrot).
+fn compute_zoom(params: &FractalParams) -> Option<f64> {
+    if params.width == 0 || params.height == 0 {
+        return None;
+    }
+    let pixel_size = params.span_x.abs().max(params.span_y.abs()) / params.width as f64;
+    if !pixel_size.is_finite() || pixel_size <= 0.0 {
+        return None;
+    }
+    let base_range = 4.0;
+    let zoom = base_range / pixel_size;
+    if !zoom.is_finite() || zoom <= 1.0 {
+        return None;
+    }
+    Some(zoom)
+}
+
+/// Détermine si on doit utiliser GMP reference basé sur le niveau de zoom.
+/// Pour des zooms de e1 à e16 (10^1 à 10^16), on utilise CPU f64.
+/// Au-delà de 10^16, on bascule sur GMP reference.
+pub fn should_use_gmp_reference(params: &FractalParams) -> bool {
+    let zoom = match compute_zoom(params) {
+        Some(z) => z,
+        None => return false,
+    };
+    // Seuil: zoom > 10^16 → GMP reference
+    zoom > 1e16
 }
 
 pub fn should_use_perturbation(params: &FractalParams, gpu_f32: bool) -> bool {
