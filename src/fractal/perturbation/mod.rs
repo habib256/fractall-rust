@@ -729,16 +729,10 @@ pub fn render_perturbation_with_cache(
             .map(|flag| flag.load(Ordering::Relaxed))
             .collect();
 
-        // Détecter les pixels avec itération 0 ou 1 comme suspects
-        // Ces pixels peuvent être des erreurs de calcul, surtout avec des tolérances élevées
-        // qui ne les détectent pas comme glitched. Les recalculer en GMP pour être sûr.
-        // Note: itération 0 = divergence immédiate (peut être correct, mais vérifions en GMP)
-        for (idx, &iter) in iterations.iter().enumerate() {
-            if iter <= 1 {
-                // Pixel qui diverge immédiatement : suspect, recalculer en GMP pour vérifier
-                glitch_mask[idx] = true;
-            }
-        }
+        // Ne pas marquer automatiquement les pixels avec itération <= 1 comme suspects.
+        // Ces pixels peuvent être corrects (divergence immédiate réelle).
+        // La détection de glitch basée sur la tolérance et le voisinage est suffisante.
+        // Marquer seulement si déjà détecté comme glitched/suspect par iterate_pixel.
 
         if params.glitch_neighbor_pass {
             let neighbor_threshold = (params.iteration_max / 50).max(8);
@@ -849,11 +843,12 @@ pub fn render_perturbation_with_cache(
             .filter_map(|(idx, flagged)| if *flagged { Some(idx) } else { None })
             .collect();
 
-        // Fallback complet vers GMP si trop de glitches (>10% des pixels)
-        // Cela indique que la perturbation n'est pas adaptée au niveau de zoom
+        // Fallback complet vers GMP si trop de glitches (>30% des pixels)
+        // Augmenté de 10% à 30% pour éviter de recalculer toute l'image trop souvent.
+        // La correction individuelle avec perturbation GMP est maintenant plus efficace.
         let total_pixels = width * height;
         let glitch_ratio = glitched_indices.len() as f64 / total_pixels as f64;
-        const GLITCH_FALLBACK_THRESHOLD: f64 = 0.10; // 10%
+        const GLITCH_FALLBACK_THRESHOLD: f64 = 0.30; // 30% (augmenté de 10%)
 
         if glitch_ratio > GLITCH_FALLBACK_THRESHOLD {
             // Trop de glitches: recalculer tous les pixels en GMP
@@ -909,7 +904,8 @@ pub fn render_perturbation_with_cache(
         }
         
         if !glitched_indices.is_empty() {
-            let gmp_params = MpcParams::from_params(&orbit_params);
+            // Utiliser perturbation GMP au lieu de recalcul complet pour corriger les glitches.
+            // C'est beaucoup plus rapide car on réutilise l'orbite de référence déjà calculée.
             let prec = compute_perturbation_precision_bits(params);
             let width_u32 = params.width;
             
@@ -931,6 +927,8 @@ pub fn render_perturbation_with_cache(
                 Float::with_val(prec, params.center_y)
             };
             
+            // Utiliser l'orbite de référence GMP déjà calculée (plus rapide que recalcul complet)
+            use crate::fractal::perturbation::delta::iterate_pixel_gmp;
             let corrections: Vec<_> = glitched_indices
                 .par_iter()
                 .map(|&idx| {
@@ -940,15 +938,15 @@ pub fn render_perturbation_with_cache(
                     // Calculer dc en GMP directement
                     let dc_gmp = compute_dc_gmp(i, j, params, &center_x_gmp, &center_y_gmp, prec);
                     
-                    // Calculer le point pixel = center + dc en GMP
-                    let mut z_pixel_re = center_x_gmp.clone();
-                    z_pixel_re += dc_gmp.real();
-                    let mut z_pixel_im = center_y_gmp.clone();
-                    z_pixel_im += dc_gmp.imag();
-                    let z_pixel = complex_from_xy(prec, z_pixel_re, z_pixel_im);
+                    // Utiliser perturbation GMP avec l'orbite de référence (beaucoup plus rapide)
+                    let result = iterate_pixel_gmp(
+                        params,
+                        &cache.orbit,
+                        &dc_gmp,
+                        prec,
+                    );
                     
-                    let (iter_val, z_final) = iterate_point_mpc(&gmp_params, &z_pixel);
-                    (idx, iter_val, complex_to_complex64(&z_final))
+                    (idx, result.iteration, result.z_final)
                 })
                 .collect();
 

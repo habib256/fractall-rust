@@ -96,14 +96,14 @@ pub fn compute_adaptive_glitch_tolerance(pixel_size: f64, user_tolerance: f64) -
     };
 
     // Tolérance adaptative selon le niveau de zoom
-    // Tolerances resserrées pour mieux détecter les glitches aux zooms profonds
-    // et les recalculer en GMP plutôt que d'accumuler des erreurs numériques
+    // Ajustée pour réduire les faux positifs et améliorer les performances
+    // La perturbation devrait être rapide, donc on évite de marquer trop de pixels comme glitched
     match zoom_level as u32 {
-        0..=6 => 1e-6,    // Zoom peu profond : très strict
-        7..=14 => 1e-5,   // Moyen : strict
-        15..=30 => 1e-4,  // Profond : standard (resserré de 1e-3)
-        31..=50 => 1e-3,  // Très profond : relaxé (resserré de 1e-2)
-        _ => 1e-2,        // Extrême (>50) : tolérant mais contrôlé (resserré de 1e-1)
+        0..=6 => 1e-5,    // Zoom peu profond : modéré (relaxé de 1e-6)
+        7..=14 => 1e-4,   // Moyen : standard (relaxé de 1e-5)
+        15..=30 => 1e-3,  // Profond : relaxé (relaxé de 1e-4 pour éviter trop de recalculs)
+        31..=50 => 1e-2,  // Très profond : très relaxé (relaxé de 1e-3)
+        _ => 1e-1,        // Extrême (>50) : très tolérant (relaxé de 1e-2)
     }
 }
 
@@ -286,6 +286,10 @@ pub fn iterate_pixel(
         // Nested BLA loop: apply consecutive BLA steps (like C++ do...while(b))
         // This allows multiple BLA steps to be applied in sequence, improving performance
         let mut bla_applied = false;
+        // Cache de la norme carrée pour éviter les recalculs (optimisation 2)
+        let mut delta_norm_sqr_cached = delta.norm_sqr_approx();
+        // Cache de la conversion ComplexExp → Complex64 (optimisation 1)
+        let mut delta_approx_cached = delta.to_complex64_approx();
         loop {
             // C++: break if limits exceeded (lines 293-294)
             if limit_ptb != 0 && iters_ptb >= limit_ptb {
@@ -294,17 +298,20 @@ pub fn iterate_pixel(
             if limit_bla != 0 && steps_bla >= limit_bla {
                 break;
             }
-            // Check rebasing at the start of each BLA iteration (like C++ line 296-308)
-            // This ensures we catch rebasing opportunities even during BLA steps
+            // Optimisation 4: Vérifier rebasing seulement si nécessaire (fin d'orbite effective)
+            // Les autres vérifications de rebasing sont faites après application BLA pour améliorer les performances
             if n >= effective_len {
                 // Reached end of effective orbit: rebase
                 let last_idx = effective_len.saturating_sub(1) as usize;
                 let z_ref = ref_orbit.get_z_ref_f64(last_idx as u32).unwrap_or_else(|| {
                     ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
                 });
-                let delta_approx = delta.to_complex64_approx();
-                let z_curr = z_ref + delta_approx;
+                // Utiliser le cache de delta_approx (optimisation 1)
+                let z_curr = z_ref + delta_approx_cached;
                 delta = ComplexExp::from_complex64(z_curr);
+                // Mettre à jour les caches après rebasing
+                delta_approx_cached = delta.to_complex64_approx();
+                delta_norm_sqr_cached = delta.norm_sqr_approx();
                 
                 // Hybrid BLA: change phase on rebasing: phase = (phase + n) % cycle_period
                 if let Some(ref mut phase) = current_phase {
@@ -316,32 +323,6 @@ pub fn iterate_pixel(
                     }
                 }
                 n = 0;
-            } else {
-                // Check rebasing condition: |Z_m + z_n| < |z_n|
-                let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
-                    ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
-                });
-                let delta_approx = delta.to_complex64_approx();
-                let z_curr = z_ref + delta_approx;
-                let z_curr_norm_sqr = z_curr.norm_sqr();
-                let delta_norm_sqr_check = delta.norm_sqr_approx();
-                
-                if z_curr_norm_sqr > 0.0 && delta_norm_sqr_check > 0.0 && z_curr_norm_sqr < delta_norm_sqr_check {
-                    // Rebasing: replace z_n with Z_m + z_n and reset m to 0
-                    delta = ComplexExp::from_complex64(z_curr);
-                    
-                    // Hybrid BLA: change phase on rebasing: phase = (phase + n) % cycle_period
-                    if let Some(ref mut phase) = current_phase {
-                        if let Some(refs) = hybrid_refs {
-                            if refs.cycle_period > 0 {
-                                **phase = (**phase + n) % refs.cycle_period;
-                                phase_changed = true;
-                            }
-                        }
-                    }
-                    n = 0;
-                    continue; // Continue BLA loop with rebased delta
-                }
             }
             
             // Try to find and apply a BLA step
@@ -351,9 +332,8 @@ pub fn iterate_pixel(
             if is_tricorn {
                 if let Some(ref nonconformal_levels) = bla_table.nonconformal_levels {
                     if !nonconformal_levels.is_empty() {
-                        // Convert delta to (re, im) vector
-                        let delta_approx = delta.to_complex64_approx();
-                        let delta_vec = (delta_approx.re, delta_approx.im);
+                        // Utiliser le cache de delta_approx (optimisation 1)
+                        let delta_vec = (delta_approx_cached.re, delta_approx_cached.im);
                         let delta_norm_sqr_check = delta_vec.0 * delta_vec.0 + delta_vec.1 * delta_vec.1;
                         
                         for level in (0..nonconformal_levels.len()).rev() {
@@ -384,6 +364,37 @@ pub fn iterate_pixel(
                                 stepped = true;
                                 bla_applied = true;
                                 steps_bla += 1;  // C++: steps_bla++ après chaque pas BLA
+                                // Mettre à jour les caches après application BLA
+                                delta_approx_cached = delta.to_complex64_approx();
+                                delta_norm_sqr_cached = delta.norm_sqr_approx();
+                                
+                                // Optimisation 4: Vérifier rebasing après application BLA
+                                if n < effective_len {
+                                    let z_ref_check = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
+                                        ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+                                    });
+                                    let z_curr_check = z_ref_check + delta_approx_cached;
+                                    let z_curr_norm_sqr_check = z_curr_check.norm_sqr();
+                                    
+                                    if z_curr_norm_sqr_check > 0.0 && delta_norm_sqr_cached > 0.0 && z_curr_norm_sqr_check < delta_norm_sqr_cached {
+                                        // Rebasing: replace z_n with Z_m + z_n and reset m to 0
+                                        delta = ComplexExp::from_complex64(z_curr_check);
+                                        // Mettre à jour les caches après rebasing
+                                        delta_approx_cached = delta.to_complex64_approx();
+                                        delta_norm_sqr_cached = delta.norm_sqr_approx();
+                                        
+                                        // Hybrid BLA: change phase on rebasing: phase = (phase + n) % cycle_period
+                                        if let Some(ref mut phase) = current_phase {
+                                            if let Some(refs) = hybrid_refs {
+                                                if refs.cycle_period > 0 {
+                                                    **phase = (**phase + n) % refs.cycle_period;
+                                                    phase_changed = true;
+                                                }
+                                            }
+                                        }
+                                        n = 0;
+                                    }
+                                }
                                 break; // Found a BLA step, continue nested loop to try another
                             }
                         }
@@ -408,7 +419,8 @@ pub fn iterate_pixel(
             // Search strategy: iterate levels in reverse order (largest skip first) to find the largest
             // valid skip l = 2^level satisfying |z_n| < R_{n,l}.
             if !stepped && !bla_table.levels.is_empty() {
-                let delta_norm_sqr = delta.norm_sqr_approx();
+                // Utiliser le cache de la norme au lieu de recalculer (optimisation 2)
+                let delta_norm_sqr = delta_norm_sqr_cached;
                 // Search from highest level (largest skip) to lowest level (smallest skip)
                 for level in (0..bla_table.levels.len()).rev() {
                     let level_nodes = &bla_table.levels[level];
@@ -481,6 +493,37 @@ pub fn iterate_pixel(
                         stepped = true;
                         bla_applied = true;
                         steps_bla += 1;  // C++: steps_bla++ après chaque pas BLA
+                        // Mettre à jour les caches après application BLA
+                        delta_approx_cached = delta.to_complex64_approx();
+                        delta_norm_sqr_cached = delta.norm_sqr_approx();
+                        
+                        // Optimisation 4: Vérifier rebasing après application BLA (plus efficace que à chaque itération)
+                        if n < effective_len {
+                            let z_ref_check = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
+                                ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+                            });
+                            let z_curr_check = z_ref_check + delta_approx_cached;
+                            let z_curr_norm_sqr_check = z_curr_check.norm_sqr();
+                            
+                            if z_curr_norm_sqr_check > 0.0 && delta_norm_sqr_cached > 0.0 && z_curr_norm_sqr_check < delta_norm_sqr_cached {
+                                // Rebasing: replace z_n with Z_m + z_n and reset m to 0
+                                delta = ComplexExp::from_complex64(z_curr_check);
+                                // Mettre à jour les caches après rebasing
+                                delta_approx_cached = delta.to_complex64_approx();
+                                delta_norm_sqr_cached = delta.norm_sqr_approx();
+                                
+                                // Hybrid BLA: change phase on rebasing: phase = (phase + n) % cycle_period
+                                if let Some(ref mut phase) = current_phase {
+                                    if let Some(refs) = hybrid_refs {
+                                        if refs.cycle_period > 0 {
+                                            **phase = (**phase + n) % refs.cycle_period;
+                                            phase_changed = true;
+                                        }
+                                    }
+                                }
+                                n = 0;
+                            }
+                        }
                         break; // Found a BLA step, continue nested loop to try another
                     }
                 }
@@ -494,6 +537,11 @@ pub fn iterate_pixel(
 
         // If no BLA was applied, do a perturbation iteration
         if !bla_applied {
+            // Cache de z_ref pour éviter les accès répétés (optimisation 3)
+            let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
+                ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+            });
+            
             // DÉSACTIVÉ: Optimisation pour le centre exact qui causait des artefacts circulaires visibles.
             // Même avec des seuils stricts, cette optimisation créait un cercle au centre.
             // La perturbation standard fonctionne correctement même au centre exact.
@@ -505,10 +553,8 @@ pub fn iterate_pixel(
             //     // Skip to rebasing check after perturbation
             // } else 
             if is_burning_ship {
-                let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
-                    ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
-                });
-                let delta_approx = delta.to_complex64_approx();
+                // Utiliser le cache de delta_approx (optimisation 1)
+                let delta_approx = delta_approx_cached;
                 let z_curr = z_ref + delta_approx;
 
                 // Check if quadrant is stable (same signs)
@@ -525,8 +571,7 @@ pub fn iterate_pixel(
                     // δ' = diffabs(Re(z_ref), δ_re) + i·diffabs(Im(z_ref), δ_im)
                     // Then: δ' = 2·z_abs·δ_diffabs + δ_diffabs² + dc
                     // where z_abs = (|Re(z_ref)|, |Im(z_ref)|) and δ_diffabs uses diffabs
-
-                    let delta_approx = delta.to_complex64_approx();
+                    // Réutiliser delta_approx calculé précédemment (optimisation 5)
                     
                     // Calculate diffabs for real and imaginary parts
                     let delta_diffabs_re = diffabs(z_ref.re, delta_approx.re);
@@ -563,9 +608,7 @@ pub fn iterate_pixel(
             } else if is_multibrot {
                 // Multibrot: z^d + c
                 // δ' ≈ d·z_ref^(d-1)·δ + d(d-1)/2·z_ref^(d-2)·δ²
-                let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
-                    ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
-                });
+                // z_ref déjà en cache (optimisation 3)
                 let d = multibrot_power;
                 let z_norm = z_ref.norm();
                 if z_norm > 1e-15 {
@@ -583,14 +626,11 @@ pub fn iterate_pixel(
             } else if is_tricorn {
                 // Tricorn: z' = conj(z)² + c
                 // Use non-conformal matrices for perturbation
-                let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
-                    ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
-                });
+                // z_ref déjà en cache (optimisation 3)
                 let coeffs = crate::fractal::perturbation::nonconformal::compute_tricorn_bla_coefficients(z_ref);
                 
-                // Convert delta to vector
-                let delta_approx = delta.to_complex64_approx();
-                let delta_vec = (delta_approx.re, delta_approx.im);
+                // Utiliser le cache de delta_approx (optimisation 1)
+                let delta_vec = (delta_approx_cached.re, delta_approx_cached.im);
                 
                 // Linear term: A·delta_vec where A = [[2X, -2Y], [-2Y, -2X]]
                 let linear_vec = coeffs.a.mul_vector(delta_vec.0, delta_vec.1);
@@ -655,9 +695,7 @@ pub fn iterate_pixel(
                 //
                 // Pour Julia, le point C est fixe (seed), donc pas de terme c dans la perturbation.
                 // Hybrid BLA: use get_z_ref_f64 to account for phase offset
-                let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
-                    ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
-                });  // Z_m (où m = n, avec phase offset pour Hybrid BLA)
+                // z_ref déjà en cache (optimisation 3) - Z_m (où m = n, avec phase offset pour Hybrid BLA)
                 let linear = delta.mul_complex64(z_ref * 2.0);  // 2·Z_m·z_n
                 let nonlinear = delta.mul(delta);  // z_n²
                 if is_julia {
@@ -669,6 +707,9 @@ pub fn iterate_pixel(
                 }
                 n += 1;  // Incrémenter m et n simultanément (m = n dans notre implémentation)
             }
+            // Mettre à jour les caches après itération de perturbation
+            delta_approx_cached = delta.to_complex64_approx();
+            delta_norm_sqr_cached = delta.norm_sqr_approx();
             iters_ptb += 1;  // C++: iters_ptb++ après chaque itération de perturbation
         }
 
@@ -688,8 +729,8 @@ pub fn iterate_pixel(
             let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
                 ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
             });
-            let delta_approx = delta.to_complex64_approx();
-            let z_curr = z_ref + delta_approx;
+            // Utiliser le cache de delta_approx (optimisation 1)
+            let z_curr = z_ref + delta_approx_cached;
             (z_curr, z_ref.norm_sqr())
         };
 
