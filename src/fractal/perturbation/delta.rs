@@ -681,10 +681,12 @@ pub fn iterate_pixel_gmp(
     bailout_sqr *= &bailout;
     
     // Initialisation selon le type de fractale
+    // IMPORTANT: S'assurer que delta utilise la même précision que prec
     let mut delta = match params.fractal_type {
         FractalType::Julia => {
             // Julia: delta initial = dc (car z_0 = C + c pour Julia)
-            dc_gmp.clone()
+            // Créer une nouvelle valeur avec la précision explicite
+            Complex::with_val(prec, (dc_gmp.real(), dc_gmp.imag()))
         }
         _ => {
             // Mandelbrot/BurningShip: delta initial = 0 (car z_0 = seed)
@@ -706,14 +708,17 @@ pub fn iterate_pixel_gmp(
         
         // Apply perturbation formula: z_{n+1} = 2·Z_m·z_n + z_n² + c
         // In GMP: delta_{n+1} = 2·z_ref·delta + delta² + dc
-        let mut delta_sq = delta.clone();
+        // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision
+        // Créer de nouvelles valeurs avec la précision explicite pour garantir la cohérence
+        let mut delta_sq = Complex::with_val(prec, (delta.real(), delta.imag()));
         delta_sq *= &delta;
         
-        let mut linear_term = z_ref.clone();
+        let mut linear_term = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
         linear_term *= &delta;
-        linear_term *= Float::with_val(prec, 2.0);
+        let two = Float::with_val(prec, 2.0);
+        linear_term *= &two;
         
-        let mut next_delta = linear_term;
+        let mut next_delta = Complex::with_val(prec, (linear_term.real(), linear_term.imag()));
         next_delta += &delta_sq;
         
         if !is_julia {
@@ -726,7 +731,8 @@ pub fn iterate_pixel_gmp(
         if is_burning_ship {
             // Burning Ship: z' = (|Re(z)|, |Im(z)|)² + c
             // For deep zooms, compute full orbit: z_curr = z_ref + delta
-            let mut z_curr = z_ref.clone();
+            // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision
+            let mut z_curr = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
             z_curr += &delta;
             
             // Apply abs() to real and imaginary parts
@@ -757,10 +763,11 @@ pub fn iterate_pixel_gmp(
             delta = z_next - z_ref_next;
         } else if is_tricorn {
             // Tricorn: z' = conj(z)² + c
-            let mut z_curr = z_ref.clone();
+            // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision
+            let mut z_curr = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
             z_curr += &delta;
             let z_conj = z_curr.clone().conj();
-            let mut z_temp = z_conj.clone();
+            let mut z_temp = Complex::with_val(prec, (z_conj.real(), z_conj.imag()));
             z_temp *= &z_conj;
             z_temp += &ref_orbit.cref_gmp;
             if !is_julia {
@@ -784,7 +791,8 @@ pub fn iterate_pixel_gmp(
         }
         
         // Check bailout
-        let mut z_curr = z_ref.clone();
+        // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision
+        let mut z_curr = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
         z_curr += &delta;
         let z_curr_norm_sqr = complex_norm_sqr(&z_curr, prec);
         
@@ -825,12 +833,13 @@ pub fn iterate_pixel_gmp(
     }
     
     // Final result
+    // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision
     let final_index = n.min(effective_len.saturating_sub(1));
     let z_ref = match ref_orbit.get_z_ref_gmp(final_index) {
         Some(z) => z,
         None => ref_orbit.z_ref_gmp.last().unwrap(),
     };
-    let mut z_curr = z_ref.clone();
+    let mut z_curr = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
     z_curr += &delta;
     
     DeltaResult {

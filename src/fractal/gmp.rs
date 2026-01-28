@@ -193,7 +193,15 @@ pub struct MpcParams {
 
 impl MpcParams {
     pub fn from_params(params: &FractalParams) -> Self {
-        let prec = params.precision_bits.max(64);
+        // Pour perturbation, utiliser la précision calculée si disponible
+        // Sinon utiliser params.precision_bits
+        use crate::fractal::perturbation::compute_perturbation_precision_bits;
+        let prec = if params.algorithm_mode == crate::fractal::AlgorithmMode::Perturbation 
+            || params.algorithm_mode == crate::fractal::AlgorithmMode::ReferenceGmp {
+            compute_perturbation_precision_bits(params)
+        } else {
+            params.precision_bits.max(64)
+        };
         let bailout = Float::with_val(prec, params.bailout);
         let mut bailout_sqr = bailout.clone();
         bailout_sqr *= &bailout;

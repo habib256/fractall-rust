@@ -50,6 +50,8 @@ pub fn save_png(
                             params.color_mode,
                             params.color_repeat,
                             params.out_coloring_mode,
+                            params.color_space,
+                            None, // Orbit data not stored in PNG export yet
                         )
                     };
 

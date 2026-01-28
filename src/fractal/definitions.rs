@@ -1,7 +1,8 @@
 use num_complex::Complex64;
 
-use crate::fractal::{AlgorithmMode, FractalParams, FractalType, OutColoringMode, PlaneTransform};
+use crate::fractal::{AlgorithmMode, FractalParams, FractalType, OutColoringMode, PlaneTransform, ColorSpace};
 use crate::fractal::lyapunov::{LyapunovConfig, LyapunovPreset};
+use crate::fractal::orbit_traps::OrbitTrapType;
 
 /// Construit des paramètres avec les valeurs par défaut du type,
 /// en reprenant la logique de `fractal_definitions.c`.
@@ -14,12 +15,17 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         center_y: 0.0,
         span_x: 0.0,
         span_y: 0.0,
+        center_x_hp: None,
+        center_y_hp: None,
+        span_x_hp: None,
+        span_y_hp: None,
         seed: Complex64::new(0.0, 0.0),
         iteration_max: 2500,
         bailout: 4.0,
         fractal_type,
         color_mode: 6,   // SmoothPlasma (défaut dans le projet C)
         color_repeat: 40,
+        color_space: ColorSpace::Rgb,
         use_gmp: false,
         precision_bits: 256,
         algorithm_mode: AlgorithmMode::Auto,
@@ -43,6 +49,8 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         interior_threshold: 0.001,
         out_coloring_mode: OutColoringMode::Smooth,
         plane_transform: PlaneTransform::Mu,
+        enable_orbit_traps: false,
+        orbit_trap_type: OrbitTrapType::Point,
     };
 
     match fractal_type {

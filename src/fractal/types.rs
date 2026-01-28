@@ -1,4 +1,5 @@
 use num_complex::Complex64;
+use super::orbit_traps::OrbitTrapType;
 
 /// Types de fractales pris en charge par la version CLI.
 ///
@@ -168,6 +169,35 @@ impl AlgorithmMode {
     }
 }
 
+/// Espace colorimétrique pour les gradients
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[allow(dead_code)]
+pub enum ColorSpace {
+    /// Espace RGB standard (défaut)
+    #[default]
+    Rgb,
+    /// Espace HSB/HSV (Teinte, Saturation, Brillance) - transitions plus naturelles
+    Hsb,
+    /// Espace LCH (Luminosité, Chroma, Teinte) - perceptuellement uniforme
+    Lch,
+}
+
+impl ColorSpace {
+    #[allow(dead_code)]
+    pub fn all() -> &'static [ColorSpace] {
+        &[ColorSpace::Rgb, ColorSpace::Hsb, ColorSpace::Lch]
+    }
+    
+    #[allow(dead_code)]
+    pub fn name(self) -> &'static str {
+        match self {
+            ColorSpace::Rgb => "RGB",
+            ColorSpace::Hsb => "HSB",
+            ColorSpace::Lch => "LCH",
+        }
+    }
+}
+
 /// Mode de colorisation pour les pixels extérieurs (XaoS-style outcoloring).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum OutColoringMode {
@@ -192,6 +222,10 @@ pub enum OutColoringMode {
     /// current default smooth coloring
     #[default]
     Smooth,
+    /// Coloration basée sur orbit traps (distance minimale à une forme géométrique)
+    OrbitTraps,
+    /// Technique Wings utilisant sinh() sur l'orbite pour motifs en ailes
+    Wings,
 }
 
 impl OutColoringMode {
@@ -209,6 +243,8 @@ impl OutColoringMode {
             OutColoringMode::Potential,
             OutColoringMode::ColorDecomposition,
             OutColoringMode::Smooth,
+            OutColoringMode::OrbitTraps,
+            OutColoringMode::Wings,
         ]
     }
 
@@ -226,6 +262,8 @@ impl OutColoringMode {
             OutColoringMode::Potential => "Potential",
             OutColoringMode::ColorDecomposition => "Color Decomp",
             OutColoringMode::Smooth => "Smooth",
+            OutColoringMode::OrbitTraps => "Orbit Traps",
+            OutColoringMode::Wings => "Wings",
         }
     }
 
@@ -243,6 +281,8 @@ impl OutColoringMode {
             OutColoringMode::Potential => 7,
             OutColoringMode::ColorDecomposition => 8,
             OutColoringMode::Smooth => 9,
+            OutColoringMode::OrbitTraps => 10,
+            OutColoringMode::Wings => 11,
         }
     }
 
@@ -260,6 +300,8 @@ impl OutColoringMode {
             7 => Some(OutColoringMode::Potential),
             8 => Some(OutColoringMode::ColorDecomposition),
             9 => Some(OutColoringMode::Smooth),
+            10 => Some(OutColoringMode::OrbitTraps),
+            11 => Some(OutColoringMode::Wings),
             _ => None,
         }
     }
@@ -278,6 +320,8 @@ impl OutColoringMode {
             OutColoringMode::Potential => "potential",
             OutColoringMode::ColorDecomposition => "color-decomp",
             OutColoringMode::Smooth => "smooth",
+            OutColoringMode::OrbitTraps => "orbit-traps",
+            OutColoringMode::Wings => "wings",
         }
     }
 
@@ -491,6 +535,14 @@ pub struct FractalParams {
     pub span_x: f64,
     /// Étendue (hauteur) du plan complexe.
     pub span_y: f64,
+    
+    /// Coordonnées haute précision (String) pour préserver la précision arbitraire.
+    /// Utilisées pour les calculs GMP aux zooms profonds (>10^15).
+    /// Si None, les valeurs f64 sont utilisées (compatibilité GPU/CPU standard).
+    pub center_x_hp: Option<String>,
+    pub center_y_hp: Option<String>,
+    pub span_x_hp: Option<String>,
+    pub span_y_hp: Option<String>,
 
     pub seed: Complex64,
     pub iteration_max: u32,
@@ -502,6 +554,8 @@ pub struct FractalParams {
     pub color_mode: u8,
     /// Nombre de répétitions du gradient (2-40).
     pub color_repeat: u32,
+    /// Espace colorimétrique pour les gradients (RGB, HSB, LCH)
+    pub color_space: ColorSpace,
 
     /// Active le chemin GMP pour la haute précision.
     pub use_gmp: bool,
@@ -557,6 +611,11 @@ pub struct FractalParams {
 
     /// Complex plane transformation (XaoS-style).
     pub plane_transform: PlaneTransform,
+    
+    /// Active le calcul d'orbit traps (nécessite stockage de l'orbite complète)
+    pub enable_orbit_traps: bool,
+    /// Type d'orbit trap à utiliser
+    pub orbit_trap_type: OrbitTrapType,
 }
 
 impl FractalParams {
@@ -617,9 +676,12 @@ impl FractalParams {
 }
 
 /// Résultat du calcul d'un point de fractale.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct FractalResult {
     pub iteration: u32,
     pub z: Complex64,
+    /// Données d'orbite pour orbit traps (None si orbit traps désactivés)
+    #[allow(dead_code)]
+    pub orbit: Option<crate::fractal::orbit_traps::OrbitData>,
 }
 

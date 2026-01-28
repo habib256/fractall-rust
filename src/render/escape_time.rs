@@ -136,7 +136,7 @@ fn render_escape_time_f64(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
                 let xg = params.center_x + (x_ratio - 0.5) * params.span_x;
                 let z_pixel = Complex64::new(xg, yg);
                 let z_pixel = params.plane_transform.transform(z_pixel);
-                let FractalResult { iteration, z: z_final } = iterate_point(params, z_pixel);
+                let FractalResult { iteration, z: z_final, orbit: _ } = iterate_point(params, z_pixel);
                 *iter = iteration;
                 *z = z_final;
             }
@@ -437,7 +437,7 @@ fn render_escape_time_f64_cancellable_with_reuse(
                 let xg = params.center_x + (x_ratio - 0.5) * params.span_x;
                 let z_pixel = Complex64::new(xg, yg);
                 let z_pixel = params.plane_transform.transform(z_pixel);
-                let FractalResult { iteration, z: z_final } = iterate_point(params, z_pixel);
+                let FractalResult { iteration, z: z_final, orbit: _ } = iterate_point(params, z_pixel);
                 *iter = iteration;
                 *z = z_final;
             }

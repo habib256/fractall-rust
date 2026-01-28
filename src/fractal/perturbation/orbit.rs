@@ -193,9 +193,26 @@ impl ReferenceOrbitCache {
     /// The cache is valid if: same center (GMP precision), same type, precision >= required, iteration_max >= required.
     pub fn is_valid_for(&self, params: &FractalParams) -> bool {
         // Compute center in GMP precision for exact comparison
-        let prec = params.precision_bits.max(self.precision_bits).max(128);
-        let center_x = Float::with_val(prec, params.center_x);
-        let center_y = Float::with_val(prec, params.center_y);
+        // Utiliser la précision calculée pour la comparaison
+        use crate::fractal::perturbation::compute_perturbation_precision_bits;
+        let prec = compute_perturbation_precision_bits(params).max(self.precision_bits);
+        // Utiliser les String haute précision si disponibles pour la comparaison
+        let center_x = if let Some(ref cx_hp) = params.center_x_hp {
+            match Float::parse(cx_hp) {
+                Ok(parse_result) => Float::with_val(prec, parse_result),
+                Err(_) => Float::with_val(prec, params.center_x),
+            }
+        } else {
+            Float::with_val(prec, params.center_x)
+        };
+        let center_y = if let Some(ref cy_hp) = params.center_y_hp {
+            match Float::parse(cy_hp) {
+                Ok(parse_result) => Float::with_val(prec, parse_result),
+                Err(_) => Float::with_val(prec, params.center_y),
+            }
+        } else {
+            Float::with_val(prec, params.center_y)
+        };
 
         // Compare as GMP strings with full precision
         let cx_str = center_x.to_string_radix(10, None);
@@ -383,11 +400,50 @@ pub fn compute_reference_orbit(
     params: &FractalParams,
     cancel: Option<&AtomicBool>,
 ) -> Option<(ReferenceOrbit, String, String)> {
-    let prec = params.precision_bits.max(128);
+    // Utiliser la précision calculée au lieu du preset
+    use crate::fractal::perturbation::compute_perturbation_precision_bits;
+    let prec = compute_perturbation_precision_bits(params);
 
-    // Use center directly (no need to compute from xmin/xmax anymore)
-    let center_x_gmp = Float::with_val(prec, params.center_x);
-    let center_y_gmp = Float::with_val(prec, params.center_y);
+    // Utiliser les String haute précision si disponibles, sinon fallback sur f64
+    let center_x_gmp = if let Some(ref cx_hp) = params.center_x_hp {
+        match Float::parse(cx_hp) {
+            Ok(parse_result) => Float::with_val(prec, parse_result),
+            Err(_) => {
+                eprintln!("[PRECISION WARNING] Failed to parse center_x_hp, using f64 fallback");
+                Float::with_val(prec, params.center_x)
+            }
+        }
+    } else {
+        Float::with_val(prec, params.center_x)
+    };
+    
+    let center_y_gmp = if let Some(ref cy_hp) = params.center_y_hp {
+        match Float::parse(cy_hp) {
+            Ok(parse_result) => Float::with_val(prec, parse_result),
+            Err(_) => {
+                eprintln!("[PRECISION WARNING] Failed to parse center_y_hp, using f64 fallback");
+                Float::with_val(prec, params.center_y)
+            }
+        }
+    } else {
+        Float::with_val(prec, params.center_y)
+    };
+    
+    // Log de diagnostic pour zoom profond (une seule fois)
+    let pixel_size = params.span_x.abs().max(params.span_y.abs()) / params.width as f64;
+    if pixel_size < 1e-15 {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static LAST_LOGGED_ORBIT: AtomicU64 = AtomicU64::new(0);
+        let log_key = (prec as u64) << 32 | (params.center_x_hp.is_some() as u64);
+        let last_logged = LAST_LOGGED_ORBIT.load(Ordering::Relaxed);
+        if log_key != last_logged {
+            LAST_LOGGED_ORBIT.store(log_key, Ordering::Relaxed);
+            eprintln!("[PRECISION DEBUG] compute_reference_orbit: prec={}, using_hp={}, center_x f64={:.20e}, center_y f64={:.20e}",
+                prec, params.center_x_hp.is_some(), params.center_x, params.center_y);
+            eprintln!("[PRECISION DEBUG] center_x_gmp={}, center_y_gmp={}",
+                center_x_gmp.to_string_radix(10, Some(30)), center_y_gmp.to_string_radix(10, Some(30)));
+        }
+    }
 
     // Store GMP strings for cache validation
     let cx_str = center_x_gmp.to_string_radix(10, None);

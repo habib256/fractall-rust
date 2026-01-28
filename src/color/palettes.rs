@@ -1,5 +1,8 @@
 use num_complex::Complex64;
-use crate::fractal::OutColoringMode;
+use std::sync::OnceLock;
+use crate::fractal::{OutColoringMode, ColorSpace};
+use crate::fractal::orbit_traps::OrbitData;
+use crate::color::color_models::{rgb_to_hsb, hsb_to_rgb, rgb_to_lch, lch_to_rgb, interpolate_hsb, interpolate_lch};
 
 /// Identifiants de palettes, alignés sur `colorization.h`.
 #[derive(Clone, Copy, Debug)]
@@ -13,6 +16,10 @@ pub enum PaletteId {
     Plasma = 6,
     Ice = 7,
     Cosmic = 8,
+    Neon = 9,
+    Twilight = 10,
+    Emboss = 11,
+    Waves = 12,
 }
 
 impl PaletteId {
@@ -27,6 +34,10 @@ impl PaletteId {
             6 => PaletteId::Plasma,
             7 => PaletteId::Ice,
             8 => PaletteId::Cosmic,
+            9 => PaletteId::Neon,
+            10 => PaletteId::Twilight,
+            11 => PaletteId::Emboss,
+            12 => PaletteId::Waves,
             _ => PaletteId::Plasma,
         }
     }
@@ -41,7 +52,7 @@ struct GradientStop {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Gradient {
+pub(crate) struct Gradient {
     _name: &'static str,
     stops: &'static [GradientStop],
 }
@@ -120,6 +131,24 @@ const COSMIC_STOPS: [GradientStop; 9] = [
     GradientStop { position: 1.000, r: 139, g: 0, b: 0 },     // Dark Red
 ];
 
+// Palette "Néon" Profond : Noir → Bleu Marine → Bleu → Marron → Rouge → Noir
+const NEON_STOPS: [GradientStop; 6] = [
+    GradientStop { position: 0.000, r: 0, g: 0, b: 0 },       // Noir
+    GradientStop { position: 0.200, r: 0, g: 0, b: 128 },      // Bleu Marine
+    GradientStop { position: 0.400, r: 0, g: 0, b: 255 },      // Bleu
+    GradientStop { position: 0.600, r: 128, g: 0, b: 0 },      // Marron
+    GradientStop { position: 0.800, r: 255, g: 0, b: 0 },      // Rouge
+    GradientStop { position: 1.000, r: 0, g: 0, b: 0 },        // Retour au Noir
+];
+
+// Palette "Embossage" : 50% blanc extérieur, 45% dégradé transition, 5% blanc intérieur
+const EMBOSS_STOPS: [GradientStop; 4] = [
+    GradientStop { position: 0.000, r: 255, g: 255, b: 255 }, // Blanc pur (extérieur)
+    GradientStop { position: 0.500, r: 255, g: 255, b: 255 }, // Blanc pur (fin extérieur)
+    GradientStop { position: 0.950, r: 0, g: 0, b: 0 },       // Noir (transition)
+    GradientStop { position: 1.000, r: 255, g: 255, b: 255 }, // Blanc pur (intérieur)
+];
+
 const FIRE: Gradient = Gradient { _name: "SmoothFire", stops: &FIRE_STOPS };
 const OCEAN: Gradient = Gradient { _name: "SmoothOcean", stops: &OCEAN_STOPS };
 const FOREST: Gradient = Gradient { _name: "SmoothForest", stops: &FOREST_STOPS };
@@ -129,6 +158,92 @@ const SUNSET: Gradient = Gradient { _name: "SmoothSunset", stops: &SUNSET_STOPS 
 const PLASMA: Gradient = Gradient { _name: "SmoothPlasma", stops: &PLASMA_STOPS };
 const ICE: Gradient = Gradient { _name: "SmoothIce", stops: &ICE_STOPS };
 const COSMIC: Gradient = Gradient { _name: "SmoothCosmic", stops: &COSMIC_STOPS };
+const NEON: Gradient = Gradient { _name: "Neon", stops: &NEON_STOPS };
+const EMBOSS: Gradient = Gradient { _name: "Emboss", stops: &EMBOSS_STOPS };
+
+/// Génère la palette Twilight avec 510 couleurs (gris-lavande → spectre cyclique)
+fn generate_twilight_stops() -> Vec<GradientStop> {
+    let mut stops = Vec::with_capacity(510);
+    let start_color = (225, 216, 226); // Gris-lavande
+    
+    for i in 0..510 {
+        let t = i as f64 / 509.0;
+        // Transition cyclique douce à travers le spectre
+        let hue = t * 360.0; // 0-360 degrés
+        let (r, g, b) = hsv_to_rgb(hue, 0.7, 0.9); // Saturation 0.7, Valeur 0.9
+        
+        // Mélanger avec la couleur de départ pour transition douce
+        let blend_factor = if t < 0.1 {
+            t / 0.1 // Transition douce depuis gris-lavande
+        } else {
+            1.0
+        };
+        
+        let r_final = ((start_color.0 as f64 * (1.0 - blend_factor) + r as f64 * blend_factor) as u8).min(255);
+        let g_final = ((start_color.1 as f64 * (1.0 - blend_factor) + g as f64 * blend_factor) as u8).min(255);
+        let b_final = ((start_color.2 as f64 * (1.0 - blend_factor) + b as f64 * blend_factor) as u8).min(255);
+        
+        stops.push(GradientStop {
+            position: t,
+            r: r_final,
+            g: g_final,
+            b: b_final,
+        });
+    }
+    
+    stops
+}
+
+/// Génère la palette Waves avec ondes sinusoïdales (nombres premiers pour fréquences)
+fn generate_waves_stops() -> Vec<GradientStop> {
+    let mut stops = Vec::with_capacity(256);
+    let freq_r = 2.0; // Premier nombre premier
+    let freq_g = 3.0; // Deuxième nombre premier
+    let freq_b = 5.0; // Troisième nombre premier
+    
+    for i in 0..256 {
+        let t = i as f64 / 255.0;
+        let r = ((t * std::f64::consts::PI * 2.0 * freq_r).sin() * 0.5 + 0.5) * 255.0;
+        let g = ((t * std::f64::consts::PI * 2.0 * freq_g).sin() * 0.5 + 0.5) * 255.0;
+        let b = ((t * std::f64::consts::PI * 2.0 * freq_b).sin() * 0.5 + 0.5) * 255.0;
+        
+        stops.push(GradientStop {
+            position: t,
+            r: r.clamp(0.0, 255.0) as u8,
+            g: g.clamp(0.0, 255.0) as u8,
+            b: b.clamp(0.0, 255.0) as u8,
+        });
+    }
+    
+    stops
+}
+
+/// Conversion HSV vers RGB (helper pour Twilight)
+fn hsv_to_rgb(h: f64, s: f64, v: f64) -> (u8, u8, u8) {
+    let c = v * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = v - c;
+    
+    let (r, g, b) = if h < 60.0 {
+        (c, x, 0.0)
+    } else if h < 120.0 {
+        (x, c, 0.0)
+    } else if h < 180.0 {
+        (0.0, c, x)
+    } else if h < 240.0 {
+        (0.0, x, c)
+    } else if h < 300.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+    
+    (
+        ((r + m) * 255.0).clamp(0.0, 255.0) as u8,
+        ((g + m) * 255.0).clamp(0.0, 255.0) as u8,
+        ((b + m) * 255.0).clamp(0.0, 255.0) as u8,
+    )
+}
 
 fn palette_for(id: PaletteId) -> Gradient {
     match id {
@@ -141,11 +256,54 @@ fn palette_for(id: PaletteId) -> Gradient {
         PaletteId::Plasma => PLASMA,
         PaletteId::Ice => ICE,
         PaletteId::Cosmic => COSMIC,
+        PaletteId::Neon => NEON,
+        PaletteId::Twilight => Gradient { _name: "Twilight", stops: &[] }, // Généré dynamiquement
+        PaletteId::Emboss => EMBOSS,
+        PaletteId::Waves => Gradient { _name: "Waves", stops: &[] }, // Généré dynamiquement
     }
 }
 
+/// Génère une petite image de prévisualisation de la palette.
+/// Retourne une ColorImage egui de taille width x height représentant le gradient de la palette.
+pub fn generate_palette_preview(palette_index: u8, width: u32, height: u32) -> egui::ColorImage {
+    let palette_id = PaletteId::from_u8(palette_index);
+    let gradient = palette_for(palette_id);
+    
+    let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+    
+    for _y in 0..height {
+        for x in 0..width {
+            // Calculer la position dans le gradient (0.0 à 1.0)
+            let t = x as f64 / (width - 1) as f64;
+            let (r, g, b) = gradient_interpolate(gradient, t);
+            rgba.push(r);
+            rgba.push(g);
+            rgba.push(b);
+            rgba.push(255); // Alpha
+        }
+    }
+    
+    egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &rgba)
+}
+
 fn gradient_interpolate(g: Gradient, mut t: f64) -> (u8, u8, u8) {
-    let stops = g.stops;
+    // Gérer les palettes dynamiques avec cache thread-safe
+    let stops: &[GradientStop] = if g.stops.is_empty() {
+        // Palette dynamique - déterminer laquelle basé sur le nom
+        match g._name {
+            "Twilight" => {
+                static CACHE: OnceLock<Vec<GradientStop>> = OnceLock::new();
+                CACHE.get_or_init(|| generate_twilight_stops())
+            }
+            "Waves" => {
+                static CACHE: OnceLock<Vec<GradientStop>> = OnceLock::new();
+                CACHE.get_or_init(|| generate_waves_stops())
+            }
+            _ => g.stops, // Fallback (ne devrait pas arriver)
+        }
+    } else {
+        g.stops
+    };
 
     // Clamp t
     if t < 0.0 {
@@ -156,6 +314,10 @@ fn gradient_interpolate(g: Gradient, mut t: f64) -> (u8, u8, u8) {
     }
 
     let eps = 1e-9;
+
+    if stops.is_empty() {
+        return (0, 0, 0);
+    }
 
     if t <= stops[0].position as f64 + eps {
         let s = stops[0];
@@ -189,6 +351,144 @@ fn gradient_interpolate(g: Gradient, mut t: f64) -> (u8, u8, u8) {
 
     // Fallback
     (last.r, last.g, last.b)
+}
+
+/// Interpole un gradient en espace HSB pour transitions plus naturelles
+fn gradient_interpolate_hsb(g: Gradient, mut t: f64) -> (u8, u8, u8) {
+    // Gérer les palettes dynamiques avec cache thread-safe
+    let stops: &[GradientStop] = if g.stops.is_empty() {
+        match g._name {
+            "Twilight" => {
+                static CACHE: OnceLock<Vec<GradientStop>> = OnceLock::new();
+                CACHE.get_or_init(|| generate_twilight_stops())
+            }
+            "Waves" => {
+                static CACHE: OnceLock<Vec<GradientStop>> = OnceLock::new();
+                CACHE.get_or_init(|| generate_waves_stops())
+            }
+            _ => g.stops,
+        }
+    } else {
+        g.stops
+    };
+
+    if t < 0.0 {
+        t = 0.0;
+    }
+    if t > 1.0 {
+        t = 1.0;
+    }
+
+    let eps = 1e-9;
+
+    if stops.is_empty() {
+        return (0, 0, 0);
+    }
+
+    if t <= stops[0].position as f64 + eps {
+        let s = stops[0];
+        return (s.r, s.g, s.b);
+    }
+    let last = stops[stops.len() - 1];
+    if t >= last.position as f64 - eps {
+        return (last.r, last.g, last.b);
+    }
+
+    // Trouver le segment contenant t
+    for w in stops.windows(2) {
+        let a = w[0];
+        let b = w[1];
+        if t >= a.position as f64 - eps && t < b.position as f64 + eps {
+            let denom = (b.position - a.position) as f64;
+            let factor = if denom.abs() < std::f64::EPSILON {
+                0.0
+            } else {
+                (t - a.position as f64) / denom
+            };
+            
+            // Interpolation en espace HSB
+            let hsb1 = rgb_to_hsb(a.r, a.g, a.b);
+            let hsb2 = rgb_to_hsb(b.r, b.g, b.b);
+            let hsb_interp = interpolate_hsb(hsb1, hsb2, factor);
+            return hsb_to_rgb(hsb_interp);
+        }
+    }
+
+    (last.r, last.g, last.b)
+}
+
+/// Interpole un gradient en espace LCH pour transitions perceptuellement uniformes
+/// Utilise la formule proposée : L=75-75v, C=28+75-75v avec fonction cosinus
+fn gradient_interpolate_lch(g: Gradient, mut t: f64) -> (u8, u8, u8) {
+    // Gérer les palettes dynamiques avec cache thread-safe
+    let stops: &[GradientStop] = if g.stops.is_empty() {
+        match g._name {
+            "Twilight" => {
+                static CACHE: OnceLock<Vec<GradientStop>> = OnceLock::new();
+                CACHE.get_or_init(|| generate_twilight_stops())
+            }
+            "Waves" => {
+                static CACHE: OnceLock<Vec<GradientStop>> = OnceLock::new();
+                CACHE.get_or_init(|| generate_waves_stops())
+            }
+            _ => g.stops,
+        }
+    } else {
+        g.stops
+    };
+
+    if t < 0.0 {
+        t = 0.0;
+    }
+    if t > 1.0 {
+        t = 1.0;
+    }
+
+    let eps = 1e-9;
+
+    if stops.is_empty() {
+        return (0, 0, 0);
+    }
+
+    if t <= stops[0].position as f64 + eps {
+        let s = stops[0];
+        return (s.r, s.g, s.b);
+    }
+    let last = stops[stops.len() - 1];
+    if t >= last.position as f64 - eps {
+        return (last.r, last.g, last.b);
+    }
+
+    // Trouver le segment contenant t
+    for w in stops.windows(2) {
+        let a = w[0];
+        let b = w[1];
+        if t >= a.position as f64 - eps && t < b.position as f64 + eps {
+            let denom = (b.position - a.position) as f64;
+            let factor = if denom.abs() < std::f64::EPSILON {
+                0.0
+            } else {
+                (t - a.position as f64) / denom
+            };
+            
+            // Interpolation en espace LCH
+            let lch1 = rgb_to_lch(a.r, a.g, a.b);
+            let lch2 = rgb_to_lch(b.r, b.g, b.b);
+            let lch_interp = interpolate_lch(lch1, lch2, factor);
+            return lch_to_rgb(lch_interp);
+        }
+    }
+
+    (last.r, last.g, last.b)
+}
+
+/// Interpole un gradient selon l'espace colorimétrique sélectionné
+pub fn gradient_interpolate_with_space(g: Gradient, t: f64, color_space: ColorSpace) -> (u8, u8, u8) {
+    match color_space {
+        ColorSpace::Rgb => gradient_interpolate(g, t),
+        ColorSpace::Hsb => gradient_interpolate_hsb(g, t),
+        ColorSpace::Lch => gradient_interpolate_lch(g, t),
+    }
 }
 
 fn smooth_iteration(iteration: u32, z: Complex64, iter_max: u32, bailout: f64) -> f64 {
@@ -407,6 +707,62 @@ fn compute_color_decomposition(iteration: u32, z: Complex64, iter_max: u32) -> f
     (base * 0.7 + normalized_angle * 0.3).min(1.0)
 }
 
+/// Compute orbit traps coloring based on minimum distance to trap
+fn compute_orbit_traps(orbit: Option<&OrbitData>, iteration: u32, iter_max: u32) -> f64 {
+    match orbit {
+        Some(orbit_data) if !orbit_data.points.is_empty() => {
+            // Utiliser la distance minimale normalisée pour la coloration
+            // Plus la distance est petite, plus la valeur est élevée
+            let normalized_distance = if orbit_data.min_distance > 0.0 {
+                // Normaliser la distance (inverser pour que proche = valeur élevée)
+                1.0 / (1.0 + orbit_data.min_distance * 10.0)
+            } else {
+                1.0
+            };
+            
+            // Mélanger avec l'itération pour variation
+            let iter_factor = iteration as f64 / iter_max as f64;
+            (normalized_distance * 0.7 + iter_factor * 0.3).min(1.0)
+        }
+        _ => {
+            // Pas d'orbite disponible, utiliser itération simple
+            iteration as f64 / iter_max as f64
+        }
+    }
+}
+
+/// Compute Wings coloring using sinh() on orbit
+fn compute_wings(orbit: Option<&OrbitData>, iteration: u32, iter_max: u32) -> f64 {
+    match orbit {
+        Some(orbit_data) if !orbit_data.points.is_empty() => {
+            // Calculer sinh sur les points de l'orbite pour créer des motifs en ailes
+            let mut sum_sinh = 0.0;
+            let mut count = 0;
+            
+            for &point in &orbit_data.points {
+                let sinh_re = point.re.sinh();
+                let sinh_im = point.im.sinh();
+                let magnitude = (sinh_re * sinh_re + sinh_im * sinh_im).sqrt();
+                sum_sinh += magnitude;
+                count += 1;
+            }
+            
+            if count > 0 {
+                let avg_sinh = sum_sinh / count as f64;
+                // Normaliser et mélanger avec itération
+                let normalized = (avg_sinh / (1.0 + avg_sinh)).min(1.0);
+                let iter_factor = iteration as f64 / iter_max as f64;
+                (normalized * 0.6 + iter_factor * 0.4).min(1.0)
+            } else {
+                iteration as f64 / iter_max as f64
+            }
+        }
+        _ => {
+            iteration as f64 / iter_max as f64
+        }
+    }
+}
+
 /// Calcule la couleur RGB pour un pixel à partir de:
 /// - son nombre d'itérations,
 /// - la valeur finale de z,
@@ -424,6 +780,8 @@ pub fn color_for_pixel(
     palette_index: u8,
     color_repeat: u32,
     out_coloring_mode: OutColoringMode,
+    color_space: ColorSpace,
+    orbit: Option<&OrbitData>,
 ) -> (u8, u8, u8) {
     // Points dans l'ensemble : noir
     if iteration >= iter_max {
@@ -461,6 +819,8 @@ pub fn color_for_pixel(
         OutColoringMode::Potential => compute_potential(iteration, z_positive, iter_max),
         OutColoringMode::ColorDecomposition => compute_color_decomposition(iteration, z_positive, iter_max),
         OutColoringMode::Smooth => smooth_iteration(iteration, z_positive, iter_max, 2.0), // Default bailout
+        OutColoringMode::OrbitTraps => compute_orbit_traps(orbit, iteration, iter_max),
+        OutColoringMode::Wings => compute_wings(orbit, iteration, iter_max),
     };
 
     // Clamp t dans [0, 1) pour éviter les problèmes aux limites
@@ -471,6 +831,7 @@ pub fn color_for_pixel(
         t = 0.999_999;
     }
 
+    // Utiliser color_repeat pour la longueur du cycle
     let repeat_count = color_repeat.max(1) as f64;
     let cycle = (t * repeat_count).floor();
     let mut t_repeat = (t * repeat_count) % 1.0;
@@ -489,7 +850,7 @@ pub fn color_for_pixel(
     }
 
     let palette = palette_for(PaletteId::from_u8(palette_index));
-    let (r, g, b) = gradient_interpolate(palette, t_repeat);
+    let (r, g, b) = gradient_interpolate_with_space(palette, t_repeat, color_space);
 
     // Binary decomposition: invert color when original z.im < 0
     if out_coloring_mode == OutColoringMode::BinaryDecomposition && original_z_im_negative {

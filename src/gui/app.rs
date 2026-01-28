@@ -8,7 +8,7 @@ use image::RgbImage;
 use num_complex::Complex64;
 use rug::Float;
 
-use crate::color::{color_for_pixel, color_for_nebulabrot_pixel, color_for_buddhabrot_pixel};
+use crate::color::{color_for_pixel, color_for_nebulabrot_pixel, color_for_buddhabrot_pixel, generate_palette_preview};
 use crate::fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalParams, FractalType, LyapunovPreset, OutColoringMode, PlaneTransform};
 use crate::fractal::perturbation::ReferenceOrbitCache;
 use crate::render::render_escape_time_cancellable_with_reuse;
@@ -25,9 +25,13 @@ pub struct FractallApp {
     params: FractalParams,
     iterations: Vec<u32>,
     zs: Vec<Complex64>,
+    orbits: Vec<Option<crate::fractal::orbit_traps::OrbitData>>,
     
     // Texture egui pour l'affichage
     texture: Option<TextureHandle>,
+    
+    // Cache des textures de prévisualisation des palettes
+    palette_preview_textures: [Option<TextureHandle>; 13],
     
     // État UI
     selected_type: FractalType,
@@ -96,7 +100,13 @@ impl FractallApp {
             params: params.clone(),
             iterations: Vec::new(),
             zs: Vec::new(),
+            orbits: Vec::new(),
             texture: None,
+            palette_preview_textures: [
+                None, None, None, None, None,
+                None, None, None, None, None,
+                None, None, None,
+            ],
             selected_type: default_type,
             palette_index: 6, // SmoothPlasma par défaut
             color_repeat: 40,
@@ -131,10 +141,17 @@ impl FractallApp {
         }
     }
     
-    /// Synchronise les coordonnées haute précision vers les params f64.
+    /// Synchronise les coordonnées haute précision vers les params f64 et String.
     /// Appelé après chaque modification des coordonnées HP.
+    /// Stocke les String dans FractalParams pour préserver la précision pour les calculs GMP.
     fn sync_hp_to_params(&mut self) {
-        // Parser les strings HP vers rug::Float puis convertir en f64
+        // Stocker les String directement dans FractalParams pour préserver la précision
+        self.params.center_x_hp = Some(self.center_x_hp.clone());
+        self.params.center_y_hp = Some(self.center_y_hp.clone());
+        self.params.span_x_hp = Some(self.span_x_hp.clone());
+        self.params.span_y_hp = Some(self.span_y_hp.clone());
+        
+        // Parser les strings HP vers rug::Float puis convertir en f64 pour compatibilité GPU/CPU standard
         let prec = HP_PRECISION;
         
         if let Ok(cx) = Float::parse(&self.center_x_hp) {
@@ -691,6 +708,7 @@ impl FractallApp {
         self.params.height = new_height;
         self.iterations.clear();
         self.zs.clear();
+        self.orbits.clear();
         self.texture = None;
         self.start_render();
     }
@@ -703,6 +721,11 @@ impl FractallApp {
 
         if self.iterations.is_empty() || self.zs.is_empty() {
             return;
+        }
+        
+        // S'assurer que orbits a la même taille que iterations/zs
+        while self.orbits.len() < self.iterations.len() {
+            self.orbits.push(None);
         }
 
         let is_nebulabrot = self.params.fractal_type == FractalType::Nebulabrot;
@@ -731,6 +754,7 @@ impl FractallApp {
                         } else if is_buddhabrot {
                             color_for_buddhabrot_pixel(z, palette_idx, color_rep)
                         } else {
+                            let orbit = self.orbits.get(idx).and_then(|o| o.as_ref());
                             color_for_pixel(
                                 iter,
                                 z,
@@ -738,6 +762,8 @@ impl FractallApp {
                                 palette_idx,
                                 color_rep,
                                 out_mode,
+                                self.params.color_space,
+                                orbit,
                             )
                         };
 
@@ -1037,7 +1063,7 @@ impl eframe::App for FractallApp {
             
             // C pour cycle palette
             if i.key_pressed(egui::Key::C) {
-                self.palette_index = (self.palette_index + 1) % 9;
+                self.palette_index = (self.palette_index + 1) % 13;
                 if !self.iterations.is_empty() {
                     self.update_texture(ctx);
                 }
@@ -1394,24 +1420,58 @@ impl eframe::App for FractallApp {
 
                     ui.separator();
 
-                    // Plane (XaoS-style) juste après Type
-                    ui.label("Plane:");
-                    let old_plane = self.params.plane_transform;
-                    egui::ComboBox::from_id_source("plane_transform")
-                        .selected_text(self.params.plane_transform.name())
-                        .show_ui(ui, |ui| {
-                            for plane in PlaneTransform::all() {
-                                ui.selectable_value(&mut self.params.plane_transform, *plane, plane.name());
+                    // Plane (XaoS-style) uniquement pour fractales escape-time
+                    let is_escape_time = !matches!(
+                        self.selected_type,
+                        FractalType::VonKoch | FractalType::Dragon | FractalType::Buddhabrot | FractalType::Lyapunov | FractalType::Nebulabrot
+                    );
+                    
+                    if is_escape_time {
+                        ui.label("Plane:");
+                        let old_plane = self.params.plane_transform;
+                        egui::ComboBox::from_id_source("plane_transform")
+                            .selected_text(self.params.plane_transform.name())
+                            .show_ui(ui, |ui| {
+                                for plane in PlaneTransform::all() {
+                                    ui.selectable_value(&mut self.params.plane_transform, *plane, plane.name());
+                                }
+                            });
+                        if old_plane != self.params.plane_transform {
+                            self.orbit_cache = None;
+                            if self.params.plane_transform != PlaneTransform::Mu
+                                && self.params.algorithm_mode == AlgorithmMode::Perturbation
+                            {
+                                self.params.algorithm_mode = AlgorithmMode::Auto;
                             }
-                        });
-                    if old_plane != self.params.plane_transform {
-                        self.orbit_cache = None;
-                        if self.params.plane_transform != PlaneTransform::Mu
-                            && self.params.algorithm_mode == AlgorithmMode::Perturbation
-                        {
-                            self.params.algorithm_mode = AlgorithmMode::Auto;
+                            self.start_render();
                         }
-                        self.start_render();
+                    }
+
+                    // Qualité (uniquement pour fractales supportées)
+                    let supports_advanced_modes = matches!(
+                        self.selected_type,
+                        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
+                    );
+                    let show_tolerance = matches!(
+                        self.params.algorithm_mode, 
+                        AlgorithmMode::Auto | AlgorithmMode::Perturbation
+                    );
+                    
+                    if supports_advanced_modes && show_tolerance {
+                        ui.separator();
+                        let old_preset = self.render_preset;
+                        ui.label("Qualité:");
+                        egui::ComboBox::from_id_source("render_preset")
+                            .selected_text(self.render_preset.name())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.render_preset, RenderPreset::Ultra, "Ultra (rapide)");
+                                ui.selectable_value(&mut self.render_preset, RenderPreset::Fast, "Fast (équilibré)");
+                                ui.selectable_value(&mut self.render_preset, RenderPreset::Standard, "Standard (précis)");
+                            });
+                        if old_preset != self.render_preset {
+                            self.apply_render_preset(self.render_preset);
+                            self.start_render();
+                        }
                     }
                 });
                 
@@ -1420,15 +1480,31 @@ impl eframe::App for FractallApp {
                 ui.horizontal(|ui| {
                     ui.label("Palette:");
                     if ui.button("<").clicked() {
-                        self.palette_index = if self.palette_index == 0 { 8 } else { self.palette_index - 1 };
+                        self.palette_index = if self.palette_index == 0 { 12 } else { self.palette_index - 1 };
                         self.params.color_mode = self.palette_index;
                         if !self.iterations.is_empty() {
                             self.update_texture(ctx);
                         }
                     }
-                    ui.label(format!("{}", self.palette_index));
+                    
+                    // Afficher la prévisualisation de la palette
+                    let palette_idx = self.palette_index as usize;
+                    if self.palette_preview_textures[palette_idx].is_none() {
+                        let preview_image = generate_palette_preview(self.palette_index, 100, 12);
+                        self.palette_preview_textures[palette_idx] = Some(ctx.load_texture(
+                            format!("palette_preview_{}", self.palette_index),
+                            preview_image,
+                            egui::TextureOptions::LINEAR
+                        ));
+                    }
+                    
+                    if let Some(ref palette_texture) = self.palette_preview_textures[palette_idx] {
+                        ui.add(egui::Image::new(palette_texture)
+                            .fit_to_exact_size(egui::Vec2::new(100.0, 12.0)));
+                    }
+                    
                     if ui.button(">").clicked() {
-                        self.palette_index = (self.palette_index + 1) % 9;
+                        self.palette_index = (self.palette_index + 1) % 13; // 13 palettes maintenant (0-12)
                         self.params.color_mode = self.palette_index;
                         if !self.iterations.is_empty() {
                             self.update_texture(ctx);
@@ -1465,38 +1541,48 @@ impl eframe::App for FractallApp {
                         }
                     }
 
-                    // Afficher les contrôles de mode de calcul pour les fractales escape-time supportées
-                    let supports_advanced_modes = matches!(
-                        self.selected_type,
-                        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
-                    );
+                    ui.separator();
 
-                    if supports_advanced_modes {
-                        ui.separator();
-
-                        // 4. Tolérance (perturbation uniquement)
-                        let show_tolerance = matches!(
-                            self.params.algorithm_mode, 
-                            AlgorithmMode::Auto | AlgorithmMode::Perturbation
-                        );
-                        
-                        if show_tolerance {
-                            ui.separator();
-                            let old_preset = self.render_preset;
-                            ui.label("Qualité:");
-                            egui::ComboBox::from_id_source("render_preset")
-                                .selected_text(self.render_preset.name())
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut self.render_preset, RenderPreset::Ultra, "Ultra (rapide)");
-                                    ui.selectable_value(&mut self.render_preset, RenderPreset::Fast, "Fast (équilibré)");
-                                    ui.selectable_value(&mut self.render_preset, RenderPreset::Standard, "Standard (précis)");
-                                });
-                            if old_preset != self.render_preset {
-                                self.apply_render_preset(self.render_preset);
-                                self.start_render();
-                            }
-                        }
-                    }
+                });
+                
+                // Afficher les informations (centre, itérations, zoom) sous la barre de menu
+                ui.separator();
+                ui.horizontal(|ui| {
+                    // Coordonnées du centre
+                    let center_text = if self.params.center_x.abs() < 1e-6 && self.params.center_y.abs() < 1e-6 {
+                        format!("Centre: ({:.6}, {:.6})", self.params.center_x, self.params.center_y)
+                    } else if self.params.center_x.abs() > 1e3 || self.params.center_y.abs() > 1e3 {
+                        format!("Centre: ({:.2e}, {:.2e})", self.params.center_x, self.params.center_y)
+                    } else {
+                        format!("Centre: ({:.6}, {:.6})", self.params.center_x, self.params.center_y)
+                    };
+                    ui.label(center_text);
+                    
+                    ui.separator();
+                    
+                    // Nombre d'itérations
+                    ui.label(format!("Iter.: {}", self.params.iteration_max));
+                    
+                    ui.separator();
+                    
+                    // Calcul du zoom
+                    let base_range = 4.0; // Plage de base pour Mandelbrot
+                    let pixel_size = if self.params.width > 0 && self.params.height > 0 {
+                        self.params.span_x.abs().max(self.params.span_y.abs()) / self.params.width as f64
+                    } else {
+                        0.0
+                    };
+                    let zoom = if pixel_size > 0.0 && pixel_size.is_finite() {
+                        base_range / pixel_size
+                    } else {
+                        1.0
+                    };
+                    let zoom_text = if zoom >= 1e6 {
+                        format!("Zoom: {:.2e}", zoom)
+                    } else {
+                        format!("Zoom: {:.2}", zoom)
+                    };
+                    ui.label(zoom_text);
                 });
         });
         
@@ -1671,21 +1757,6 @@ impl eframe::App for FractallApp {
         // Barre d'état en bas
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(format!("Iter. {}", self.params.iteration_max));
-                    ui.separator();
-                    
-                    let base_range = 4.0;
-                    let zoom_factor = base_range / self.params.span_x;
-                    if zoom_factor.is_finite() && zoom_factor > 0.0 {
-                        ui.label(format!("Zoom: {:.2e}", zoom_factor));
-                    } else {
-                        ui.label("Zoom: n/a");
-                    }
-                    
-                    ui.separator();
-                    ui.label(format!("Centre: ({:.6}, {:.6})", self.params.center_x, self.params.center_y));
-
-                    ui.separator();
                     
                     // ═══════════════════════════════════════════════════════════════
                     // Affichage du mode de calcul effectif

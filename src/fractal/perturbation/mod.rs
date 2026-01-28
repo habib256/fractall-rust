@@ -307,9 +307,11 @@ pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32
     // Pour les très grands zooms, augmenter la marge pour éviter les erreurs
     let zoom_bits = zoom.log2().ceil() as i32;
     let safety_margin = if zoom > 1e30 {
-        160  // Marge très grande pour les zooms extrêmes (>10^30)
+        200  // Marge très grande pour les zooms extrêmes (>10^30)
     } else if zoom > 1e20 {
-        128  // Marge grande pour les zooms très profonds (>10^20)
+        160  // Marge grande pour les zooms très profonds (>10^20)
+    } else if zoom > 1e15 {
+        128  // Marge importante pour zooms profonds (>10^15) - CRITIQUE pour éviter bugs
     } else if zoom > 1e10 {
         96   // Marge plus grande pour les très grands zooms (>10^10)
     } else if zoom > 1e6 {
@@ -318,11 +320,25 @@ pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32
         64   // Marge standard pour les zooms faibles
     };
     let needed_bits = (zoom_bits + safety_margin).max(128) as u32;
+    let final_bits = needed_bits.clamp(128, 8192);
+
+    // Log de diagnostic pour zoom profond (une seule fois par appel avec un cache statique)
+    if zoom > 1e15 {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static LAST_LOGGED_ZOOM: AtomicU64 = AtomicU64::new(0);
+        let zoom_bits_u64 = (zoom_bits as u64) << 32 | (final_bits as u64);
+        let last_logged = LAST_LOGGED_ZOOM.load(Ordering::Relaxed);
+        if zoom_bits_u64 != last_logged {
+            LAST_LOGGED_ZOOM.store(zoom_bits_u64, Ordering::Relaxed);
+            eprintln!("[PRECISION DEBUG] zoom={:.2e}, pixel_size={:.2e}, zoom_bits={}, safety_margin={}, needed_bits={}, final_bits={}, preset_bits={}",
+                zoom, pixel_size, zoom_bits, safety_margin, needed_bits, final_bits, params.precision_bits);
+        }
+    }
 
     // Ajustement automatique basé sur le zoom : utiliser la précision calculée
     // Le preset (params.precision_bits) est ignoré pour permettre l'ajustement automatique
     // Clamp to reasonable range: 128 minimum, 8192 maximum
-    needed_bits.clamp(128, 8192)
+    final_bits
 }
 
 /// Détermine si le zoom est trop profond pour utiliser la perturbation standard (f64/ComplexExp).
@@ -370,9 +386,39 @@ pub fn compute_dc_gmp(
 ) -> Complex {
     let inv_width = Float::with_val(prec, 1.0) / Float::with_val(prec, params.width as f64);
     let inv_height = Float::with_val(prec, 1.0) / Float::with_val(prec, params.height as f64);
-    let x_range = Float::with_val(prec, params.span_x);
-    let y_range = Float::with_val(prec, params.span_y);
+    
+    // Utiliser les String haute précision si disponibles, sinon fallback sur f64
+    let x_range = if let Some(ref sx_hp) = params.span_x_hp {
+        match Float::parse(sx_hp) {
+            Ok(parse_result) => Float::with_val(prec, parse_result),
+            Err(_) => Float::with_val(prec, params.span_x)
+        }
+    } else {
+        Float::with_val(prec, params.span_x)
+    };
+    
+    let y_range = if let Some(ref sy_hp) = params.span_y_hp {
+        match Float::parse(sy_hp) {
+            Ok(parse_result) => Float::with_val(prec, parse_result),
+            Err(_) => Float::with_val(prec, params.span_y)
+        }
+    } else {
+        Float::with_val(prec, params.span_y)
+    };
+    
     let half = Float::with_val(prec, 0.5);
+    
+    // Log de diagnostic pour quelques pixels (coin supérieur gauche) - une seule fois
+    let pixel_size = params.span_x.abs().max(params.span_y.abs()) / params.width as f64;
+    if pixel_size < 1e-15 && i == 0 && j == 0 {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static LOGGED_DC: AtomicBool = AtomicBool::new(false);
+        if !LOGGED_DC.swap(true, Ordering::Relaxed) {
+            eprintln!("[PRECISION DEBUG] compute_dc_gmp: pixel (0,0), using_hp={}, span_x f64={:.20e}, span_y f64={:.20e}, x_range_gmp={}, y_range_gmp={}",
+                params.span_x_hp.is_some(), params.span_x, params.span_y,
+                x_range.to_string_radix(10, Some(30)), y_range.to_string_radix(10, Some(30)));
+        }
+    }
     
     // dc_re = (i/width - 0.5) * x_range
     let i_float = Float::with_val(prec, i as f64);
@@ -383,6 +429,16 @@ pub fn compute_dc_gmp(
     y_ratio -= &half;
     let x_offset = Float::with_val(prec, &x_ratio * &x_range);
     let y_offset = Float::with_val(prec, &y_ratio * &y_range);
+    
+    // Log de diagnostic pour quelques pixels - une seule fois
+    if pixel_size < 1e-15 && i == 0 && j == 0 {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static LOGGED_DC_OFFSET: AtomicBool = AtomicBool::new(false);
+        if !LOGGED_DC_OFFSET.swap(true, Ordering::Relaxed) {
+            eprintln!("[PRECISION DEBUG] dc_gmp: x_offset={}, y_offset={}",
+                x_offset.to_string_radix(10, Some(30)), y_offset.to_string_radix(10, Some(30)));
+        }
+    }
     
     // Le point complexe du pixel est center + dc
     // Mais dc seul est juste l'offset, donc on retourne juste l'offset
@@ -737,31 +793,43 @@ pub fn render_perturbation_with_cache(
         if glitch_ratio > GLITCH_FALLBACK_THRESHOLD {
             // Trop de glitches: recalculer tous les pixels en GMP
             let gmp_params = MpcParams::from_params(&orbit_params);
-            let prec = gmp_params.prec;
-            let x_range = params.span_x;
-            let y_range = params.span_y;
-            let x_step = x_range / params.width as f64;
-            let y_step = y_range / params.height as f64;
-            let x_half = x_range * 0.5;
-            let y_half = y_range * 0.5;
-            let center_x = params.center_x;
-            let center_y = params.center_y;
+            let prec = compute_perturbation_precision_bits(params);
             let width_u32 = params.width;
 
+            // Utiliser compute_dc_gmp pour calculer directement en GMP
+            let center_x_gmp = if let Some(ref cx_hp) = params.center_x_hp {
+                match Float::parse(cx_hp) {
+                    Ok(parse_result) => Float::with_val(prec, parse_result),
+                    Err(_) => Float::with_val(prec, params.center_x),
+                }
+            } else {
+                Float::with_val(prec, params.center_x)
+            };
+            let center_y_gmp = if let Some(ref cy_hp) = params.center_y_hp {
+                match Float::parse(cy_hp) {
+                    Ok(parse_result) => Float::with_val(prec, parse_result),
+                    Err(_) => Float::with_val(prec, params.center_y),
+                }
+            } else {
+                Float::with_val(prec, params.center_y)
+            };
+            
             let all_corrections: Vec<_> = (0..total_pixels)
                 .into_par_iter()
                 .map(|idx| {
-                    let x = (idx as u32 % width_u32) as f64;
-                    let y = (idx as u32 / width_u32) as f64;
-                    let dx = x_step * x - x_half;
-                    let dy = y_step * y - y_half;
-                    let xg = center_x + dx;
-                    let yg = center_y + dy;
-                    let z_pixel = complex_from_xy(
-                        prec,
-                        Float::with_val(prec, xg),
-                        Float::with_val(prec, yg),
-                    );
+                    let i = (idx as u32 % width_u32) as usize;
+                    let j = (idx as u32 / width_u32) as usize;
+                    
+                    // Calculer dc en GMP directement
+                    let dc_gmp = compute_dc_gmp(i, j, params, &center_x_gmp, &center_y_gmp, prec);
+                    
+                    // Calculer le point pixel = center + dc en GMP
+                    let mut z_pixel_re = center_x_gmp.clone();
+                    z_pixel_re += dc_gmp.real();
+                    let mut z_pixel_im = center_y_gmp.clone();
+                    z_pixel_im += dc_gmp.imag();
+                    let z_pixel = complex_from_xy(prec, z_pixel_re, z_pixel_im);
+                    
                     let (iter_val, z_final) = iterate_point_mpc(&gmp_params, &z_pixel);
                     (idx, iter_val, complex_to_complex64(&z_final))
                 })
@@ -777,31 +845,43 @@ pub fn render_perturbation_with_cache(
         
         if !glitched_indices.is_empty() {
             let gmp_params = MpcParams::from_params(&orbit_params);
-            let prec = gmp_params.prec;
+            let prec = compute_perturbation_precision_bits(params);
             let width_u32 = params.width;
-            let x_range = params.span_x;
-            let y_range = params.span_y;
-            let x_step = x_range / params.width as f64;
-            let y_step = y_range / params.height as f64;
-            let x_half = x_range * 0.5;
-            let y_half = y_range * 0.5;
-            let center_x = params.center_x;
-            let center_y = params.center_y;
-
+            
+            // Utiliser les String haute précision si disponibles pour le calcul de dc
+            let center_x_gmp = if let Some(ref cx_hp) = params.center_x_hp {
+                match Float::parse(cx_hp) {
+                    Ok(parse_result) => Float::with_val(prec, parse_result),
+                    Err(_) => Float::with_val(prec, params.center_x),
+                }
+            } else {
+                Float::with_val(prec, params.center_x)
+            };
+            let center_y_gmp = if let Some(ref cy_hp) = params.center_y_hp {
+                match Float::parse(cy_hp) {
+                    Ok(parse_result) => Float::with_val(prec, parse_result),
+                    Err(_) => Float::with_val(prec, params.center_y),
+                }
+            } else {
+                Float::with_val(prec, params.center_y)
+            };
+            
             let corrections: Vec<_> = glitched_indices
                 .par_iter()
                 .map(|&idx| {
-                    let x = (idx as u32 % width_u32) as f64;
-                    let y = (idx as u32 / width_u32) as f64;
-                    let dx = x_step * x - x_half;
-                    let dy = y_step * y - y_half;
-                    let xg = center_x + dx;
-                    let yg = center_y + dy;
-                    let z_pixel = complex_from_xy(
-                        prec,
-                        Float::with_val(prec, xg),
-                        Float::with_val(prec, yg),
-                    );
+                    let i = (idx as u32 % width_u32) as usize;
+                    let j = (idx as u32 / width_u32) as usize;
+                    
+                    // Calculer dc en GMP directement
+                    let dc_gmp = compute_dc_gmp(i, j, params, &center_x_gmp, &center_y_gmp, prec);
+                    
+                    // Calculer le point pixel = center + dc en GMP
+                    let mut z_pixel_re = center_x_gmp.clone();
+                    z_pixel_re += dc_gmp.real();
+                    let mut z_pixel_im = center_y_gmp.clone();
+                    z_pixel_im += dc_gmp.imag();
+                    let z_pixel = complex_from_xy(prec, z_pixel_re, z_pixel_im);
+                    
                     let (iter_val, z_final) = iterate_point_mpc(&gmp_params, &z_pixel);
                     (idx, iter_val, complex_to_complex64(&z_final))
                 })
@@ -827,18 +907,48 @@ fn render_perturbation_gmp_path(
     mut iterations: Vec<u32>,
     mut zs: Vec<Complex64>,
 ) -> Option<((Vec<u32>, Vec<Complex64>), Arc<ReferenceOrbitCache>)> {
-    let prec = params.precision_bits.max(128);
+    // Utiliser la précision calculée au lieu du preset
+    let prec = compute_perturbation_precision_bits(params);
     let width = params.width as usize;
+    
+    // Log de diagnostic - une seule fois
+    let pixel_size = params.span_x.abs().max(params.span_y.abs()) / params.width as f64;
+    if pixel_size < 1e-15 {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static LAST_LOGGED_GMP_PATH: AtomicU32 = AtomicU32::new(0);
+        let last_logged = LAST_LOGGED_GMP_PATH.load(Ordering::Relaxed);
+        if prec != last_logged {
+            LAST_LOGGED_GMP_PATH.store(prec, Ordering::Relaxed);
+            eprintln!("[PRECISION DEBUG] render_perturbation_gmp_path: prec={}, preset_bits={}, cache.center_x_gmp={}, cache.center_y_gmp={}",
+                prec, params.precision_bits, cache.center_x_gmp, cache.center_y_gmp);
+        }
+    }
     
     // Parse center from GMP strings stored in cache
     let center_x_gmp = match Float::parse(&cache.center_x_gmp) {
         Ok(parse_result) => Float::with_val(prec, parse_result),
-        Err(_) => return None,
+        Err(_) => {
+            eprintln!("[PRECISION ERROR] Failed to parse center_x_gmp: {}", cache.center_x_gmp);
+            return None;
+        },
     };
     let center_y_gmp = match Float::parse(&cache.center_y_gmp) {
         Ok(parse_result) => Float::with_val(prec, parse_result),
-        Err(_) => return None,
+        Err(_) => {
+            eprintln!("[PRECISION ERROR] Failed to parse center_y_gmp: {}", cache.center_y_gmp);
+            return None;
+        },
     };
+    
+    // Log de diagnostic pour vérifier la conversion String → GMP - une seule fois
+    if pixel_size < 1e-15 {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static LOGGED_PARSED: AtomicBool = AtomicBool::new(false);
+        if !LOGGED_PARSED.swap(true, Ordering::Relaxed) {
+            eprintln!("[PRECISION DEBUG] Parsed center_x_gmp={}, center_y_gmp={}",
+                center_x_gmp.to_string_radix(10, Some(30)), center_y_gmp.to_string_radix(10, Some(30)));
+        }
+    }
     
     let cancelled = AtomicBool::new(false);
     let reuse_data = build_reuse(params, reuse);
@@ -956,8 +1066,6 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(false));
         let (iters, _) =
             render_perturbation_cancellable_with_reuse(params, &cancel, None).unwrap();
-        let x_step = params.span_x / params.width as f64;
-        let y_step = params.span_y / params.height as f64;
         for &(x, y) in indices {
             let idx = (y * params.width + x) as usize;
             // Utiliser center+span directement pour éviter les problèmes de précision
