@@ -300,6 +300,174 @@ impl OutColoringMode {
     }
 }
 
+/// Complex plane transformation mode (XaoS-style).
+/// Transforms coordinate c before fractal iteration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PlaneTransform {
+    /// Normal mode: c = c (no transformation)
+    #[default]
+    Mu,
+    /// Inversion: c = 1/c (infinity <-> 0)
+    Inversion,
+    /// Inversion with shifted center: c = 1/(c + 0.25)
+    InversionShifted,
+    /// Lambda plane: c = 4*mu*(1-mu)
+    Lambda,
+    /// Inverse lambda: c = 1/(4*mu*(1-mu))
+    InversionLambda,
+    /// Inverse lambda minus 1: c = 1/(4*mu*(1-mu)) - 1
+    InversionLambdaMinus1,
+    /// Special inversion for Mandelbrot details: c = 1/(c - 1.40115)
+    InversionSpecial,
+}
+
+impl PlaneTransform {
+    /// Returns all available plane transforms.
+    #[allow(dead_code)]
+    pub fn all() -> &'static [PlaneTransform] {
+        &[
+            PlaneTransform::Mu,
+            PlaneTransform::Inversion,
+            PlaneTransform::InversionShifted,
+            PlaneTransform::Lambda,
+            PlaneTransform::InversionLambda,
+            PlaneTransform::InversionLambdaMinus1,
+            PlaneTransform::InversionSpecial,
+        ]
+    }
+
+    /// Display name for UI.
+    #[allow(dead_code)]
+    pub fn name(self) -> &'static str {
+        match self {
+            PlaneTransform::Mu => "μ (normal)",
+            PlaneTransform::Inversion => "1/μ",
+            PlaneTransform::InversionShifted => "1/(μ+0.25)",
+            PlaneTransform::Lambda => "λ",
+            PlaneTransform::InversionLambda => "1/λ",
+            PlaneTransform::InversionLambdaMinus1 => "1/λ-1",
+            PlaneTransform::InversionSpecial => "1/(μ-1.40115)",
+        }
+    }
+
+    /// Numeric ID for serialization.
+    #[allow(dead_code)]
+    pub fn id(self) -> u8 {
+        match self {
+            PlaneTransform::Mu => 0,
+            PlaneTransform::Inversion => 1,
+            PlaneTransform::InversionShifted => 2,
+            PlaneTransform::Lambda => 3,
+            PlaneTransform::InversionLambda => 4,
+            PlaneTransform::InversionLambdaMinus1 => 5,
+            PlaneTransform::InversionSpecial => 6,
+        }
+    }
+
+    /// Create from numeric ID.
+    #[allow(dead_code)]
+    pub fn from_id(id: u8) -> Option<Self> {
+        match id {
+            0 => Some(PlaneTransform::Mu),
+            1 => Some(PlaneTransform::Inversion),
+            2 => Some(PlaneTransform::InversionShifted),
+            3 => Some(PlaneTransform::Lambda),
+            4 => Some(PlaneTransform::InversionLambda),
+            5 => Some(PlaneTransform::InversionLambdaMinus1),
+            6 => Some(PlaneTransform::InversionSpecial),
+            _ => None,
+        }
+    }
+
+    /// CLI name for command-line argument.
+    #[allow(dead_code)]
+    pub fn cli_name(self) -> &'static str {
+        match self {
+            PlaneTransform::Mu => "mu",
+            PlaneTransform::Inversion => "1/mu",
+            PlaneTransform::InversionShifted => "1/(mu+0.25)",
+            PlaneTransform::Lambda => "lambda",
+            PlaneTransform::InversionLambda => "1/lambda",
+            PlaneTransform::InversionLambdaMinus1 => "1/lambda-1",
+            PlaneTransform::InversionSpecial => "1/(mu-1.40115)",
+        }
+    }
+
+    /// Parse from CLI name.
+    #[allow(dead_code)]
+    pub fn from_cli_name(value: &str) -> Option<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "mu" | "0" => Some(PlaneTransform::Mu),
+            "1/mu" | "inv" | "inversion" | "1" => Some(PlaneTransform::Inversion),
+            "1/(mu+0.25)" | "inv-shifted" | "2" => Some(PlaneTransform::InversionShifted),
+            "lambda" | "3" => Some(PlaneTransform::Lambda),
+            "1/lambda" | "inv-lambda" | "4" => Some(PlaneTransform::InversionLambda),
+            "1/lambda-1" | "inv-lambda-1" | "5" => Some(PlaneTransform::InversionLambdaMinus1),
+            "1/(mu-1.40115)" | "inv-special" | "6" => Some(PlaneTransform::InversionSpecial),
+            _ => None,
+        }
+    }
+
+    /// Apply the plane transformation to a complex coordinate.
+    #[inline]
+    pub fn transform(self, mu: Complex64) -> Complex64 {
+        match self {
+            PlaneTransform::Mu => mu,
+            PlaneTransform::Inversion => {
+                // c = 1/mu = conj(mu) / |mu|^2
+                let denom = mu.norm_sqr();
+                if denom < 1e-20 {
+                    return Complex64::new(1e10, 0.0);
+                }
+                mu.conj() / denom
+            }
+            PlaneTransform::InversionShifted => {
+                // c = 1/(mu + 0.25)
+                let shifted = mu + Complex64::new(0.25, 0.0);
+                let denom = shifted.norm_sqr();
+                if denom < 1e-20 {
+                    return Complex64::new(1e10, 0.0);
+                }
+                shifted.conj() / denom
+            }
+            PlaneTransform::Lambda => {
+                // c = 4*mu*(1-mu)
+                let one = Complex64::new(1.0, 0.0);
+                mu * (one - mu) * 4.0
+            }
+            PlaneTransform::InversionLambda => {
+                // c = 1/(4*mu*(1-mu))
+                let one = Complex64::new(1.0, 0.0);
+                let lambda = mu * (one - mu) * 4.0;
+                let denom = lambda.norm_sqr();
+                if denom < 1e-20 {
+                    return Complex64::new(1e10, 0.0);
+                }
+                lambda.conj() / denom
+            }
+            PlaneTransform::InversionLambdaMinus1 => {
+                // c = 1/(4*mu*(1-mu)) - 1
+                let one = Complex64::new(1.0, 0.0);
+                let lambda = mu * (one - mu) * 4.0;
+                let denom = lambda.norm_sqr();
+                if denom < 1e-20 {
+                    return Complex64::new(1e10, 0.0);
+                }
+                lambda.conj() / denom - one
+            }
+            PlaneTransform::InversionSpecial => {
+                // c = 1/(mu - 1.40115)
+                let shifted = mu - Complex64::new(1.40115, 0.0);
+                let denom = shifted.norm_sqr();
+                if denom < 1e-20 {
+                    return Complex64::new(1e10, 0.0);
+                }
+                shifted.conj() / denom
+            }
+        }
+    }
+}
+
 use crate::fractal::lyapunov::LyapunovPreset;
 
 /// Paramètres d'une fractale pour le rendu escape-time.
@@ -386,6 +554,9 @@ pub struct FractalParams {
 
     /// Mode de colorisation pour les pixels extérieurs (XaoS-style).
     pub out_coloring_mode: OutColoringMode,
+
+    /// Complex plane transformation (XaoS-style).
+    pub plane_transform: PlaneTransform,
 }
 
 impl FractalParams {

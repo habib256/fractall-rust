@@ -7,7 +7,7 @@ pub mod vectorial;
 pub mod buddhabrot;
 pub mod perturbation;
 
-pub use types::{AlgorithmMode, FractalParams, FractalResult, FractalType, OutColoringMode};
+pub use types::{AlgorithmMode, FractalParams, FractalResult, FractalType, OutColoringMode, PlaneTransform};
 pub use definitions::{default_params_for_type, apply_lyapunov_preset};
 pub use lyapunov::{render_lyapunov, LyapunovPreset};
 pub use vectorial::{render_von_koch, render_dragon};

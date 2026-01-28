@@ -1,6 +1,6 @@
 use num_complex::Complex64;
 
-use crate::fractal::{AlgorithmMode, FractalParams, FractalType, OutColoringMode};
+use crate::fractal::{AlgorithmMode, FractalParams, FractalType, OutColoringMode, PlaneTransform};
 use crate::fractal::lyapunov::{LyapunovConfig, LyapunovPreset};
 
 /// Construit des paramètres avec les valeurs par défaut du type,
@@ -42,6 +42,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         enable_interior_detection: true,   // Enable by default to properly color interior points
         interior_threshold: 0.001,
         out_coloring_mode: OutColoringMode::Smooth,
+        plane_transform: PlaneTransform::Mu,
     };
 
     match fractal_type {

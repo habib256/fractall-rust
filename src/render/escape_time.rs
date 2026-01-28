@@ -5,7 +5,7 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 use rug::Float;
 
-use crate::fractal::{AlgorithmMode, FractalParams, FractalResult, FractalType};
+use crate::fractal::{AlgorithmMode, FractalParams, FractalResult, FractalType, PlaneTransform};
 use crate::fractal::iterations::iterate_point;
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
 use crate::fractal::{render_lyapunov, render_von_koch, render_dragon, render_buddhabrot, render_nebulabrot};
@@ -62,6 +62,16 @@ pub fn render_escape_time(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
         params.fractal_type,
         FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
     ) {
+        // Perturbation ne supporte pas les transformations de plan (delta-based).
+        // Si l'utilisateur force Perturbation avec un plan != Mu, on retombe sur standard.
+        if params.plane_transform != PlaneTransform::Mu
+            && params.algorithm_mode == AlgorithmMode::Perturbation
+        {
+            if params.use_gmp {
+                return render_escape_time_gmp(params);
+            }
+            return render_escape_time_f64(params);
+        }
         match params.algorithm_mode {
             AlgorithmMode::ReferenceGmp => return render_escape_time_gmp(params),
             AlgorithmMode::StandardF64 | AlgorithmMode::StandardDS => {
@@ -125,6 +135,7 @@ fn render_escape_time_f64(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
                 let x_ratio = i as f64 / params.width as f64;
                 let xg = params.center_x + (x_ratio - 0.5) * params.span_x;
                 let z_pixel = Complex64::new(xg, yg);
+                let z_pixel = params.plane_transform.transform(z_pixel);
                 let FractalResult { iteration, z: z_final } = iterate_point(params, z_pixel);
                 *iter = iteration;
                 *z = z_final;
@@ -178,7 +189,14 @@ fn render_escape_time_gmp(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
                 let mut xg = span_x.clone();
                 xg *= &x_ratio;
                 xg += &center_x;
-                let z_pixel = complex_from_xy(prec, xg, yg.clone());
+                // Apply plane transformation using f64 approximation (transform doesn't need GMP precision)
+                let z_approx = Complex64::new(xg.to_f64(), yg.to_f64());
+                let z_transformed = params.plane_transform.transform(z_approx);
+                let z_pixel = complex_from_xy(
+                    prec,
+                    Float::with_val(prec, z_transformed.re),
+                    Float::with_val(prec, z_transformed.im),
+                );
                 let (iter_val, z_final) = iterate_point_mpc(&gmp, &z_pixel);
                 *iter = iter_val;
                 *z = complex_to_complex64(&z_final);
@@ -277,6 +295,17 @@ pub fn render_escape_time_cancellable_with_reuse(
         params.fractal_type,
         FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
     ) {
+        // Perturbation ne supporte pas les transformations de plan.
+        // Si forcé, fallback sur standard (f64 ou GMP suivant use_gmp).
+        if params.plane_transform != PlaneTransform::Mu
+            && params.algorithm_mode == AlgorithmMode::Perturbation
+        {
+            let reuse = build_reuse(params, reuse);
+            if params.use_gmp {
+                return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse);
+            }
+            return render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse);
+        }
         match params.algorithm_mode {
             AlgorithmMode::ReferenceGmp => {
                 let reuse = build_reuse(params, reuse);
@@ -307,6 +336,11 @@ pub fn render_escape_time_cancellable_with_reuse(
 
 pub fn should_use_perturbation(params: &FractalParams, gpu_f32: bool) -> bool {
     if params.width == 0 || params.height == 0 {
+        return false;
+    }
+    // Disable perturbation for non-Mu plane transforms
+    // Perturbation relies on delta-based calculations that don't work correctly with plane transforms
+    if params.plane_transform != PlaneTransform::Mu {
         return false;
     }
     if !matches!(
@@ -402,6 +436,7 @@ fn render_escape_time_f64_cancellable_with_reuse(
                 let x_ratio = i as f64 / params.width as f64;
                 let xg = params.center_x + (x_ratio - 0.5) * params.span_x;
                 let z_pixel = Complex64::new(xg, yg);
+                let z_pixel = params.plane_transform.transform(z_pixel);
                 let FractalResult { iteration, z: z_final } = iterate_point(params, z_pixel);
                 *iter = iteration;
                 *z = z_final;
@@ -496,7 +531,10 @@ fn render_escape_time_gmp_cancellable_with_reuse(
                 let mut xg = span_x.clone();
                 xg *= &x_ratio;
                 xg += &center_x;
-                let z_pixel = complex_from_xy(prec, xg, yg.clone());
+                // Apply plane transformation using f64 approximation (transform doesn't need GMP precision)
+                let z_approx = Complex64::new(xg.to_f64(), yg.to_f64());
+                let z_transformed = params.plane_transform.transform(z_approx);
+                let z_pixel = complex_from_xy(prec, Float::with_val(prec, z_transformed.re), Float::with_val(prec, z_transformed.im));
                 let (iter_val, z_final) = iterate_point_mpc(&gmp, &z_pixel);
                 *iter = iter_val;
                 *z = complex_to_complex64(&z_final);

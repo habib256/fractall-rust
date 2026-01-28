@@ -7,7 +7,7 @@ mod color;
 mod render;
 mod io;
 
-use fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalType, LyapunovPreset, OutColoringMode};
+use fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalType, LyapunovPreset, OutColoringMode, PlaneTransform};
 use render::render_escape_time;
 use io::png::save_png;
 
@@ -106,6 +106,11 @@ struct Cli {
     /// Mode de colorisation (iter, iter+real, iter+imag, iter+real/imag, iter+all, binary, biomorphs, potential, color-decomp, smooth)
     #[arg(long, default_value = "smooth")]
     outcoloring: String,
+
+    /// Transformation du plan complexe (0=mu, 1=1/mu, 2=1/(mu+0.25), 3=lambda, 4=1/lambda, 5=1/lambda-1, 6=1/(mu-1.40115))
+    /// Valeurs acceptées: 0-6 ou noms (mu, 1/mu, 1/(mu+0.25), lambda, 1/lambda, 1/lambda-1, 1/(mu-1.40115))
+    #[arg(long, default_value = "0")]
+    plane: String,
 
     /// Fichier de sortie PNG
     #[arg(long, value_name = "FICHIER")]
@@ -243,6 +248,20 @@ fn main() {
             eprintln!(
                 "Mode de colorisation invalide: '{}'. Options: iter, iter+real, iter+imag, iter+real/imag, iter+all, binary, biomorphs, potential, color-decomp, smooth",
                 cli.outcoloring
+            );
+            std::process::exit(1);
+        }
+    }
+
+    // Transformation du plan (XaoS-style).
+    match PlaneTransform::from_cli_name(&cli.plane) {
+        Some(plane) => {
+            params.plane_transform = plane;
+        }
+        None => {
+            eprintln!(
+                "Plane invalide: '{}'. Options: 0-6, mu, 1/mu, 1/(mu+0.25), lambda, 1/lambda, 1/lambda-1, 1/(mu-1.40115)",
+                cli.plane
             );
             std::process::exit(1);
         }

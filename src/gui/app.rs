@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
@@ -10,7 +9,7 @@ use num_complex::Complex64;
 use rug::Float;
 
 use crate::color::{color_for_pixel, color_for_nebulabrot_pixel, color_for_buddhabrot_pixel};
-use crate::fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalParams, FractalType, LyapunovPreset, OutColoringMode};
+use crate::fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalParams, FractalType, LyapunovPreset, OutColoringMode, PlaneTransform};
 use crate::fractal::perturbation::ReferenceOrbitCache;
 use crate::render::render_escape_time_cancellable_with_reuse;
 use crate::gui::texture::rgb_image_to_color_image;
@@ -86,7 +85,8 @@ impl FractallApp {
         
         // Initialiser le GPU renderer (peut échouer silencieusement si GPU indisponible)
         let gpu_renderer = GpuRenderer::new().map(Arc::new);
-        let use_gpu_default = gpu_renderer.is_some();
+        // Par défaut, rester en mode CPU même si le GPU est disponible.
+        let use_gpu_default = false;
         if gpu_renderer.is_none() {
             eprintln!("⚠️  GPU non disponible - le rendu GPU sera désactivé");
             eprintln!("   L'application fonctionnera en mode CPU uniquement");
@@ -372,6 +372,8 @@ impl FractallApp {
                         AlgorithmMode::Perturbation => true,
                         _ => false,
                     };
+                    let use_perturbation =
+                        use_perturbation && pass_params.plane_transform == PlaneTransform::Mu;
                     let use_ds = pass_params.algorithm_mode == AlgorithmMode::StandardDS;
                     
                     let gpu_result = match pass_params.fractal_type {
@@ -425,6 +427,8 @@ impl FractallApp {
                             AlgorithmMode::Perturbation => true,
                             _ => false,
                         };
+                        let fallback_use_perturbation =
+                            fallback_use_perturbation && pass_params.plane_transform == PlaneTransform::Mu;
 
                         if fallback_use_perturbation && matches!(pass_params.fractal_type,
                             FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip)
@@ -474,6 +478,8 @@ impl FractallApp {
                         AlgorithmMode::Perturbation => true,
                         _ => false,
                     };
+                    let use_perturbation =
+                        use_perturbation && pass_params.plane_transform == PlaneTransform::Mu;
 
                     if use_perturbation && matches!(pass_params.fractal_type, FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip) {
                         // Use cache-aware CPU perturbation rendering
@@ -1099,15 +1105,156 @@ impl eframe::App for FractallApp {
         // Panneau de contrôle en haut
         egui::TopBottomPanel::top("controls").show(ctx, |ui| {
                 ui.horizontal(|ui| {
+                    // Section technique (CPU / GPU en premier)
+                    let supports_advanced_modes = matches!(
+                        self.selected_type,
+                        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
+                    );
+                    if supports_advanced_modes {
+                        ui.label("Tech:");
+                        let gpu_available = self.gpu_renderer.is_some();
+                        let old_use_gpu = self.use_gpu;
+                        let old_mode = self.params.algorithm_mode;
+
+                        let render_text = match (self.use_gpu && gpu_available, self.params.algorithm_mode) {
+                            (_, AlgorithmMode::Auto) => "🔄 Auto".to_string(),
+                            (false, AlgorithmMode::StandardF64) => "💻 CPU Standard f64".to_string(),
+                            (false, AlgorithmMode::Perturbation) => "💻 CPU Perturbation f64".to_string(),
+                            (false, AlgorithmMode::ReferenceGmp) => "💻 CPU GMP Reference".to_string(),
+                            (false, AlgorithmMode::StandardDS) => "🔄 Auto".to_string(),
+                            (true, AlgorithmMode::StandardF64) => "🎮 GPU Standard f32".to_string(),
+                            (true, AlgorithmMode::StandardDS) => "🎮 GPU Double-Single".to_string(),
+                            (true, AlgorithmMode::Perturbation) => "🎮 GPU Perturbation f32".to_string(),
+                            (true, AlgorithmMode::ReferenceGmp) => "🔄 Auto".to_string(),
+                        };
+
+                        ui.menu_button(&render_text, |ui| {
+                            if ui.selectable_label(
+                                self.params.algorithm_mode == AlgorithmMode::Auto,
+                                "🔄 Auto"
+                            ).clicked() {
+                                self.params.algorithm_mode = AlgorithmMode::Auto;
+                                ui.close_menu();
+                            }
+
+                            ui.separator();
+
+                            ui.menu_button("💻 CPU", |ui| {
+                                if ui.selectable_label(
+                                    !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::StandardF64,
+                                    "📊 Standard f64"
+                                ).clicked() {
+                                    self.use_gpu = false;
+                                    self.params.algorithm_mode = AlgorithmMode::StandardF64;
+                                    ui.close_menu();
+                                }
+
+                                let plane_ok = self.params.plane_transform == PlaneTransform::Mu;
+                                if ui
+                                    .add_enabled(
+                                        plane_ok,
+                                        egui::SelectableLabel::new(
+                                            !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::Perturbation,
+                                            "🔬 Perturbation f64",
+                                        ),
+                                    )
+                                    .clicked()
+                                {
+                                    self.use_gpu = false;
+                                    self.params.algorithm_mode = AlgorithmMode::Perturbation;
+                                    ui.close_menu();
+                                }
+
+                                if ui.selectable_label(
+                                    !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::ReferenceGmp,
+                                    "🔢 GMP Reference"
+                                ).clicked() {
+                                    self.use_gpu = false;
+                                    self.params.algorithm_mode = AlgorithmMode::ReferenceGmp;
+                                    ui.close_menu();
+                                }
+                            });
+
+                            if gpu_available {
+                                ui.menu_button("🎮 GPU", |ui| {
+                                    if ui.selectable_label(
+                                        self.use_gpu && self.params.algorithm_mode == AlgorithmMode::StandardF64,
+                                        "⚡ Standard f32"
+                                    ).clicked() {
+                                        self.use_gpu = true;
+                                        self.params.algorithm_mode = AlgorithmMode::StandardF64;
+                                        ui.close_menu();
+                                    }
+
+                                    let supports_ds = matches!(self.params.fractal_type, FractalType::Mandelbrot);
+                                    if supports_ds {
+                                        if ui.selectable_label(
+                                            self.use_gpu && self.params.algorithm_mode == AlgorithmMode::StandardDS,
+                                            "🔬 Double-Single (DS)"
+                                        ).clicked() {
+                                            self.use_gpu = true;
+                                            self.params.algorithm_mode = AlgorithmMode::StandardDS;
+                                            ui.close_menu();
+                                        }
+                                    }
+
+                                    let plane_ok = self.params.plane_transform == PlaneTransform::Mu;
+                                    if ui
+                                        .add_enabled(
+                                            plane_ok,
+                                            egui::SelectableLabel::new(
+                                                self.use_gpu && self.params.algorithm_mode == AlgorithmMode::Perturbation,
+                                                "🚀 Perturbation f32",
+                                            ),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.use_gpu = true;
+                                        self.params.algorithm_mode = AlgorithmMode::Perturbation;
+                                        ui.close_menu();
+                                    }
+                                });
+                            } else {
+                                ui.add_enabled(false, egui::Label::new("🎮 GPU (Non disponible)"));
+                            }
+                        });
+
+                        // Si on passe de GPU à CPU ou vice-versa, ajuster l'algo si nécessaire
+                        if old_use_gpu != self.use_gpu {
+                            if self.use_gpu && self.params.algorithm_mode == AlgorithmMode::ReferenceGmp {
+                                self.params.algorithm_mode = AlgorithmMode::Auto;
+                            }
+                            self.orbit_cache = None;
+                            self.start_render();
+                        }
+
+                        if self.params.algorithm_mode == AlgorithmMode::StandardDS
+                            && !matches!(self.params.fractal_type, FractalType::Mandelbrot)
+                        {
+                            self.params.algorithm_mode = AlgorithmMode::StandardF64;
+                        }
+
+                        if self.params.plane_transform != PlaneTransform::Mu
+                            && self.params.algorithm_mode == AlgorithmMode::Perturbation
+                        {
+                            self.params.algorithm_mode = AlgorithmMode::Auto;
+                        }
+
+                        if old_mode != self.params.algorithm_mode {
+                            self.orbit_cache = None;
+                            self.start_render();
+                        }
+
+                        ui.separator();
+                    }
+
+                    // Puis le menu Type (toutes catégories)
                     ui.label("Type:");
 
-                    // Catégories de fractales avec menus déroulants
+                    // Catégories de fractales dans un seul menu
                     let vector_types = [(1, "Von Koch"), (2, "Dragon")];
-
-
                     let density_types = [(16, "Buddhabrot"), (24, "Nebulabrot")];
 
-                    // Helper pour déterminer la catégorie actuelle
                     let current_category = match self.selected_type {
                         FractalType::VonKoch | FractalType::Dragon => "Vector",
                         FractalType::Buddhabrot | FractalType::Nebulabrot => "Densité",
@@ -1115,151 +1262,157 @@ impl eframe::App for FractallApp {
                         _ => "Escape-Time",
                     };
 
-                    // Menu Vector
-                    let vector_label = if current_category == "Vector" {
-                        format!("▼ Vector: {}", self.selected_type.name())
-                    } else {
-                        "Vector".to_string()
+                    let current_label = match self.selected_type {
+                        FractalType::Lyapunov => self.selected_lyapunov_preset.name(),
+                        _ => self.selected_type.name(),
                     };
-                    ui.menu_button(&vector_label, |ui| {
-                        for (id, label) in vector_types.iter() {
-                            if let Some(fractal_type) = FractalType::from_id(*id) {
-                                if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
-                                    self.change_fractal_type(fractal_type);
+
+                    let type_menu_label = format!("▼ {}: {}", current_category, current_label);
+                    ui.menu_button(&type_menu_label, |ui| {
+                        ui.menu_button("Vector", |ui| {
+                            for (id, label) in vector_types.iter() {
+                                if let Some(fractal_type) = FractalType::from_id(*id) {
+                                    if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
+                                        self.change_fractal_type(fractal_type);
+                                        ui.close_menu();
+                                    }
+                                }
+                            }
+                        });
+
+                        ui.menu_button("Escape-Time", |ui| {
+                            // Sous-menu Mandelbrot
+                            ui.menu_button("Mandelbrot", |ui| {
+                                for (id, label) in [(3, "Mandelbrot"), (4, "Julia")] {
+                                    if let Some(fractal_type) = FractalType::from_id(id) {
+                                        if ui.selectable_label(self.selected_type == fractal_type, label).clicked() {
+                                            self.change_fractal_type(fractal_type);
+                                            ui.close_menu();
+                                        }
+                                    }
+                                }
+                            });
+
+                            // Sous-menu Barnsley
+                            ui.menu_button("Barnsley", |ui| {
+                                for (id, label) in [(10, "Mandelbrot"), (9, "Julia")] {
+                                    if let Some(fractal_type) = FractalType::from_id(id) {
+                                        if ui.selectable_label(self.selected_type == fractal_type, label).clicked() {
+                                            self.change_fractal_type(fractal_type);
+                                            ui.close_menu();
+                                        }
+                                    }
+                                }
+                            });
+
+                            // Sous-menu Magnet
+                            ui.menu_button("Magnet", |ui| {
+                                for (id, label) in [(12, "Mandelbrot"), (11, "Julia")] {
+                                    if let Some(fractal_type) = FractalType::from_id(id) {
+                                        if ui.selectable_label(self.selected_type == fractal_type, label).clicked() {
+                                            self.change_fractal_type(fractal_type);
+                                            ui.close_menu();
+                                        }
+                                    }
+                                }
+                            });
+
+                            // Sous-menu Burning Ship
+                            ui.menu_button("Burning Ship", |ui| {
+                                for (id, label) in [(13, "Standard"), (18, "Perpendicular")] {
+                                    if let Some(fractal_type) = FractalType::from_id(id) {
+                                        if ui.selectable_label(self.selected_type == fractal_type, label).clicked() {
+                                            self.change_fractal_type(fractal_type);
+                                            ui.close_menu();
+                                        }
+                                    }
+                                }
+                            });
+
+                            ui.separator();
+
+                            // Sous-menu Variantes Mandelbrot
+                            ui.menu_button("Variantes M", |ui| {
+                                for (id, label) in [
+                                    (14, "Tricorn"),
+                                    (15, "Mandelbulb"),
+                                    (19, "Celtic"),
+                                    (20, "Alpha"),
+                                    (23, "Multibrot"),
+                                ] {
+                                    if let Some(fractal_type) = FractalType::from_id(id) {
+                                        if ui.selectable_label(self.selected_type == fractal_type, label).clicked() {
+                                            self.change_fractal_type(fractal_type);
+                                            ui.close_menu();
+                                        }
+                                    }
+                                }
+                            });
+
+                            // Sous-menu Autres
+                            ui.menu_button("Autres", |ui| {
+                                for (id, label) in [
+                                    (5, "Julia Sin"),
+                                    (6, "Newton"),
+                                    (7, "Phoenix"),
+                                    (8, "Buffalo"),
+                                    (21, "Pickover Stalks"),
+                                    (22, "Nova"),
+                                ] {
+                                    if let Some(fractal_type) = FractalType::from_id(id) {
+                                        if ui.selectable_label(self.selected_type == fractal_type, label).clicked() {
+                                            self.change_fractal_type(fractal_type);
+                                            ui.close_menu();
+                                        }
+                                    }
+                                }
+                            });
+                        });
+
+                        ui.menu_button("Densité", |ui| {
+                            for (id, label) in density_types.iter() {
+                                if let Some(fractal_type) = FractalType::from_id(*id) {
+                                    if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
+                                        self.change_fractal_type(fractal_type);
+                                        ui.close_menu();
+                                    }
+                                }
+                            }
+                        });
+
+                        ui.menu_button("Lyapunov", |ui| {
+                            for preset in LyapunovPreset::all() {
+                                let is_selected = self.selected_type == FractalType::Lyapunov
+                                    && self.selected_lyapunov_preset == *preset;
+                                if ui.selectable_label(is_selected, preset.name()).clicked() {
+                                    self.change_lyapunov_preset(*preset);
                                     ui.close_menu();
                                 }
                             }
+                        });
+                    });
+
+                    ui.separator();
+
+                    // Plane (XaoS-style) juste après Type
+                    ui.label("Plane:");
+                    let old_plane = self.params.plane_transform;
+                    egui::ComboBox::from_id_source("plane_transform")
+                        .selected_text(self.params.plane_transform.name())
+                        .show_ui(ui, |ui| {
+                            for plane in PlaneTransform::all() {
+                                ui.selectable_value(&mut self.params.plane_transform, *plane, plane.name());
+                            }
+                        });
+                    if old_plane != self.params.plane_transform {
+                        self.orbit_cache = None;
+                        if self.params.plane_transform != PlaneTransform::Mu
+                            && self.params.algorithm_mode == AlgorithmMode::Perturbation
+                        {
+                            self.params.algorithm_mode = AlgorithmMode::Auto;
                         }
-                    });
-
-                    // Menu Escape-Time avec sous-menus
-                    let escape_label = if current_category == "Escape-Time" {
-                        format!("▼ Escape-Time: {}", self.selected_type.name())
-                    } else {
-                        "Escape-Time".to_string()
-                    };
-                    ui.menu_button(&escape_label, |ui| {
-                        // Sous-menu Mandelbrot
-                        ui.menu_button("Mandelbrot", |ui| {
-                            for (id, label) in [(3, "Mandelbrot"), (4, "Julia")] {
-                                if let Some(fractal_type) = FractalType::from_id(id) {
-                                    if ui.selectable_label(self.selected_type == fractal_type, label).clicked() {
-                                        self.change_fractal_type(fractal_type);
-                                        ui.close_menu();
-                                    }
-                                }
-                            }
-                        });
-
-                        // Sous-menu Barnsley
-                        ui.menu_button("Barnsley", |ui| {
-                            for (id, label) in [(10, "Mandelbrot"), (9, "Julia")] {
-                                if let Some(fractal_type) = FractalType::from_id(id) {
-                                    if ui.selectable_label(self.selected_type == fractal_type, label).clicked() {
-                                        self.change_fractal_type(fractal_type);
-                                        ui.close_menu();
-                                    }
-                                }
-                            }
-                        });
-
-                        // Sous-menu Magnet
-                        ui.menu_button("Magnet", |ui| {
-                            for (id, label) in [(12, "Mandelbrot"), (11, "Julia")] {
-                                if let Some(fractal_type) = FractalType::from_id(id) {
-                                    if ui.selectable_label(self.selected_type == fractal_type, label).clicked() {
-                                        self.change_fractal_type(fractal_type);
-                                        ui.close_menu();
-                                    }
-                                }
-                            }
-                        });
-
-                        // Sous-menu Burning Ship
-                        ui.menu_button("Burning Ship", |ui| {
-                            for (id, label) in [(13, "Standard"), (18, "Perpendicular")] {
-                                if let Some(fractal_type) = FractalType::from_id(id) {
-                                    if ui.selectable_label(self.selected_type == fractal_type, label).clicked() {
-                                        self.change_fractal_type(fractal_type);
-                                        ui.close_menu();
-                                    }
-                                }
-                            }
-                        });
-
-                        ui.separator();
-
-                        // Sous-menu Variantes Mandelbrot
-                        ui.menu_button("Variantes M", |ui| {
-                            for (id, label) in [
-                                (14, "Tricorn"),
-                                (15, "Mandelbulb"),
-                                (19, "Celtic"),
-                                (20, "Alpha"),
-                                (23, "Multibrot"),
-                            ] {
-                                if let Some(fractal_type) = FractalType::from_id(id) {
-                                    if ui.selectable_label(self.selected_type == fractal_type, label).clicked() {
-                                        self.change_fractal_type(fractal_type);
-                                        ui.close_menu();
-                                    }
-                                }
-                            }
-                        });
-
-                        // Sous-menu Autres
-                        ui.menu_button("Autres", |ui| {
-                            for (id, label) in [
-                                (5, "Julia Sin"),
-                                (6, "Newton"),
-                                (7, "Phoenix"),
-                                (8, "Buffalo"),
-                                (21, "Pickover Stalks"),
-                                (22, "Nova"),
-                            ] {
-                                if let Some(fractal_type) = FractalType::from_id(id) {
-                                    if ui.selectable_label(self.selected_type == fractal_type, label).clicked() {
-                                        self.change_fractal_type(fractal_type);
-                                        ui.close_menu();
-                                    }
-                                }
-                            }
-                        });
-                    });
-
-                    // Menu Densité
-                    let density_label = if current_category == "Densité" {
-                        format!("▼ Densité: {}", self.selected_type.name())
-                    } else {
-                        "Densité".to_string()
-                    };
-                    ui.menu_button(&density_label, |ui| {
-                        for (id, label) in density_types.iter() {
-                            if let Some(fractal_type) = FractalType::from_id(*id) {
-                                if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
-                                    self.change_fractal_type(fractal_type);
-                                    ui.close_menu();
-                                }
-                            }
-                        }
-                    });
-
-                    // Menu Lyapunov avec presets
-                    let lyapunov_label = if current_category == "Lyapunov" {
-                        format!("▼ Lyapunov: {}", self.selected_lyapunov_preset.name())
-                    } else {
-                        "Lyapunov".to_string()
-                    };
-                    ui.menu_button(&lyapunov_label, |ui| {
-                        for preset in LyapunovPreset::all() {
-                            let is_selected = self.selected_type == FractalType::Lyapunov
-                                && self.selected_lyapunov_preset == *preset;
-                            if ui.selectable_label(is_selected, preset.name()).clicked() {
-                                self.change_lyapunov_preset(*preset);
-                                ui.close_menu();
-                            }
-                        }
-                    });
+                        self.start_render();
+                    }
                 });
                 
                 ui.separator();
@@ -1320,155 +1473,6 @@ impl eframe::App for FractallApp {
 
                     if supports_advanced_modes {
                         ui.separator();
-
-                        // ═══════════════════════════════════════════════════════════════
-                        // SECTION CALCUL - Menu Render avec sous-menus hiérarchiques
-                        // ═══════════════════════════════════════════════════════════════
-                        
-                        let gpu_available = self.gpu_renderer.is_some();
-                        let old_use_gpu = self.use_gpu;
-                        let old_mode = self.params.algorithm_mode;
-                        
-                        // Texte du menu Render selon la sélection actuelle
-                        let render_text = match (self.use_gpu && gpu_available, self.params.algorithm_mode) {
-                            (_, AlgorithmMode::Auto) => "🔄 Auto".to_string(),
-                            (false, AlgorithmMode::StandardF64) => "💻 CPU Standard f64".to_string(),
-                            (false, AlgorithmMode::Perturbation) => "💻 CPU Perturbation f64".to_string(),
-                            (false, AlgorithmMode::ReferenceGmp) => "💻 CPU GMP Reference".to_string(),
-                            (false, AlgorithmMode::StandardDS) => "🔄 Auto".to_string(), // StandardDS n'existe que sur GPU, fallback Auto
-                            (true, AlgorithmMode::StandardF64) => "🎮 GPU Standard f32".to_string(),
-                            (true, AlgorithmMode::StandardDS) => "🎮 GPU Double-Single".to_string(),
-                            (true, AlgorithmMode::Perturbation) => "🎮 GPU Perturbation f32".to_string(),
-                            (true, AlgorithmMode::ReferenceGmp) => "🔄 Auto".to_string(), // GMP pas sur GPU, fallback Auto
-                        };
-                        
-                        ui.menu_button(&render_text, |ui| {
-                            if ui.selectable_label(
-                                self.params.algorithm_mode == AlgorithmMode::Auto,
-                                "🔄 Auto"
-                            ).clicked() {
-                                self.params.algorithm_mode = AlgorithmMode::Auto;
-                                ui.close_menu();
-                            }
-                            
-                            ui.separator();
-                            
-                            ui.menu_button("💻 CPU", |ui| {
-                                if ui.selectable_label(
-                                    !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::StandardF64,
-                                    "📊 Standard f64"
-                                ).clicked() {
-                                    self.use_gpu = false;
-                                    self.params.algorithm_mode = AlgorithmMode::StandardF64;
-                                    ui.close_menu();
-                                }
-                                
-                                if ui.selectable_label(
-                                    !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::Perturbation,
-                                    "🔬 Perturbation f64"
-                                ).clicked() {
-                                    self.use_gpu = false;
-                                    self.params.algorithm_mode = AlgorithmMode::Perturbation;
-                                    ui.close_menu();
-                                }
-                                
-                                if ui.selectable_label(
-                                    !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::ReferenceGmp,
-                                    "🔢 GMP Reference"
-                                ).clicked() {
-                                    self.use_gpu = false;
-                                    self.params.algorithm_mode = AlgorithmMode::ReferenceGmp;
-                                    ui.close_menu();
-                                }
-                            });
-                            
-                            if gpu_available {
-                                ui.menu_button("🎮 GPU", |ui| {
-                                    if ui.selectable_label(
-                                        self.use_gpu && self.params.algorithm_mode == AlgorithmMode::StandardF64,
-                                        "⚡ Standard f32"
-                                    ).clicked() {
-                                        self.use_gpu = true;
-                                        self.params.algorithm_mode = AlgorithmMode::StandardF64;
-                                        ui.close_menu();
-                                    }
-                                    
-                                    let supports_ds = matches!(self.params.fractal_type, FractalType::Mandelbrot);
-                                    if supports_ds {
-                                        if ui.selectable_label(
-                                            self.use_gpu && self.params.algorithm_mode == AlgorithmMode::StandardDS,
-                                            "🔬 Double-Single (DS)"
-                                        ).clicked() {
-                                            self.use_gpu = true;
-                                            self.params.algorithm_mode = AlgorithmMode::StandardDS;
-                                            ui.close_menu();
-                                        }
-                                    }
-                                    
-                                    if ui.selectable_label(
-                                        self.use_gpu && self.params.algorithm_mode == AlgorithmMode::Perturbation,
-                                        "🚀 Perturbation f32"
-                                    ).clicked() {
-                                        self.use_gpu = true;
-                                        self.params.algorithm_mode = AlgorithmMode::Perturbation;
-                                        ui.close_menu();
-                                    }
-                                });
-                            } else {
-                                ui.add_enabled(false, egui::Label::new("🎮 GPU (Non disponible)"));
-                            }
-                        });
-                        
-                        // Si on passe de GPU à CPU ou vice-versa, ajuster l'algo si nécessaire
-                        if old_use_gpu != self.use_gpu {
-                            // GMP n'est pas supporté sur GPU
-                            if self.use_gpu && self.params.algorithm_mode == AlgorithmMode::ReferenceGmp {
-                                self.params.algorithm_mode = AlgorithmMode::Auto;
-                            }
-                            self.orbit_cache = None;
-                            self.start_render();
-                        }
-                        
-                        // Vérifier la compatibilité StandardDS (seulement Mandelbrot)
-                        if self.params.algorithm_mode == AlgorithmMode::StandardDS {
-                            if !matches!(self.params.fractal_type, FractalType::Mandelbrot) {
-                                // StandardDS n'est disponible que pour Mandelbrot
-                                self.params.algorithm_mode = AlgorithmMode::StandardF64;
-                            }
-                        }
-                        
-                        if old_mode != self.params.algorithm_mode {
-                            self.orbit_cache = None;
-                            self.start_render();
-                        }
-
-                        // 3. Options de rendu
-                        ui.separator();
-                        
-                        let options_text = format!(
-                            "⚙️ Options{}",
-                            if self.params.enable_interior_detection || self.params.enable_distance_estimation {
-                                " •"
-                            } else {
-                                ""
-                            }
-                        );
-                        
-                        let options_changed = RefCell::new(false);
-                        ui.menu_button(&options_text, |ui| {
-                            if ui.checkbox(&mut self.params.enable_interior_detection, "Interior Detection").changed() {
-                                *options_changed.borrow_mut() = true;
-                            }
-                            
-                            if ui.checkbox(&mut self.params.enable_distance_estimation, "Distance Estimation").changed() {
-                                *options_changed.borrow_mut() = true;
-                            }
-                        });
-                        
-                        if *options_changed.borrow() {
-                            self.orbit_cache = None;
-                            self.start_render();
-                        }
 
                         // 4. Tolérance (perturbation uniquement)
                         let show_tolerance = matches!(
