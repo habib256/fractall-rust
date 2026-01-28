@@ -1,5 +1,6 @@
 use num_complex::Complex64;
 use super::orbit_traps::OrbitTrapType;
+use rug;
 
 /// Types de fractales pris en charge par la version CLI.
 ///
@@ -445,6 +446,118 @@ impl PlaneTransform {
             "1/lambda-1" | "inv-lambda-1" | "5" => Some(PlaneTransform::InversionLambdaMinus1),
             "1/(mu-1.40115)" | "inv-special" | "6" => Some(PlaneTransform::InversionSpecial),
             _ => None,
+        }
+    }
+
+    /// Apply the plane transformation to a complex coordinate in GMP precision.
+    /// This version avoids the GMP → f64 → GMP conversion that loses precision at deep zooms.
+    pub fn transform_gmp(self, mu: &rug::Complex, prec: u32) -> rug::Complex {
+        use rug::Float;
+        match self {
+            PlaneTransform::Mu => mu.clone(),
+            PlaneTransform::Inversion => {
+                // c = 1/mu = conj(mu) / |mu|^2
+                let mut denom = mu.real().clone();
+                denom *= mu.real();
+                let mut im_sq = mu.imag().clone();
+                im_sq *= mu.imag();
+                denom += &im_sq;
+                let threshold = Float::with_val(prec, 1e-20);
+                if denom < threshold {
+                    return rug::Complex::with_val(prec, (Float::with_val(prec, 1e10), Float::with_val(prec, 0.0)));
+                }
+                let mut result = mu.clone().conj();
+                result /= &denom;
+                result
+            }
+            PlaneTransform::InversionShifted => {
+                // c = 1/(mu + 0.25)
+                let mut shifted = mu.clone();
+                shifted += rug::Complex::with_val(prec, (Float::with_val(prec, 0.25), Float::with_val(prec, 0.0)));
+                let mut denom = shifted.real().clone();
+                denom *= shifted.real();
+                let mut im_sq = shifted.imag().clone();
+                im_sq *= shifted.imag();
+                denom += &im_sq;
+                let threshold = Float::with_val(prec, 1e-20);
+                if denom < threshold {
+                    return rug::Complex::with_val(prec, (Float::with_val(prec, 1e10), Float::with_val(prec, 0.0)));
+                }
+                let mut result = shifted.conj();
+                result /= &denom;
+                result
+            }
+            PlaneTransform::Lambda => {
+                // c = 4*mu*(1-mu)
+                let one = rug::Complex::with_val(prec, (Float::with_val(prec, 1.0), Float::with_val(prec, 0.0)));
+                let mut one_minus_mu = one.clone();
+                one_minus_mu -= mu;
+                let mut result = mu.clone();
+                result *= &one_minus_mu;
+                result *= Float::with_val(prec, 4.0);
+                result
+            }
+            PlaneTransform::InversionLambda => {
+                // c = 1/(4*mu*(1-mu))
+                let one = rug::Complex::with_val(prec, (Float::with_val(prec, 1.0), Float::with_val(prec, 0.0)));
+                let mut one_minus_mu = one.clone();
+                one_minus_mu -= mu;
+                let mut lambda = mu.clone();
+                lambda *= &one_minus_mu;
+                lambda *= Float::with_val(prec, 4.0);
+                let mut denom = lambda.real().clone();
+                denom *= lambda.real();
+                let mut im_sq = lambda.imag().clone();
+                im_sq *= lambda.imag();
+                denom += &im_sq;
+                let threshold = Float::with_val(prec, 1e-20);
+                if denom < threshold {
+                    return rug::Complex::with_val(prec, (Float::with_val(prec, 1e10), Float::with_val(prec, 0.0)));
+                }
+                let mut result = lambda.conj();
+                result /= &denom;
+                result
+            }
+            PlaneTransform::InversionLambdaMinus1 => {
+                // c = 1/(4*mu*(1-mu)) - 1
+                let one = rug::Complex::with_val(prec, (Float::with_val(prec, 1.0), Float::with_val(prec, 0.0)));
+                let mut one_minus_mu = one.clone();
+                one_minus_mu -= mu;
+                let mut lambda = mu.clone();
+                lambda *= &one_minus_mu;
+                lambda *= Float::with_val(prec, 4.0);
+                let mut denom = lambda.real().clone();
+                denom *= lambda.real();
+                let mut im_sq = lambda.imag().clone();
+                im_sq *= lambda.imag();
+                denom += &im_sq;
+                let threshold = Float::with_val(prec, 1e-20);
+                if denom < threshold {
+                    return rug::Complex::with_val(prec, (Float::with_val(prec, 1e10), Float::with_val(prec, 0.0)));
+                }
+                let mut result = lambda.conj();
+                result /= &denom;
+                result -= &one;
+                result
+            }
+            PlaneTransform::InversionSpecial => {
+                // c = 1/(mu - 1.40115)
+                let shift_val = Float::with_val(prec, 1.40115);
+                let mut shifted = mu.clone();
+                shifted -= rug::Complex::with_val(prec, (shift_val.clone(), Float::with_val(prec, 0.0)));
+                let mut denom = shifted.real().clone();
+                denom *= shifted.real();
+                let mut im_sq = shifted.imag().clone();
+                im_sq *= shifted.imag();
+                denom += &im_sq;
+                let threshold = Float::with_val(prec, 1e-20);
+                if denom < threshold {
+                    return rug::Complex::with_val(prec, (Float::with_val(prec, 1e10), Float::with_val(prec, 0.0)));
+                }
+                let mut result = shifted.conj();
+                result /= &denom;
+                result
+            }
         }
     }
 

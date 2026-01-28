@@ -158,11 +158,55 @@ fn render_escape_time_gmp(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
     let gmp = MpcParams::from_params(params);
     let prec = gmp.prec;
 
-    // Utiliser center+span directement pour éviter les problèmes de précision
-    let center_x = Float::with_val(prec, params.center_x);
-    let center_y = Float::with_val(prec, params.center_y);
-    let span_x = Float::with_val(prec, params.span_x);
-    let span_y = Float::with_val(prec, params.span_y);
+    // IMPORTANT: Utiliser les String haute précision si disponibles pour préserver la précision GMP
+    // aux zooms profonds (>e16). Sinon fallback sur f64 pour compatibilité.
+    let center_x = if let Some(ref cx_hp) = params.center_x_hp {
+        match Float::parse(cx_hp) {
+            Ok(parse_result) => Float::with_val(prec, parse_result),
+            Err(_) => {
+                eprintln!("[PRECISION WARNING] Failed to parse center_x_hp, using f64 fallback");
+                Float::with_val(prec, params.center_x)
+            }
+        }
+    } else {
+        Float::with_val(prec, params.center_x)
+    };
+    
+    let center_y = if let Some(ref cy_hp) = params.center_y_hp {
+        match Float::parse(cy_hp) {
+            Ok(parse_result) => Float::with_val(prec, parse_result),
+            Err(_) => {
+                eprintln!("[PRECISION WARNING] Failed to parse center_y_hp, using f64 fallback");
+                Float::with_val(prec, params.center_y)
+            }
+        }
+    } else {
+        Float::with_val(prec, params.center_y)
+    };
+    
+    let span_x = if let Some(ref sx_hp) = params.span_x_hp {
+        match Float::parse(sx_hp) {
+            Ok(parse_result) => Float::with_val(prec, parse_result),
+            Err(_) => {
+                eprintln!("[PRECISION WARNING] Failed to parse span_x_hp, using f64 fallback");
+                Float::with_val(prec, params.span_x)
+            }
+        }
+    } else {
+        Float::with_val(prec, params.span_x)
+    };
+    
+    let span_y = if let Some(ref sy_hp) = params.span_y_hp {
+        match Float::parse(sy_hp) {
+            Ok(parse_result) => Float::with_val(prec, parse_result),
+            Err(_) => {
+                eprintln!("[PRECISION WARNING] Failed to parse span_y_hp, using f64 fallback");
+                Float::with_val(prec, params.span_y)
+            }
+        }
+    } else {
+        Float::with_val(prec, params.span_y)
+    };
 
     let width_f = Float::with_val(prec, params.width);
     let height_f = Float::with_val(prec, params.height);
@@ -188,14 +232,11 @@ fn render_escape_time_gmp(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
                 let mut xg = span_x.clone();
                 xg *= &x_ratio;
                 xg += &center_x;
-                // Apply plane transformation using f64 approximation (transform doesn't need GMP precision)
-                let z_approx = Complex64::new(xg.to_f64(), yg.to_f64());
-                let z_transformed = params.plane_transform.transform(z_approx);
-                let z_pixel = complex_from_xy(
-                    prec,
-                    Float::with_val(prec, z_transformed.re),
-                    Float::with_val(prec, z_transformed.im),
-                );
+                // IMPORTANT: Utiliser la version GMP de plane_transform pour éviter la perte de précision
+                // aux zooms profonds (>e16). La conversion GMP → f64 → GMP perdait toute la précision.
+                let z_gmp = complex_from_xy(prec, xg, yg.clone());
+                let z_transformed = params.plane_transform.transform_gmp(&z_gmp, prec);
+                let z_pixel = z_transformed;
                 let (iter_val, z_final) = iterate_point_mpc(&gmp, &z_pixel);
                 *iter = iter_val;
                 *z = complex_to_complex64(&z_final);
@@ -473,11 +514,55 @@ fn render_escape_time_gmp_cancellable_with_reuse(
     let gmp = MpcParams::from_params(params);
     let prec = gmp.prec;
 
-    // Utiliser center+span directement pour éviter les problèmes de précision
-    let center_x = Float::with_val(prec, params.center_x);
-    let center_y = Float::with_val(prec, params.center_y);
-    let span_x = Float::with_val(prec, params.span_x);
-    let span_y = Float::with_val(prec, params.span_y);
+    // IMPORTANT: Utiliser les String haute précision si disponibles pour préserver la précision GMP
+    // aux zooms profonds (>e16). Sinon fallback sur f64 pour compatibilité.
+    let center_x = if let Some(ref cx_hp) = params.center_x_hp {
+        match Float::parse(cx_hp) {
+            Ok(parse_result) => Float::with_val(prec, parse_result),
+            Err(_) => {
+                eprintln!("[PRECISION WARNING] Failed to parse center_x_hp, using f64 fallback");
+                Float::with_val(prec, params.center_x)
+            }
+        }
+    } else {
+        Float::with_val(prec, params.center_x)
+    };
+    
+    let center_y = if let Some(ref cy_hp) = params.center_y_hp {
+        match Float::parse(cy_hp) {
+            Ok(parse_result) => Float::with_val(prec, parse_result),
+            Err(_) => {
+                eprintln!("[PRECISION WARNING] Failed to parse center_y_hp, using f64 fallback");
+                Float::with_val(prec, params.center_y)
+            }
+        }
+    } else {
+        Float::with_val(prec, params.center_y)
+    };
+    
+    let span_x = if let Some(ref sx_hp) = params.span_x_hp {
+        match Float::parse(sx_hp) {
+            Ok(parse_result) => Float::with_val(prec, parse_result),
+            Err(_) => {
+                eprintln!("[PRECISION WARNING] Failed to parse span_x_hp, using f64 fallback");
+                Float::with_val(prec, params.span_x)
+            }
+        }
+    } else {
+        Float::with_val(prec, params.span_x)
+    };
+    
+    let span_y = if let Some(ref sy_hp) = params.span_y_hp {
+        match Float::parse(sy_hp) {
+            Ok(parse_result) => Float::with_val(prec, parse_result),
+            Err(_) => {
+                eprintln!("[PRECISION WARNING] Failed to parse span_y_hp, using f64 fallback");
+                Float::with_val(prec, params.span_y)
+            }
+        }
+    } else {
+        Float::with_val(prec, params.span_y)
+    };
 
     let width_f = Float::with_val(prec, params.width);
     let height_f = Float::with_val(prec, params.height);
@@ -529,10 +614,11 @@ fn render_escape_time_gmp_cancellable_with_reuse(
                 let mut xg = span_x.clone();
                 xg *= &x_ratio;
                 xg += &center_x;
-                // Apply plane transformation using f64 approximation (transform doesn't need GMP precision)
-                let z_approx = Complex64::new(xg.to_f64(), yg.to_f64());
-                let z_transformed = params.plane_transform.transform(z_approx);
-                let z_pixel = complex_from_xy(prec, Float::with_val(prec, z_transformed.re), Float::with_val(prec, z_transformed.im));
+                // IMPORTANT: Utiliser la version GMP de plane_transform pour éviter la perte de précision
+                // aux zooms profonds (>e16). La conversion GMP → f64 → GMP perdait toute la précision.
+                let z_gmp = complex_from_xy(prec, xg, yg.clone());
+                let z_transformed = params.plane_transform.transform_gmp(&z_gmp, prec);
+                let z_pixel = z_transformed;
                 let (iter_val, z_final) = iterate_point_mpc(&gmp, &z_pixel);
                 *iter = iter_val;
                 *z = complex_to_complex64(&z_final);

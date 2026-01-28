@@ -170,11 +170,22 @@ impl FractallApp {
     
     /// Met à jour les coordonnées HP depuis les params f64.
     /// Appelé quand on change de type de fractale ou reset.
+    /// IMPORTANT: Utiliser to_string_radix avec précision maximale pour préserver la précision
+    /// aux zooms profonds (>e16). format!("{:.20e}") limite à 20 chiffres significatifs.
     fn sync_params_to_hp(&mut self) {
-        self.center_x_hp = format!("{:.20e}", self.params.center_x);
-        self.center_y_hp = format!("{:.20e}", self.params.center_y);
-        self.span_x_hp = format!("{:.20e}", self.params.span_x);
-        self.span_y_hp = format!("{:.20e}", self.params.span_y);
+        let prec = HP_PRECISION;
+        // Convertir f64 → GMP Float → String avec précision maximale
+        // Cela préserve beaucoup plus de précision que format!("{:.20e}")
+        let cx_gmp = Float::with_val(prec, self.params.center_x);
+        let cy_gmp = Float::with_val(prec, self.params.center_y);
+        let sx_gmp = Float::with_val(prec, self.params.span_x);
+        let sy_gmp = Float::with_val(prec, self.params.span_y);
+        
+        // Utiliser to_string_radix(10, None) pour obtenir tous les chiffres significatifs
+        self.center_x_hp = cx_gmp.to_string_radix(10, None);
+        self.center_y_hp = cy_gmp.to_string_radix(10, None);
+        self.span_x_hp = sx_gmp.to_string_radix(10, None);
+        self.span_y_hp = sy_gmp.to_string_radix(10, None);
     }
     
     /// Effectue un zoom en haute précision.
@@ -209,10 +220,12 @@ impl FractallApp {
         let new_span_x = Float::with_val(prec, target_aspect) * &new_span_y;
         
         // Sauvegarder en strings avec précision maximale
-        self.center_x_hp = new_center_x.to_string();
-        self.center_y_hp = new_center_y.to_string();
-        self.span_x_hp = new_span_x.to_string();
-        self.span_y_hp = new_span_y.to_string();
+        // IMPORTANT: Utiliser to_string_radix(10, None) pour préserver toute la précision GMP
+        // aux zooms profonds (>e16). to_string() peut limiter la précision dans certains cas.
+        self.center_x_hp = new_center_x.to_string_radix(10, None);
+        self.center_y_hp = new_center_y.to_string_radix(10, None);
+        self.span_x_hp = new_span_x.to_string_radix(10, None);
+        self.span_y_hp = new_span_y.to_string_radix(10, None);
         
         // Synchroniser vers f64 pour le rendu
         self.sync_hp_to_params();
@@ -260,11 +273,12 @@ impl FractallApp {
             (sx, selection_span_y)
         };
         
-        // Sauvegarder en strings
-        self.center_x_hp = new_center_x.to_string();
-        self.center_y_hp = new_center_y.to_string();
-        self.span_x_hp = new_span_x.to_string();
-        self.span_y_hp = new_span_y.to_string();
+        // Sauvegarder en strings avec précision maximale
+        // IMPORTANT: Utiliser to_string_radix(10, None) pour préserver toute la précision GMP
+        self.center_x_hp = new_center_x.to_string_radix(10, None);
+        self.center_y_hp = new_center_y.to_string_radix(10, None);
+        self.span_x_hp = new_span_x.to_string_radix(10, None);
+        self.span_y_hp = new_span_y.to_string_radix(10, None);
         
         // Synchroniser vers f64
         self.sync_hp_to_params();
@@ -282,8 +296,9 @@ impl FractallApp {
         let new_span_y = span_y * Float::with_val(prec, factor);
         let new_span_x = Float::with_val(prec, target_aspect) * &new_span_y;
         
-        self.span_x_hp = new_span_x.to_string();
-        self.span_y_hp = new_span_y.to_string();
+        // IMPORTANT: Utiliser to_string_radix(10, None) pour préserver toute la précision GMP
+        self.span_x_hp = new_span_x.to_string_radix(10, None);
+        self.span_y_hp = new_span_y.to_string_radix(10, None);
         
         self.sync_hp_to_params();
     }
@@ -1575,7 +1590,7 @@ impl eframe::App for FractallApp {
                     let display_size = image_size * scale;
                     
                     // Gestion des interactions sur l'image
-                    // Désactiver la sélection de texte pour forcer le curseur à rester un pointeur
+                    // Désactiver la sélection de texte pour forcer le curseur à rester une flèche
                     let response = ui.add(
                         egui::Image::new(texture)
                             .fit_to_exact_size(display_size)
@@ -1583,7 +1598,8 @@ impl eframe::App for FractallApp {
                     );
                     let image_rect = response.rect;
                     
-                    // Forcer le curseur à rester un pointeur (pas un curseur de texte) quand on survole l'image
+                    // Forcer le curseur à être une flèche quand on survole l'image
+                    // IMPORTANT: Toujours afficher une flèche (Default) et non un curseur de texte ou autre
                     if response.hovered() {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
                     }

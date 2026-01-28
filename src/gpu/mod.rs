@@ -716,14 +716,48 @@ impl GpuRenderer {
                     x_ratio -= &half;
                     y_ratio -= &half;
                     
-                    let x_range = rug::Float::with_val(prec, params.span_x);
-                    let y_range = rug::Float::with_val(prec, params.span_y);
+                    // IMPORTANT: Utiliser les String haute précision si disponibles pour préserver la précision GMP
+                    // aux zooms profonds (>e16). Sinon fallback sur f64 pour compatibilité.
+                    let x_range = if let Some(ref sx_hp) = params.span_x_hp {
+                        match rug::Float::parse(sx_hp) {
+                            Ok(parse_result) => rug::Float::with_val(prec, parse_result),
+                            Err(_) => rug::Float::with_val(prec, params.span_x),
+                        }
+                    } else {
+                        rug::Float::with_val(prec, params.span_x)
+                    };
+                    
+                    let y_range = if let Some(ref sy_hp) = params.span_y_hp {
+                        match rug::Float::parse(sy_hp) {
+                            Ok(parse_result) => rug::Float::with_val(prec, parse_result),
+                            Err(_) => rug::Float::with_val(prec, params.span_y),
+                        }
+                    } else {
+                        rug::Float::with_val(prec, params.span_y)
+                    };
+                    
                     let x_offset = rug::Float::with_val(prec, &x_ratio * &x_range);
                     let y_offset = rug::Float::with_val(prec, &y_ratio * &y_range);
                     
                     // Calculer le point pixel = center + dc en GMP
-                    let center_x_gmp = rug::Float::with_val(prec, params.center_x);
-                    let center_y_gmp = rug::Float::with_val(prec, params.center_y);
+                    // IMPORTANT: Utiliser les String haute précision si disponibles
+                    let center_x_gmp = if let Some(ref cx_hp) = params.center_x_hp {
+                        match rug::Float::parse(cx_hp) {
+                            Ok(parse_result) => rug::Float::with_val(prec, parse_result),
+                            Err(_) => rug::Float::with_val(prec, params.center_x),
+                        }
+                    } else {
+                        rug::Float::with_val(prec, params.center_x)
+                    };
+                    
+                    let center_y_gmp = if let Some(ref cy_hp) = params.center_y_hp {
+                        match rug::Float::parse(cy_hp) {
+                            Ok(parse_result) => rug::Float::with_val(prec, parse_result),
+                            Err(_) => rug::Float::with_val(prec, params.center_y),
+                        }
+                    } else {
+                        rug::Float::with_val(prec, params.center_y)
+                    };
                     let mut z_pixel_re = center_x_gmp;
                     z_pixel_re += &x_offset;
                     let mut z_pixel_im = center_y_gmp;
