@@ -1,4 +1,5 @@
 use num_complex::Complex64;
+use crate::fractal::OutColoringMode;
 
 /// Identifiants de palettes, alignés sur `colorization.h`.
 #[derive(Clone, Copy, Debug)]
@@ -207,23 +208,47 @@ fn smooth_iteration(iteration: u32, z: Complex64, iter_max: u32) -> f64 {
         return iter / max;
     }
 
-    // Même logique que Colorization_SmoothIteration (sans cas Lyapunov)
-    if iteration >= iter_max || mag < 7.4 {
+    // Points dans l'ensemble : utiliser iteration/max
+    if iteration >= iter_max {
         return iter / max;
     }
 
+    // Pour un rendu smooth, calculer nu basé sur la magnitude de z
+    // Formule standard: nu = log(log(|z|) / log(2)) / log(2)
+    // Cela donne une estimation continue du nombre d'itérations avant l'échappement
+    
+    // La magnitude doit être >= bailout (typiquement 2.0) pour que le calcul soit valide
+    // Si mag < 2.0, on utilise simplement iter/max pour éviter les problèmes
+    if mag < 2.0 {
+        return iter / max;
+    }
+    
     let log_zn = mag.ln() / 2.0;
-    if !log_zn.is_finite() {
+    
+    if !log_zn.is_finite() || log_zn <= 0.0 {
         return iter / max;
     }
 
-    let nu = (log_zn / 2.0_f64.ln()).ln() / 2.0_f64.ln();
+    // Calculer nu de manière stable: nu = log(log(|z|) / log(2)) / log(2)
+    let log2 = 2.0_f64.ln();
+    let ratio = log_zn / log2;
+    
+    if ratio <= 1.0 || !ratio.is_finite() {
+        // Si ratio <= 1, log(ratio) serait <= 0, ce qui créerait des problèmes
+        return iter / max;
+    }
+    
+    let nu = ratio.ln() / log2;
 
-    if !nu.is_finite() {
+    if !nu.is_finite() || nu < 0.0 || nu > iter + 1.0 {
         return iter / max;
     }
 
+    // Calcul smooth: iter + 1 - nu
+    // Cela donne une valeur continue basée sur la magnitude de z
     let mut smooth = iter + 1.0 - nu;
+    
+    // Clamp pour éviter les valeurs hors limites
     if smooth < 0.0 {
         smooth = 0.0;
     }
@@ -233,46 +258,195 @@ fn smooth_iteration(iteration: u32, z: Complex64, iter_max: u32) -> f64 {
     smooth / max
 }
 
+/// Compute discrete iteration value (no smoothing).
+fn compute_iter_discrete(iteration: u32, _z: Complex64, iter_max: u32) -> f64 {
+    iteration as f64 / iter_max as f64
+}
+
+/// Compute iteration + z.re contribution.
+fn compute_iter_plus_real(iteration: u32, z: Complex64, iter_max: u32) -> f64 {
+    let base = iteration as f64 / iter_max as f64;
+    // Normalize z.re contribution (typically |z.re| < bailout^0.5)
+    let real_contrib = (z.re.abs() / 10.0).min(1.0) * 0.2;
+    (base + real_contrib).min(1.0)
+}
+
+/// Compute iteration + z.im contribution.
+fn compute_iter_plus_imag(iteration: u32, z: Complex64, iter_max: u32) -> f64 {
+    let base = iteration as f64 / iter_max as f64;
+    // Normalize z.im contribution
+    let imag_contrib = (z.im.abs() / 10.0).min(1.0) * 0.2;
+    (base + imag_contrib).min(1.0)
+}
+
+/// Compute iteration + atan(z.re/z.im) ratio.
+fn compute_iter_plus_real_imag(iteration: u32, z: Complex64, iter_max: u32) -> f64 {
+    let base = iteration as f64 / iter_max as f64;
+    // Compute ratio using atan2 to avoid division by zero
+    let angle = z.re.atan2(z.im);
+    let ratio_contrib = ((angle + std::f64::consts::PI) / (2.0 * std::f64::consts::PI)) * 0.2;
+    if ratio_contrib.is_finite() {
+        (base + ratio_contrib).min(1.0)
+    } else {
+        base
+    }
+}
+
+/// Compute combination of real, imag, and ratio.
+fn compute_iter_plus_all(iteration: u32, z: Complex64, iter_max: u32) -> f64 {
+    let base = iteration as f64 / iter_max as f64;
+    let real_contrib = (z.re.abs() / 10.0).min(1.0) * 0.1;
+    let imag_contrib = (z.im.abs() / 10.0).min(1.0) * 0.1;
+    let angle = z.re.atan2(z.im);
+    let ratio_contrib = ((angle + std::f64::consts::PI) / (2.0 * std::f64::consts::PI)) * 0.1;
+    let total = if ratio_contrib.is_finite() {
+        base + real_contrib + imag_contrib + ratio_contrib
+    } else {
+        base + real_contrib + imag_contrib
+    };
+    total.min(1.0)
+}
+
+/// Compute biomorphs boundary detection value.
+fn compute_biomorphs(iteration: u32, z: Complex64, iter_max: u32) -> f64 {
+    // Biomorphs: different behavior at boundary
+    if z.re.abs() < 10.0 || z.im.abs() < 10.0 {
+        // At boundary: use discrete iteration
+        iteration as f64 / iter_max as f64
+    } else {
+        // Outside boundary: use smooth
+        smooth_iteration(iteration, z, iter_max)
+    }
+}
+
+/// Compute electrostatic potential.
+fn compute_potential(iteration: u32, z: Complex64, iter_max: u32) -> f64 {
+    let mag = z.norm();
+    if mag <= 1.0 || !mag.is_finite() {
+        return iteration as f64 / iter_max as f64;
+    }
+
+    // Potential: log(|z|) / 2^iteration
+    let log_mag = mag.ln();
+    let power = 2.0_f64.powi(iteration as i32);
+
+    if power.is_infinite() || power == 0.0 {
+        return iteration as f64 / iter_max as f64;
+    }
+
+    let potential = log_mag / power;
+
+    if !potential.is_finite() {
+        return iteration as f64 / iter_max as f64;
+    }
+
+    // Normalize potential to [0, 1]
+    // Typical range is very small, so we scale it up
+    let normalized = (potential.abs() * 1000.0).min(1.0);
+    normalized
+}
+
+/// Compute color decomposition based on angle.
+fn compute_color_decomposition(iteration: u32, z: Complex64, iter_max: u32) -> f64 {
+    let base = smooth_iteration(iteration, z, iter_max);
+    // Use angle of z for color variation
+    let angle = z.im.atan2(z.re);
+    let normalized_angle = (angle + std::f64::consts::PI) / (2.0 * std::f64::consts::PI);
+
+    if !normalized_angle.is_finite() {
+        return base;
+    }
+
+    // Mix base with angle: 70% smooth, 30% angle
+    (base * 0.7 + normalized_angle * 0.3).min(1.0)
+}
+
 /// Calcule la couleur RGB pour un pixel à partir de:
 /// - son nombre d'itérations,
 /// - la valeur finale de z,
-/// - les paramètres de colorisation (palette, répétition).
+/// - les paramètres de colorisation (palette, répétition, mode outcoloring).
+///
+/// Supporte 10 modes de colorisation inspirés de XaoS.
+///
+/// Supporte interior detection encodé dans z:
+/// - Si z.im < 0: point intérieur (interior detection flag encoded in sign)
+///   Les points intérieurs sont coloriés en noir (sauf pour BinaryDecomposition).
 pub fn color_for_pixel(
     iteration: u32,
     z: Complex64,
     iter_max: u32,
     palette_index: u8,
     color_repeat: u32,
+    out_coloring_mode: OutColoringMode,
 ) -> (u8, u8, u8) {
     // Points dans l'ensemble : noir
     if iteration >= iter_max {
         return (0, 0, 0);
     }
 
-    let mut t = smooth_iteration(iteration, z, iter_max);
+    // For BinaryDecomposition, we need the original z.im sign
+    let is_interior = z.im < 0.0;
+    let original_z_im_negative = z.im < 0.0;
+
+    // Interior detection: if z.im < 0, it's an interior point (encoded flag)
+    // Color interior points black (Section 6 of deep zoom theory)
+    // Exception: BinaryDecomposition uses the sign for color inversion
+    if is_interior && out_coloring_mode != OutColoringMode::BinaryDecomposition {
+        return (0, 0, 0);
+    }
+
+    // Restore z with positive im for calculations (except for sign check)
+    let z_positive = Complex64::new(z.re, z.im.abs());
+
+    // Compute base value based on outcoloring mode
+    let mut t = match out_coloring_mode {
+        OutColoringMode::Iter => compute_iter_discrete(iteration, z_positive, iter_max),
+        OutColoringMode::IterPlusReal => compute_iter_plus_real(iteration, z_positive, iter_max),
+        OutColoringMode::IterPlusImag => compute_iter_plus_imag(iteration, z_positive, iter_max),
+        OutColoringMode::IterPlusRealImag => compute_iter_plus_real_imag(iteration, z_positive, iter_max),
+        OutColoringMode::IterPlusAll => compute_iter_plus_all(iteration, z_positive, iter_max),
+        OutColoringMode::BinaryDecomposition => smooth_iteration(iteration, z_positive, iter_max),
+        OutColoringMode::Biomorphs => compute_biomorphs(iteration, z_positive, iter_max),
+        OutColoringMode::Potential => compute_potential(iteration, z_positive, iter_max),
+        OutColoringMode::ColorDecomposition => compute_color_decomposition(iteration, z_positive, iter_max),
+        OutColoringMode::Smooth => smooth_iteration(iteration, z_positive, iter_max),
+    };
+
+    // Clamp t dans [0, 1) pour éviter les problèmes aux limites
+    if t < 0.0 {
+        t = 0.0;
+    }
     if t >= 1.0 {
         t = 0.999_999;
     }
 
     let repeat_count = color_repeat.max(1) as f64;
-    let mut cycle = (t * repeat_count).floor();
+    let cycle = (t * repeat_count).floor();
     let mut t_repeat = (t * repeat_count) % 1.0;
 
+    // Éviter les valeurs exactement à 0 ou 1 qui créent des discontinuités
     if t_repeat < 0.000_001 && t > 0.0 {
+        t_repeat = 0.000_001;
+    }
+    if t_repeat >= 0.999_999 {
         t_repeat = 0.999_999;
-        cycle -= 1.0;
-        if cycle < 0.0 {
-            cycle = 0.0;
-        }
     }
 
-    // Alternance endroit/envers
+    // Alternance endroit/envers pour créer des cycles de couleur
     if (cycle as i64) % 2 == 1 {
         t_repeat = 1.0 - t_repeat;
     }
 
     let palette = palette_for(PaletteId::from_u8(palette_index));
-    gradient_interpolate(palette, t_repeat)
+    let (r, g, b) = gradient_interpolate(palette, t_repeat);
+
+    // Binary decomposition: invert color when original z.im < 0
+    if out_coloring_mode == OutColoringMode::BinaryDecomposition && original_z_im_negative {
+        // Invert the color
+        return (255 - r, 255 - g, 255 - b);
+    }
+
+    (r, g, b)
 }
 
 /// Décode la couleur RGB pour Nebulabrot (encodée dans iterations et zs).

@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
@@ -9,7 +10,7 @@ use num_complex::Complex64;
 use rug::Float;
 
 use crate::color::{color_for_pixel, color_for_nebulabrot_pixel, color_for_buddhabrot_pixel};
-use crate::fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalParams, FractalType, LyapunovPreset};
+use crate::fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalParams, FractalType, LyapunovPreset, OutColoringMode};
 use crate::fractal::perturbation::ReferenceOrbitCache;
 use crate::render::render_escape_time_cancellable_with_reuse;
 use crate::gui::texture::rgb_image_to_color_image;
@@ -33,6 +34,7 @@ pub struct FractallApp {
     selected_type: FractalType,
     palette_index: u8,
     color_repeat: u32,
+    out_coloring_mode: OutColoringMode,
     selected_lyapunov_preset: LyapunovPreset,
     render_preset: RenderPreset,
     gpu_renderer: Option<Arc<GpuRenderer>>,
@@ -98,6 +100,7 @@ impl FractallApp {
             selected_type: default_type,
             palette_index: 6, // SmoothPlasma par défaut
             color_repeat: 40,
+            out_coloring_mode: OutColoringMode::Smooth,
             selected_lyapunov_preset: LyapunovPreset::default(),
             render_preset: RenderPreset::Standard,
             gpu_renderer,
@@ -706,6 +709,7 @@ impl FractallApp {
         let iter_max = self.params.iteration_max;
         let palette_idx = self.palette_index;
         let color_rep = self.color_repeat;
+        let out_mode = self.out_coloring_mode;
 
         let buffer: Vec<u8> = (0..height as usize)
             .into_par_iter()
@@ -727,6 +731,7 @@ impl FractallApp {
                                 iter_max,
                                 palette_idx,
                                 color_rep,
+                                out_mode,
                             )
                         };
 
@@ -1289,6 +1294,24 @@ impl eframe::App for FractallApp {
                         }
                     }
 
+                    ui.separator();
+
+                    ui.label("Outcoloring:");
+                    let old_out_mode = self.out_coloring_mode;
+                    egui::ComboBox::from_id_source("outcoloring_mode")
+                        .selected_text(self.out_coloring_mode.name())
+                        .show_ui(ui, |ui| {
+                            for mode in OutColoringMode::all() {
+                                ui.selectable_value(&mut self.out_coloring_mode, *mode, mode.name());
+                            }
+                        });
+                    if old_out_mode != self.out_coloring_mode {
+                        self.params.out_coloring_mode = self.out_coloring_mode;
+                        if !self.iterations.is_empty() {
+                            self.update_texture(ctx);
+                        }
+                    }
+
                     // Afficher les contrôles de mode de calcul pour les fractales escape-time supportées
                     let supports_advanced_modes = matches!(
                         self.selected_type,
@@ -1308,26 +1331,21 @@ impl eframe::App for FractallApp {
                         
                         // Texte du menu Render selon la sélection actuelle
                         let render_text = match (self.use_gpu && gpu_available, self.params.algorithm_mode) {
-                            (_, AlgorithmMode::Auto) => "Auto".to_string(),
-                            (false, AlgorithmMode::StandardF64) => "CPU > fp64".to_string(),
-                            (false, AlgorithmMode::Perturbation) => "CPU > fp64 Perturbation".to_string(),
-                            (false, AlgorithmMode::ReferenceGmp) => "CPU > GMP Reference".to_string(),
-                            (true, AlgorithmMode::StandardF64) => "GPU > fp32".to_string(),
-                            (true, AlgorithmMode::Perturbation) => "GPU > fp32 Perturbation".to_string(),
-                            (true, AlgorithmMode::ReferenceGmp) => "Auto".to_string(), // GMP pas sur GPU, fallback Auto
-                            (_, AlgorithmMode::StandardDS) => "Auto".to_string(), // StandardDS supprimé
+                            (_, AlgorithmMode::Auto) => "🔄 Auto".to_string(),
+                            (false, AlgorithmMode::StandardF64) => "💻 CPU Standard f64".to_string(),
+                            (false, AlgorithmMode::Perturbation) => "💻 CPU Perturbation f64".to_string(),
+                            (false, AlgorithmMode::ReferenceGmp) => "💻 CPU GMP Reference".to_string(),
+                            (false, AlgorithmMode::StandardDS) => "🔄 Auto".to_string(), // StandardDS n'existe que sur GPU, fallback Auto
+                            (true, AlgorithmMode::StandardF64) => "🎮 GPU Standard f32".to_string(),
+                            (true, AlgorithmMode::StandardDS) => "🎮 GPU Double-Single".to_string(),
+                            (true, AlgorithmMode::Perturbation) => "🎮 GPU Perturbation f32".to_string(),
+                            (true, AlgorithmMode::ReferenceGmp) => "🔄 Auto".to_string(), // GMP pas sur GPU, fallback Auto
                         };
                         
-                        // Si StandardDS est sélectionné, le basculer vers StandardF64
-                        if self.params.algorithm_mode == AlgorithmMode::StandardDS {
-                            self.params.algorithm_mode = AlgorithmMode::StandardF64;
-                        }
-                        
                         ui.menu_button(&render_text, |ui| {
-                            // Option Auto
                             if ui.selectable_label(
                                 self.params.algorithm_mode == AlgorithmMode::Auto,
-                                "Auto"
+                                "🔄 Auto"
                             ).clicked() {
                                 self.params.algorithm_mode = AlgorithmMode::Auto;
                                 ui.close_menu();
@@ -1335,11 +1353,10 @@ impl eframe::App for FractallApp {
                             
                             ui.separator();
                             
-                            // Sous-menu CPU
-                            ui.menu_button("CPU", |ui| {
+                            ui.menu_button("💻 CPU", |ui| {
                                 if ui.selectable_label(
                                     !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::StandardF64,
-                                    "fp64"
+                                    "📊 Standard f64"
                                 ).clicked() {
                                     self.use_gpu = false;
                                     self.params.algorithm_mode = AlgorithmMode::StandardF64;
@@ -1348,7 +1365,7 @@ impl eframe::App for FractallApp {
                                 
                                 if ui.selectable_label(
                                     !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::Perturbation,
-                                    "fp64 Perturbation"
+                                    "🔬 Perturbation f64"
                                 ).clicked() {
                                     self.use_gpu = false;
                                     self.params.algorithm_mode = AlgorithmMode::Perturbation;
@@ -1357,7 +1374,7 @@ impl eframe::App for FractallApp {
                                 
                                 if ui.selectable_label(
                                     !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::ReferenceGmp,
-                                    "GMP Reference"
+                                    "🔢 GMP Reference"
                                 ).clicked() {
                                     self.use_gpu = false;
                                     self.params.algorithm_mode = AlgorithmMode::ReferenceGmp;
@@ -1365,21 +1382,32 @@ impl eframe::App for FractallApp {
                                 }
                             });
                             
-                            // Sous-menu GPU
                             if gpu_available {
-                                ui.menu_button("GPU", |ui| {
+                                ui.menu_button("🎮 GPU", |ui| {
                                     if ui.selectable_label(
                                         self.use_gpu && self.params.algorithm_mode == AlgorithmMode::StandardF64,
-                                        "fp32"
+                                        "⚡ Standard f32"
                                     ).clicked() {
                                         self.use_gpu = true;
                                         self.params.algorithm_mode = AlgorithmMode::StandardF64;
                                         ui.close_menu();
                                     }
                                     
+                                    let supports_ds = matches!(self.params.fractal_type, FractalType::Mandelbrot);
+                                    if supports_ds {
+                                        if ui.selectable_label(
+                                            self.use_gpu && self.params.algorithm_mode == AlgorithmMode::StandardDS,
+                                            "🔬 Double-Single (DS)"
+                                        ).clicked() {
+                                            self.use_gpu = true;
+                                            self.params.algorithm_mode = AlgorithmMode::StandardDS;
+                                            ui.close_menu();
+                                        }
+                                    }
+                                    
                                     if ui.selectable_label(
                                         self.use_gpu && self.params.algorithm_mode == AlgorithmMode::Perturbation,
-                                        "fp32 Perturbation"
+                                        "🚀 Perturbation f32"
                                     ).clicked() {
                                         self.use_gpu = true;
                                         self.params.algorithm_mode = AlgorithmMode::Perturbation;
@@ -1387,7 +1415,7 @@ impl eframe::App for FractallApp {
                                     }
                                 });
                             } else {
-                                ui.add_enabled(false, egui::Label::new("GPU (N/A)"));
+                                ui.add_enabled(false, egui::Label::new("🎮 GPU (Non disponible)"));
                             }
                         });
                         
@@ -1401,12 +1429,48 @@ impl eframe::App for FractallApp {
                             self.start_render();
                         }
                         
+                        // Vérifier la compatibilité StandardDS (seulement Mandelbrot)
+                        if self.params.algorithm_mode == AlgorithmMode::StandardDS {
+                            if !matches!(self.params.fractal_type, FractalType::Mandelbrot) {
+                                // StandardDS n'est disponible que pour Mandelbrot
+                                self.params.algorithm_mode = AlgorithmMode::StandardF64;
+                            }
+                        }
+                        
                         if old_mode != self.params.algorithm_mode {
                             self.orbit_cache = None;
                             self.start_render();
                         }
 
-                        // 3. Tolérance (perturbation uniquement)
+                        // 3. Options de rendu
+                        ui.separator();
+                        
+                        let options_text = format!(
+                            "⚙️ Options{}",
+                            if self.params.enable_interior_detection || self.params.enable_distance_estimation {
+                                " •"
+                            } else {
+                                ""
+                            }
+                        );
+                        
+                        let options_changed = RefCell::new(false);
+                        ui.menu_button(&options_text, |ui| {
+                            if ui.checkbox(&mut self.params.enable_interior_detection, "Interior Detection").changed() {
+                                *options_changed.borrow_mut() = true;
+                            }
+                            
+                            if ui.checkbox(&mut self.params.enable_distance_estimation, "Distance Estimation").changed() {
+                                *options_changed.borrow_mut() = true;
+                            }
+                        });
+                        
+                        if *options_changed.borrow() {
+                            self.orbit_cache = None;
+                            self.start_render();
+                        }
+
+                        // 4. Tolérance (perturbation uniquement)
                         let show_tolerance = matches!(
                             self.params.algorithm_mode, 
                             AlgorithmMode::Auto | AlgorithmMode::Perturbation

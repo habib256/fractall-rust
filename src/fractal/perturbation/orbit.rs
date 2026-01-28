@@ -150,7 +150,7 @@ pub fn compute_reference_orbit(
     let cref_f64 = Complex64::new(center_x_gmp.to_f64(), center_y_gmp.to_f64());
 
     let mut z = match params.fractal_type {
-        FractalType::Mandelbrot | FractalType::BurningShip | FractalType::Multibrot => {
+        FractalType::Mandelbrot | FractalType::BurningShip | FractalType::Multibrot | FractalType::Tricorn => {
             Complex::with_val(prec, (params.seed.re, params.seed.im))
         }
         FractalType::Julia => cref.clone(),
@@ -202,6 +202,14 @@ pub fn compute_reference_orbit(
                 let mut z_pow = pow_f64_mpc(&z, params.multibrot_power, prec);
                 z_pow += &cref;
                 z_pow
+            }
+            FractalType::Tricorn => {
+                // Tricorn: z' = conj(z)² + c
+                let z_conj = z.clone().conj();
+                let mut z_temp = z_conj.clone();
+                z_temp *= &z_conj;
+                z_temp += &cref;
+                z_temp
             }
             _ => return None,
         };

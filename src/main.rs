@@ -7,7 +7,7 @@ mod color;
 mod render;
 mod io;
 
-use fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalType, LyapunovPreset};
+use fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalType, LyapunovPreset, OutColoringMode};
 use render::render_escape_time;
 use io::png::save_png;
 
@@ -102,6 +102,10 @@ struct Cli {
     /// Preset Lyapunov (standard, zircon-city, jellyfish, asymmetric, spaceship, heavy-blocks)
     #[arg(long)]
     lyapunov_preset: Option<String>,
+
+    /// Mode de colorisation (iter, iter+real, iter+imag, iter+real/imag, iter+all, binary, biomorphs, potential, color-decomp, smooth)
+    #[arg(long, default_value = "smooth")]
+    outcoloring: String,
 
     /// Fichier de sortie PNG
     #[arg(long, value_name = "FICHIER")]
@@ -227,6 +231,20 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+        }
+    }
+
+    // Mode de colorisation (outcoloring).
+    match OutColoringMode::from_cli_name(&cli.outcoloring) {
+        Some(mode) => {
+            params.out_coloring_mode = mode;
+        }
+        None => {
+            eprintln!(
+                "Mode de colorisation invalide: '{}'. Options: iter, iter+real, iter+imag, iter+real/imag, iter+all, binary, biomorphs, potential, color-decomp, smooth",
+                cli.outcoloring
+            );
+            std::process::exit(1);
         }
     }
 

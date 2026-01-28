@@ -168,6 +168,138 @@ impl AlgorithmMode {
     }
 }
 
+/// Mode de colorisation pour les pixels extérieurs (XaoS-style outcoloring).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum OutColoringMode {
+    /// Discrete iteration bands (no smoothing)
+    Iter,
+    /// iteration + z.re contribution
+    IterPlusReal,
+    /// iteration + z.im contribution
+    IterPlusImag,
+    /// iteration + atan(z.re/z.im) ratio
+    IterPlusRealImag,
+    /// combination of real, imag, and ratio
+    IterPlusAll,
+    /// different color based on sign of z.im
+    BinaryDecomposition,
+    /// boundary detection (|z.re| < 10 or |z.im| < 10)
+    Biomorphs,
+    /// electrostatic potential: log(|z|) / 2^n
+    Potential,
+    /// based on angle/phase of z: atan2(z.im, z.re)
+    ColorDecomposition,
+    /// current default smooth coloring
+    #[default]
+    Smooth,
+}
+
+impl OutColoringMode {
+    /// Returns all available outcoloring modes.
+    #[allow(dead_code)]
+    pub fn all() -> &'static [OutColoringMode] {
+        &[
+            OutColoringMode::Iter,
+            OutColoringMode::IterPlusReal,
+            OutColoringMode::IterPlusImag,
+            OutColoringMode::IterPlusRealImag,
+            OutColoringMode::IterPlusAll,
+            OutColoringMode::BinaryDecomposition,
+            OutColoringMode::Biomorphs,
+            OutColoringMode::Potential,
+            OutColoringMode::ColorDecomposition,
+            OutColoringMode::Smooth,
+        ]
+    }
+
+    /// Display name for UI.
+    #[allow(dead_code)]
+    pub fn name(self) -> &'static str {
+        match self {
+            OutColoringMode::Iter => "Iter",
+            OutColoringMode::IterPlusReal => "Iter+Real",
+            OutColoringMode::IterPlusImag => "Iter+Imag",
+            OutColoringMode::IterPlusRealImag => "Iter+Real/Imag",
+            OutColoringMode::IterPlusAll => "Iter+All",
+            OutColoringMode::BinaryDecomposition => "Binary Decomp",
+            OutColoringMode::Biomorphs => "Biomorphs",
+            OutColoringMode::Potential => "Potential",
+            OutColoringMode::ColorDecomposition => "Color Decomp",
+            OutColoringMode::Smooth => "Smooth",
+        }
+    }
+
+    /// Numeric ID for serialization.
+    #[allow(dead_code)]
+    pub fn id(self) -> u8 {
+        match self {
+            OutColoringMode::Iter => 0,
+            OutColoringMode::IterPlusReal => 1,
+            OutColoringMode::IterPlusImag => 2,
+            OutColoringMode::IterPlusRealImag => 3,
+            OutColoringMode::IterPlusAll => 4,
+            OutColoringMode::BinaryDecomposition => 5,
+            OutColoringMode::Biomorphs => 6,
+            OutColoringMode::Potential => 7,
+            OutColoringMode::ColorDecomposition => 8,
+            OutColoringMode::Smooth => 9,
+        }
+    }
+
+    /// Create from numeric ID.
+    #[allow(dead_code)]
+    pub fn from_id(id: u8) -> Option<Self> {
+        match id {
+            0 => Some(OutColoringMode::Iter),
+            1 => Some(OutColoringMode::IterPlusReal),
+            2 => Some(OutColoringMode::IterPlusImag),
+            3 => Some(OutColoringMode::IterPlusRealImag),
+            4 => Some(OutColoringMode::IterPlusAll),
+            5 => Some(OutColoringMode::BinaryDecomposition),
+            6 => Some(OutColoringMode::Biomorphs),
+            7 => Some(OutColoringMode::Potential),
+            8 => Some(OutColoringMode::ColorDecomposition),
+            9 => Some(OutColoringMode::Smooth),
+            _ => None,
+        }
+    }
+
+    /// CLI name for command-line argument.
+    #[allow(dead_code)]
+    pub fn cli_name(self) -> &'static str {
+        match self {
+            OutColoringMode::Iter => "iter",
+            OutColoringMode::IterPlusReal => "iter+real",
+            OutColoringMode::IterPlusImag => "iter+imag",
+            OutColoringMode::IterPlusRealImag => "iter+real/imag",
+            OutColoringMode::IterPlusAll => "iter+all",
+            OutColoringMode::BinaryDecomposition => "binary",
+            OutColoringMode::Biomorphs => "biomorphs",
+            OutColoringMode::Potential => "potential",
+            OutColoringMode::ColorDecomposition => "color-decomp",
+            OutColoringMode::Smooth => "smooth",
+        }
+    }
+
+    /// Parse from CLI name.
+    #[allow(dead_code)]
+    pub fn from_cli_name(value: &str) -> Option<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "iter" | "0" => Some(OutColoringMode::Iter),
+            "iter+real" | "iterreal" | "1" => Some(OutColoringMode::IterPlusReal),
+            "iter+imag" | "iterimag" | "2" => Some(OutColoringMode::IterPlusImag),
+            "iter+real/imag" | "iterrealimag" | "3" => Some(OutColoringMode::IterPlusRealImag),
+            "iter+all" | "iterall" | "4" => Some(OutColoringMode::IterPlusAll),
+            "binary" | "binary-decomp" | "binarydecomp" | "5" => Some(OutColoringMode::BinaryDecomposition),
+            "biomorphs" | "biomorph" | "6" => Some(OutColoringMode::Biomorphs),
+            "potential" | "7" => Some(OutColoringMode::Potential),
+            "color-decomp" | "colordecomp" | "decomp" | "8" => Some(OutColoringMode::ColorDecomposition),
+            "smooth" | "9" => Some(OutColoringMode::Smooth),
+            _ => None,
+        }
+    }
+}
+
 use crate::fractal::lyapunov::LyapunovPreset;
 
 /// Paramètres d'une fractale pour le rendu escape-time.
@@ -244,6 +376,16 @@ pub struct FractalParams {
     pub lyapunov_preset: LyapunovPreset,
     /// Séquence Lyapunov (true=A, false=B). Si vide, utilise la séquence par défaut.
     pub lyapunov_sequence: Vec<bool>,
+
+    /// Active le calcul de distance estimation (nécessite DualComplex, ajoute overhead)
+    pub enable_distance_estimation: bool,
+    /// Active la détection d'intérieur (nécessite ExtendedDualComplex, ajoute overhead)
+    pub enable_interior_detection: bool,
+    /// Seuil pour détection d'intérieur (défaut 0.001)
+    pub interior_threshold: f64,
+
+    /// Mode de colorisation pour les pixels extérieurs (XaoS-style).
+    pub out_coloring_mode: OutColoringMode,
 }
 
 impl FractalParams {

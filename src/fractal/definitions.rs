@@ -1,6 +1,6 @@
 use num_complex::Complex64;
 
-use crate::fractal::{AlgorithmMode, FractalParams, FractalType};
+use crate::fractal::{AlgorithmMode, FractalParams, FractalType, OutColoringMode};
 use crate::fractal::lyapunov::{LyapunovConfig, LyapunovPreset};
 
 /// Construit des paramètres avec les valeurs par défaut du type,
@@ -36,6 +36,12 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         multibrot_power: 2.5,
         lyapunov_preset: LyapunovPreset::default(),
         lyapunov_sequence: Vec::new(),
+        // Enable distance estimation and interior detection by default for better rendering
+        // These features use dual numbers (Section 5 and 6 of deep zoom theory)
+        enable_distance_estimation: false, // Can be enabled for distance field coloring
+        enable_interior_detection: true,   // Enable by default to properly color interior points
+        interior_threshold: 0.001,
+        out_coloring_mode: OutColoringMode::Smooth,
     };
 
     match fractal_type {

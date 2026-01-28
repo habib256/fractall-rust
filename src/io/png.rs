@@ -49,6 +49,7 @@ pub fn save_png(
                             params.iteration_max,
                             params.color_mode,
                             params.color_repeat,
+                            params.out_coloring_mode,
                         )
                     };
 

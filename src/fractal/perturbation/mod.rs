@@ -17,6 +17,9 @@ pub mod bla;
 pub mod delta;
 pub mod series;
 pub mod glitch;
+pub mod nonconformal;
+pub mod distance;
+pub mod interior;
 
 pub use orbit::ReferenceOrbitCache;
 pub use glitch::{detect_glitch_clusters, select_secondary_reference_points};
@@ -152,7 +155,7 @@ pub fn render_perturbation_with_cache(
     }
     let supports = matches!(
         params.fractal_type,
-        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
+        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn
     );
     if !supports {
         return None;
@@ -242,8 +245,27 @@ pub fn render_perturbation_with_cache(
                     delta0,
                     dc_term,
                 );
+                
+                // Use distance estimation and interior detection results
+                // Encode is_interior in z.im sign: negative = interior point
+                // Encode distance in z.re when available (for distance-based coloring)
+                let mut z_value = result.z_final;
+                
+                if result.is_interior {
+                    // Interior point: encode flag in z.im sign (negative = interior)
+                    // This allows color_for_pixel to detect and color interior points black
+                    z_value = Complex64::new(z_value.re, -z_value.im.abs());
+                } else if result.distance.is_finite() && result.distance != f64::INFINITY && result.distance > 0.0 {
+                    // Distance estimation available: can be used for distance field coloring
+                    // For now, we keep z as-is to preserve smooth_iteration calculation
+                    // Distance can be accessed via result.distance if needed in the future
+                    // Optionally encode distance in z.re for special distance-based coloring modes
+                    // z_value = Complex64::new(result.distance, z_value.im);
+                }
+                
                 *iter = result.iteration;
-                *z = result.z_final;
+                *z = z_value;
+                
                 if result.glitched || result.suspect {
                     glitch_mask[j * width + i].store(true, Ordering::Relaxed);
                 }

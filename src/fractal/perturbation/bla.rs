@@ -1,6 +1,12 @@
 use num_complex::Complex64;
 
 use crate::fractal::{FractalParams, FractalType};
+use crate::fractal::perturbation::nonconformal::{
+    compute_tricorn_bla_coefficients,
+    compute_nonconformal_validity_radius,
+    merge_nonconformal_bla,
+    Matrix2x2,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct BlaNode {
@@ -25,14 +31,31 @@ pub struct BlaNode {
     pub sign_im: f64,
 }
 
+/// Nœud BLA non-conforme pour formules non-analytiques (comme Tricorn).
+/// Utilise des matrices 2×2 au lieu de nombres complexes pour les coefficients.
+#[derive(Clone, Copy, Debug)]
+pub struct BlaNodeNonConformal {
+    /// Coefficient linéaire A (matrice 2×2)
+    pub a: Matrix2x2,
+    /// Coefficient dc B (matrice 2×2)
+    pub b: Matrix2x2,
+    /// Rayon de validité pour ce BLA
+    pub validity_radius: f64,
+}
+
 #[derive(Clone, Debug)]
 pub struct BlaTable {
     pub levels: Vec<Vec<BlaNode>>,
+    /// Table BLA non-conforme pour formules non-analytiques (optionnelle)
+    pub nonconformal_levels: Option<Vec<Vec<BlaNodeNonConformal>>>,
 }
 
 impl BlaTable {
     pub fn empty() -> Self {
-        Self { levels: Vec::new() }
+        Self {
+            levels: Vec::new(),
+            nonconformal_levels: None,
+        }
     }
 }
 
@@ -208,9 +231,12 @@ fn compute_bla_coefficients(
     }
 }
 
-/// Build BLA table from the f64 reference orbit.
+/// Build BLA table from the f64 reference orbit (Section 3.3 of deep zoom theory).
+/// Creates M single-step BLAs, then merges neighbours to create multi-step BLAs.
 /// Note: Use z_ref_f64 from ReferenceOrbit, not z_ref (which is Vec<ComplexExp>).
 pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTable {
+    // Note: Tricorn support in BLA would require non-conformal matrices (see nonconformal.rs)
+    // For now, Tricorn uses perturbation without BLA acceleration
     let supports_bla = matches!(
         params.fractal_type,
         FractalType::Mandelbrot | FractalType::Julia | FractalType::Multibrot | FractalType::BurningShip
@@ -248,19 +274,35 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
         
         let a_norm = coeffs.a.norm();
 
-        // When a_norm is small, validity can exceed base_threshold
-        // The formula: threshold / (1 + |a|) scales inversely with derivative magnitude
-        let mut validity = (base_threshold * validity_scale) / (1.0 + a_norm);
-        if !validity.is_finite() {
-            validity = base_threshold * validity_scale;
-        }
-        // Allow validity to exceed base_threshold when z_ref is small (a_norm small)
-        // but cap at max_validity to prevent numerical issues
-        validity = validity.min(max_validity);
+        // Single-step BLA validity formula (Section 3.1 of deep zoom theory):
+        // Valid when |z²| << |2Z·z + c|, which simplifies to |z| << |2Z| = |A|
+        // Assuming negligibility of c, we get: |z_n| << |A_{n,1}| =: R_{n,1}
+        // Formula: R = ε·|A| where ε is the threshold (base_threshold * validity_scale)
+        let epsilon = base_threshold * validity_scale;
+        let validity = if a_norm > 1e-20 {
+            epsilon * a_norm
+        } else {
+            0.0
+        };
+        
+        // Cap at max_validity to prevent numerical issues
+        let mut validity = validity.min(max_validity);
         
         // Pour Burning Ship, réduire la validité si le quadrant n'est pas stable
         if is_burning_ship && !bs_valid {
             validity = 0.0;
+        } else if is_burning_ship && bs_valid {
+            // Burning Ship ABS variation BLA (Section 4.2 of deep zoom theory):
+            // The absolute value folds the plane when X or Y are near 0.
+            // Single step BLA radius becomes the minimum of the non-linearity radius and the folding radii:
+            // R = max{0, min{ε·|A|, |X|/2, |Y|/2}}
+            // The factor /2 is a "fudge factor for paranoia" as mentioned in the theory.
+            // Note: For Burning Ship, we use the conformal formula R = ε·|A| (Section 3.1)
+            // since it's conformal within each stable quadrant.
+            let nonlinearity_radius = validity;
+            let folding_radius_re = z.re.abs() / 2.0;
+            let folding_radius_im = z.im.abs() / 2.0;
+            validity = nonlinearity_radius.min(folding_radius_re).min(folding_radius_im).max(0.0);
         }
 
         // Calculate quadrant signs for Burning Ship optimization
@@ -290,7 +332,12 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
             break;
         }
         let mut current = Vec::with_capacity(prev.len() - step);
-        for i in 0..(prev.len() - step) {
+        // Merging BLA steps (Section 3.3 of deep zoom theory):
+        // Start merge from iteration 1 for the first level (level 1) because
+        // iteration 0 always corresponds to a non-linear perturbation step as Z=0.
+        // For subsequent levels, we can start from 0 as we're merging already-merged BLAs.
+        let start_idx = if level == 1 { 1 } else { 0 };
+        for i in start_idx..(prev.len() - step) {
             let node1 = prev[i];
             let node2 = prev[i + step];
             
@@ -322,8 +369,23 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
                 zero
             };
             
-            let a_norm = node1.a.norm();
-            let scaled = node2.validity_radius / (1.0 + a_norm);
+            // Merging BLA validity formula (Section 3.2 of deep zoom theory):
+            // If Tx skips lx iterations from mx when |z| < Rx
+            // and Ty skips ly iterations from mx+lx when |z| < Ry,
+            // then Tz = Ty ∘ Tx skips lx+ly iterations from mx when |z| < Rz:
+            // Rz = max{0, min{Rx, Ry - |Bx|·|c| / |Ax|}}
+            let a1_norm = node1.a.norm();
+            let is_julia = params.fractal_type == FractalType::Julia;
+            let validity = if a1_norm > 1e-20 && !is_julia {
+                // For Mandelbrot: account for cref in the adjustment term
+                let b1_norm = node1.b.norm();
+                let cref_norm = params.center_x.hypot(params.center_y);
+                let adjustment = b1_norm * cref_norm / a1_norm;
+                node1.validity_radius.min((node2.validity_radius - adjustment).max(0.0)).max(0.0)
+            } else {
+                // For Julia or when |A| is too small, use simpler formula
+                node1.validity_radius.min(node2.validity_radius)
+            };
             
             // Pour les niveaux supérieurs de Burning Ship, le BLA est valide 
             // seulement si les deux nœuds sont valides
@@ -331,7 +393,7 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
             let validity = if is_burning_ship && !bs_valid {
                 0.0
             } else {
-                node1.validity_radius.min(scaled)
+                validity
             };
             
             // Valider les coefficients d'ordre supérieur
@@ -355,5 +417,169 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
         levels.push(current);
     }
 
-    BlaTable { levels }
+    // Build non-conformal table for Tricorn if applicable
+    let nonconformal_levels = if params.fractal_type == FractalType::Tricorn {
+        build_bla_table_nonconformal(ref_orbit, params)
+    } else {
+        None
+    };
+
+    BlaTable {
+        levels,
+        nonconformal_levels,
+    }
+}
+
+/// Build non-conformal BLA table from the f64 reference orbit for Tricorn.
+/// Uses 2×2 real matrices instead of complex numbers for coefficients.
+pub fn build_bla_table_nonconformal(ref_orbit: &[Complex64], params: &FractalParams) -> Option<Vec<Vec<BlaNodeNonConformal>>> {
+    if params.fractal_type != FractalType::Tricorn {
+        return None;
+    }
+
+    let base_len = ref_orbit.len().saturating_sub(1);
+    if base_len == 0 {
+        return None;
+    }
+
+    let base_threshold = params.bla_threshold.max(1e-16);
+    let validity_scale = params.bla_validity_scale.clamp(0.1, 100.0);
+    let max_validity = base_threshold * validity_scale * 10.0;
+    let cref_norm = params.center_x.hypot(params.center_y);
+
+    let mut levels: Vec<Vec<BlaNodeNonConformal>> = Vec::new();
+    let mut level0 = Vec::with_capacity(base_len);
+
+    // Build level 0: single-step BLAs
+    for (_i, &z) in ref_orbit.iter().enumerate().take(base_len) {
+        let coeffs = compute_tricorn_bla_coefficients(z);
+        
+        // Calculate validity radius using non-conformal formula
+        let validity = compute_nonconformal_validity_radius(
+            coeffs.a,
+            coeffs.b,
+            base_threshold * validity_scale,
+            cref_norm,
+        ).min(max_validity).max(0.0);
+
+        level0.push(BlaNodeNonConformal {
+            a: coeffs.a,
+            b: coeffs.b,
+            validity_radius: validity,
+        });
+    }
+    levels.push(level0);
+
+    // Merge levels: start from iteration 1 (iteration 0 is always non-linear)
+    let max_level = 16usize;
+    for level in 1..=max_level {
+        let step = 1usize << (level - 1);
+        let prev = &levels[level - 1];
+        if prev.len() <= step {
+            break;
+        }
+        let mut current = Vec::with_capacity(prev.len() - step);
+        // Start merge from iteration 1 for first level
+        let start_idx = if level == 1 { 1 } else { 0 };
+        for i in start_idx..(prev.len() - step) {
+            let node1 = prev[i];
+            let node2 = prev[i + step];
+            
+            // Merge using non-conformal formula
+            let (az, bz, rz) = merge_nonconformal_bla(
+                node1.a,
+                node1.b,
+                node1.validity_radius,
+                node2.a,
+                node2.b,
+                node2.validity_radius,
+                cref_norm,
+            );
+            
+            current.push(BlaNodeNonConformal {
+                a: az,
+                b: bz,
+                validity_radius: rz,
+            });
+        }
+        levels.push(current);
+    }
+
+    Some(levels)
+}
+
+#[cfg(test)]
+mod nonconformal_tests {
+    use super::*;
+    use crate::fractal::{AlgorithmMode, FractalType};
+    use num_complex::Complex64;
+
+    fn test_tricorn_params() -> FractalParams {
+        FractalParams {
+            width: 100,
+            height: 100,
+            center_x: 0.0,
+            center_y: 0.0,
+            span_x: 4.0,
+            span_y: 4.0,
+            seed: Complex64::new(0.0, 0.0),
+            iteration_max: 100,
+            bailout: 4.0,
+            fractal_type: FractalType::Tricorn,
+            color_mode: 0,
+            color_repeat: 2,
+            use_gmp: false,
+            precision_bits: 192,
+            algorithm_mode: AlgorithmMode::Perturbation,
+            bla_threshold: 1e-6,
+            bla_validity_scale: 1.0,
+            glitch_tolerance: 1e-4,
+            series_order: 2,
+            series_threshold: 1e-6,
+            series_error_tolerance: 1e-9,
+            glitch_neighbor_pass: false,
+            series_standalone: false,
+            max_secondary_refs: 3,
+            min_glitch_cluster_size: 100,
+            multibrot_power: 2.5,
+            lyapunov_preset: Default::default(),
+            lyapunov_sequence: Vec::new(),
+            enable_distance_estimation: false,
+            enable_interior_detection: false,
+            interior_threshold: 0.001,
+        }
+    }
+
+    #[test]
+    fn build_nonconformal_table() {
+        let params = test_tricorn_params();
+        let ref_orbit = vec![
+            Complex64::new(0.0, 0.0),
+            Complex64::new(0.0, 0.0),
+            Complex64::new(1.0, 0.0),
+            Complex64::new(2.0, 0.0),
+        ];
+        let table = build_bla_table_nonconformal(&ref_orbit, &params);
+        assert!(table.is_some());
+        let levels = table.unwrap();
+        assert!(!levels.is_empty());
+        assert!(!levels[0].is_empty());
+    }
+
+    #[test]
+    fn nonconformal_table_merging() {
+        let params = test_tricorn_params();
+        let ref_orbit: Vec<Complex64> = (0..10)
+            .map(|i| Complex64::new(i as f64 * 0.1, 0.0))
+            .collect();
+        let table = build_bla_table_nonconformal(&ref_orbit, &params);
+        assert!(table.is_some());
+        let levels = table.unwrap();
+        // Should have multiple levels after merging
+        assert!(levels.len() > 1);
+        // Level 1 should start from iteration 1
+        if levels.len() > 1 {
+            assert!(levels[1].len() < levels[0].len());
+        }
+    }
 }
