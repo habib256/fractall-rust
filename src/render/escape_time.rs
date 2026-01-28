@@ -74,8 +74,7 @@ pub fn render_escape_time(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
         }
         match params.algorithm_mode {
             AlgorithmMode::ReferenceGmp => return render_escape_time_gmp(params),
-            AlgorithmMode::StandardF64 | AlgorithmMode::StandardDS => {
-                // StandardDS n'existe que sur GPU, sur CPU on utilise f64
+            AlgorithmMode::StandardF64 => {
                 return render_escape_time_f64(params);
             }
             AlgorithmMode::Perturbation => {
@@ -311,8 +310,7 @@ pub fn render_escape_time_cancellable_with_reuse(
                 let reuse = build_reuse(params, reuse);
                 return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse);
             }
-            AlgorithmMode::StandardF64 | AlgorithmMode::StandardDS => {
-                // StandardDS n'existe que sur GPU, sur CPU on utilise f64
+            AlgorithmMode::StandardF64 => {
                 let reuse = build_reuse(params, reuse);
                 return render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse);
             }

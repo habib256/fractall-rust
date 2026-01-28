@@ -911,6 +911,13 @@ fn render_perturbation_gmp_path(
     let prec = compute_perturbation_precision_bits(params);
     let width = params.width as usize;
     
+    // IMPORTANT: Vérifier que la précision du cache correspond à la précision calculée
+    // Si la précision du cache est inférieure, cela peut causer des erreurs de précision
+    if cache.precision_bits < prec {
+        eprintln!("[PRECISION WARNING] Cache precision ({}) < required precision ({}) for zoom {:.2e}. Cache may need recomputation.",
+            cache.precision_bits, prec, params.span_x.abs().max(params.span_y.abs()) / params.width as f64);
+    }
+    
     // Log de diagnostic - une seule fois
     let pixel_size = params.span_x.abs().max(params.span_y.abs()) / params.width as f64;
     if pixel_size < 1e-15 {
@@ -919,8 +926,8 @@ fn render_perturbation_gmp_path(
         let last_logged = LAST_LOGGED_GMP_PATH.load(Ordering::Relaxed);
         if prec != last_logged {
             LAST_LOGGED_GMP_PATH.store(prec, Ordering::Relaxed);
-            eprintln!("[PRECISION DEBUG] render_perturbation_gmp_path: prec={}, preset_bits={}, cache.center_x_gmp={}, cache.center_y_gmp={}",
-                prec, params.precision_bits, cache.center_x_gmp, cache.center_y_gmp);
+            eprintln!("[PRECISION DEBUG] render_perturbation_gmp_path: prec={}, preset_bits={}, cache.precision_bits={}, cache.center_x_gmp={}, cache.center_y_gmp={}",
+                prec, params.precision_bits, cache.precision_bits, cache.center_x_gmp, cache.center_y_gmp);
         }
     }
     
@@ -955,6 +962,11 @@ fn render_perturbation_gmp_path(
     
     // Clone cache for use in parallel iteration
     let cache_ref = Arc::clone(cache);
+    
+    // Collect glitched pixels for correction
+    let glitch_mask: Vec<AtomicBool> = (0..width * params.height as usize)
+        .map(|_| AtomicBool::new(false))
+        .collect();
     
     iterations
         .par_chunks_mut(width)
@@ -1006,8 +1018,10 @@ fn render_perturbation_gmp_path(
                 *iter = result.iteration;
                 *z = result.z_final;
                 
-                if result.glitched || result.suspect {
-                    // Note: glitch_mask not used in GMP path, but keep for consistency
+                // Mark glitched or suspect pixels for correction
+                if result.glitched || result.suspect || !result.z_final.re.is_finite() || !result.z_final.im.is_finite() {
+                    let idx = j * width + i;
+                    glitch_mask[idx].store(true, Ordering::Relaxed);
                 }
             }
         });
@@ -1015,6 +1029,46 @@ fn render_perturbation_gmp_path(
     if cancelled.load(Ordering::Relaxed) {
         None
     } else {
+        // Correct glitched pixels using direct GMP iteration (fallback)
+        let glitched_indices: Vec<usize> = glitch_mask
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, flag)| if flag.load(Ordering::Relaxed) { Some(idx) } else { None })
+            .collect();
+        
+        if !glitched_indices.is_empty() {
+            // Use direct GMP iteration as fallback for glitched pixels
+            let mut orbit_params = params.clone();
+            orbit_params.precision_bits = prec;
+            let gmp_params = MpcParams::from_params(&orbit_params);
+            let width_u32 = params.width;
+            
+            let corrections: Vec<_> = glitched_indices
+                .par_iter()
+                .map(|&idx| {
+                    let i = (idx as u32 % width_u32) as usize;
+                    let j = (idx as u32 / width_u32) as usize;
+                    
+                    // Calculate pixel point directly in GMP: center + dc
+                    let dc_gmp = compute_dc_gmp(i, j, params, &center_x_gmp, &center_y_gmp, prec);
+                    let mut z_pixel_re = center_x_gmp.clone();
+                    z_pixel_re += dc_gmp.real();
+                    let mut z_pixel_im = center_y_gmp.clone();
+                    z_pixel_im += dc_gmp.imag();
+                    let z_pixel = complex_from_xy(prec, z_pixel_re, z_pixel_im);
+                    
+                    // Use direct GMP iteration (no perturbation)
+                    let (iter_val, z_final) = iterate_point_mpc(&gmp_params, &z_pixel);
+                    (idx, iter_val, complex_to_complex64(&z_final))
+                })
+                .collect();
+            
+            for (idx, iter_val, z_final) in corrections {
+                iterations[idx] = iter_val;
+                zs[idx] = z_final;
+            }
+        }
+        
         Some(((iterations, zs), Arc::clone(cache)))
     }
 }

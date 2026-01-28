@@ -138,8 +138,6 @@ impl FractalType {
 pub enum AlgorithmMode {
     Auto,
     StandardF64,
-    /// Double-Single: émule f64 avec deux f32, pour zooms profonds sur GPU sans f64 natif
-    StandardDS,
     Perturbation,
     ReferenceGmp,
 }
@@ -150,7 +148,6 @@ impl AlgorithmMode {
         match self {
             AlgorithmMode::Auto => "Auto",
             AlgorithmMode::StandardF64 => "Standard f64",
-            AlgorithmMode::StandardDS => "Standard DS",
             AlgorithmMode::Perturbation => "Perturbation",
             AlgorithmMode::ReferenceGmp => "Reference GMP",
         }
@@ -161,7 +158,6 @@ impl AlgorithmMode {
         match value.trim().to_lowercase().as_str() {
             "auto" => Some(AlgorithmMode::Auto),
             "f64" | "standard" | "standardf64" => Some(AlgorithmMode::StandardF64),
-            "ds" | "standardds" | "double-single" => Some(AlgorithmMode::StandardDS),
             "perturbation" | "perturb" => Some(AlgorithmMode::Perturbation),
             "gmp" | "referencegmp" | "reference-gmp" => Some(AlgorithmMode::ReferenceGmp),
             _ => None,

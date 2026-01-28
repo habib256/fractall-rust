@@ -59,13 +59,23 @@ src/
 Le code utilise **center + span** au lieu de xmin/xmax/ymin/ymax:
 ```rust
 pub struct FractalParams {
-    pub center_x: f64,  // centre X
-    pub center_y: f64,  // centre Y
-    pub span_x: f64,    // largeur totale
-    pub span_y: f64,    // hauteur totale
+    pub center_x: f64,  // centre X (pour compatibilité GPU/CPU standard)
+    pub center_y: f64,  // centre Y (pour compatibilité GPU/CPU standard)
+    pub span_x: f64,    // largeur totale (pour compatibilité GPU/CPU standard)
+    pub span_y: f64,    // hauteur totale (pour compatibilité GPU/CPU standard)
+    
+    // Coordonnées haute précision (String) pour préserver la précision arbitraire
+    // Utilisées pour les calculs GMP aux zooms profonds (>10^15)
+    // Si None, les valeurs f64 sont utilisées (compatibilité GPU/CPU standard)
+    pub center_x_hp: Option<String>,
+    pub center_y_hp: Option<String>,
+    pub span_x_hp: Option<String>,
+    pub span_y_hp: Option<String>,
 }
 ```
 Avantage: evite la soustraction de grands nombres proches lors de zooms profonds (>1e15).
+Les coordonnées haute précision en String préservent la précision arbitraire pour les calculs GMP,
+évitant les pertes de précision lors de la conversion f64 → GMP aux zooms très profonds (>10^16).
 
 ## Dispatch rendu (escape_time.rs)
 
@@ -73,29 +83,49 @@ Avantage: evite la soustraction de grands nombres proches lors de zooms profonds
 AlgorithmMode::Auto → should_use_perturbation()?
   - GPU f32: pixel_size < 1e-5  → perturbation
   - CPU f64: pixel_size < 1e-13 → perturbation
-  - Zoom extreme (pixel_size < 1e-15) → force GMP (pas perturbation)
+  - Zoom extreme (pixel_size < 1e-15) → should_use_full_gmp_perturbation() → force GMP complet (render_perturbation_gmp_path)
   - sinon: f64 standard
 
 Modes forces: StandardF64 | StandardDS | Perturbation | ReferenceGmp
+
+Précision GMP:
+  - Calcul automatique via compute_perturbation_precision_bits() pour perturbation
+  - Utilise les String haute précision (center_x_hp, etc.) si disponibles
+  - Toutes les opérations GMP utilisent la même précision calculée (pas le preset)
+  - Propagation de précision garantie dans iterate_pixel_gmp() via Complex::with_val(prec, ...)
+  - Les valeurs GMP sont créées explicitement avec la précision calculée pour éviter les incohérences
 ```
 
 ## Perturbation (deep zoom)
 
-**Supporte**: Mandelbrot, Julia, BurningShip
+**Supporte**: Mandelbrot, Julia, BurningShip, Tricorn
 
 Pipeline:
-1. Orbite de reference au centre (GMP, precision auto-calculee)
-2. Table BLA precalculee pour sauter des iterations
-3. Pixels = delta par rapport a reference (ComplexExp: mantisse f64 + exposant)
+1. Orbite de reference au centre (GMP, precision auto-calculee via `compute_perturbation_precision_bits()`)
+2. Table BLA precalculee pour sauter des iterations (desactivee pour zoom >10^15)
+3. Pixels = delta par rapport a reference:
+   - Zooms moyens: ComplexExp (mantisse f64 + exposant)
+   - Zooms profonds (>10^15): GMP complet (`iterate_pixel_gmp()`)
 4. Detection glitchs + correction en GMP
 
-**Calcul dc** (offset pixel vs centre) - `perturbation/mod.rs:205-226`:
-```rust
-let dc_re = (i as f64 * inv_width - 0.5) * x_range;
-let dc_im = (j as f64 * inv_height - 0.5) * y_range;
-```
+**Calcul dc** (offset pixel vs centre) - `perturbation/mod.rs:compute_dc_gmp()`:
+- Utilise les String haute précision (`span_x_hp`, `span_y_hp`) si disponibles
+- Sinon fallback sur f64 pour compatibilité
+- Calcul direct en GMP: `dc = (i/width - 0.5) * span_x` (idem pour y)
 
-**Cache** (`ReferenceOrbitCache`): orbite + BLA reutilises si meme centre/type/precision.
+**Précision GMP automatique** (`compute_perturbation_precision_bits()`):
+- Calcule la précision nécessaire basée sur le zoom: `log2(zoom) + safety_margin`
+- Marges de sécurité adaptatives:
+  - Zoom >10^30: 200 bits
+  - Zoom >10^20: 160 bits
+  - Zoom >10^15: 128 bits (CRITIQUE pour éviter bugs)
+  - Zoom >10^10: 96 bits
+  - Zoom >10^6: 80 bits
+  - Sinon: 64 bits
+- Plage: 128-8192 bits
+- Utilisée partout au lieu du preset `precision_bits`
+
+**Cache** (`ReferenceOrbitCache`): orbite + BLA reutilises si meme centre (comparaison en String GMP)/type/precision.
 
 ## Parametres perturbation (FractalParams)
 
@@ -176,7 +206,14 @@ Selection automatique selon zoom et support materiel.
 ## GUI (FractallApp)
 
 - Rendu progressif multi-passes (preview → full)
-- Coordonnees haute precision (String → rug::Float pour zooms >1e15)
+- Coordonnees haute precision:
+  - Stockees en String (`center_x_hp`, `center_y_hp`, `span_x_hp`, `span_y_hp`)
+  - Synchronisees vers `FractalParams` via `sync_hp_to_params()`
+  - Les String sont stockees directement dans `FractalParams` pour preserver la precision
+  - Conversion String → rug::Float pour calculs GMP aux zooms profonds (>10^15)
+  - Conversion String → f64 pour compatibilite GPU/CPU standard
 - Selection rectangulaire pour zoom
 - Cache orbite/BLA entre re-rendus
 - Switch CPU/GPU
+- Affichage stats (centre, iterations, zoom) sous la barre de menu
+- Selection palette avec apercu visuel (image gradient)

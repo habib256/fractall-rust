@@ -264,10 +264,13 @@ pub fn pow_f64_mpc(value: &Complex, exp: f64, prec: u32) -> Complex {
     if r == 0 {
         return Complex::with_val(prec, (0, 0));
     }
-    let theta = value.imag().clone().atan2(value.real());
+    // IMPORTANT: Créer des copies avec la précision explicite pour éviter la perte de précision
+    let im_prec = Float::with_val(prec, value.imag());
+    let re_prec = Float::with_val(prec, value.real());
+    let theta = im_prec.atan2(&re_prec);
     let exp_f = Float::with_val(prec, exp);
     let r_pow = r.pow(&exp_f);
-    let angle = theta * exp_f;
+    let angle = theta * &exp_f;
     let cos_a = angle.clone().cos();
     let sin_a = angle.sin();
     Complex::with_val(prec, (r_pow.clone() * cos_a, r_pow * sin_a))

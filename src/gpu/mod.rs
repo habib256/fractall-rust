@@ -62,7 +62,6 @@ pub struct GpuRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline_f32: wgpu::ComputePipeline,
-    pipeline_ds: wgpu::ComputePipeline,
     #[allow(dead_code)]
     pipeline_f64: Option<PipelinesF64>,
     pipeline_julia_f32: wgpu::ComputePipeline,
@@ -173,19 +172,6 @@ impl GpuRenderer {
                 label: Some("mandelbrot-pipeline-f32"),
                 layout: Some(&pipeline_layout),
                 module: &shader_f32,
-                entry_point: "main",
-            });
-
-            // Pipeline Double-Single (DS) - émule f64 avec deux f32
-            let shader_ds = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("mandelbrot-ds"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("mandelbrot_ds.wgsl").into()),
-            });
-
-            let pipeline_ds = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("mandelbrot-pipeline-ds"),
-                layout: Some(&pipeline_layout),
-                module: &shader_ds,
                 entry_point: "main",
             });
 
@@ -313,7 +299,6 @@ impl GpuRenderer {
                 device,
                 queue,
                 pipeline_f32,
-                pipeline_ds,
                 pipeline_f64,
                 pipeline_julia_f32,
                 pipeline_burning_ship_f32,
@@ -340,25 +325,6 @@ impl GpuRenderer {
         self.render_mandelbrot_f32(params, cancel)
     }
 
-    /// Render Mandelbrot using Double-Single (DS) precision.
-    /// Emulates f64 precision using two f32 values, allowing deeper zooms
-    /// on GPUs that don't support native f64.
-    pub fn render_mandelbrot_ds(
-        &self,
-        params: &FractalParams,
-        cancel: &std::sync::atomic::AtomicBool,
-    ) -> Option<(Vec<u32>, Vec<Complex64>)> {
-        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-            return None;
-        }
-        self.render_escape_f32(
-            params,
-            cancel,
-            &self.pipeline_ds,
-            ParamsF32::from_params(params, None),
-            "mandelbrot-ds",
-        )
-    }
 
     pub fn render_julia(
         &self,
@@ -725,31 +691,45 @@ impl GpuRenderer {
         if !glitched_indices.is_empty() {
             let gmp_params = MpcParams::from_params(&orbit_params);
             let prec = gmp_params.prec;
-            let x_range = params.span_x;
-            let y_range = params.span_y;
-            let x_step = x_range / params.width as f64;
-            let y_step = y_range / params.height as f64;
             let width = params.width;
-            let x_half = x_range * 0.5;
-            let y_half = y_range * 0.5;
-            let center_x = params.center_x;
-            let center_y = params.center_y;
-
+            
             // Collect results in parallel
+            // IMPORTANT: Utiliser la même formule que compute_dc_gmp pour garantir la cohérence
+            // Formule: dc = (pixel_index/dimension - 0.5) * range
+            // Cela évite les erreurs de précision lors de la soustraction de grands nombres
             let corrections: Vec<_> = glitched_indices
                 .par_iter()
                 .map(|&idx| {
-                    let x = (idx % width) as f64;
-                    let y = (idx / width) as f64;
-                    let dx = x_step * x - x_half;
-                    let dy = y_step * y - y_half;
-                    let xg = center_x + dx;
-                    let yg = center_y + dy;
-                    let z_pixel = complex_from_xy(
-                        prec,
-                        rug::Float::with_val(prec, xg),
-                        rug::Float::with_val(prec, yg),
-                    );
+                    let i = (idx % width) as usize;
+                    let j = (idx / width) as usize;
+                    
+                    // Utiliser la même formule que compute_dc_gmp pour la cohérence
+                    // Calculer dc directement sans soustraire center_x/center_y
+                    let inv_width = rug::Float::with_val(prec, 1.0) / rug::Float::with_val(prec, width as f64);
+                    let inv_height = rug::Float::with_val(prec, 1.0) / rug::Float::with_val(prec, params.height as f64);
+                    
+                    let i_float = rug::Float::with_val(prec, i as f64);
+                    let j_float = rug::Float::with_val(prec, j as f64);
+                    let mut x_ratio = rug::Float::with_val(prec, &i_float * &inv_width);
+                    let mut y_ratio = rug::Float::with_val(prec, &j_float * &inv_height);
+                    let half = rug::Float::with_val(prec, 0.5);
+                    x_ratio -= &half;
+                    y_ratio -= &half;
+                    
+                    let x_range = rug::Float::with_val(prec, params.span_x);
+                    let y_range = rug::Float::with_val(prec, params.span_y);
+                    let x_offset = rug::Float::with_val(prec, &x_ratio * &x_range);
+                    let y_offset = rug::Float::with_val(prec, &y_ratio * &y_range);
+                    
+                    // Calculer le point pixel = center + dc en GMP
+                    let center_x_gmp = rug::Float::with_val(prec, params.center_x);
+                    let center_y_gmp = rug::Float::with_val(prec, params.center_y);
+                    let mut z_pixel_re = center_x_gmp;
+                    z_pixel_re += &x_offset;
+                    let mut z_pixel_im = center_y_gmp;
+                    z_pixel_im += &y_offset;
+                    
+                    let z_pixel = complex_from_xy(prec, z_pixel_re, z_pixel_im);
                     let (iter_val, z_final) = iterate_point_mpc(&gmp_params, &z_pixel);
                     (idx as usize, iter_val, complex_to_complex64(&z_final))
                 })

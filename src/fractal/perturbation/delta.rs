@@ -708,13 +708,18 @@ pub fn iterate_pixel_gmp(
         
         // Apply perturbation formula: z_{n+1} = 2·Z_m·z_n + z_n² + c
         // In GMP: delta_{n+1} = 2·z_ref·delta + delta² + dc
-        // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision
+        // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision prec
         // Créer de nouvelles valeurs avec la précision explicite pour garantir la cohérence
-        let mut delta_sq = Complex::with_val(prec, (delta.real(), delta.imag()));
-        delta_sq *= &delta;
         
-        let mut linear_term = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
-        linear_term *= &delta;
+        // Créer des copies avec la précision explicite pour toutes les valeurs
+        let delta_prec = Complex::with_val(prec, (delta.real(), delta.imag()));
+        let z_ref_prec = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
+        
+        let mut delta_sq = delta_prec.clone();
+        delta_sq *= &delta_prec;
+        
+        let mut linear_term = z_ref_prec.clone();
+        linear_term *= &delta_prec;
         let two = Float::with_val(prec, 2.0);
         linear_term *= &two;
         
@@ -722,8 +727,9 @@ pub fn iterate_pixel_gmp(
         next_delta += &delta_sq;
         
         if !is_julia {
-            // Mandelbrot: add dc term
-            next_delta += dc_gmp;
+            // Mandelbrot: add dc term - créer une copie avec la précision explicite
+            let dc_gmp_prec = Complex::with_val(prec, (dc_gmp.real(), dc_gmp.imag()));
+            next_delta += &dc_gmp_prec;
         }
         // Julia: dc is already incorporated in initial delta
         
@@ -731,9 +737,11 @@ pub fn iterate_pixel_gmp(
         if is_burning_ship {
             // Burning Ship: z' = (|Re(z)|, |Im(z)|)² + c
             // For deep zooms, compute full orbit: z_curr = z_ref + delta
-            // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision
-            let mut z_curr = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
-            z_curr += &delta;
+            // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision prec
+            let z_ref_prec_bs = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
+            let delta_prec_bs = Complex::with_val(prec, (delta.real(), delta.imag()));
+            let mut z_curr = z_ref_prec_bs;
+            z_curr += &delta_prec_bs;
             
             // Apply abs() to real and imaginary parts
             let re_abs = z_curr.real().clone().abs();
@@ -742,16 +750,20 @@ pub fn iterate_pixel_gmp(
             z_abs *= z_abs.clone();
             
             // Add cref + dc
-            let mut z_next = z_abs;
-            z_next += &ref_orbit.cref_gmp;
+            // IMPORTANT: S'assurer que toutes les valeurs utilisent la même précision
+            let mut z_next = Complex::with_val(prec, (z_abs.real(), z_abs.imag()));
+            let cref_prec = Complex::with_val(prec, (ref_orbit.cref_gmp.real(), ref_orbit.cref_gmp.imag()));
+            z_next += &cref_prec;
             if !is_julia {
-                z_next += dc_gmp;
+                let dc_gmp_prec = Complex::with_val(prec, (dc_gmp.real(), dc_gmp.imag()));
+                z_next += &dc_gmp_prec;
             }
             
             // Calculate delta for next iteration: z_next - z_ref_next
             if (n + 1) >= effective_len {
                 // Rebase: delta = z_next, reset n to 0
-                delta = z_next;
+                // IMPORTANT: S'assurer que delta utilise la bonne précision
+                delta = Complex::with_val(prec, (z_next.real(), z_next.imag()));
                 n = 0;
                 continue;
             }
@@ -760,22 +772,31 @@ pub fn iterate_pixel_gmp(
                 Some(z) => z,
                 None => break,
             };
-            delta = z_next - z_ref_next;
+            // IMPORTANT: Créer de nouvelles valeurs avec la précision explicite pour la soustraction
+            let z_next_prec = Complex::with_val(prec, (z_next.real(), z_next.imag()));
+            let z_ref_next_prec = Complex::with_val(prec, (z_ref_next.real(), z_ref_next.imag()));
+            delta = z_next_prec - z_ref_next_prec;
         } else if is_tricorn {
             // Tricorn: z' = conj(z)² + c
-            // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision
-            let mut z_curr = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
-            z_curr += &delta;
+            // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision prec
+            let z_ref_prec_tc = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
+            let delta_prec_tc = Complex::with_val(prec, (delta.real(), delta.imag()));
+            let mut z_curr = z_ref_prec_tc;
+            z_curr += &delta_prec_tc;
             let z_conj = z_curr.clone().conj();
             let mut z_temp = Complex::with_val(prec, (z_conj.real(), z_conj.imag()));
             z_temp *= &z_conj;
-            z_temp += &ref_orbit.cref_gmp;
+            // IMPORTANT: S'assurer que cref_gmp utilise la même précision
+            let cref_prec = Complex::with_val(prec, (ref_orbit.cref_gmp.real(), ref_orbit.cref_gmp.imag()));
+            z_temp += &cref_prec;
             if !is_julia {
-                z_temp += dc_gmp;
+                let dc_gmp_prec = Complex::with_val(prec, (dc_gmp.real(), dc_gmp.imag()));
+                z_temp += &dc_gmp_prec;
             }
             
             if (n + 1) >= effective_len {
-                delta = z_temp;
+                // IMPORTANT: S'assurer que delta utilise la bonne précision
+                delta = Complex::with_val(prec, (z_temp.real(), z_temp.imag()));
                 n = 0;
                 continue;
             }
@@ -784,16 +805,21 @@ pub fn iterate_pixel_gmp(
                 Some(z) => z,
                 None => break,
             };
-            delta = z_temp - z_ref_next;
+            // IMPORTANT: Créer de nouvelles valeurs avec la précision explicite pour la soustraction
+            let z_temp_prec = Complex::with_val(prec, (z_temp.real(), z_temp.imag()));
+            let z_ref_next_prec = Complex::with_val(prec, (z_ref_next.real(), z_ref_next.imag()));
+            delta = z_temp_prec - z_ref_next_prec;
         } else {
             // Standard Mandelbrot/Julia: use computed next_delta
             delta = next_delta;
         }
         
         // Check bailout
-        // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision
-        let mut z_curr = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
-        z_curr += &delta;
+        // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision prec
+        let z_ref_prec = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
+        let delta_prec = Complex::with_val(prec, (delta.real(), delta.imag()));
+        let mut z_curr = z_ref_prec;
+        z_curr += &delta_prec;
         let z_curr_norm_sqr = complex_norm_sqr(&z_curr, prec);
         
         if !z_curr.real().is_finite() || !z_curr.imag().is_finite() {
@@ -819,11 +845,13 @@ pub fn iterate_pixel_gmp(
         }
         
         // Check for rebasing: when |Z_m + z_n| < |z_n|
-        let delta_norm_sqr = complex_norm_sqr(&delta, prec);
+        // IMPORTANT: Utiliser delta_prec qui a déjà la bonne précision
+        let delta_norm_sqr = complex_norm_sqr(&delta_prec, prec);
         if z_curr_norm_sqr > Float::with_val(prec, 0.0) 
             && delta_norm_sqr > Float::with_val(prec, 0.0) 
             && z_curr_norm_sqr < delta_norm_sqr {
             // Rebasing: replace z_n with Z_m + z_n and reset m to 0
+            // IMPORTANT: z_curr a déjà la bonne précision prec
             delta = z_curr;
             n = 0;
             continue;
@@ -833,14 +861,16 @@ pub fn iterate_pixel_gmp(
     }
     
     // Final result
-    // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision
+    // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision prec
     let final_index = n.min(effective_len.saturating_sub(1));
     let z_ref = match ref_orbit.get_z_ref_gmp(final_index) {
         Some(z) => z,
         None => ref_orbit.z_ref_gmp.last().unwrap(),
     };
-    let mut z_curr = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
-    z_curr += &delta;
+    let z_ref_prec = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
+    let delta_prec = Complex::with_val(prec, (delta.real(), delta.imag()));
+    let mut z_curr = z_ref_prec;
+    z_curr += &delta_prec;
     
     DeltaResult {
         iteration: final_index,

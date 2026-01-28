@@ -391,7 +391,6 @@ impl FractallApp {
                     };
                     let use_perturbation =
                         use_perturbation && pass_params.plane_transform == PlaneTransform::Mu;
-                    let use_ds = pass_params.algorithm_mode == AlgorithmMode::StandardDS;
                     
                     let gpu_result = match pass_params.fractal_type {
                         FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
@@ -404,10 +403,6 @@ impl FractallApp {
                                     result
                                 })
                         }
-                        FractalType::Mandelbrot if use_ds => {
-                            // Mode DS standard (sans perturbation)
-                            gpu.render_mandelbrot_ds(&pass_params, &cancel)
-                        }
                         FractalType::Mandelbrot => gpu.render_mandelbrot(&pass_params, &cancel),
                         FractalType::Julia => gpu.render_julia(&pass_params, &cancel),
                         FractalType::BurningShip => gpu.render_burning_ship(&pass_params, &cancel),
@@ -415,20 +410,9 @@ impl FractallApp {
                     };
                     if let Some(result) = gpu_result {
                         let base_precision = gpu.precision_label();
-                        // Détecter le mode de précision utilisé
-                        let pixel_size = pass_params.span_x / pass_params.width as f64;
-                        let uses_ds_perturb = use_perturbation && pixel_size < 1e-6;
-                        let precision = if use_ds {
-                            "f32 DS".to_string()
-                        } else if uses_ds_perturb {
-                            format!("{} DS", base_precision)
-                        } else {
-                            base_precision.to_string()
-                        };
+                        let precision = base_precision.to_string();
                         let effective_mode = if use_perturbation {
                             AlgorithmMode::Perturbation
-                        } else if use_ds {
-                            AlgorithmMode::StandardDS
                         } else {
                             AlgorithmMode::StandardF64
                         };
@@ -464,7 +448,7 @@ impl FractallApp {
                                 let effective_mode = match pass_params.algorithm_mode {
                                     AlgorithmMode::ReferenceGmp => AlgorithmMode::ReferenceGmp,
                                     AlgorithmMode::Perturbation => AlgorithmMode::Perturbation,
-                                    AlgorithmMode::StandardF64 | AlgorithmMode::StandardDS => AlgorithmMode::StandardF64,
+                                    AlgorithmMode::StandardF64 => AlgorithmMode::StandardF64,
                                     AlgorithmMode::Auto => {
                                         if crate::render::escape_time::should_use_perturbation(
                                             &pass_params,
@@ -511,7 +495,7 @@ impl FractallApp {
                             let effective_mode = match pass_params.algorithm_mode {
                                 AlgorithmMode::ReferenceGmp => AlgorithmMode::ReferenceGmp,
                                 AlgorithmMode::Perturbation => AlgorithmMode::Perturbation,
-                                AlgorithmMode::StandardF64 | AlgorithmMode::StandardDS => AlgorithmMode::StandardF64,
+                                AlgorithmMode::StandardF64 => AlgorithmMode::StandardF64,
                                 AlgorithmMode::Auto => {
                                     if crate::render::escape_time::should_use_perturbation(
                                         &pass_params,
@@ -1147,9 +1131,7 @@ impl eframe::App for FractallApp {
                             (false, AlgorithmMode::StandardF64) => "💻 CPU Standard f64".to_string(),
                             (false, AlgorithmMode::Perturbation) => "💻 CPU Perturbation f64".to_string(),
                             (false, AlgorithmMode::ReferenceGmp) => "💻 CPU GMP Reference".to_string(),
-                            (false, AlgorithmMode::StandardDS) => "🔄 Auto".to_string(),
                             (true, AlgorithmMode::StandardF64) => "🎮 GPU Standard f32".to_string(),
-                            (true, AlgorithmMode::StandardDS) => "🎮 GPU Double-Single".to_string(),
                             (true, AlgorithmMode::Perturbation) => "🎮 GPU Perturbation f32".to_string(),
                             (true, AlgorithmMode::ReferenceGmp) => "🔄 Auto".to_string(),
                         };
@@ -1212,18 +1194,6 @@ impl eframe::App for FractallApp {
                                         ui.close_menu();
                                     }
 
-                                    let supports_ds = matches!(self.params.fractal_type, FractalType::Mandelbrot);
-                                    if supports_ds {
-                                        if ui.selectable_label(
-                                            self.use_gpu && self.params.algorithm_mode == AlgorithmMode::StandardDS,
-                                            "🔬 Double-Single (DS)"
-                                        ).clicked() {
-                                            self.use_gpu = true;
-                                            self.params.algorithm_mode = AlgorithmMode::StandardDS;
-                                            ui.close_menu();
-                                        }
-                                    }
-
                                     let plane_ok = self.params.plane_transform == PlaneTransform::Mu;
                                     if ui
                                         .add_enabled(
@@ -1252,12 +1222,6 @@ impl eframe::App for FractallApp {
                             }
                             self.orbit_cache = None;
                             self.start_render();
-                        }
-
-                        if self.params.algorithm_mode == AlgorithmMode::StandardDS
-                            && !matches!(self.params.fractal_type, FractalType::Mandelbrot)
-                        {
-                            self.params.algorithm_mode = AlgorithmMode::StandardF64;
                         }
 
                         if self.params.plane_transform != PlaneTransform::Mu
@@ -1761,16 +1725,11 @@ impl eframe::App for FractallApp {
                     // ═══════════════════════════════════════════════════════════════
                     // Affichage du mode de calcul effectif
                     // Format: [Device] [Precision] [Algorithme]
-                    // Ex: "GPU f32 DS Perturbation" ou "CPU f64 Standard"
+                    // Ex: "GPU f32 Perturbation" ou "CPU f64 Standard"
                     // ═══════════════════════════════════════════════════════════════
                     
-                    let pixel_size = self.params.span_x / self.params.width as f64;
                     let effective_mode = self.effective_algorithm_mode();
                     let gpu_active = self.use_gpu && self.gpu_renderer.is_some();
-                    
-                    // Déterminer si DS (Double-Single) est actif sur GPU
-                    // DS s'active automatiquement quand pixel_size < 1e-6 en mode perturbation
-                    let uses_ds = gpu_active && pixel_size < 1e-6 && effective_mode == AlgorithmMode::Perturbation;
                     
                     let mode_display = if let (Some(device_label), Some(method_label)) =
                         (&self.last_render_device_label, &self.last_render_method_label)
@@ -1785,11 +1744,7 @@ impl eframe::App for FractallApp {
                         
                         let (precision, algo) = match (gpu_active, effective_mode) {
                             // GPU modes
-                            (true, AlgorithmMode::Perturbation) => {
-                                let prec = if uses_ds { "f32 DS" } else { "f32" };
-                                (prec, "Perturbation")
-                            }
-                            (true, AlgorithmMode::StandardDS) => ("f32 DS", "Standard"),
+                            (true, AlgorithmMode::Perturbation) => ("f32", "Perturbation"),
                             (true, AlgorithmMode::StandardF64) => ("f32", "Standard"),
                             (true, _) => ("f32", "Standard"), // Fallback GPU
                             
@@ -1800,7 +1755,6 @@ impl eframe::App for FractallApp {
                             }
                             (false, AlgorithmMode::Perturbation) => ("f64", "Perturbation"),
                             (false, AlgorithmMode::StandardF64) => ("f64", "Standard"),
-                            (false, AlgorithmMode::StandardDS) => ("f64", "Standard"), // DS n'existe pas sur CPU
                             (false, AlgorithmMode::Auto) => ("f64", "Standard"),
                         };
                         

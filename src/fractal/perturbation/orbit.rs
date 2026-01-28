@@ -191,11 +191,17 @@ pub struct ReferenceOrbitCache {
 impl ReferenceOrbitCache {
     /// Check if the cache is valid for the given parameters.
     /// The cache is valid if: same center (GMP precision), same type, precision >= required, iteration_max >= required.
+    /// 
+    /// IMPORTANT: Compare la précision calculée (via compute_perturbation_precision_bits)
+    /// avec la précision stockée dans le cache (qui est aussi la précision calculée, pas le preset).
     pub fn is_valid_for(&self, params: &FractalParams) -> bool {
         // Compute center in GMP precision for exact comparison
         // Utiliser la précision calculée pour la comparaison
         use crate::fractal::perturbation::compute_perturbation_precision_bits;
-        let prec = compute_perturbation_precision_bits(params).max(self.precision_bits);
+        let required_prec = compute_perturbation_precision_bits(params);
+        // Utiliser la précision maximale entre celle requise et celle du cache pour la comparaison
+        let prec = required_prec.max(self.precision_bits);
+        
         // Utiliser les String haute précision si disponibles pour la comparaison
         let center_x = if let Some(ref cx_hp) = params.center_x_hp {
             match Float::parse(cx_hp) {
@@ -218,10 +224,13 @@ impl ReferenceOrbitCache {
         let cx_str = center_x.to_string_radix(10, None);
         let cy_str = center_y.to_string_radix(10, None);
 
+        // Vérifier que la précision calculée nécessaire est <= précision du cache
+        // self.precision_bits contient maintenant la précision calculée (pas le preset)
+        // donc on compare directement avec la précision calculée requise
         self.fractal_type == params.fractal_type
             && self.center_x_gmp == cx_str
             && self.center_y_gmp == cy_str
-            && self.precision_bits >= params.precision_bits
+            && self.precision_bits >= required_prec  // Comparer précision calculée du cache avec précision calculée requise
             && self.iteration_max >= params.iteration_max
             && (self.seed_re - params.seed.re).abs() < 1e-15
             && (self.seed_im - params.seed.im).abs() < 1e-15
@@ -230,6 +239,8 @@ impl ReferenceOrbitCache {
     }
 
     /// Create a new cache from computed orbit and BLA table.
+    /// IMPORTANT: Stocke la précision calculée (via compute_perturbation_precision_bits)
+    /// au lieu du preset (params.precision_bits) pour garantir la cohérence.
     pub fn new(
         orbit: ReferenceOrbit,
         bla_table: BlaTable,
@@ -239,6 +250,10 @@ impl ReferenceOrbitCache {
         center_y_gmp: String,
         hybrid_refs: Option<HybridBlaReferences>,
     ) -> Self {
+        // Utiliser la précision calculée au lieu du preset
+        use crate::fractal::perturbation::compute_perturbation_precision_bits;
+        let computed_precision = compute_perturbation_precision_bits(params);
+        
         Self {
             orbit,
             bla_table,
@@ -246,7 +261,7 @@ impl ReferenceOrbitCache {
             center_x_gmp,
             center_y_gmp,
             fractal_type: params.fractal_type,
-            precision_bits: params.precision_bits,
+            precision_bits: computed_precision,  // Stocker la précision calculée au lieu du preset
             iteration_max: params.iteration_max,
             seed_re: params.seed.re,
             seed_im: params.seed.im,
@@ -484,34 +499,49 @@ pub fn compute_reference_orbit(
         }
         z = match params.fractal_type {
             FractalType::Mandelbrot => {
-                let mut z_sq = z.clone();
-                z_sq *= &z;
+                // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision prec
+                // Créer une copie avec la précision explicite pour garantir la cohérence
+                let z_prec = Complex::with_val(prec, (z.real(), z.imag()));
+                let mut z_sq = z_prec.clone();
+                z_sq *= &z_prec;
                 z_sq += &cref;
                 z_sq
             }
             FractalType::Julia => {
-                let mut z_sq = z.clone();
-                z_sq *= &z;
+                // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision prec
+                // Créer une copie avec la précision explicite pour garantir la cohérence
+                let z_prec = Complex::with_val(prec, (z.real(), z.imag()));
+                let mut z_sq = z_prec.clone();
+                z_sq *= &z_prec;
                 z_sq += &seed;
                 z_sq
             }
             FractalType::BurningShip => {
-                let re_abs = z.real().clone().abs();
-                let im_abs = z.imag().clone().abs();
+                // IMPORTANT: Créer des copies avec la précision explicite pour éviter la perte de précision
+                // lors de la conversion Float -> f64 -> Float
+                let re_prec = Float::with_val(prec, z.real());
+                let im_prec = Float::with_val(prec, z.imag());
+                let re_abs = re_prec.abs();
+                let im_abs = im_prec.abs();
                 let mut z_abs = Complex::with_val(prec, (re_abs, im_abs));
                 z_abs *= z_abs.clone();
                 z_abs += &cref;
                 z_abs
             }
             FractalType::Multibrot => {
+                // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision prec
+                // pow_f64_mpc crée déjà une nouvelle valeur avec la précision prec, donc c'est OK
                 let mut z_pow = pow_f64_mpc(&z, params.multibrot_power, prec);
                 z_pow += &cref;
                 z_pow
             }
             FractalType::Tricorn => {
                 // Tricorn: z' = conj(z)² + c
-                let z_conj = z.clone().conj();
-                let mut z_temp = z_conj.clone();
+                // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision prec
+                // Créer une copie avec la précision explicite pour garantir la cohérence
+                let z_prec = Complex::with_val(prec, (z.real(), z.imag()));
+                let z_conj = z_prec.conj();
+                let mut z_temp = Complex::with_val(prec, (z_conj.real(), z_conj.imag()));
                 z_temp *= &z_conj;
                 z_temp += &cref;
                 z_temp
@@ -539,11 +569,17 @@ pub fn compute_reference_orbit(
 }
 
 fn complex_norm_sqr(value: &Complex, prec: u32) -> Float {
-    let mut re2 = value.real().clone();
-    re2 *= value.real();
-    let mut im2 = value.imag().clone();
-    im2 *= value.imag();
-    let mut sum = Float::with_val(prec, re2);
-    sum += im2;
+    // IMPORTANT: Créer des copies avec la précision explicite pour éviter la perte de précision
+    // lors de la conversion Float -> f64 -> Float
+    let re_prec = Float::with_val(prec, value.real());
+    let im_prec = Float::with_val(prec, value.imag());
+    
+    let mut re2 = re_prec.clone();
+    re2 *= &re_prec;
+    let mut im2 = im_prec.clone();
+    im2 *= &im_prec;
+    
+    let mut sum = Float::with_val(prec, &re2);
+    sum += &im2;
     sum
 }

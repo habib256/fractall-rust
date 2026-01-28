@@ -44,148 +44,6 @@ const MAX_LEVELS: u32 = 17u;
 const RESCALE_HI: f32 = 1.0e4;
 const RESCALE_LO: f32 = 1.0e-4;
 const DEFAULT_GLITCH_TOLERANCE: f32 = 1.0e-4;
-const DS_THRESHOLD: f32 = 1.0e-6;  // Seuil pour basculer en mode double-single
-
-// ============================================================================
-// Arithmétique Double-Single (DS) - Émule f64 avec deux f32
-// Étend la précision GPU de ~10^7 à ~10^14
-// ============================================================================
-
-// Structure double-single: hi contient la partie principale, lo la correction
-struct DS {
-    hi: f32,
-    lo: f32,
-}
-
-// Crée un DS à partir d'un f32
-fn ds_from_f32(x: f32) -> DS {
-    return DS(x, 0.0);
-}
-
-// Convertit un DS en f32 (perd la précision supplémentaire)
-fn ds_to_f32(a: DS) -> f32 {
-    return a.hi + a.lo;
-}
-
-// Quick two-sum: calcule s = a + b avec erreur e, supposant |a| >= |b|
-fn two_sum_quick(a: f32, b: f32) -> DS {
-    let s = a + b;
-    let e = b - (s - a);
-    return DS(s, e);
-}
-
-// Two-sum: calcule s = a + b avec erreur e, sans hypothèse sur les magnitudes
-fn two_sum(a: f32, b: f32) -> DS {
-    let s = a + b;
-    let v = s - a;
-    let e = (a - (s - v)) + (b - v);
-    return DS(s, e);
-}
-
-// Two-product: calcule p = a * b avec erreur e, utilisant fma si disponible
-fn two_prod(a: f32, b: f32) -> DS {
-    let p = a * b;
-    let e = fma(a, b, -p);
-    return DS(p, e);
-}
-
-// Addition double-single: (a.hi + a.lo) + (b.hi + b.lo)
-fn ds_add(a: DS, b: DS) -> DS {
-    // Somme des parties hautes avec propagation d'erreur
-    let s = two_sum(a.hi, b.hi);
-    // Ajouter les parties basses et l'erreur
-    let t = a.lo + b.lo + s.lo;
-    // Renormaliser
-    let hi = s.hi + t;
-    let lo = t - (hi - s.hi);
-    return DS(hi, lo);
-}
-
-// Soustraction double-single
-fn ds_sub(a: DS, b: DS) -> DS {
-    return ds_add(a, DS(-b.hi, -b.lo));
-}
-
-// Multiplication double-single: (a.hi + a.lo) * (b.hi + b.lo)
-fn ds_mul(a: DS, b: DS) -> DS {
-    // Produit des parties hautes avec erreur
-    let p = two_prod(a.hi, b.hi);
-    // Termes croisés
-    let t = a.hi * b.lo + a.lo * b.hi + p.lo;
-    // Renormaliser
-    let hi = p.hi + t;
-    let lo = t - (hi - p.hi);
-    return DS(hi, lo);
-}
-
-// Multiplication DS par f32
-fn ds_mul_f32(a: DS, b: f32) -> DS {
-    let p = two_prod(a.hi, b);
-    let t = a.lo * b + p.lo;
-    let hi = p.hi + t;
-    let lo = t - (hi - p.hi);
-    return DS(hi, lo);
-}
-
-// Norme au carré d'un complexe DS: |z|² = re² + im²
-fn ds_norm_sqr(re: DS, im: DS) -> f32 {
-    let re_sq = ds_mul(re, re);
-    let im_sq = ds_mul(im, im);
-    let sum = ds_add(re_sq, im_sq);
-    return ds_to_f32(sum);
-}
-
-// Structure pour un complexe en double-single
-struct ComplexDS {
-    re: DS,
-    im: DS,
-}
-
-fn cds_from_f32(re: f32, im: f32) -> ComplexDS {
-    return ComplexDS(ds_from_f32(re), ds_from_f32(im));
-}
-
-fn cds_to_f32(z: ComplexDS) -> vec2<f32> {
-    return vec2<f32>(ds_to_f32(z.re), ds_to_f32(z.im));
-}
-
-// Addition de complexes DS
-fn cds_add(a: ComplexDS, b: ComplexDS) -> ComplexDS {
-    return ComplexDS(ds_add(a.re, b.re), ds_add(a.im, b.im));
-}
-
-// Soustraction de complexes DS
-fn cds_sub(a: ComplexDS, b: ComplexDS) -> ComplexDS {
-    return ComplexDS(ds_sub(a.re, b.re), ds_sub(a.im, b.im));
-}
-
-// Multiplication de complexes DS: (a + bi)(c + di) = (ac - bd) + (ad + bc)i
-fn cds_mul(a: ComplexDS, b: ComplexDS) -> ComplexDS {
-    let ac = ds_mul(a.re, b.re);
-    let bd = ds_mul(a.im, b.im);
-    let ad = ds_mul(a.re, b.im);
-    let bc = ds_mul(a.im, b.re);
-    return ComplexDS(ds_sub(ac, bd), ds_add(ad, bc));
-}
-
-// Multiplication complexe DS par f32
-fn cds_mul_f32(a: ComplexDS, b: f32) -> ComplexDS {
-    return ComplexDS(ds_mul_f32(a.re, b), ds_mul_f32(a.im, b));
-}
-
-// Carré d'un complexe DS: z² = (re² - im²) + 2·re·im·i
-fn cds_sqr(z: ComplexDS) -> ComplexDS {
-    let re_sq = ds_mul(z.re, z.re);
-    let im_sq = ds_mul(z.im, z.im);
-    let two_re_im = ds_mul_f32(ds_mul(z.re, z.im), 2.0);
-    return ComplexDS(ds_sub(re_sq, im_sq), two_re_im);
-}
-
-// Norme au carré d'un complexe DS
-fn cds_norm_sqr(z: ComplexDS) -> f32 {
-    return ds_norm_sqr(z.re, z.im);
-}
-
 // ============================================================================
 
 // Calcule la tolérance de glitch adaptative basée sur le niveau de zoom
@@ -322,45 +180,12 @@ fn main(
         return;
     }
     
-    // Calculer le pixel_size pour déterminer si on utilise le mode DS
+    // Calcul de la position du pixel en f32 standard
     let pixel_size = params.span_x / f32(params.width);
-    let use_ds = pixel_size < DS_THRESHOLD;
-    
-    // Calcul de la position du pixel avec précision étendue si nécessaire
-    var dc_re: f32;
-    var dc_im: f32;
-    
-    if (use_ds) {
-        // Mode double-single pour une meilleure précision sur les zooms profonds
-        // Calcul: ((gid.x / width) - 0.5) * span_x
-        // En DS: position = (gid.x * span_x) / width - span_x * 0.5
-        let gid_x_ds = ds_from_f32(f32(gid.x));
-        let gid_y_ds = ds_from_f32(f32(gid.y));
-        let span_x_ds = ds_from_f32(params.span_x);
-        let span_y_ds = ds_from_f32(params.span_y);
-        let width_inv = ds_from_f32(1.0 / f32(params.width));
-        let height_inv = ds_from_f32(1.0 / f32(params.height));
-        let half = ds_from_f32(0.5);
-        
-        // dx = gid.x * span_x / width - span_x * 0.5
-        let x_frac = ds_mul(gid_x_ds, width_inv);
-        let x_centered = ds_sub(x_frac, half);
-        let dx_ds = ds_mul(x_centered, span_x_ds);
-        
-        // dy = gid.y * span_y / height - span_y * 0.5
-        let y_frac = ds_mul(gid_y_ds, height_inv);
-        let y_centered = ds_sub(y_frac, half);
-        let dy_ds = ds_mul(y_centered, span_y_ds);
-        
-        dc_re = ds_to_f32(dx_ds);
-        dc_im = ds_to_f32(dy_ds);
-    } else {
-        // Mode standard f32
-        let dx = (f32(gid.x) * params.span_x / f32(params.width)) - params.span_x * 0.5;
-        let dy = (f32(gid.y) * params.span_y / f32(params.height)) - params.span_y * 0.5;
-        dc_re = dx;
-        dc_im = dy;
-    }
+    let dx = (f32(gid.x) * params.span_x / f32(params.width)) - params.span_x * 0.5;
+    let dy = (f32(gid.y) * params.span_y / f32(params.height)) - params.span_y * 0.5;
+    let dc_re = dx;
+    let dc_im = dy;
 
     let is_julia = params.fractal_kind == 1u;
     let is_burning_ship = params.fractal_kind == 2u;
@@ -477,12 +302,19 @@ fn main(
         let nan_im = z_im != z_im;
         let inf_re = abs(z_re) > 1e30;
         let inf_im = abs(z_im) > 1e30;
+        // IMPORTANT: Ajouter une vérification pour éviter les faux positifs au centre
+        // où delta_norm_sqr peut être très petit mais la tolérance relative peut être trop stricte
+        // Utiliser une tolérance absolue minimale pour éviter les détections erronées
+        let glitch_scale = max(z_ref_norm_sqr, 1.0);  // Éviter division par zéro et faux positifs au centre
         let glitched = (nan_re || nan_im || inf_re || inf_im)
-            || (z_ref_norm_sqr > 0.0 && delta_norm_sqr > glitch_tolerance_sqr * z_ref_norm_sqr);
+            || (z_ref_norm_sqr > 0.0 && delta_norm_sqr > glitch_tolerance_sqr * glitch_scale);
         if (glitched) {
+            // IMPORTANT: Ne pas stocker les valeurs invalides (NaN/Inf) qui causent des artefacts visuels
+            // Utiliser des valeurs par défaut valides qui seront remplacées par la correction CPU
+            // Utiliser z_ref comme valeur par défaut pour éviter les artefacts circulaires
             out_pixels[idx].iter = n;
-            out_pixels[idx].z_re = z_re;
-            out_pixels[idx].z_im = z_im;
+            out_pixels[idx].z_re = z.re;  // Utiliser z_ref au lieu de z_re invalide
+            out_pixels[idx].z_im = z.im;  // Utiliser z_ref au lieu de z_im invalide
             out_pixels[idx].flags = 1u;
             return;
         }
