@@ -3,10 +3,28 @@ use num_complex::Complex64;
 /// Nombre dual complexe pour la différentiation automatique.
 /// Utilisé pour suivre les dérivées de Z + z par rapport aux coordonnées pixel.
 /// 
-/// Pour la distance estimation, on suit dz/dk où k sont les coordonnées pixel.
-/// value: la valeur complexe
-/// dual_re: dérivée par rapport à la coordonnée X du pixel
-/// dual_im: dérivée par rapport à la coordonnée Y du pixel
+/// # Distance Estimation Theory
+/// 
+/// Keep track of derivatives of Z+z wrt. pixel coordinates k. As Z is constant for the whole image,
+/// you just need dz/dk. An easy way to do this is with dual numbers for automatic numeric differentiation.
+/// Set up the pixel coordinates as dual numbers with dual part 1+0i, then transform them to the
+/// complex C+c plane of the fractal iterations. At the end you plug the complex derivative into the
+/// (directional) distance estimate formula, it is already prescaled by the pixel spacing (this also
+/// helps to avoid overflow during iteration).
+/// 
+/// For non-complex-analytic formulas (like Mandelbar/Tricorn and Burning Ship), you can use dual numbers
+/// with two dual parts, for each of the real and imaginary components. At the end they can be combined
+/// into a Jacobian matrix and used in the (directional) distance estimate formula for general iterations.
+/// 
+/// # Implementation
+/// 
+/// - `value`: la valeur complexe (z)
+/// - `dual_re`: dérivée par rapport à la coordonnée X du pixel (dz/dk_x)
+/// - `dual_im`: dérivée par rapport à la coordonnée Y du pixel (dz/dk_y)
+/// 
+/// Note: For conformal fractals (Mandelbrot, Julia), this implementation correctly propagates derivatives.
+/// For non-conformal fractals (Tricorn, Burning Ship), the dual propagation is simplified and does not
+/// fully implement the Jacobian matrix approach described in the theory.
 #[derive(Clone, Copy, Debug)]
 pub struct DualComplex {
     pub value: Complex64,
@@ -109,8 +127,18 @@ impl DualComplex {
 
 /// Calcule la distance estimation à partir d'un DualComplex.
 /// 
-/// Formule: distance = |z|·ln|z| / |dz/dk|
+/// # Formula
+/// 
+/// Distance estimation: distance = |z|·ln|z| / |dz/dk|
 /// où z est la valeur complexe et dz/dk est la dérivée par rapport aux coordonnées pixel.
+/// 
+/// The derivative dz/dk is already prescaled by the pixel spacing (from transform_pixel_to_complex),
+/// which helps to avoid overflow during iteration.
+/// 
+/// # Note
+/// 
+/// This function is currently computed but not actively used in the rendering pipeline.
+/// It can be used for distance-based coloring or 3D rendering in the future.
 pub fn compute_distance_estimate(dual: DualComplex) -> f64 {
     let z_norm = dual.norm();
     let dz_norm = dual.derivative_norm();
@@ -126,6 +154,12 @@ pub fn compute_distance_estimate(dual: DualComplex) -> f64 {
 
 /// Transforme les coordonnées pixel en coordonnées complexes avec propagation des dérivées.
 /// 
+/// Set up the pixel coordinates as dual numbers with dual part 1+0i, then transform them to the
+/// complex C+c plane of the fractal iterations.
+/// 
+/// The derivatives are prescaled by pixel spacing (span/width, span/height), which helps avoid
+/// overflow during iteration and ensures the distance estimate is correctly scaled.
+/// 
 /// # Arguments
 /// * `pixel_re` - Coordonnée X du pixel (0..width)
 /// * `pixel_im` - Coordonnée Y du pixel (0..height)
@@ -137,7 +171,8 @@ pub fn compute_distance_estimate(dual: DualComplex) -> f64 {
 /// * `height` - Hauteur de l'image en pixels
 /// 
 /// # Returns
-/// DualComplex représentant C + c dans le plan complexe avec dérivées préservées
+/// DualComplex représentant C + c dans le plan complexe avec dérivées préservées.
+/// The dual parts represent dc/dpixel_x and dc/dpixel_y, prescaled by pixel spacing.
 pub fn transform_pixel_to_complex(
     pixel_re: f64,
     pixel_im: f64,

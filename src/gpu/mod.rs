@@ -17,6 +17,21 @@ use crate::fractal::perturbation::orbit::{compute_reference_orbit_cached, Refere
 const WORKGROUP_SIZE: u32 = 16;
 const MAX_LEVELS: usize = 17;
 
+/// Sélectionne les backends wgpu appropriés selon l'OS détecté.
+/// 
+/// - macOS : Metal (requis pour macOS)
+/// - Linux : Vulkan et OpenGL (Vulkan prioritaire pour NVIDIA)
+/// - Windows : DirectX12 et Vulkan
+/// - Autres : Tous les backends disponibles
+fn select_backends_for_platform() -> wgpu::Backends {
+    match std::env::consts::OS {
+        "macos" => wgpu::Backends::METAL,
+        "linux" => wgpu::Backends::VULKAN | wgpu::Backends::GL,
+        "windows" => wgpu::Backends::DX12 | wgpu::Backends::VULKAN,
+        _ => wgpu::Backends::all(), // Fallback pour autres OS
+    }
+}
+
 /// Cache pour les buffers GPU de perturbation.
 /// Permet d'éviter de re-uploader les données d'orbite quand elles n'ont pas changé.
 struct PerturbationBufferCache {
@@ -70,9 +85,13 @@ impl GpuRenderer {
         // pour permettre à l'application de démarrer sans GPU
         std::panic::catch_unwind(|| {
             pollster::block_on(async {
-            // Forcer Vulkan en priorité pour éviter les problèmes EGL sur NVIDIA
+            // Sélectionner les backends appropriés selon l'OS
+            let backends = select_backends_for_platform();
+            let os_name = std::env::consts::OS;
+            eprintln!("OS détecté: {}, Backends wgpu sélectionnés: {:?}", os_name, backends);
+            
             let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-                backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
+                backends,
                 ..Default::default()
             });
             let adapter = instance
@@ -85,7 +104,13 @@ impl GpuRenderer {
 
             // Afficher les infos de l'adaptateur GPU
             let info = adapter.get_info();
-            eprintln!("GPU détecté: {} ({:?}), Driver: {}", info.name, info.backend, info.driver);
+            // Sur Apple Silicon, info.name contient le CPU/GPU unifié (ex: "Apple M1")
+            // et info.backend contient le backend (Metal)
+            if !info.driver.is_empty() {
+                eprintln!("GPU détecté: {} (Backend: {:?}), Driver: {}", info.name, info.backend, info.driver);
+            } else {
+                eprintln!("CPU/GPU détecté: {} (Backend: {:?})", info.name, info.backend);
+            }
 
             // Ne plus utiliser f64 en mode GPU, toujours utiliser f32
             let supports_f64 = false;

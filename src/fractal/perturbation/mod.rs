@@ -1,15 +1,98 @@
+//! Module de perturbation pour les zooms profonds (Section 2 de la théorie des zooms profonds).
+//!
+//! # Section 2: Perturbation
+//!
+//! Low precision deltas relative to high precision orbit.
+//!
+//! Pour les zooms très profonds (>1e13), la précision standard f64 devient insuffisante.
+//! La méthode de perturbation permet de calculer les pixels avec une précision relative
+//! en utilisant:
+//!
+//! 1. **Orbite de référence haute précision** `Z_m` calculée au centre de l'image (GMP)
+//! 2. **Deltas de perturbation basse précision** `z_n` relatifs à cette orbite (f64)
+//!
+//! ## Formules mathématiques
+//!
+//! - **Pixel orbit**: `Z_m + z_n` où:
+//!   - `Z_m` est l'orbite de référence haute précision à l'itération `m`
+//!   - `z_n` est le delta de perturbation basse précision à l'itération `n`
+//!
+//! - **Point C du pixel**: `C + c` où:
+//!   - `C` est le point de référence (centre de l'image)
+//!   - `c` est l'offset du pixel par rapport au centre
+//!
+//! - **Formule de perturbation**: `z_{n+1} = 2·Z_m·z_n + z_n² + c`
+//!
+//!   Cette formule découle du développement de Taylor de `(Z_m + z_n)² + (C + c)`:
+//!   ```
+//!   (Z_m + z_n)² + (C + c) = Z_m² + 2·Z_m·z_n + z_n² + C + c
+//!                           = (Z_m² + C) + (2·Z_m·z_n + z_n² + c)
+//!                           = Z_{m+1} + z_{n+1}
+//!   ```
+//!
+//! ## Initialisation
+//!
+//! - `m` et `n` commencent à 0 (`m = 0`, `n = 0`)
+//! - `z_0 = 0` (delta initial = 0 pour Mandelbrot)
+//!
+//! **Note**: Dans le code, `m` et `n` sont représentés par une seule variable `n` qui est toujours
+//! synchronisée (`m = n`). Pour Julia, l'initialisation diffère: `z_0 = c` (delta initial = offset du pixel).
+//!
+//! ## Avantages
+//!
+//! - Calcul de l'orbite de référence une seule fois (au centre)
+//! - Calcul des pixels en f64 (rapide) au lieu de GMP (lent)
+//! - Permet les zooms jusqu'à ~1e15 avant de nécessiter GMP complet
+//!
+//! ## Rebasing
+//!
+//! Rebasing to avoid glitches: when `|Z_m + z_n| < |z_n|`, replace `z_n` with `Z_m + z_n`
+//! and reset the reference iteration count `m` to 0.
+//!
+//! **Dans le code**: Comme `m = n` (une seule variable `n`), réinitialiser `n` à 0 équivaut
+//! à réinitialiser `m` à 0.
+//!
+//! ## Optimisations
+//!
+//! - **Bivariate Linear Approximation (BLA)**: Sometimes, `l` iterations starting at `n` can be
+//!   approximated by bivariate linear function: `z_{n+l} = A_{n,l}·z_n + B_{n,l}·c`. This is valid
+//!   when the non-linear part of the full perturbation iterations is so small that omitting it would
+//!   cause fewer problems than the rounding error of the low precision data type.
+//!
+//! - **ABS Variation BLA**: The only problem with the Mandelbrot set is the non-linearity, but some
+//!   other formulas have other problems, for example the Burning Ship, defined by:
+//!   `X + iY → (|X| + i|Y|)² + C`. The absolute value folds the plane when `X` or `Y` are near 0,
+//!   so the single step BLA radius becomes the minimum of the non-linearity radius and the folding
+//!   radii: `R = max{0, min{ε·inf|A| - sup|B|·|c| / inf|A|, |X|, |Y|}}`. Currently Fraktaler 3 uses
+//!   a fudge factor for paranoia, dividing `|X|` and `|Y|` by 2. The merged BLA step radius is unchanged.
+//!
+//! - **Non-Conformal BLA**: The Mandelbrot set is conformal (angles are preserved). This means
+//!   complex numbers can be used for derivatives. Some other formulas are not conformal, for
+//!   example the Tricorn aka Mandelbar, defined by: `X + iY → (X - iY)² + C`. For non-conformal
+//!   formulas, replace complex numbers by 2×2 real matrices for `A`, `B`. Be careful finding norms:
+//!   define `sup|M|` and `inf|M|` as the largest and smallest singular values of `M`. Then:
+//!   - Single step BLA radius: `R = ε·inf|A| - sup|B|·|c| / inf|A|`
+//!   - Merging BLA steps radius: `R_z = max{0, min{R_x, R_y - sup|B_x|·|c| / sup|A_x|}}`
+//! - **Séries**: Approximation par séries de Taylor pour les termes d'ordre supérieur
+//! - **Rebasing**: Quand `|Z_m + z_n| < |z_n|`, remplace `z_n` par `Z_m + z_n` et réinitialise `m` à 0
+//! - **Hybrid BLA**: For a hybrid loop with multiple phases, you need multiple references, one
+//!   starting at each phase in the loop. Rebasing switches to the reference for the current phase.
+//!   You need one BLA table per reference. Current implementation uses secondary references for
+//!   glitch correction, where each reference has its own orbit and BLA table.
+//! - **Détection de glitches**: Recalcule en GMP les pixels suspects
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use num_complex::Complex64;
 use rayon::prelude::*;
-use rug::Float;
 
 use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
-use crate::fractal::perturbation::delta::iterate_pixel;
+use crate::fractal::perturbation::delta::{iterate_pixel, iterate_pixel_gmp};
 use crate::fractal::perturbation::orbit::{compute_reference_orbit_cached, compute_reference_orbit};
 use crate::fractal::perturbation::types::ComplexExp;
+use rug::{Complex, Float};
 
 pub mod types;
 pub mod orbit;
@@ -21,8 +104,120 @@ pub mod nonconformal;
 pub mod distance;
 pub mod interior;
 
-pub use orbit::ReferenceOrbitCache;
+pub use orbit::{ReferenceOrbitCache, HybridBlaReferences};
 pub use glitch::{detect_glitch_clusters, select_secondary_reference_points};
+
+/// Iterate a pixel using Hybrid BLA with multiple references (one per phase).
+///
+/// For a hybrid loop with multiple phases, you need multiple references, one starting at
+/// each phase in the loop. Rebasing switches to the reference for the current phase.
+/// You need one BLA table per reference.
+///
+/// This function manages phase switching during rebasing: when rebasing occurs (reaching
+/// end of effective orbit), it switches to the reference for the next phase in the cycle.
+fn iterate_pixel_hybrid_bla(
+    params: &FractalParams,
+    hybrid_refs: &HybridBlaReferences,
+    series_table: Option<&crate::fractal::perturbation::series::SeriesTable>,
+    delta0: crate::fractal::perturbation::types::ComplexExp,
+    dc: crate::fractal::perturbation::types::ComplexExp,
+) -> crate::fractal::perturbation::delta::DeltaResult {
+    use crate::fractal::perturbation::types::ComplexExp;
+    
+    if hybrid_refs.cycle_period == 0 {
+        // No cycle detected: use primary reference (single reference)
+        return iterate_pixel(
+            params,
+            &hybrid_refs.primary,
+            &hybrid_refs.primary_bla,
+            series_table,
+            delta0,
+            dc,
+        );
+    }
+    
+    // Hybrid BLA: iterate through phases, switching references on rebasing
+    // For Hybrid BLA: rebasing switches to the reference for the current phase
+    // The current phase is determined by the total iteration count: phase = (iteration - cycle_start) % cycle_period
+    let mut delta = delta0;
+    let mut total_iterations = 0u32;
+    
+    // Iterate through phases until bailout or max iterations
+    // Rebasing switches to the reference for the current phase (determined by iteration count)
+    while total_iterations < params.iteration_max {
+        // Determine current phase based on total iteration count
+        // For Hybrid BLA: rebasing switches to the reference for the current phase
+        let current_phase = hybrid_refs.get_current_phase(total_iterations);
+        
+        // Get reference and BLA table for current phase
+        let ref_orbit = hybrid_refs.get_reference(current_phase);
+        let bla_table = hybrid_refs.get_bla_table(current_phase);
+        let effective_len = ref_orbit.effective_len() as u32;
+        
+        // Create a modified params with reduced iteration_max for this phase
+        let mut phase_params = params.clone();
+        phase_params.iteration_max = (params.iteration_max - total_iterations).min(effective_len);
+        
+        // Iterate with current phase reference
+        // When rebasing occurs (reaching end of effective orbit), iterate_pixel resets n to 0
+        // In Hybrid BLA, we detect this by checking if we completed the effective orbit
+        let result = iterate_pixel(
+            &phase_params,
+            ref_orbit,
+            bla_table,
+            series_table,
+            delta,
+            dc,
+        );
+        
+        total_iterations += result.iteration;
+        
+        // Check if we escaped, glitched, or reached max iterations
+        if result.z_final.norm_sqr() > params.bailout * params.bailout 
+            || result.glitched 
+            || total_iterations >= params.iteration_max {
+            return crate::fractal::perturbation::delta::DeltaResult {
+                iteration: total_iterations.min(params.iteration_max),
+                z_final: result.z_final,
+                glitched: result.glitched,
+                suspect: result.suspect,
+                distance: result.distance,
+                is_interior: result.is_interior,
+            };
+        }
+        
+        // Check if rebasing occurred (completed effective orbit for this phase)
+        // If result.iteration == effective_len, we reached the end and rebased
+        // In Hybrid BLA, rebasing switches to the reference for the current phase
+        // (which will be determined by the new total_iterations count)
+        if result.iteration >= effective_len.saturating_sub(1) {
+            // Rebasing occurred: update delta and continue with next iteration
+            // The phase will be recalculated based on the new total_iterations count
+            delta = ComplexExp::from_complex64(result.z_final);
+            continue;
+        } else {
+            // Normal iteration: return result with accumulated iterations
+            return crate::fractal::perturbation::delta::DeltaResult {
+                iteration: total_iterations,
+                z_final: result.z_final,
+                glitched: result.glitched,
+                suspect: result.suspect,
+                distance: result.distance,
+                is_interior: result.is_interior,
+            };
+        }
+    }
+    
+    // Fallback: use primary reference
+    iterate_pixel(
+        params,
+        &hybrid_refs.primary,
+        &hybrid_refs.primary_bla,
+        series_table,
+        delta0,
+        dc,
+    )
+}
 
 pub fn mark_neighbor_glitches(
     iterations: &[u32],
@@ -109,14 +304,18 @@ pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32
     // Bits needed = log2(zoom) + safety margin
     // For deep zooms: need ~3.32 bits per decimal digit of zoom
     // Add safety margin for intermediate calculations
-    // Pour les très grands zooms (>1e10), augmenter la marge pour éviter les erreurs
+    // Pour les très grands zooms, augmenter la marge pour éviter les erreurs
     let zoom_bits = zoom.log2().ceil() as i32;
-    let safety_margin = if zoom > 1e10 {
-        96  // Marge plus grande pour les très grands zooms
+    let safety_margin = if zoom > 1e30 {
+        160  // Marge très grande pour les zooms extrêmes (>10^30)
+    } else if zoom > 1e20 {
+        128  // Marge grande pour les zooms très profonds (>10^20)
+    } else if zoom > 1e10 {
+        96   // Marge plus grande pour les très grands zooms (>10^10)
     } else if zoom > 1e6 {
-        80  // Marge moyenne pour les zooms moyens
+        80   // Marge moyenne pour les zooms moyens
     } else {
-        64  // Marge standard pour les zooms faibles
+        64   // Marge standard pour les zooms faibles
     };
     let needed_bits = (zoom_bits + safety_margin).max(128) as u32;
 
@@ -124,6 +323,70 @@ pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32
     // Le preset (params.precision_bits) est ignoré pour permettre l'ajustement automatique
     // Clamp to reasonable range: 128 minimum, 8192 maximum
     needed_bits.clamp(128, 8192)
+}
+
+/// Détermine si le zoom est trop profond pour utiliser la perturbation standard (f64/ComplexExp).
+/// Pour les zooms très profonds (>10^15), il faut utiliser GMP complet pour tous les calculs.
+///
+/// # Arguments
+/// * `params` - Paramètres de la fractale
+///
+/// # Returns
+/// `true` si GMP complet doit être utilisé, `false` sinon
+pub fn should_use_full_gmp_perturbation(params: &FractalParams) -> bool {
+    if params.width == 0 || params.height == 0 {
+        return false;
+    }
+    let pixel_size = params.span_x.abs().max(params.span_y.abs()) / params.width as f64;
+    if !pixel_size.is_finite() || pixel_size <= 0.0 {
+        return false;
+    }
+    
+    // Seuil : pixel_size < 1e-15 correspond à un zoom > 10^15
+    // À ce niveau, la précision f64 est insuffisante même avec ComplexExp
+    // Il faut utiliser GMP complet pour tous les calculs
+    pixel_size < 1e-15
+}
+
+/// Calcule l'offset dc (pixel offset from center) en GMP pour les zooms profonds.
+/// Cette fonction préserve la précision GMP en calculant directement l'offset
+/// sans utiliser params.center_x/center_y qui sont en f64.
+///
+/// # Arguments
+/// * `i` - Coordonnée X du pixel (0..width)
+/// * `j` - Coordonnée Y du pixel (0..height)
+/// * `params` - Paramètres de la fractale
+/// * `prec` - Précision GMP à utiliser
+///
+/// # Returns
+/// Le complexe dc représentant l'offset du pixel par rapport au centre, en GMP
+pub fn compute_dc_gmp(
+    i: usize,
+    j: usize,
+    params: &FractalParams,
+    _center_x_gmp: &Float,
+    _center_y_gmp: &Float,
+    prec: u32,
+) -> Complex {
+    let inv_width = Float::with_val(prec, 1.0) / Float::with_val(prec, params.width as f64);
+    let inv_height = Float::with_val(prec, 1.0) / Float::with_val(prec, params.height as f64);
+    let x_range = Float::with_val(prec, params.span_x);
+    let y_range = Float::with_val(prec, params.span_y);
+    let half = Float::with_val(prec, 0.5);
+    
+    // dc_re = (i/width - 0.5) * x_range
+    let i_float = Float::with_val(prec, i as f64);
+    let j_float = Float::with_val(prec, j as f64);
+    let mut x_ratio = Float::with_val(prec, &i_float * &inv_width);
+    let mut y_ratio = Float::with_val(prec, &j_float * &inv_height);
+    x_ratio -= &half;
+    y_ratio -= &half;
+    let x_offset = Float::with_val(prec, &x_ratio * &x_range);
+    let y_offset = Float::with_val(prec, &y_ratio * &y_range);
+    
+    // Le point complexe du pixel est center + dc
+    // Mais dc seul est juste l'offset, donc on retourne juste l'offset
+    Complex::with_val(prec, (x_offset, y_offset))
 }
 
 #[allow(dead_code)]
@@ -142,8 +405,35 @@ pub fn render_perturbation_cancellable_with_reuse(
     Some(result)
 }
 
-/// Render perturbation with optional orbit cache support.
-/// Returns the result and the updated cache for reuse in subsequent frames.
+/// Rend une fractale en utilisant la méthode de perturbation.
+///
+/// Cette fonction calcule l'orbite de référence haute précision au centre de l'image,
+/// puis itère chaque pixel en utilisant la formule de perturbation:
+/// `z_{n+1} = 2·Z_m·z_n + z_n² + c`
+///
+/// # Pipeline de rendu
+///
+/// 1. Calcul de l'orbite de référence `Z_m` au centre (GMP, haute précision)
+/// 2. Construction de la table BLA pour sauter des itérations
+/// 3. Pour chaque pixel:
+///    - Calcul de `dc` (offset par rapport au centre)
+///    - Itération avec perturbation (`iterate_pixel`)
+///    - Détection de glitches
+/// 4. Correction des glitches détectés (recalcul en GMP ou références secondaires)
+///
+/// # Arguments
+///
+/// * `params` - Paramètres de la fractale (dimensions, centre, zoom, etc.)
+/// * `cancel` - Flag d'annulation pour interrompre le calcul
+/// * `reuse` - Données de réutilisation d'un rendu précédent (optionnel)
+/// * `orbit_cache` - Cache de l'orbite de référence pour éviter le recalcul (optionnel)
+///
+/// # Retour
+///
+/// Retourne `Some((iterations, zs), cache)` si le calcul réussit, `None` si annulé.
+/// - `iterations`: Nombre d'itérations avant divergence pour chaque pixel
+/// - `zs`: Valeur finale de z pour chaque pixel (pour le coloriage)
+/// - `cache`: Cache de l'orbite de référence pour réutilisation
 pub fn render_perturbation_with_cache(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
@@ -164,6 +454,9 @@ pub fn render_perturbation_with_cache(
     let mut orbit_params = params.clone();
     orbit_params.precision_bits = compute_perturbation_precision_bits(params);
 
+    // Check if we need full GMP perturbation (very deep zooms >10^15)
+    let use_full_gmp = should_use_full_gmp_perturbation(params);
+
     // Use cached orbit/BLA or compute fresh
     let cache =
         compute_reference_orbit_cached(&orbit_params, Some(cancel.as_ref()), orbit_cache)?;
@@ -179,9 +472,23 @@ pub fn render_perturbation_with_cache(
         return Some(((iterations, zs), cache));
     }
 
-    // Compute dc directly as offset from center to avoid precision loss.
-    // Formula: dc = (pixel_index/dimension - 0.5) * range
-    // This avoids subtracting large close values (xmin vs center_x).
+    // For very deep zooms, use full GMP perturbation path
+    if use_full_gmp {
+        return render_perturbation_gmp_path(params, cancel, reuse, &cache, iterations, zs);
+    }
+
+    // Compute dc (pixel offset from center) directly to avoid precision loss.
+    //
+    // Formule: dc = (pixel_index/dimension - 0.5) * range
+    //
+    // Cette méthode évite la soustraction de grands nombres proches (xmin vs center_x)
+    // qui causerait des erreurs de précision lors de zooms profonds.
+    //
+    // Pour un pixel à la position (i, j):
+    // - dc_re = (i/width - 0.5) * span_x
+    // - dc_im = (j/height - 0.5) * span_y
+    //
+    // Le point complexe du pixel est alors: C + dc où C = (center_x, center_y)
     let x_range = params.span_x;
     let y_range = params.span_y;
     let inv_width = 1.0 / params.width as f64;
@@ -226,25 +533,48 @@ pub fn render_perturbation_with_cache(
                     }
                 }
 
+                // Calcul de dc (offset du pixel par rapport au centre)
                 // dc_re = (i/width - 0.5) * x_range
-                // This computes the offset from center directly without subtracting large values.
+                // Cette formule calcule l'offset directement sans soustraire de grands nombres.
                 let dc_re = (i as f64 * inv_width - 0.5) * x_range;
 
                 let dc = ComplexExp::from_complex64(Complex64::new(dc_re, dc_im));
+                
+                // Initialisation du delta selon le type de fractale:
+                // - Mandelbrot: z_0 = 0, donc delta0 = 0, et c = dc dans la formule
+                // - Julia: z_0 = c (le point C du pixel), donc delta0 = dc, et pas de terme c
                 let (delta0, dc_term) = if params.fractal_type == FractalType::Julia {
+                    // Julia: delta initial = dc (car z_0 = C + c pour Julia)
                     (dc, ComplexExp::zero())
                 } else {
+                    // Mandelbrot: delta initial = 0 (car z_0 = 0), terme c = dc
                     (ComplexExp::zero(), dc)
                 };
 
-                let result = iterate_pixel(
-                    params,
-                    &cache_ref.orbit,
-                    &cache_ref.bla_table,
-                    cache_ref.series_table.as_ref(),
-                    delta0,
-                    dc_term,
-                );
+                // Hybrid BLA: use the appropriate reference for the current phase
+                // For a hybrid loop with multiple phases, you need multiple references, one starting at
+                // each phase in the loop. Rebasing switches to the reference for the current phase.
+                // You need one BLA table per reference.
+                let result = if let Some(ref hybrid) = cache_ref.hybrid_refs {
+                    // Hybrid BLA: iterate with phase-aware reference switching
+                    iterate_pixel_hybrid_bla(
+                        params,
+                        hybrid,
+                        cache_ref.series_table.as_ref(),
+                        delta0,
+                        dc_term,
+                    )
+                } else {
+                    // Single reference (no cycle detected)
+                    iterate_pixel(
+                        params,
+                        &cache_ref.orbit,
+                        &cache_ref.bla_table,
+                        cache_ref.series_table.as_ref(),
+                        delta0,
+                        dc_term,
+                    )
+                };
                 
                 // Use distance estimation and interior detection results
                 // Encode is_interior in z.im sign: negative = interior point
@@ -306,8 +636,19 @@ pub fn render_perturbation_with_cache(
             }
         }
 
-        // Multi-reference glitch correction: use secondary reference points
-        // to fix glitch clusters before falling back to GMP
+        // Hybrid BLA: Multi-reference glitch correction
+        //
+        // For a hybrid loop with multiple phases, you need multiple references, one starting at
+        // each phase in the loop. Rebasing switches to the reference for the current phase.
+        // You need one BLA table per reference.
+        //
+        // Current implementation: Use secondary reference points to fix glitch clusters.
+        // Each secondary reference has its own orbit and BLA table. When a pixel is recalculated
+        // with a secondary reference, it uses that reference's orbit and BLA table.
+        //
+        // Note: The current rebasing implementation (in iterate_pixel) resets n to 0 with the
+        // same reference. A full Hybrid BLA implementation would switch to a different reference
+        // corresponding to the current phase when rebasing.
         if params.max_secondary_refs > 0 {
             let clusters = detect_glitch_clusters(
                 &glitch_mask,
@@ -323,14 +664,17 @@ pub fn render_perturbation_with_cache(
             );
 
             // Process each secondary reference
+            // Each reference corresponds to a different phase/starting point in the hybrid loop.
+            // One BLA table per reference is computed.
             for cluster in secondary_refs {
-                // Create params with new center for secondary orbit
+                // Create params with new center for secondary orbit (different phase)
                 let mut sec_params = orbit_params.clone();
                 sec_params.center_x = cluster.center_x;
                 sec_params.center_y = cluster.center_y;
 
-                // Compute secondary reference orbit
+                // Compute secondary reference orbit (one reference per phase)
                 if let Some((sec_orbit, _, _)) = compute_reference_orbit(&sec_params, Some(cancel.as_ref())) {
+                    // Build BLA table for this reference (one BLA table per reference)
                     let sec_bla = bla::build_bla_table(&sec_orbit.z_ref_f64, &sec_params);
                     let sec_series = if params.series_standalone
                         && matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia)
@@ -470,6 +814,98 @@ pub fn render_perturbation_with_cache(
         }
 
         Some(((iterations, zs), cache))
+    }
+}
+
+/// Rendu avec chemin GMP complet pour les zooms très profonds (>10^15).
+/// Cette fonction utilise GMP pour tous les calculs de perturbation.
+fn render_perturbation_gmp_path(
+    params: &FractalParams,
+    cancel: &Arc<AtomicBool>,
+    reuse: Option<(&[u32], &[Complex64], u32, u32)>,
+    cache: &Arc<ReferenceOrbitCache>,
+    mut iterations: Vec<u32>,
+    mut zs: Vec<Complex64>,
+) -> Option<((Vec<u32>, Vec<Complex64>), Arc<ReferenceOrbitCache>)> {
+    let prec = params.precision_bits.max(128);
+    let width = params.width as usize;
+    
+    // Parse center from GMP strings stored in cache
+    let center_x_gmp = match Float::parse(&cache.center_x_gmp) {
+        Ok(parse_result) => Float::with_val(prec, parse_result),
+        Err(_) => return None,
+    };
+    let center_y_gmp = match Float::parse(&cache.center_y_gmp) {
+        Ok(parse_result) => Float::with_val(prec, parse_result),
+        Err(_) => return None,
+    };
+    
+    let cancelled = AtomicBool::new(false);
+    let reuse_data = build_reuse(params, reuse);
+    
+    // Clone cache for use in parallel iteration
+    let cache_ref = Arc::clone(cache);
+    
+    iterations
+        .par_chunks_mut(width)
+        .zip(zs.par_chunks_mut(width))
+        .enumerate()
+        .for_each(|(j, (iter_row, z_row))| {
+            let reuse_row = reuse_data.as_ref();
+            if j % 16 == 0 && cancel.load(Ordering::Relaxed) {
+                cancelled.store(true, Ordering::Relaxed);
+                return;
+            }
+            if cancelled.load(Ordering::Relaxed) {
+                return;
+            }
+            
+            for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
+                if let Some(reuse) = reuse_row {
+                    let ratio = reuse.ratio as usize;
+                    if j % ratio == 0 && i % ratio == 0 {
+                        let src_x = i / ratio;
+                        let src_y = j / ratio;
+                        let src_idx = (src_y * reuse.width as usize + src_x) as usize;
+                        if src_idx < reuse.iterations.len() {
+                            *iter = reuse.iterations[src_idx];
+                            *z = reuse.zs[src_idx];
+                            continue;
+                        }
+                    }
+                }
+                
+                // Compute dc in GMP precision
+                let dc_gmp = compute_dc_gmp(
+                    i,
+                    j,
+                    params,
+                    &center_x_gmp,
+                    &center_y_gmp,
+                    prec,
+                );
+                
+                // Iterate pixel with full GMP precision
+                let result = iterate_pixel_gmp(
+                    params,
+                    &cache_ref.orbit,
+                    &dc_gmp,
+                    prec,
+                );
+                
+                *iter = result.iteration;
+                *z = result.z_final;
+                
+                if result.glitched || result.suspect {
+                    // Note: glitch_mask not used in GMP path, but keep for consistency
+                }
+            }
+        });
+    
+    if cancelled.load(Ordering::Relaxed) {
+        None
+    } else {
+        Some(((iterations, zs), Arc::clone(cache)))
     }
 }
 

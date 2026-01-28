@@ -1,8 +1,18 @@
 use num_complex::Complex64;
 
+/// # Non-Conformal BLA
+///
+/// The Mandelbrot set is conformal (angles are preserved). This means complex numbers can be used
+/// for derivatives. Some other formulas are not conformal, for example the Tricorn aka Mandelbar,
+/// defined by: X + iY → (X - iY)² + C
+///
+/// For non-conformal formulas, replace complex numbers by 2×2 real matrices for A, B.
+/// Dual numbers with two dual parts can be used to calculate the derivatives.
+///
+/// Be careful finding norms. Define sup|M| and inf|M| as the largest and smallest singular
+/// values of M.
+///
 /// Matrice 2×2 réelle pour les formules non-conformes (comme Tricorn/Mandelbar).
-/// Pour les formules non-conformes, les dérivées ne peuvent pas être représentées
-/// par des nombres complexes, donc on utilise des matrices 2×2 réelles.
 #[derive(Clone, Copy, Debug)]
 pub struct Matrix2x2 {
     pub m00: f64,
@@ -70,7 +80,8 @@ impl Matrix2x2 {
         }
     }
 
-    /// Calcule la plus grande valeur singulière (sup|M|)
+    /// Calcule la plus grande valeur singulière (sup|M|).
+    /// Define sup|M| as the largest singular value of M.
     pub fn sup_norm(self) -> f64 {
         // For a 2x2 matrix, the largest singular value can be computed as:
         // σ_max = sqrt((trace(M^T M) + sqrt(trace(M^T M)^2 - 4*det(M^T M))) / 2)
@@ -91,7 +102,8 @@ impl Matrix2x2 {
         }
     }
 
-    /// Calcule la plus petite valeur singulière (inf|M|)
+    /// Calcule la plus petite valeur singulière (inf|M|).
+    /// Define inf|M| as the smallest singular value of M.
     pub fn inf_norm(self) -> f64 {
         // For a 2x2 matrix, the smallest singular value:
         // σ_min = sqrt((trace(M^T M) - sqrt(trace(M^T M)^2 - 4*det(M^T M))) / 2)
@@ -137,7 +149,12 @@ impl BlaCoefficientsNonConformal {
     }
 }
 
-/// Calcule les coefficients BLA non-conformes pour Tricorn.
+/// Calcule les coefficients BLA non-conformes pour Tricorn (Mandelbar).
+///
+/// Tricorn is defined by: X + iY → (X - iY)² + C
+///
+/// For non-conformal formulas, replace complex numbers by 2×2 real matrices for A, B.
+///
 /// Tricorn: z' = (X - iY)² + C = (X² - Y² - 2iXY) + C
 /// 
 /// Pour z = X + iY, on a:
@@ -149,7 +166,7 @@ impl BlaCoefficientsNonConformal {
 /// dX'/dX = 2X, dX'/dY = -2Y
 /// dY'/dX = -2Y, dY'/dY = -2X
 ///
-/// Donc A = [[2X, -2Y], [-2Y, -2X]]
+/// Donc A = [[2X, -2Y], [-2Y, -2X]] (matrice 2×2 réelle)
 pub fn compute_tricorn_bla_coefficients(z: Complex64) -> BlaCoefficientsNonConformal {
     let x = z.re;
     let y = z.im;
@@ -177,26 +194,34 @@ pub fn compute_nonconformal_validity_radius(
     epsilon: f64,
     c_norm: f64,
 ) -> f64 {
-    let inf_a = a.inf_norm();
-    let sup_b = b.sup_norm();
+    let inf_a = a.inf_norm();  // inf|A|
+    let sup_b = b.sup_norm();  // sup|B|
     
     if inf_a < 1e-20 {
-        return 0.0;
+        return 0.0;  // Avoid division by zero
     }
     
-    let term1 = epsilon * inf_a;
-    let term2 = sup_b * c_norm / inf_a;
+    // R = ε·inf|A| - sup|B|·|c| / inf|A|
+    let term1 = epsilon * inf_a;  // ε·inf|A|
+    let term2 = sup_b * c_norm / inf_a;  // sup|B|·|c| / inf|A|
     
-    (term1 - term2).max(0.0)
+    (term1 - term2).max(0.0)  // max{0, ε·inf|A| - sup|B|·|c| / inf|A|}
 }
 
-/// Fusionne deux BLAs non-conformes (Section 4.1 of deep zoom theory).
-/// Si Tx skips lx iterations from mx when |z| < Rx
-/// and Ty skips ly iterations from mx+lx when |z| < Ry,
-/// then Tz = Ty ∘ Tx skips lx+ly iterations from mx when |z| < Rz.
+/// Fusionne deux BLAs non-conformes.
 ///
-/// Formule fusion: Rz = max{0, min{Rx, Ry - sup|Bx|·|c| / sup|Ax|}}
-/// Note: Uses sup|Ax| in denominator as per theory (not inf|Ax|)
+/// If T_x skips l_x iterations from iteration m_x when |z| < R_x
+/// and T_y skips l_y iterations from iteration m_x + l_x when |z| < R_y,
+/// then T_z = T_y ∘ T_x skips l_x + l_y iterations from iteration m_x when |z| < R_z.
+///
+/// Merging BLA steps radius becomes:
+/// R_z = max{0, min{R_x, R_y - sup|B_x|·|c| / sup|A_x|}}
+///
+/// where:
+/// - R_x, R_y are the validity radii of T_x and T_y
+/// - sup|A_x| is the largest singular value of A_x
+/// - sup|B_x| is the largest singular value of B_x
+/// - |c| is the norm of the reference point C
 pub fn merge_nonconformal_bla(
     ax: Matrix2x2,
     bx: Matrix2x2,
@@ -206,18 +231,20 @@ pub fn merge_nonconformal_bla(
     ry: f64,
     c_norm: f64,
 ) -> (Matrix2x2, Matrix2x2, f64) {
-    // Composition: Az = Ay·Ax, Bz = Ay·Bx + By
+    // Composition: A_z = A_y·A_x, B_z = A_y·B_x + B_y
     let az = ay.mul(ax);
     let bz = ay.mul(bx).add(by);
     
-    // Validity radius: Rz = max{0, min{Rx, Ry - sup|Bx|·|c| / sup|Ax|}}
-    let sup_ax = ax.sup_norm();
-    let sup_bx = bx.sup_norm();
+    // Validity radius: R_z = max{0, min{R_x, R_y - sup|B_x|·|c| / sup|A_x|}}
+    let sup_ax = ax.sup_norm();  // sup|A_x|
+    let sup_bx = bx.sup_norm();  // sup|B_x|
     
     let rz = if sup_ax < 1e-20 {
+        // Avoid division by zero: use simpler formula
         rx.min(ry).max(0.0)
     } else {
-        let adjustment = sup_bx * c_norm / sup_ax;
+        // R_z = max{0, min{R_x, R_y - sup|B_x|·|c| / sup|A_x|}}
+        let adjustment = sup_bx * c_norm / sup_ax;  // sup|B_x|·|c| / sup|A_x|
         rx.min(ry - adjustment).max(0.0)
     };
     

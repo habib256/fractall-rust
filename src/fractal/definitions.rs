@@ -39,7 +39,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         // Enable distance estimation and interior detection by default for better rendering
         // These features use dual numbers (Section 5 and 6 of deep zoom theory)
         enable_distance_estimation: false, // Can be enabled for distance field coloring
-        enable_interior_detection: true,   // Enable by default to properly color interior points
+        enable_interior_detection: false,   // Disabled for now
         interior_threshold: 0.001,
         out_coloring_mode: OutColoringMode::Smooth,
         plane_transform: PlaneTransform::Mu,

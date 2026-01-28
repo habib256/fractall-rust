@@ -1,9 +1,11 @@
 use num_complex::Complex64;
+use rug::{Complex, Float};
 
 use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::perturbation::bla::BlaTable;
 use crate::fractal::perturbation::orbit::ReferenceOrbit;
 use crate::fractal::perturbation::types::ComplexExp;
+use crate::fractal::gmp::complex_norm_sqr;
 use crate::fractal::perturbation::series::{
     SeriesConfig, SeriesTable, should_use_series, estimate_series_error, compute_series_skip,
 };
@@ -64,8 +66,57 @@ pub fn compute_adaptive_glitch_tolerance(pixel_size: f64, user_tolerance: f64) -
 }
 
 /// Iterate a pixel using perturbation theory (Section 2 of deep zoom theory).
-/// Uses high precision reference orbit Zm and low precision deltas zn relative to it.
-/// Pixel orbit is Zm+zn, C+c where c is the pixel offset from center.
+///
+/// # Section 2: Perturbation
+///
+/// Low precision deltas relative to high precision orbit.
+///
+/// ## Formules mathématiques
+///
+/// - **Pixel orbit**: `Z_m + z_n` (où `Z_m` est l'orbite de référence haute précision, `z_n` le delta basse précision)
+/// - **Point C du pixel**: `C + c` (où `C` est le centre, `c` l'offset du pixel)
+/// - **Formule de perturbation**: `z_{n+1} = 2·Z_m·z_n + z_n² + c`
+///
+/// ## Initialisation
+///
+/// - `m` et `n` commencent à 0 (`m = 0`, `n = 0`)
+/// - `z_0 = 0` (delta initial = 0 pour Mandelbrot)
+///
+/// **Note**: Dans le code, `m` et `n` sont représentés par une seule variable `n` qui est toujours
+/// synchronisée (`m = n`). Pour Julia, l'initialisation diffère: `z_0 = c` (delta initial = offset du pixel).
+///
+/// ## Rebasing
+///
+/// Rebasing to avoid glitches: when `|Z_m + z_n| < |z_n|`, replace `z_n` with `Z_m + z_n`
+/// and reset the reference iteration count `m` to 0.
+///
+/// ## Notation dans le code
+///
+/// **Important**: Dans le code, il n'y a qu'une seule variable `n` qui représente à la fois
+/// `m` (l'index de l'orbite de référence) et `n` (l'itération du delta). Ils sont toujours
+/// synchronisés (`m = n` dans notre implémentation).
+///
+/// - `Z_m` ↔ `ref_orbit.z_ref_f64[n]` (orbite de référence haute précision à l'itération `n`)
+/// - `z_n` ↔ `delta` (delta de perturbation basse précision, type `ComplexExp`)
+/// - `C` ↔ `ref_orbit.cref` (point de référence, centre de l'image)
+/// - `c` ↔ `dc` (offset du pixel par rapport au centre, type `ComplexExp`)
+/// - `m` et `n` ↔ `n` (une seule variable dans le code, toujours synchronisée)
+///
+/// # Arguments
+///
+/// * `params` - Paramètres de la fractale
+/// * `ref_orbit` - Orbite de référence haute précision calculée au centre (ou référence de phase pour Hybrid BLA)
+/// * `bla_table` - Table BLA (Bivariate Linear Approximation) pour sauter des itérations.
+///   Approxime `l` itérations par `z_{n+l} = A_{n,l}·z_n + B_{n,l}·c` quand valide.
+///   For Hybrid BLA: one BLA table per reference (one per phase).
+/// * `series_table` - Table de séries pour approximation (optionnelle)
+/// * `delta0` - Delta initial (`z_0`): `ComplexExp::zero()` pour Mandelbrot, `dc` pour Julia
+/// * `dc` - Offset du pixel par rapport au centre (`c` dans la formule)
+///
+/// # Hybrid BLA
+///
+/// For a hybrid loop with multiple phases, this function is called with the reference
+/// for the current phase. Rebasing switches to the reference for the current phase.
 pub fn iterate_pixel(
     params: &FractalParams,
     ref_orbit: &ReferenceOrbit,
@@ -111,7 +162,9 @@ pub fn iterate_pixel(
     let mut n = 0u32;
     let mut delta = delta0;
     // Use z_ref_f64 for fast path iteration (z_ref is high-precision Vec<ComplexExp>)
-    let max_iter = params.iteration_max.min(ref_orbit.z_ref_f64.len().saturating_sub(1) as u32);
+    // Hybrid BLA: account for phase offset in effective length
+    let effective_len = ref_orbit.effective_len() as u32;
+    let max_iter = params.iteration_max.min(effective_len.saturating_sub(1));
     let bailout_sqr = params.bailout * params.bailout;
 
     // Calculer le pixel_size pour la tolérance adaptative
@@ -150,8 +203,13 @@ pub fn iterate_pixel(
         }
     }
 
+    // Main iteration loop: BLA Table Lookup algorithm
+    // For each iteration:
+    // 1. Find the BLA starting from iteration m (n) that has the largest skip l satisfying |z| < R
+    // 2. If there is none, do a perturbation iteration
+    // 3. Check for rebasing opportunities after each BLA application or perturbation step
     while n < max_iter {
-        let mut stepped = false;
+        let mut stepped = false;  // Track if a BLA was applied
         let mut delta_norm_sqr = 0.0;
 
         // Try non-conformal BLA first for Tricorn
@@ -171,14 +229,16 @@ pub fn iterate_pixel(
                         let node = &level_nodes[n as usize];
                         
                         if delta_norm_sqr_check < node.validity_radius * node.validity_radius {
-                            // Apply non-conformal BLA: next_vec = A·delta_vec + B·dc_vec
+                            // Apply non-conformal BLA: z_{n+l} = A_{n,l}·z_n + B_{n,l}·c
+                            // For non-conformal fractals (Tricorn), A and B are 2×2 real matrices
+                            // instead of complex numbers, as angles are not preserved.
                             let dc_approx = dc.to_complex64_approx();
                             let dc_vec = (dc_approx.re, dc_approx.im);
                             
-                            // Linear term: A·delta_vec
+                            // Linear term: A_{n,l}·z_n
                             let linear_vec = node.a.mul_vector(delta_vec.0, delta_vec.1);
                             
-                            // Add dc term: B·dc_vec (B is identity for Tricorn)
+                            // Add dc term: B_{n,l}·c
                             let dc_term_vec = node.b.mul_vector(dc_vec.0, dc_vec.1);
                             
                             let next_vec = (linear_vec.0 + dc_term_vec.0, linear_vec.1 + dc_term_vec.1);
@@ -186,7 +246,7 @@ pub fn iterate_pixel(
                             // Convert back to ComplexExp
                             delta = ComplexExp::from_complex64(Complex64::new(next_vec.0, next_vec.1));
                             delta_norm_sqr = delta.norm_sqr_approx();
-                            n += 1u32 << level;
+                            n += 1u32 << level;  // Skip l = 2^level iterations
                             stepped = true;
                             break;
                         }
@@ -195,11 +255,25 @@ pub fn iterate_pixel(
             }
         }
 
-        // BLA table lookup (Section 3.4 of deep zoom theory):
-        // Find the BLA starting from iteration m that has the largest skip l satisfying |z| < R.
-        // Le BLA est maintenant supporté pour Burning Ship quand le quadrant est stable
+        // BLA Table Lookup:
+        // Find the BLA starting from iteration m (n in our code) that has the largest skip l
+        // satisfying |z| < R. If there is none, do a perturbation iteration.
+        // Check for rebasing opportunities after each BLA application or perturbation step.
+        //
+        // Bivariate Linear Approximation (BLA):
+        // Sometimes, l iterations starting at n can be approximated by bivariate linear function:
+        // z_{n+l} = A_{n,l}·z_n + B_{n,l}·c
+        // This is valid when the non-linear part of the full perturbation iterations is so small
+        // that omitting it would cause fewer problems than the rounding error of the low precision data type.
+        //
+        // Note: BLA is automatically disabled for very deep zooms (>10^15) where f64 precision
+        // is insufficient. In such cases, the BLA table will be empty and full GMP perturbation is used.
+        //
+        // Search strategy: iterate levels in reverse order (largest skip first) to find the largest
+        // valid skip l = 2^level satisfying |z_n| < R_{n,l}.
         if !stepped && !bla_table.levels.is_empty() {
             delta_norm_sqr = delta.norm_sqr_approx();
+            // Search from highest level (largest skip) to lowest level (smallest skip)
             for level in (0..bla_table.levels.len()).rev() {
                 let level_nodes = &bla_table.levels[level];
                 if (n as usize) >= level_nodes.len() {
@@ -210,6 +284,10 @@ pub fn iterate_pixel(
                 if is_burning_ship && !node.burning_ship_valid {
                     continue;
                 }
+                // Single Step BLA validity condition: |z_n| < R_{n,l}
+                // Derived from: |z_n²| << |2·Z_n·z_n + c|
+                // Assuming negligibility of c: |z_n| << |2·Z_n| = |A_{n,1}|
+                // Therefore: |z_n| < R_{n,l} where R_{n,l} = ε·|A_{n,l}|
                 if delta_norm_sqr < node.validity_radius * node.validity_radius {
                     // For Burning Ship, apply sign transformation to delta
                     let work_delta = if is_burning_ship && node.burning_ship_valid {
@@ -219,12 +297,13 @@ pub fn iterate_pixel(
                     };
 
                     if should_use_series(series_config, delta_norm_sqr, node.validity_radius) {
+                        // Use series approximation with higher-order terms
                         let delta_sq = work_delta.mul(work_delta);
-                        let mut next_delta = work_delta.mul_complex64(node.a);
+                        let mut next_delta = work_delta.mul_complex64(node.a);  // A_{n,l}·z_n
                         if !is_julia {
-                            next_delta = next_delta.add(dc.mul_complex64(node.b));
+                            next_delta = next_delta.add(dc.mul_complex64(node.b));  // + B_{n,l}·c
                         }
-                        // Terme quadratique (ordre 2)
+                        // Terme quadratique (ordre 2): C·z_n²
                         next_delta = next_delta.add(delta_sq.mul_complex64(node.c));
 
                         // Termes d'ordre supérieur pour Multibrot (ordre 4-6)
@@ -254,13 +333,15 @@ pub fn iterate_pixel(
                         }
                         delta = next_delta;
                     } else {
-                        let mut next_delta = work_delta.mul_complex64(node.a);
+                        // Apply BLA: z_{n+l} = A_{n,l}·z_n + B_{n,l}·c
+                        let mut next_delta = work_delta.mul_complex64(node.a);  // A_{n,l}·z_n
                         if !is_julia {
-                            next_delta = next_delta.add(dc.mul_complex64(node.b));
+                            next_delta = next_delta.add(dc.mul_complex64(node.b));  // + B_{n,l}·c
                         }
                         delta = next_delta;
                     }
                     delta_norm_sqr = delta.norm_sqr_approx();
+                    // Skip l = 2^level iterations: z_{n+l} has been computed
                     n += 1u32 << level;
                     stepped = true;
                     break;
@@ -268,9 +349,12 @@ pub fn iterate_pixel(
             }
         }
 
+        // If no BLA was found (stepped == false), do a perturbation iteration
         if !stepped {
             if is_burning_ship {
-                let z_ref = ref_orbit.z_ref_f64[n as usize];
+                let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
+                    ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+                });
                 let delta_approx = delta.to_complex64_approx();
                 let z_curr = z_ref + delta_approx;
 
@@ -309,11 +393,11 @@ pub fn iterate_pixel(
                     z_temp = z_temp * z_temp;
                     let c_pixel = ref_orbit.cref + dc.to_complex64_approx();
                     let z_next = z_temp + c_pixel;
-                    let next_index = (n + 1) as usize;
-                    if next_index >= ref_orbit.z_ref_f64.len() {
-                        break;
-                    }
-                    let z_ref_next = ref_orbit.z_ref_f64[next_index];
+                    let next_index = n + 1;
+                    let z_ref_next = match ref_orbit.get_z_ref_f64(next_index) {
+                        Some(z) => z,
+                        None => break, // End of effective orbit for this phase
+                    };
                     delta = ComplexExp::from_complex64(z_next - z_ref_next);
                 }
                 delta_norm_sqr = delta.norm_sqr_approx();
@@ -321,7 +405,9 @@ pub fn iterate_pixel(
             } else if is_multibrot {
                 // Multibrot: z^d + c
                 // δ' ≈ d·z_ref^(d-1)·δ + d(d-1)/2·z_ref^(d-2)·δ²
-                let z_ref = ref_orbit.z_ref_f64[n as usize];
+                let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
+                    ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+                });
                 let d = multibrot_power;
                 let z_norm = z_ref.norm();
                 if z_norm > 1e-15 {
@@ -340,7 +426,9 @@ pub fn iterate_pixel(
             } else if is_tricorn {
                 // Tricorn: z' = conj(z)² + c
                 // Use non-conformal matrices for perturbation
-                let z_ref = ref_orbit.z_ref_f64[n as usize];
+                let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
+                    ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+                });
                 let coeffs = crate::fractal::perturbation::nonconformal::compute_tricorn_bla_coefficients(z_ref);
                 
                 // Convert delta to vector
@@ -372,7 +460,9 @@ pub fn iterate_pixel(
             } else if use_high_precision {
                 // High-precision path: use ComplexExp for z_ref multiplication
                 // δ' = 2·z_ref·δ + δ²
-                let z_ref_hp = ref_orbit.z_ref[n as usize];
+                let z_ref_hp = ref_orbit.get_z_ref(n).unwrap_or_else(|| {
+                    ref_orbit.z_ref[ref_orbit.z_ref.len().saturating_sub(1)]
+                });
                 // Scale z_ref by 2 for the linear term
                 let z_ref_2 = ComplexExp {
                     re: crate::fractal::perturbation::types::FloatExp::new(
@@ -394,38 +484,61 @@ pub fn iterate_pixel(
                 delta_norm_sqr = delta.norm_sqr_approx();
                 n += 1;
             } else {
-                // Standard perturbation iteration (Section 2 of deep zoom theory):
-                // Pixel orbit Zm+zn, C+c. Perturbation formula: zn+1 = 2·Zm·zn + zn² + c
-                // For Mandelbrot/Julia: z² + c
-                // δ' = 2·z_ref·δ + δ² + dc (for Mandelbrot) or δ' = 2·z_ref·δ + δ² (for Julia)
-                let z_ref = ref_orbit.z_ref_f64[n as usize];
-                let linear = delta.mul_complex64(z_ref * 2.0);
-                let nonlinear = delta.mul(delta);
+                // Section 2: Perturbation
+                //
+                // Formule de perturbation: z_{n+1} = 2·Z_m·z_n + z_n² + c
+                //
+                // Décomposition selon la documentation:
+                // - Terme linéaire: 2·Z_m·z_n
+                // - Terme quadratique: z_n²
+                // - Terme constant: c (offset du pixel)
+                //
+                // Notation mathématique → code:
+                // - Z_m ↔ z_ref[n] (orbite de référence haute précision, où m = n dans notre implémentation)
+                // - z_n ↔ delta (delta de perturbation basse précision)
+                // - c ↔ dc (offset du pixel par rapport au centre)
+                //
+                // Pour Julia, le point C est fixe (seed), donc pas de terme c dans la perturbation.
+                // Hybrid BLA: use get_z_ref_f64 to account for phase offset
+                let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
+                    ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+                });  // Z_m (où m = n, avec phase offset pour Hybrid BLA)
+                let linear = delta.mul_complex64(z_ref * 2.0);  // 2·Z_m·z_n
+                let nonlinear = delta.mul(delta);  // z_n²
                 if is_julia {
+                    // Julia: z_{n+1} = 2·Z_m·z_n + z_n² (pas de terme c car C est fixe)
                     delta = linear.add(nonlinear);
                 } else {
+                    // Mandelbrot: z_{n+1} = 2·Z_m·z_n + z_n² + c
                     delta = linear.add(nonlinear).add(dc);
                 }
                 delta_norm_sqr = delta.norm_sqr_approx();
-                n += 1;
+                n += 1;  // Incrémenter m et n simultanément (m = n dans notre implémentation)
             }
         }
 
-        // Note: We no longer break here when reaching the end of the reference orbit.
-        // Instead, we rebase (see rebasing logic below) to reuse the same reference orbit in a loop.
-        // This is Zhuoran's improvement that allows using a single reference orbit for very deep zooms.
-
-        // Check if we've reached the end of the reference orbit (Zhuoran's improvement)
-        // If so, rebase to reuse the same reference orbit in a loop
-        if n >= ref_orbit.z_ref_f64.len() as u32 {
-            // Calculate z_curr using the last valid reference point
-            let last_idx = ref_orbit.z_ref_f64.len().saturating_sub(1);
-            let z_ref = ref_orbit.z_ref_f64[last_idx];
+        // Rebasing quand on atteint la fin de l'orbite de référence (amélioration de Zhuoran)
+        //
+        // Hybrid BLA: For a hybrid loop with multiple phases, rebasing switches to the reference
+        // for the current phase. You need one BLA table per reference.
+        //
+        // When reaching the end of the effective orbit:
+        // - If Hybrid BLA is enabled and a cycle is detected, switch to the reference for the next phase
+        // - Otherwise, reset delta and reuse the same orbit in a loop (Zhuoran's method)
+        let effective_len = ref_orbit.effective_len() as u32;
+        if n >= effective_len {
+            // Calculer z_curr en utilisant le dernier point de référence valide
+            let last_idx = effective_len.saturating_sub(1) as usize;
+            let z_ref = ref_orbit.get_z_ref_f64(last_idx as u32).unwrap_or_else(|| {
+                ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+            });
             let delta_approx = delta.to_complex64_approx();
             let z_curr = z_ref + delta_approx;
             
-            // Rebase: delta = z_curr, reset n to 0 to reuse the reference orbit
-            // This is Zhuoran's method that allows using a single reference orbit for very deep zooms
+            // Rebasing: delta = z_curr
+            // In Hybrid BLA, if hybrid_refs is provided, we would switch to the reference
+            // for the next phase. For now, we reset n to 0 and continue with the same reference.
+            // Full Hybrid BLA implementation would switch references here.
             delta = ComplexExp::from_complex64(z_curr);
             n = 0;
             continue;
@@ -433,35 +546,53 @@ pub fn iterate_pixel(
 
         // For high-precision path, use ComplexExp for z_curr calculation
         let (z_curr, z_ref_norm_sqr) = if use_high_precision && !is_burning_ship && !is_multibrot && !is_tricorn {
-            let z_ref_hp = ref_orbit.z_ref[n as usize];
+            let z_ref_hp = ref_orbit.get_z_ref(n).unwrap_or_else(|| {
+                ref_orbit.z_ref[ref_orbit.z_ref.len().saturating_sub(1)]
+            });
             let z_curr_hp = z_ref_hp.add(delta);
             let z_curr = z_curr_hp.to_complex64_approx();
             let z_ref_norm = z_ref_hp.norm_sqr_approx();
             (z_curr, z_ref_norm)
         } else {
-            let z_ref = ref_orbit.z_ref_f64[n as usize];
+            let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
+                ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+            });
             let delta_approx = delta.to_complex64_approx();
             let z_curr = z_ref + delta_approx;
             (z_curr, z_ref.norm_sqr())
         };
 
-        // Rebasing (Section 2.1 of deep zoom theory):
-        // When |Zm + zn| < |zn|, replace zn with Zm + zn and reset the reference iteration count m to 0.
-        // This helps maintain delta small relative to z_ref and reduces glitches.
-        // In our implementation: z_curr = Zm + zn (where Zm is z_ref and zn is delta),
-        // so we check if |z_curr| < |delta|, and if so, rebase delta = z_curr and reset n (m) to 0.
+        // ====================================================================================
+        // Check for rebasing opportunities after each BLA application or perturbation step
+        // ====================================================================================
+        //
+        // Rebasing to avoid glitches: when |Z_m + z_n| < |z_n|, replace z_n with Z_m + z_n
+        // and reset the reference iteration count m to 0.
+        //
+        // This check is performed after each BLA application or perturbation iteration step
+        // as specified in the BLA Table Lookup algorithm.
+        //
+        // Implémentation:
+        // - z_curr = Z_m + z_n (où Z_m = z_ref[n] et z_n = delta)
+        //   Note: Dans le code, m et n sont représentés par la même variable n (m = n toujours)
+        // - Condition: |z_curr| < |delta| (équivalent à |Z_m + z_n| < |z_n|)
+        // - Si la condition est vraie:
+        //   * delta ← z_curr (replace z_n with Z_m + z_n)
+        //   * n ← 0 (reset m to 0, car m = n dans notre implémentation)
         let z_curr_norm_sqr = z_curr.norm_sqr();
-        // Recalculate delta_norm_sqr if not already computed (e.g., after BLA step)
+        // Recalculer delta_norm_sqr si pas déjà calculé (ex: après un saut BLA)
         if !stepped {
             delta_norm_sqr = delta.norm_sqr_approx();
         }
         let delta_norm_sqr_check = delta_norm_sqr;
+        
+        // Vérifier la condition de rebasing: |Z_m + z_n| < |z_n|
+        // Équivalent à: |z_curr| < |delta|
+        // Note: z_curr = Z_m + z_n où Z_m = z_ref[n] (m = n dans notre implémentation)
         if z_curr_norm_sqr > 0.0 && delta_norm_sqr_check > 0.0 && z_curr_norm_sqr < delta_norm_sqr_check {
-            // Perform rebasing: delta = z_curr (which is Zm + zn), reset n (m) to 0
-            // This allows reusing the same reference orbit in a loop (Zhuoran's method)
-            delta = ComplexExp::from_complex64(z_curr);
-            n = 0;
-            // Continue to next iteration with rebased delta
+            // Rebasing: replace z_n with Z_m + z_n and reset m to 0
+            delta = ComplexExp::from_complex64(z_curr);  // replace z_n with Z_m + z_n
+            n = 0;  // reset m to 0 (car m = n)
             continue;
         }
 
@@ -499,12 +630,17 @@ pub fn iterate_pixel(
         }
     }
 
-    let final_index = n.min(ref_orbit.z_ref_f64.len().saturating_sub(1) as u32);
+    let effective_len = ref_orbit.effective_len() as u32;
+    let final_index = n.min(effective_len.saturating_sub(1));
     let z_curr = if use_high_precision && !is_burning_ship && !is_multibrot && !is_tricorn {
-        let z_ref_hp = ref_orbit.z_ref[final_index as usize];
+        let z_ref_hp = ref_orbit.get_z_ref(final_index).unwrap_or_else(|| {
+            ref_orbit.z_ref[ref_orbit.z_ref.len().saturating_sub(1)]
+        });
         z_ref_hp.add(delta).to_complex64_approx()
     } else {
-        let z_ref = ref_orbit.z_ref_f64[final_index as usize];
+        let z_ref = ref_orbit.get_z_ref_f64(final_index).unwrap_or_else(|| {
+            ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+        });
         z_ref + delta.to_complex64_approx()
     };
     DeltaResult {
@@ -514,6 +650,196 @@ pub fn iterate_pixel(
         suspect,
         distance: f64::INFINITY, // Distance estimation not computed by default
         is_interior: false, // Interior detection not computed by default
+    }
+}
+
+/// Iterate a pixel using perturbation theory with full GMP precision.
+/// This function is used for very deep zooms (>10^15) where f64/ComplexExp precision is insufficient.
+///
+/// # Arguments
+///
+/// * `params` - Paramètres de la fractale
+/// * `ref_orbit` - Orbite de référence haute précision calculée au centre (avec z_ref_gmp)
+/// * `dc_gmp` - Offset du pixel par rapport au centre en GMP (`c` dans la formule)
+/// * `prec` - Précision GMP à utiliser
+///
+/// # Returns
+///
+/// DeltaResult avec le nombre d'itérations et la valeur finale de z
+pub fn iterate_pixel_gmp(
+    params: &FractalParams,
+    ref_orbit: &ReferenceOrbit,
+    dc_gmp: &Complex,
+    prec: u32,
+) -> DeltaResult {
+    let mut n = 0u32;
+    let effective_len = ref_orbit.effective_len() as u32;
+    let max_iter = params.iteration_max.min(effective_len.saturating_sub(1));
+    
+    let bailout = Float::with_val(prec, params.bailout);
+    let mut bailout_sqr = bailout.clone();
+    bailout_sqr *= &bailout;
+    
+    // Initialisation selon le type de fractale
+    let mut delta = match params.fractal_type {
+        FractalType::Julia => {
+            // Julia: delta initial = dc (car z_0 = C + c pour Julia)
+            dc_gmp.clone()
+        }
+        _ => {
+            // Mandelbrot/BurningShip: delta initial = 0 (car z_0 = seed)
+            Complex::with_val(prec, (0, 0))
+        }
+    };
+    
+    let is_julia = params.fractal_type == FractalType::Julia;
+    let is_burning_ship = params.fractal_type == FractalType::BurningShip;
+    let is_tricorn = params.fractal_type == FractalType::Tricorn;
+    
+    // Main iteration loop with full GMP precision
+    while n < max_iter {
+        // Get reference point at iteration n
+        let z_ref = match ref_orbit.get_z_ref_gmp(n) {
+            Some(z) => z,
+            None => break, // End of effective orbit
+        };
+        
+        // Apply perturbation formula: z_{n+1} = 2·Z_m·z_n + z_n² + c
+        // In GMP: delta_{n+1} = 2·z_ref·delta + delta² + dc
+        let mut delta_sq = delta.clone();
+        delta_sq *= &delta;
+        
+        let mut linear_term = z_ref.clone();
+        linear_term *= &delta;
+        linear_term *= Float::with_val(prec, 2.0);
+        
+        let mut next_delta = linear_term;
+        next_delta += &delta_sq;
+        
+        if !is_julia {
+            // Mandelbrot: add dc term
+            next_delta += dc_gmp;
+        }
+        // Julia: dc is already incorporated in initial delta
+        
+        // Handle special cases
+        if is_burning_ship {
+            // Burning Ship: z' = (|Re(z)|, |Im(z)|)² + c
+            // For deep zooms, compute full orbit: z_curr = z_ref + delta
+            let mut z_curr = z_ref.clone();
+            z_curr += &delta;
+            
+            // Apply abs() to real and imaginary parts
+            let re_abs = z_curr.real().clone().abs();
+            let im_abs = z_curr.imag().clone().abs();
+            let mut z_abs = Complex::with_val(prec, (re_abs, im_abs));
+            z_abs *= z_abs.clone();
+            
+            // Add cref + dc
+            let mut z_next = z_abs;
+            z_next += &ref_orbit.cref_gmp;
+            if !is_julia {
+                z_next += dc_gmp;
+            }
+            
+            // Calculate delta for next iteration: z_next - z_ref_next
+            if (n + 1) >= effective_len {
+                // Rebase: delta = z_next, reset n to 0
+                delta = z_next;
+                n = 0;
+                continue;
+            }
+            
+            let z_ref_next = match ref_orbit.get_z_ref_gmp(n + 1) {
+                Some(z) => z,
+                None => break,
+            };
+            delta = z_next - z_ref_next;
+        } else if is_tricorn {
+            // Tricorn: z' = conj(z)² + c
+            let mut z_curr = z_ref.clone();
+            z_curr += &delta;
+            let z_conj = z_curr.clone().conj();
+            let mut z_temp = z_conj.clone();
+            z_temp *= &z_conj;
+            z_temp += &ref_orbit.cref_gmp;
+            if !is_julia {
+                z_temp += dc_gmp;
+            }
+            
+            if (n + 1) >= effective_len {
+                delta = z_temp;
+                n = 0;
+                continue;
+            }
+            
+            let z_ref_next = match ref_orbit.get_z_ref_gmp(n + 1) {
+                Some(z) => z,
+                None => break,
+            };
+            delta = z_temp - z_ref_next;
+        } else {
+            // Standard Mandelbrot/Julia: use computed next_delta
+            delta = next_delta;
+        }
+        
+        // Check bailout
+        let mut z_curr = z_ref.clone();
+        z_curr += &delta;
+        let z_curr_norm_sqr = complex_norm_sqr(&z_curr, prec);
+        
+        if !z_curr.real().is_finite() || !z_curr.imag().is_finite() {
+            return DeltaResult {
+                iteration: n,
+                z_final: crate::fractal::gmp::complex_to_complex64(&z_curr),
+                glitched: true,
+                suspect: false,
+                distance: f64::INFINITY,
+                is_interior: false,
+            };
+        }
+        
+        if z_curr_norm_sqr > bailout_sqr {
+            return DeltaResult {
+                iteration: n,
+                z_final: crate::fractal::gmp::complex_to_complex64(&z_curr),
+                glitched: false,
+                suspect: false,
+                distance: f64::INFINITY,
+                is_interior: false,
+            };
+        }
+        
+        // Check for rebasing: when |Z_m + z_n| < |z_n|
+        let delta_norm_sqr = complex_norm_sqr(&delta, prec);
+        if z_curr_norm_sqr > Float::with_val(prec, 0.0) 
+            && delta_norm_sqr > Float::with_val(prec, 0.0) 
+            && z_curr_norm_sqr < delta_norm_sqr {
+            // Rebasing: replace z_n with Z_m + z_n and reset m to 0
+            delta = z_curr;
+            n = 0;
+            continue;
+        }
+        
+        n += 1;
+    }
+    
+    // Final result
+    let final_index = n.min(effective_len.saturating_sub(1));
+    let z_ref = match ref_orbit.get_z_ref_gmp(final_index) {
+        Some(z) => z,
+        None => ref_orbit.z_ref_gmp.last().unwrap(),
+    };
+    let mut z_curr = z_ref.clone();
+    z_curr += &delta;
+    
+    DeltaResult {
+        iteration: final_index,
+        z_final: crate::fractal::gmp::complex_to_complex64(&z_curr),
+        glitched: false,
+        suspect: false,
+        distance: f64::INFINITY,
+        is_interior: false,
     }
 }
 
@@ -543,7 +869,9 @@ pub(crate) fn iterate_pixel_with_duals(
     enable_interior: bool,
 ) -> DeltaResult {
     let mut n = 0u32;
-    let max_iter = params.iteration_max.min(ref_orbit.z_ref_f64.len().saturating_sub(1) as u32);
+    // Hybrid BLA: account for phase offset in effective length
+    let effective_len = ref_orbit.effective_len() as u32;
+    let max_iter = params.iteration_max.min(effective_len.saturating_sub(1));
     let bailout_sqr = params.bailout * params.bailout;
     
     let pixel_size = params.span_x / params.width as f64;
@@ -600,7 +928,9 @@ pub(crate) fn iterate_pixel_with_duals(
         // Check interior detection
         if enable_interior {
             if is_interior(delta_dual, params.interior_threshold) {
-                let z_ref = ref_orbit.z_ref_f64[n as usize];
+                let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
+                    ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+                });
                 let z_curr = z_ref + delta_dual.value;
                 return DeltaResult {
                     iteration: n,
@@ -688,30 +1018,49 @@ pub(crate) fn iterate_pixel_with_duals(
         if !stepped {
             // Standard perturbation iteration with dual propagation
             if is_burning_ship {
-                // Burning Ship: simplified (full implementation would need quadrant handling)
-                let z_ref = ref_orbit.z_ref_f64[n as usize];
+                // Burning Ship: z' = (|Re(z)| + i|Im(z)|)² + c
+                //
+                // For non-complex-analytic formulas (like Burning Ship), you can use dual numbers
+                // with two dual parts, for each of the real and imaginary components. At the end they
+                // can be combined into a Jacobian matrix and used in the (directional) distance estimate
+                // formula for general iterations.
+                //
+                // Note: Current implementation is simplified - dual propagation for Burning Ship does not
+                // fully implement the Jacobian matrix approach. The absolute value operations create
+                // discontinuities that require special handling in the dual propagation. A full implementation
+                // would require propagating duals through the absolute value operations and combining into
+                // a Jacobian matrix for distance estimation.
+                let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
+                    ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+                });
                 let z_ref_dual = ExtendedDualComplex::from_complex(z_ref);
                 let z_curr_dual = z_ref_dual.add(delta_dual);
                 // For Burning Ship, we'd compute |z|² with duals
-                // Simplified: use standard path
+                // Simplified: use standard path (duals not fully propagated through abs() operations)
                 let z_curr = z_curr_dual.value;
                 let re_abs = z_curr.re.abs();
                 let im_abs = z_curr.im.abs();
                 let z_abs_sq = Complex64::new(re_abs * re_abs - im_abs * im_abs, 2.0 * re_abs * im_abs);
                 let z_next = z_abs_sq + ref_orbit.cref + dc_dual.value;
-                // Zhuoran's improvement: rebase when reaching end of reference orbit
-                if ((n + 1) as usize) >= ref_orbit.z_ref_f64.len() {
+                // Hybrid BLA: rebase when reaching end of effective orbit for current phase
+                let effective_len = ref_orbit.effective_len() as u32;
+                if (n + 1) >= effective_len {
                     // Rebase: delta_dual = z_next (which is z_curr for next iteration), reset n to 0
+                    // In Hybrid BLA, this switches to the reference for the current phase
                     delta_dual = ExtendedDualComplex::from_complex(z_next);
                     n = 0;
                     continue;
                 }
-                let z_ref_next = ref_orbit.z_ref_f64[(n + 1) as usize];
+                let z_ref_next = ref_orbit.get_z_ref_f64(n + 1).unwrap_or_else(|| {
+                    ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+                });
                 delta_dual = ExtendedDualComplex::from_complex(z_next - z_ref_next);
                 n += 1;
             } else if is_multibrot {
                 // Multibrot: z^d + c
-                let z_ref = ref_orbit.z_ref_f64[n as usize];
+                let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
+                    ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+                });
                 let z_ref_dual = ExtendedDualComplex::from_complex(z_ref);
                 let z_curr_dual = z_ref_dual.add(delta_dual);
                 let d = multibrot_power;
@@ -720,13 +1069,17 @@ pub(crate) fn iterate_pixel_with_duals(
                     // Simplified: use standard computation
                     let z_pow = z_curr_dual.value.powf(d);
                     let z_next = z_pow + ref_orbit.cref + dc_dual.value;
-                    // Zhuoran's improvement: rebase when reaching end of reference orbit
-                    if ((n + 1) as usize) >= ref_orbit.z_ref_f64.len() {
+                    // Hybrid BLA: rebase when reaching end of effective orbit for current phase
+                    let effective_len = ref_orbit.effective_len() as u32;
+                    if (n + 1) >= effective_len {
+                        // Rebase: switch to reference for current phase
                         delta_dual = ExtendedDualComplex::from_complex(z_next);
                         n = 0;
                         continue;
                     }
-                    let z_ref_next = ref_orbit.z_ref_f64[(n + 1) as usize];
+                    let z_ref_next = ref_orbit.get_z_ref_f64(n + 1).unwrap_or_else(|| {
+                        ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+                    });
                     delta_dual = ExtendedDualComplex::from_complex(z_next - z_ref_next);
                 } else {
                     delta_dual = dc_dual;
@@ -735,9 +1088,20 @@ pub(crate) fn iterate_pixel_with_duals(
             } else if is_tricorn {
                 // Tricorn: z' = conj(z)² + c
                 // Use non-conformal matrices for perturbation
-                // Note: Dual propagation for Tricorn is simplified - full implementation would
-                // require propagating duals through matrix operations
-                let z_ref = ref_orbit.z_ref_f64[n as usize];
+                //
+                // For non-complex-analytic formulas (like Mandelbar/Tricorn), you can use dual numbers
+                // with two dual parts, for each of the real and imaginary components. At the end they
+                // can be combined into a Jacobian matrix and used in the (directional) distance estimate
+                // formula for general iterations.
+                //
+                // Note: Current implementation is simplified - dual propagation for Tricorn does not fully
+                // implement the Jacobian matrix approach. The duals are not correctly propagated through
+                // the non-conformal matrix operations. A full implementation would require:
+                // 1. Propagating dual_re and dual_im through 2×2 real matrices (Jacobian)
+                // 2. Combining the results into a proper distance estimate using the Jacobian norm
+                let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
+                    ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+                });
                 let coeffs = crate::fractal::perturbation::nonconformal::compute_tricorn_bla_coefficients(z_ref);
                 let delta_vec = (delta_dual.value.re, delta_dual.value.im);
                 let linear_vec = coeffs.a.mul_vector(delta_vec.0, delta_vec.1);
@@ -750,7 +1114,8 @@ pub(crate) fn iterate_pixel_with_duals(
                     linear_vec.0 + delta_conj_sq_re + dc_term_vec.0,
                     linear_vec.1 + delta_conj_sq_im + dc_term_vec.1,
                 );
-                // Update value, keep duals (simplified - full propagation would update duals through matrices)
+                // Update value, keep duals (simplified - full implementation would propagate duals
+                // through 2×2 real matrices and combine into Jacobian for distance estimation)
                 delta_dual.value = Complex64::new(next_vec.0, next_vec.1);
                 n += 1;
             } else {
@@ -774,15 +1139,18 @@ pub(crate) fn iterate_pixel_with_duals(
                 let z_next_dual = z_sq_dual.add(c_dual);
                 
                 // Calculate delta for next iteration: z_next - z_ref_next
-                // Zhuoran's improvement: if we reach the end of the reference orbit, rebase instead of breaking
-                if ((n + 1) as usize) >= ref_orbit.z_ref_f64.len() {
+                // Hybrid BLA: if we reach the end of the effective orbit, rebase instead of breaking
+                let effective_len = ref_orbit.effective_len() as u32;
+                if (n + 1) >= effective_len {
                     // Rebase: delta_dual = z_next_dual (which is z_curr for next iteration), reset n to 0
-                    // This allows reusing the same reference orbit in a loop
+                    // In Hybrid BLA, this switches to the reference for the current phase
                     delta_dual = z_next_dual;
                     n = 0;
                     continue;
                 }
-                let z_ref_next = ref_orbit.z_ref_f64[(n + 1) as usize];
+                let z_ref_next = ref_orbit.get_z_ref_f64(n + 1).unwrap_or_else(|| {
+                    ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+                });
                 let z_ref_next_dual = ExtendedDualComplex::from_complex(z_ref_next);
                 delta_dual = z_next_dual.add(z_ref_next_dual.scale(-1.0));
                 n += 1;
@@ -790,7 +1158,9 @@ pub(crate) fn iterate_pixel_with_duals(
         }
         
         // Check bailout
-        let z_ref = ref_orbit.z_ref_f64[n as usize];
+        let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
+            ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+        });
         let z_curr = z_ref + delta_dual.value;
         
         if !z_curr.re.is_finite() || !z_curr.im.is_finite() {
@@ -845,8 +1215,11 @@ pub(crate) fn iterate_pixel_with_duals(
     }
     
     // Final result
-    let final_index = n.min(ref_orbit.z_ref_f64.len().saturating_sub(1) as u32);
-    let z_ref = ref_orbit.z_ref_f64[final_index as usize];
+    let effective_len = ref_orbit.effective_len() as u32;
+    let final_index = n.min(effective_len.saturating_sub(1));
+    let z_ref = ref_orbit.get_z_ref_f64(final_index).unwrap_or_else(|| {
+        ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+    });
     let z_curr = z_ref + delta_dual.value;
     
     let distance = if enable_distance {

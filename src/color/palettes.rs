@@ -191,21 +191,29 @@ fn gradient_interpolate(g: Gradient, mut t: f64) -> (u8, u8, u8) {
     (last.r, last.g, last.b)
 }
 
-fn smooth_iteration(iteration: u32, z: Complex64, iter_max: u32) -> f64 {
+fn smooth_iteration(iteration: u32, z: Complex64, iter_max: u32, bailout: f64) -> f64 {
     let iter = iteration as f64;
     let max = iter_max as f64;
 
     // Vérifier que z est fini avant de calculer sa norme
-    // Si z est NaN ou infini, retourner une valeur par défaut
+    // Si z est NaN ou infini, utiliser une valeur basée sur l'itération avec une petite variation
+    // pour éviter que tous les pixels avec z invalide aient la même couleur (créant des blocs)
     if !z.re.is_finite() || !z.im.is_finite() {
-        return iter / max;
+        // Utiliser une valeur qui varie légèrement pour éviter les blocs identiques
+        // Variation basée sur la partie fractionnaire de l'itération pour créer une transition
+        let base = iter / max;
+        let variation = ((iter as u32 % 4) as f64) * 0.01 / max; // Petite variation cyclique
+        return (base + variation).min(0.999);
     }
 
     let mag = z.norm();
 
     // Vérifier que la norme est finie et valide
     if !mag.is_finite() || mag <= 0.0 {
-        return iter / max;
+        // Utiliser une valeur qui varie légèrement pour éviter les blocs identiques
+        let base = iter / max;
+        let variation = ((iter as u32 % 4) as f64) * 0.01 / max;
+        return (base + variation).min(0.999);
     }
 
     // Points dans l'ensemble : utiliser iteration/max
@@ -214,39 +222,77 @@ fn smooth_iteration(iteration: u32, z: Complex64, iter_max: u32) -> f64 {
     }
 
     // Pour un rendu smooth, calculer nu basé sur la magnitude de z
-    // Formule standard: nu = log(log(|z|) / log(2)) / log(2)
+    // Formule standard: nu = n + 1 - log₂(log₂(|z|))
+    // Équivalent: nu = n + 1 - log(log(|z|) / log(2)) / log(2)
     // Cela donne une estimation continue du nombre d'itérations avant l'échappement
     
-    // La magnitude doit être >= bailout (typiquement 2.0) pour que le calcul soit valide
-    // Si mag < 2.0, on utilise simplement iter/max pour éviter les problèmes
-    if mag < 2.0 {
-        return iter / max;
+    // La magnitude doit être >= bailout pour que le calcul soit valide
+    // Si mag < bailout, utiliser une interpolation pour éviter les discontinuités
+    let log2 = 2.0_f64.ln();
+    let bailout_val = bailout.max(2.0); // Utiliser au minimum 2.0 pour la formule
+    
+    if mag < bailout_val {
+        // Pour mag < bailout, utiliser une interpolation linéaire vers la valeur à mag=bailout
+        // pour éviter les discontinuités brutales avec les pixels voisins
+        let t = (mag / bailout_val).min(1.0).max(0.0);
+        let base_value = iter / max;
+        // Calculer la valeur smooth à mag=bailout
+        let log_mag_at_bailout = bailout_val.ln();
+        let ratio_at_bailout = log_mag_at_bailout / log2;
+        if ratio_at_bailout > 1.0 {
+            let nu_at_bailout = ratio_at_bailout.ln() / log2;
+            if nu_at_bailout.is_finite() && nu_at_bailout >= 0.0 && nu_at_bailout <= iter + 1.0 {
+                let smooth_at_bailout = (iter + 1.0 - nu_at_bailout) / max;
+                return base_value + t * (smooth_at_bailout - base_value);
+            }
+        }
+        return base_value;
     }
     
-    let log_zn = mag.ln() / 2.0;
+    // Formule correcte: nu = log(log(|z|) / log(2)) / log(2)
+    // où log(|z|) est le logarithme naturel de la magnitude
+    let log_mag = mag.ln();
     
-    if !log_zn.is_finite() || log_zn <= 0.0 {
-        return iter / max;
+    if !log_mag.is_finite() || log_mag <= 0.0 {
+        // Utiliser une valeur qui varie légèrement pour éviter les blocs identiques
+        let base = iter / max;
+        let variation = ((iter as u32 % 4) as f64) * 0.01 / max;
+        return (base + variation).min(0.999);
     }
 
-    // Calculer nu de manière stable: nu = log(log(|z|) / log(2)) / log(2)
-    let log2 = 2.0_f64.ln();
-    let ratio = log_zn / log2;
+    // Calculer ratio = log(|z|) / log(2)
+    let ratio = log_mag / log2;
     
     if ratio <= 1.0 || !ratio.is_finite() {
-        // Si ratio <= 1, log(ratio) serait <= 0, ce qui créerait des problèmes
-        return iter / max;
+        // Si ratio <= 1, le calcul de nu ne serait pas valide
+        // Utiliser une interpolation pour éviter les discontinuités
+        if ratio > 0.0 && ratio.is_finite() {
+            let t = ratio.min(1.0).max(0.0);
+            let base_value = iter / max;
+            // Petite variation pour éviter les blocs identiques
+            return base_value + t * 0.05;
+        }
+        let base = iter / max;
+        let variation = ((iter as u32 % 4) as f64) * 0.01 / max;
+        return (base + variation).min(0.999);
     }
     
+    // Calculer nu = log(ratio) / log(2) = log(log(|z|) / log(2)) / log(2)
     let nu = ratio.ln() / log2;
 
-    if !nu.is_finite() || nu < 0.0 || nu > iter + 1.0 {
-        return iter / max;
+    if !nu.is_finite() {
+        // Utiliser une valeur qui varie légèrement pour éviter les blocs identiques
+        let base = iter / max;
+        let variation = ((iter as u32 % 4) as f64) * 0.01 / max;
+        return (base + variation).min(0.999);
     }
+    
+    // Clamp nu dans une plage raisonnable pour éviter les valeurs aberrantes
+    let nu_clamped = nu.max(0.0).min(iter + 1.0);
 
     // Calcul smooth: iter + 1 - nu
     // Cela donne une valeur continue basée sur la magnitude de z
-    let mut smooth = iter + 1.0 - nu;
+    let mut smooth = iter + 1.0 - nu_clamped;
     
     // Clamp pour éviter les valeurs hors limites
     if smooth < 0.0 {
@@ -315,7 +361,7 @@ fn compute_biomorphs(iteration: u32, z: Complex64, iter_max: u32) -> f64 {
         iteration as f64 / iter_max as f64
     } else {
         // Outside boundary: use smooth
-        smooth_iteration(iteration, z, iter_max)
+        smooth_iteration(iteration, z, iter_max, 2.0) // Default bailout
     }
 }
 
@@ -348,7 +394,7 @@ fn compute_potential(iteration: u32, z: Complex64, iter_max: u32) -> f64 {
 
 /// Compute color decomposition based on angle.
 fn compute_color_decomposition(iteration: u32, z: Complex64, iter_max: u32) -> f64 {
-    let base = smooth_iteration(iteration, z, iter_max);
+    let base = smooth_iteration(iteration, z, iter_max, 2.0); // Default bailout
     // Use angle of z for color variation
     let angle = z.im.atan2(z.re);
     let normalized_angle = (angle + std::f64::consts::PI) / (2.0 * std::f64::consts::PI);
@@ -385,15 +431,20 @@ pub fn color_for_pixel(
     }
 
     // For BinaryDecomposition, we need the original z.im sign
-    let is_interior = z.im < 0.0;
+    // Note: Interior detection via z.im < 0 is only valid when enable_interior_detection is true
+    // and the flag is explicitly encoded. For normal escape-time fractals, z.im can be negative
+    // naturally, so we should NOT use this as a signal unless interior detection is enabled.
+    // Since color_for_pixel doesn't have access to params.enable_interior_detection,
+    // we disable this check to avoid false positives that create black checkerboard patterns.
     let original_z_im_negative = z.im < 0.0;
-
-    // Interior detection: if z.im < 0, it's an interior point (encoded flag)
-    // Color interior points black (Section 6 of deep zoom theory)
-    // Exception: BinaryDecomposition uses the sign for color inversion
-    if is_interior && out_coloring_mode != OutColoringMode::BinaryDecomposition {
-        return (0, 0, 0);
-    }
+    
+    // DISABLED: Interior detection check removed to prevent false positives
+    // The interior detection flag should only be used when explicitly enabled via
+    // enable_interior_detection in FractalParams, and should be passed separately
+    // rather than encoded in z.im sign to avoid conflicts with normal negative z.im values.
+    // if is_interior && out_coloring_mode != OutColoringMode::BinaryDecomposition {
+    //     return (0, 0, 0);
+    // }
 
     // Restore z with positive im for calculations (except for sign check)
     let z_positive = Complex64::new(z.re, z.im.abs());
@@ -405,11 +456,11 @@ pub fn color_for_pixel(
         OutColoringMode::IterPlusImag => compute_iter_plus_imag(iteration, z_positive, iter_max),
         OutColoringMode::IterPlusRealImag => compute_iter_plus_real_imag(iteration, z_positive, iter_max),
         OutColoringMode::IterPlusAll => compute_iter_plus_all(iteration, z_positive, iter_max),
-        OutColoringMode::BinaryDecomposition => smooth_iteration(iteration, z_positive, iter_max),
+        OutColoringMode::BinaryDecomposition => smooth_iteration(iteration, z_positive, iter_max, 2.0), // Default bailout
         OutColoringMode::Biomorphs => compute_biomorphs(iteration, z_positive, iter_max),
         OutColoringMode::Potential => compute_potential(iteration, z_positive, iter_max),
         OutColoringMode::ColorDecomposition => compute_color_decomposition(iteration, z_positive, iter_max),
-        OutColoringMode::Smooth => smooth_iteration(iteration, z_positive, iter_max),
+        OutColoringMode::Smooth => smooth_iteration(iteration, z_positive, iter_max, 2.0), // Default bailout
     };
 
     // Clamp t dans [0, 1) pour éviter les problèmes aux limites

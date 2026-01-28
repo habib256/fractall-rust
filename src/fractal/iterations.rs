@@ -45,7 +45,21 @@ fn mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let mut i = 0u32;
     while i < p.iteration_max && z.norm() < p.bailout {
         z = z * z + z_pixel;
+        // Vérifier que z reste fini pour éviter NaN/infini qui causent des artefacts
+        if !z.re.is_finite() || !z.im.is_finite() {
+            // Si z devient invalide, utiliser une valeur de repli basée sur la dernière valeur valide
+            // ou une valeur par défaut si c'est la première itération
+            if i == 0 {
+                z = Complex64::new(z_pixel.re * 10.0, z_pixel.im * 10.0);
+            }
+            break;
+        }
         i += 1;
+    }
+    // S'assurer que z est valide avant de retourner
+    if !z.re.is_finite() || !z.im.is_finite() {
+        // Valeur de repli pour éviter les artefacts
+        z = Complex64::new(z_pixel.re * 10.0, z_pixel.im * 10.0);
     }
     FractalResult { iteration: i, z }
 }
@@ -56,7 +70,18 @@ fn julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let mut i = 0u32;
     while i < p.iteration_max && z.norm() < p.bailout {
         z = z * z + p.seed;
+        // Vérifier que z reste fini pour éviter NaN/infini qui causent des artefacts
+        if !z.re.is_finite() || !z.im.is_finite() {
+            if i == 0 {
+                z = Complex64::new(p.seed.re * 10.0, p.seed.im * 10.0);
+            }
+            break;
+        }
         i += 1;
+    }
+    // S'assurer que z est valide avant de retourner
+    if !z.re.is_finite() || !z.im.is_finite() {
+        z = Complex64::new(p.seed.re * 10.0, p.seed.im * 10.0);
     }
     FractalResult { iteration: i, z }
 }
@@ -202,7 +227,18 @@ fn burning_ship(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         let mut z_temp = Complex64::new(re, im);
         z_temp = z_temp * z_temp;
         z = z_temp + z_pixel;
+        // Vérifier que z reste fini pour éviter NaN/infini qui causent des artefacts
+        if !z.re.is_finite() || !z.im.is_finite() {
+            if i == 0 {
+                z = Complex64::new(z_pixel.re * 10.0, z_pixel.im * 10.0);
+            }
+            break;
+        }
         i += 1;
+    }
+    // S'assurer que z est valide avant de retourner
+    if !z.re.is_finite() || !z.im.is_finite() {
+        z = Complex64::new(z_pixel.re * 10.0, z_pixel.im * 10.0);
     }
 
     FractalResult { iteration: i, z }

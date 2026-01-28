@@ -144,11 +144,11 @@ struct BlaCoefficients {
     e: Complex64,  // δ⁴
 }
 
-/// Compute BLA coefficients (A, B, C, D, E) for a single iteration at z_ref.
-/// For z^d + c iteration: δ' = A·δ + B·dc + C·δ² + D·δ³ + E·δ⁴
+/// Compute BLA coefficients (A_{n,1}, B_{n,1}, C, D, E) for a single iteration at z_ref.
+/// For z^d + c iteration: δ' = A_{n,1}·δ + B_{n,1}·dc + C·δ² + D·δ³ + E·δ⁴
 /// where:
-/// - A = d·z^(d-1)
-/// - B = 1 (Mandelbrot) or 0 (Julia)
+/// - A_{n,1} = d·z^(d-1) (for single step, A_{n,1} = 2·Z_n for Mandelbrot)
+/// - B_{n,1} = 1 (Mandelbrot) or 0 (Julia)
 /// - C = d(d-1)/2·z^(d-2)
 /// - D = d(d-1)(d-2)/6·z^(d-3)  (pour Multibrot, 0 pour Mandelbrot)
 /// - E = d(d-1)(d-2)(d-3)/24·z^(d-4)  (pour Multibrot, 0 pour Mandelbrot)
@@ -162,8 +162,8 @@ fn compute_bla_coefficients(
 
     match fractal_type {
         FractalType::Mandelbrot | FractalType::Julia => {
-            // Standard z² + c: A = 2z, C = 1, D = E = 0
-            let a = z * 2.0;
+            // Standard z² + c: A_{n,1} = 2·Z_n, C = 1, D = E = 0
+            let a = z * 2.0;  // A_{n,1} = 2·Z_n
             let b = if is_julia { zero } else { Complex64::new(1.0, 0.0) };
             let c = Complex64::new(1.0, 0.0);
             // Pour z², les termes d'ordre supérieur sont nuls
@@ -231,8 +231,46 @@ fn compute_bla_coefficients(
     }
 }
 
-/// Build BLA table from the f64 reference orbit (Section 3.3 of deep zoom theory).
-/// Creates M single-step BLAs, then merges neighbours to create multi-step BLAs.
+/// Build BLA table from the f64 reference orbit.
+///
+/// # Bivariate Linear Approximation
+///
+/// Sometimes, `l` iterations starting at `n` can be approximated by bivariate linear function:
+/// `z_{n+l} = A_{n,l}·z_n + B_{n,l}·c`
+///
+/// # Note on Deep Zooms
+///
+/// For very deep zooms (>10^15), the f64 precision of the reference orbit and BLA coefficients
+/// becomes insufficient. In such cases, BLA should be disabled and full GMP perturbation used instead.
+/// This function will return an empty BLA table if the zoom is too deep for f64 precision.
+///
+/// This is valid when the non-linear part of the full perturbation iterations is so small that
+/// omitting it would cause fewer problems than the rounding error of the low precision data type.
+///
+/// # Single Step BLA
+///
+/// Approximation of a single step by bilinear form is valid when:
+/// ```
+/// |z_n²| << |2·Z_n·z_n + c|
+/// ⇑ assume negligibility of c << |2·Z_n·z_n|
+/// ⇑ factor out z_n
+/// |z_n| << |2·Z_n|
+/// ⇑ definition of A_{n,1}, B_{n,1} for single step
+/// |z_n| << |A_{n,1}| =: R_{n,1}
+/// ```
+///
+/// # BLA Table Construction
+///
+/// This style of table construction is suboptimal according to Zhuoran.
+///
+/// Suppose the reference has `M` iterations. Create `M` BLAs each skipping 1 iteration
+/// (this can be done in parallel). Then merge neighbours without overlap to create `⌈M/2⌉`
+/// each skipping 2 iterations (except for perhaps the last which skips less). Repeat until
+/// there is only 1 BLA skipping `M-1` iterations: it's best to start the merge from iteration 1
+/// because reference iteration 0 always corresponds to a non-linear perturbation step as `Z=0`.
+///
+/// The resulting table has `O(M)` elements.
+///
 /// Note: Use z_ref_f64 from ReferenceOrbit, not z_ref (which is Vec<ComplexExp>).
 pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTable {
     // Note: Tricorn support in BLA would require non-conformal matrices (see nonconformal.rs)
@@ -245,13 +283,27 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
         return BlaTable::empty();
     }
 
-    let base_len = ref_orbit.len().saturating_sub(1);
+    // M = number of iterations in reference orbit (minus 1, as we don't need BLA for last iteration)
+    let base_len = ref_orbit.len().saturating_sub(1);  // M
     if base_len == 0 {
         return BlaTable::empty();
     }
 
+    // Check if zoom is too deep for f64-based BLA
+    // For pixel_size < 1e-15 (zoom > 10^15), f64 precision is insufficient
+    // Disable BLA and use full GMP perturbation instead
+    if params.width > 0 && params.height > 0 {
+        let pixel_size = params.span_x.abs().max(params.span_y.abs()) / params.width as f64;
+        if pixel_size.is_finite() && pixel_size > 0.0 && pixel_size < 1e-15 {
+            // Zoom too deep for f64-based BLA: return empty table
+            // The perturbation code will detect this and use full GMP path
+            return BlaTable::empty();
+        }
+    }
+
     let is_burning_ship = params.fractal_type == FractalType::BurningShip;
     let mut levels: Vec<Vec<BlaNode>> = Vec::new();
+    // Step 1: Create M BLAs each skipping 1 iteration (this can be done in parallel)
     let mut level0 = Vec::with_capacity(base_len);
     let base_threshold = params.bla_threshold.max(1e-16);
     let validity_scale = params.bla_validity_scale.clamp(0.1, 100.0);
@@ -274,13 +326,19 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
         
         let a_norm = coeffs.a.norm();
 
-        // Single-step BLA validity formula (Section 3.1 of deep zoom theory):
-        // Valid when |z²| << |2Z·z + c|, which simplifies to |z| << |2Z| = |A|
-        // Assuming negligibility of c, we get: |z_n| << |A_{n,1}| =: R_{n,1}
-        // Formula: R = ε·|A| where ε is the threshold (base_threshold * validity_scale)
+        // Single Step BLA validity formula:
+        // Approximation of a single step by bilinear form is valid when:
+        // |z_n²| << |2·Z_n·z_n + c|
+        // ⇑ assume negligibility of c << |2·Z_n·z_n|
+        // ⇑ factor out z_n
+        // |z_n| << |2·Z_n|
+        // ⇑ definition of A_{n,1}, B_{n,1} for single step
+        // |z_n| << |A_{n,1}| =: R_{n,1}
+        //
+        // Formula: R_{n,1} = ε·|A_{n,1}| where ε is the threshold (base_threshold * validity_scale)
         let epsilon = base_threshold * validity_scale;
         let validity = if a_norm > 1e-20 {
-            epsilon * a_norm
+            epsilon * a_norm  // R_{n,1} = ε·|A_{n,1}|
         } else {
             0.0
         };
@@ -292,16 +350,27 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
         if is_burning_ship && !bs_valid {
             validity = 0.0;
         } else if is_burning_ship && bs_valid {
-            // Burning Ship ABS variation BLA (Section 4.2 of deep zoom theory):
-            // The absolute value folds the plane when X or Y are near 0.
-            // Single step BLA radius becomes the minimum of the non-linearity radius and the folding radii:
-            // R = max{0, min{ε·|A|, |X|/2, |Y|/2}}
-            // The factor /2 is a "fudge factor for paranoia" as mentioned in the theory.
-            // Note: For Burning Ship, we use the conformal formula R = ε·|A| (Section 3.1)
-            // since it's conformal within each stable quadrant.
-            let nonlinearity_radius = validity;
-            let folding_radius_re = z.re.abs() / 2.0;
-            let folding_radius_im = z.im.abs() / 2.0;
+            // ABS Variation BLA for Burning Ship:
+            // The only problem with the Mandelbrot set is the non-linearity, but some other formulas
+            // have other problems, for example the Burning Ship, defined by:
+            // X + iY → (|X| + i|Y|)² + C
+            //
+            // The absolute value folds the plane when X or Y are near 0, so the single step BLA radius
+            // becomes the minimum of the non-linearity radius and the folding radii:
+            // R = max{0, min{ε·inf|A| - sup|B|·|c| / inf|A|, |X|, |Y|}}
+            //
+            // Currently Fraktaler 3 uses a fudge factor for paranoia, dividing |X| and |Y| by 2.
+            // The merged BLA step radius is unchanged.
+            //
+            // Note: For Burning Ship, since it's conformal within each stable quadrant,
+            // we have inf|A| = |A| and sup|B| = |B| = 1, so:
+            // ε·inf|A| - sup|B|·|c| / inf|A| ≈ ε·|A| - |c| / |A|
+            // For deep zooms where |c| << |A|, this simplifies to ε·|A|.
+            // We use ε·|A| as the non-linearity radius (valid in stable quadrant).
+            let nonlinearity_radius = validity;  // ε·|A| ≈ ε·inf|A| - sup|B|·|c| / inf|A| (for conformal case)
+            let folding_radius_re = z.re.abs() / 2.0;  // |X|/2 (fudge factor for paranoia)
+            let folding_radius_im = z.im.abs() / 2.0;  // |Y|/2 (fudge factor for paranoia)
+            // R = max{0, min{nonlinearity_radius, |X|/2, |Y|/2}}
             validity = nonlinearity_radius.min(folding_radius_re).min(folding_radius_im).max(0.0);
         }
 
@@ -332,21 +401,33 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
             break;
         }
         let mut current = Vec::with_capacity(prev.len() - step);
-        // Merging BLA steps (Section 3.3 of deep zoom theory):
+        // Merging BLA Steps:
+        // If T_x skips l_x iterations from iteration m_x when |z| < R_x
+        // and T_y skips l_y iterations from iteration m_x + l_x when |z| < R_y,
+        // then T_z = T_y ∘ T_x skips l_x + l_y iterations from iteration m_x when |z| < R_z
+        //
         // Start merge from iteration 1 for the first level (level 1) because
         // iteration 0 always corresponds to a non-linear perturbation step as Z=0.
         // For subsequent levels, we can start from 0 as we're merging already-merged BLAs.
         let start_idx = if level == 1 { 1 } else { 0 };
         for i in start_idx..(prev.len() - step) {
-            let node1 = prev[i];
-            let node2 = prev[i + step];
+            let node1 = prev[i];      // T_x: skips l_x = step iterations from m_x = i
+            let node2 = prev[i + step];  // T_y: skips l_y = step iterations from m_x + l_x = i + step
             
-            // Composition des coefficients pour les niveaux supérieurs
-            // δ' = A1·δ + B1·dc + C1·δ² + D1·δ³ + E1·δ⁴
-            // δ'' = A2·δ' + B2·dc + C2·δ'² + D2·δ'³ + E2·δ'⁴
-            // En substituant et en gardant les termes jusqu'à l'ordre 4:
-            let a_new = node2.a * node1.a;
-            let b_new = node2.a * node1.b + node2.b;
+            // Merging BLA Steps:
+            // If T_x skips l_x iterations from iteration m_x when |z| < R_x
+            // and T_y skips l_y iterations from iteration m_x + l_x when |z| < R_y,
+            // then T_z = T_y ∘ T_x skips l_x + l_y iterations from iteration m_x when |z| < R_z:
+            //
+            // z_{m_x + l_x + l_y} = A_{m_x, l_x + l_y}·z_{m_x} + B_{m_x, l_x + l_y}·c
+            //
+            // where:
+            // - A_{m_x, l_x + l_y} = A_z = A_y·A_x
+            // - B_{m_x, l_x + l_y} = B_z = A_y·B_x + B_y
+            //
+            // Composition des coefficients:
+            let a_new = node2.a * node1.a;  // A_z = A_y·A_x
+            let b_new = node2.a * node1.b + node2.b;  // B_z = A_y·B_x + B_y
             let a1_sq = node1.a * node1.a;
             let c_new = node2.a * node1.c + node2.c * a1_sq;
             
@@ -369,31 +450,37 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
                 zero
             };
             
-            // Merging BLA validity formula (Section 3.2 of deep zoom theory):
-            // If Tx skips lx iterations from mx when |z| < Rx
-            // and Ty skips ly iterations from mx+lx when |z| < Ry,
-            // then Tz = Ty ∘ Tx skips lx+ly iterations from mx when |z| < Rz:
-            // Rz = max{0, min{Rx, Ry - |Bx|·|c| / |Ax|}}
-            let a1_norm = node1.a.norm();
+            // Merging BLA validity formula:
+            // R_{m_x, l_x + l_y} = R_z = max{0, min{R_x, R_y - |B_x|·|c| / |A_x|}}
+            //
+            // where:
+            // - R_x = node1.validity_radius (validity radius of T_x)
+            // - R_y = node2.validity_radius (validity radius of T_y)
+            // - |A_x| = |node1.a| (norm of A_x coefficient)
+            // - |B_x| = |node1.b| (norm of B_x coefficient)
+            // - |c| = |cref| (norm of reference point C)
+            let a1_norm = node1.a.norm();  // |A_x|
             let is_julia = params.fractal_type == FractalType::Julia;
             let validity = if a1_norm > 1e-20 && !is_julia {
-                // For Mandelbrot: account for cref in the adjustment term
-                let b1_norm = node1.b.norm();
-                let cref_norm = params.center_x.hypot(params.center_y);
-                let adjustment = b1_norm * cref_norm / a1_norm;
+                // For Mandelbrot: R_z = max{0, min{R_x, R_y - |B_x|·|c| / |A_x|}}
+                let b1_norm = node1.b.norm();  // |B_x|
+                let cref_norm = params.center_x.hypot(params.center_y);  // |c|
+                let adjustment = b1_norm * cref_norm / a1_norm;  // |B_x|·|c| / |A_x|
                 node1.validity_radius.min((node2.validity_radius - adjustment).max(0.0)).max(0.0)
             } else {
-                // For Julia or when |A| is too small, use simpler formula
+                // For Julia (B_x = 0) or when |A_x| is too small, use simpler formula:
+                // R_z = max{0, min{R_x, R_y}}
                 node1.validity_radius.min(node2.validity_radius)
             };
             
             // Pour les niveaux supérieurs de Burning Ship, le BLA est valide 
-            // seulement si les deux nœuds sont valides
+            // seulement si les deux nœuds sont valides.
+            // The merged BLA step radius is unchanged (same formula as conformal case).
             let bs_valid = node1.burning_ship_valid && node2.burning_ship_valid;
             let validity = if is_burning_ship && !bs_valid {
                 0.0
             } else {
-                validity
+                validity  // Merged BLA step radius unchanged for Burning Ship
             };
             
             // Valider les coefficients d'ordre supérieur
@@ -414,8 +501,9 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams) -> BlaTa
                 sign_im: node1.sign_im,
             });
         }
-        levels.push(current);
+        levels.push(current);  // Level k: ⌈M/2^k⌉ BLAs each skipping 2^k iterations
     }
+    // The resulting table has O(M) elements: M + M/2 + M/4 + ... = 2M - 1 = O(M)
 
     // Build non-conformal table for Tricorn if applicable
     let nonconformal_levels = if params.fractal_type == FractalType::Tricorn {

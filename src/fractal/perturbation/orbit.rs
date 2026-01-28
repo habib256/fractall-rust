@@ -10,6 +10,117 @@ use crate::fractal::perturbation::bla::{BlaTable, build_bla_table};
 use crate::fractal::perturbation::types::ComplexExp;
 use crate::fractal::perturbation::series::{SeriesTable, build_series_table};
 
+/// Hybrid BLA: Multiple references for different phases of a periodic loop.
+/// For a hybrid loop with multiple phases, you need multiple references, one starting at
+/// each phase in the loop. Rebasing switches to the reference for the current phase.
+/// You need one BLA table per reference.
+#[derive(Clone, Debug)]
+pub struct HybridBlaReferences {
+    /// Primary reference (phase 0)
+    pub primary: ReferenceOrbit,
+    /// Primary BLA table (phase 0)
+    pub primary_bla: BlaTable,
+    /// Secondary references for other phases (if cycle detected)
+    pub phases: Vec<ReferenceOrbit>,
+    /// BLA tables for each phase (one per reference)
+    pub phase_bla_tables: Vec<BlaTable>,
+    /// Cycle period (0 if no cycle detected)
+    pub cycle_period: u32,
+    /// Cycle start index in the orbit
+    pub cycle_start: u32,
+}
+
+impl HybridBlaReferences {
+    /// Create a single-reference HybridBlaReferences (no cycle detected)
+    pub fn single(orbit: ReferenceOrbit, bla_table: BlaTable) -> Self {
+        Self {
+            primary: orbit,
+            primary_bla: bla_table,
+            phases: Vec::new(),
+            phase_bla_tables: Vec::new(),
+            cycle_period: 0,
+            cycle_start: 0,
+        }
+    }
+
+    /// Get the BLA table for a specific phase
+    pub fn get_bla_table(&self, phase: u32) -> &BlaTable {
+        if phase == 0 {
+            &self.primary_bla
+        } else if (phase as usize) <= self.phase_bla_tables.len() {
+            &self.phase_bla_tables[(phase - 1) as usize]
+        } else {
+            // Fallback to primary if phase doesn't exist
+            &self.primary_bla
+        }
+    }
+
+    /// Get the reference for a specific phase
+    pub fn get_reference(&self, phase: u32) -> &ReferenceOrbit {
+        if phase == 0 {
+            &self.primary
+        } else if (phase as usize) <= self.phases.len() {
+            &self.phases[(phase - 1) as usize]
+        } else {
+            // Fallback to primary if phase doesn't exist
+            &self.primary
+        }
+    }
+
+    /// Get the current phase based on iteration count
+    pub fn get_current_phase(&self, iteration: u32) -> u32 {
+        if self.cycle_period == 0 {
+            0
+        } else {
+            (iteration.saturating_sub(self.cycle_start)) % self.cycle_period
+        }
+    }
+}
+
+/// Detect periodic cycles in the reference orbit.
+/// Returns (cycle_start, cycle_period) if a cycle is detected, None otherwise.
+/// A cycle is detected when z_ref[i] ≈ z_ref[j] for i < j within tolerance.
+fn detect_cycle(z_ref: &[Complex64], tolerance: f64) -> Option<(u32, u32)> {
+    if z_ref.len() < 10 {
+        return None;
+    }
+
+    let tolerance_sqr = tolerance * tolerance;
+    let min_cycle_length = 2u32;
+    let max_cycle_length = (z_ref.len() / 2).min(1000) as u32;
+
+    // Look for cycles: z[i] ≈ z[i+period] for multiple consecutive iterations
+    for period in min_cycle_length..=max_cycle_length {
+        let period_usize = period as usize;
+        if period_usize * 2 >= z_ref.len() {
+            continue;
+        }
+
+        // Check if we have a cycle starting at some point
+        for start in 0..(z_ref.len() - period_usize * 2) {
+            let mut cycle_valid = true;
+            let check_length = period_usize.min(z_ref.len() - start - period_usize);
+
+            // Verify that z[start+k] ≈ z[start+period+k] for k in [0, check_length)
+            for k in 0..check_length {
+                let z1 = z_ref[start + k];
+                let z2 = z_ref[start + period_usize + k];
+                let diff_sqr = (z1 - z2).norm_sqr();
+                if diff_sqr > tolerance_sqr {
+                    cycle_valid = false;
+                    break;
+                }
+            }
+
+            if cycle_valid && check_length >= period_usize.min(3) {
+                return Some((start as u32, period));
+            }
+        }
+    }
+
+    None
+}
+
 #[derive(Clone, Debug)]
 pub struct ReferenceOrbit {
     pub cref: Complex64,
@@ -17,13 +128,48 @@ pub struct ReferenceOrbit {
     pub z_ref: Vec<ComplexExp>,
     /// Fast path: f64 version of reference orbit for shallow zooms
     pub z_ref_f64: Vec<Complex64>,
+    /// Full GMP precision reference orbit for very deep zooms (>10^15)
+    /// This preserves full GMP precision without conversion to f64
+    pub z_ref_gmp: Vec<Complex>,
+    /// Full GMP precision center point for very deep zooms
+    pub cref_gmp: Complex,
+    /// Phase offset for Hybrid BLA (0 for single reference, >0 for multi-phase)
+    pub phase_offset: u32,
+}
+
+impl ReferenceOrbit {
+    /// Get the reference point at iteration m, accounting for phase offset
+    pub fn get_z_ref_f64(&self, m: u32) -> Option<Complex64> {
+        let idx = (m + self.phase_offset) as usize;
+        self.z_ref_f64.get(idx).copied()
+    }
+
+    /// Get the reference point at iteration m (high precision), accounting for phase offset
+    pub fn get_z_ref(&self, m: u32) -> Option<ComplexExp> {
+        let idx = (m + self.phase_offset) as usize;
+        self.z_ref.get(idx).copied()
+    }
+
+    /// Get the reference point at iteration m (full GMP precision), accounting for phase offset
+    pub fn get_z_ref_gmp(&self, m: u32) -> Option<&Complex> {
+        let idx = (m + self.phase_offset) as usize;
+        self.z_ref_gmp.get(idx)
+    }
+
+    /// Get the effective length of the reference orbit for this phase
+    pub fn effective_len(&self) -> usize {
+        self.z_ref_f64.len().saturating_sub(self.phase_offset as usize)
+    }
 }
 
 /// Cache for reference orbit and BLA table to avoid recomputation between frames.
+/// Supports Hybrid BLA with multiple references (one per phase).
 #[derive(Clone, Debug)]
 pub struct ReferenceOrbitCache {
     pub orbit: ReferenceOrbit,
     pub bla_table: BlaTable,
+    /// Hybrid BLA references (multiple phases if cycle detected)
+    pub hybrid_refs: Option<HybridBlaReferences>,
     /// Standalone series table for iteration skipping (optional)
     pub series_table: Option<SeriesTable>,
     /// Center X in GMP precision (stored as string for Clone/Debug)
@@ -74,6 +220,7 @@ impl ReferenceOrbitCache {
         params: &FractalParams,
         center_x_gmp: String,
         center_y_gmp: String,
+        hybrid_refs: Option<HybridBlaReferences>,
     ) -> Self {
         Self {
             orbit,
@@ -88,11 +235,77 @@ impl ReferenceOrbitCache {
             seed_im: params.seed.im,
             bla_threshold: params.bla_threshold,
             bla_validity_scale: params.bla_validity_scale,
+            hybrid_refs,
         }
     }
 }
 
+/// Build Hybrid BLA references from a primary orbit.
+/// Detects cycles and creates references for each phase if a cycle is found.
+/// For Hybrid BLA: you need one BLA table per reference.
+fn build_hybrid_bla_references(
+    primary_orbit: &ReferenceOrbit,
+    primary_bla: &BlaTable,
+    params: &FractalParams,
+    cancel: Option<&AtomicBool>,
+) -> Option<HybridBlaReferences> {
+    // Detect cycle in the reference orbit
+    // Use a tolerance based on the precision and zoom level
+    let pixel_size = params.span_x / params.width as f64;
+    let tolerance = (pixel_size * 1e-3).max(1e-10).min(1e-6);
+    
+    if let Some((cycle_start, cycle_period)) = detect_cycle(&primary_orbit.z_ref_f64, tolerance) {
+        // Cycle detected: create references for each phase
+        // For Hybrid BLA: you need multiple references, one starting at each phase in the loop
+        let mut phases = Vec::new();
+        let mut phase_bla_tables = Vec::new();
+        
+        for phase in 1..cycle_period {
+            if let Some(cancel) = cancel {
+                if cancel.load(Ordering::Relaxed) {
+                    return None;
+                }
+            }
+            
+            // Create a reference starting at this phase offset
+            let phase_offset = cycle_start + phase;
+            if phase_offset as usize >= primary_orbit.z_ref_f64.len() {
+                break;
+            }
+            
+            // Create reference orbit with phase offset
+            let phase_orbit = ReferenceOrbit {
+                cref: primary_orbit.cref,
+                z_ref: primary_orbit.z_ref.clone(),
+                z_ref_f64: primary_orbit.z_ref_f64.clone(),
+                z_ref_gmp: primary_orbit.z_ref_gmp.clone(),
+                cref_gmp: primary_orbit.cref_gmp.clone(),
+                phase_offset,
+            };
+            
+            // Build BLA table for this phase reference (one BLA table per reference)
+            let phase_bla = build_bla_table(&phase_orbit.z_ref_f64, params);
+            
+            phases.push(phase_orbit);
+            phase_bla_tables.push(phase_bla);
+        }
+        
+        Some(HybridBlaReferences {
+            primary: primary_orbit.clone(),
+            primary_bla: primary_bla.clone(),
+            phases,
+            phase_bla_tables,
+            cycle_period,
+            cycle_start,
+        })
+    } else {
+        // No cycle detected: single reference
+        Some(HybridBlaReferences::single(primary_orbit.clone(), primary_bla.clone()))
+    }
+}
+
 /// Compute the reference orbit and BLA table, using cache if available.
+/// Supports Hybrid BLA: detects cycles and creates multiple references (one per phase).
 pub fn compute_reference_orbit_cached(
     params: &FractalParams,
     cancel: Option<&AtomicBool>,
@@ -120,6 +333,10 @@ pub fn compute_reference_orbit_cached(
         None
     };
 
+    // Build Hybrid BLA references (detect cycles and create references for each phase)
+    // For Hybrid BLA: you need one BLA table per reference
+    let hybrid_refs = build_hybrid_bla_references(&orbit, &bla_table, params, cancel);
+
     Some(Arc::new(ReferenceOrbitCache::new(
         orbit,
         bla_table,
@@ -127,11 +344,41 @@ pub fn compute_reference_orbit_cached(
         params,
         center_x_gmp,
         center_y_gmp,
+        hybrid_refs,
     )))
 }
 
-/// Compute reference orbit in GMP precision.
-/// Returns (orbit, center_x_gmp_string, center_y_gmp_string).
+/// Calcule l'orbite de référence haute précision au centre de l'image.
+///
+/// L'orbite de référence `Z_m` est calculée en haute précision (GMP) au point central
+/// de l'image. Cette orbite est ensuite utilisée comme référence pour calculer les
+/// pixels environnants via la méthode de perturbation.
+///
+/// ## Initialisation selon le type de fractale
+///
+/// - **Mandelbrot/BurningShip/Multibrot/Tricorn**: `Z_0 = seed` (généralement 0)
+/// - **Julia**: `Z_0 = C` (le point central de l'image)
+///
+/// ## Itération
+///
+/// L'orbite est calculée avec la formule standard de chaque fractale:
+/// - Mandelbrot: `Z_{m+1} = Z_m² + C`
+/// - Julia: `Z_{m+1} = Z_m² + seed`
+/// - BurningShip: `Z_{m+1} = (|Re(Z_m)| + i|Im(Z_m)|)² + C`
+/// - etc.
+///
+/// L'orbite est stockée à la fois en haute précision (`z_ref: Vec<ComplexExp>`) et
+/// en f64 (`z_ref_f64: Vec<Complex64>`) pour optimiser les performances.
+///
+/// # Arguments
+///
+/// * `params` - Paramètres de la fractale
+/// * `cancel` - Flag d'annulation (optionnel)
+///
+/// # Retour
+///
+/// Retourne `Some((orbit, center_x_gmp_string, center_y_gmp_string))` si le calcul réussit.
+/// Les chaînes GMP sont utilisées pour la validation du cache.
 pub fn compute_reference_orbit(
     params: &FractalParams,
     cancel: Option<&AtomicBool>,
@@ -164,9 +411,11 @@ pub fn compute_reference_orbit(
 
     let mut z_ref = Vec::with_capacity(params.iteration_max as usize + 1);
     let mut z_ref_f64 = Vec::with_capacity(params.iteration_max as usize + 1);
-    // Store both high-precision and f64 versions
+    let mut z_ref_gmp = Vec::with_capacity(params.iteration_max as usize + 1);
+    // Store high-precision, f64, and full GMP versions
     z_ref.push(ComplexExp::from_gmp(&z));
     z_ref_f64.push(complex_to_complex64(&z));
+    z_ref_gmp.push(z.clone());
 
     for i in 0..params.iteration_max {
         if let Some(cancel) = cancel {
@@ -213,12 +462,24 @@ pub fn compute_reference_orbit(
             }
             _ => return None,
         };
-        // Store both high-precision and f64 versions
+        // Store high-precision, f64, and full GMP versions
         z_ref.push(ComplexExp::from_gmp(&z));
         z_ref_f64.push(complex_to_complex64(&z));
+        z_ref_gmp.push(z.clone());
     }
 
-    Some((ReferenceOrbit { cref: cref_f64, z_ref, z_ref_f64 }, cx_str, cy_str))
+    Some((
+        ReferenceOrbit {
+            cref: cref_f64,
+            z_ref,
+            z_ref_f64,
+            z_ref_gmp,
+            cref_gmp: cref,
+            phase_offset: 0, // Primary reference starts at phase 0
+        },
+        cx_str,
+        cy_str,
+    ))
 }
 
 fn complex_norm_sqr(value: &Complex, prec: u32) -> Float {
