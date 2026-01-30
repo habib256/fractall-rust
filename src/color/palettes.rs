@@ -653,15 +653,23 @@ fn compute_iter_plus_all(iteration: u32, z: Complex64, iter_max: u32) -> f64 {
     total.min(1.0)
 }
 
+/// Seuil pour la frontière des biomorphs (Pickover).
+/// Doit être du même ordre que le bailout d'échappement (2–4) pour que les deux
+/// branches (intérieur / extérieur frontière) soient visibles.
+const BIOMORPH_THRESHOLD: f64 = 3.0;
+
 /// Compute biomorphs boundary detection value.
+/// Pickover biomorphs : frontière quand |Re(z)| ou |Im(z)| dépasse le seuil.
+/// Avec un bailout typique de 2–4, un seuil à 10 rendait la branche "smooth"
+/// quasi inaccessible (z à l'échappement a presque toujours Re,Im < 10).
 fn compute_biomorphs(iteration: u32, z: Complex64, iter_max: u32) -> f64 {
-    // Biomorphs: different behavior at boundary
-    if z.re.abs() < 10.0 || z.im.abs() < 10.0 {
-        // At boundary: use discrete iteration
+    let t = BIOMORPH_THRESHOLD;
+    if z.re.abs() < t && z.im.abs() < t {
+        // À l'intérieur de la « frontière » biomorphe : itération discrète (contours nets)
         iteration as f64 / iter_max as f64
     } else {
-        // Outside boundary: use smooth
-        smooth_iteration(iteration, z, iter_max, 2.0) // Default bailout
+        // Au-delà de la frontière : smooth (dégradé)
+        smooth_iteration(iteration, z, iter_max, 2.0)
     }
 }
 

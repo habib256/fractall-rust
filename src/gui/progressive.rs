@@ -23,6 +23,7 @@ pub enum RenderMessage {
         width: u32,
         height: u32,
         /// Buffer RGBA pré-colorisé (évite de bloquer le thread UI)
+        #[allow(dead_code)]
         colored_buffer: Vec<u8>,
     },
     /// Toutes les passes sont terminées.
@@ -42,29 +43,30 @@ pub struct ProgressiveConfig {
 }
 
 impl ProgressiveConfig {
-    /// Configuration standard: 4 passes (1/8, 1/4, 1/2, pleine résolution).
+    /// Configuration standard: 5 passes (1/16 → 1/8 → 1/4 → 1/2 → pleine résolution).
+    /// Progression très progressive pour un feedback visuel fluide.
     pub fn standard() -> Self {
-        Self { passes: vec![8, 4, 2, 1] }
+        Self { passes: vec![16, 8, 4, 2, 1] }
     }
 
-    /// Configuration standard sans passe intermédiaire.
+    /// Configuration standard avec moins de passes (1/16, 1/4, pleine résolution).
     pub fn standard_basic() -> Self {
-        Self { passes: vec![8, 2, 1] }
+        Self { passes: vec![16, 4, 1] }
     }
 
-    /// Configuration pour GMP (2 passes seulement car déjà lent).
+    /// Configuration pour GMP (3 passes: 1/16, 1/8, pleine — déjà lent).
     pub fn gmp_mode() -> Self {
-        Self { passes: vec![8, 1] }
+        Self { passes: vec![16, 8, 1] }
     }
 
-    /// Configuration pour petites images (<256px).
+    /// Configuration pour petites images (<256px): 4 passes progressives.
     pub fn fast() -> Self {
-        Self { passes: vec![4, 2, 1] }
+        Self { passes: vec![8, 4, 2, 1] }
     }
 
     /// Configuration rapide sans passe intermédiaire.
     pub fn fast_basic() -> Self {
-        Self { passes: vec![4, 1] }
+        Self { passes: vec![8, 1] }
     }
 
     /// Configuration avec une seule passe (pas de progressif).
@@ -147,6 +149,7 @@ pub fn upscale_nearest(
 }
 
 /// Upscale un buffer RGB en utilisant l'interpolation nearest-neighbor.
+#[allow(dead_code)]
 pub fn upscale_rgb_nearest(
     src_buffer: &[u8],
     src_width: u32,
@@ -210,17 +213,17 @@ mod tests {
 
     #[test]
     fn test_progressive_config_selection() {
-        // Large image, no GMP -> standard
+        // Large image, no GMP -> standard (5 passes progressives)
         let config = ProgressiveConfig::for_params(1024, 768, false);
-        assert_eq!(config.passes, vec![8, 4, 2, 1]);
+        assert_eq!(config.passes, vec![16, 8, 4, 2, 1]);
 
-        // Large image, GMP -> gmp_mode
+        // Large image, GMP -> gmp_mode (3 passes)
         let config = ProgressiveConfig::for_params(1024, 768, true);
-        assert_eq!(config.passes, vec![8, 1]);
+        assert_eq!(config.passes, vec![16, 8, 1]);
 
-        // Small image -> fast
+        // Small image -> fast (4 passes)
         let config = ProgressiveConfig::for_params(200, 200, false);
-        assert_eq!(config.passes, vec![4, 2, 1]);
+        assert_eq!(config.passes, vec![8, 4, 2, 1]);
 
         // Very small image -> single pass
         let config = ProgressiveConfig::for_params(32, 32, false);

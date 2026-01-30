@@ -13,7 +13,7 @@ use crate::fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_ty
 use crate::fractal::perturbation::ReferenceOrbitCache;
 use crate::render::render_escape_time_cancellable_with_reuse;
 use crate::gui::texture::rgb_image_to_color_image;
-use crate::gui::progressive::{ProgressiveConfig, RenderMessage, upscale_nearest, upscale_rgb_nearest};
+use crate::gui::progressive::{ProgressiveConfig, RenderMessage, upscale_nearest};
 use crate::gpu::GpuRenderer;
 
 /// Précision par défaut pour les calculs de coordonnées haute précision (en bits).
@@ -135,6 +135,39 @@ pub struct FractallApp {
 
     // Cache for orbit/BLA to accelerate deep zoom re-renders
     orbit_cache: Option<Arc<ReferenceOrbitCache>>,
+
+    // Fenêtre de rendu haute résolution
+    show_render_dialog: bool,
+    render_resolution_preset: RenderResolutionPreset,
+    hq_rendering: bool,
+    hq_render_progress: f32,
+    hq_render_receiver: Option<mpsc::Receiver<HqRenderMessage>>,
+    hq_render_result: Option<String>,
+}
+
+/// Presets de résolution pour le rendu haute qualité.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RenderResolutionPreset {
+    Window,
+    Res4K,
+    Res8K,
+}
+
+impl RenderResolutionPreset {
+    fn resolution(self, window_w: u32, window_h: u32) -> (u32, u32) {
+        match self {
+            RenderResolutionPreset::Window => (window_w, window_h),
+            RenderResolutionPreset::Res4K => (3840, 2160),
+            RenderResolutionPreset::Res8K => (7680, 4320),
+        }
+    }
+}
+
+/// Message pour le rendu haute qualité asynchrone.
+enum HqRenderMessage {
+    Progress(f32),      // 0.0 à 1.0
+    Done(String),       // Chemin du fichier sauvegardé
+    Error(String),      // Message d'erreur
 }
 
 impl FractallApp {
@@ -195,6 +228,12 @@ impl FractallApp {
             window_height: height,
             pending_resize: None,
             orbit_cache: None,
+            show_render_dialog: false,
+            render_resolution_preset: RenderResolutionPreset::Res4K,
+            hq_rendering: false,
+            hq_render_progress: 0.0,
+            hq_render_receiver: None,
+            hq_render_result: None,
         }
     }
     
@@ -398,6 +437,83 @@ impl FractallApp {
                 eprintln!("Erreur chargement PNG: {}", e);
             }
         }
+    }
+
+    /// Lance un rendu haute résolution asynchrone et sauvegarde le résultat.
+    fn render_high_quality(&mut self) {
+        let (render_width, render_height) = self.render_resolution_preset.resolution(
+            self.window_width,
+            self.window_height,
+        );
+
+        // Créer les params pour le rendu haute résolution
+        let mut render_params = self.params.clone();
+        render_params.width = render_width;
+        render_params.height = render_height;
+
+        // Ajuster span pour conserver le ratio d'aspect
+        let current_aspect = self.params.span_x / self.params.span_y;
+        let target_aspect = render_width as f64 / render_height as f64;
+
+        if current_aspect > target_aspect {
+            render_params.span_y = render_params.span_x / target_aspect;
+        } else {
+            render_params.span_x = render_params.span_y * target_aspect;
+        }
+
+        // Copier les coordonnées HP pour le thread
+        let center_x_hp = self.center_x_hp.clone();
+        let center_y_hp = self.center_y_hp.clone();
+        let span_x_hp = self.span_x_hp.clone();
+        let span_y_hp = self.span_y_hp.clone();
+
+        // Canal de communication
+        let (tx, rx) = mpsc::channel();
+        self.hq_render_receiver = Some(rx);
+        self.hq_rendering = true;
+        self.hq_render_progress = 0.0;
+        self.hq_render_result = None;
+
+        println!("Rendering at {}x{}...", render_width, render_height);
+
+        // Lancer le rendu dans un thread séparé
+        thread::spawn(move || {
+            let cancel = Arc::new(AtomicBool::new(false));
+
+            // Signaler le début
+            let _ = tx.send(HqRenderMessage::Progress(0.1));
+
+            if let Some((iterations, zs)) = crate::render::escape_time::render_escape_time_cancellable(&render_params, &cancel) {
+                // Signaler la fin du calcul, début de la sauvegarde
+                let _ = tx.send(HqRenderMessage::Progress(0.9));
+
+                // Sauvegarder avec métadonnées
+                use std::path::Path;
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                let filename = format!("fractal_{}x{}_{}.png", render_width, render_height, timestamp);
+
+                if let Err(e) = crate::io::png::save_png_with_metadata(
+                    &render_params,
+                    &iterations,
+                    &zs,
+                    Path::new(&filename),
+                    &center_x_hp,
+                    &center_y_hp,
+                    &span_x_hp,
+                    &span_y_hp,
+                ) {
+                    let _ = tx.send(HqRenderMessage::Error(format!("Error saving PNG: {}", e)));
+                } else {
+                    println!("High quality render saved: {}", filename);
+                    let _ = tx.send(HqRenderMessage::Done(filename));
+                }
+            } else {
+                let _ = tx.send(HqRenderMessage::Error("Render cancelled".to_string()));
+            }
+        });
     }
 
     /// Lance le rendu progressif de la fractale dans un thread séparé.
@@ -722,7 +838,7 @@ impl FractallApp {
                 distances,
                 width,
                 height,
-                colored_buffer,
+                colored_buffer: _, // ignoré : on re-colorise avec la palette actuelle (params)
             } => {
                 self.current_pass = pass_index + 1;
                 self.last_render_device_label = Some(precision_label);
@@ -747,25 +863,24 @@ impl FractallApp {
                     self.zs = upscaled_zs;
                     self.distances = Vec::new(); // No upscaling for distances in preview
                     self.is_preview = true;
-
-                    // Upscale le buffer colorisé pour l'affichage preview
-                    let upscaled_buffer = upscale_rgb_nearest(
-                        &colored_buffer,
-                        width,
-                        height,
-                        self.params.width,
-                        self.params.height,
-                    );
-                    self.load_texture_from_buffer(ctx, &upscaled_buffer, self.params.width, self.params.height);
                 } else {
                     self.iterations = iterations;
                     self.zs = zs;
                     self.distances = distances;
                     self.is_preview = false;
-
-                    // Utiliser directement le buffer pré-colorisé (pas de blocage UI)
-                    self.load_texture_from_buffer(ctx, &colored_buffer, width, height);
                 }
+
+                // Re-coloriser avec la palette actuelle (params) pour que les changements
+                // de palette pendant le rendu soient immédiatement reflétés à l'écran.
+                let display_buffer = colorize_buffer(
+                    &self.iterations,
+                    &self.zs,
+                    &self.distances,
+                    &self.params,
+                    self.params.width,
+                    self.params.height,
+                );
+                self.load_texture_from_buffer(ctx, &display_buffer, self.params.width, self.params.height);
 
                 ctx.request_repaint();
             }
@@ -1499,6 +1614,11 @@ impl eframe::App for FractallApp {
                         }
                     }
 
+                    ui.separator();
+
+                    if ui.button("🎬 Render").clicked() {
+                        self.show_render_dialog = true;
+                    }
                 });
                 
                 ui.separator();
@@ -1538,18 +1658,6 @@ impl eframe::App for FractallApp {
                     }
                     
                     ui.separator();
-                    
-                    ui.label("Color Repeat:");
-                    let old_repeat = self.color_repeat;
-                    ui.add(egui::Slider::new(&mut self.color_repeat, 1..=60));
-                    if old_repeat != self.color_repeat {
-                        self.params.color_repeat = self.color_repeat;
-                        if !self.iterations.is_empty() {
-                            self.update_texture(ctx);
-                        }
-                    }
-
-                    ui.separator();
 
                     ui.label("Outcoloring:");
                     let old_out_mode = self.out_coloring_mode;
@@ -1562,6 +1670,18 @@ impl eframe::App for FractallApp {
                         });
                     if old_out_mode != self.out_coloring_mode {
                         self.params.out_coloring_mode = self.out_coloring_mode;
+                        if !self.iterations.is_empty() {
+                            self.update_texture(ctx);
+                        }
+                    }
+
+                    ui.separator();
+
+                    ui.label("Color Repeat:");
+                    let old_repeat = self.color_repeat;
+                    ui.add(egui::Slider::new(&mut self.color_repeat, 1..=60));
+                    if old_repeat != self.color_repeat {
+                        self.params.color_repeat = self.color_repeat;
                         if !self.iterations.is_empty() {
                             self.update_texture(ctx);
                         }
@@ -1611,7 +1731,106 @@ impl eframe::App for FractallApp {
                     ui.label(zoom_text);
                 });
         });
-        
+
+        // Traiter les messages du rendu HQ en cours
+        if let Some(ref receiver) = self.hq_render_receiver {
+            while let Ok(msg) = receiver.try_recv() {
+                match msg {
+                    HqRenderMessage::Progress(p) => {
+                        self.hq_render_progress = p;
+                    }
+                    HqRenderMessage::Done(filename) => {
+                        self.hq_rendering = false;
+                        self.hq_render_progress = 1.0;
+                        self.hq_render_result = Some(format!("✓ Saved: {}", filename));
+                    }
+                    HqRenderMessage::Error(err) => {
+                        self.hq_rendering = false;
+                        self.hq_render_result = Some(format!("✗ {}", err));
+                    }
+                }
+            }
+        }
+
+        // Fenêtre de configuration du rendu haute résolution
+        if self.show_render_dialog {
+            egui::Window::new("🎬 High Quality Render")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    if self.hq_rendering {
+                        // Afficher la barre de progression pendant le rendu
+                        let resolution_label = match self.render_resolution_preset {
+                            RenderResolutionPreset::Window => format!("{}×{}", self.window_width, self.window_height),
+                            RenderResolutionPreset::Res4K => "4K".to_string(),
+                            RenderResolutionPreset::Res8K => "8K".to_string(),
+                        };
+                        ui.heading(format!("Rendering with {} precision...", resolution_label));
+                        ui.add_space(10.0);
+
+                        let progress_bar = egui::ProgressBar::new(self.hq_render_progress)
+                            .show_percentage()
+                            .animate(true);
+                        ui.add(progress_bar);
+
+                        ui.add_space(10.0);
+                        ui.label("Please wait...");
+
+                        // Demander un repaint pour mettre à jour la barre
+                        ctx.request_repaint();
+                    } else if let Some(ref result) = self.hq_render_result {
+                        // Afficher le résultat
+                        ui.heading("Complete");
+                        ui.add_space(10.0);
+                        ui.label(result.as_str());
+                        ui.add_space(20.0);
+
+                        if ui.button("Close").clicked() {
+                            self.show_render_dialog = false;
+                            self.hq_render_result = None;
+                            self.hq_render_receiver = None;
+                        }
+                    } else {
+                        // Afficher les options de résolution
+                        ui.heading("Resolution");
+                        ui.add_space(10.0);
+
+                        // Presets de résolution
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(
+                                &mut self.render_resolution_preset,
+                                RenderResolutionPreset::Window,
+                                format!("Window ({}×{})", self.window_width, self.window_height)
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(&mut self.render_resolution_preset, RenderResolutionPreset::Res4K, "4K (3840×2160)");
+                        });
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(&mut self.render_resolution_preset, RenderResolutionPreset::Res8K, "8K (7680×4320)");
+                        });
+
+                        ui.add_space(20.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+
+                        // Boutons d'action
+                        ui.horizontal(|ui| {
+                            if ui.button("Cancel").clicked() {
+                                self.show_render_dialog = false;
+                            }
+
+                            ui.add_space(20.0);
+
+                            if ui.button("✓ Render & Save").clicked() {
+                                self.render_high_quality();
+                            }
+                        });
+                    }
+                });
+        }
+
         // Interface principale - zone d'affichage de la fractale
         // Désactiver la sélection de texte pour éviter que le curseur devienne un curseur de texte
         egui::CentralPanel::default()
