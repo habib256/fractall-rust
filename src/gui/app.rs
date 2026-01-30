@@ -1694,7 +1694,11 @@ impl eframe::App for FractallApp {
                         _ => self.selected_type.name(),
                     };
 
-                    let type_menu_label = format!("▼ {}: {}", current_category, current_label);
+                    let type_menu_label = if current_category == current_label {
+                        format!("▼ {}", current_label)
+                    } else {
+                        format!("▼ {}: {}", current_category, current_label)
+                    };
                     ui.menu_button(&type_menu_label, |ui| {
                         // Mandelbrots à la racine (pas de dossiers)
                         let mandelbrot_types = [

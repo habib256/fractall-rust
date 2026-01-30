@@ -205,12 +205,15 @@ Fire, Ocean, Forest, Violet, Rainbow, Sunset, Plasma, Ice, Cosmic, Neon, Twiligh
 | 15-23 | Mandelbulb, Celtic, Alpha, Pickover, Nova, Multibrot... | f64/GMP |
 | 16, 24 | Buddhabrot, Nebulabrot | special |
 | 17 | Lyapunov | special (6 presets) |
+| 25-31 | Burning Ship Julia, Tricorn Julia, Celtic Julia, Buffalo Julia, Multibrot Julia, Perp. Burning Ship Julia, Alpha Mandelbrot Julia | f64/GMP |
+
+**Paires Mandelbrot / Julia** (preview Julia et touche J en GUI): Mandelbrot↔Julia, Barnsley↔Barnsley Julia, Magnet↔Magnet Julia, Burning Ship↔Burning Ship Julia, Tricorn↔Tricorn Julia, Celtic↔Celtic Julia, Buffalo↔Buffalo Julia, Multibrot↔Multibrot Julia, Perpendicular Burning Ship↔Perp. Burning Ship Julia, Alpha Mandelbrot↔Alpha Mandelbrot Julia.
 
 ## CLI
 
 ```
 # Base
---type N              # type fractale (1-24)
+--type N              # type fractale (1-24 standard, 25-31 variantes Julia)
 --width/height        # dimensions
 --center-x/center-y   # centre
 --iterations          # max iterations
@@ -252,6 +255,13 @@ Selection automatique selon zoom et support materiel.
 
 ## GUI (FractallApp)
 
+**Menu Type** (racine):
+- Mandelbrots a la racine: Mandelbrot, Barnsley Mandelbrot, Magnet Mandelbrot, Burning Ship, Perp. Burning Ship, Tricorn, Celtic, Buffalo, Multibrot, Alpha Mandelbrot
+- Dossier **Julia all** (apres Alpha Mandelbrot): toutes les variantes Julia
+- Separateur puis Mandelbulb, puis Julia Sin, Newton, Phoenix, Pickover Stalks, Nova
+- Dossiers Densite (Buddhabrot, Nebulabrot) et Lyapunov (presets)
+- Vector (Von Koch, Dragon) retire du menu
+
 **Rendu**:
 - Rendu progressif multi-passes (preview -> full)
 - Recolorisation asynchrone (ne bloque pas l'UI lors du changement de palette/color_repeat)
@@ -263,6 +273,7 @@ Selection automatique selon zoom et support materiel.
 - Switch CPU/GPU
 - Stats: centre, iterations, zoom
 - Apercu palettes
+- Preview Julia au survol (types ayant une variante Julia) + touche J pour basculer en vue Julia
 
 **Rendu haute resolution**:
 - Presets: Window, 4K (3840x2160), 8K (7680x4320)

@@ -4,7 +4,7 @@
 
 Fractall is a high-performance fractal explorer written in Rust, featuring real-time GPU rendering, arbitrary-precision arithmetic for deep zooms beyond 10^300, and a modern interactive GUI.
 
-![Mandelbrot Set](https://img.shields.io/badge/Fractals-24%20Types-blue)
+![Mandelbrot Set](https://img.shields.io/badge/Fractals-31%20Types-blue)
 ![GPU Accelerated](https://img.shields.io/badge/GPU-Vulkan%20%7C%20Metal%20%7C%20DX12-green)
 ![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange)
 
@@ -28,15 +28,13 @@ Fractall is a high-performance fractal explorer written in Rust, featuring real-
 - Automatic CPU fallback when GPU isn't available
 - Progressive rendering: see previews instantly, full quality follows
 
-### 24 Fractal Types
-| Classic | Exotic | Special |
-|---------|--------|---------|
-| Mandelbrot | Burning Ship | Buddhabrot |
-| Julia | Tricorn | Nebulabrot |
-| Newton | Celtic | Lyapunov |
-| Phoenix | Buffalo | Von Koch |
-| Barnsley | Nova | Dragon |
-| Magnet | Multibrot | Pickover Stalks |
+### 31 Fractal Types
+| Mandelbrot-like | Julia variants | Special |
+|-----------------|----------------|---------|
+| Mandelbrot, Barnsley, Magnet | Julia, Barnsley Julia, Magnet Julia | Buddhabrot, Nebulabrot |
+| Burning Ship, Perp. Burning Ship | Burning Ship Julia, Perp. Burning Ship Julia | Lyapunov |
+| Tricorn, Celtic, Buffalo, Multibrot, Alpha Mandelbrot | Tricorn Julia, Celtic Julia, Buffalo Julia, Multibrot Julia, Alpha Mandelbrot Julia | Von Koch, Dragon |
+| Mandelbulb | — | Julia Sin, Newton, Phoenix, Nova, Pickover Stalks |
 
 ### Rich Coloring Options
 - **13 beautiful palettes** with smooth gradients
@@ -93,7 +91,8 @@ cargo run --release --bin fractall-cli -- \
 | **Zoom out** | Right-click / `-` |
 | **Pan** | Middle-click drag |
 | **Reset view** | `0` |
-| **Change fractal** | `F1`-`F12` or dropdown |
+| **Change fractal** | Type menu: Mandelbrots at root, **Julia all** folder for all Julia sets |
+| **Julia preview** | Hover over Mandelbrot-like types; **J** to switch to full Julia view |
 | **Cycle palette** | `C` |
 | **Cycle color repeat** | `R` |
 | **Save screenshot** | `S` |
@@ -105,7 +104,7 @@ cargo run --release --bin fractall-cli -- \
 fractall-cli [OPTIONS] --type <N> --output <FILE>
 
 OPTIONS:
-    --type <N>              Fractal type (1-24)
+    --type <N>              Fractal type (1-24 standard, 25-31 Julia variants)
     --width <W>             Image width [default: 1920]
     --height <H>            Image height [default: 1080]
     --center-x <X>          Center X coordinate
