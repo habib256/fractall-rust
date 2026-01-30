@@ -1099,7 +1099,21 @@ pub fn iterate_pixel_gmp(
     let final_index = n.min(effective_len.saturating_sub(1));
     let z_ref = match ref_orbit.get_z_ref_gmp(final_index) {
         Some(z) => z,
-        None => ref_orbit.z_ref_gmp.last().unwrap(),
+        None => match ref_orbit.z_ref_gmp.last() {
+            Some(z) => z,
+            None => {
+                // Vecteur vide - retourner un résultat glitch
+                return DeltaResult {
+                    iteration: 0,
+                    z_final: Complex64::new(0.0, 0.0),
+                    glitched: true,
+                    suspect: false,
+                    distance: f64::INFINITY,
+                    is_interior: false,
+                    phase_changed: false,
+                };
+            }
+        },
     };
     let z_ref_prec = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
     let delta_prec = Complex::with_val(prec, (delta.real(), delta.imag()));

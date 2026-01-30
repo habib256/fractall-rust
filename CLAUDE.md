@@ -18,14 +18,14 @@ src/
 ├── main_gui.rs          # GUI (egui/eframe)
 ├── fractal/
 │   ├── mod.rs           # exports + default_params_for_type()
-│   ├── types.rs         # FractalType, FractalParams, AlgorithmMode, ColorSpace (Serialize/Deserialize)
+│   ├── types.rs         # FractalType, FractalParams, AlgorithmMode, ColorSpace, PlaneTransform
 │   ├── definitions.rs   # constantes par type + LyapunovPreset
 │   ├── iterations.rs    # escape-time f64
 │   ├── gmp.rs           # precision arbitraire (rug/mpc)
-│   ├── lyapunov.rs      # Lyapunov exponent (Serialize/Deserialize)
+│   ├── lyapunov.rs      # Lyapunov exponent
 │   ├── buddhabrot.rs    # Buddhabrot/Nebulabrot
 │   ├── vectorial.rs     # Von Koch, Dragon
-│   ├── orbit_traps.rs   # Orbit trap detection (Serialize/Deserialize)
+│   ├── orbit_traps.rs   # Orbit trap detection (Point, Line, Cross, Circle)
 │   └── perturbation/
 │       ├── mod.rs       # render_perturbation_cancellable_with_reuse()
 │       ├── types.rs     # ComplexExp, FloatExp (mantisse + exposant)
@@ -45,15 +45,15 @@ src/
 │   ├── mandelbrot_f32.wgsl / mandelbrot_f64.wgsl
 │   ├── julia_f32.wgsl / julia_f64.wgsl
 │   ├── burning_ship_f32.wgsl / burning_ship_f64.wgsl
-│   └── perturbation.wgsl
+│   └── perturbation.wgsl  # BLA cache, series approx, adaptive glitch
 ├── gui/
 │   ├── mod.rs
-│   ├── app.rs           # FractallApp (egui) + drag-and-drop
+│   ├── app.rs           # FractallApp (egui) + drag-and-drop + HQ render
 │   ├── progressive.rs   # rendu multi-passes
 │   └── texture.rs
 ├── color/
 │   ├── mod.rs
-│   ├── palettes.rs      # 13 palettes predefinies
+│   ├── palettes.rs      # 13 palettes predefinies (0-12)
 │   └── color_models.rs  # RGB, HSB, LCH conversions
 └── io/
     ├── mod.rs
@@ -145,14 +145,52 @@ Precision GMP:
 
 ## Couleur
 
+**Palettes** (13 disponibles, index 0-12):
+Fire, Ocean, Forest, Violet, Rainbow, Sunset, Plasma, Ice, Cosmic, Neon, Twilight, Emboss, Waves
+
 **Espaces couleur** (color_models.rs):
 - RGB: standard
 - HSB: Teinte-Saturation-Luminosite (interpolation circulaire)
 - LCH: Luminance-Chroma-Hue via CIE Lab (perceptuellement uniforme)
 
+**Modes de colorisation** (OutColoringMode, 15 modes):
+| Mode | Description |
+|------|-------------|
+| Iterations | Couleur basee sur nombre d'iterations |
+| IterReal | Iterations + partie reelle de z |
+| IterImag | Iterations + partie imaginaire de z |
+| IterRealImag | Iterations + re/im |
+| IterAll | Combinaison complete |
+| Binary | Noir/blanc binaire |
+| Biomorphs | Motifs biologiques |
+| Potential | Potentiel electrique |
+| ColorDecomp | Decomposition par angle |
+| Smooth | Lissage logarithmique (defaut) |
+| OrbitTraps | Distance aux pieges geometriques |
+| Wings | Motifs ailes via sinh() |
+| Distance | Gradient base sur distance estimee |
+| DistanceAO | Distance + ambient occlusion |
+| Distance3D | Effet 3D via gradient distance |
+
 **Orbit traps** (orbit_traps.rs):
-- Types: Point, Line, Cross, Circle
-- Tracking distance minimale sur l'orbite
+| Type | Description |
+|------|-------------|
+| Point | Distance a l'origine |
+| Line | Distance a une ligne (angle configurable) |
+| Cross | Distance a une croix H+V |
+| Circle | Distance a un cercle (centre, rayon) |
+
+## Transformations de plan (XaoS-style)
+
+| ID | Nom | Formule |
+|----|-----|---------|
+| 0 | Mu | c (normal) |
+| 1 | Inversion | 1/c |
+| 2 | InversionShifted | 1/(c + 0.25) |
+| 3 | Lambda | 4*c*(1-c) |
+| 4 | InversionLambda | 1/(4*c*(1-c)) |
+| 5 | InversionLambdaMinus1 | 1/(4*c*(1-c)) - 1 |
+| 6 | InversionSpecial | 1/(c - 1.40115) |
 
 ## Types de fractales (--type N)
 
@@ -171,38 +209,66 @@ Precision GMP:
 ## CLI
 
 ```
+# Base
 --type N              # type fractale (1-24)
 --width/height        # dimensions
 --center-x/center-y   # centre
 --iterations          # max iterations
---palette 0-12        # palette
---color_repeat        # repetitions gradient
+--output FILE         # PNG sortie (avec metadonnees)
+
+# Couleur
+--palette 0-12        # palette (13 disponibles)
+--color-repeat        # repetitions gradient (1-120)
+--outcoloring MODE    # mode colorisation (smooth, distance, orbit-traps, wings...)
+--color-space         # rgb|hsb|lch
+
+# Algorithme
 --algorithm           # auto|f64|perturbation|gmp
 --precision-bits      # bits GMP (defaut 256)
---bla_threshold       # seuil BLA
---glitch_tolerance    # tolerance glitch
---multibrot_power     # puissance Multibrot
---lyapunov_preset     # standard|zircon-city|jellyfish|asymmetric|spaceship|heavy-blocks
---output FILE         # PNG sortie (avec metadonnees)
+--plane N             # transformation de plan (0-6)
+
+# Perturbation
+--bla-threshold       # seuil BLA
+--glitch-tolerance    # tolerance glitch
+
+# Features avancees
+--enable-distance-estimation  # estimation distance (dual numbers)
+--enable-interior-detection   # detection interieur
+--interior-threshold          # seuil interieur (defaut 0.001)
+--enable-orbit-traps          # activer orbit traps
+
+# Specifiques
+--multibrot-power     # puissance Multibrot
+--lyapunov-preset     # standard|zircon-city|jellyfish|asymmetric|spaceship|heavy-blocks
 ```
 
 ## GPU (wgpu)
 
 Shaders:
 - `mandelbrot_f32/f64.wgsl`, `julia_f32/f64.wgsl`, `burning_ship_f32/f64.wgsl`
-- `perturbation.wgsl`
+- `perturbation.wgsl` (BLA cache workgroup, series approx, adaptive glitch tolerance)
 
 Selection automatique selon zoom et support materiel.
 
 ## GUI (FractallApp)
 
+**Rendu**:
 - Rendu progressif multi-passes (preview -> full)
+- Recolorisation asynchrone (ne bloque pas l'UI lors du changement de palette/color_repeat)
+- Cache orbite/BLA entre re-rendus
+
+**Fonctionnalites**:
 - Coordonnees HP en String, sync vers FractalParams
 - Selection rectangulaire pour zoom
-- Cache orbite/BLA entre re-rendus
 - Switch CPU/GPU
 - Stats: centre, iterations, zoom
 - Apercu palettes
+
+**Rendu haute resolution**:
+- Presets: Window, 4K (3840x2160), 8K (7680x4320)
+- Rendu asynchrone avec barre de progression
+
+**Import/Export**:
 - **Drag-and-drop**: Glisser un PNG pour restaurer l'etat
 - **Sauvegarde (S)**: PNG avec metadonnees integrees
 
@@ -210,10 +276,19 @@ Selection automatique selon zoom et support materiel.
 
 | Touche | Action |
 |--------|--------|
-| F1-F12 | Changer type fractale |
-| C | Cycler palette |
-| R | Cycler color_repeat |
+| F1-F12 | Changer type fractale (F1=Mandelbrot, F2=Julia...) |
+| C | Cycler palette (0-12) |
+| R | Cycler color_repeat (+1, max 120) |
 | S | Screenshot PNG (avec metadonnees) |
-| +/= | Zoom avant |
-| - | Zoom arriere |
-| 0 | Reset vue |
+| +/= | Zoom avant (1.5x au centre) |
+| - | Zoom arriere (1.5x) |
+| 0 | Reset vue par defaut |
+| Souris | Selection rectangle pour zoom |
+
+## Threading
+
+**Rendu progressif**: Thread dedie pour chaque passe, communication via mpsc channels.
+
+**Recolorisation**: Thread separe pour eviter de bloquer l'UI lors des changements de palette/color_repeat. Systeme de versioning pour ignorer les resultats obsoletes si l'utilisateur change rapidement le slider.
+
+**Rendu HQ**: Thread dedie avec messages de progression (Progress/Done/Error).

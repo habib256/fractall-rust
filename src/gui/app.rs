@@ -148,6 +148,13 @@ pub struct FractallApp {
     hq_render_progress: f32,
     hq_render_receiver: Option<mpsc::Receiver<HqRenderMessage>>,
     hq_render_result: Option<String>,
+
+    // Canal dédié pour les recolorisations asynchrones (changement palette/color_repeat)
+    // Persiste toute la vie de l'application, contrairement à texture_ready_* qui n'existe que pendant le rendu
+    recolor_sender: mpsc::Sender<RecolorReadyMessage>,
+    recolor_receiver: mpsc::Receiver<RecolorReadyMessage>,
+    /// Compteur de version pour ignorer les recolorisations obsolètes (si l'utilisateur change le slider rapidement)
+    recolor_version: u64,
 }
 
 /// Presets de résolution pour le rendu haute qualité.
@@ -190,6 +197,15 @@ struct TextureReadyMessage {
     precision_label: String,
 }
 
+/// Message pour les recolorisations asynchrones (changement palette/color_repeat).
+/// Plus simple que TextureReadyMessage car on ne change pas les données d'itération.
+struct RecolorReadyMessage {
+    display_buffer: Vec<u8>,
+    width: u32,
+    height: u32,
+    version: u64,
+}
+
 impl FractallApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let default_type = FractalType::Mandelbrot;
@@ -205,7 +221,10 @@ impl FractallApp {
             eprintln!("⚠️  GPU non disponible - le rendu GPU sera désactivé");
             eprintln!("   L'application fonctionnera en mode CPU uniquement");
         }
-        
+
+        // Canal pour les recolorisations asynchrones (persiste toute la vie de l'app)
+        let (recolor_tx, recolor_rx) = mpsc::channel();
+
         Self {
             params: params.clone(),
             iterations: Vec::new(),
@@ -256,6 +275,9 @@ impl FractallApp {
             hq_render_progress: 0.0,
             hq_render_receiver: None,
             hq_render_result: None,
+            recolor_sender: recolor_tx,
+            recolor_receiver: recolor_rx,
+            recolor_version: 0,
         }
     }
     
@@ -562,7 +584,7 @@ impl FractallApp {
                 use std::path::Path;
                 let timestamp = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_secs();
                 let filename = format!("fractal_{}x{}_{}.png", render_width, render_height, timestamp);
 
@@ -903,6 +925,17 @@ impl FractallApp {
     /// Ne traite qu'un seul message PassComplete par frame pour permettre l'affichage progressif.
     /// La colorisation (upscale + colorize) est faite dans un thread dédié pour ne pas bloquer l'UI.
     fn check_render_complete(&mut self, ctx: &Context) {
+        // Traiter les recolorisations asynchrones (changement palette/color_repeat)
+        // Ignorer les messages obsolètes (version != version actuelle)
+        while let Ok(msg) = self.recolor_receiver.try_recv() {
+            if msg.version == self.recolor_version {
+                self.load_texture_from_buffer(ctx, &msg.display_buffer, msg.width, msg.height);
+                ctx.request_repaint();
+                break;
+            }
+            // Message obsolète, on continue à vider le channel
+        }
+
         // Traiter d'abord une texture prête (calcul faite hors thread principal)
         if let Some(ref rx) = self.texture_ready_receiver {
             if let Ok(tex) = rx.try_recv() {
@@ -1115,88 +1148,76 @@ impl FractallApp {
     /// Charge une texture depuis un buffer RGB pré-colorisé.
     /// Utilisé pour les passes de rendu (évite de bloquer l'UI).
     fn load_texture_from_buffer(&mut self, ctx: &Context, rgb_buffer: &[u8], width: u32, height: u32) {
-        let img = RgbImage::from_raw(width, height, rgb_buffer.to_vec())
-            .expect("Invalid RGB buffer dimensions");
+        let expected_size = (width as usize) * (height as usize) * 3;
+        if rgb_buffer.len() != expected_size {
+            eprintln!("Warning: RGB buffer size mismatch: got {}, expected {}", rgb_buffer.len(), expected_size);
+            return;
+        }
+        let Some(img) = RgbImage::from_raw(width, height, rgb_buffer.to_vec()) else {
+            eprintln!("Warning: Failed to create RgbImage from buffer");
+            return;
+        };
         let color_image = rgb_image_to_color_image(&img);
         self.texture = Some(ctx.load_texture("fractal", color_image, TextureOptions::LINEAR));
     }
 
     /// Met à jour la texture egui à partir des données de fractale.
     /// Utilisé pour les changements de palette/couleur (re-colorisation nécessaire).
+    /// La colorisation est faite de manière asynchrone pour ne pas bloquer l'UI.
     fn update_texture(&mut self, ctx: &Context) {
         let width = self.params.width;
         let height = self.params.height;
-        let w = width as usize;
 
         if self.iterations.is_empty() || self.zs.is_empty() {
             return;
         }
-        
+
         // S'assurer que orbits a la même taille que iterations/zs
-        while self.orbits.len() < self.iterations.len() {
-            self.orbits.push(None);
+        let target_len = self.iterations.len();
+        if self.orbits.len() < target_len {
+            self.orbits.resize(target_len, None);
+        } else if self.orbits.len() > target_len {
+            self.orbits.truncate(target_len);
         }
 
-        let is_nebulabrot = self.params.fractal_type == FractalType::Nebulabrot;
-        let is_buddhabrot = self.params.fractal_type == FractalType::Buddhabrot;
+        // Cloner les données pour le thread de colorisation
+        let iterations = self.iterations.clone();
+        let zs = self.zs.clone();
+        let distances = self.distances.clone();
+        let orbits = self.orbits.clone();
+        let mut params = self.params.clone();
+        // Mettre à jour les params avec les valeurs actuelles de l'UI
+        params.color_mode = self.palette_index;
+        params.color_repeat = self.color_repeat;
+        params.out_coloring_mode = self.out_coloring_mode;
 
-        // Créer l'image RGB avec colorisation parallélisée
-        use rayon::prelude::*;
-        let iterations = &self.iterations;
-        let zs = &self.zs;
-        let iter_max = self.params.iteration_max;
-        let palette_idx = self.palette_index;
-        let color_rep = self.color_repeat;
-        let out_mode = self.out_coloring_mode;
+        let tx = self.recolor_sender.clone();
 
-        let buffer: Vec<u8> = (0..height as usize)
-            .into_par_iter()
-            .flat_map(|y| {
-                (0..width)
-                    .flat_map(|x| {
-                        let idx = y * w + x as usize;
-                        let iter = iterations[idx];
-                        let z = zs[idx];
+        // Incrémenter la version pour ignorer les résultats obsolètes
+        self.recolor_version = self.recolor_version.wrapping_add(1);
+        let version = self.recolor_version;
 
-                        let (r, g, b) = if is_nebulabrot {
-                            color_for_nebulabrot_pixel(iter, z)
-                        } else if is_buddhabrot {
-                            color_for_buddhabrot_pixel(z, palette_idx, color_rep)
-                        } else {
-                            let orbit = self.orbits.get(idx).and_then(|o| o.as_ref());
-                            // Get distance if available (only from perturbation rendering)
-                            let distance = self.distances.get(idx).copied();
-                            let interior_flag_encoded =
-                                self.params.enable_interior_detection && !self.distances.is_empty();
-                            color_for_pixel(
-                                iter,
-                                z,
-                                iter_max,
-                                palette_idx,
-                                color_rep,
-                                out_mode,
-                                self.params.color_space,
-                                orbit,
-                                distance,
-                                interior_flag_encoded,
-                            )
-                        };
+        // Spawner un thread pour la colorisation (ne bloque pas l'UI)
+        thread::spawn(move || {
+            let display_buffer = colorize_buffer(
+                &iterations,
+                &zs,
+                &distances,
+                &orbits,
+                &params,
+                width,
+                height,
+            );
+            let _ = tx.send(RecolorReadyMessage {
+                display_buffer,
+                width,
+                height,
+                version,
+            });
+        });
 
-                        vec![r, g, b]
-                    })
-                    .collect::<Vec<u8>>()
-            })
-            .collect();
-        
-        let img = RgbImage::from_raw(width, height, buffer).unwrap();
-        
-        // Convertir en texture egui
-        let color_image = rgb_image_to_color_image(&img);
-        self.texture = Some(ctx.load_texture(
-            "fractal",
-            color_image,
-            TextureOptions::LINEAR
-        ));
+        // Demander un repaint pour recevoir le résultat
+        ctx.request_repaint();
     }
     
     /// Calcule les coordonnées complexes depuis les coordonnées pixel.
@@ -1415,7 +1436,7 @@ impl eframe::App for FractallApp {
                 use std::path::Path;
                 let timestamp = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_secs();
                 let filename = format!("fractal_{}.png", timestamp);
                 if let Err(e) = save_png_with_metadata(
@@ -1471,158 +1492,7 @@ impl eframe::App for FractallApp {
         // Panneau de contrôle en haut
         egui::TopBottomPanel::top("controls").show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    // Section technique (CPU / GPU en premier)
-                    let supports_advanced_modes = matches!(
-                        self.selected_type,
-                        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
-                    );
-                    let is_lyapunov = self.selected_type == FractalType::Lyapunov;
-
-                    if supports_advanced_modes || is_lyapunov {
-                        ui.label("Tech:");
-                        let gpu_available = self.gpu_renderer.is_some();
-                        let old_use_gpu = self.use_gpu;
-                        let old_mode = self.params.algorithm_mode;
-
-                        let render_text = if is_lyapunov {
-                            match self.params.algorithm_mode {
-                                AlgorithmMode::Auto => "🔄 Auto".to_string(),
-                                AlgorithmMode::StandardF64 => "💻 CPU Standard f64".to_string(),
-                                _ => "🔄 Auto".to_string(),
-                            }
-                        } else {
-                            match (self.use_gpu && gpu_available, self.params.algorithm_mode) {
-                                (_, AlgorithmMode::Auto) => "🔄 Auto".to_string(),
-                                (false, AlgorithmMode::StandardF64) => "💻 CPU Standard f64".to_string(),
-                                (false, AlgorithmMode::Perturbation) => "💻 CPU Perturbation f64".to_string(),
-                                (false, AlgorithmMode::ReferenceGmp) => "💻 CPU GMP Reference".to_string(),
-                                (true, AlgorithmMode::StandardF64) => "🎮 GPU Standard f32".to_string(),
-                                (true, AlgorithmMode::Perturbation) => "🎮 GPU Perturbation f32".to_string(),
-                                (true, AlgorithmMode::ReferenceGmp) => "🔄 Auto".to_string(),
-                            }
-                        };
-
-                        ui.menu_button(&render_text, |ui| {
-                            if ui.selectable_label(
-                                self.params.algorithm_mode == AlgorithmMode::Auto,
-                                "🔄 Auto"
-                            ).clicked() {
-                                self.params.algorithm_mode = AlgorithmMode::Auto;
-                                if is_lyapunov {
-                                    self.use_gpu = false;
-                                }
-                                ui.close_menu();
-                            }
-
-                            if is_lyapunov {
-                                if ui.selectable_label(
-                                    !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::StandardF64,
-                                    "💻 CPU Standard f64"
-                                ).clicked() {
-                                    self.use_gpu = false;
-                                    self.params.algorithm_mode = AlgorithmMode::StandardF64;
-                                    ui.close_menu();
-                                }
-                            } else {
-                                ui.separator();
-
-                                ui.menu_button("💻 CPU", |ui| {
-                                    if ui.selectable_label(
-                                        !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::StandardF64,
-                                        "📊 Standard f64"
-                                    ).clicked() {
-                                        self.use_gpu = false;
-                                        self.params.algorithm_mode = AlgorithmMode::StandardF64;
-                                        ui.close_menu();
-                                    }
-
-                                    if ui.selectable_label(
-                                        !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::ReferenceGmp,
-                                        "🔢 GMP Reference"
-                                    ).clicked() {
-                                        self.use_gpu = false;
-                                        self.params.algorithm_mode = AlgorithmMode::ReferenceGmp;
-                                        ui.close_menu();
-                                    }
-
-                                    let plane_ok = self.params.plane_transform == PlaneTransform::Mu;
-                                    if ui
-                                        .add_enabled(
-                                            plane_ok,
-                                            egui::SelectableLabel::new(
-                                                !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::Perturbation,
-                                                "🔬 Perturbation f64",
-                                            ),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.use_gpu = false;
-                                        self.params.algorithm_mode = AlgorithmMode::Perturbation;
-                                        ui.close_menu();
-                                    }
-                                });
-
-                                if gpu_available {
-                                    ui.menu_button("🎮 GPU", |ui| {
-                                        if ui.selectable_label(
-                                            self.use_gpu && self.params.algorithm_mode == AlgorithmMode::StandardF64,
-                                            "⚡ Standard f32"
-                                        ).clicked() {
-                                            self.use_gpu = true;
-                                            self.params.algorithm_mode = AlgorithmMode::StandardF64;
-                                            ui.close_menu();
-                                        }
-
-                                        let plane_ok = self.params.plane_transform == PlaneTransform::Mu;
-                                        if ui
-                                            .add_enabled(
-                                                plane_ok,
-                                                egui::SelectableLabel::new(
-                                                    self.use_gpu && self.params.algorithm_mode == AlgorithmMode::Perturbation,
-                                                    "🚀 Perturbation f32",
-                                                ),
-                                            )
-                                            .clicked()
-                                        {
-                                            self.use_gpu = true;
-                                            self.params.algorithm_mode = AlgorithmMode::Perturbation;
-                                            ui.close_menu();
-                                        }
-                                    });
-                                } else {
-                                    ui.add_enabled(false, egui::Label::new("🎮 GPU (Non disponible)"));
-                                }
-                            }
-                        });
-
-                        if supports_advanced_modes {
-                            // Si on passe de GPU à CPU ou vice-versa, ajuster l'algo si nécessaire
-                            if old_use_gpu != self.use_gpu {
-                                if self.use_gpu && self.params.algorithm_mode == AlgorithmMode::ReferenceGmp {
-                                    self.params.algorithm_mode = AlgorithmMode::Auto;
-                                }
-                                self.orbit_cache = None;
-                                self.start_render();
-                            }
-
-                            if self.params.plane_transform != PlaneTransform::Mu
-                                && self.params.algorithm_mode == AlgorithmMode::Perturbation
-                            {
-                                self.params.algorithm_mode = AlgorithmMode::Auto;
-                            }
-
-                            if old_mode != self.params.algorithm_mode {
-                                self.orbit_cache = None;
-                                self.start_render();
-                            }
-                        } else if is_lyapunov && old_mode != self.params.algorithm_mode {
-                            self.start_render();
-                        }
-
-                        ui.separator();
-                    }
-
-                    // Puis le menu Type (toutes catégories)
+                    // Menu Type (toutes catégories)
                     ui.label("Type:");
 
                     // Catégories de fractales dans un seul menu
@@ -1797,6 +1667,156 @@ impl eframe::App for FractallApp {
 
                     ui.separator();
 
+                    // Section Tech (Type → Plane → Tech → Render)
+                    let supports_advanced_modes = matches!(
+                        self.selected_type,
+                        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
+                    );
+                    let is_lyapunov = self.selected_type == FractalType::Lyapunov;
+
+                    if supports_advanced_modes || is_lyapunov {
+                        ui.separator();
+                        ui.label("Tech:");
+                        let gpu_available = self.gpu_renderer.is_some();
+                        let old_use_gpu = self.use_gpu;
+                        let old_mode = self.params.algorithm_mode;
+
+                        let render_text = if is_lyapunov {
+                            match self.params.algorithm_mode {
+                                AlgorithmMode::Auto => "🔄 Auto".to_string(),
+                                AlgorithmMode::StandardF64 => "💻 CPU Standard f64".to_string(),
+                                _ => "🔄 Auto".to_string(),
+                            }
+                        } else {
+                            match (self.use_gpu && gpu_available, self.params.algorithm_mode) {
+                                (_, AlgorithmMode::Auto) => "🔄 Auto".to_string(),
+                                (false, AlgorithmMode::StandardF64) => "💻 CPU Standard f64".to_string(),
+                                (false, AlgorithmMode::Perturbation) => "💻 CPU Perturbation f64".to_string(),
+                                (false, AlgorithmMode::ReferenceGmp) => "💻 CPU GMP Reference".to_string(),
+                                (true, AlgorithmMode::StandardF64) => "🎮 GPU Standard f32".to_string(),
+                                (true, AlgorithmMode::Perturbation) => "🎮 GPU Perturbation f32".to_string(),
+                                (true, AlgorithmMode::ReferenceGmp) => "🔄 Auto".to_string(),
+                            }
+                        };
+
+                        ui.menu_button(&render_text, |ui| {
+                            if ui.selectable_label(
+                                self.params.algorithm_mode == AlgorithmMode::Auto,
+                                "🔄 Auto"
+                            ).clicked() {
+                                self.params.algorithm_mode = AlgorithmMode::Auto;
+                                if is_lyapunov {
+                                    self.use_gpu = false;
+                                }
+                                ui.close_menu();
+                            }
+
+                            if is_lyapunov {
+                                if ui.selectable_label(
+                                    !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::StandardF64,
+                                    "💻 CPU Standard f64"
+                                ).clicked() {
+                                    self.use_gpu = false;
+                                    self.params.algorithm_mode = AlgorithmMode::StandardF64;
+                                    ui.close_menu();
+                                }
+                            } else {
+                                ui.separator();
+
+                                ui.menu_button("💻 CPU", |ui| {
+                                    if ui.selectable_label(
+                                        !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::StandardF64,
+                                        "📊 Standard f64"
+                                    ).clicked() {
+                                        self.use_gpu = false;
+                                        self.params.algorithm_mode = AlgorithmMode::StandardF64;
+                                        ui.close_menu();
+                                    }
+
+                                    if ui.selectable_label(
+                                        !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::ReferenceGmp,
+                                        "🔢 GMP Reference"
+                                    ).clicked() {
+                                        self.use_gpu = false;
+                                        self.params.algorithm_mode = AlgorithmMode::ReferenceGmp;
+                                        ui.close_menu();
+                                    }
+
+                                    let plane_ok = self.params.plane_transform == PlaneTransform::Mu;
+                                    if ui
+                                        .add_enabled(
+                                            plane_ok,
+                                            egui::SelectableLabel::new(
+                                                !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::Perturbation,
+                                                "🔬 Perturbation f64",
+                                            ),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.use_gpu = false;
+                                        self.params.algorithm_mode = AlgorithmMode::Perturbation;
+                                        ui.close_menu();
+                                    }
+                                });
+
+                                if gpu_available {
+                                    ui.menu_button("🎮 GPU", |ui| {
+                                        if ui.selectable_label(
+                                            self.use_gpu && self.params.algorithm_mode == AlgorithmMode::StandardF64,
+                                            "⚡ Standard f32"
+                                        ).clicked() {
+                                            self.use_gpu = true;
+                                            self.params.algorithm_mode = AlgorithmMode::StandardF64;
+                                            ui.close_menu();
+                                        }
+
+                                        let plane_ok = self.params.plane_transform == PlaneTransform::Mu;
+                                        if ui
+                                            .add_enabled(
+                                                plane_ok,
+                                                egui::SelectableLabel::new(
+                                                    self.use_gpu && self.params.algorithm_mode == AlgorithmMode::Perturbation,
+                                                    "🚀 Perturbation f32",
+                                                ),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.use_gpu = true;
+                                            self.params.algorithm_mode = AlgorithmMode::Perturbation;
+                                            ui.close_menu();
+                                        }
+                                    });
+                                } else {
+                                    ui.add_enabled(false, egui::Label::new("🎮 GPU (Non disponible)"));
+                                }
+                            }
+                        });
+
+                        if supports_advanced_modes {
+                            if old_use_gpu != self.use_gpu {
+                                if self.use_gpu && self.params.algorithm_mode == AlgorithmMode::ReferenceGmp {
+                                    self.params.algorithm_mode = AlgorithmMode::Auto;
+                                }
+                                self.orbit_cache = None;
+                                self.start_render();
+                            }
+
+                            if self.params.plane_transform != PlaneTransform::Mu
+                                && self.params.algorithm_mode == AlgorithmMode::Perturbation
+                            {
+                                self.params.algorithm_mode = AlgorithmMode::Auto;
+                            }
+
+                            if old_mode != self.params.algorithm_mode {
+                                self.orbit_cache = None;
+                                self.start_render();
+                            }
+                        } else if is_lyapunov && old_mode != self.params.algorithm_mode {
+                            self.start_render();
+                        }
+                    }
+
+                    ui.separator();
                     if ui.button("🎬 Render").clicked() {
                         self.show_render_dialog = true;
                     }

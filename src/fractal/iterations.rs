@@ -250,6 +250,10 @@ fn magnet_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         let mut n = z * z + seed_minus_one;
         n = n * n;
         let q = Complex64::new(2.0, 0.0) * z + seed_minus_two;
+        // Eviter division par zero
+        if q.norm() < 1e-12 {
+            break;
+        }
         z = n / q;
         i += 1;
     }
@@ -269,6 +273,10 @@ fn magnet_mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         let mut n = z * z + c_minus_one;
         n = n * n;
         let q = Complex64::new(2.0, 0.0) * z + c_minus_two;
+        // Eviter division par zero
+        if q.norm() < 1e-12 {
+            break;
+        }
         z = n / q;
         i += 1;
     }
