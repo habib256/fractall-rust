@@ -255,6 +255,21 @@ impl OutColoringMode {
         ]
     }
 
+    /// Modes proposés dans le menu GUI (Biomorph, Orbit Trap, Wings et distances exclus).
+    pub fn menu_modes() -> &'static [OutColoringMode] {
+        &[
+            OutColoringMode::Iter,
+            OutColoringMode::IterPlusReal,
+            OutColoringMode::IterPlusImag,
+            OutColoringMode::IterPlusRealImag,
+            OutColoringMode::IterPlusAll,
+            OutColoringMode::BinaryDecomposition,
+            OutColoringMode::Potential,
+            OutColoringMode::ColorDecomposition,
+            OutColoringMode::Smooth,
+        ]
+    }
+
     /// Display name for UI.
     #[allow(dead_code)]
     pub fn name(self) -> &'static str {
@@ -829,5 +844,7 @@ pub struct FractalResult {
     /// Données d'orbite pour orbit traps (None si orbit traps désactivés)
     #[allow(dead_code)]
     pub orbit: Option<crate::fractal::orbit_traps::OrbitData>,
+    /// Estimation de distance (pour modes Distance / Distance AO / 3D), None si désactivé ou non calculé
+    pub distance: Option<f64>,
 }
 

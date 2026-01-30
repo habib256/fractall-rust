@@ -7,6 +7,7 @@ use rug::Float;
 
 use crate::fractal::{AlgorithmMode, FractalParams, FractalResult, FractalType, PlaneTransform};
 use crate::fractal::iterations::iterate_point;
+use crate::fractal::orbit_traps::OrbitData;
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
 use crate::fractal::{render_lyapunov, render_von_koch, render_dragon, render_buddhabrot, render_nebulabrot};
 use crate::fractal::lyapunov::{render_lyapunov_cancellable, render_lyapunov_mpc_cancellable, render_lyapunov_mpc};
@@ -136,7 +137,7 @@ fn render_escape_time_f64(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
                 let xg = params.center_x + (x_ratio - 0.5) * params.span_x;
                 let z_pixel = Complex64::new(xg, yg);
                 let z_pixel = params.plane_transform.transform(z_pixel);
-                let FractalResult { iteration, z: z_final, orbit: _ } = iterate_point(params, z_pixel);
+                let FractalResult { iteration, z: z_final, orbit: _, distance: _ } = iterate_point(params, z_pixel);
                 *iter = iteration;
                 *z = z_final;
             }
@@ -283,50 +284,90 @@ fn build_reuse<'a>(
 }
 
 /// Version annulable du rendu escape-time.
-/// Retourne None si annulé, Some(...) sinon.
+/// Retourne None si annulé, Some(iterations, zs) sinon (orbites/distances ignorés pour compatibilité).
 #[allow(dead_code)]
 pub fn render_escape_time_cancellable(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
 ) -> Option<(Vec<u32>, Vec<Complex64>)> {
     render_escape_time_cancellable_with_reuse(params, cancel, None)
+        .map(|(i, z, _o, _d)| (i, z))
 }
+
+/// Résultat du rendu escape-time (iterations, zs, orbites optionnelles, distances optionnelles).
+pub type EscapeTimeResult = (
+    Vec<u32>,
+    Vec<Complex64>,
+    Vec<Option<OrbitData>>,
+    Vec<f64>,
+);
 
 /// Version annulable du rendu escape-time avec réutilisation d'une passe précédente.
 /// Les points déjà calculés sont réutilisés quand les résolutions s'alignent.
+/// Retourne (iterations, zs, orbits, distances) : orbits remplies pour f64 si enable_orbit_traps,
+/// distances remplies pour perturbation si enable_distance_estimation.
 pub fn render_escape_time_cancellable_with_reuse(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
     reuse: Option<(&[u32], &[Complex64], u32, u32)>,
-) -> Option<(Vec<u32>, Vec<Complex64>)> {
+) -> Option<EscapeTimeResult> {
     // Vérifier l'annulation avant de commencer
     if cancel.load(Ordering::Relaxed) {
         return None;
     }
 
-    // Dispatch vers les algorithmes spéciaux
+    // Dispatch vers les algorithmes spéciaux (pas d'orbites ni distances)
+    let empty_orbits_distances = |n: usize| -> (Vec<Option<OrbitData>>, Vec<f64>) {
+        (vec![None; n], vec![])
+    };
     match params.fractal_type {
-        FractalType::VonKoch => return Some(render_von_koch(params)),
-        FractalType::Dragon => return Some(render_dragon(params)),
+        FractalType::VonKoch => {
+            let (i, z) = render_von_koch(params);
+            let n = i.len();
+            return Some((i, z, empty_orbits_distances(n).0, vec![]));
+        }
+        FractalType::Dragon => {
+            let (i, z) = render_dragon(params);
+            let n = i.len();
+            return Some((i, z, empty_orbits_distances(n).0, vec![]));
+        }
         FractalType::Buddhabrot => {
             return if params.use_gmp {
-                render_buddhabrot_mpc_cancellable(params, cancel)
+                render_buddhabrot_mpc_cancellable(params, cancel).map(|(i, z)| {
+                    let n = i.len();
+                    (i, z, empty_orbits_distances(n).0, vec![])
+                })
             } else {
-                render_buddhabrot_cancellable(params, cancel)
+                render_buddhabrot_cancellable(params, cancel).map(|(i, z)| {
+                    let n = i.len();
+                    (i, z, empty_orbits_distances(n).0, vec![])
+                })
             };
         }
         FractalType::Lyapunov => {
             return if params.use_gmp {
-                render_lyapunov_mpc_cancellable(params, cancel)
+                render_lyapunov_mpc_cancellable(params, cancel).map(|(i, z)| {
+                    let n = i.len();
+                    (i, z, empty_orbits_distances(n).0, vec![])
+                })
             } else {
-                render_lyapunov_cancellable(params, cancel)
+                render_lyapunov_cancellable(params, cancel).map(|(i, z)| {
+                    let n = i.len();
+                    (i, z, empty_orbits_distances(n).0, vec![])
+                })
             };
         }
         FractalType::Nebulabrot => {
             return if params.use_gmp {
-                render_nebulabrot_mpc_cancellable(params, cancel)
+                render_nebulabrot_mpc_cancellable(params, cancel).map(|(i, z)| {
+                    let n = i.len();
+                    (i, z, empty_orbits_distances(n).0, vec![])
+                })
             } else {
-                render_nebulabrot_cancellable(params, cancel)
+                render_nebulabrot_cancellable(params, cancel).map(|(i, z)| {
+                    let n = i.len();
+                    (i, z, empty_orbits_distances(n).0, vec![])
+                })
             };
         }
         _ => {}
@@ -358,13 +399,9 @@ pub fn render_escape_time_cancellable_with_reuse(
             }
             AlgorithmMode::Perturbation => {
                 return render_perturbation_cancellable_with_reuse(params, cancel, reuse)
-                    .map(|(i, z, _d)| (i, z));
+                    .map(|(i, z, d)| (i, z, vec![], d));
             }
             AlgorithmMode::Auto => {
-                // La perturbation f64 est trop lente comparée aux autres méthodes.
-                // Utiliser CPU f64 standard jusqu'à zoom ~10^16, puis GMP reference au-delà.
-                // Pour des zooms de e1 à e16, utiliser CPU f64 standard (rapide et précis)
-                // Au-delà de 10^16, basculer sur GMP reference (précision nécessaire)
                 let reuse = build_reuse(params, reuse);
                 if should_use_gmp_reference(params) {
                     return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse);
@@ -450,7 +487,7 @@ pub fn should_use_perturbation(params: &FractalParams, gpu_f32: bool) -> bool {
 fn render_escape_time_f64_cancellable(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
-) -> Option<(Vec<u32>, Vec<Complex64>)> {
+) -> Option<EscapeTimeResult> {
     render_escape_time_f64_cancellable_with_reuse(params, cancel, None)
 }
 
@@ -458,45 +495,48 @@ fn render_escape_time_f64_cancellable_with_reuse(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
     reuse: Option<ReuseData<'_>>,
-) -> Option<(Vec<u32>, Vec<Complex64>)> {
+) -> Option<EscapeTimeResult> {
     let width = params.width as usize;
     let height = params.height as usize;
-    let mut iterations = vec![0u32; width * height];
-    let mut zs = vec![Complex64::new(0.0, 0.0); width * height];
+    let n = width * height;
+    let mut iterations = vec![0u32; n];
+    let mut zs = vec![Complex64::new(0.0, 0.0); n];
+    let mut orbits: Vec<Option<OrbitData>> = vec![None; n];
+    let mut distances: Vec<f64> = vec![f64::INFINITY; n]; // INFINITY = pas d'estimation
 
     if width == 0 || height == 0 {
-        return Some((iterations, zs));
+        return Some((iterations, zs, orbits, distances));
     }
 
-    // Utiliser center+span directement pour éviter les problèmes de précision
-    // xg = center_x + (i/width - 0.5) * span_x
-    // yg = center_y + (j/height - 0.5) * span_y
-
-    // Flag interne pour propager l'annulation aux threads Rayon
     let cancelled = AtomicBool::new(false);
+    let need_orbits = params.enable_orbit_traps;
+    let need_distances = params.enable_distance_estimation;
 
     iterations
         .par_chunks_mut(width)
         .zip(zs.par_chunks_mut(width))
+        .zip(orbits.par_chunks_mut(width))
+        .zip(distances.par_chunks_mut(width))
         .enumerate()
-        .for_each(|(j, (iter_row, z_row))| {
+        .for_each(|(j, (((iter_row, z_row), orbit_row), dist_row))| {
             let reuse_row = reuse.as_ref();
-            // Vérifier l'annulation toutes les 16 lignes
-            if j % 16 == 0 {
-                if cancel.load(Ordering::Relaxed) {
-                    cancelled.store(true, Ordering::Relaxed);
-                    return;
-                }
+            if j % 16 == 0 && cancel.load(Ordering::Relaxed) {
+                cancelled.store(true, Ordering::Relaxed);
+                return;
             }
-            // Si déjà annulé, sortir
             if cancelled.load(Ordering::Relaxed) {
                 return;
             }
 
-            // Utiliser center+span directement
             let y_ratio = j as f64 / params.height as f64;
             let yg = params.center_y + (y_ratio - 0.5) * params.span_y;
-            for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
+            for (i, (((iter, z), orbit_cell), dist_cell)) in iter_row
+                .iter_mut()
+                .zip(z_row.iter_mut())
+                .zip(orbit_row.iter_mut())
+                .zip(dist_row.iter_mut())
+                .enumerate()
+            {
                 if let Some(reuse) = reuse_row {
                     let ratio = reuse.ratio as usize;
                     if j % ratio == 0 && i % ratio == 0 {
@@ -514,16 +554,27 @@ fn render_escape_time_f64_cancellable_with_reuse(
                 let xg = params.center_x + (x_ratio - 0.5) * params.span_x;
                 let z_pixel = Complex64::new(xg, yg);
                 let z_pixel = params.plane_transform.transform(z_pixel);
-                let FractalResult { iteration, z: z_final, orbit: _ } = iterate_point(params, z_pixel);
+                let FractalResult {
+                    iteration,
+                    z: z_final,
+                    orbit,
+                    distance,
+                } = iterate_point(params, z_pixel);
                 *iter = iteration;
                 *z = z_final;
+                if need_orbits {
+                    *orbit_cell = orbit;
+                }
+                if need_distances {
+                    *dist_cell = distance.unwrap_or(f64::INFINITY);
+                }
             }
         });
 
     if cancelled.load(Ordering::Relaxed) {
         None
     } else {
-        Some((iterations, zs))
+        Some((iterations, zs, orbits, distances))
     }
 }
 
@@ -531,7 +582,7 @@ fn render_escape_time_f64_cancellable_with_reuse(
 fn render_escape_time_gmp_cancellable(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
-) -> Option<(Vec<u32>, Vec<Complex64>)> {
+) -> Option<EscapeTimeResult> {
     render_escape_time_gmp_cancellable_with_reuse(params, cancel, None)
 }
 
@@ -539,14 +590,15 @@ fn render_escape_time_gmp_cancellable_with_reuse(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
     reuse: Option<ReuseData<'_>>,
-) -> Option<(Vec<u32>, Vec<Complex64>)> {
+) -> Option<EscapeTimeResult> {
     let width = params.width as usize;
     let height = params.height as usize;
-    let mut iterations = vec![0u32; width * height];
-    let mut zs = vec![Complex64::new(0.0, 0.0); width * height];
+    let n = width * height;
+    let mut iterations = vec![0u32; n];
+    let mut zs = vec![Complex64::new(0.0, 0.0); n];
 
     if width == 0 || height == 0 {
-        return Some((iterations, zs));
+        return Some((iterations, zs, vec![], vec![]));
     }
 
     let gmp = MpcParams::from_params(params);
@@ -666,7 +718,6 @@ fn render_escape_time_gmp_cancellable_with_reuse(
     if cancelled.load(Ordering::Relaxed) {
         None
     } else {
-        Some((iterations, zs))
+        Some((iterations, zs, vec![None; n], vec![]))
     }
 }
-

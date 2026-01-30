@@ -41,8 +41,9 @@ pub fn iterate_point(params: &FractalParams, z_pixel: Complex64) -> FractalResul
 }
 
 fn mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
-    // Mendelbrot_Iteration
+    // Mendelbrot_Iteration: z_{n+1} = z_n^2 + c, dz/dc: z'_{n+1} = 2*z_n*z'_n + 1
     let mut z = p.seed;
+    let mut dz = Complex64::new(1.0, 0.0); // dz/dc
     let mut i = 0u32;
     
     // Initialiser orbit data si orbit traps activés
@@ -58,6 +59,8 @@ fn mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     }
     
     while i < p.iteration_max && z.norm() < p.bailout {
+        // z'_{n+1} = 2*z_n*z'_n + 1 (dérivée par rapport à c)
+        dz = z * dz * 2.0 + Complex64::new(1.0, 0.0);
         z = z * z + z_pixel;
         // Vérifier que z reste fini pour éviter NaN/infini qui causent des artefacts
         if !z.re.is_finite() || !z.im.is_finite() {
@@ -80,12 +83,25 @@ fn mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         // Valeur de repli pour éviter les artefacts
         z = Complex64::new(z_pixel.re * 10.0, z_pixel.im * 10.0);
     }
-    FractalResult { iteration: i, z, orbit: orbit_data }
+    // Estimation de distance: d = |z| * ln(|z|) / |dz/dc| (en unités plan complexe)
+    let distance = if p.enable_distance_estimation && i < p.iteration_max && i > 0 {
+        let z_norm = z.norm().max(2.0);
+        let dz_norm = dz.norm();
+        if dz_norm > 1e-300 && z_norm > 1.0 {
+            Some(z_norm * z_norm.ln() / dz_norm)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    FractalResult { iteration: i, z, orbit: orbit_data, distance }
 }
 
 fn julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
-    // Julia_Iteration
+    // Julia_Iteration: z_{n+1} = z_n^2 + c, dérivée par rapport à z_0: z'_{n+1} = 2*z_n*z'_n
     let mut z = z_pixel;
+    let mut dz = Complex64::new(1.0, 0.0); // dz/dz_0
     let mut i = 0u32;
     
     let mut orbit_data = if p.enable_orbit_traps {
@@ -99,6 +115,7 @@ fn julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     }
     
     while i < p.iteration_max && z.norm() < p.bailout {
+        dz = z * dz * 2.0;
         z = z * z + p.seed;
         if !z.re.is_finite() || !z.im.is_finite() {
             if i == 0 {
@@ -114,7 +131,19 @@ fn julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     if !z.re.is_finite() || !z.im.is_finite() {
         z = Complex64::new(p.seed.re * 10.0, p.seed.im * 10.0);
     }
-    FractalResult { iteration: i, z, orbit: orbit_data }
+    // Estimation de distance: d = |z| * ln(|z|) / |dz/dz_0|
+    let distance = if p.enable_distance_estimation && i < p.iteration_max && i > 0 {
+        let z_norm = z.norm().max(2.0);
+        let dz_norm = dz.norm();
+        if dz_norm > 1e-300 && z_norm > 1.0 {
+            Some(z_norm * z_norm.ln() / dz_norm)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    FractalResult { iteration: i, z, orbit: orbit_data, distance }
 }
 
 fn julia_sin(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
@@ -125,7 +154,7 @@ fn julia_sin(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         z = p.seed * z.sin();
         i += 1;
     }
-    FractalResult { iteration: i, z, orbit: None }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
 }
 
 fn newton(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
@@ -149,7 +178,7 @@ fn newton(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         z = z - z_quot;
         i += 1;
     }
-    FractalResult { iteration: i, z, orbit: None }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
 }
 
 fn phoenix(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
@@ -170,7 +199,7 @@ fn phoenix(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         i += 1;
     }
 
-    FractalResult { iteration: i, z, orbit: None }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
 }
 
 fn barnsley_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
@@ -188,7 +217,7 @@ fn barnsley_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         i += 1;
     }
 
-    FractalResult { iteration: i, z, orbit: None }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
 }
 
 fn barnsley_mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
@@ -207,7 +236,7 @@ fn barnsley_mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         i += 1;
     }
 
-    FractalResult { iteration: i, z, orbit: None }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
 }
 
 fn magnet_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
@@ -225,7 +254,7 @@ fn magnet_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         i += 1;
     }
 
-    FractalResult { iteration: i, z, orbit: None }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
 }
 
 fn magnet_mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
@@ -244,7 +273,7 @@ fn magnet_mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         i += 1;
     }
 
-    FractalResult { iteration: i, z, orbit: None }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
 }
 
 fn burning_ship(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
@@ -283,7 +312,7 @@ fn burning_ship(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         z = Complex64::new(z_pixel.re * 10.0, z_pixel.im * 10.0);
     }
 
-    FractalResult { iteration: i, z, orbit: orbit_data }
+    FractalResult { iteration: i, z, orbit: orbit_data, distance: None }
 }
 
 fn buffalo(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
@@ -299,7 +328,7 @@ fn buffalo(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         i += 1;
     }
 
-    FractalResult { iteration: i, z, orbit: None }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
 }
 
 fn tricorn(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
@@ -314,7 +343,7 @@ fn tricorn(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         i += 1;
     }
 
-    FractalResult { iteration: i, z, orbit: None }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
 }
 
 fn mandelbulb(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
@@ -331,7 +360,7 @@ fn mandelbulb(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         i += 1;
     }
 
-    FractalResult { iteration: i, z, orbit: None }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
 }
 
 fn perpendicular_burning_ship(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
@@ -354,7 +383,7 @@ fn perpendicular_burning_ship(p: &FractalParams, z_pixel: Complex64) -> FractalR
         i += 1;
     }
 
-    FractalResult { iteration: i, z, orbit: None }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
 }
 
 fn celtic(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
@@ -371,7 +400,7 @@ fn celtic(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         i += 1;
     }
 
-    FractalResult { iteration: i, z, orbit: None }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
 }
 
 fn alpha_mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
@@ -387,7 +416,7 @@ fn alpha_mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         i += 1;
     }
 
-    FractalResult { iteration: i, z, orbit: None }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
 }
 
 fn pickover_stalks(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
@@ -426,6 +455,7 @@ fn pickover_stalks(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         iteration: iter_value,
         z,
         orbit: None,
+        distance: None,
     }
 }
 
@@ -473,7 +503,7 @@ fn nova(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         i += 1;
     }
 
-    FractalResult { iteration: i, z, orbit: None }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
 }
 
 fn multibrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
@@ -491,6 +521,6 @@ fn multibrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         i += 1;
     }
 
-    FractalResult { iteration: i, z, orbit: None }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
 }
 

@@ -8,6 +8,7 @@ use std::sync::Arc;
 use num_complex::Complex64;
 
 use crate::fractal::perturbation::ReferenceOrbitCache;
+use crate::fractal::orbit_traps::OrbitData;
 
 /// Message envoyé du thread de rendu vers le GUI.
 pub enum RenderMessage {
@@ -20,6 +21,8 @@ pub enum RenderMessage {
         iterations: Vec<u32>,
         zs: Vec<Complex64>,
         distances: Vec<f64>,
+        /// Données d'orbite pour Orbit Traps / Wings (vide si non calculé)
+        orbits: Vec<Option<OrbitData>>,
         width: u32,
         height: u32,
         /// Buffer RGBA pré-colorisé (évite de bloquer le thread UI)

@@ -20,11 +20,12 @@ use crate::gpu::GpuRenderer;
 const HP_PRECISION: u32 = 256;
 
 /// Colorise un buffer d'itérations en RGB.
-/// Cette fonction est appelée dans le thread de rendu pour éviter de bloquer l'UI.
+/// Cette fonction est appelée dans le thread de rendu ou dans l'UI pour re-coloriser avec la palette actuelle.
 fn colorize_buffer(
     iterations: &[u32],
     zs: &[Complex64],
     distances: &[f64],
+    orbits: &[Option<crate::fractal::orbit_traps::OrbitData>],
     params: &FractalParams,
     width: u32,
     height: u32,
@@ -49,13 +50,14 @@ fn colorize_buffer(
                     let idx = y * w + x as usize;
                     let iter = iterations.get(idx).copied().unwrap_or(0);
                     let z = zs.get(idx).copied().unwrap_or(Complex64::new(0.0, 0.0));
+                    let orbit = orbits.get(idx).and_then(|o| o.as_ref());
+                    let distance = distances.get(idx).copied().filter(|d| d.is_finite());
 
                     let (r, g, b) = if is_nebulabrot {
                         color_for_nebulabrot_pixel(iter, z)
                     } else if is_buddhabrot {
                         color_for_buddhabrot_pixel(z, palette_idx, color_rep)
                     } else {
-                        let distance = distances.get(idx).copied();
                         color_for_pixel(
                             iter,
                             z,
@@ -64,7 +66,7 @@ fn colorize_buffer(
                             color_rep,
                             out_mode,
                             color_space,
-                            None, // orbit traps non supportés en thread
+                            orbit,
                             distance,
                             interior_flag_encoded,
                         )
@@ -476,18 +478,67 @@ impl FractallApp {
 
         println!("Rendering at {}x{}...", render_width, render_height);
 
-        // Lancer le rendu dans un thread séparé
+        // Configuration progressive (même logique que le rendu fenêtre)
+        let allow_intermediate = !matches!(
+            render_params.fractal_type,
+            FractalType::VonKoch | FractalType::Dragon | FractalType::Buddhabrot
+                | FractalType::Nebulabrot | FractalType::Lyapunov
+        );
+        let config = ProgressiveConfig::for_params_with_intermediate(
+            render_width,
+            render_height,
+            render_params.use_gmp,
+            allow_intermediate,
+        );
+
+        // Lancer le rendu progressif dans un thread séparé (multi-passes pour barre de progression)
         thread::spawn(move || {
             let cancel = Arc::new(AtomicBool::new(false));
+            let total_passes = config.passes.len() as f32;
+            let mut previous_pass: Option<(Vec<u32>, Vec<Complex64>, u32, u32)> = None;
+            let mut final_result: Option<(Vec<u32>, Vec<Complex64>)> = None;
 
-            // Signaler le début
-            let _ = tx.send(HqRenderMessage::Progress(0.1));
+            for (pass_index, &scale_divisor) in config.passes.iter().enumerate() {
+                if cancel.load(Ordering::Relaxed) {
+                    let _ = tx.send(HqRenderMessage::Error("Render cancelled".to_string()));
+                    return;
+                }
+                let pass_width = (render_width / scale_divisor as u32).max(1);
+                let pass_height = (render_height / scale_divisor as u32).max(1);
+                let mut pass_params = render_params.clone();
+                pass_params.width = pass_width;
+                pass_params.height = pass_height;
 
-            if let Some((iterations, zs)) = crate::render::escape_time::render_escape_time_cancellable(&render_params, &cancel) {
-                // Signaler la fin du calcul, début de la sauvegarde
-                let _ = tx.send(HqRenderMessage::Progress(0.9));
+                let reuse = previous_pass.as_ref().map(|(i, z, w, h)| (i.as_slice(), z.as_slice(), *w, *h));
+                let result = crate::render::escape_time::render_escape_time_cancellable_with_reuse(
+                    &pass_params,
+                    &cancel,
+                    reuse,
+                );
 
-                // Sauvegarder avec métadonnées
+                match result {
+                    Some((iterations, zs, _orbits, _distances)) => {
+                        // Progression : 5% au début, puis 5–90% répartis sur les passes, 90–95% sauvegarde
+                        let pass_progress = (pass_index + 1) as f32 / total_passes * 0.85f32; // 0.85 * (1/5..5/5)
+                        let progress = 0.05f32 + pass_progress; // 5% -> 90%
+                        let _ = tx.send(HqRenderMessage::Progress(progress));
+
+                        if pass_index + 1 == config.passes.len() {
+                            final_result = Some((iterations, zs));
+                            break;
+                        }
+                        previous_pass = Some((iterations, zs, pass_width, pass_height));
+                    }
+                    None => {
+                        let _ = tx.send(HqRenderMessage::Error("Render cancelled".to_string()));
+                        return;
+                    }
+                }
+            }
+
+            if let Some((iterations, zs)) = final_result {
+                let _ = tx.send(HqRenderMessage::Progress(0.92));
+
                 use std::path::Path;
                 let timestamp = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -507,11 +558,10 @@ impl FractallApp {
                 ) {
                     let _ = tx.send(HqRenderMessage::Error(format!("Error saving PNG: {}", e)));
                 } else {
+                    let _ = tx.send(HqRenderMessage::Progress(1.0));
                     println!("High quality render saved: {}", filename);
                     let _ = tx.send(HqRenderMessage::Done(filename));
                 }
-            } else {
-                let _ = tx.send(HqRenderMessage::Error("Render cancelled".to_string()));
             }
         });
     }
@@ -576,8 +626,22 @@ impl FractallApp {
         let (sender, receiver) = mpsc::channel();
         self.render_receiver = Some(receiver);
 
-        // Paramètres pour le thread
-        let params = self.params.clone();
+        // Paramètres pour le thread (activer orbit traps / distance selon outcoloring)
+        let mut params = self.params.clone();
+        match params.out_coloring_mode {
+            crate::fractal::OutColoringMode::OrbitTraps | crate::fractal::OutColoringMode::Wings => {
+                params.enable_orbit_traps = true;
+            }
+            _ => {}
+        }
+        if matches!(
+            params.out_coloring_mode,
+            crate::fractal::OutColoringMode::Distance
+                | crate::fractal::OutColoringMode::DistanceAO
+                | crate::fractal::OutColoringMode::Distance3D
+        ) {
+            params.enable_distance_estimation = true;
+        }
         let cancel = Arc::clone(&self.render_cancel);
         let full_width = self.params.width;
         let full_height = self.params.height;
@@ -624,22 +688,22 @@ impl FractallApp {
                         FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
                             if use_perturbation =>
                         {
-                            // Use cache-aware GPU rendering for perturbation (no distance estimation on GPU)
                             gpu.render_perturbation_with_cache(&pass_params, &cancel, reuse, current_orbit_cache.as_ref())
                                 .map(|((iterations, zs), cache)| {
                                     current_orbit_cache = Some(cache);
-                                    (iterations, zs, Vec::new()) // GPU doesn't compute distances
+                                    let n = iterations.len();
+                                    (iterations, zs, Vec::new(), vec![None; n])
                                 })
                         }
                         FractalType::Mandelbrot => gpu.render_mandelbrot(&pass_params, &cancel)
-                            .map(|(i, z)| (i, z, Vec::new())),
+                            .map(|(i, z)| { let n = i.len(); (i, z, Vec::new(), vec![None; n]) }),
                         FractalType::Julia => gpu.render_julia(&pass_params, &cancel)
-                            .map(|(i, z)| (i, z, Vec::new())),
+                            .map(|(i, z)| { let n = i.len(); (i, z, Vec::new(), vec![None; n]) }),
                         FractalType::BurningShip => gpu.render_burning_ship(&pass_params, &cancel)
-                            .map(|(i, z)| (i, z, Vec::new())),
+                            .map(|(i, z)| { let n = i.len(); (i, z, Vec::new(), vec![None; n]) }),
                         _ => None,
                     };
-                    if let Some((iterations, zs, distances)) = gpu_result {
+                    if let Some((iterations, zs, distances, orbits)) = gpu_result {
                         let base_precision = gpu.precision_label();
                         let precision = base_precision.to_string();
                         let effective_mode = if use_perturbation {
@@ -648,7 +712,7 @@ impl FractallApp {
                             AlgorithmMode::StandardF64
                         };
                         Some((
-                            (iterations, zs, distances),
+                            (iterations, zs, distances, orbits),
                             effective_mode,
                             format!("GPU {}", precision),
                         ))
@@ -670,12 +734,13 @@ impl FractallApp {
                             render_perturbation_with_cache(&pass_params, &cancel, reuse, current_orbit_cache.as_ref())
                                 .map(|((iterations, zs, distances), cache)| {
                                     current_orbit_cache = Some(cache);
-                                    ((iterations, zs, distances), AlgorithmMode::Perturbation, "CPU f64".to_string())
+                                    let n = iterations.len();
+                                    ((iterations, zs, distances, vec![None; n]), AlgorithmMode::Perturbation, "CPU f64".to_string())
                                 })
                         } else {
                             let cpu_result =
                                 render_escape_time_cancellable_with_reuse(&pass_params, &cancel, reuse);
-                            cpu_result.map(|(iterations, zs)| {
+                            cpu_result.map(|(iterations, zs, orbits, distances)| {
                                 let effective_mode = match pass_params.algorithm_mode {
                                     AlgorithmMode::ReferenceGmp => AlgorithmMode::ReferenceGmp,
                                     AlgorithmMode::Perturbation => AlgorithmMode::Perturbation,
@@ -699,7 +764,7 @@ impl FractallApp {
                                     AlgorithmMode::Perturbation => "CPU f64".to_string(),
                                     _ => "CPU f64".to_string(),
                                 };
-                                ((iterations, zs, Vec::new()), effective_mode, precision_label)
+                                ((iterations, zs, distances, orbits), effective_mode, precision_label)
                             })
                         }
                     }
@@ -720,10 +785,11 @@ impl FractallApp {
                         render_perturbation_with_cache(&pass_params, &cancel, reuse, current_orbit_cache.as_ref())
                             .map(|((iterations, zs, distances), cache)| {
                                 current_orbit_cache = Some(cache);
-                                ((iterations, zs, distances), AlgorithmMode::Perturbation, "CPU f64".to_string())
+                                let n = iterations.len();
+                                ((iterations, zs, distances, vec![None; n]), AlgorithmMode::Perturbation, "CPU f64".to_string())
                             })
                     } else {
-                        render_escape_time_cancellable_with_reuse(&pass_params, &cancel, reuse).map(|(iterations, zs)| {
+                        render_escape_time_cancellable_with_reuse(&pass_params, &cancel, reuse).map(|(iterations, zs, orbits, distances)| {
                             let effective_mode = match pass_params.algorithm_mode {
                                 AlgorithmMode::ReferenceGmp => AlgorithmMode::ReferenceGmp,
                                 AlgorithmMode::Perturbation => AlgorithmMode::Perturbation,
@@ -747,13 +813,13 @@ impl FractallApp {
                                 AlgorithmMode::Perturbation => "CPU f64".to_string(),
                                 _ => "CPU f64".to_string(),
                             };
-                            ((iterations, zs, Vec::new()), effective_mode, precision_label)
+                            ((iterations, zs, distances, orbits), effective_mode, precision_label)
                         })
                     }
                 };
 
                 match result {
-                    Some(((iterations, zs, distances), effective_mode, precision_label)) => {
+                    Some(((iterations, zs, distances, orbits), effective_mode, precision_label)) => {
                         // Garder une copie pour la passe suivante afin d'éviter le recalcul
                         if pass_index + 1 < config.passes.len() {
                             previous_pass = Some((iterations.clone(), zs.clone(), pass_width, pass_height));
@@ -766,6 +832,7 @@ impl FractallApp {
                             &iterations,
                             &zs,
                             &distances,
+                            &orbits,
                             &pass_params,
                             pass_width,
                             pass_height,
@@ -779,6 +846,7 @@ impl FractallApp {
                             iterations,
                             zs,
                             distances,
+                            orbits,
                             width: pass_width,
                             height: pass_height,
                             colored_buffer,
@@ -836,6 +904,7 @@ impl FractallApp {
                 iterations,
                 zs,
                 distances,
+                orbits,
                 width,
                 height,
                 colored_buffer: _, // ignoré : on re-colorise avec la palette actuelle (params)
@@ -862,11 +931,13 @@ impl FractallApp {
                     self.iterations = upscaled_iter;
                     self.zs = upscaled_zs;
                     self.distances = Vec::new(); // No upscaling for distances in preview
+                    self.orbits = Vec::new();   // No upscaling for orbits in preview
                     self.is_preview = true;
                 } else {
                     self.iterations = iterations;
                     self.zs = zs;
                     self.distances = distances;
+                    self.orbits = orbits;
                     self.is_preview = false;
                 }
 
@@ -876,6 +947,7 @@ impl FractallApp {
                     &self.iterations,
                     &self.zs,
                     &self.distances,
+                    &self.orbits,
                     &self.params,
                     self.params.width,
                     self.params.height,
@@ -1145,12 +1217,9 @@ impl FractallApp {
     }
 
     /// Change le type de fractale.
-    /// Réinitialise toujours la position au domaine par défaut de la nouvelle fractale.
+    /// Réinitialise toujours la position au domaine par défaut (zoom, centre, etc.).
+    /// Si on reselectionne le même type, recharge quand même les defaults.
     fn change_fractal_type(&mut self, new_type: FractalType) {
-        if new_type == self.selected_type {
-            return;
-        }
-
         self.selected_type = new_type;
         let width = self.params.width;
         let height = self.params.height;
@@ -1664,7 +1733,7 @@ impl eframe::App for FractallApp {
                     egui::ComboBox::from_id_source("outcoloring_mode")
                         .selected_text(self.out_coloring_mode.name())
                         .show_ui(ui, |ui| {
-                            for mode in OutColoringMode::all() {
+                            for mode in OutColoringMode::menu_modes() {
                                 ui.selectable_value(&mut self.out_coloring_mode, *mode, mode.name());
                             }
                         });
@@ -2058,9 +2127,15 @@ impl eframe::App for FractallApp {
                         ui.label(format!("GMP: {}b", effective_prec));
                     }
 
-                    // Afficher le statut du rendu progressif
+                    // Afficher le statut du rendu progressif + barre de progression
                     if self.rendering {
                         ui.separator();
+                        let total = self.total_passes.max(1) as f32;
+                        let progress = (self.current_pass as f32 / total).min(1.0);
+                        let progress_bar = egui::ProgressBar::new(progress)
+                            .show_percentage()
+                            .animate(true);
+                        ui.add(progress_bar);
                         if let Some(start) = self.render_start_time {
                             let elapsed = start.elapsed().as_secs_f64();
                             let time_str = if elapsed < 60.0 {
