@@ -1582,7 +1582,7 @@ impl eframe::App for FractallApp {
                 }
             }
 
-            // J pour basculer vers Julia avec le seed actuel (uniquement en mode Julia preview)
+            // J : basculer vers Julia si seed dispo, sinon activer le mode preview Julia
             if i.key_pressed(egui::Key::J) {
                 if self.selected_type.has_julia_variant()
                     && self.julia_preview_enabled
@@ -1609,6 +1609,9 @@ impl eframe::App for FractallApp {
                     self.sync_params_to_hp();
                     self.orbit_cache = None;
                     self.start_render();
+                } else if self.selected_type.has_julia_variant() && !self.julia_preview_enabled {
+                    // Pas de sélection Julia : activer le mode preview et cocher la case
+                    self.julia_preview_enabled = true;
                 }
             }
 
