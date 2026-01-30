@@ -142,38 +142,6 @@ fractall-cli --type 4 --center-x=-0.8 --center-y=0.156 -o julia.png
 fractall-cli --type 17 --lyapunov_preset zircon-city -o lyapunov.png
 ```
 
-## Architecture
-
-```
-fractall-rust/
-├── src/
-│   ├── main.rs          # CLI application
-│   ├── main_gui.rs      # GUI application (egui/eframe)
-│   ├── fractal/         # Fractal algorithms
-│   │   ├── iterations.rs    # Standard f64 escape-time
-│   │   ├── gmp.rs           # Arbitrary precision (GMP)
-│   │   ├── perturbation/    # Deep zoom optimizations
-│   │   │   ├── bla.rs       # Bilinear Approximation
-│   │   │   ├── glitch.rs    # Glitch detection & correction
-│   │   │   └── ...
-│   │   └── ...
-│   ├── gpu/             # GPU shaders (WGSL)
-│   ├── color/           # Palettes & color models
-│   └── io/              # PNG I/O with metadata
-└── Cargo.toml
-```
-
-## Performance
-
-| Scenario | Hardware | Performance |
-|----------|----------|-------------|
-| 1080p Mandelbrot | RTX 4060 Ti | ~60 FPS real-time |
-| 4K render, 1000 iter | RTX 4060 Ti | < 1 second |
-| Deep zoom 10^50 | CPU (GMP) | 5-30 seconds |
-| Deep zoom 10^100 | CPU (GMP) | 1-5 minutes |
-
-*Performance varies based on iteration count, zoom location, and fractal complexity.*
-
 ## Technical Highlights
 
 - **Perturbation Theory**: Compute deep zooms efficiently by calculating deltas from a high-precision reference orbit
