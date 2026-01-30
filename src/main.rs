@@ -9,7 +9,7 @@ mod io;
 
 use fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalType, LyapunovPreset, OutColoringMode, PlaneTransform};
 use render::render_escape_time;
-use io::png::save_png;
+use io::png::save_png_with_metadata;
 
 /// Utilitaire CLI pour générer des fractales basées sur fractall.
 ///
@@ -291,9 +291,23 @@ fn main() {
     let (iterations, zs) = render_escape_time(&params);
     let render_time = start_time.elapsed();
 
-    // Export PNG.
+    // Export PNG avec métadonnées.
     let save_start = std::time::Instant::now();
-    if let Err(e) = save_png(&params, &iterations, &zs, &cli.output) {
+    // Convertir les coordonnées f64 en strings pour les métadonnées HP
+    let center_x_hp = params.center_x.to_string();
+    let center_y_hp = params.center_y.to_string();
+    let span_x_hp = params.span_x.to_string();
+    let span_y_hp = params.span_y.to_string();
+    if let Err(e) = save_png_with_metadata(
+        &params,
+        &iterations,
+        &zs,
+        &cli.output,
+        &center_x_hp,
+        &center_y_hp,
+        &span_x_hp,
+        &span_y_hp,
+    ) {
         eprintln!("Erreur lors de l'écriture du PNG: {e}");
         std::process::exit(1);
     }

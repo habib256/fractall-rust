@@ -9,11 +9,12 @@ use std::sync::Arc;
 use num_complex::Complex64;
 use rayon::prelude::*;
 use rug::Float;
+use serde::{Deserialize, Serialize};
 
 use crate::fractal::FractalParams;
 
 /// Preset de Lyapunov prédéfini.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum LyapunovPreset {
     /// Standard (Swallow): séquence "AB", plage [2.0, 4.0] x [2.0, 4.0]
     Standard,

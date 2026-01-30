@@ -13,11 +13,69 @@ use crate::fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_ty
 use crate::fractal::perturbation::ReferenceOrbitCache;
 use crate::render::render_escape_time_cancellable_with_reuse;
 use crate::gui::texture::rgb_image_to_color_image;
-use crate::gui::progressive::{ProgressiveConfig, RenderMessage, upscale_nearest};
+use crate::gui::progressive::{ProgressiveConfig, RenderMessage, upscale_nearest, upscale_rgb_nearest};
 use crate::gpu::GpuRenderer;
 
 /// Précision par défaut pour les calculs de coordonnées haute précision (en bits).
 const HP_PRECISION: u32 = 256;
+
+/// Colorise un buffer d'itérations en RGB.
+/// Cette fonction est appelée dans le thread de rendu pour éviter de bloquer l'UI.
+fn colorize_buffer(
+    iterations: &[u32],
+    zs: &[Complex64],
+    distances: &[f64],
+    params: &FractalParams,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    use rayon::prelude::*;
+
+    let w = width as usize;
+    let is_nebulabrot = params.fractal_type == FractalType::Nebulabrot;
+    let is_buddhabrot = params.fractal_type == FractalType::Buddhabrot;
+    let iter_max = params.iteration_max;
+    let palette_idx = params.color_mode as u8;
+    let color_rep = params.color_repeat;
+    let out_mode = params.out_coloring_mode;
+    let color_space = params.color_space;
+    let interior_flag_encoded = params.enable_interior_detection && !distances.is_empty();
+
+    (0..height as usize)
+        .into_par_iter()
+        .flat_map(|y| {
+            (0..width)
+                .flat_map(|x| {
+                    let idx = y * w + x as usize;
+                    let iter = iterations.get(idx).copied().unwrap_or(0);
+                    let z = zs.get(idx).copied().unwrap_or(Complex64::new(0.0, 0.0));
+
+                    let (r, g, b) = if is_nebulabrot {
+                        color_for_nebulabrot_pixel(iter, z)
+                    } else if is_buddhabrot {
+                        color_for_buddhabrot_pixel(z, palette_idx, color_rep)
+                    } else {
+                        let distance = distances.get(idx).copied();
+                        color_for_pixel(
+                            iter,
+                            z,
+                            iter_max,
+                            palette_idx,
+                            color_rep,
+                            out_mode,
+                            color_space,
+                            None, // orbit traps non supportés en thread
+                            distance,
+                            interior_flag_encoded,
+                        )
+                    };
+
+                    vec![r, g, b]
+                })
+                .collect::<Vec<u8>>()
+        })
+        .collect()
+}
 
 /// Application principale egui pour fractall.
 pub struct FractallApp {
@@ -40,7 +98,6 @@ pub struct FractallApp {
     color_repeat: u32,
     out_coloring_mode: OutColoringMode,
     selected_lyapunov_preset: LyapunovPreset,
-    render_preset: RenderPreset,
     gpu_renderer: Option<Arc<GpuRenderer>>,
     use_gpu: bool,
     
@@ -78,11 +135,6 @@ pub struct FractallApp {
 
     // Cache for orbit/BLA to accelerate deep zoom re-renders
     orbit_cache: Option<Arc<ReferenceOrbitCache>>,
-
-    // Distance estimation et interior detection
-    enable_distance_estimation: bool,
-    enable_interior_detection: bool,
-    interior_threshold: f64,
 }
 
 impl FractallApp {
@@ -90,9 +142,8 @@ impl FractallApp {
         let default_type = FractalType::Mandelbrot;
         let width = 800;
         let height = 600;
-        let mut params = default_params_for_type(default_type, width, height);
-        apply_default_preset(&mut params, RenderPreset::Standard);
-        
+        let params = default_params_for_type(default_type, width, height);
+
         // Initialiser le GPU renderer (peut échouer silencieusement si GPU indisponible)
         let gpu_renderer = GpuRenderer::new().map(Arc::new);
         // Par défaut, rester en mode CPU même si le GPU est disponible.
@@ -119,7 +170,6 @@ impl FractallApp {
             color_repeat: 40,
             out_coloring_mode: OutColoringMode::Smooth,
             selected_lyapunov_preset: LyapunovPreset::default(),
-            render_preset: RenderPreset::Standard,
             gpu_renderer,
             use_gpu: use_gpu_default,
             // Initialiser les coordonnées haute précision depuis les params f64
@@ -145,9 +195,6 @@ impl FractallApp {
             window_height: height,
             pending_resize: None,
             orbit_cache: None,
-            enable_distance_estimation: false,
-            enable_interior_detection: false,
-            interior_threshold: 0.001,
         }
     }
     
@@ -309,10 +356,50 @@ impl FractallApp {
         // IMPORTANT: Utiliser to_string_radix(10, None) pour préserver toute la précision GMP
         self.span_x_hp = new_span_x.to_string_radix(10, None);
         self.span_y_hp = new_span_y.to_string_radix(10, None);
-        
+
         self.sync_hp_to_params();
     }
-    
+
+    /// Charge l'état de la fractale depuis un fichier PNG contenant des métadonnées.
+    fn load_from_png(&mut self, path: &std::path::Path) {
+        match crate::io::png::load_png_metadata(path) {
+            Ok(params) => {
+                // Restaurer le type de fractale
+                self.selected_type = params.fractal_type;
+
+                // Restaurer les paramètres de couleur
+                self.palette_index = params.color_mode;
+                self.color_repeat = params.color_repeat;
+                self.out_coloring_mode = params.out_coloring_mode;
+
+                // Restaurer les coordonnées HP depuis les params
+                self.center_x_hp = params.center_x_hp.clone().unwrap_or_else(|| params.center_x.to_string());
+                self.center_y_hp = params.center_y_hp.clone().unwrap_or_else(|| params.center_y.to_string());
+                self.span_x_hp = params.span_x_hp.clone().unwrap_or_else(|| params.span_x.to_string());
+                self.span_y_hp = params.span_y_hp.clone().unwrap_or_else(|| params.span_y.to_string());
+
+                // Restaurer les params (mais garder les dimensions actuelles de la fenêtre)
+                let current_width = self.params.width;
+                let current_height = self.params.height;
+                self.params = params;
+                self.params.width = current_width;
+                self.params.height = current_height;
+
+                // Synchroniser HP vers params
+                self.sync_hp_to_params();
+
+                // Invalider le cache et relancer le rendu
+                self.orbit_cache = None;
+                self.start_render();
+
+                println!("État restauré depuis: {}", path.display());
+            }
+            Err(e) => {
+                eprintln!("Erreur chargement PNG: {}", e);
+            }
+        }
+    }
+
     /// Lance le rendu progressif de la fractale dans un thread séparé.
     fn start_render(&mut self) {
         // Annuler tout rendu en cours
@@ -558,6 +645,16 @@ impl FractallApp {
                             previous_pass = None;
                         }
 
+                        // Coloriser dans le thread de rendu pour éviter de bloquer l'UI
+                        let colored_buffer = colorize_buffer(
+                            &iterations,
+                            &zs,
+                            &distances,
+                            &pass_params,
+                            pass_width,
+                            pass_height,
+                        );
+
                         let _ = sender.send(RenderMessage::PassComplete {
                             pass_index: pass_index as u8,
                             scale_divisor,
@@ -568,6 +665,7 @@ impl FractallApp {
                             distances,
                             width: pass_width,
                             height: pass_height,
+                            colored_buffer,
                         });
                         
                         // Délai pour laisser l'UI afficher cette passe avant de continuer
@@ -624,6 +722,7 @@ impl FractallApp {
                 distances,
                 width,
                 height,
+                colored_buffer,
             } => {
                 self.current_pass = pass_index + 1;
                 self.last_render_device_label = Some(precision_label);
@@ -648,14 +747,26 @@ impl FractallApp {
                     self.zs = upscaled_zs;
                     self.distances = Vec::new(); // No upscaling for distances in preview
                     self.is_preview = true;
+
+                    // Upscale le buffer colorisé pour l'affichage preview
+                    let upscaled_buffer = upscale_rgb_nearest(
+                        &colored_buffer,
+                        width,
+                        height,
+                        self.params.width,
+                        self.params.height,
+                    );
+                    self.load_texture_from_buffer(ctx, &upscaled_buffer, self.params.width, self.params.height);
                 } else {
                     self.iterations = iterations;
                     self.zs = zs;
                     self.distances = distances;
                     self.is_preview = false;
+
+                    // Utiliser directement le buffer pré-colorisé (pas de blocage UI)
+                    self.load_texture_from_buffer(ctx, &colored_buffer, width, height);
                 }
 
-                self.update_texture(ctx);
                 ctx.request_repaint();
             }
 
@@ -729,8 +840,18 @@ impl FractallApp {
         self.texture = None;
         self.start_render();
     }
-    
+
+    /// Charge une texture depuis un buffer RGB pré-colorisé.
+    /// Utilisé pour les passes de rendu (évite de bloquer l'UI).
+    fn load_texture_from_buffer(&mut self, ctx: &Context, rgb_buffer: &[u8], width: u32, height: u32) {
+        let img = RgbImage::from_raw(width, height, rgb_buffer.to_vec())
+            .expect("Invalid RGB buffer dimensions");
+        let color_image = rgb_image_to_color_image(&img);
+        self.texture = Some(ctx.load_texture("fractal", color_image, TextureOptions::LINEAR));
+    }
+
     /// Met à jour la texture egui à partir des données de fractale.
+    /// Utilisé pour les changements de palette/couleur (re-colorisation nécessaire).
     fn update_texture(&mut self, ctx: &Context) {
         let width = self.params.width;
         let height = self.params.height;
@@ -933,51 +1054,12 @@ impl FractallApp {
 
         // Toujours utiliser le domaine par défaut pour bien centrer la fractale
         self.params = new_params;
-        if self.selected_type == FractalType::Mandelbrot {
-            self.apply_render_preset(self.render_preset);
-        }
         // Synchroniser les coordonnées HP depuis les nouvelles params
         self.sync_params_to_hp();
         self.use_gpu = false;
         // Invalidate orbit cache when changing fractal type
         self.orbit_cache = None;
         self.start_render();
-    }
-
-    fn apply_render_preset(&mut self, preset: RenderPreset) {
-        self.render_preset = preset;
-        match preset {
-            RenderPreset::Standard => {
-                self.params.algorithm_mode = AlgorithmMode::Auto;
-                self.params.bla_threshold = 1e-6;
-                self.params.glitch_tolerance = 1e-4;
-                self.params.precision_bits = 256;
-            self.params.series_order = 2;
-            self.params.series_threshold = 1e-6;
-            self.params.series_error_tolerance = 1e-9;
-            self.params.glitch_neighbor_pass = true;
-            }
-            RenderPreset::Fast => {
-                self.params.algorithm_mode = AlgorithmMode::Auto;
-                self.params.bla_threshold = 5e-6;
-                self.params.glitch_tolerance = 5e-4;
-                self.params.precision_bits = 192;
-            self.params.series_order = 2;
-            self.params.series_threshold = 3e-6;
-            self.params.series_error_tolerance = 5e-9;
-            self.params.glitch_neighbor_pass = true;
-            }
-            RenderPreset::Ultra => {
-                self.params.algorithm_mode = AlgorithmMode::Auto;
-                self.params.bla_threshold = 1e-5;
-                self.params.glitch_tolerance = 1e-3;
-                self.params.precision_bits = 160;
-            self.params.series_order = 2;
-            self.params.series_threshold = 1e-5;
-            self.params.series_error_tolerance = 1e-8;
-            self.params.glitch_neighbor_pass = true;
-            }
-        }
     }
 
     fn effective_algorithm_mode(&self) -> AlgorithmMode {
@@ -1002,64 +1084,22 @@ impl FractallApp {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RenderPreset {
-    Standard,
-    Fast,
-    Ultra,
-}
-
-impl RenderPreset {
-    fn name(self) -> &'static str {
-        match self {
-            RenderPreset::Standard => "Standard (Légère)",
-            RenderPreset::Fast => "Fast (Modérée)",
-            RenderPreset::Ultra => "Ultra (Agressive)",
-        }
-    }
-}
-
-fn apply_default_preset(params: &mut FractalParams, preset: RenderPreset) {
-    match preset {
-        RenderPreset::Standard => {
-            params.algorithm_mode = AlgorithmMode::Auto;
-            params.bla_threshold = 1e-6;
-            params.glitch_tolerance = 1e-4;
-            params.precision_bits = 256;
-            params.series_order = 2;
-            params.series_threshold = 1e-6;
-            params.series_error_tolerance = 1e-9;
-            params.glitch_neighbor_pass = true;
-        }
-        RenderPreset::Fast => {
-            params.algorithm_mode = AlgorithmMode::Auto;
-            params.bla_threshold = 5e-6;
-            params.glitch_tolerance = 5e-4;
-            params.precision_bits = 192;
-            params.series_order = 2;
-            params.series_threshold = 3e-6;
-            params.series_error_tolerance = 5e-9;
-            params.glitch_neighbor_pass = true;
-        }
-        RenderPreset::Ultra => {
-            params.algorithm_mode = AlgorithmMode::Auto;
-            params.bla_threshold = 1e-5;
-            params.glitch_tolerance = 1e-3;
-            params.precision_bits = 160;
-            params.series_order = 2;
-            params.series_threshold = 1e-5;
-            params.series_error_tolerance = 1e-8;
-            params.glitch_neighbor_pass = true;
-        }
-    }
-}
-
-
 impl eframe::App for FractallApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         // Vérifier si le rendu est terminé
         self.check_render_complete(ctx);
-        
+
+        // Détection des fichiers déposés (drag-and-drop)
+        ctx.input(|i| {
+            for file in &i.raw.dropped_files {
+                if let Some(path) = &file.path {
+                    if path.extension().map(|e| e == "png").unwrap_or(false) {
+                        self.load_from_png(path);
+                    }
+                }
+            }
+        });
+
         // Gestion des raccourcis clavier
         ctx.input(|i| {
             // F1-F12 pour changer le type
@@ -1101,19 +1141,28 @@ impl eframe::App for FractallApp {
                 }
             }
             
-            // S pour screenshot
+            // S pour screenshot avec métadonnées
             if i.key_pressed(egui::Key::S) {
-                use crate::io::png::save_png;
+                use crate::io::png::save_png_with_metadata;
                 use std::path::Path;
                 let timestamp = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_secs();
                 let filename = format!("fractal_{}.png", timestamp);
-                if let Err(e) = save_png(&self.params, &self.iterations, &self.zs, Path::new(&filename)) {
+                if let Err(e) = save_png_with_metadata(
+                    &self.params,
+                    &self.iterations,
+                    &self.zs,
+                    Path::new(&filename),
+                    &self.center_x_hp,
+                    &self.center_y_hp,
+                    &self.span_x_hp,
+                    &self.span_y_hp,
+                ) {
                     eprintln!("Erreur export PNG: {}", e);
                 } else {
-                    println!("Screenshot sauvegardé: {}", filename);
+                    println!("Screenshot sauvegardé avec métadonnées: {}", filename);
                 }
             }
             
@@ -1196,6 +1245,15 @@ impl eframe::App for FractallApp {
                                     ui.close_menu();
                                 }
 
+                                if ui.selectable_label(
+                                    !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::ReferenceGmp,
+                                    "🔢 GMP Reference"
+                                ).clicked() {
+                                    self.use_gpu = false;
+                                    self.params.algorithm_mode = AlgorithmMode::ReferenceGmp;
+                                    ui.close_menu();
+                                }
+
                                 let plane_ok = self.params.plane_transform == PlaneTransform::Mu;
                                 if ui
                                     .add_enabled(
@@ -1209,15 +1267,6 @@ impl eframe::App for FractallApp {
                                 {
                                     self.use_gpu = false;
                                     self.params.algorithm_mode = AlgorithmMode::Perturbation;
-                                    ui.close_menu();
-                                }
-
-                                if ui.selectable_label(
-                                    !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::ReferenceGmp,
-                                    "🔢 GMP Reference"
-                                ).clicked() {
-                                    self.use_gpu = false;
-                                    self.params.algorithm_mode = AlgorithmMode::ReferenceGmp;
                                     ui.close_menu();
                                 }
                             });
@@ -1450,67 +1499,6 @@ impl eframe::App for FractallApp {
                         }
                     }
 
-                    // Qualité (uniquement pour fractales supportées)
-                    let supports_advanced_modes = matches!(
-                        self.selected_type,
-                        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
-                    );
-                    let show_tolerance = matches!(
-                        self.params.algorithm_mode, 
-                        AlgorithmMode::Auto | AlgorithmMode::Perturbation
-                    );
-                    
-                    if supports_advanced_modes && show_tolerance {
-                        ui.separator();
-                        let old_preset = self.render_preset;
-                        ui.label("Qualité:");
-                        egui::ComboBox::from_id_source("render_preset")
-                            .selected_text(self.render_preset.name())
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.render_preset, RenderPreset::Ultra, "Ultra (rapide)");
-                                ui.selectable_value(&mut self.render_preset, RenderPreset::Fast, "Fast (équilibré)");
-                                ui.selectable_value(&mut self.render_preset, RenderPreset::Standard, "Standard (précis)");
-                            });
-                        if old_preset != self.render_preset {
-                            self.apply_render_preset(self.render_preset);
-                            self.start_render();
-                        }
-                    }
-
-                    // Advanced: Distance Estimation et Interior Detection
-                    ui.separator();
-                    ui.collapsing("Avancé", |ui| {
-                        // Distance estimation checkbox
-                        let old_dist = self.enable_distance_estimation;
-                        ui.checkbox(&mut self.enable_distance_estimation, "Distance Estimation");
-                        if old_dist != self.enable_distance_estimation {
-                            self.params.enable_distance_estimation = self.enable_distance_estimation;
-                            self.orbit_cache = None;
-                            self.start_render();
-                        }
-
-                        // Interior detection checkbox
-                        let old_interior = self.enable_interior_detection;
-                        ui.checkbox(&mut self.enable_interior_detection, "Interior Detection");
-                        if old_interior != self.enable_interior_detection {
-                            self.params.enable_interior_detection = self.enable_interior_detection;
-                            self.orbit_cache = None;
-                            self.start_render();
-                        }
-
-                        // Interior threshold slider (only show if interior detection enabled)
-                        if self.enable_interior_detection {
-                            ui.horizontal(|ui| {
-                                ui.label("Threshold:");
-                                let old_threshold = self.interior_threshold;
-                                ui.add(egui::Slider::new(&mut self.interior_threshold, 0.0001..=0.1).logarithmic(true));
-                                if (old_threshold - self.interior_threshold).abs() > 1e-8 {
-                                    self.params.interior_threshold = self.interior_threshold;
-                                    self.start_render();
-                                }
-                            });
-                        }
-                    });
                 });
                 
                 ui.separator();

@@ -1,8 +1,9 @@
 use num_complex::Complex64;
+use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
 /// Type d'Orbit Trap (forme géométrique pour détecter la proximité de l'orbite)
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub enum OrbitTrapType {
     /// Distance minimale à un point (généralement l'origine)

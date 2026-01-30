@@ -22,6 +22,8 @@ pub enum RenderMessage {
         distances: Vec<f64>,
         width: u32,
         height: u32,
+        /// Buffer RGBA pré-colorisé (évite de bloquer le thread UI)
+        colored_buffer: Vec<u8>,
     },
     /// Toutes les passes sont terminées.
     AllComplete {
@@ -142,6 +144,38 @@ pub fn upscale_nearest(
     }
 
     (dst_iterations, dst_zs)
+}
+
+/// Upscale un buffer RGB en utilisant l'interpolation nearest-neighbor.
+pub fn upscale_rgb_nearest(
+    src_buffer: &[u8],
+    src_width: u32,
+    src_height: u32,
+    dst_width: u32,
+    dst_height: u32,
+) -> Vec<u8> {
+    let dst_size = (dst_width * dst_height * 3) as usize;
+    let mut dst_buffer = vec![0u8; dst_size];
+
+    let x_ratio = src_width as f64 / dst_width as f64;
+    let y_ratio = src_height as f64 / dst_height as f64;
+
+    for dst_y in 0..dst_height {
+        let src_y = ((dst_y as f64 * y_ratio) as u32).min(src_height.saturating_sub(1));
+        for dst_x in 0..dst_width {
+            let src_x = ((dst_x as f64 * x_ratio) as u32).min(src_width.saturating_sub(1));
+            let src_idx = ((src_y * src_width + src_x) * 3) as usize;
+            let dst_idx = ((dst_y * dst_width + dst_x) * 3) as usize;
+
+            if src_idx + 2 < src_buffer.len() && dst_idx + 2 < dst_buffer.len() {
+                dst_buffer[dst_idx] = src_buffer[src_idx];
+                dst_buffer[dst_idx + 1] = src_buffer[src_idx + 1];
+                dst_buffer[dst_idx + 2] = src_buffer[src_idx + 2];
+            }
+        }
+    }
+
+    dst_buffer
 }
 
 #[cfg(test)]

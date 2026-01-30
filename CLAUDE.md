@@ -18,14 +18,14 @@ src/
 ├── main_gui.rs          # GUI (egui/eframe)
 ├── fractal/
 │   ├── mod.rs           # exports + default_params_for_type()
-│   ├── types.rs         # FractalType, FractalParams, AlgorithmMode, ColorSpace
+│   ├── types.rs         # FractalType, FractalParams, AlgorithmMode, ColorSpace (Serialize/Deserialize)
 │   ├── definitions.rs   # constantes par type + LyapunovPreset
 │   ├── iterations.rs    # escape-time f64
 │   ├── gmp.rs           # precision arbitraire (rug/mpc)
-│   ├── lyapunov.rs      # Lyapunov exponent
+│   ├── lyapunov.rs      # Lyapunov exponent (Serialize/Deserialize)
 │   ├── buddhabrot.rs    # Buddhabrot/Nebulabrot
 │   ├── vectorial.rs     # Von Koch, Dragon
-│   ├── orbit_traps.rs   # Orbit trap detection (Point, Line, Cross, Circle)
+│   ├── orbit_traps.rs   # Orbit trap detection (Serialize/Deserialize)
 │   └── perturbation/
 │       ├── mod.rs       # render_perturbation_cancellable_with_reuse()
 │       ├── types.rs     # ComplexExp, FloatExp (mantisse + exposant)
@@ -48,16 +48,16 @@ src/
 │   └── perturbation.wgsl
 ├── gui/
 │   ├── mod.rs
-│   ├── app.rs           # FractallApp (egui)
+│   ├── app.rs           # FractallApp (egui) + drag-and-drop
 │   ├── progressive.rs   # rendu multi-passes
 │   └── texture.rs
 ├── color/
 │   ├── mod.rs
-│   ├── palettes.rs      # 8+ palettes predefinies
+│   ├── palettes.rs      # 13 palettes predefinies
 │   └── color_models.rs  # RGB, HSB, LCH conversions
 └── io/
     ├── mod.rs
-    └── png.rs
+    └── png.rs           # save_png_with_metadata(), load_png_metadata()
 ```
 
 ## Systeme de coordonnees
@@ -78,6 +78,18 @@ pub struct FractalParams {
 }
 ```
 Avantage: evite la soustraction de grands nombres proches lors de zooms profonds.
+
+## Metadonnees PNG
+
+Les images PNG generees contiennent les parametres complets de la fractale dans un chunk tEXt:
+- Cle: `fractall-params`
+- Valeur: JSON serialise de `FractalParams` (incluant coordonnees HP)
+
+**Fonctions** (`io/png.rs`):
+- `save_png_with_metadata()`: Sauvegarde PNG + metadonnees JSON
+- `load_png_metadata()`: Charge les FractalParams depuis un PNG
+
+**Drag-and-drop**: Glisser un PNG sur la fenetre GUI restaure l'etat exact de la fractale.
 
 ## Dispatch rendu (escape_time.rs)
 
@@ -161,9 +173,9 @@ Precision GMP:
 ```
 --type N              # type fractale (1-24)
 --width/height        # dimensions
---center_x/center_y   # centre
+--center-x/center-y   # centre
 --iterations          # max iterations
---palette 0-8         # palette
+--palette 0-12        # palette
 --color_repeat        # repetitions gradient
 --algorithm           # auto|f64|perturbation|gmp
 --precision-bits      # bits GMP (defaut 256)
@@ -171,7 +183,7 @@ Precision GMP:
 --glitch_tolerance    # tolerance glitch
 --multibrot_power     # puissance Multibrot
 --lyapunov_preset     # standard|zircon-city|jellyfish|asymmetric|spaceship|heavy-blocks
---output FILE         # PNG sortie
+--output FILE         # PNG sortie (avec metadonnees)
 ```
 
 ## GPU (wgpu)
@@ -191,3 +203,17 @@ Selection automatique selon zoom et support materiel.
 - Switch CPU/GPU
 - Stats: centre, iterations, zoom
 - Apercu palettes
+- **Drag-and-drop**: Glisser un PNG pour restaurer l'etat
+- **Sauvegarde (S)**: PNG avec metadonnees integrees
+
+## Raccourcis clavier GUI
+
+| Touche | Action |
+|--------|--------|
+| F1-F12 | Changer type fractale |
+| C | Cycler palette |
+| R | Cycler color_repeat |
+| S | Screenshot PNG (avec metadonnees) |
+| +/= | Zoom avant |
+| - | Zoom arriere |
+| 0 | Reset vue |

@@ -17,8 +17,8 @@ path = "src/main_gui.rs"
 clap = { version = "4.5", features = ["derive"] }
 # Image avec support PNG natif (détection automatique du format)
 image = "0.25"
-# Nombres complexes pour les calculs de fractales
-num-complex = "0.4"
+# Nombres complexes pour les calculs de fractales (avec serde pour métadonnées PNG)
+num-complex = { version = "0.4", features = ["serde"] }
 # Parallélisation multi-cœurs pour le rendu et la colorisation
 rayon = "1.11"
 # GUI avec egui (wgpu backend pour rendu GPU)
@@ -30,3 +30,8 @@ pollster = "0.3"
 bytemuck = { version = "1.15", features = ["derive"] }
 # Haute précision GMP/MPFR/MPC via rug (libs natives requises)
 rug = { version = "1.24", features = ["float", "complex"] }
+# Sérialisation pour métadonnées PNG
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# Accès bas-niveau aux chunks PNG pour métadonnées
+png = "0.17"

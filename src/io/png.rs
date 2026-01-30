@@ -1,22 +1,31 @@
+use std::fs::File;
+use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
-use image::{ImageError, RgbImage};
 use num_complex::Complex64;
+use png::{Decoder, Encoder};
 use rayon::prelude::*;
 
 use crate::color::{color_for_pixel, color_for_nebulabrot_pixel, color_for_buddhabrot_pixel};
 use crate::fractal::{FractalParams, FractalType};
 
-/// Génére une image RGB colorisée à partir des matrices d'itérations et de z,
-/// puis l'enregistre au format PNG.
+/// Clé du chunk tEXt pour les métadonnées fractales.
+const METADATA_KEY: &str = "fractall-params";
+
+/// Génère une image RGB colorisée avec métadonnées fractales intégrées dans un chunk tEXt.
 ///
-/// La colorisation est également parallélisée pour améliorer les performances.
-pub fn save_png(
+/// Les métadonnées permettent de restaurer exactement l'état de la fractale
+/// (coordonnées HP, type, paramètres) lors du chargement ultérieur de l'image.
+pub fn save_png_with_metadata(
     params: &FractalParams,
     iterations: &[u32],
     zs: &[Complex64],
     output: &Path,
-) -> Result<(), ImageError> {
+    center_x_hp: &str,
+    center_y_hp: &str,
+    span_x_hp: &str,
+    span_y_hp: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let width = params.width;
     let height = params.height;
     let w = width as usize;
@@ -51,9 +60,9 @@ pub fn save_png(
                             params.color_repeat,
                             params.out_coloring_mode,
                             params.color_space,
-                            None, // Orbit data not stored in PNG export yet
-                            None, // Distance not stored in PNG export yet
-                            false, // Interior flag not encoded in PNG export
+                            None,
+                            None,
+                            false,
                         )
                     };
 
@@ -63,14 +72,53 @@ pub fn save_png(
         })
         .collect();
 
-    // Créer l'image depuis le buffer
-    let img = RgbImage::from_raw(width, height, buffer)
-        .ok_or_else(|| ImageError::from(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Impossible de créer l'image depuis le buffer"
-        )))?;
+    // Créer les params avec coordonnées HP complètes pour sérialisation
+    let mut params_to_save = params.clone();
+    params_to_save.center_x_hp = Some(center_x_hp.to_string());
+    params_to_save.center_y_hp = Some(center_y_hp.to_string());
+    params_to_save.span_x_hp = Some(span_x_hp.to_string());
+    params_to_save.span_y_hp = Some(span_y_hp.to_string());
 
-    // Avec image 0.25, save() détecte automatiquement le format depuis l'extension
-    img.save(output)
+    // Sérialiser en JSON
+    let metadata_json = serde_json::to_string(&params_to_save)?;
+
+    // Écrire le PNG avec métadonnées via le crate png
+    let file = File::create(output)?;
+    let writer = BufWriter::new(file);
+
+    let mut encoder = Encoder::new(writer, width, height);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+
+    // Ajouter le chunk tEXt avec les métadonnées
+    encoder.add_text_chunk(METADATA_KEY.to_string(), metadata_json)?;
+
+    let mut png_writer = encoder.write_header()?;
+    png_writer.write_image_data(&buffer)?;
+
+    Ok(())
+}
+
+/// Charge les métadonnées fractales depuis un fichier PNG.
+///
+/// Retourne les FractalParams si le fichier contient les métadonnées fractall,
+/// ou une erreur si le fichier n'est pas un PNG valide ou ne contient pas de métadonnées.
+pub fn load_png_metadata(path: &Path) -> Result<FractalParams, Box<dyn std::error::Error>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+
+    let decoder = Decoder::new(reader);
+    let png_reader = decoder.read_info()?;
+    let info = png_reader.info();
+
+    // Chercher le chunk tEXt avec notre clé
+    for text_chunk in &info.uncompressed_latin1_text {
+        if text_chunk.keyword == METADATA_KEY {
+            let params: FractalParams = serde_json::from_str(&text_chunk.text)?;
+            return Ok(params);
+        }
+    }
+
+    Err("Aucune métadonnée fractall trouvée dans le PNG".into())
 }
 

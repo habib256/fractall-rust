@@ -1,4 +1,5 @@
 use num_complex::Complex64;
+use serde::{Deserialize, Serialize};
 use super::orbit_traps::OrbitTrapType;
 use rug;
 
@@ -12,7 +13,7 @@ use rug;
 /// 14=Tricorn, 15=Mandelbulb, 16=Buddhabrot, 17=Lyapunov,
 /// 18=Perpendicular Burning Ship, 19=Celtic, 20=Alpha Mandelbrot,
 /// 21=Pickover Stalks, 22=Nova, 23=Multibrot, 24=Nebulabrot.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FractalType {
     VonKoch,
     Dragon,
@@ -135,7 +136,7 @@ impl FractalType {
 }
 
 /// Mode d'algorithme pour le rendu escape-time.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AlgorithmMode {
     Auto,
     StandardF64,
@@ -167,7 +168,7 @@ impl AlgorithmMode {
 }
 
 /// Espace colorimétrique pour les gradients
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub enum ColorSpace {
     /// Espace RGB standard (défaut)
@@ -196,7 +197,7 @@ impl ColorSpace {
 }
 
 /// Mode de colorisation pour les pixels extérieurs (XaoS-style outcoloring).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum OutColoringMode {
     /// Discrete iteration bands (no smoothing)
     Iter,
@@ -369,7 +370,7 @@ impl OutColoringMode {
 
 /// Complex plane transformation mode (XaoS-style).
 /// Transforms coordinate c before fractal iteration.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum PlaneTransform {
     /// Normal mode: c = c (no transformation)
     #[default]
@@ -657,7 +658,7 @@ use crate::fractal::lyapunov::LyapunovPreset;
 /// Les coordonnées du plan complexe sont représentées par centre + étendue
 /// (center_x/center_y + span_x/span_y) plutôt que par bornes (xmin/xmax/ymin/ymax).
 /// Cela permet des zooms profonds (> 1e15) sans perte de précision f64.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FractalParams {
     pub width: u32,
     pub height: u32,
