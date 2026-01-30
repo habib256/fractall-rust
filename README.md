@@ -68,7 +68,7 @@ sudo pacman -S gmp mpfr libmpc
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/fractall-rust.git
+git clone https://github.com/habib256/fractall-rust.git
 cd fractall-rust
 
 # Build in release mode (important for performance!)
