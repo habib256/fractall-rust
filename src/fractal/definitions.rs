@@ -282,6 +282,69 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.bailout = 4.0;
             params.iteration_max = 2500;
         }
+        FractalType::BurningShipJulia => {
+            params.center_x = 0.0;
+            params.center_y = 0.0;
+            params.span_x = 4.0;
+            params.span_y = 4.0;
+            params.seed = Complex64::new(0.36228, -0.0777);
+            params.bailout = 4.0;
+            params.iteration_max = 2500;
+        }
+        FractalType::TricornJulia => {
+            params.center_x = 0.0;
+            params.center_y = 0.0;
+            params.span_x = 4.0;
+            params.span_y = 3.0;
+            params.seed = Complex64::new(0.36228, -0.0777);
+            params.bailout = 4.0;
+            params.iteration_max = 2500;
+        }
+        FractalType::CelticJulia => {
+            params.center_x = 0.0;
+            params.center_y = 0.0;
+            params.span_x = 3.0;
+            params.span_y = 3.0;
+            params.seed = Complex64::new(0.36228, -0.0777);
+            params.bailout = 4.0;
+            params.iteration_max = 2500;
+        }
+        FractalType::BuffaloJulia => {
+            params.center_x = 0.0;
+            params.center_y = 0.0;
+            params.span_x = 4.0;
+            params.span_y = 4.0;
+            params.seed = Complex64::new(0.36228, -0.0777);
+            params.bailout = 4.0;
+            params.iteration_max = 2500;
+        }
+        FractalType::MultibrotJulia => {
+            params.center_x = 0.0;
+            params.center_y = 0.0;
+            params.span_x = 4.0;
+            params.span_y = 3.0;
+            params.seed = Complex64::new(0.36228, -0.0777);
+            params.bailout = 4.0;
+            params.iteration_max = 2500;
+        }
+        FractalType::PerpendicularBurningShipJulia => {
+            params.center_x = 0.0;
+            params.center_y = 0.0;
+            params.span_x = 4.0;
+            params.span_y = 3.0;
+            params.seed = Complex64::new(0.36228, -0.0777);
+            params.bailout = 4.0;
+            params.iteration_max = 2500;
+        }
+        FractalType::AlphaMandelbrotJulia => {
+            params.center_x = 0.0;
+            params.center_y = 0.0;
+            params.span_x = 4.0;
+            params.span_y = 3.0;
+            params.seed = Complex64::new(0.36228, -0.0777);
+            params.bailout = 4.0;
+            params.iteration_max = 2000;
+        }
         FractalType::Nebulabrot => {
             // Nebulabrot_def: xmin=-2.5, xmax=1.5, ymin=-1.5, ymax=1.5
             params.center_x = -0.5;

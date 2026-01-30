@@ -13,6 +13,8 @@ use rug;
 /// 14=Tricorn, 15=Mandelbulb, 16=Buddhabrot, 17=Lyapunov,
 /// 18=Perpendicular Burning Ship, 19=Celtic, 20=Alpha Mandelbrot,
 /// 21=Pickover Stalks, 22=Nova, 23=Multibrot, 24=Nebulabrot.
+/// Extension (non C): 25=Burning Ship Julia, 26=Tricorn Julia, 27=Celtic Julia,
+/// 28=Buffalo Julia, 29=Multibrot Julia, 30=Perpendicular Burning Ship Julia, 31=Alpha Mandelbrot Julia.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FractalType {
     VonKoch,
@@ -39,6 +41,13 @@ pub enum FractalType {
     Nova,
     Multibrot,
     Nebulabrot,
+    BurningShipJulia,
+    TricornJulia,
+    CelticJulia,
+    BuffaloJulia,
+    MultibrotJulia,
+    PerpendicularBurningShipJulia,
+    AlphaMandelbrotJulia,
 }
 
 impl FractalType {
@@ -69,6 +78,13 @@ impl FractalType {
             22 => Some(FractalType::Nova),
             23 => Some(FractalType::Multibrot),
             24 => Some(FractalType::Nebulabrot),
+            25 => Some(FractalType::BurningShipJulia),
+            26 => Some(FractalType::TricornJulia),
+            27 => Some(FractalType::CelticJulia),
+            28 => Some(FractalType::BuffaloJulia),
+            29 => Some(FractalType::MultibrotJulia),
+            30 => Some(FractalType::PerpendicularBurningShipJulia),
+            31 => Some(FractalType::AlphaMandelbrotJulia),
             _ => None,
         }
     }
@@ -101,6 +117,13 @@ impl FractalType {
             FractalType::Nova => 22,
             FractalType::Multibrot => 23,
             FractalType::Nebulabrot => 24,
+            FractalType::BurningShipJulia => 25,
+            FractalType::TricornJulia => 26,
+            FractalType::CelticJulia => 27,
+            FractalType::BuffaloJulia => 28,
+            FractalType::MultibrotJulia => 29,
+            FractalType::PerpendicularBurningShipJulia => 30,
+            FractalType::AlphaMandelbrotJulia => 31,
         }
     }
 
@@ -131,6 +154,13 @@ impl FractalType {
             FractalType::Nova => "Nova",
             FractalType::Multibrot => "Multibrot",
             FractalType::Nebulabrot => "Nebulabrot",
+            FractalType::BurningShipJulia => "Burning Ship Julia",
+            FractalType::TricornJulia => "Tricorn Julia",
+            FractalType::CelticJulia => "Celtic Julia",
+            FractalType::BuffaloJulia => "Buffalo Julia",
+            FractalType::MultibrotJulia => "Multibrot Julia",
+            FractalType::PerpendicularBurningShipJulia => "Perpendicular Burning Ship Julia",
+            FractalType::AlphaMandelbrotJulia => "Alpha Mandelbrot Julia",
         }
     }
 
@@ -143,6 +173,13 @@ impl FractalType {
             FractalType::Mandelbrot
                 | FractalType::BarnsleyMandelbrot
                 | FractalType::MagnetMandelbrot
+                | FractalType::BurningShip
+                | FractalType::Tricorn
+                | FractalType::Celtic
+                | FractalType::Buffalo
+                | FractalType::Multibrot
+                | FractalType::PerpendicularBurningShip
+                | FractalType::AlphaMandelbrot
         )
     }
 
@@ -154,7 +191,38 @@ impl FractalType {
             FractalType::Mandelbrot => Some(FractalType::Julia),
             FractalType::BarnsleyMandelbrot => Some(FractalType::BarnsleyJulia),
             FractalType::MagnetMandelbrot => Some(FractalType::MagnetJulia),
+            FractalType::BurningShip => Some(FractalType::BurningShipJulia),
+            FractalType::Tricorn => Some(FractalType::TricornJulia),
+            FractalType::Celtic => Some(FractalType::CelticJulia),
+            FractalType::Buffalo => Some(FractalType::BuffaloJulia),
+            FractalType::Multibrot => Some(FractalType::MultibrotJulia),
+            FractalType::PerpendicularBurningShip => Some(FractalType::PerpendicularBurningShipJulia),
+            FractalType::AlphaMandelbrot => Some(FractalType::AlphaMandelbrotJulia),
             _ => None,
+        }
+    }
+
+    /// Nom de la famille (sous-menu) pour l'affichage du menu Type.
+    /// Permet d'afficher "Famille: Nom" (ex. "Mandelbrot: Julia").
+    #[allow(dead_code)]
+    pub fn menu_family(self) -> &'static str {
+        match self {
+            FractalType::Mandelbrot | FractalType::Julia => "Mandelbrot",
+            FractalType::BarnsleyMandelbrot | FractalType::BarnsleyJulia => "Barnsley",
+            FractalType::MagnetMandelbrot | FractalType::MagnetJulia => "Magnet",
+            FractalType::BurningShip | FractalType::BurningShipJulia
+            | FractalType::PerpendicularBurningShip | FractalType::PerpendicularBurningShipJulia => "Burning Ship",
+            FractalType::Tricorn | FractalType::TricornJulia => "Tricorn",
+            FractalType::Celtic | FractalType::CelticJulia => "Celtic",
+            FractalType::Buffalo | FractalType::BuffaloJulia => "Buffalo",
+            FractalType::Multibrot | FractalType::MultibrotJulia => "Multibrot",
+            FractalType::AlphaMandelbrot | FractalType::AlphaMandelbrotJulia => "Alpha Mandelbrot",
+            FractalType::VonKoch | FractalType::Dragon => "Vector",
+            FractalType::Buddhabrot | FractalType::Nebulabrot => "Densité",
+            FractalType::Lyapunov => "Lyapunov",
+            FractalType::Mandelbulb => "Variantes M",
+            FractalType::JuliaSin | FractalType::Newton | FractalType::Phoenix
+            | FractalType::PickoverStalks | FractalType::Nova => "Autres",
         }
     }
 }

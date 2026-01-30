@@ -300,6 +300,13 @@ pub fn iterate_point_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
         FractalType::PickoverStalks => pickover_stalks_mpc(g, z_pixel),
         FractalType::Nova => nova_mpc(g, z_pixel),
         FractalType::Multibrot => multibrot_mpc(g, z_pixel),
+        FractalType::BurningShipJulia => burning_ship_julia_mpc(g, z_pixel),
+        FractalType::TricornJulia => tricorn_julia_mpc(g, z_pixel),
+        FractalType::CelticJulia => celtic_julia_mpc(g, z_pixel),
+        FractalType::BuffaloJulia => buffalo_julia_mpc(g, z_pixel),
+        FractalType::MultibrotJulia => multibrot_julia_mpc(g, z_pixel),
+        FractalType::PerpendicularBurningShipJulia => perpendicular_burning_ship_julia_mpc(g, z_pixel),
+        FractalType::AlphaMandelbrotJulia => alpha_mandelbrot_julia_mpc(g, z_pixel),
         FractalType::Buddhabrot => {
             panic!("Buddhabrot doit être rendu via render_buddhabrot(), pas iterate_point_mpc()")
         }
@@ -337,6 +344,13 @@ pub fn iterate_point_gmp(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
         FractalType::PickoverStalks => pickover_stalks(g, z_pixel),
         FractalType::Nova => nova(g, z_pixel),
         FractalType::Multibrot => multibrot(g, z_pixel),
+        FractalType::BurningShipJulia => burning_ship_julia(g, z_pixel),
+        FractalType::TricornJulia => tricorn_julia(g, z_pixel),
+        FractalType::CelticJulia => celtic_julia(g, z_pixel),
+        FractalType::BuffaloJulia => buffalo_julia(g, z_pixel),
+        FractalType::MultibrotJulia => multibrot_julia(g, z_pixel),
+        FractalType::PerpendicularBurningShipJulia => perpendicular_burning_ship_julia(g, z_pixel),
+        FractalType::AlphaMandelbrotJulia => alpha_mandelbrot_julia(g, z_pixel),
         FractalType::Buddhabrot => {
             panic!("Buddhabrot doit être rendu via render_buddhabrot(), pas iterate_point_gmp()")
         }
@@ -717,6 +731,129 @@ fn multibrot(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     while i < g.iteration_max && z.norm_sqr() < g.bailout_sqr {
         let z_pow = z.pow_f64(d, g.prec);
         z = z_pow.add(z_pixel);
+        i += 1;
+    }
+    (i, z)
+}
+
+// Julia variants (z_0 = z_pixel, c = g.seed)
+
+#[allow(dead_code)]
+fn burning_ship_julia(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
+    let mut z = z_pixel.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && z.norm_sqr() < g.bailout_sqr {
+        let re = z.re.clone().abs();
+        let im = z.im.clone().abs();
+        let mut z_temp = ComplexF::new(re, im);
+        z_temp = z_temp.mul(&z_temp);
+        z = z_temp.add(&g.seed);
+        i += 1;
+    }
+    (i, z)
+}
+
+#[allow(dead_code)]
+fn tricorn_julia(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
+    let mut z = z_pixel.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && z.norm_sqr() < g.bailout_sqr {
+        let z_conj = z.conj();
+        let z_temp = z_conj.mul(&z_conj);
+        z = z_temp.add(&g.seed);
+        i += 1;
+    }
+    (i, z)
+}
+
+#[allow(dead_code)]
+fn celtic_julia(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
+    let mut z = z_pixel.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && z.norm_sqr() < g.bailout_sqr {
+        let x = z.re.clone();
+        let y = z.im.clone();
+        let mut u = x.clone();
+        u *= &x;
+        let mut y2 = y.clone();
+        y2 *= &y;
+        u -= y2;
+        let mut v = x;
+        v *= y;
+        v *= Float::with_val(g.prec, 2.0);
+        let mut re = u.abs();
+        re += &g.seed.re;
+        let mut im = v;
+        im += &g.seed.im;
+        z = ComplexF::new(re, im);
+        i += 1;
+    }
+    (i, z)
+}
+
+#[allow(dead_code)]
+fn buffalo_julia(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
+    let mut z = z_pixel.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && z.norm_sqr() < g.bailout_sqr {
+        let z_sq = z.mul(&z);
+        let re_sq = z_sq.re.clone().abs();
+        let im_sq = z_sq.im.clone().abs();
+        z = ComplexF::new(re_sq + &g.seed.re, im_sq + &g.seed.im);
+        i += 1;
+    }
+    (i, z)
+}
+
+#[allow(dead_code)]
+fn multibrot_julia(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
+    let mut z = z_pixel.clone();
+    let mut i = 0u32;
+    let d = g.multibrot_power;
+    while i < g.iteration_max && z.norm_sqr() < g.bailout_sqr {
+        let z_pow = z.pow_f64(d, g.prec);
+        z = z_pow.add(&g.seed);
+        i += 1;
+    }
+    (i, z)
+}
+
+#[allow(dead_code)]
+fn perpendicular_burning_ship_julia(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
+    let mut z = z_pixel.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && z.norm_sqr() < g.bailout_sqr {
+        let x = z.re.clone();
+        let y = z.im.clone();
+        let y_abs = y.clone().abs();
+        let mut x2 = x.clone();
+        x2 *= &x;
+        let mut y2 = y_abs.clone();
+        y2 *= &y_abs;
+        let mut re = x2;
+        re -= y2;
+        re += &g.seed.re;
+
+        let mut im = x;
+        im *= y_abs;
+        im *= Float::with_val(g.prec, -2.0);
+        im += &g.seed.im;
+
+        z = ComplexF::new(re, im);
+        i += 1;
+    }
+    (i, z)
+}
+
+#[allow(dead_code)]
+fn alpha_mandelbrot_julia(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
+    let mut z = z_pixel.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && z.norm_sqr() < g.bailout_sqr {
+        let z_sq = z.mul(&z);
+        let m = z_sq.add(&g.seed);
+        let m_sq = m.mul(&m);
+        z = z_sq.add(&m_sq).add(&g.seed);
         i += 1;
     }
     (i, z)
@@ -1124,6 +1261,136 @@ fn multibrot_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
         let z_pow = pow_f64_mpc(&z, d, g.prec);
         let mut z_next = z_pow;
         z_next += z_pixel;
+        z = z_next;
+        i += 1;
+    }
+    (i, z)
+}
+
+fn burning_ship_julia_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = z_pixel.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let re = z.real().clone().abs();
+        let im = z.imag().clone().abs();
+        let mut z_temp = complex_from_xy(g.prec, re, im);
+        z_temp *= z_temp.clone();
+        z_temp += &g.seed;
+        z = z_temp;
+        i += 1;
+    }
+    (i, z)
+}
+
+fn tricorn_julia_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = z_pixel.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let z_conj = z.clone().conj();
+        let mut z_temp = z_conj.clone();
+        z_temp *= &z_conj;
+        z_temp += &g.seed;
+        z = z_temp;
+        i += 1;
+    }
+    (i, z)
+}
+
+fn celtic_julia_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = z_pixel.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let x = z.real().clone();
+        let y = z.imag().clone();
+        let mut u = x.clone();
+        u *= &x;
+        let mut y2 = y.clone();
+        y2 *= &y;
+        u -= y2;
+        let mut v = x;
+        v *= y;
+        v *= Float::with_val(g.prec, 2.0);
+        let mut re = u.abs();
+        re += g.seed.real();
+        let mut im = v;
+        im += g.seed.imag();
+        z = complex_from_xy(g.prec, re, im);
+        i += 1;
+    }
+    (i, z)
+}
+
+fn buffalo_julia_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = z_pixel.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let mut z_sq = z.clone();
+        z_sq *= &z;
+        let re_sq = z_sq.real().clone().abs();
+        let im_sq = z_sq.imag().clone().abs();
+        let mut re = re_sq;
+        re += g.seed.real();
+        let mut im = im_sq;
+        im += g.seed.imag();
+        z = complex_from_xy(g.prec, re, im);
+        i += 1;
+    }
+    (i, z)
+}
+
+fn multibrot_julia_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = z_pixel.clone();
+    let mut i = 0u32;
+    let d = g.multibrot_power;
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let z_pow = pow_f64_mpc(&z, d, g.prec);
+        let mut z_next = z_pow;
+        z_next += &g.seed;
+        z = z_next;
+        i += 1;
+    }
+    (i, z)
+}
+
+fn perpendicular_burning_ship_julia_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = z_pixel.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let x = z.real().clone();
+        let y = z.imag().clone();
+        let y_abs = y.clone().abs();
+        let mut x2 = x.clone();
+        x2 *= &x;
+        let mut y2 = y_abs.clone();
+        y2 *= &y_abs;
+        let mut re = x2;
+        re -= y2;
+        re += g.seed.real();
+
+        let mut im = x;
+        im *= y_abs;
+        im *= Float::with_val(g.prec, -2.0);
+        im += g.seed.imag();
+
+        z = complex_from_xy(g.prec, re, im);
+        i += 1;
+    }
+    (i, z)
+}
+
+fn alpha_mandelbrot_julia_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = z_pixel.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let mut z_sq = z.clone();
+        z_sq *= &z;
+        let mut m = z_sq.clone();
+        m += &g.seed;
+        let mut m_sq = m.clone();
+        m_sq *= &m;
+        let mut z_next = z_sq;
+        z_next += &m_sq;
+        z_next += &g.seed;
         z = z_next;
         i += 1;
     }

@@ -28,6 +28,13 @@ pub fn iterate_point(params: &FractalParams, z_pixel: Complex64) -> FractalResul
         FractalType::PickoverStalks => pickover_stalks(params, z_pixel),
         FractalType::Nova => nova(params, z_pixel),
         FractalType::Multibrot => multibrot(params, z_pixel),
+        FractalType::BurningShipJulia => burning_ship_julia(params, z_pixel),
+        FractalType::TricornJulia => tricorn_julia(params, z_pixel),
+        FractalType::CelticJulia => celtic_julia(params, z_pixel),
+        FractalType::BuffaloJulia => buffalo_julia(params, z_pixel),
+        FractalType::MultibrotJulia => multibrot_julia(params, z_pixel),
+        FractalType::PerpendicularBurningShipJulia => perpendicular_burning_ship_julia(params, z_pixel),
+        FractalType::AlphaMandelbrotJulia => alpha_mandelbrot_julia(params, z_pixel),
         FractalType::Buddhabrot => {
             panic!("Buddhabrot doit être rendu via render_buddhabrot(), pas iterate_point()")
         }
@@ -529,6 +536,107 @@ fn multibrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         i += 1;
     }
 
+    FractalResult { iteration: i, z, orbit: None, distance: None }
+}
+
+// Julia variants: z_0 = z_pixel, c = p.seed (same formula as Mandelbrot-like counterpart)
+
+fn burning_ship_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
+    let mut z = z_pixel;
+    let mut i = 0u32;
+    while i < p.iteration_max && z.norm() < p.bailout {
+        let re = z.re.abs();
+        let im = z.im.abs();
+        let mut z_temp = Complex64::new(re, im);
+        z_temp = z_temp * z_temp;
+        z = z_temp + p.seed;
+        if !z.re.is_finite() || !z.im.is_finite() {
+            break;
+        }
+        i += 1;
+    }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
+}
+
+fn tricorn_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
+    let mut z = z_pixel;
+    let mut i = 0u32;
+    while i < p.iteration_max && z.norm() < p.bailout {
+        let z_conj = Complex64::new(z.re, -z.im);
+        let z_temp = z_conj * z_conj;
+        z = z_temp + p.seed;
+        i += 1;
+    }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
+}
+
+fn celtic_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
+    let mut z = z_pixel;
+    let mut i = 0u32;
+    while i < p.iteration_max && z.norm() < p.bailout {
+        let x = z.re;
+        let y = z.im;
+        let u = x * x - y * y;
+        let v = 2.0 * x * y;
+        z = Complex64::new(u.abs() + p.seed.re, v + p.seed.im);
+        i += 1;
+    }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
+}
+
+fn buffalo_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
+    let mut z = z_pixel;
+    let mut i = 0u32;
+    while i < p.iteration_max && z.norm() < p.bailout {
+        let z_sq = z * z;
+        let re_sq = z_sq.re.abs();
+        let im_sq = z_sq.im.abs();
+        z = Complex64::new(re_sq + p.seed.re, im_sq + p.seed.im);
+        i += 1;
+    }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
+}
+
+fn multibrot_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
+    let mut z = z_pixel;
+    let mut i = 0u32;
+    let d = p.multibrot_power;
+    while i < p.iteration_max && z.norm() < p.bailout {
+        let z_pow = z.powf(d);
+        if !z_pow.re.is_finite() || !z_pow.im.is_finite() {
+            break;
+        }
+        z = z_pow + p.seed;
+        i += 1;
+    }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
+}
+
+fn perpendicular_burning_ship_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
+    let mut z = z_pixel;
+    let mut i = 0u32;
+    while i < p.iteration_max && z.norm() < p.bailout {
+        let x = z.re;
+        let y = z.im;
+        let y_abs = y.abs();
+        let x2 = x * x;
+        let y2 = y_abs * y_abs;
+        z = Complex64::new(x2 - y2 + p.seed.re, -2.0 * x * y_abs + p.seed.im);
+        i += 1;
+    }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
+}
+
+fn alpha_mandelbrot_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
+    let mut z = z_pixel;
+    let mut i = 0u32;
+    while i < p.iteration_max && z.norm() < p.bailout {
+        let z_sq = z * z;
+        let m = z_sq + p.seed;
+        let m_sq = m * m;
+        z = z_sq + m_sq + p.seed;
+        i += 1;
+    }
     FractalResult { iteration: i, z, orbit: None, distance: None }
 }
 

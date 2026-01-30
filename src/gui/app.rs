@@ -1685,17 +1685,10 @@ impl eframe::App for FractallApp {
                     // Menu Type (toutes catégories)
                     ui.label("Type:");
 
-                    // Catégories de fractales dans un seul menu
-                    let vector_types = [(1, "Von Koch"), (2, "Dragon")];
+                    // Menu Type : Mandelbrots à la racine, Julias dans un dossier
                     let density_types = [(16, "Buddhabrot"), (24, "Nebulabrot")];
 
-                    let current_category = match self.selected_type {
-                        FractalType::VonKoch | FractalType::Dragon => "Vector",
-                        FractalType::Buddhabrot | FractalType::Nebulabrot => "Densité",
-                        FractalType::Lyapunov => "Lyapunov",
-                        _ => "Escape-Time",
-                    };
-
+                    let current_category = self.selected_type.menu_family();
                     let current_label = match self.selected_type {
                         FractalType::Lyapunov => self.selected_lyapunov_preset.name(),
                         _ => self.selected_type.name(),
@@ -1703,8 +1696,43 @@ impl eframe::App for FractallApp {
 
                     let type_menu_label = format!("▼ {}: {}", current_category, current_label);
                     ui.menu_button(&type_menu_label, |ui| {
-                        ui.menu_button("Vector", |ui| {
-                            for (id, label) in vector_types.iter() {
+                        // Mandelbrots à la racine (pas de dossiers)
+                        let mandelbrot_types = [
+                            (3, "Mandelbrot"),
+                            (10, "Barnsley Mandelbrot"),
+                            (12, "Magnet Mandelbrot"),
+                            (13, "Burning Ship"),
+                            (18, "Perp. Burning Ship"),
+                            (14, "Tricorn"),
+                            (19, "Celtic"),
+                            (8, "Buffalo"),
+                            (23, "Multibrot"),
+                            (20, "Alpha Mandelbrot"),
+                        ];
+                        for (id, label) in mandelbrot_types.iter() {
+                            if let Some(fractal_type) = FractalType::from_id(*id) {
+                                if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
+                                    self.change_fractal_type(fractal_type);
+                                    ui.close_menu();
+                                }
+                            }
+                        }
+
+                        // Dossier Julia all juste après Alpha Mandelbrot
+                        ui.menu_button("Julia all", |ui| {
+                            let julia_types = [
+                                (4, "Julia"),
+                                (9, "Barnsley Julia"),
+                                (11, "Magnet Julia"),
+                                (25, "Burning Ship Julia"),
+                                (30, "Perpendicular Burning Ship Julia"),
+                                (26, "Tricorn Julia"),
+                                (27, "Celtic Julia"),
+                                (28, "Buffalo Julia"),
+                                (29, "Multibrot Julia"),
+                                (31, "Alpha Mandelbrot Julia"),
+                            ];
+                            for (id, label) in julia_types.iter() {
                                 if let Some(fractal_type) = FractalType::from_id(*id) {
                                     if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
                                         self.change_fractal_type(fractal_type);
@@ -1714,94 +1742,33 @@ impl eframe::App for FractallApp {
                             }
                         });
 
-                        ui.menu_button("Escape-Time", |ui| {
-                            // Sous-menu Mandelbrot
-                            ui.menu_button("Mandelbrot", |ui| {
-                                for (id, label) in [(3, "Mandelbrot"), (4, "Julia")] {
-                                    if let Some(fractal_type) = FractalType::from_id(id) {
-                                        if ui.selectable_label(self.selected_type == fractal_type, label).clicked() {
-                                            self.change_fractal_type(fractal_type);
-                                            ui.close_menu();
-                                        }
-                                    }
-                                }
-                            });
+                        ui.separator();
 
-                            // Sous-menu Barnsley
-                            ui.menu_button("Barnsley", |ui| {
-                                for (id, label) in [(10, "Mandelbrot"), (9, "Julia")] {
-                                    if let Some(fractal_type) = FractalType::from_id(id) {
-                                        if ui.selectable_label(self.selected_type == fractal_type, label).clicked() {
-                                            self.change_fractal_type(fractal_type);
-                                            ui.close_menu();
-                                        }
-                                    }
-                                }
-                            });
+                        // Mandelbulb à la racine
+                        if let Some(fractal_type) = FractalType::from_id(15) {
+                            if ui.selectable_label(self.selected_type == fractal_type, "Mandelbulb").clicked() {
+                                self.change_fractal_type(fractal_type);
+                                ui.close_menu();
+                            }
+                        }
 
-                            // Sous-menu Magnet
-                            ui.menu_button("Magnet", |ui| {
-                                for (id, label) in [(12, "Mandelbrot"), (11, "Julia")] {
-                                    if let Some(fractal_type) = FractalType::from_id(id) {
-                                        if ui.selectable_label(self.selected_type == fractal_type, label).clicked() {
-                                            self.change_fractal_type(fractal_type);
-                                            ui.close_menu();
-                                        }
-                                    }
+                        let autres_types = [
+                            (5, "Julia Sin"),
+                            (6, "Newton"),
+                            (7, "Phoenix"),
+                            (21, "Pickover Stalks"),
+                            (22, "Nova"),
+                        ];
+                        for (id, label) in autres_types.iter() {
+                            if let Some(fractal_type) = FractalType::from_id(*id) {
+                                if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
+                                    self.change_fractal_type(fractal_type);
+                                    ui.close_menu();
                                 }
-                            });
+                            }
+                        }
 
-                            // Sous-menu Burning Ship
-                            ui.menu_button("Burning Ship", |ui| {
-                                for (id, label) in [(13, "Standard"), (18, "Perpendicular")] {
-                                    if let Some(fractal_type) = FractalType::from_id(id) {
-                                        if ui.selectable_label(self.selected_type == fractal_type, label).clicked() {
-                                            self.change_fractal_type(fractal_type);
-                                            ui.close_menu();
-                                        }
-                                    }
-                                }
-                            });
-
-                            ui.separator();
-
-                            // Sous-menu Variantes Mandelbrot
-                            ui.menu_button("Variantes M", |ui| {
-                                for (id, label) in [
-                                    (14, "Tricorn"),
-                                    (15, "Mandelbulb"),
-                                    (19, "Celtic"),
-                                    (20, "Alpha"),
-                                    (23, "Multibrot"),
-                                ] {
-                                    if let Some(fractal_type) = FractalType::from_id(id) {
-                                        if ui.selectable_label(self.selected_type == fractal_type, label).clicked() {
-                                            self.change_fractal_type(fractal_type);
-                                            ui.close_menu();
-                                        }
-                                    }
-                                }
-                            });
-
-                            // Sous-menu Autres
-                            ui.menu_button("Autres", |ui| {
-                                for (id, label) in [
-                                    (5, "Julia Sin"),
-                                    (6, "Newton"),
-                                    (7, "Phoenix"),
-                                    (8, "Buffalo"),
-                                    (21, "Pickover Stalks"),
-                                    (22, "Nova"),
-                                ] {
-                                    if let Some(fractal_type) = FractalType::from_id(id) {
-                                        if ui.selectable_label(self.selected_type == fractal_type, label).clicked() {
-                                            self.change_fractal_type(fractal_type);
-                                            ui.close_menu();
-                                        }
-                                    }
-                                }
-                            });
-                        });
+                        ui.separator();
 
                         ui.menu_button("Densité", |ui| {
                             for (id, label) in density_types.iter() {
