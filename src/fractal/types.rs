@@ -133,6 +133,30 @@ impl FractalType {
             FractalType::Nebulabrot => "Nebulabrot",
         }
     }
+
+    /// Returns true if this fractal type has a corresponding Julia variant.
+    /// Used for the Julia preview mode in the GUI.
+    #[allow(dead_code)]
+    pub fn has_julia_variant(self) -> bool {
+        matches!(
+            self,
+            FractalType::Mandelbrot
+                | FractalType::BarnsleyMandelbrot
+                | FractalType::MagnetMandelbrot
+        )
+    }
+
+    /// Returns the corresponding Julia type for this Mandelbrot-like fractal.
+    /// Returns None if there is no Julia variant.
+    #[allow(dead_code)]
+    pub fn julia_variant(self) -> Option<FractalType> {
+        match self {
+            FractalType::Mandelbrot => Some(FractalType::Julia),
+            FractalType::BarnsleyMandelbrot => Some(FractalType::BarnsleyJulia),
+            FractalType::MagnetMandelbrot => Some(FractalType::MagnetJulia),
+            _ => None,
+        }
+    }
 }
 
 /// Mode d'algorithme pour le rendu escape-time.

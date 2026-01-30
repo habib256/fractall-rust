@@ -155,6 +155,17 @@ pub struct FractallApp {
     recolor_receiver: mpsc::Receiver<RecolorReadyMessage>,
     /// Compteur de version pour ignorer les recolorisations obsolètes (si l'utilisateur change le slider rapidement)
     recolor_version: u64,
+
+    // Mini-Julia preview (shown when hovering over Mandelbrot)
+    julia_preview_enabled: bool,
+    julia_preview_texture: Option<TextureHandle>,
+    julia_preview_sender: mpsc::Sender<JuliaPreviewMessage>,
+    julia_preview_receiver: mpsc::Receiver<JuliaPreviewMessage>,
+    julia_preview_version: u64,
+    julia_preview_last_seed: Option<Complex64>,
+    julia_preview_last_request_time: Option<Instant>,
+    julia_preview_cancel: Arc<AtomicBool>,
+    julia_preview_rendering: bool,
 }
 
 /// Presets de résolution pour le rendu haute qualité.
@@ -206,6 +217,15 @@ struct RecolorReadyMessage {
     version: u64,
 }
 
+/// Message pour le rendu asynchrone de la preview Julia.
+struct JuliaPreviewMessage {
+    display_buffer: Vec<u8>,
+    width: u32,
+    height: u32,
+    seed: Complex64,
+    version: u64,
+}
+
 impl FractallApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let default_type = FractalType::Mandelbrot;
@@ -224,6 +244,9 @@ impl FractallApp {
 
         // Canal pour les recolorisations asynchrones (persiste toute la vie de l'app)
         let (recolor_tx, recolor_rx) = mpsc::channel();
+
+        // Canal pour le rendu asynchrone de la preview Julia
+        let (julia_preview_tx, julia_preview_rx) = mpsc::channel();
 
         Self {
             params: params.clone(),
@@ -278,6 +301,17 @@ impl FractallApp {
             recolor_sender: recolor_tx,
             recolor_receiver: recolor_rx,
             recolor_version: 0,
+
+            // Mini-Julia preview (désactivé par défaut pour Mandelbrot)
+            julia_preview_enabled: false,
+            julia_preview_texture: None,
+            julia_preview_sender: julia_preview_tx,
+            julia_preview_receiver: julia_preview_rx,
+            julia_preview_version: 0,
+            julia_preview_last_seed: None,
+            julia_preview_last_request_time: None,
+            julia_preview_cancel: Arc::new(AtomicBool::new(false)),
+            julia_preview_rendering: false,
         }
     }
     
@@ -1219,7 +1253,116 @@ impl FractallApp {
         // Demander un repaint pour recevoir le résultat
         ctx.request_repaint();
     }
-    
+
+    /// Demande un rendu asynchrone de la preview Julia pour le seed donné.
+    /// Throttle les requêtes pour éviter de surcharger le CPU.
+    fn request_julia_preview(&mut self, seed: Complex64) {
+        // Throttling: ignorer si moins de 50ms depuis la dernière requête
+        if let Some(last_time) = self.julia_preview_last_request_time {
+            if last_time.elapsed() < Duration::from_millis(50) {
+                return;
+            }
+        }
+
+        // Ignorer si le seed n'a pas changé significativement
+        if let Some(last_seed) = self.julia_preview_last_seed {
+            let dist = (seed - last_seed).norm();
+            if dist < 1e-10 {
+                return;
+            }
+        }
+
+        // Annuler le rendu précédent
+        self.julia_preview_cancel.store(true, Ordering::Relaxed);
+
+        // Mettre à jour l'état
+        self.julia_preview_last_seed = Some(seed);
+        self.julia_preview_last_request_time = Some(Instant::now());
+        self.julia_preview_version = self.julia_preview_version.wrapping_add(1);
+        let version = self.julia_preview_version;
+
+        // Nouveau flag d'annulation
+        self.julia_preview_cancel = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::clone(&self.julia_preview_cancel);
+
+        // Créer les params pour la preview Julia (type correspondant au Mandelbrot actuel)
+        let julia_type = match self.selected_type.julia_variant() {
+            Some(jt) => jt,
+            None => return, // Pas de variante Julia pour ce type
+        };
+        let preview_width = 160u32;
+        let preview_height = 120u32;
+        let mut params = default_params_for_type(julia_type, preview_width, preview_height);
+        params.seed = seed;
+        params.iteration_max = 256;
+        params.algorithm_mode = AlgorithmMode::StandardF64;
+        params.color_mode = self.palette_index;
+        params.color_repeat = self.color_repeat;
+        params.out_coloring_mode = self.out_coloring_mode;
+
+        let tx = self.julia_preview_sender.clone();
+        self.julia_preview_rendering = true;
+
+        // Spawner le thread de rendu
+        thread::spawn(move || {
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+
+            let result = render_escape_time_cancellable_with_reuse(&params, &cancel, None);
+
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+
+            if let Some((iterations, zs, orbits, distances)) = result {
+                let display_buffer = colorize_buffer(
+                    &iterations,
+                    &zs,
+                    &distances,
+                    &orbits,
+                    &params,
+                    preview_width,
+                    preview_height,
+                );
+                let _ = tx.send(JuliaPreviewMessage {
+                    display_buffer,
+                    width: preview_width,
+                    height: preview_height,
+                    seed,
+                    version,
+                });
+            }
+        });
+    }
+
+    /// Vérifie si un rendu de preview Julia est terminé et met à jour la texture.
+    fn check_julia_preview_complete(&mut self, ctx: &Context) {
+        while let Ok(msg) = self.julia_preview_receiver.try_recv() {
+            // Ignorer les résultats obsolètes
+            if msg.version != self.julia_preview_version {
+                continue;
+            }
+
+            // Créer la texture depuis le buffer
+            let expected_size = (msg.width as usize) * (msg.height as usize) * 3;
+            if msg.display_buffer.len() == expected_size {
+                if let Some(img) = RgbImage::from_raw(msg.width, msg.height, msg.display_buffer) {
+                    let color_image = rgb_image_to_color_image(&img);
+                    self.julia_preview_texture = Some(ctx.load_texture(
+                        "julia_preview",
+                        color_image,
+                        TextureOptions::LINEAR,
+                    ));
+                    self.julia_preview_last_seed = Some(msg.seed);
+                    self.julia_preview_rendering = false;
+                    ctx.request_repaint();
+                }
+            }
+            break;
+        }
+    }
+
     /// Calcule les coordonnées complexes depuis les coordonnées pixel.
     fn pixel_to_complex(&self, pixel_x: f32, pixel_y: f32, viewport_width: f32, viewport_height: f32) -> Complex64 {
         let x_ratio = pixel_x as f64 / viewport_width as f64;
@@ -1348,6 +1491,12 @@ impl FractallApp {
         self.use_gpu = false;
         // Invalidate orbit cache when changing fractal type
         self.orbit_cache = None;
+
+        // Clear Julia preview (only relevant for Mandelbrot)
+        self.julia_preview_texture = None;
+        self.julia_preview_last_seed = None;
+        self.julia_preview_cancel.store(true, Ordering::Relaxed);
+
         self.start_render();
     }
 
@@ -1377,6 +1526,9 @@ impl eframe::App for FractallApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         // Vérifier si le rendu est terminé
         self.check_render_complete(ctx);
+
+        // Vérifier si la preview Julia est terminée
+        self.check_julia_preview_complete(ctx);
 
         // Détection des fichiers déposés (drag-and-drop)
         ctx.input(|i| {
@@ -1429,7 +1581,37 @@ impl eframe::App for FractallApp {
                     self.update_texture(ctx);
                 }
             }
-            
+
+            // J pour basculer vers Julia avec le seed actuel (uniquement en mode Julia preview)
+            if i.key_pressed(egui::Key::J) {
+                if self.selected_type.has_julia_variant()
+                    && self.julia_preview_enabled
+                    && self.julia_preview_last_seed.is_some()
+                {
+                    let seed = self.julia_preview_last_seed.unwrap();
+                    let julia_type = self.selected_type.julia_variant().unwrap();
+                    // Désactiver le mode preview
+                    self.julia_preview_enabled = false;
+                    self.julia_preview_texture = None;
+                    self.julia_preview_cancel.store(true, Ordering::Relaxed);
+                    // Basculer vers Julia avec ce seed
+                    let width = self.params.width;
+                    let height = self.params.height;
+                    let mut new_params = default_params_for_type(julia_type, width, height);
+                    new_params.seed = seed;
+                    new_params.use_gmp = self.params.use_gmp;
+                    new_params.precision_bits = self.params.precision_bits;
+                    new_params.color_mode = self.params.color_mode;
+                    new_params.color_repeat = self.params.color_repeat;
+                    new_params.algorithm_mode = AlgorithmMode::Auto;
+                    self.params = new_params;
+                    self.selected_type = julia_type;
+                    self.sync_params_to_hp();
+                    self.orbit_cache = None;
+                    self.start_render();
+                }
+            }
+
             // S pour screenshot avec métadonnées
             if i.key_pressed(egui::Key::S) {
                 use crate::io::png::save_png_with_metadata;
@@ -1455,23 +1637,28 @@ impl eframe::App for FractallApp {
                 }
             }
             
-            // + ou = pour zoom au centre
-            let zoom_in_pressed = i.events.iter().any(|e| {
-                matches!(e, egui::Event::Text(text) if text == "+" || text == "=")
-            });
-            if zoom_in_pressed {
-                let center = Complex64::new(self.params.center_x, self.params.center_y);
-                self.zoom_at_point(center, 1.5);
+            // Désactiver les raccourcis de zoom en mode Julia preview
+            let julia_mode = self.selected_type.has_julia_variant() && self.julia_preview_enabled;
+
+            // + ou = pour zoom au centre (désactivé en mode Julia)
+            if !julia_mode {
+                let zoom_in_pressed = i.events.iter().any(|e| {
+                    matches!(e, egui::Event::Text(text) if text == "+" || text == "=")
+                });
+                if zoom_in_pressed {
+                    let center = Complex64::new(self.params.center_x, self.params.center_y);
+                    self.zoom_at_point(center, 1.5);
+                }
             }
-            
-            // - pour dézoom au centre
-            if i.key_pressed(egui::Key::Minus) {
+
+            // - pour dézoom au centre (désactivé en mode Julia)
+            if !julia_mode && i.key_pressed(egui::Key::Minus) {
                 let center = Complex64::new(self.params.center_x, self.params.center_y);
                 self.zoom_out_at_point(center, 1.0 / 1.5);
             }
-            
-            // 0 pour reset zoom
-            if i.key_pressed(egui::Key::Num0) {
+
+            // 0 pour reset zoom (désactivé en mode Julia)
+            if !julia_mode && i.key_pressed(egui::Key::Num0) {
                 use crate::fractal::default_params_for_type;
                 let width = self.params.width;
                 let height = self.params.height;
@@ -1816,6 +2003,19 @@ impl eframe::App for FractallApp {
                         }
                     }
 
+                    // Checkbox Julia mode (pour les types Mandelbrot-like avec variante Julia)
+                    if self.selected_type.has_julia_variant() {
+                        ui.separator();
+                        let old_enabled = self.julia_preview_enabled;
+                        ui.checkbox(&mut self.julia_preview_enabled, "Julia");
+                        if old_enabled && !self.julia_preview_enabled {
+                            // Nettoyer quand désactivé
+                            self.julia_preview_texture = None;
+                            self.julia_preview_last_seed = None;
+                            self.julia_preview_cancel.store(true, Ordering::Relaxed);
+                        }
+                    }
+
                     ui.separator();
                     if ui.button("🎬 Render").clicked() {
                         self.show_render_dialog = true;
@@ -2029,57 +2229,82 @@ impl eframe::App for FractallApp {
                     // IMPORTANT: Toujours afficher une flèche (Default) et non un curseur de texte ou autre
                     if response.hovered() {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
-                    }
-                    
-                    // Détecter le début d'une sélection rectangulaire (drag avec bouton gauche)
-                    ctx.input(|i| {
-                        // Vérifier si le bouton gauche est pressé et si on est dans la zone de l'image
-                        if i.pointer.primary_down() {
-                            if let Some(pointer_pos) = i.pointer.interact_pos() {
-                                if image_rect.contains(pointer_pos) {
-                                    if !self.selecting {
-                                        // Commencer une nouvelle sélection
-                                        self.selecting = true;
-                                        self.select_start = Some(pointer_pos);
-                                        self.select_current = Some(pointer_pos);
-                                    } else {
-                                        // Mettre à jour la position actuelle
-                                        let clamped_pos = egui::Pos2::new(
-                                            pointer_pos.x.max(image_rect.min.x).min(image_rect.max.x),
-                                            pointer_pos.y.max(image_rect.min.y).min(image_rect.max.y),
-                                        );
-                                        self.select_current = Some(clamped_pos);
-                                    }
+
+                        // Track mouse position for Julia preview (on Mandelbrot-like types)
+                        if self.selected_type.has_julia_variant()
+                            && self.julia_preview_enabled
+                            && !self.selecting
+                        {
+                            if let Some(pos) = ui.ctx().pointer_hover_pos() {
+                                if image_rect.contains(pos) {
+                                    let local_pos = pos - image_rect.min;
+                                    let pixel_x = (local_pos.x / image_rect.width()) * self.params.width as f32;
+                                    let pixel_y = (local_pos.y / image_rect.height()) * self.params.height as f32;
+                                    let seed = self.pixel_to_complex(
+                                        pixel_x,
+                                        pixel_y,
+                                        self.params.width as f32,
+                                        self.params.height as f32,
+                                    );
+                                    self.request_julia_preview(seed);
                                 }
                             }
-                        } else if self.selecting && i.pointer.primary_released() {
-                            // Le bouton a été relâché, terminer la sélection
-                            if let (Some(start), Some(current)) = (self.select_start, self.select_current) {
-                                let rect_min = egui::Pos2::new(
-                                    start.x.min(current.x),
-                                    start.y.min(current.y),
-                                );
-                                let rect_max = egui::Pos2::new(
-                                    start.x.max(current.x),
-                                    start.y.max(current.y),
-                                );
-                                
-                                // Vérifier que le rectangle est dans l'image et a une taille minimale
-                                if image_rect.contains(rect_min) && image_rect.contains(rect_max) {
-                                    let width = rect_max.x - rect_min.x;
-                                    let height = rect_max.y - rect_min.y;
-                                    
-                                    if width > 5.0 && height > 5.0 {
-                                        self.zoom_to_rectangle(rect_min, rect_max, image_rect);
-                                    }
-                                }
-                            }
-                            
-                            self.selecting = false;
-                            self.select_start = None;
-                            self.select_current = None;
                         }
-                    });
+                    }
+
+                    // Détecter le début d'une sélection rectangulaire (drag avec bouton gauche)
+                    // Désactivé en mode Julia preview
+                    let julia_mode = self.selected_type.has_julia_variant() && self.julia_preview_enabled;
+                    if !julia_mode {
+                        ctx.input(|i| {
+                            // Vérifier si le bouton gauche est pressé et si on est dans la zone de l'image
+                            if i.pointer.primary_down() {
+                                if let Some(pointer_pos) = i.pointer.interact_pos() {
+                                    if image_rect.contains(pointer_pos) {
+                                        if !self.selecting {
+                                            // Commencer une nouvelle sélection
+                                            self.selecting = true;
+                                            self.select_start = Some(pointer_pos);
+                                            self.select_current = Some(pointer_pos);
+                                        } else {
+                                            // Mettre à jour la position actuelle
+                                            let clamped_pos = egui::Pos2::new(
+                                                pointer_pos.x.max(image_rect.min.x).min(image_rect.max.x),
+                                                pointer_pos.y.max(image_rect.min.y).min(image_rect.max.y),
+                                            );
+                                            self.select_current = Some(clamped_pos);
+                                        }
+                                    }
+                                }
+                            } else if self.selecting && i.pointer.primary_released() {
+                                // Le bouton a été relâché, terminer la sélection
+                                if let (Some(start), Some(current)) = (self.select_start, self.select_current) {
+                                    let rect_min = egui::Pos2::new(
+                                        start.x.min(current.x),
+                                        start.y.min(current.y),
+                                    );
+                                    let rect_max = egui::Pos2::new(
+                                        start.x.max(current.x),
+                                        start.y.max(current.y),
+                                    );
+
+                                    // Vérifier que le rectangle est dans l'image et a une taille minimale
+                                    if image_rect.contains(rect_min) && image_rect.contains(rect_max) {
+                                        let width = rect_max.x - rect_min.x;
+                                        let height = rect_max.y - rect_min.y;
+
+                                        if width > 5.0 && height > 5.0 {
+                                            self.zoom_to_rectangle(rect_min, rect_max, image_rect);
+                                        }
+                                    }
+                                }
+
+                                self.selecting = false;
+                                self.select_start = None;
+                                self.select_current = None;
+                            }
+                        });
+                    }
                     
                     // Dessiner le rectangle de sélection par-dessus l'image
                     if self.selecting {
@@ -2112,8 +2337,8 @@ impl eframe::App for FractallApp {
                     }
                     
                     // Clic simple (sans drag) : zoom au point
-                    // Seulement si on n'a pas fait de sélection
-                    if response.clicked() && !self.selecting {
+                    // Seulement si on n'a pas fait de sélection et pas en mode Julia
+                    if response.clicked() && !self.selecting && !julia_mode {
                         if let Some(pos) = response.interact_pointer_pos() {
                             let local_pos = pos - image_rect.min;
                             let pixel_x = (local_pos.x / image_rect.width()) * self.params.width as f32;
@@ -2122,33 +2347,112 @@ impl eframe::App for FractallApp {
                             self.zoom_at_point(point, 2.0);
                         }
                     }
-                    
-                    // Clic droit : dézoom centré sur la position de la souris
-                    if response.secondary_clicked() {
-                        if let Some(pos) = response.interact_pointer_pos() {
-                            let local_pos = pos - image_rect.min;
-                            let pixel_x = (local_pos.x / image_rect.width()) * self.params.width as f32;
-                            let pixel_y = (local_pos.y / image_rect.height()) * self.params.height as f32;
-                            let point = self.pixel_to_complex(pixel_x, pixel_y, self.params.width as f32, self.params.height as f32);
-                            self.zoom_out_at_point(point, 2.0);
+
+                    // Clic droit : dézoom centré sur la position de la souris (désactivé en mode Julia)
+                    if !julia_mode {
+                        if response.secondary_clicked() {
+                            if let Some(pos) = response.interact_pointer_pos() {
+                                let local_pos = pos - image_rect.min;
+                                let pixel_x = (local_pos.x / image_rect.width()) * self.params.width as f32;
+                                let pixel_y = (local_pos.y / image_rect.height()) * self.params.height as f32;
+                                let point = self.pixel_to_complex(pixel_x, pixel_y, self.params.width as f32, self.params.height as f32);
+                                self.zoom_out_at_point(point, 2.0);
+                            } else {
+                                // Fallback si pas de position : dézoom au centre
+                                self.zoom_out(2.0);
+                            }
                         } else {
-                            // Fallback si pas de position : dézoom au centre
-                            self.zoom_out(2.0);
-                        }
-                    } else {
-                        ctx.input(|i| {
-                            if i.pointer.secondary_clicked() {
-                                if let Some(pos) = i.pointer.interact_pos() {
-                                    if image_rect.contains(pos) {
-                                        let local_pos = pos - image_rect.min;
-                                        let pixel_x = (local_pos.x / image_rect.width()) * self.params.width as f32;
-                                        let pixel_y = (local_pos.y / image_rect.height()) * self.params.height as f32;
-                                        let point = self.pixel_to_complex(pixel_x, pixel_y, self.params.width as f32, self.params.height as f32);
-                                        self.zoom_out_at_point(point, 2.0);
+                            ctx.input(|i| {
+                                if i.pointer.secondary_clicked() {
+                                    if let Some(pos) = i.pointer.interact_pos() {
+                                        if image_rect.contains(pos) {
+                                            let local_pos = pos - image_rect.min;
+                                            let pixel_x = (local_pos.x / image_rect.width()) * self.params.width as f32;
+                                            let pixel_y = (local_pos.y / image_rect.height()) * self.params.height as f32;
+                                            let point = self.pixel_to_complex(pixel_x, pixel_y, self.params.width as f32, self.params.height as f32);
+                                            self.zoom_out_at_point(point, 2.0);
+                                        }
                                     }
                                 }
-                            }
-                        });
+                            });
+                        }
+                    }
+
+                    // Overlay Julia preview (en mode Julia sur Mandelbrot)
+                    if julia_mode {
+                        // Taille et position de l'overlay (coin supérieur droit)
+                        let preview_width = 200.0;
+                        let preview_height = 150.0;
+                        let margin = 10.0;
+                        let overlay_pos = egui::Pos2::new(
+                            image_rect.max.x - preview_width - margin,
+                            image_rect.min.y + margin,
+                        );
+                        let overlay_rect = egui::Rect::from_min_size(overlay_pos, egui::Vec2::new(preview_width, preview_height));
+
+                        // Fond semi-transparent
+                        ui.painter().rect_filled(
+                            overlay_rect,
+                            4.0,
+                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
+                        );
+
+                        // Bordure
+                        ui.painter().rect_stroke(
+                            overlay_rect,
+                            4.0,
+                            egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 100, 100)),
+                        );
+
+                        // Afficher la preview Julia ou un spinner
+                        if let Some(ref texture) = self.julia_preview_texture {
+                            let tex_rect = egui::Rect::from_min_size(
+                                egui::Pos2::new(overlay_pos.x + 20.0, overlay_pos.y + 5.0),
+                                egui::Vec2::new(160.0, 120.0),
+                            );
+                            ui.painter().image(
+                                texture.id(),
+                                tex_rect,
+                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                egui::Color32::WHITE,
+                            );
+                        } else if self.julia_preview_rendering {
+                            // Indicateur de chargement (simple texte)
+                            ui.painter().text(
+                                overlay_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                "Loading...",
+                                egui::FontId::default(),
+                                egui::Color32::WHITE,
+                            );
+                        } else {
+                            ui.painter().text(
+                                overlay_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                "Move mouse",
+                                egui::FontId::default(),
+                                egui::Color32::GRAY,
+                            );
+                        }
+
+                        // Afficher les coordonnées du seed et l'aide
+                        if let Some(seed) = self.julia_preview_last_seed {
+                            let text = format!("c = {:.4} + {:.4}i", seed.re, seed.im);
+                            ui.painter().text(
+                                egui::Pos2::new(overlay_pos.x + preview_width / 2.0, overlay_pos.y + preview_height - 20.0),
+                                egui::Align2::CENTER_CENTER,
+                                text,
+                                egui::FontId::proportional(11.0),
+                                egui::Color32::WHITE,
+                            );
+                        }
+                        ui.painter().text(
+                            egui::Pos2::new(overlay_pos.x + preview_width / 2.0, overlay_pos.y + preview_height - 8.0),
+                            egui::Align2::CENTER_CENTER,
+                            "Press J to switch",
+                            egui::FontId::proportional(10.0),
+                            egui::Color32::GRAY,
+                        );
                     }
                 } else if self.rendering {
                     // Pas encore de texture, afficher le spinner
