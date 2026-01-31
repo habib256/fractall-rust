@@ -41,8 +41,10 @@ struct BlaNode {
 };
 
 const MAX_LEVELS: u32 = 17u;
-const RESCALE_HI: f32 = 1.0e4;
-const RESCALE_LO: f32 = 1.0e-4;
+// Extended rescaling thresholds for better precision at deep zooms
+// FloatExp-style: keep mantissa in reasonable range while tracking scale separately
+const RESCALE_HI: f32 = 1.0e6;
+const RESCALE_LO: f32 = 1.0e-6;
 const DEFAULT_GLITCH_TOLERANCE: f32 = 1.0e-4;
 // ============================================================================
 
@@ -132,18 +134,24 @@ fn rescale_delta(re: f32, im: f32, scale: f32) -> vec3<f32> {
     var new_im = im;
     var new_scale = scale;
     let abs_max = max(abs(new_re), abs(new_im));
-    if (abs_max > RESCALE_HI) {
+
+    // Clamp scale to avoid overflow/underflow
+    // f32 exponent range is roughly 2^-126 to 2^127
+    let max_scale = 1.0e30;
+    let min_scale = 1.0e-30;
+
+    if (abs_max > RESCALE_HI && new_scale < max_scale) {
         let k = floor(log2(abs_max / RESCALE_HI));
-        let factor = exp2(k);
+        let factor = exp2(min(k, 20.0)); // Limit single rescale step
         new_re = new_re / factor;
         new_im = new_im / factor;
-        new_scale = new_scale * factor;
-    } else if (abs_max > 0.0 && abs_max < RESCALE_LO) {
+        new_scale = min(new_scale * factor, max_scale);
+    } else if (abs_max > 0.0 && abs_max < RESCALE_LO && new_scale > min_scale) {
         let k = floor(log2(RESCALE_LO / abs_max));
-        let factor = exp2(k);
+        let factor = exp2(min(k, 20.0)); // Limit single rescale step
         new_re = new_re * factor;
         new_im = new_im * factor;
-        new_scale = new_scale / factor;
+        new_scale = max(new_scale / factor, min_scale);
     }
     return vec3<f32>(new_re, new_im, new_scale);
 }
@@ -287,31 +295,47 @@ fn main(
                 delta_im = scaled.y;
                 delta_scale = scaled.z;
             } else {
-                // DÉSACTIVÉ: Optimisation pour le centre exact qui causait des artefacts circulaires visibles.
-                // Même avec des seuils stricts, cette optimisation créait un cercle au centre.
-                // La perturbation standard fonctionne correctement même au centre exact.
-                // if (is_center_like) {
-                //     // Au centre exact, delta reste ≈ 0, donc on peut le forcer à 0 pour éviter les erreurs d'arrondi
-                //     // qui pourraient s'accumuler
-                //     delta_re = 0.0;
-                //     delta_im = 0.0;
-                //     delta_scale = 1.0;
-                // } else {
-                    let delta_actual_re = delta_re * delta_scale;
-                    let delta_actual_im = delta_im * delta_scale;
-                    let linear = complex_mul(2.0 * z.re, 2.0 * z.im, delta_actual_re, delta_actual_im);
-                    let nonlinear = complex_mul(delta_actual_re, delta_actual_im, delta_actual_re, delta_actual_im);
-                    // IMPORTANT: Pour Mandelbrot, on ajoute dc à chaque itération. Pour Julia, dc est déjà dans delta initial.
-                    // WGSL: select(false_val, true_val, cond) => cond ? true_val : false_val
-                    // Donc ici on veut dc si !is_julia, sinon 0.
-                    let next_re = linear.x + nonlinear.x + select(0.0, dc_re, !is_julia);
-                    let next_im = linear.y + nonlinear.y + select(0.0, dc_im, !is_julia);
-                    let scaled = rescale_delta(next_re, next_im, delta_scale);
-                    delta_re = scaled.x;
-                    delta_im = scaled.y;
-                    delta_scale = scaled.z;
-                // }
+                let delta_actual_re = delta_re * delta_scale;
+                let delta_actual_im = delta_im * delta_scale;
+                let linear = complex_mul(2.0 * z.re, 2.0 * z.im, delta_actual_re, delta_actual_im);
+                let nonlinear = complex_mul(delta_actual_re, delta_actual_im, delta_actual_re, delta_actual_im);
+                // IMPORTANT: Pour Mandelbrot, on ajoute dc à chaque itération. Pour Julia, dc est déjà dans delta initial.
+                // WGSL: select(false_val, true_val, cond) => cond ? true_val : false_val
+                // Donc ici on veut dc si !is_julia, sinon 0.
+                let next_re = linear.x + nonlinear.x + select(0.0, dc_re, !is_julia);
+                let next_im = linear.y + nonlinear.y + select(0.0, dc_im, !is_julia);
+                let scaled = rescale_delta(next_re, next_im, delta_scale);
+                delta_re = scaled.x;
+                delta_im = scaled.y;
+                delta_scale = scaled.z;
                 n = n + 1u;
+            }
+        }
+
+        // ====================================================================================
+        // REBASING: Critical for avoiding glitches in perturbation
+        // ====================================================================================
+        // When |Z_m + z_n| < |z_n|, replace z_n with Z_m + z_n and reset m to 0.
+        // This prevents delta from diverging and causing widespread glitches.
+        // Without rebasing, delta grows uncontrollably at deeper zooms.
+        if (n > 0u && n < params.iter_max) {
+            let z_check = z_ref[n];
+            let delta_actual_re = delta_re * delta_scale;
+            let delta_actual_im = delta_im * delta_scale;
+            let z_curr_re = z_check.re + delta_actual_re;
+            let z_curr_im = z_check.im + delta_actual_im;
+            let z_curr_norm_sqr = z_curr_re * z_curr_re + z_curr_im * z_curr_im;
+            let delta_norm_sqr = delta_actual_re * delta_actual_re + delta_actual_im * delta_actual_im;
+
+            // Rebasing condition: |z_curr| < |delta| and both are non-zero
+            if (z_curr_norm_sqr > 0.0 && delta_norm_sqr > 0.0 && z_curr_norm_sqr < delta_norm_sqr) {
+                // Rebase: delta = z_curr, restart from iteration 0
+                let scaled = rescale_delta(z_curr_re, z_curr_im, 1.0);
+                delta_re = scaled.x;
+                delta_im = scaled.y;
+                delta_scale = scaled.z;
+                n = 0u;
+                continue;
             }
         }
 
@@ -331,11 +355,13 @@ fn main(
         let inf_re = abs(z_re) > 1e30;
         let inf_im = abs(z_im) > 1e30;
 
-        // IMPORTANT (GPU f32): la détection de glitch basée sur |delta| est trop instable et
-        // provoque des zones massives "flagged" (carrés/rectangles magenta). On ne marque
-        // donc glitched que les cas réellement invalides (NaN/Inf), et on laisse le rendu
-        // normal gérer le reste.
-        let glitched = (nan_re || nan_im || inf_re || inf_im);
+        // Glitch detection: with rebasing enabled, delta-based detection is now stable
+        // Detect glitches when:
+        // 1. NaN or Inf values (always invalid)
+        // 2. Delta is too large relative to z_ref (indicates precision loss)
+        let glitch_scale = z_ref_norm_sqr + 1.0;
+        let delta_too_large = delta_norm_sqr > glitch_tolerance_sqr * glitch_scale;
+        let glitched = (nan_re || nan_im || inf_re || inf_im || delta_too_large);
         
         if (glitched) {
             // IMPORTANT: Ne pas stocker les valeurs invalides (NaN/Inf) qui causent des artefacts visuels

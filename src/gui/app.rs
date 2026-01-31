@@ -101,6 +101,8 @@ pub struct FractallApp {
     out_coloring_mode: OutColoringMode,
     selected_lyapunov_preset: LyapunovPreset,
     gpu_renderer: Option<Arc<GpuRenderer>>,
+    /// N'a pas encore tenté de créer le GPU (init différée après ouverture de la fenêtre)
+    gpu_init_attempted: bool,
     use_gpu: bool,
     
     // Coordonnées haute précision (représentation décimale exacte)
@@ -233,14 +235,12 @@ impl FractallApp {
         let height = 600;
         let params = default_params_for_type(default_type, width, height);
 
-        // Initialiser le GPU renderer (peut échouer silencieusement si GPU indisponible)
-        let gpu_renderer = GpuRenderer::new().map(Arc::new);
+        // Ne pas créer le GPU ici : init différée au premier update() pour éviter
+        // "Parent device is lost" sur NVIDIA (eframe doit d'abord créer sa fenêtre/device).
+        let gpu_renderer = None;
+        let gpu_init_attempted = false;
         // Par défaut, rester en mode CPU même si le GPU est disponible.
         let use_gpu_default = false;
-        if gpu_renderer.is_none() {
-            eprintln!("⚠️  GPU non disponible - le rendu GPU sera désactivé");
-            eprintln!("   L'application fonctionnera en mode CPU uniquement");
-        }
 
         // Canal pour les recolorisations asynchrones (persiste toute la vie de l'app)
         let (recolor_tx, recolor_rx) = mpsc::channel();
@@ -266,6 +266,7 @@ impl FractallApp {
             out_coloring_mode: OutColoringMode::Smooth,
             selected_lyapunov_preset: LyapunovPreset::default(),
             gpu_renderer,
+            gpu_init_attempted,
             use_gpu: use_gpu_default,
             // Initialiser les coordonnées haute précision depuis les params f64
             center_x_hp: params.center_x.to_string(),
@@ -1524,6 +1525,17 @@ impl FractallApp {
 
 impl eframe::App for FractallApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // Init différée du GPU : une fois la fenêtre eframe prête, éviter "Parent device is lost" sur NVIDIA
+        if !self.gpu_init_attempted {
+            self.gpu_init_attempted = true;
+            if self.gpu_renderer.is_none() {
+                self.gpu_renderer = GpuRenderer::new().map(Arc::new);
+                if self.gpu_renderer.is_none() {
+                    eprintln!("⚠️  GPU non disponible - le rendu GPU sera désactivé (mode CPU uniquement)");
+                }
+            }
+        }
+
         // Vérifier si le rendu est terminé
         self.check_render_complete(ctx);
 
@@ -1700,6 +1712,39 @@ impl eframe::App for FractallApp {
                         format!("▼ {}: {}", current_category, current_label)
                     };
                     ui.menu_button(&type_menu_label, |ui| {
+                        // Nova tout en haut
+                        if let Some(fractal_type) = FractalType::from_id(22) {
+                            if ui.selectable_label(self.selected_type == fractal_type, "Nova").clicked() {
+                                self.change_fractal_type(fractal_type);
+                                ui.close_menu();
+                            }
+                        }
+
+                        // Lyapunov et Densité
+                        ui.menu_button("Lyapunov", |ui| {
+                            for preset in LyapunovPreset::all() {
+                                let is_selected = self.selected_type == FractalType::Lyapunov
+                                    && self.selected_lyapunov_preset == *preset;
+                                if ui.selectable_label(is_selected, preset.name()).clicked() {
+                                    self.change_lyapunov_preset(*preset);
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+
+                        ui.menu_button("Densité", |ui| {
+                            for (id, label) in density_types.iter() {
+                                if let Some(fractal_type) = FractalType::from_id(*id) {
+                                    if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
+                                        self.change_fractal_type(fractal_type);
+                                        ui.close_menu();
+                                    }
+                                }
+                            }
+                        });
+
+                        ui.separator();
+
                         // Mandelbrots à la racine (pas de dossiers)
                         let mandelbrot_types = [
                             (3, "Mandelbrot"),
@@ -1712,6 +1757,7 @@ impl eframe::App for FractallApp {
                             (8, "Buffalo"),
                             (23, "Multibrot"),
                             (20, "Alpha Mandelbrot"),
+                            (32, "Mandelbrot Sin"),
                         ];
                         for (id, label) in mandelbrot_types.iter() {
                             if let Some(fractal_type) = FractalType::from_id(*id) {
@@ -1735,6 +1781,7 @@ impl eframe::App for FractallApp {
                                 (28, "Buffalo Julia"),
                                 (29, "Multibrot Julia"),
                                 (31, "Alpha Mandelbrot Julia"),
+                                (5, "Julia Sin"),
                             ];
                             for (id, label) in julia_types.iter() {
                                 if let Some(fractal_type) = FractalType::from_id(*id) {
@@ -1757,11 +1804,9 @@ impl eframe::App for FractallApp {
                         }
 
                         let autres_types = [
-                            (5, "Julia Sin"),
                             (6, "Newton"),
                             (7, "Phoenix"),
                             (21, "Pickover Stalks"),
-                            (22, "Nova"),
                         ];
                         for (id, label) in autres_types.iter() {
                             if let Some(fractal_type) = FractalType::from_id(*id) {
@@ -1772,29 +1817,6 @@ impl eframe::App for FractallApp {
                             }
                         }
 
-                        ui.separator();
-
-                        ui.menu_button("Densité", |ui| {
-                            for (id, label) in density_types.iter() {
-                                if let Some(fractal_type) = FractalType::from_id(*id) {
-                                    if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
-                                        self.change_fractal_type(fractal_type);
-                                        ui.close_menu();
-                                    }
-                                }
-                            }
-                        });
-
-                        ui.menu_button("Lyapunov", |ui| {
-                            for preset in LyapunovPreset::all() {
-                                let is_selected = self.selected_type == FractalType::Lyapunov
-                                    && self.selected_lyapunov_preset == *preset;
-                                if ui.selectable_label(is_selected, preset.name()).clicked() {
-                                    self.change_lyapunov_preset(*preset);
-                                    ui.close_menu();
-                                }
-                            }
-                        });
                     });
 
                     ui.separator();

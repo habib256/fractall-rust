@@ -35,6 +35,7 @@ pub fn iterate_point(params: &FractalParams, z_pixel: Complex64) -> FractalResul
         FractalType::MultibrotJulia => multibrot_julia(params, z_pixel),
         FractalType::PerpendicularBurningShipJulia => perpendicular_burning_ship_julia(params, z_pixel),
         FractalType::AlphaMandelbrotJulia => alpha_mandelbrot_julia(params, z_pixel),
+        FractalType::MandelbrotSin => mandelbrot_sin(params, z_pixel),
         FractalType::Buddhabrot => {
             panic!("Buddhabrot doit être rendu via render_buddhabrot(), pas iterate_point()")
         }
@@ -154,11 +155,22 @@ fn julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
 }
 
 fn julia_sin(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
-    // JuliaSin_Iteration
+    // JuliaSin_Iteration: z_{n+1} = c * sin(z_n), z_0 = pixel, c = seed
     let mut z = z_pixel;
     let mut i = 0u32;
     while i < p.iteration_max && z.norm() < p.bailout {
         z = p.seed * z.sin();
+        i += 1;
+    }
+    FractalResult { iteration: i, z, orbit: None, distance: None }
+}
+
+fn mandelbrot_sin(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
+    // MandelbrotSin_Iteration: z_{n+1} = c * sin(z_n), z_0 = seed, c = pixel (contrepartie de Julia Sin)
+    let mut z = p.seed;
+    let mut i = 0u32;
+    while i < p.iteration_max && z.norm() < p.bailout {
+        z = z_pixel * z.sin();
         i += 1;
     }
     FractalResult { iteration: i, z, orbit: None, distance: None }

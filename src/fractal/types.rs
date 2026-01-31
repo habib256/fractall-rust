@@ -13,8 +13,8 @@ use rug;
 /// 14=Tricorn, 15=Mandelbulb, 16=Buddhabrot, 17=Lyapunov,
 /// 18=Perpendicular Burning Ship, 19=Celtic, 20=Alpha Mandelbrot,
 /// 21=Pickover Stalks, 22=Nova, 23=Multibrot, 24=Nebulabrot.
-/// Extension (non C): 25=Burning Ship Julia, 26=Tricorn Julia, 27=Celtic Julia,
-/// 28=Buffalo Julia, 29=Multibrot Julia, 30=Perpendicular Burning Ship Julia, 31=Alpha Mandelbrot Julia.
+/// Extension (non C): 25=Burning Ship Julia, ..., 31=Alpha Mandelbrot Julia,
+/// 32=Mandelbrot Sin (correspond à Julia Sin).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FractalType {
     VonKoch,
@@ -48,6 +48,7 @@ pub enum FractalType {
     MultibrotJulia,
     PerpendicularBurningShipJulia,
     AlphaMandelbrotJulia,
+    MandelbrotSin,
 }
 
 impl FractalType {
@@ -85,6 +86,7 @@ impl FractalType {
             29 => Some(FractalType::MultibrotJulia),
             30 => Some(FractalType::PerpendicularBurningShipJulia),
             31 => Some(FractalType::AlphaMandelbrotJulia),
+            32 => Some(FractalType::MandelbrotSin),
             _ => None,
         }
     }
@@ -124,6 +126,7 @@ impl FractalType {
             FractalType::MultibrotJulia => 29,
             FractalType::PerpendicularBurningShipJulia => 30,
             FractalType::AlphaMandelbrotJulia => 31,
+            FractalType::MandelbrotSin => 32,
         }
     }
 
@@ -161,6 +164,7 @@ impl FractalType {
             FractalType::MultibrotJulia => "Multibrot Julia",
             FractalType::PerpendicularBurningShipJulia => "Perpendicular Burning Ship Julia",
             FractalType::AlphaMandelbrotJulia => "Alpha Mandelbrot Julia",
+            FractalType::MandelbrotSin => "Mandelbrot Sin",
         }
     }
 
@@ -180,6 +184,7 @@ impl FractalType {
                 | FractalType::Multibrot
                 | FractalType::PerpendicularBurningShip
                 | FractalType::AlphaMandelbrot
+                | FractalType::MandelbrotSin
         )
     }
 
@@ -198,6 +203,7 @@ impl FractalType {
             FractalType::Multibrot => Some(FractalType::MultibrotJulia),
             FractalType::PerpendicularBurningShip => Some(FractalType::PerpendicularBurningShipJulia),
             FractalType::AlphaMandelbrot => Some(FractalType::AlphaMandelbrotJulia),
+            FractalType::MandelbrotSin => Some(FractalType::JuliaSin),
             _ => None,
         }
     }
@@ -221,8 +227,10 @@ impl FractalType {
             FractalType::Buddhabrot | FractalType::Nebulabrot => "Densité",
             FractalType::Lyapunov => "Lyapunov",
             FractalType::Mandelbulb => "Variantes M",
-            FractalType::JuliaSin | FractalType::Newton | FractalType::Phoenix
-            | FractalType::PickoverStalks | FractalType::Nova => "Autres",
+            FractalType::JuliaSin => "Julia all",
+            FractalType::MandelbrotSin => "Mandelbrot Sin",
+            FractalType::Newton | FractalType::Phoenix | FractalType::PickoverStalks => "Autres",
+            FractalType::Nova => "Nova",
         }
     }
 }

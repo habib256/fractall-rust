@@ -672,7 +672,7 @@ pub fn iterate_pixel(
                 let z_ref_hp = ref_orbit.get_z_ref(n).unwrap_or_else(|| {
                     ref_orbit.z_ref[ref_orbit.z_ref.len().saturating_sub(1)]
                 });
-                // Scale z_ref by 2 for the linear term
+                // Scale z_ref by 2 for the linear term (optimized: multiply mantissa directly)
                 let z_ref_2 = ComplexExp {
                     re: crate::fractal::perturbation::types::FloatExp::new(
                         z_ref_hp.re.mantissa * 2.0,
@@ -685,40 +685,24 @@ pub fn iterate_pixel(
                 };
                 let linear = delta.mul(z_ref_2);
                 let nonlinear = delta.mul(delta);
-                if is_julia {
-                    delta = linear.add(nonlinear);
+                delta = if is_julia {
+                    linear.add(nonlinear)
                 } else {
-                    delta = linear.add(nonlinear).add(dc);
-                }
+                    linear.add(nonlinear).add(dc)
+                };
                 n += 1;
             } else {
-                // Section 2: Perturbation
-                //
-                // Formule de perturbation: z_{n+1} = 2·Z_m·z_n + z_n² + c
-                //
-                // Décomposition selon la documentation:
-                // - Terme linéaire: 2·Z_m·z_n
-                // - Terme quadratique: z_n²
-                // - Terme constant: c (offset du pixel)
-                //
-                // Notation mathématique → code:
-                // - Z_m ↔ z_ref[n] (orbite de référence haute précision, où m = n dans notre implémentation)
-                // - z_n ↔ delta (delta de perturbation basse précision)
-                // - c ↔ dc (offset du pixel par rapport au centre)
-                //
-                // Pour Julia, le point C est fixe (seed), donc pas de terme c dans la perturbation.
-                // Hybrid BLA: use get_z_ref_f64 to account for phase offset
-                // z_ref déjà en cache (optimisation 3) - Z_m (où m = n, avec phase offset pour Hybrid BLA)
-                let linear = delta.mul_complex64(z_ref * 2.0);  // 2·Z_m·z_n
+                // Standard perturbation: z_{n+1} = 2·Z_m·z_n + z_n² + c
+                // Pre-compute 2·z_ref once (optimization)
+                let z_ref_2 = Complex64::new(z_ref.re * 2.0, z_ref.im * 2.0);
+                let linear = delta.mul_complex64(z_ref_2);  // 2·Z_m·z_n
                 let nonlinear = delta.mul(delta);  // z_n²
-                if is_julia {
-                    // Julia: z_{n+1} = 2·Z_m·z_n + z_n² (pas de terme c car C est fixe)
-                    delta = linear.add(nonlinear);
+                delta = if is_julia {
+                    linear.add(nonlinear)
                 } else {
-                    // Mandelbrot: z_{n+1} = 2·Z_m·z_n + z_n² + c
-                    delta = linear.add(nonlinear).add(dc);
-                }
-                n += 1;  // Incrémenter m et n simultanément (m = n dans notre implémentation)
+                    linear.add(nonlinear).add(dc)
+                };
+                n += 1;
             }
             // Mettre à jour les caches après itération de perturbation
             delta_approx_cached = delta.to_complex64_approx();

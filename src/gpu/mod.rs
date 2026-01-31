@@ -435,8 +435,9 @@ impl GpuRenderer {
             })
             .collect();
 
-        // Access the cache with interior mutability via Mutex
-        let mut cache_guard = self.perturbation_cache.lock().unwrap();
+        // Access the cache with interior mutability via Mutex.
+        // Recover from poison if another thread panicked (e.g. device lost) to avoid double panic.
+        let mut cache_guard = self.perturbation_cache.lock().unwrap_or_else(|e| e.into_inner());
         
         // Check if we can reuse existing buffers
         let can_reuse = cache_guard.as_ref()

@@ -88,10 +88,20 @@ pub fn render_escape_time(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
                 .unwrap_or_else(|| (Vec::new(), Vec::new()));
             }
             AlgorithmMode::Auto => {
-                // La perturbation f64 est trop lente comparée aux autres méthodes.
-                // Utiliser CPU f64 standard jusqu'à zoom ~10^16, puis GMP reference au-delà.
-                // Pour des zooms de e1 à e16, utiliser CPU f64 standard (rapide et précis)
-                // Au-delà de 10^16, basculer sur GMP reference (précision nécessaire)
+                // Auto mode dispatch:
+                // 1. For very deep zooms (>10^15), use perturbation with GMP reference orbit
+                // 2. For moderate zooms (10^13 to 10^15), use perturbation for performance
+                // 3. For shallow zooms (<10^13), use standard f64 (faster, sufficient precision)
+                // 4. For extremely deep zooms (>10^16), use GMP reference if perturbation is not suitable
+                if should_use_perturbation(params, false) {
+                    return render_perturbation_cancellable_with_reuse(
+                        params,
+                        &Arc::new(AtomicBool::new(false)),
+                        None,
+                    )
+                    .map(|(i, z, _d)| (i, z))
+                    .unwrap_or_else(|| (Vec::new(), Vec::new()));
+                }
                 if should_use_gmp_reference(params) {
                     return render_escape_time_gmp(params);
                 }
@@ -402,6 +412,12 @@ pub fn render_escape_time_cancellable_with_reuse(
                     .map(|(i, z, d)| (i, z, vec![], d));
             }
             AlgorithmMode::Auto => {
+                // Auto mode dispatch for cancellable version:
+                // Use perturbation for moderate to deep zooms (10^13 to 10^15)
+                if should_use_perturbation(params, false) {
+                    return render_perturbation_cancellable_with_reuse(params, cancel, reuse)
+                        .map(|(i, z, d)| (i, z, vec![], d));
+                }
                 let reuse = build_reuse(params, reuse);
                 if should_use_gmp_reference(params) {
                     return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse);

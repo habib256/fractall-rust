@@ -307,6 +307,7 @@ pub fn iterate_point_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
         FractalType::MultibrotJulia => multibrot_julia_mpc(g, z_pixel),
         FractalType::PerpendicularBurningShipJulia => perpendicular_burning_ship_julia_mpc(g, z_pixel),
         FractalType::AlphaMandelbrotJulia => alpha_mandelbrot_julia_mpc(g, z_pixel),
+        FractalType::MandelbrotSin => mandelbrot_sin_mpc(g, z_pixel),
         FractalType::Buddhabrot => {
             panic!("Buddhabrot doit être rendu via render_buddhabrot(), pas iterate_point_mpc()")
         }
@@ -351,6 +352,7 @@ pub fn iterate_point_gmp(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
         FractalType::MultibrotJulia => multibrot_julia(g, z_pixel),
         FractalType::PerpendicularBurningShipJulia => perpendicular_burning_ship_julia(g, z_pixel),
         FractalType::AlphaMandelbrotJulia => alpha_mandelbrot_julia(g, z_pixel),
+        FractalType::MandelbrotSin => mandelbrot_sin(g, z_pixel),
         FractalType::Buddhabrot => {
             panic!("Buddhabrot doit être rendu via render_buddhabrot(), pas iterate_point_gmp()")
         }
@@ -392,6 +394,18 @@ fn julia_sin(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     while i < g.iteration_max && z.norm_sqr() < g.bailout_sqr {
         let sin_z = z.sin(g.prec);
         z = g.seed.mul(&sin_z);
+        i += 1;
+    }
+    (i, z)
+}
+
+#[allow(dead_code)]
+fn mandelbrot_sin(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
+    let mut z = g.seed.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && z.norm_sqr() < g.bailout_sqr {
+        let sin_z = z.sin(g.prec);
+        z = z_pixel.mul(&sin_z);
         i += 1;
     }
     (i, z)
@@ -891,6 +905,18 @@ fn julia_sin_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
         let mut sin_z = z.clone().sin();
         sin_z *= &g.seed;
+        z = sin_z;
+        i += 1;
+    }
+    (i, z)
+}
+
+fn mandelbrot_sin_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    let mut z = g.seed.clone();
+    let mut i = 0u32;
+    while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+        let mut sin_z = z.clone().sin();
+        sin_z *= z_pixel;
         z = sin_z;
         i += 1;
     }

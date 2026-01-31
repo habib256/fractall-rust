@@ -9,6 +9,7 @@ pub struct FloatExp {
 }
 
 impl FloatExp {
+    #[inline(always)]
     pub fn zero() -> Self {
         Self {
             mantissa: 0.0,
@@ -16,6 +17,7 @@ impl FloatExp {
         }
     }
 
+    #[inline(always)]
     pub fn from_f64(value: f64) -> Self {
         if value == 0.0 {
             return Self::zero();
@@ -24,6 +26,7 @@ impl FloatExp {
         Self { mantissa, exponent }
     }
 
+    #[inline(always)]
     pub fn new(mantissa: f64, exponent: i32) -> Self {
         if mantissa == 0.0 {
             return Self::zero();
@@ -35,6 +38,7 @@ impl FloatExp {
         }
     }
 
+    #[inline(always)]
     pub fn abs(self) -> Self {
         Self {
             mantissa: self.mantissa.abs(),
@@ -61,6 +65,7 @@ impl FloatExp {
         Self { mantissa, exponent: exp }
     }
 
+    #[inline(always)]
     pub fn to_f64(self) -> f64 {
         if self.mantissa == 0.0 {
             return 0.0;
@@ -78,6 +83,7 @@ impl FloatExp {
 impl Add for FloatExp {
     type Output = Self;
 
+    #[inline(always)]
     fn add(self, rhs: Self) -> Self::Output {
         if self.mantissa == 0.0 {
             return rhs;
@@ -105,6 +111,7 @@ impl Add for FloatExp {
 impl Sub for FloatExp {
     type Output = Self;
 
+    #[inline(always)]
     fn sub(self, rhs: Self) -> Self::Output {
         self + Self::new(-rhs.mantissa, rhs.exponent)
     }
@@ -113,6 +120,7 @@ impl Sub for FloatExp {
 impl Mul for FloatExp {
     type Output = Self;
 
+    #[inline(always)]
     fn mul(self, rhs: Self) -> Self::Output {
         Self::new(self.mantissa * rhs.mantissa, self.exponent + rhs.exponent)
     }
@@ -121,6 +129,7 @@ impl Mul for FloatExp {
 impl Mul<f64> for FloatExp {
     type Output = Self;
 
+    #[inline(always)]
     fn mul(self, rhs: f64) -> Self::Output {
         Self::new(self.mantissa * rhs, self.exponent)
     }
@@ -129,6 +138,7 @@ impl Mul<f64> for FloatExp {
 impl Mul<FloatExp> for f64 {
     type Output = FloatExp;
 
+    #[inline(always)]
     fn mul(self, rhs: FloatExp) -> Self::Output {
         rhs * self
     }
@@ -141,6 +151,7 @@ pub struct ComplexExp {
 }
 
 impl ComplexExp {
+    #[inline(always)]
     pub fn zero() -> Self {
         Self {
             re: FloatExp::zero(),
@@ -148,6 +159,7 @@ impl ComplexExp {
         }
     }
 
+    #[inline(always)]
     pub fn from_complex64(value: Complex64) -> Self {
         Self {
             re: FloatExp::from_f64(value.re),
@@ -157,6 +169,7 @@ impl ComplexExp {
 
     /// Create a ComplexExp from a GMP Complex, preserving the extended exponent range.
     /// This allows storing values that would overflow or underflow f64.
+    #[inline]
     pub fn from_gmp(value: &Complex) -> Self {
         Self {
             re: FloatExp::from_gmp(value.real()),
@@ -164,6 +177,7 @@ impl ComplexExp {
         }
     }
 
+    #[inline(always)]
     pub fn add(self, rhs: Self) -> Self {
         Self {
             re: self.re + rhs.re,
@@ -171,24 +185,28 @@ impl ComplexExp {
         }
     }
 
+    #[inline(always)]
     pub fn mul(self, rhs: Self) -> Self {
         let re = self.re * rhs.re - self.im * rhs.im;
         let im = self.re * rhs.im + self.im * rhs.re;
         Self { re, im }
     }
 
+    #[inline(always)]
     pub fn mul_complex64(self, rhs: Complex64) -> Self {
         let re = self.re * rhs.re - self.im * rhs.im;
         let im = self.re * rhs.im + self.im * rhs.re;
         Self { re, im }
     }
 
+    #[inline(always)]
     pub fn norm_sqr_approx(self) -> f64 {
         let re = self.re.to_f64();
         let im = self.im.to_f64();
         re * re + im * im
     }
 
+    #[inline(always)]
     pub fn to_complex64_approx(self) -> Complex64 {
         Complex64::new(self.re.to_f64(), self.im.to_f64())
     }
@@ -197,6 +215,7 @@ impl ComplexExp {
     /// Used when the quadrant is stable and we can apply signed perturbation.
     /// result.re = sign_re * self.re
     /// result.im = sign_im * self.im
+    #[inline(always)]
     pub fn mul_signed(self, sign_re: f64, sign_im: f64) -> Self {
         Self {
             re: FloatExp::new(self.re.mantissa * sign_re, self.re.exponent),
@@ -205,6 +224,7 @@ impl ComplexExp {
     }
 }
 
+#[inline(always)]
 fn frexp(value: f64) -> (f64, i32) {
     if value == 0.0 {
         return (0.0, 0);
@@ -231,6 +251,7 @@ fn frexp(value: f64) -> (f64, i32) {
     }
 }
 
+#[inline(always)]
 fn pow2i(exp: i32) -> f64 {
     if exp < -1022 {
         return 0.0;

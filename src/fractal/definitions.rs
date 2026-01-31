@@ -107,6 +107,16 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.bailout = 4.0;
             params.iteration_max = 2500;
         }
+        FractalType::MandelbrotSin => {
+            // MandelbrotSin: même vue que Julia Sin, z_0 = seed
+            params.center_x = 0.0;
+            params.center_y = 0.0;
+            params.span_x = 2.0 * std::f64::consts::PI;
+            params.span_y = 4.0;
+            params.seed = Complex64::new(1.0, 0.0);
+            params.bailout = 4.0;
+            params.iteration_max = 2500;
+        }
         FractalType::Newton => {
             // Newton_def: xmin=-3.0, xmax=3.0, ymin=-2.0, ymax=2.0
             params.seed = Complex64::new(8.0, 0.0);
