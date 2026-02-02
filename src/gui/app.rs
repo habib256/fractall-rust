@@ -1091,12 +1091,42 @@ impl FractallApp {
             }
 
             RenderMessage::AllComplete { orbit_cache } => {
+                // Avant de fermer les canaux : récupérer toute texture déjà envoyée par le worker
+                // (ex. dernière passe pleine résolution), sinon attendre brièvement pour éviter
+                // que l'image reste pixellisée quand AllComplete arrive avant TextureReadyMessage.
+                if let Some(rx) = self.texture_ready_receiver.take() {
+                    let mut last_tex = None;
+                    while let Ok(tex) = rx.try_recv() {
+                        last_tex = Some(tex);
+                    }
+                    if last_tex.is_none() {
+                        if let Ok(tex) = rx.recv_timeout(Duration::from_millis(100)) {
+                            last_tex = Some(tex);
+                        }
+                    }
+                    if let Some(tex) = last_tex {
+                        self.current_pass = tex.pass_index + 1;
+                        self.last_render_device_label = Some(tex.precision_label.clone());
+                        self.last_render_method_label = Some(match tex.effective_mode {
+                            AlgorithmMode::ReferenceGmp => String::new(),
+                            AlgorithmMode::Perturbation => "Perturbation".to_string(),
+                            _ => "Standard".to_string(),
+                        });
+                        self.iterations = tex.iterations;
+                        self.zs = tex.zs;
+                        self.distances = tex.distances;
+                        self.orbits = tex.orbits;
+                        self.is_preview = tex.is_preview;
+                        self.load_texture_from_buffer(ctx, &tex.display_buffer, tex.width, tex.height);
+                        ctx.request_repaint();
+                    }
+                }
+                self.texture_ready_sender = None;
+
                 self.rendering = false;
                 self.is_preview = false;
                 self.render_thread = None;
                 self.render_receiver = None;
-                self.texture_ready_sender = None;
-                self.texture_ready_receiver = None;
 
                 // Store the updated orbit cache for future renders
                 if orbit_cache.is_some() {
