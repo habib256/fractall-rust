@@ -946,18 +946,31 @@ pub fn color_for_nebulabrot_pixel(iteration: u32, z: Complex64) -> (u8, u8, u8) 
 pub fn color_for_buddhabrot_pixel(
     z: Complex64,
     palette_index: u8,
-    _color_repeat: u32,
+    color_repeat: u32,
 ) -> (u8, u8, u8) {
     // z.re contient la densité normalisée * 2.0
-    let normalized = (z.re / 2.0).clamp(0.0, 1.0);
+    let t = (z.re / 2.0).clamp(0.0, 1.0);
 
     // Densité nulle = noir
-    if normalized < 0.001 {
+    if t < 0.001 {
         return (0, 0, 0);
     }
 
-    // Appliquer le gradient directement (pas de répétition pour Buddhabrot)
+    // Appliquer color_repeat (cycles du gradient) comme pour les autres fractales
+    let repeat_count = color_repeat.max(1) as f64;
+    let cycle = (t * repeat_count).floor();
+    let mut t_repeat = (t * repeat_count) % 1.0;
+    if t_repeat < 0.000_001 && t > 0.0 {
+        t_repeat = 0.000_001;
+    }
+    if t_repeat >= 0.999_999 {
+        t_repeat = 0.999_999;
+    }
+    if (cycle as i64) % 2 == 1 {
+        t_repeat = 1.0 - t_repeat;
+    }
+
     let palette = palette_for(PaletteId::from_u8(palette_index));
-    gradient_interpolate(palette, normalized)
+    gradient_interpolate(palette, t_repeat)
 }
 

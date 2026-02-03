@@ -512,6 +512,16 @@ impl FractallApp {
                 self.params.width = current_width;
                 self.params.height = current_height;
 
+                // Fractales densité: color_repeat limité à 1..=8
+                let is_density = matches!(
+                    self.params.fractal_type,
+                    FractalType::Buddhabrot | FractalType::Nebulabrot | FractalType::AntiBuddhabrot
+                );
+                if is_density && self.params.color_repeat > 8 {
+                    self.params.color_repeat = 8;
+                    self.color_repeat = 8;
+                }
+
                 // Synchroniser HP vers params
                 self.sync_hp_to_params();
                 self.iteration_input = self.params.iteration_max.to_string();
@@ -1518,16 +1528,26 @@ impl FractallApp {
         let mut new_params = default_params_for_type(new_type, width, height);
 
         // Conserver les paramètres de rendu (GMP, palette, etc.)
+        let is_density_type = matches!(
+            new_type,
+            FractalType::Buddhabrot | FractalType::Nebulabrot | FractalType::AntiBuddhabrot
+        );
         new_params.use_gmp = self.params.use_gmp;
         new_params.precision_bits = self.params.precision_bits;
         new_params.color_mode = self.params.color_mode;
-        new_params.color_repeat = self.params.color_repeat;
+        // Fractales densité : toujours 1 par défaut à la sélection (ne pas conserver l’ancienne valeur)
+        new_params.color_repeat = if is_density_type {
+            1
+        } else {
+            self.params.color_repeat
+        };
         new_params.algorithm_mode = AlgorithmMode::Auto;
         new_params.bla_threshold = self.params.bla_threshold;
         new_params.glitch_tolerance = self.params.glitch_tolerance;
 
         // Toujours utiliser le domaine par défaut pour bien centrer la fractale
         self.params = new_params;
+        self.color_repeat = self.params.color_repeat;
         self.iteration_input = self.params.iteration_max.to_string();
         // Synchroniser les coordonnées HP depuis les nouvelles params
         self.sync_params_to_hp();
@@ -1627,9 +1647,17 @@ impl eframe::App for FractallApp {
                 }
             }
             
-            // R pour color_repeat (1-120, par pas de 1)
+            // R pour color_repeat (1-120 ou 1-8 pour densité)
             if i.key_pressed(egui::Key::R) {
-                self.color_repeat = if self.color_repeat >= 120 { 1 } else { self.color_repeat + 1 };
+                let max_repeat = if matches!(
+                    self.selected_type,
+                    FractalType::Buddhabrot | FractalType::Nebulabrot | FractalType::AntiBuddhabrot
+                ) {
+                    8
+                } else {
+                    120
+                };
+                self.color_repeat = if self.color_repeat >= max_repeat { 1 } else { self.color_repeat + 1 };
                 self.params.color_repeat = self.color_repeat;
                 if !self.iterations.is_empty() {
                     self.update_texture(ctx);
@@ -2143,8 +2171,17 @@ impl eframe::App for FractallApp {
                     ui.separator();
 
                     ui.label("Color Repeat:");
+                    let is_density_type = matches!(
+                        self.selected_type,
+                        FractalType::Buddhabrot | FractalType::Nebulabrot | FractalType::AntiBuddhabrot
+                    );
+                    let (min_repeat, max_repeat) = if is_density_type { (1, 8) } else { (1, 120) };
+                    if is_density_type && self.color_repeat > max_repeat {
+                        self.color_repeat = max_repeat;
+                        self.params.color_repeat = self.color_repeat;
+                    }
                     let old_repeat = self.color_repeat;
-                    ui.add(egui::Slider::new(&mut self.color_repeat, 1..=120));
+                    ui.add(egui::Slider::new(&mut self.color_repeat, min_repeat..=max_repeat));
                     if old_repeat != self.color_repeat {
                         self.params.color_repeat = self.color_repeat;
                         if !self.iterations.is_empty() {

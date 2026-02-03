@@ -223,6 +223,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
             params.iteration_max = 220;
+            params.color_repeat = 1; // densité: 1 par défaut, max 8
         }
         FractalType::Lyapunov => {
             // Lyapunov_def - Zircon City par défaut
@@ -364,6 +365,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
             params.iteration_max = 2500;
+            params.color_repeat = 1; // densité: 1 par défaut, max 8
         }
         FractalType::AntiBuddhabrot => {
             // Anti-Buddhabrot: mêmes bornes que Buddhabrot, iterations plus élevées
@@ -374,6 +376,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
             params.iteration_max = 500;
+            params.color_repeat = 1; // densité: 1 par défaut, max 8
         }
     }
 
