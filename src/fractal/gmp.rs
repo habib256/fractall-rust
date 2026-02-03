@@ -317,6 +317,9 @@ pub fn iterate_point_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
         FractalType::Nebulabrot => {
             panic!("Nebulabrot doit être rendu via render_nebulabrot(), pas iterate_point_mpc()")
         }
+        FractalType::AntiBuddhabrot => {
+            panic!("Anti-Buddhabrot doit être rendu via render_antibuddhabrot(), pas iterate_point_mpc()")
+        }
     }
 }
 
@@ -361,6 +364,9 @@ pub fn iterate_point_gmp(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
         }
         FractalType::Nebulabrot => {
             panic!("Nebulabrot doit être rendu via render_nebulabrot(), pas iterate_point_gmp()")
+        }
+        FractalType::AntiBuddhabrot => {
+            panic!("Anti-Buddhabrot doit être rendu via render_antibuddhabrot(), pas iterate_point_gmp()")
         }
     }
 }

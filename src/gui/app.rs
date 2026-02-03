@@ -34,7 +34,8 @@ fn colorize_buffer(
 
     let w = width as usize;
     let is_nebulabrot = params.fractal_type == FractalType::Nebulabrot;
-    let is_buddhabrot = params.fractal_type == FractalType::Buddhabrot;
+    let is_buddhabrot = params.fractal_type == FractalType::Buddhabrot
+        || params.fractal_type == FractalType::AntiBuddhabrot;
     let iter_max = params.iteration_max;
     let palette_idx = params.color_mode as u8;
     let color_rep = params.color_repeat;
@@ -157,6 +158,11 @@ pub struct FractallApp {
     recolor_receiver: mpsc::Receiver<RecolorReadyMessage>,
     /// Compteur de version pour ignorer les recolorisations obsolètes (si l'utilisateur change le slider rapidement)
     recolor_version: u64,
+
+    // Zone de texte pour le nombre d'itérations
+    iteration_input: String,
+    /// True si le champ Itérations avait le focus la frame précédente (pour ne pas intercepter "0" en raccourci reset)
+    iteration_input_has_focus: bool,
 
     // Mini-Julia preview (shown when hovering over Mandelbrot)
     julia_preview_enabled: bool,
@@ -302,6 +308,9 @@ impl FractallApp {
             recolor_sender: recolor_tx,
             recolor_receiver: recolor_rx,
             recolor_version: 0,
+
+            iteration_input: params.iteration_max.to_string(),
+            iteration_input_has_focus: false,
 
             // Mini-Julia preview (désactivé par défaut pour Mandelbrot)
             julia_preview_enabled: false,
@@ -505,6 +514,7 @@ impl FractallApp {
 
                 // Synchroniser HP vers params
                 self.sync_hp_to_params();
+                self.iteration_input = self.params.iteration_max.to_string();
 
                 // Invalider le cache et relancer le rendu
                 self.orbit_cache = None;
@@ -559,7 +569,7 @@ impl FractallApp {
         let allow_intermediate = !matches!(
             render_params.fractal_type,
             FractalType::VonKoch | FractalType::Dragon | FractalType::Buddhabrot
-                | FractalType::Nebulabrot | FractalType::Lyapunov
+                | FractalType::Nebulabrot | FractalType::AntiBuddhabrot | FractalType::Lyapunov
         );
         let config = ProgressiveConfig::for_params_with_intermediate(
             render_width,
@@ -680,6 +690,7 @@ impl FractallApp {
                 | FractalType::Dragon
                 | FractalType::Buddhabrot
                 | FractalType::Nebulabrot
+                | FractalType::AntiBuddhabrot
                 | FractalType::Lyapunov
         );
         let use_gpu = self.use_gpu
@@ -1517,6 +1528,7 @@ impl FractallApp {
 
         // Toujours utiliser le domaine par défaut pour bien centrer la fractale
         self.params = new_params;
+        self.iteration_input = self.params.iteration_max.to_string();
         // Synchroniser les coordonnées HP depuis les nouvelles params
         self.sync_params_to_hp();
         self.use_gpu = false;
@@ -1648,6 +1660,7 @@ impl eframe::App for FractallApp {
                     new_params.algorithm_mode = AlgorithmMode::Auto;
                     self.params = new_params;
                     self.selected_type = julia_type;
+                    self.iteration_input = self.params.iteration_max.to_string();
                     self.sync_params_to_hp();
                     self.orbit_cache = None;
                     self.start_render();
@@ -1702,8 +1715,8 @@ impl eframe::App for FractallApp {
                 self.zoom_out_at_point(center, 1.0 / 1.5);
             }
 
-            // 0 pour reset zoom (désactivé en mode Julia)
-            if !julia_mode && i.key_pressed(egui::Key::Num0) {
+            // 0 pour reset zoom (désactivé en mode Julia) — ne pas déclencher si le focus est sur le champ Itérations (pour pouvoir taper "50", "500", etc.)
+            if !julia_mode && !self.iteration_input_has_focus && i.key_pressed(egui::Key::Num0) {
                 use crate::fractal::default_params_for_type;
                 let width = self.params.width;
                 let height = self.params.height;
@@ -1714,6 +1727,7 @@ impl eframe::App for FractallApp {
                 new_params.color_mode = self.params.color_mode;
                 new_params.color_repeat = self.params.color_repeat;
                 self.params = new_params;
+                self.iteration_input = self.params.iteration_max.to_string();
                 // Synchroniser les coordonnées HP
                 self.sync_params_to_hp();
                 self.orbit_cache = None;
@@ -1728,7 +1742,7 @@ impl eframe::App for FractallApp {
                     ui.label("Type:");
 
                     // Menu Type : Mandelbrots à la racine, Julias dans un dossier
-                    let density_types = [(16, "Buddhabrot"), (24, "Nebulabrot")];
+                    let density_types = [(16, "Buddhabrot"), (24, "Nebulabrot"), (33, "Anti-Buddhabrot")];
 
                     let current_category = self.selected_type.menu_family();
                     let current_label = match self.selected_type {
@@ -1854,7 +1868,7 @@ impl eframe::App for FractallApp {
                     // Plane (XaoS-style) uniquement pour fractales escape-time
                     let is_escape_time = !matches!(
                         self.selected_type,
-                        FractalType::VonKoch | FractalType::Dragon | FractalType::Buddhabrot | FractalType::Lyapunov | FractalType::Nebulabrot
+                        FractalType::VonKoch | FractalType::Dragon | FractalType::Buddhabrot | FractalType::Lyapunov | FractalType::Nebulabrot | FractalType::AntiBuddhabrot
                     );
                     
                     if is_escape_time {
@@ -1880,7 +1894,45 @@ impl eframe::App for FractallApp {
 
                     ui.separator();
 
-                    // Section Tech (Type → Plane → Tech → Render)
+                    // Checkbox Julia mode (pour les types Mandelbrot-like avec variante Julia)
+                    if self.selected_type.has_julia_variant() {
+                        ui.separator();
+                        let old_enabled = self.julia_preview_enabled;
+                        ui.checkbox(&mut self.julia_preview_enabled, "Julia");
+                        if old_enabled && !self.julia_preview_enabled {
+                            // Nettoyer quand désactivé
+                            self.julia_preview_texture = None;
+                            self.julia_preview_last_seed = None;
+                            self.julia_preview_cancel.store(true, Ordering::Relaxed);
+                        }
+                    }
+
+                    ui.separator();
+
+                    ui.label("Iter:");
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.iteration_input)
+                            .desired_width(60.0)
+                    );
+                    self.iteration_input_has_focus = response.has_focus();
+                    // Appliquer la valeur à la perte de focus ou sur Entrée
+                    if response.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        if let Ok(val) = self.iteration_input.trim().parse::<u32>() {
+                            let val = val.max(1);
+                            if val != self.params.iteration_max {
+                                self.params.iteration_max = val;
+                                self.iteration_input = val.to_string();
+                                self.orbit_cache = None;
+                                self.start_render();
+                            }
+                        } else {
+                            self.iteration_input = self.params.iteration_max.to_string();
+                        }
+                    }
+
+                    ui.separator();
+
+                    // Section Tech (entre Iter et Render)
                     let supports_advanced_modes = matches!(
                         self.selected_type,
                         FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
@@ -1888,7 +1940,6 @@ impl eframe::App for FractallApp {
                     let is_lyapunov = self.selected_type == FractalType::Lyapunov;
 
                     if supports_advanced_modes || is_lyapunov {
-                        ui.separator();
                         ui.label("Tech:");
                         let gpu_available = self.gpu_renderer.is_some();
                         let old_use_gpu = self.use_gpu;
@@ -2026,19 +2077,6 @@ impl eframe::App for FractallApp {
                             }
                         } else if is_lyapunov && old_mode != self.params.algorithm_mode {
                             self.start_render();
-                        }
-                    }
-
-                    // Checkbox Julia mode (pour les types Mandelbrot-like avec variante Julia)
-                    if self.selected_type.has_julia_variant() {
-                        ui.separator();
-                        let old_enabled = self.julia_preview_enabled;
-                        ui.checkbox(&mut self.julia_preview_enabled, "Julia");
-                        if old_enabled && !self.julia_preview_enabled {
-                            // Nettoyer quand désactivé
-                            self.julia_preview_texture = None;
-                            self.julia_preview_last_seed = None;
-                            self.julia_preview_cancel.store(true, Ordering::Relaxed);
                         }
                     }
 

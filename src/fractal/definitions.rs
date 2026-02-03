@@ -365,6 +365,16 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.bailout = 4.0;
             params.iteration_max = 2500;
         }
+        FractalType::AntiBuddhabrot => {
+            // Anti-Buddhabrot: mêmes bornes que Buddhabrot, iterations plus élevées
+            params.center_x = -0.5;
+            params.center_y = 0.0;
+            params.span_x = 4.0;
+            params.span_y = 3.0;
+            params.seed = Complex64::new(0.0, 0.0);
+            params.bailout = 4.0;
+            params.iteration_max = 500;
+        }
     }
 
     params

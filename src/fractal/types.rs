@@ -49,6 +49,7 @@ pub enum FractalType {
     PerpendicularBurningShipJulia,
     AlphaMandelbrotJulia,
     MandelbrotSin,
+    AntiBuddhabrot,
 }
 
 impl FractalType {
@@ -87,6 +88,7 @@ impl FractalType {
             30 => Some(FractalType::PerpendicularBurningShipJulia),
             31 => Some(FractalType::AlphaMandelbrotJulia),
             32 => Some(FractalType::MandelbrotSin),
+            33 => Some(FractalType::AntiBuddhabrot),
             _ => None,
         }
     }
@@ -127,6 +129,7 @@ impl FractalType {
             FractalType::PerpendicularBurningShipJulia => 30,
             FractalType::AlphaMandelbrotJulia => 31,
             FractalType::MandelbrotSin => 32,
+            FractalType::AntiBuddhabrot => 33,
         }
     }
 
@@ -165,6 +168,7 @@ impl FractalType {
             FractalType::PerpendicularBurningShipJulia => "Perpendicular Burning Ship Julia",
             FractalType::AlphaMandelbrotJulia => "Alpha Mandelbrot Julia",
             FractalType::MandelbrotSin => "Mandelbrot Sin",
+            FractalType::AntiBuddhabrot => "Anti-Buddhabrot",
         }
     }
 
@@ -224,7 +228,7 @@ impl FractalType {
             FractalType::Multibrot | FractalType::MultibrotJulia => "Multibrot",
             FractalType::AlphaMandelbrot | FractalType::AlphaMandelbrotJulia => "Alpha Mandelbrot",
             FractalType::VonKoch | FractalType::Dragon => "Vector",
-            FractalType::Buddhabrot | FractalType::Nebulabrot => "Densité",
+            FractalType::Buddhabrot | FractalType::Nebulabrot | FractalType::AntiBuddhabrot => "Densité",
             FractalType::Lyapunov => "Lyapunov",
             FractalType::Mandelbulb => "Variantes M",
             FractalType::JuliaSin => "Julia all",

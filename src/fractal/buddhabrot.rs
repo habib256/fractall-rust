@@ -912,3 +912,374 @@ pub fn render_nebulabrot_cancellable(
 
     Some((iterations, zs))
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Anti-Buddhabrot : accumule les orbites des points INTÉRIEURS (non-escapés).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Rendu Anti-Buddhabrot.
+///
+/// Trace les trajectoires des points qui restent bornés (intérieurs à l'ensemble
+/// de Mandelbrot) et accumule leur densité dans une matrice.
+#[allow(dead_code)]
+pub fn render_antibuddhabrot(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
+    let width = params.width as usize;
+    let height = params.height as usize;
+    let size = width * height;
+
+    if width == 0 || height == 0 {
+        return (vec![0; size], vec![Complex64::new(0.0, 0.0); size]);
+    }
+
+    let xrange = params.span_x;
+    let yrange = params.span_y;
+    let iter_max = params.iteration_max;
+    let bailout_sq = params.bailout * params.bailout;
+
+    let pixels = width * height;
+    let num_samples = if pixels <= 640 * 480 {
+        pixels * 20
+    } else if pixels <= 1024 * 768 {
+        pixels * 10
+    } else {
+        pixels * 5
+    }
+    .max(1000)
+    .min(50_000_000);
+
+    let density: Vec<AtomicU32> = (0..size).map(|_| AtomicU32::new(0)).collect();
+
+    (0..num_samples).into_par_iter().for_each(|sample_idx| {
+        let mut rng = Rng::new(42 + sample_idx as u32 * 12345);
+
+        let xg = params.center_x + (rng.next_f64() - 0.5) * xrange;
+        let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
+        let c = Complex64::new(xg, yg);
+
+        let mut trajectory = Vec::with_capacity(iter_max as usize);
+        let mut z = Complex64::new(0.0, 0.0);
+        let mut escaped = false;
+
+        for _iter in 0..iter_max {
+            z = z * z + c;
+
+            if z.re.is_nan() || z.im.is_nan() || z.re.is_infinite() || z.im.is_infinite() {
+                escaped = true;
+                break;
+            }
+
+            let mag2 = z.norm_sqr();
+            trajectory.push(z);
+
+            if mag2 > bailout_sq {
+                escaped = true;
+                break;
+            }
+        }
+
+        // Anti-Buddhabrot : tracer uniquement les trajectoires des points INTÉRIEURS
+        if !escaped && !trajectory.is_empty() {
+            let scale_x = width as f64 / xrange;
+            let scale_y = height as f64 / yrange;
+
+            for point in &trajectory {
+                if point.re.is_nan() || point.im.is_nan() {
+                    continue;
+                }
+
+                let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
+                let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
+
+                if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
+                    let idx = py as usize * width + px as usize;
+                    density[idx].fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+    });
+
+    let max_density = density
+        .iter()
+        .map(|d| d.load(Ordering::Relaxed))
+        .max()
+        .unwrap_or(1)
+        .max(1);
+
+    let log_max = (1.0 + max_density as f64).ln();
+
+    let iterations: Vec<u32> = density
+        .par_iter()
+        .map(|d| {
+            let val = d.load(Ordering::Relaxed);
+            let normalized = (1.0 + val as f64).ln() / log_max;
+            (normalized * iter_max as f64) as u32
+        })
+        .collect();
+
+    let zs: Vec<Complex64> = density
+        .par_iter()
+        .map(|d| {
+            let val = d.load(Ordering::Relaxed);
+            let normalized = (1.0 + val as f64).ln() / log_max;
+            Complex64::new(normalized * 2.0, 0.0)
+        })
+        .collect();
+
+    (iterations, zs)
+}
+
+/// Rendu Anti-Buddhabrot en précision MPC.
+pub fn render_antibuddhabrot_mpc(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
+    let cancel = Arc::new(AtomicBool::new(false));
+    render_antibuddhabrot_mpc_cancellable(params, &cancel)
+        .unwrap_or_else(|| (Vec::new(), Vec::new()))
+}
+
+/// Version annulable du rendu Anti-Buddhabrot en MPC.
+pub fn render_antibuddhabrot_mpc_cancellable(
+    params: &FractalParams,
+    cancel: &Arc<AtomicBool>,
+) -> Option<(Vec<u32>, Vec<Complex64>)> {
+    let width = params.width as usize;
+    let height = params.height as usize;
+    let size = width * height;
+
+    if width == 0 || height == 0 {
+        return Some((vec![0; size], vec![Complex64::new(0.0, 0.0); size]));
+    }
+
+    let prec = params.precision_bits.max(64);
+    let xrange = params.span_x;
+    let yrange = params.span_y;
+    let iter_max = params.iteration_max;
+    let bailout = Float::with_val(prec, params.bailout);
+    let mut bailout_sq = bailout.clone();
+    bailout_sq *= &bailout;
+
+    let pixels = width * height;
+    let num_samples = if pixels <= 640 * 480 {
+        pixels * 20
+    } else if pixels <= 1024 * 768 {
+        pixels * 10
+    } else {
+        pixels * 5
+    }
+    .max(1000)
+    .min(50_000_000);
+
+    let density: Vec<AtomicU32> = (0..size).map(|_| AtomicU32::new(0)).collect();
+    let cancelled = AtomicBool::new(false);
+
+    (0..num_samples).into_par_iter().for_each(|sample_idx| {
+        if sample_idx % 10000 == 0 {
+            if cancel.load(Ordering::Relaxed) {
+                cancelled.store(true, Ordering::Relaxed);
+                return;
+            }
+        }
+        if cancelled.load(Ordering::Relaxed) {
+            return;
+        }
+
+        let mut rng = Rng::new(42 + sample_idx as u32 * 12345);
+        let xg = params.center_x + (rng.next_f64() - 0.5) * xrange;
+        let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
+        let c = Complex::with_val(prec, (xg, yg));
+
+        let mut trajectory: Vec<Complex64> = Vec::with_capacity(iter_max as usize);
+        let mut z = Complex::with_val(prec, (0.0, 0.0));
+        let mut escaped = false;
+
+        for _iter in 0..iter_max {
+            let mut z_next = z.clone();
+            z_next *= &z;
+            z_next += &c;
+            z = z_next;
+
+            if z.real().is_nan() || z.imag().is_nan() || z.real().is_infinite() || z.imag().is_infinite() {
+                escaped = true;
+                break;
+            }
+
+            trajectory.push(complex_to_complex64(&z));
+
+            if complex_norm_sqr_mpc(&z, prec) > bailout_sq {
+                escaped = true;
+                break;
+            }
+        }
+
+        if !escaped && !trajectory.is_empty() {
+            let scale_x = width as f64 / xrange;
+            let scale_y = height as f64 / yrange;
+
+            for point in &trajectory {
+                if point.re.is_nan() || point.im.is_nan() {
+                    continue;
+                }
+
+                let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
+                let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
+
+                if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
+                    let idx = py as usize * width + px as usize;
+                    density[idx].fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+    });
+
+    if cancelled.load(Ordering::Relaxed) {
+        return None;
+    }
+
+    let max_density = density
+        .iter()
+        .map(|d| d.load(Ordering::Relaxed))
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let log_max = (1.0 + max_density as f64).ln();
+
+    let iterations: Vec<u32> = density
+        .par_iter()
+        .map(|d| {
+            let val = d.load(Ordering::Relaxed);
+            let normalized = (1.0 + val as f64).ln() / log_max;
+            (normalized * iter_max as f64) as u32
+        })
+        .collect();
+
+    let zs: Vec<Complex64> = density
+        .par_iter()
+        .map(|d| {
+            let val = d.load(Ordering::Relaxed);
+            let normalized = (1.0 + val as f64).ln() / log_max;
+            Complex64::new(normalized * 2.0, 0.0)
+        })
+        .collect();
+
+    Some((iterations, zs))
+}
+
+/// Version annulable du rendu Anti-Buddhabrot (f64).
+pub fn render_antibuddhabrot_cancellable(
+    params: &FractalParams,
+    cancel: &Arc<AtomicBool>,
+) -> Option<(Vec<u32>, Vec<Complex64>)> {
+    let width = params.width as usize;
+    let height = params.height as usize;
+    let size = width * height;
+
+    if width == 0 || height == 0 {
+        return Some((vec![0; size], vec![Complex64::new(0.0, 0.0); size]));
+    }
+
+    let xrange = params.span_x;
+    let yrange = params.span_y;
+    let iter_max = params.iteration_max;
+    let bailout_sq = params.bailout * params.bailout;
+
+    let pixels = width * height;
+    let num_samples = if pixels <= 640 * 480 {
+        pixels * 20
+    } else if pixels <= 1024 * 768 {
+        pixels * 10
+    } else {
+        pixels * 5
+    }
+    .max(1000)
+    .min(50_000_000);
+
+    let density: Vec<AtomicU32> = (0..size).map(|_| AtomicU32::new(0)).collect();
+    let cancelled = AtomicBool::new(false);
+
+    (0..num_samples).into_par_iter().for_each(|sample_idx| {
+        if sample_idx % 10000 == 0 {
+            if cancel.load(Ordering::Relaxed) {
+                cancelled.store(true, Ordering::Relaxed);
+                return;
+            }
+        }
+        if cancelled.load(Ordering::Relaxed) {
+            return;
+        }
+
+        let mut rng = Rng::new(42 + sample_idx as u32 * 12345);
+        let xg = params.center_x + (rng.next_f64() - 0.5) * xrange;
+        let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
+        let c = Complex64::new(xg, yg);
+
+        let mut trajectory = Vec::with_capacity(iter_max as usize);
+        let mut z = Complex64::new(0.0, 0.0);
+        let mut escaped = false;
+
+        for _iter in 0..iter_max {
+            z = z * z + c;
+
+            if z.re.is_nan() || z.im.is_nan() || z.re.is_infinite() || z.im.is_infinite() {
+                escaped = true;
+                break;
+            }
+
+            trajectory.push(z);
+
+            if z.norm_sqr() > bailout_sq {
+                escaped = true;
+                break;
+            }
+        }
+
+        if !escaped && !trajectory.is_empty() {
+            let scale_x = width as f64 / xrange;
+            let scale_y = height as f64 / yrange;
+
+            for point in &trajectory {
+                if point.re.is_nan() || point.im.is_nan() {
+                    continue;
+                }
+
+                let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
+                let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
+
+                if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
+                    let idx = py as usize * width + px as usize;
+                    density[idx].fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+    });
+
+    if cancelled.load(Ordering::Relaxed) {
+        return None;
+    }
+
+    let max_density = density
+        .iter()
+        .map(|d| d.load(Ordering::Relaxed))
+        .max()
+        .unwrap_or(1)
+        .max(1);
+
+    let log_max = (1.0 + max_density as f64).ln();
+
+    let iterations: Vec<u32> = density
+        .par_iter()
+        .map(|d| {
+            let val = d.load(Ordering::Relaxed);
+            let normalized = (1.0 + val as f64).ln() / log_max;
+            (normalized * iter_max as f64) as u32
+        })
+        .collect();
+
+    let zs: Vec<Complex64> = density
+        .par_iter()
+        .map(|d| {
+            let val = d.load(Ordering::Relaxed);
+            let normalized = (1.0 + val as f64).ln() / log_max;
+            Complex64::new(normalized * 2.0, 0.0)
+        })
+        .collect();
+
+    Some((iterations, zs))
+}

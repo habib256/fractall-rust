@@ -9,7 +9,7 @@ use crate::fractal::{AlgorithmMode, FractalParams, FractalResult, FractalType, P
 use crate::fractal::iterations::iterate_point;
 use crate::fractal::orbit_traps::OrbitData;
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
-use crate::fractal::{render_lyapunov, render_von_koch, render_dragon, render_buddhabrot, render_nebulabrot};
+use crate::fractal::{render_lyapunov, render_von_koch, render_dragon, render_buddhabrot, render_nebulabrot, render_antibuddhabrot};
 use crate::fractal::lyapunov::{render_lyapunov_cancellable, render_lyapunov_mpc_cancellable, render_lyapunov_mpc};
 use crate::fractal::buddhabrot::{
     render_buddhabrot_cancellable,
@@ -18,6 +18,9 @@ use crate::fractal::buddhabrot::{
     render_nebulabrot_mpc,
     render_buddhabrot_mpc_cancellable,
     render_nebulabrot_mpc_cancellable,
+    render_antibuddhabrot_cancellable,
+    render_antibuddhabrot_mpc,
+    render_antibuddhabrot_mpc_cancellable,
 };
 use crate::fractal::perturbation::render_perturbation_cancellable_with_reuse;
 
@@ -54,6 +57,13 @@ pub fn render_escape_time(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
                 render_nebulabrot_mpc(params)
             } else {
                 render_nebulabrot(params)
+            };
+        }
+        FractalType::AntiBuddhabrot => {
+            return if params.use_gmp {
+                render_antibuddhabrot_mpc(params)
+            } else {
+                render_antibuddhabrot(params)
             };
         }
         _ => {}
@@ -375,6 +385,19 @@ pub fn render_escape_time_cancellable_with_reuse(
                 })
             } else {
                 render_nebulabrot_cancellable(params, cancel).map(|(i, z)| {
+                    let n = i.len();
+                    (i, z, empty_orbits_distances(n).0, vec![])
+                })
+            };
+        }
+        FractalType::AntiBuddhabrot => {
+            return if params.use_gmp {
+                render_antibuddhabrot_mpc_cancellable(params, cancel).map(|(i, z)| {
+                    let n = i.len();
+                    (i, z, empty_orbits_distances(n).0, vec![])
+                })
+            } else {
+                render_antibuddhabrot_cancellable(params, cancel).map(|(i, z)| {
                     let n = i.len();
                     (i, z, empty_orbits_distances(n).0, vec![])
                 })

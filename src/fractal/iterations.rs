@@ -45,6 +45,9 @@ pub fn iterate_point(params: &FractalParams, z_pixel: Complex64) -> FractalResul
         FractalType::Nebulabrot => {
             panic!("Nebulabrot doit être rendu via render_nebulabrot(), pas iterate_point()")
         }
+        FractalType::AntiBuddhabrot => {
+            panic!("Anti-Buddhabrot doit être rendu via render_antibuddhabrot(), pas iterate_point()")
+        }
     }
 }
 
