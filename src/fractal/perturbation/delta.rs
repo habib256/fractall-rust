@@ -887,46 +887,10 @@ pub fn iterate_pixel_gmp(
             None => break, // End of effective orbit
         };
         
-        // Apply perturbation formula: z_{n+1} = 2·Z_m·z_n + z_n² + c
-        // In GMP: delta_{n+1} = 2·z_ref·delta + delta² + dc
-        // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision prec
-        // Créer de nouvelles valeurs avec la précision explicite pour garantir la cohérence
-        
-        // DÉSACTIVÉ: Optimisation pour le centre exact qui causait des artefacts circulaires visibles.
-        // Même avec des seuils stricts, cette optimisation créait un cercle au centre.
-        // La perturbation standard fonctionne correctement même au centre exact.
-        // if is_center_like && !is_burning_ship {
-        //     // Au centre exact, delta reste ≈ 0, donc on peut le forcer à 0 pour éviter les erreurs d'arrondi
-        //     // qui pourraient s'accumuler. Cela garantit que le pixel suit exactement l'orbite de référence.
-        //     delta = Complex::with_val(prec, (0, 0));
-        // } else {
-        {
-            // Créer des copies avec la précision explicite pour toutes les valeurs
-            let delta_prec = Complex::with_val(prec, (delta.real(), delta.imag()));
-            let z_ref_prec = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
-            
-            let mut delta_sq = delta_prec.clone();
-            delta_sq *= &delta_prec;
-            
-            let mut linear_term = z_ref_prec.clone();
-            linear_term *= &delta_prec;
-            let two = Float::with_val(prec, 2.0);
-            linear_term *= &two;
-            
-            let mut next_delta = Complex::with_val(prec, (linear_term.real(), linear_term.imag()));
-            next_delta += &delta_sq;
-            
-            if !is_julia {
-                // Mandelbrot: add dc term - créer une copie avec la précision explicite
-                let dc_gmp_prec = Complex::with_val(prec, (dc_gmp.real(), dc_gmp.imag()));
-                next_delta += &dc_gmp_prec;
-            }
-            // Julia: dc is already incorporated in initial delta
-            
-            delta = next_delta;
-        }
-        
-        // Handle special cases
+        // Apply perturbation formula depending on fractal type.
+        // Burning Ship and Tricorn have their own formulas and must NOT use the
+        // standard Mandelbrot perturbation (which would corrupt delta before
+        // their type-specific handling).
         if is_burning_ship {
             // Burning Ship: z' = (|Re(z)|, |Im(z)|)² + c
             // For deep zooms, compute full orbit: z_curr = z_ref + delta
@@ -1003,7 +967,27 @@ pub fn iterate_pixel_gmp(
             let z_ref_next_prec = Complex::with_val(prec, (z_ref_next.real(), z_ref_next.imag()));
             delta = z_temp_prec - z_ref_next_prec;
         } else {
-            // Standard Mandelbrot/Julia: delta already computed above in the else block
+            // Standard Mandelbrot/Julia: delta_{n+1} = 2·z_ref·delta + delta² + dc
+            let delta_prec = Complex::with_val(prec, (delta.real(), delta.imag()));
+            let z_ref_prec = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
+
+            let mut delta_sq = delta_prec.clone();
+            delta_sq *= &delta_prec;
+
+            let mut linear_term = z_ref_prec.clone();
+            linear_term *= &delta_prec;
+            let two = Float::with_val(prec, 2.0);
+            linear_term *= &two;
+
+            let mut next_delta = Complex::with_val(prec, (linear_term.real(), linear_term.imag()));
+            next_delta += &delta_sq;
+
+            if !is_julia {
+                let dc_gmp_prec = Complex::with_val(prec, (dc_gmp.real(), dc_gmp.imag()));
+                next_delta += &dc_gmp_prec;
+            }
+
+            delta = next_delta;
         }
         
         // Check bailout
