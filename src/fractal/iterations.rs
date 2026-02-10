@@ -52,9 +52,9 @@ pub fn iterate_point(params: &FractalParams, z_pixel: Complex64) -> FractalResul
 }
 
 fn mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
-    // Mendelbrot_Iteration: z_{n+1} = z_n^2 + c, dz/dc: z'_{n+1} = 2*z_n*z'_n + 1
+    // Mandelbrot_Iteration: z_{n+1} = z_n^2 + c, dz/dc: z'_{n+1} = 2*z_n*z'_n + 1
     let mut z = p.seed;
-    let mut dz = Complex64::new(1.0, 0.0); // dz/dc
+    let mut dz = Complex64::new(0.0, 0.0); // dz_0/dc = 0 (seed is constant w.r.t. c)
     let mut i = 0u32;
     
     // Initialiser orbit data si orbit traps activés
@@ -94,12 +94,12 @@ fn mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         // Valeur de repli pour éviter les artefacts
         z = Complex64::new(z_pixel.re * 10.0, z_pixel.im * 10.0);
     }
-    // Estimation de distance: d = |z| * ln(|z|) / |dz/dc| (en unités plan complexe)
+    // Estimation de distance Mandelbrot: d = 2 * |z| * ln(|z|) / |dz/dc|
     let distance = if p.enable_distance_estimation && i < p.iteration_max && i > 0 {
         let z_norm = z.norm().max(2.0);
         let dz_norm = dz.norm();
         if dz_norm > 1e-300 && z_norm > 1.0 {
-            Some(z_norm * z_norm.ln() / dz_norm)
+            Some(2.0 * z_norm * z_norm.ln() / dz_norm)
         } else {
             None
         }
@@ -262,21 +262,21 @@ fn barnsley_mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
 }
 
 fn magnet_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
-    // Magnet1j_Iteration
+    // Magnet1j_Iteration: z_{n+1} = ((z_n² + c - 1) / (2*z_n + c - 2))²
     let mut z = z_pixel;
     let mut i = 0u32;
 
     while i < p.iteration_max && z.norm() < p.bailout {
         let seed_minus_one = Complex64::new(p.seed.re - 1.0, p.seed.im);
         let seed_minus_two = Complex64::new(p.seed.re - 2.0, p.seed.im);
-        let mut n = z * z + seed_minus_one;
-        n = n * n;
+        let n = z * z + seed_minus_one;
         let q = Complex64::new(2.0, 0.0) * z + seed_minus_two;
         // Eviter division par zero
         if q.norm() < 1e-12 {
             break;
         }
-        z = n / q;
+        let ratio = n / q;
+        z = ratio * ratio;
         i += 1;
     }
 
@@ -284,7 +284,7 @@ fn magnet_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
 }
 
 fn magnet_mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
-    // Magnet1m_Iteration
+    // Magnet1m_Iteration: z_{n+1} = ((z_n² + c - 1) / (2*z_n + c - 2))²
     let c = z_pixel;
     let mut z = Complex64::new(0.0, 0.0);
     let mut i = 0u32;
@@ -292,14 +292,14 @@ fn magnet_mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     while i < p.iteration_max && z.norm() < p.bailout {
         let c_minus_one = Complex64::new(c.re - 1.0, c.im);
         let c_minus_two = Complex64::new(c.re - 2.0, c.im);
-        let mut n = z * z + c_minus_one;
-        n = n * n;
+        let n = z * z + c_minus_one;
         let q = Complex64::new(2.0, 0.0) * z + c_minus_two;
         // Eviter division par zero
         if q.norm() < 1e-12 {
             break;
         }
-        z = n / q;
+        let ratio = n / q;
+        z = ratio * ratio;
         i += 1;
     }
 

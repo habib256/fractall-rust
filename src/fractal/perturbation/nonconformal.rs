@@ -95,8 +95,8 @@ impl Matrix2x2 {
         
         let discriminant = trace * trace - 4.0 * det;
         if discriminant < 0.0 {
-            // Fallback: use Frobenius norm
-            (mtm_00 + mtm_01 + mtm_10 + mtm_11).sqrt()
+            // Fallback: use Frobenius norm = sqrt(trace(M^T * M))
+            (mtm_00 + mtm_11).sqrt()
         } else {
             ((trace + discriminant.sqrt()) / 2.0).sqrt().max(0.0)
         }

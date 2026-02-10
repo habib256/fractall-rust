@@ -250,7 +250,7 @@ fn main(
                         // WGSL: select(false_val, true_val, cond) => cond ? true_val : false_val
                         let next_re = mul1.x + select(0.0, mul2.x, !is_julia) + mul3.x;
                         let next_im = mul1.y + select(0.0, mul2.y, !is_julia) + mul3.y;
-                        let scaled = rescale_delta(next_re, next_im, delta_scale);
+                        let scaled = rescale_delta(next_re, next_im, 1.0);
                         delta_re = scaled.x;
                         delta_im = scaled.y;
                         delta_scale = scaled.z;
@@ -259,7 +259,7 @@ fn main(
                         // WGSL: select(false_val, true_val, cond) => cond ? true_val : false_val
                         let next_re = mul1.x + select(0.0, mul2.x, !is_julia);
                         let next_im = mul1.y + select(0.0, mul2.y, !is_julia);
-                        let scaled = rescale_delta(next_re, next_im, delta_scale);
+                        let scaled = rescale_delta(next_re, next_im, 1.0);
                         delta_re = scaled.x;
                         delta_im = scaled.y;
                         delta_scale = scaled.z;
@@ -290,7 +290,7 @@ fn main(
                 let z_next_ref = z_ref[n];
                 let next_re = z_next_re - z_next_ref.re;
                 let next_im = z_next_im - z_next_ref.im;
-                let scaled = rescale_delta(next_re, next_im, delta_scale);
+                let scaled = rescale_delta(next_re, next_im, 1.0);
                 delta_re = scaled.x;
                 delta_im = scaled.y;
                 delta_scale = scaled.z;
@@ -304,7 +304,7 @@ fn main(
                 // Donc ici on veut dc si !is_julia, sinon 0.
                 let next_re = linear.x + nonlinear.x + select(0.0, dc_re, !is_julia);
                 let next_im = linear.y + nonlinear.y + select(0.0, dc_im, !is_julia);
-                let scaled = rescale_delta(next_re, next_im, delta_scale);
+                let scaled = rescale_delta(next_re, next_im, 1.0);
                 delta_re = scaled.x;
                 delta_im = scaled.y;
                 delta_scale = scaled.z;

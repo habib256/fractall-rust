@@ -84,7 +84,7 @@ pub fn render_buddhabrot(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
 
     // Traitement parallèle des échantillons
     (0..num_samples).into_par_iter().for_each(|sample_idx| {
-        let mut rng = Rng::new(42 + sample_idx as u32 * 12345);
+        let mut rng = Rng::new((sample_idx as u32).wrapping_mul(12345).wrapping_add(42));
 
         // Point aléatoire dans le domaine : utiliser center+span directement
         // xg = center_x + (random - 0.5) * span_x
@@ -231,7 +231,7 @@ pub fn render_buddhabrot_mpc_cancellable(
             return;
         }
 
-        let mut rng = Rng::new(42 + sample_idx as u32 * 12345);
+        let mut rng = Rng::new((sample_idx as u32).wrapping_mul(12345).wrapping_add(42));
         // Point aléatoire : utiliser center+span directement
         let xg = params.center_x + (rng.next_f64() - 0.5) * xrange;
         let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
@@ -366,7 +366,7 @@ pub fn render_nebulabrot(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
 
     // Traitement parallèle
     (0..num_samples).into_par_iter().for_each(|sample_idx| {
-        let mut rng = Rng::new(42 + sample_idx as u32 * 12345);
+        let mut rng = Rng::new((sample_idx as u32).wrapping_mul(12345).wrapping_add(42));
 
         // Point aléatoire : utiliser center+span directement
         let xg = params.center_x + (rng.next_f64() - 0.5) * xrange;
@@ -533,7 +533,7 @@ pub fn render_nebulabrot_mpc_cancellable(
             return;
         }
 
-        let mut rng = Rng::new(42 + sample_idx as u32 * 12345);
+        let mut rng = Rng::new((sample_idx as u32).wrapping_mul(12345).wrapping_add(42));
         // Point aléatoire : utiliser center+span directement
         let xg = params.center_x + (rng.next_f64() - 0.5) * xrange;
         let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
@@ -688,7 +688,7 @@ pub fn render_buddhabrot_cancellable(
             return;
         }
 
-        let mut rng = Rng::new(42 + sample_idx as u32 * 12345);
+        let mut rng = Rng::new((sample_idx as u32).wrapping_mul(12345).wrapping_add(42));
         // Point aléatoire : utiliser center+span directement
         let xg = params.center_x + (rng.next_f64() - 0.5) * xrange;
         let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
@@ -822,7 +822,7 @@ pub fn render_nebulabrot_cancellable(
             return;
         }
 
-        let mut rng = Rng::new(42 + sample_idx as u32 * 12345);
+        let mut rng = Rng::new((sample_idx as u32).wrapping_mul(12345).wrapping_add(42));
         // Point aléatoire : utiliser center+span directement
         let xg = params.center_x + (rng.next_f64() - 0.5) * xrange;
         let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
@@ -950,7 +950,7 @@ pub fn render_antibuddhabrot(params: &FractalParams) -> (Vec<u32>, Vec<Complex64
     let density: Vec<AtomicU32> = (0..size).map(|_| AtomicU32::new(0)).collect();
 
     (0..num_samples).into_par_iter().for_each(|sample_idx| {
-        let mut rng = Rng::new(42 + sample_idx as u32 * 12345);
+        let mut rng = Rng::new((sample_idx as u32).wrapping_mul(12345).wrapping_add(42));
 
         let xg = params.center_x + (rng.next_f64() - 0.5) * xrange;
         let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
@@ -1081,7 +1081,7 @@ pub fn render_antibuddhabrot_mpc_cancellable(
             return;
         }
 
-        let mut rng = Rng::new(42 + sample_idx as u32 * 12345);
+        let mut rng = Rng::new((sample_idx as u32).wrapping_mul(12345).wrapping_add(42));
         let xg = params.center_x + (rng.next_f64() - 0.5) * xrange;
         let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
         let c = Complex::with_val(prec, (xg, yg));
@@ -1205,7 +1205,7 @@ pub fn render_antibuddhabrot_cancellable(
             return;
         }
 
-        let mut rng = Rng::new(42 + sample_idx as u32 * 12345);
+        let mut rng = Rng::new((sample_idx as u32).wrapping_mul(12345).wrapping_add(42));
         let xg = params.center_x + (rng.next_f64() - 0.5) * xrange;
         let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
         let c = Complex64::new(xg, yg);

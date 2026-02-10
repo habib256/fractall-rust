@@ -303,3 +303,16 @@ Selection automatique selon zoom et support materiel.
 **Recolorisation**: Thread separe pour eviter de bloquer l'UI lors des changements de palette/color_repeat. Systeme de versioning pour ignorer les resultats obsoletes si l'utilisateur change rapidement le slider.
 
 **Rendu HQ**: Thread dedie avec messages de progression (Progress/Done/Error).
+
+## Bugs connus restants (non corriges)
+
+Les bugs suivants ont ete identifies mais necessitent une analyse plus approfondie:
+
+1. **BLA table off-by-one** (`perturbation/bla.rs`): `start_idx=1` au level 1 cause un decalage d'index entre la table BLA et les requetes `level_nodes[n]`. Impact visible aux zooms profonds.
+2. **GMP perturbation z_ref stale** (`perturbation/delta.rs:885-1062`): `iterate_pixel_gmp` utilise `z_ref[n]` apres avoir calcule `delta_{n+1}`. Le compteur `n` est incremente trop tard.
+3. **Series skip non-fonctionnel pour Mandelbrot** (`perturbation/series.rs`): La serie utilise `delta_0 = 0` pour Mandelbrot, donc `compute_series_skip` retourne toujours `None`. La table est construite inutilement.
+4. **Burning Ship BLA sign manquant en dual-number** (`perturbation/delta.rs:1233-1238`): La transformation de signe pour Burning Ship n'est pas appliquee dans le path dual-number (distance estimation).
+5. **Fausse detection interieur avec perturbation** (`gui/app.rs`): `interior_flag_encoded` infere la detection interieur depuis `!distances.is_empty()` mais la perturbation alloue toujours un vecteur distances.
+6. **Reuse progressif sans orbit/distance** (`render/escape_time.rs`): Les pixels reutilises n'ont pas de donnees orbit/distance, causant un motif damier avec Distance/OrbitTraps.
+7. **Coordonnees pixel asymetriques** (`render/escape_time.rs`): Le mapping `i/width` au lieu de `(i+0.5)/width` cree un decalage d'un demi-pixel.
+8. **Preview palette ignore color space** (`color/palettes.rs`): `generate_palette_preview` utilise toujours RGB, pas HSB/LCH.
