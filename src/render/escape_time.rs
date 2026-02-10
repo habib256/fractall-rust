@@ -71,7 +71,7 @@ pub fn render_escape_time(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
 
     if matches!(
         params.fractal_type,
-        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
+        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn
     ) {
         // Perturbation ne supporte pas les transformations de plan (delta-based).
         // Si l'utilisateur force Perturbation avec un plan != Mu, on retombe sur standard.
@@ -408,7 +408,7 @@ pub fn render_escape_time_cancellable_with_reuse(
 
     if matches!(
         params.fractal_type,
-        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
+        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn
     ) {
         // Perturbation ne supporte pas les transformations de plan.
         // Si forcé, fallback sur standard (f64 ou GMP suivant use_gmp).
@@ -498,7 +498,7 @@ pub fn should_use_perturbation(params: &FractalParams, gpu_f32: bool) -> bool {
     }
     if !matches!(
         params.fractal_type,
-        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
+        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn
     ) {
         return false;
     }

@@ -146,9 +146,9 @@ pub struct SeriesSkipResult {
 pub fn compute_series_skip(
     table: &SeriesTable,
     delta: ComplexExp,
-    dc: ComplexExp,
+    _dc: ComplexExp,
     error_tolerance: f64,
-    is_julia: bool,
+    _is_julia: bool,
 ) -> Option<SeriesSkipResult> {
     if table.is_empty() || error_tolerance <= 0.0 {
         return None;
@@ -176,16 +176,13 @@ pub fn compute_series_skip(
         let delta_sq = delta_f64 * delta_f64;
         let delta_cube = delta_sq * delta_f64;
 
-        let mut approx = coeffs.a * delta_f64 + coeffs.b * delta_sq + coeffs.c * delta_cube;
+        let approx = coeffs.a * delta_f64 + coeffs.b * delta_sq + coeffs.c * delta_cube;
 
-        // For Mandelbrot, add contribution from dc
-        // This is a simplified model; full integration would need dc coefficients
-        if !is_julia && n > 0 {
-            // Accumulate dc contribution: sum of A_k for k=0..n-1
-            let dc_f64 = dc.to_complex64_approx();
-            // Approximate dc contribution as A_n * dc (simplified)
-            approx += coeffs.a * dc_f64 * (n as f64);
-        }
+        // Note: For Mandelbrot, dc also contributes to the series. The correct
+        // formula requires separate recursive dc coefficients (D_0=0, D_{n+1}=2·z_n·D_n+1).
+        // Without those coefficients, we omit the dc contribution here. This means
+        // the series skip is only accurate when |dc| << |A_n·δ|, which is the common case
+        // for deep zooms where pixels are very close to the reference.
 
         // Estimate error: O(δ^4) for cubic approximation
         let delta_4 = delta_norm * delta_norm * delta_norm * delta_norm;

@@ -114,20 +114,14 @@ fn compute_burning_ship_bla_coefficients(
     // z' = (|Re|, |Im|)² + c
     // En termes de perturbation, si z_ref + δ reste dans le même quadrant:
     // (|Re(z_ref + δ)|, |Im(z_ref + δ)|) ≈ (|Re(z_ref)| + sign(Re)*δ_re, |Im(z_ref)| + sign(Im)*δ_im)
-    // La dérivée devient: 2 * (sign_re * |Re|, sign_im * |Im|) * δ
-    
-    let sign_re = if z.re >= 0.0 { 1.0 } else { -1.0 };
-    let sign_im = if z.im >= 0.0 { 1.0 } else { -1.0 };
-    
-    // z_abs = (|Re|, |Im|)
     let re_abs = z.re.abs();
     let im_abs = z.im.abs();
     
-    // Pour z_abs² + c, la dérivée par rapport à δ est:
-    // d(z_abs²)/dδ = 2 * z_abs * d(z_abs)/dδ
-    // où d(z_abs)/dδ = (sign_re, sign_im) composante par composante
-    // Donc A = 2 * (sign_re * |Re| + i * sign_im * |Im|)
-    let a = Complex64::new(2.0 * sign_re * re_abs, 2.0 * sign_im * im_abs);
+    // Pour z_abs² + c, le terme linéaire de la perturbation est:
+    // 2·z_abs·δ_diffabs, où δ_diffabs = (sign_re·δ_re, sign_im·δ_im)
+    // Puisque le BLA applique A à work_delta = (sign_re·δ_re, sign_im·δ_im),
+    // le coefficient A doit être 2·z_abs = 2·(|Re|, |Im|) (pas 2·z).
+    let a = Complex64::new(2.0 * re_abs, 2.0 * im_abs);
     let b = Complex64::new(1.0, 0.0);
     let c = Complex64::new(1.0, 0.0);  // Terme quadratique
     

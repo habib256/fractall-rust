@@ -260,28 +260,9 @@ pub fn mark_neighbor_glitches(
         return mask;
     }
     
-    // Calculer le centre de l'image pour éviter de marquer les pixels au centre comme glitched
-    let center_x = width as f64 / 2.0;
-    let center_y = height as f64 / 2.0;
-    // Rayon autour du centre où on désactive la détection de glitch par voisinage
-    // pour éviter les artefacts circulaires (rayon de 20 pixels)
-    let center_radius_sqr = 20.0 * 20.0;
-    
     for y in 1..(height - 1) {
         for x in 1..(width - 1) {
             let idx = (y * width + x) as usize;
-            
-            // Vérifier si le pixel est proche du centre
-            let dx = x as f64 - center_x;
-            let dy = y as f64 - center_y;
-            let dist_sqr = dx * dx + dy * dy;
-            let is_near_center = dist_sqr < center_radius_sqr;
-            
-            // Ne pas marquer comme glitched si proche du centre pour éviter les artefacts circulaires
-            if is_near_center {
-                continue;
-            }
-            
             let center = iterations[idx];
             let left = iterations[(y * width + (x - 1)) as usize];
             let right = iterations[(y * width + (x + 1)) as usize];
