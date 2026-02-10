@@ -3,6 +3,8 @@ struct Params {
     center_y: f32,
     span_x: f32,
     span_y: f32,
+    seed_re: f32,
+    seed_im: f32,
     width: u32,
     height: u32,
     iter_max: u32,

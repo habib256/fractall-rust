@@ -209,11 +209,11 @@ fn compute_lyapunov_exponent(a: f64, b: f64, iter_max: u32, sequence: &[bool]) -
         let is_a = seq[seq_idx];
         let r = if is_a { a } else { b };
 
+        // Dérivée: |r * (1 - 2x)| évaluée AVANT l'itération (à x_n, pas x_{n+1})
+        let deriv = (r * (1.0 - 2.0 * x)).abs();
+
         // Itération de la carte logistique
         x = r * x * (1.0 - x);
-
-        // Dérivée: |r * (1 - 2x)|
-        let deriv = (r * (1.0 - 2.0 * x)).abs();
 
         if deriv > MIN_DERIV {
             product *= deriv;
@@ -305,19 +305,21 @@ fn compute_lyapunov_exponent_mpc(
         let is_a = seq[seq_idx];
         let r = if is_a { a } else { b };
 
-        let mut one_minus_x = one.clone();
-        one_minus_x -= &x;
-        let mut x_next = x.clone();
-        x_next *= &one_minus_x;
-        x_next *= r;
-        x = x_next;
-
+        // Dérivée évaluée AVANT l'itération (à x_n, pas x_{n+1})
         let mut two_x = x.clone();
         two_x *= &two;
         let mut term = one.clone();
         term -= two_x;
         term *= r;
         let deriv = term.abs();
+
+        // Itération de la carte logistique: x_{n+1} = r * x * (1 - x)
+        let mut one_minus_x = one.clone();
+        one_minus_x -= &x;
+        let mut x_next = x.clone();
+        x_next *= &one_minus_x;
+        x_next *= r;
+        x = x_next;
 
         if deriv > min_deriv {
             product *= deriv;

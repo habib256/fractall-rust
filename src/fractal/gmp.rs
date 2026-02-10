@@ -508,6 +508,7 @@ fn barnsley_mandelbrot(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
 
 #[allow(dead_code)]
 fn magnet_julia(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
+    // Magnet1j: z_{n+1} = ((z_n² + c - 1) / (2*z_n + c - 2))²
     let mut z = z_pixel.clone();
     let mut i = 0u32;
     let mut seed_minus_one_re = g.seed.re.clone();
@@ -516,11 +517,15 @@ fn magnet_julia(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let mut seed_minus_two_re = g.seed.re.clone();
     seed_minus_two_re -= Float::with_val(g.prec, 2.0);
     let seed_minus_two = ComplexF::new(seed_minus_two_re, g.seed.im.clone());
+    let threshold = Float::with_val(g.prec, 1e-24);
     while i < g.iteration_max && z.norm_sqr() < g.bailout_sqr {
-        let mut n = z.mul(&z).add(&seed_minus_one);
-        n = n.mul(&n);
+        let n = z.mul(&z).add(&seed_minus_one);
         let q = z.mul(&ComplexF::with_val(g.prec, 2.0, 0.0)).add(&seed_minus_two);
-        z = n.div(&q);
+        if q.norm_sqr() < threshold {
+            break;
+        }
+        let ratio = n.div(&q);
+        z = ratio.mul(&ratio);
         i += 1;
     }
     (i, z)
@@ -528,6 +533,7 @@ fn magnet_julia(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
 
 #[allow(dead_code)]
 fn magnet_mandelbrot(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
+    // Magnet1m: z_{n+1} = ((z_n² + c - 1) / (2*z_n + c - 2))²
     let c = z_pixel;
     let mut z = ComplexF::with_val(g.prec, 0.0, 0.0);
     let mut i = 0u32;
@@ -537,11 +543,15 @@ fn magnet_mandelbrot(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     let mut c_minus_two_re = c.re.clone();
     c_minus_two_re -= Float::with_val(g.prec, 2.0);
     let c_minus_two = ComplexF::new(c_minus_two_re, c.im.clone());
+    let threshold = Float::with_val(g.prec, 1e-24);
     while i < g.iteration_max && z.norm_sqr() < g.bailout_sqr {
-        let mut n = z.mul(&z).add(&c_minus_one);
-        n = n.mul(&n);
+        let n = z.mul(&z).add(&c_minus_one);
         let q = z.mul(&ComplexF::with_val(g.prec, 2.0, 0.0)).add(&c_minus_two);
-        z = n.div(&q);
+        if q.norm_sqr() < threshold {
+            break;
+        }
+        let ratio = n.div(&q);
+        z = ratio.mul(&ratio);
         i += 1;
     }
     (i, z)
@@ -1028,6 +1038,7 @@ fn barnsley_mandelbrot_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
 }
 
 fn magnet_julia_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    // Magnet1j: z_{n+1} = ((z_n² + c - 1) / (2*z_n + c - 2))²
     let mut z = z_pixel.clone();
     let mut i = 0u32;
     let mut seed_minus_one_re = g.seed.real().clone();
@@ -1036,22 +1047,27 @@ fn magnet_julia_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     let mut seed_minus_two_re = g.seed.real().clone();
     seed_minus_two_re -= Float::with_val(g.prec, 2.0);
     let seed_minus_two = complex_from_xy(g.prec, seed_minus_two_re, g.seed.imag().clone());
+    let threshold = Float::with_val(g.prec, 1e-24);
     while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
         let mut n = z.clone();
         n *= &z;
         n += &seed_minus_one;
-        let mut n_sq = n.clone();
-        n_sq *= &n;
         let mut q = z.clone();
         q *= Complex::with_val(g.prec, (2, 0));
         q += &seed_minus_two;
-        z = n_sq / q;
+        if complex_norm_sqr(&q, g.prec) < threshold {
+            break;
+        }
+        let ratio = n / q;
+        z = ratio.clone();
+        z *= &ratio;
         i += 1;
     }
     (i, z)
 }
 
 fn magnet_mandelbrot_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    // Magnet1m: z_{n+1} = ((z_n² + c - 1) / (2*z_n + c - 2))²
     let c = z_pixel;
     let mut z = Complex::with_val(g.prec, (0, 0));
     let mut i = 0u32;
@@ -1061,16 +1077,20 @@ fn magnet_mandelbrot_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     let mut c_minus_two_re = c.real().clone();
     c_minus_two_re -= Float::with_val(g.prec, 2.0);
     let c_minus_two = complex_from_xy(g.prec, c_minus_two_re, c.imag().clone());
+    let threshold = Float::with_val(g.prec, 1e-24);
     while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
         let mut n = z.clone();
         n *= &z;
         n += &c_minus_one;
-        let mut n_sq = n.clone();
-        n_sq *= &n;
         let mut q = z.clone();
         q *= Complex::with_val(g.prec, (2, 0));
         q += &c_minus_two;
-        z = n_sq / q;
+        if complex_norm_sqr(&q, g.prec) < threshold {
+            break;
+        }
+        let ratio = n / q;
+        z = ratio.clone();
+        z *= &ratio;
         i += 1;
     }
     (i, z)

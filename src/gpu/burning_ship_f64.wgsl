@@ -5,6 +5,8 @@ struct Params {
     center_y: f64,
     span_x: f64,
     span_y: f64,
+    seed_re: f64,
+    seed_im: f64,
     width: u32,
     height: u32,
     iter_max: u32,

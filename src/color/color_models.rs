@@ -196,10 +196,13 @@ fn lab_f(t: f64) -> f64 {
 }
 
 fn lab_f_inv(t: f64) -> f64 {
-    if t > 0.008856 {
+    // Threshold is 6/29 ≈ 0.2069 (the transition point in f-space),
+    // NOT (6/29)³ ≈ 0.008856 which is the threshold for the forward lab_f()
+    const DELTA: f64 = 6.0 / 29.0;
+    if t > DELTA {
         t.powi(3)
     } else {
-        (t - 16.0 / 116.0) / 7.787
+        3.0 * DELTA * DELTA * (t - 4.0 / 29.0)
     }
 }
 

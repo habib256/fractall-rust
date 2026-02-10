@@ -1224,6 +1224,8 @@ impl FractallApp {
         self.window_height = new_height;
         self.params.width = new_width;
         self.params.height = new_height;
+        // Synchroniser les chaînes HP pour éviter un saut au prochain zoom profond
+        self.sync_params_to_hp();
         self.iterations.clear();
         self.zs.clear();
         self.orbits.clear();
@@ -1568,7 +1570,7 @@ impl FractallApp {
             AlgorithmMode::Auto => {
                 if !matches!(
                     self.selected_type,
-                    FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
+                    FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn
                 ) || self.params.width == 0 {
                     return AlgorithmMode::StandardF64;
                 }
@@ -1740,7 +1742,7 @@ impl eframe::App for FractallApp {
             // - pour dézoom au centre (désactivé en mode Julia)
             if !julia_mode && i.key_pressed(egui::Key::Minus) {
                 let center = Complex64::new(self.params.center_x, self.params.center_y);
-                self.zoom_out_at_point(center, 1.0 / 1.5);
+                self.zoom_out_at_point(center, 1.5);
             }
 
             // 0 pour reset zoom (désactivé en mode Julia) — ne pas déclencher si le focus est sur le champ Itérations (pour pouvoir taper "50", "500", etc.)
@@ -2163,7 +2165,16 @@ impl eframe::App for FractallApp {
                         });
                     if old_out_mode != self.out_coloring_mode {
                         self.params.out_coloring_mode = self.out_coloring_mode;
-                        if !self.iterations.is_empty() {
+                        // Distance/OrbitTraps/Wings modes require data computed during render
+                        let needs_rerender = matches!(self.out_coloring_mode,
+                            OutColoringMode::Distance | OutColoringMode::DistanceAO | OutColoringMode::Distance3D
+                        ) && self.distances.is_empty()
+                        || matches!(self.out_coloring_mode,
+                            OutColoringMode::OrbitTraps | OutColoringMode::Wings
+                        ) && self.orbits.iter().all(|o| o.is_none());
+                        if needs_rerender {
+                            self.start_render();
+                        } else if !self.iterations.is_empty() {
                             self.update_texture(ctx);
                         }
                     }
@@ -2713,7 +2724,9 @@ impl eframe::App for FractallApp {
                 });
         });
         
-        // Demander un re-rendu si nécessaire
-        ctx.request_repaint();
+        // Demander un re-rendu seulement si un rendu est en cours
+        if self.rendering || self.hq_rendering {
+            ctx.request_repaint();
+        }
     }
 }

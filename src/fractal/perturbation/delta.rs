@@ -1394,7 +1394,9 @@ pub(crate) fn iterate_pixel_with_duals(
             } else {
                 // Mandelbrot/Julia: z² + c
                 // Use dual propagation: (z_ref + delta)² = z_ref² + 2·z_ref·delta + delta²
-                let z_ref = ref_orbit.z_ref_f64[n as usize];
+                let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
+                    ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+                });
                 let z_ref_dual = ExtendedDualComplex::from_complex(z_ref);
                 let z_curr_dual = z_ref_dual.add(delta_dual);
                 
