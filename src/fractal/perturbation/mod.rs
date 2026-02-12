@@ -813,7 +813,8 @@ pub fn render_perturbation_with_cache(
                     let sec_series = if params.series_standalone
                         && matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia)
                     {
-                        Some(series::build_series_table(&sec_orbit.z_ref_f64))
+                        let is_julia = params.fractal_type == FractalType::Julia;
+                        Some(series::build_series_table(&sec_orbit.z_ref_f64, is_julia))
                     } else {
                         None
                     };

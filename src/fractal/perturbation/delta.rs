@@ -8,7 +8,8 @@ use crate::fractal::perturbation::orbit::{ReferenceOrbit, HybridBlaReferences};
 use crate::fractal::perturbation::types::ComplexExp;
 use crate::fractal::gmp::complex_norm_sqr;
 use crate::fractal::perturbation::series::{
-    SeriesConfig, SeriesTable, should_use_series, estimate_series_error, compute_series_skip,
+    SeriesConfig, SeriesTable, should_use_series, estimate_series_error,
+    compute_series_skip,
 };
 use crate::fractal::perturbation::distance::{DualComplex, compute_distance_estimate, transform_pixel_to_complex};
 use crate::fractal::perturbation::interior::{ExtendedDualComplex, is_interior};
@@ -262,15 +263,16 @@ pub fn iterate_pixel(
     // This helps avoid precision loss when z_ref values are at extreme ranges
     let use_high_precision = pixel_size < 1e-14;
 
-    // Try standalone series skip BEFORE BLA (if enabled and series table is available)
+    // Try standalone series skip BEFORE BLA (if enabled and series table is available).
+    // For Mandelbrot: the series variable is dc (pixel offset), since delta_0 = 0.
+    // For Julia: the series variable is also dc (= delta_0), since delta_0 = dc.
+    // In both cases, dc is the "small parameter" that the series is expanded in.
     if let Some(table) = series_table {
-        if params.series_standalone && !is_burning_ship && !is_multibrot {
+        if params.series_standalone && !is_burning_ship && !is_multibrot && !is_tricorn {
             if let Some(skip_result) = compute_series_skip(
                 table,
-                delta,
                 dc,
                 series_config.error_tolerance,
-                is_julia,
             ) {
                 // Skip to the computed iteration
                 n = skip_result.skip_to as u32;
