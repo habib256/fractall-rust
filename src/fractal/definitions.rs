@@ -36,7 +36,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         series_threshold: 1e-6,
         series_error_tolerance: 1e-9,
         glitch_neighbor_pass: true,
-        series_standalone: false,
+        series_standalone: true,
         max_secondary_refs: 3,
         min_glitch_cluster_size: 100,
         multibrot_power: 2.5,

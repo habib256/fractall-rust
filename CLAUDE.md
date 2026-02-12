@@ -10,6 +10,8 @@ cargo run --release --bin fractall-gui
 
 Prerequis: GMP/MPFR/MPC (pour `rug`).
 
+**Tests / CI**: Aucun test unitaire ni pipeline CI/CD dans le projet actuellement.
+
 ## Architecture
 
 ```
@@ -23,7 +25,7 @@ src/
 │   ├── iterations.rs    # escape-time f64
 │   ├── gmp.rs           # precision arbitraire (rug/mpc)
 │   ├── lyapunov.rs      # Lyapunov exponent
-│   ├── buddhabrot.rs    # Buddhabrot/Nebulabrot
+│   ├── buddhabrot.rs    # Buddhabrot/Nebulabrot/Anti-Buddhabrot
 │   ├── vectorial.rs     # Von Koch, Dragon
 │   ├── orbit_traps.rs   # Orbit trap detection (Point, Line, Cross, Circle)
 │   └── perturbation/
@@ -60,6 +62,25 @@ src/
     └── png.rs           # save_png_with_metadata(), load_png_metadata()
 ```
 
+## Dependances principales (Cargo.toml)
+
+| Crate | Version | Role |
+|-------|---------|------|
+| clap | 4.5 | Parsing CLI (derive) |
+| image | 0.25 | Support PNG |
+| num-complex | 0.4 | Arithmetique complexe |
+| rayon | 1.11 | Parallelisme multi-thread |
+| eframe | 0.27 | Framework GUI (wrapper egui) |
+| egui | 0.27 | UI immediate mode |
+| wgpu | 0.19 | GPU (Vulkan/Metal/DX12) |
+| pollster | 0.3 | Runtime async pour GPU |
+| bytemuck | 1.15 | Serialisation buffers GPU |
+| rug | 1.24 | Precision arbitraire (GMP/MPFR/MPC) |
+| serde / serde_json | 1.0 | Serialisation JSON (metadonnees PNG) |
+| png | 0.17 | Acces chunks PNG bas niveau |
+
+Deux binaires: `fractall-cli` (src/main.rs) et `fractall-gui` (src/main_gui.rs).
+
 ## Systeme de coordonnees
 
 Le code utilise **center + span** au lieu de xmin/xmax/ymin/ymax:
@@ -95,9 +116,16 @@ Les images PNG generees contiennent les parametres complets de la fractale dans 
 
 ```
 AlgorithmMode::Auto:
-  - Zooms 1e1 - 1e16: CPU f64 standard (rapide)
-  - Zooms > 1e16: GMP reference (precision necessaire)
-  - Perturbation f64 desactivee en Auto (trop lente)
+  - Types speciaux:
+    - VonKoch, Dragon -> rendu vectoriel
+    - Buddhabrot/Nebulabrot/AntiBuddhabrot -> rendu densite (f64 ou GMP)
+    - Lyapunov -> calcul exposant (f64 ou GMP)
+  - Types escape-time (Mandelbrot, Julia, BurningShip, Tricorn):
+    - should_use_perturbation() true (zoom > ~1e15) -> perturbation + BLA
+    - should_use_gmp_reference() true (zoom > 1e16) -> GMP reference
+    - sinon -> CPU f64 standard (rapide)
+  - Perturbation incompatible avec plane_transform != Mu -> fallback f64/GMP
+  - Autres types -> f64 ou GMP selon use_gmp
 
 Modes forces: StandardF64 | Perturbation | ReferenceGmp
 
@@ -146,7 +174,7 @@ Precision GMP:
 ## Couleur
 
 **Palettes** (13 disponibles, index 0-12):
-Fire, Ocean, Forest, Violet, Rainbow, Sunset, Plasma, Ice, Cosmic, Neon, Twilight, Emboss, Waves
+Fire, Ocean, Forest, Violet, Rainbow, Sunset, Plasma (defaut), Ice, Cosmic, Neon, Twilight, Emboss, Waves
 
 **Espaces couleur** (color_models.rs):
 - RGB: standard
@@ -196,31 +224,56 @@ Fire, Ocean, Forest, Violet, Rainbow, Sunset, Plasma, Ice, Cosmic, Neon, Twiligh
 
 | ID | Type | Algo |
 |----|------|------|
-| 1-2 | Von Koch, Dragon | vectoriel |
+| 1 | Von Koch | vectoriel |
+| 2 | Dragon | vectoriel |
 | 3 | Mandelbrot | escape-time + perturbation |
 | 4 | Julia | escape-time + perturbation |
-| 5-12 | Julia Sin, Newton, Phoenix, Buffalo, Barnsley, Magnet | f64/GMP |
+| 5 | Julia Sin | f64/GMP |
+| 6 | Newton | f64/GMP |
+| 7 | Phoenix | f64/GMP |
+| 8 | Buffalo | f64/GMP |
+| 9 | Barnsley Julia | f64/GMP |
+| 10 | Barnsley Mandelbrot | f64/GMP |
+| 11 | Magnet Julia | f64/GMP |
+| 12 | Magnet Mandelbrot | f64/GMP |
 | 13 | Burning Ship | escape-time + perturbation |
 | 14 | Tricorn | escape-time + perturbation |
-| 15-23 | Mandelbulb, Celtic, Alpha, Pickover, Nova, Multibrot... | f64/GMP |
-| 16, 24 | Buddhabrot, Nebulabrot | special |
+| 15 | Mandelbulb | f64/GMP |
+| 16 | Buddhabrot | densite |
 | 17 | Lyapunov | special (6 presets) |
-| 25-31 | Burning Ship Julia, Tricorn Julia, Celtic Julia, Buffalo Julia, Multibrot Julia, Perp. Burning Ship Julia, Alpha Mandelbrot Julia | f64/GMP |
+| 18 | Perpendicular Burning Ship | f64/GMP |
+| 19 | Celtic | f64/GMP |
+| 20 | Alpha Mandelbrot | f64/GMP |
+| 21 | Pickover Stalks | f64/GMP |
+| 22 | Nova | f64/GMP |
+| 23 | Multibrot | f64/GMP |
+| 24 | Nebulabrot | densite |
+| 25 | Burning Ship Julia | f64/GMP |
+| 26 | Tricorn Julia | f64/GMP |
+| 27 | Celtic Julia | f64/GMP |
+| 28 | Buffalo Julia | f64/GMP |
+| 29 | Multibrot Julia | f64/GMP |
+| 30 | Perp. Burning Ship Julia | f64/GMP |
+| 31 | Alpha Mandelbrot Julia | f64/GMP |
+| 32 | Mandelbrot Sin | f64/GMP |
+| 33 | Anti-Buddhabrot | densite |
 
-**Paires Mandelbrot / Julia** (preview Julia et touche J en GUI): Mandelbrot↔Julia, Barnsley↔Barnsley Julia, Magnet↔Magnet Julia, Burning Ship↔Burning Ship Julia, Tricorn↔Tricorn Julia, Celtic↔Celtic Julia, Buffalo↔Buffalo Julia, Multibrot↔Multibrot Julia, Perpendicular Burning Ship↔Perp. Burning Ship Julia, Alpha Mandelbrot↔Alpha Mandelbrot Julia.
+**Paires Mandelbrot / Julia** (preview Julia et touche J en GUI):
+Mandelbrot↔Julia, Barnsley↔Barnsley Julia, Magnet↔Magnet Julia, Burning Ship↔Burning Ship Julia, Tricorn↔Tricorn Julia, Celtic↔Celtic Julia, Buffalo↔Buffalo Julia, Multibrot↔Multibrot Julia, Perpendicular Burning Ship↔Perp. Burning Ship Julia, Alpha Mandelbrot↔Alpha Mandelbrot Julia, Mandelbrot Sin↔Julia Sin.
 
 ## CLI
 
 ```
 # Base
---type N              # type fractale (1-24 standard, 25-31 variantes Julia)
---width/height        # dimensions
+--type N              # type fractale (1-33)
+--width/height        # dimensions (defaut 1920x1080)
 --center-x/center-y   # centre
+--xmin/xmax/ymin/ymax # alternative au centre+span
 --iterations          # max iterations
 --output FILE         # PNG sortie (avec metadonnees)
 
 # Couleur
---palette 0-12        # palette (13 disponibles)
+--palette 0-12        # palette (13 disponibles, defaut 6=Plasma)
 --color-repeat        # repetitions gradient (1-120)
 --outcoloring MODE    # mode colorisation (smooth, distance, orbit-traps, wings...)
 --color-space         # rgb|hsb|lch
@@ -232,6 +285,7 @@ Fire, Ocean, Forest, Violet, Rainbow, Sunset, Plasma, Ice, Cosmic, Neon, Twiligh
 
 # Perturbation
 --bla-threshold       # seuil BLA
+--bla-validity-scale  # multiplicateur rayon BLA
 --glitch-tolerance    # tolerance glitch
 
 # Features avancees
@@ -247,19 +301,25 @@ Fire, Ocean, Forest, Violet, Rainbow, Sunset, Plasma, Ice, Cosmic, Neon, Twiligh
 
 ## GPU (wgpu)
 
-Shaders:
+**Shaders** (7 fichiers WGSL, workgroup 16x16):
 - `mandelbrot_f32/f64.wgsl`, `julia_f32/f64.wgsl`, `burning_ship_f32/f64.wgsl`
 - `perturbation.wgsl` (BLA cache workgroup, series approx, adaptive glitch tolerance)
 
-Selection automatique selon zoom et support materiel.
+**Selection backend**:
+- macOS: Metal
+- Linux: Vulkan (prioritaire) puis OpenGL
+- Windows: DirectX12 et Vulkan
+
+Selection automatique f32/f64 selon zoom et support materiel.
 
 ## GUI (FractallApp)
 
 **Menu Type** (racine):
-- Mandelbrots a la racine: Mandelbrot, Barnsley Mandelbrot, Magnet Mandelbrot, Burning Ship, Perp. Burning Ship, Tricorn, Celtic, Buffalo, Multibrot, Alpha Mandelbrot
-- Dossier **Julia all** (apres Alpha Mandelbrot): toutes les variantes Julia
-- Separateur puis Mandelbulb, puis Julia Sin, Newton, Phoenix, Pickover Stalks, Nova
-- Dossiers Densite (Buddhabrot, Nebulabrot) et Lyapunov (presets)
+- Mandelbrots a la racine: Mandelbrot, Barnsley Mandelbrot, Magnet Mandelbrot, Burning Ship, Perp. Burning Ship, Tricorn, Celtic, Buffalo, Multibrot, Alpha Mandelbrot, Mandelbrot Sin
+- Dossier **Julia all** (apres les Mandelbrots): toutes les variantes Julia
+- Separateur puis Mandelbulb, Julia Sin, Newton, Phoenix, Pickover Stalks, Nova
+- Dossier **Densite**: Buddhabrot, Nebulabrot, Anti-Buddhabrot
+- Dossier **Lyapunov**: 6 presets
 - Vector (Von Koch, Dragon) retire du menu
 
 **Rendu**:
@@ -287,14 +347,21 @@ Selection automatique selon zoom et support materiel.
 
 | Touche | Action |
 |--------|--------|
-| F1-F12 | Changer type fractale (F1=Mandelbrot, F2=Julia...) |
+| F1-F12 | Changer type fractale (F1=Mandelbrot, F2=Julia, F3=JuliaSin, ..., F12=Tricorn) |
 | C | Cycler palette (0-12) |
-| R | Cycler color_repeat (+1, max 120) |
+| R | Cycler color_repeat (+1; max 120, ou max 8 pour types densite) |
+| J | Basculer en Julia (utilise le seed du preview) ou activer le mode preview Julia |
 | S | Screenshot PNG (avec metadonnees) |
 | +/= | Zoom avant (1.5x au centre) |
 | - | Zoom arriere (1.5x) |
-| 0 | Reset vue par defaut |
-| Souris | Selection rectangle pour zoom |
+| 0 | Reset vue par defaut (ignore si focus sur champ iterations) |
+| Enter | Valider le champ iterations |
+| Molette souris | Zoom avant/arriere |
+| Clic gauche + drag | Selection rectangle pour zoom |
+| Clic droit | Zoom arriere |
+| Clic milieu + drag | Deplacement (pan) |
+
+Note: les raccourcis +/=/-/0 sont desactives en mode preview Julia.
 
 ## Threading
 
@@ -304,15 +371,16 @@ Selection automatique selon zoom et support materiel.
 
 **Rendu HQ**: Thread dedie avec messages de progression (Progress/Done/Error).
 
+**Parallelisme CPU**: rayon (par_chunks_mut) pour le calcul des pixels. AtomicBool pour signaler l'annulation.
+
 ## Bugs connus restants (non corriges)
 
 Les bugs suivants ont ete identifies mais necessitent une analyse plus approfondie:
 
 1. **BLA table off-by-one** (`perturbation/bla.rs`): `start_idx=1` au level 1 cause un decalage d'index entre la table BLA et les requetes `level_nodes[n]`. Impact visible aux zooms profonds.
 2. **GMP perturbation z_ref stale** (`perturbation/delta.rs:885-1062`): `iterate_pixel_gmp` utilise `z_ref[n]` apres avoir calcule `delta_{n+1}`. Le compteur `n` est incremente trop tard.
-3. **Series skip non-fonctionnel pour Mandelbrot** (`perturbation/series.rs`): La serie utilise `delta_0 = 0` pour Mandelbrot, donc `compute_series_skip` retourne toujours `None`. La table est construite inutilement.
-4. **Burning Ship BLA sign manquant en dual-number** (`perturbation/delta.rs:1233-1238`): La transformation de signe pour Burning Ship n'est pas appliquee dans le path dual-number (distance estimation).
-5. **Fausse detection interieur avec perturbation** (`gui/app.rs`): `interior_flag_encoded` infere la detection interieur depuis `!distances.is_empty()` mais la perturbation alloue toujours un vecteur distances.
-6. **Reuse progressif sans orbit/distance** (`render/escape_time.rs`): Les pixels reutilises n'ont pas de donnees orbit/distance, causant un motif damier avec Distance/OrbitTraps.
-7. **Coordonnees pixel asymetriques** (`render/escape_time.rs`): Le mapping `i/width` au lieu de `(i+0.5)/width` cree un decalage d'un demi-pixel.
-8. **Preview palette ignore color space** (`color/palettes.rs`): `generate_palette_preview` utilise toujours RGB, pas HSB/LCH.
+3. **Burning Ship BLA sign manquant en dual-number** (`perturbation/delta.rs:1233-1238`): La transformation de signe pour Burning Ship n'est pas appliquee dans le path dual-number (distance estimation).
+4. **Fausse detection interieur avec perturbation** (`gui/app.rs`): `interior_flag_encoded` infere la detection interieur depuis `!distances.is_empty()` mais la perturbation alloue toujours un vecteur distances.
+5. **Reuse progressif sans orbit/distance** (`render/escape_time.rs`): Les pixels reutilises n'ont pas de donnees orbit/distance, causant un motif damier avec Distance/OrbitTraps.
+6. **Coordonnees pixel asymetriques** (`render/escape_time.rs`): Le mapping `i/width` au lieu de `(i+0.5)/width` cree un decalage d'un demi-pixel.
+7. **Preview palette ignore color space** (`color/palettes.rs`): `generate_palette_preview` utilise toujours RGB, pas HSB/LCH.

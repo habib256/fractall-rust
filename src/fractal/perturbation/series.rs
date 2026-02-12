@@ -3,28 +3,48 @@ use num_complex::Complex64;
 use crate::fractal::FractalParams;
 use crate::fractal::perturbation::types::ComplexExp;
 
-/// Coefficients de série de Taylor pour une itération.
-/// Pour z' = z² + c, la série est: δ'_n = A_n·δ + B_n·δ² + C_n·δ³
-/// où les coefficients évoluent selon les récurrences:
-/// - A_{n+1} = 2·z_n·A_n (init A_0 = 1)
-/// - B_{n+1} = 2·z_n·B_n + A_n² (init B_0 = 0)
-/// - C_{n+1} = 2·z_n·C_n + 2·A_n·B_n (init C_0 = 0)
+/// Coefficients de la série de Taylor pour l'approximation par série (SA).
+///
+/// ## Mandelbrot dc-series (is_julia = false)
+///
+/// Pour Mandelbrot z^2 + c avec delta_0 = 0, on développe delta_n en série de dc:
+///   delta_n = a_n * dc + b_n * dc^2 + c_n * dc^3 + d_n * dc^4
+///
+/// Récurrences (issues de delta_{n+1} = 2*Z_n*delta_n + delta_n^2 + dc):
+///   a_{n+1} = 2*Z_n*a_n + 1          (a_0 = 0, a_1 = 1)
+///   b_{n+1} = 2*Z_n*b_n + a_n^2      (b_0 = 0)
+///   c_{n+1} = 2*Z_n*c_n + 2*a_n*b_n  (c_0 = 0)
+///   d_{n+1} = 2*Z_n*d_n + 2*a_n*c_n + b_n^2  (d_0 = 0)
+///
+/// ## Julia delta-series (is_julia = true)
+///
+/// Pour Julia z^2 + seed avec delta_0 = dc, on développe delta_n en série de delta_0:
+///   delta_n = a_n * delta_0 + b_n * delta_0^2 + c_n * delta_0^3 + d_n * delta_0^4
+///
+/// Récurrences (issues de delta_{n+1} = 2*Z_n*delta_n + delta_n^2):
+///   a_{n+1} = 2*Z_n*a_n              (a_0 = 1)
+///   b_{n+1} = 2*Z_n*b_n + a_n^2      (b_0 = 0)
+///   c_{n+1} = 2*Z_n*c_n + 2*a_n*b_n  (c_0 = 0)
+///   d_{n+1} = 2*Z_n*d_n + 2*a_n*c_n + b_n^2  (d_0 = 0)
 #[derive(Clone, Copy, Debug)]
 pub struct SeriesCoefficients {
-    /// Coefficient linéaire A: δ'_n ≈ A·δ
+    /// Coefficient linéaire (ordre 1)
     pub a: Complex64,
-    /// Coefficient quadratique B: δ'_n ≈ A·δ + B·δ²
+    /// Coefficient quadratique (ordre 2)
     pub b: Complex64,
-    /// Coefficient cubique C: δ'_n ≈ A·δ + B·δ² + C·δ³
+    /// Coefficient cubique (ordre 3)
     pub c: Complex64,
+    /// Coefficient quartique (ordre 4)
+    pub d: Complex64,
 }
 
 impl Default for SeriesCoefficients {
     fn default() -> Self {
         Self {
-            a: Complex64::new(1.0, 0.0),
+            a: Complex64::new(0.0, 0.0),
             b: Complex64::new(0.0, 0.0),
             c: Complex64::new(0.0, 0.0),
+            d: Complex64::new(0.0, 0.0),
         }
     }
 }
@@ -35,15 +55,15 @@ impl Default for SeriesCoefficients {
 pub struct SeriesTable {
     /// Coefficients pour chaque itération (index = numéro d'itération)
     pub coeffs: Vec<SeriesCoefficients>,
-    /// Rayon de validité estimé pour chaque itération
-    pub validity_radii: Vec<f64>,
+    /// true si la table a été construite pour Julia (delta_0-series), false pour Mandelbrot (dc-series)
+    pub is_julia: bool,
 }
 
 impl SeriesTable {
     pub fn empty() -> Self {
         Self {
             coeffs: Vec::new(),
-            validity_radii: Vec::new(),
+            is_julia: false,
         }
     }
 
@@ -54,46 +74,46 @@ impl SeriesTable {
 
 /// Construit la table de série à partir de l'orbite de référence.
 ///
-/// Les coefficients évoluent selon les récurrences:
-/// - A_{n+1} = 2·z_n·A_n
-/// - B_{n+1} = 2·z_n·B_n + A_n²
-/// - C_{n+1} = 2·z_n·C_n + 2·A_n·B_n
-pub fn build_series_table(z_ref: &[Complex64]) -> SeriesTable {
+/// ## Mandelbrot (is_julia = false)
+///
+/// Récurrences dc-series (delta_0 = 0, variable = dc):
+///   a_{n+1} = 2*Z_n*a_n + 1          (a_0 = 0)
+///   b_{n+1} = 2*Z_n*b_n + a_n^2      (b_0 = 0)
+///   c_{n+1} = 2*Z_n*c_n + 2*a_n*b_n  (c_0 = 0)
+///   d_{n+1} = 2*Z_n*d_n + 2*a_n*c_n + b_n^2  (d_0 = 0)
+///
+/// ## Julia (is_julia = true)
+///
+/// Récurrences delta_0-series (delta_0 = dc, variable = delta_0):
+///   a_{n+1} = 2*Z_n*a_n              (a_0 = 1)
+///   b_{n+1} = 2*Z_n*b_n + a_n^2      (b_0 = 0)
+///   c_{n+1} = 2*Z_n*c_n + 2*a_n*b_n  (c_0 = 0)
+///   d_{n+1} = 2*Z_n*d_n + 2*a_n*c_n + b_n^2  (d_0 = 0)
+pub fn build_series_table(z_ref: &[Complex64], is_julia: bool) -> SeriesTable {
     if z_ref.is_empty() {
         return SeriesTable::empty();
     }
 
     let mut coeffs = Vec::with_capacity(z_ref.len());
-    let mut validity_radii = Vec::with_capacity(z_ref.len());
+    let zero = Complex64::new(0.0, 0.0);
+    let one = Complex64::new(1.0, 0.0);
 
-    // Initial coefficients: A_0 = 1, B_0 = 0, C_0 = 0
-    let mut a = Complex64::new(1.0, 0.0);
-    let mut b = Complex64::new(0.0, 0.0);
-    let mut c = Complex64::new(0.0, 0.0);
+    // Initial coefficients differ between Mandelbrot and Julia
+    let mut a = if is_julia { one } else { zero };  // Mandelbrot: a_0=0, Julia: a_0=1
+    let mut b = zero;
+    let mut c = zero;
+    let mut d = zero;
 
     for (i, &z_n) in z_ref.iter().enumerate() {
         // Store current coefficients
-        coeffs.push(SeriesCoefficients { a, b, c });
-
-        // Estimate validity radius based on coefficient growth
-        // When |A| grows too large, the series becomes unreliable
-        let a_norm = a.norm();
-        let b_norm = b.norm();
-        let validity = if a_norm > 1e-10 {
-            // Validity radius is approximately 1/|A| scaled by error tolerance
-            // We want |B·δ²| << |A·δ|, so |δ| << |A|/|B|
-            if b_norm > 1e-10 {
-                (a_norm / b_norm).min(1.0) * 0.1
-            } else {
-                1.0
-            }
-        } else {
-            1.0
-        };
-        validity_radii.push(validity.min(1.0).max(1e-20));
+        coeffs.push(SeriesCoefficients { a, b, c, d });
 
         // Early termination if coefficients explode
+        let a_norm = a.norm();
         if !a.re.is_finite() || !a.im.is_finite() || a_norm > 1e100 {
+            break;
+        }
+        if !b.re.is_finite() || !b.im.is_finite() {
             break;
         }
 
@@ -106,27 +126,40 @@ pub fn build_series_table(z_ref: &[Complex64]) -> SeriesTable {
         let two_z = z_n * 2.0;
         let a_sq = a * a;
         let two_ab = a * b * 2.0;
+        let two_ac = a * c * 2.0;
+        let b_sq = b * b;
 
-        // A_{n+1} = 2·z_n·A_n
-        let a_next = two_z * a;
-        // B_{n+1} = 2·z_n·B_n + A_n²
-        let b_next = two_z * b + a_sq;
-        // C_{n+1} = 2·z_n·C_n + 2·A_n·B_n
-        let c_next = two_z * c + two_ab;
-
-        a = a_next;
-        b = b_next;
-        c = c_next;
+        if is_julia {
+            // Julia: a_{n+1} = 2*Z_n*a_n  (no +1 term)
+            let a_next = two_z * a;
+            let b_next = two_z * b + a_sq;
+            let c_next = two_z * c + two_ab;
+            let d_next = two_z * d + two_ac + b_sq;
+            a = a_next;
+            b = b_next;
+            c = c_next;
+            d = d_next;
+        } else {
+            // Mandelbrot: a_{n+1} = 2*Z_n*a_n + 1  (the crucial +1 term!)
+            let a_next = two_z * a + one;
+            let b_next = two_z * b + a_sq;
+            let c_next = two_z * c + two_ab;
+            let d_next = two_z * d + two_ac + b_sq;
+            a = a_next;
+            b = b_next;
+            c = c_next;
+            d = d_next;
+        }
     }
 
-    SeriesTable { coeffs, validity_radii }
+    SeriesTable { coeffs, is_julia }
 }
 
 /// Résultat du calcul de saut de série
 pub struct SeriesSkipResult {
     /// Itération jusqu'à laquelle on peut sauter
     pub skip_to: usize,
-    /// Delta après le saut
+    /// Delta après le saut (pour chaque pixel, évaluer avec son propre dc)
     pub delta: ComplexExp,
     /// Erreur estimée de l'approximation
     pub estimated_error: f64,
@@ -134,78 +167,97 @@ pub struct SeriesSkipResult {
 
 /// Calcule le nombre d'itérations que l'on peut sauter avec l'approximation par série.
 ///
+/// Pour Mandelbrot: évalue delta_n = a_n*dc + b_n*dc^2 + c_n*dc^3 + d_n*dc^4
+///   où dc est l'offset du pixel par rapport au centre.
+///
+/// Pour Julia: évalue delta_n = a_n*delta_0 + b_n*delta_0^2 + c_n*delta_0^3 + d_n*delta_0^4
+///   où delta_0 = dc est le delta initial du pixel.
+///
+/// Dans les deux cas, l'argument `dc` est le "petit paramètre" de la série.
+///
 /// # Arguments
 /// * `table` - Table de coefficients de série
-/// * `delta_norm` - Norme du delta initial |δ|
+/// * `dc` - Offset pixel (dc pour Mandelbrot, delta_0 pour Julia)
 /// * `error_tolerance` - Tolérance d'erreur maximale acceptée
-/// * `dc` - Offset du pixel par rapport au centre (pour Mandelbrot)
-/// * `is_julia` - true si c'est un ensemble de Julia
 ///
 /// # Returns
 /// Option contenant le résultat du saut si possible, None sinon
 pub fn compute_series_skip(
     table: &SeriesTable,
-    delta: ComplexExp,
-    _dc: ComplexExp,
+    dc: ComplexExp,
     error_tolerance: f64,
-    _is_julia: bool,
 ) -> Option<SeriesSkipResult> {
     if table.is_empty() || error_tolerance <= 0.0 {
         return None;
     }
 
-    let delta_norm = delta.norm_sqr_approx().sqrt();
-    if delta_norm <= 0.0 || !delta_norm.is_finite() {
+    let dc_f64 = dc.to_complex64_approx();
+    let dc_norm = dc_f64.norm();
+    if dc_norm <= 0.0 || !dc_norm.is_finite() {
         return None;
     }
 
-    // Find the maximum iteration we can skip to
+    let dc_sq = dc_f64 * dc_f64;
+    let dc_cube = dc_sq * dc_f64;
+    let dc_4 = dc_sq * dc_sq;
+    let dc_norm_sq = dc_norm * dc_norm;
+
+    // Find the best (latest) iteration we can skip to.
+    // Strategy: scan forward, keep the last valid iteration where error is acceptable.
+    // Stop when the series diverges (error grows beyond tolerance).
     let mut best_skip = 0usize;
-    let mut best_delta = delta;
+    let mut best_approx = Complex64::new(0.0, 0.0);
     let mut best_error = f64::MAX;
 
-    for (n, (coeffs, &validity)) in table.coeffs.iter().zip(table.validity_radii.iter()).enumerate() {
-        // Check if delta is within validity radius
-        if delta_norm > validity {
-            break;
-        }
+    for (n, coeffs) in table.coeffs.iter().enumerate() {
+        // Evaluate series: delta_n = a_n*dc + b_n*dc^2 + c_n*dc^3 + d_n*dc^4
+        let approx = coeffs.a * dc_f64
+            + coeffs.b * dc_sq
+            + coeffs.c * dc_cube
+            + coeffs.d * dc_4;
 
-        // Compute approximated delta at iteration n:
-        // δ_n ≈ A_n·δ + B_n·δ² + C_n·δ³
-        let delta_f64 = delta.to_complex64_approx();
-        let delta_sq = delta_f64 * delta_f64;
-        let delta_cube = delta_sq * delta_f64;
+        // Estimate truncation error: O(dc^5) term
+        // Error ~ |next_coeff| * |dc|^5
+        // We approximate |next_coeff| from coefficient growth rate
+        let d_norm = coeffs.d.norm();
+        let c_norm = coeffs.c.norm();
 
-        let approx = coeffs.a * delta_f64 + coeffs.b * delta_sq + coeffs.c * delta_cube;
+        // Use ratio of consecutive coefficients to estimate next coefficient magnitude
+        let next_coeff_estimate = if c_norm > 1e-30 {
+            d_norm * d_norm / c_norm  // rough extrapolation
+        } else {
+            d_norm * dc_norm  // fallback
+        };
+        let dc_5 = dc_norm_sq * dc_norm_sq * dc_norm;
+        let error = next_coeff_estimate * dc_5;
 
-        // Note: For Mandelbrot, dc also contributes to the series. The correct
-        // formula requires separate recursive dc coefficients (D_0=0, D_{n+1}=2·z_n·D_n+1).
-        // Without those coefficients, we omit the dc contribution here. This means
-        // the series skip is only accurate when |dc| << |A_n·δ|, which is the common case
-        // for deep zooms where pixels are very close to the reference.
+        // Also check that the series hasn't diverged:
+        // the last term should be small relative to the total
+        let last_term_norm = (coeffs.d * dc_4).norm();
+        let approx_norm = approx.norm();
+        let term_ratio = if approx_norm > 1e-30 {
+            last_term_norm / approx_norm
+        } else {
+            last_term_norm
+        };
 
-        // Estimate error: O(δ^4) for cubic approximation
-        let delta_4 = delta_norm * delta_norm * delta_norm * delta_norm;
-        let a_norm = coeffs.a.norm();
-        let error = delta_4 * (1.0 + a_norm);
-
-        if error < error_tolerance && error < best_error {
+        if error < error_tolerance && term_ratio < 0.5 && approx.re.is_finite() && approx.im.is_finite() {
             best_skip = n;
-            best_delta = ComplexExp::from_complex64(approx);
+            best_approx = approx;
             best_error = error;
         }
 
-        // Stop if error is growing too fast
-        if error > error_tolerance * 100.0 {
+        // Stop scanning if the series is clearly diverging
+        if term_ratio > 1.0 || !approx.re.is_finite() || !approx.im.is_finite() {
             break;
         }
     }
 
-    // Only return if we can skip at least 1 iteration
-    if best_skip > 0 {
+    // Only return if we can skip at least 2 iterations (skipping 1 isn't worth the overhead)
+    if best_skip >= 2 {
         Some(SeriesSkipResult {
             skip_to: best_skip,
-            delta: best_delta,
+            delta: ComplexExp::from_complex64(best_approx),
             estimated_error: best_error,
         })
     } else {
@@ -247,13 +299,13 @@ pub fn should_use_series(config: SeriesConfig, delta_norm_sqr: f64, validity_rad
 /// Estimate the series approximation error.
 ///
 /// # Arguments
-/// * `delta_norm_sqr` - |δ|² of the current delta
+/// * `delta_norm_sqr` - |delta|^2 of the current delta
 /// * `order` - Series order (2, 3, 4, 5, or 6)
 /// * `bla_level` - BLA level (0-16), higher levels skip more iterations
 /// * `coeff_a_norm` - |A| coefficient norm from BLA node
 ///
 /// The error estimation accounts for:
-/// - Base truncation error O(δ^(order+1))
+/// - Base truncation error O(delta^(order+1))
 /// - Error accumulation from BLA level (more skipped iterations = more error)
 /// - Error amplification from coefficient A magnitude
 pub fn estimate_series_error(
@@ -268,22 +320,19 @@ pub fn estimate_series_error(
     let delta_abs = delta_norm_sqr.sqrt();
 
     // Base error according to series order
-    // L'erreur est O(δ^(order+1))
     let base_error = match order {
-        2 => delta_abs * delta_norm_sqr,                        // O(δ³)
-        3 => delta_norm_sqr * delta_norm_sqr,                   // O(δ⁴)
-        4 => delta_norm_sqr * delta_norm_sqr * delta_abs,       // O(δ⁵)
-        5 => delta_norm_sqr * delta_norm_sqr * delta_norm_sqr,  // O(δ⁶)
-        6 => delta_norm_sqr * delta_norm_sqr * delta_norm_sqr * delta_abs, // O(δ⁷)
+        2 => delta_abs * delta_norm_sqr,                        // O(delta^3)
+        3 => delta_norm_sqr * delta_norm_sqr,                   // O(delta^4)
+        4 => delta_norm_sqr * delta_norm_sqr * delta_abs,       // O(delta^5)
+        5 => delta_norm_sqr * delta_norm_sqr * delta_norm_sqr,  // O(delta^6)
+        6 => delta_norm_sqr * delta_norm_sqr * delta_norm_sqr * delta_abs, // O(delta^7)
         _ => delta_abs * delta_norm_sqr,  // Fallback to order 2
     };
 
     // Amplification factor based on BLA level
-    // Higher levels skip more iterations, accumulating more error
     let level_factor = 1.0 + (bla_level as f64) * 0.1;
 
     // Amplification factor from coefficient A
-    // Large coefficients amplify errors more
     let coeff_factor = if coeff_a_norm > 1.0 {
         1.0 + coeff_a_norm.ln()
     } else {
@@ -295,7 +344,8 @@ pub fn estimate_series_error(
 
 #[cfg(test)]
 mod tests {
-    use super::{estimate_series_error, should_use_series, SeriesConfig};
+    use super::*;
+    use num_complex::Complex64;
 
     #[test]
     fn series_activation_threshold() {
@@ -312,7 +362,6 @@ mod tests {
 
     #[test]
     fn series_error_estimate_behaves() {
-        // With level=0 and coeff_a_norm=1.0, behavior should be similar to before
         let err2 = estimate_series_error(1e-8, 2, 0, 1.0);
         let err3 = estimate_series_error(1e-8, 3, 0, 1.0);
         assert!(err3 <= err2);
@@ -325,7 +374,6 @@ mod tests {
         let err_level_5 = estimate_series_error(delta_norm_sqr, 2, 5, 1.0);
         let err_level_10 = estimate_series_error(delta_norm_sqr, 2, 10, 1.0);
 
-        // Higher BLA levels should produce higher error estimates
         assert!(err_level_5 > err_level_0);
         assert!(err_level_10 > err_level_5);
     }
@@ -337,7 +385,6 @@ mod tests {
         let err_coeff_10 = estimate_series_error(delta_norm_sqr, 2, 0, 10.0);
         let err_coeff_100 = estimate_series_error(delta_norm_sqr, 2, 0, 100.0);
 
-        // Larger coefficient norms should produce higher error estimates
         assert!(err_coeff_10 > err_coeff_1);
         assert!(err_coeff_100 > err_coeff_10);
     }
@@ -345,7 +392,6 @@ mod tests {
     #[test]
     fn series_error_small_coeff_no_amplification() {
         let delta_norm_sqr = 1e-8;
-        // Coefficients <= 1 should not amplify (coeff_factor = 1.0)
         let err_coeff_small = estimate_series_error(delta_norm_sqr, 2, 0, 0.5);
         let err_coeff_one = estimate_series_error(delta_norm_sqr, 2, 0, 1.0);
 
@@ -354,12 +400,92 @@ mod tests {
 
     #[test]
     fn series_error_invalid_inputs() {
-        // Order < 2 should return 0
         assert_eq!(estimate_series_error(1e-8, 1, 0, 1.0), 0.0);
         assert_eq!(estimate_series_error(1e-8, 0, 0, 1.0), 0.0);
-
-        // Non-finite delta should return 0
         assert_eq!(estimate_series_error(f64::NAN, 2, 0, 1.0), 0.0);
         assert_eq!(estimate_series_error(f64::INFINITY, 2, 0, 1.0), 0.0);
+    }
+
+    /// Verify that Mandelbrot dc-series coefficients are computed correctly.
+    /// For Mandelbrot at origin (Z_n = 0 for all n):
+    ///   a_0=0, a_1=1, a_2=1 (since 2*0*1 + 1 = 1)
+    ///   b_0=0, b_1=0, b_2=0 (since 2*0*0 + 0^2 = 0)
+    #[test]
+    fn mandelbrot_series_at_origin() {
+        // Reference orbit at the origin: z_0=0, z_1=0, z_2=0, ...
+        let z_ref = vec![Complex64::new(0.0, 0.0); 10];
+        let table = build_series_table(&z_ref, false);
+        assert!(!table.is_empty());
+        assert!(!table.is_julia);
+
+        // a_0 = 0 (initial for Mandelbrot)
+        assert!((table.coeffs[0].a.norm()) < 1e-10);
+        // a_1 = 2*Z_0*a_0 + 1 = 0 + 1 = 1
+        assert!((table.coeffs[1].a - Complex64::new(1.0, 0.0)).norm() < 1e-10);
+        // a_2 = 2*Z_1*a_1 + 1 = 0 + 1 = 1
+        assert!((table.coeffs[2].a - Complex64::new(1.0, 0.0)).norm() < 1e-10);
+    }
+
+    /// Verify that the Mandelbrot dc-series actually works:
+    /// For c = 0.1 (small dc), the series should approximate delta_n well.
+    #[test]
+    fn mandelbrot_series_skip_works() {
+        // Compute a reference orbit at center c=0
+        // Mandelbrot: z_{n+1} = z_n^2 + c, with c=0, z_0=0
+        // So z_n = 0 for all n (the orbit stays at origin)
+        let orbit_len = 50;
+        let z_ref = vec![Complex64::new(0.0, 0.0); orbit_len];
+        let table = build_series_table(&z_ref, false);
+
+        // For a pixel at dc = 0.1:
+        // delta_1 = dc = 0.1
+        // delta_2 = 0^2 + 0.1 = 0.1 (since z_ref=0, delta^2 + dc)
+        // Wait, actual iteration: delta_{n+1} = 2*Z_n*delta_n + delta_n^2 + dc
+        // With Z_n = 0: delta_{n+1} = delta_n^2 + dc
+        // delta_0 = 0
+        // delta_1 = 0 + 0.1 = 0.1
+        // delta_2 = 0.01 + 0.1 = 0.11
+        // delta_3 = 0.0121 + 0.1 = 0.1121
+        let dc = Complex64::new(0.1, 0.0);
+
+        // Verify series evaluation at iteration 1: a_1*dc = 1*0.1 = 0.1
+        let approx_1 = table.coeffs[1].a * dc;
+        assert!((approx_1 - Complex64::new(0.1, 0.0)).norm() < 1e-10);
+
+        // Verify series at iteration 2: a_2*dc + b_2*dc^2
+        // a_2 = 1, b_2 = 2*0*0 + 0^2 = 0, so approx = 0.1
+        // But actual delta_2 = 0.11, so at order 1 the error is 0.01 = dc^2
+        // The b coefficient should capture this at later iterations
+        let _approx_2 = table.coeffs[2].a * dc + table.coeffs[2].b * dc * dc;
+        // With Z_n=0: b_1 = 0, b_2 = 0 + 0 = 0, but we need more iterations
+        // for the quadratic term to build up
+
+        // Test compute_series_skip with a small dc
+        let small_dc = ComplexExp::from_complex64(Complex64::new(0.001, 0.0));
+        let result = compute_series_skip(&table, small_dc, 1e-9);
+        // With dc=0.001, the series should be able to skip several iterations
+        assert!(result.is_some(), "Series skip should work for small dc");
+        let skip = result.unwrap();
+        assert!(skip.skip_to >= 2, "Should skip at least 2 iterations, got {}", skip.skip_to);
+    }
+
+    /// Verify Julia delta_0-series matches the old behavior.
+    /// For Julia with Z_0 reference, the coefficients should satisfy:
+    ///   a_0 = 1, a_{n+1} = 2*Z_n*a_n (no +1 term)
+    #[test]
+    fn julia_series_coefficients() {
+        let z_ref = vec![
+            Complex64::new(0.5, 0.3),
+            Complex64::new(0.2, 0.1),
+            Complex64::new(0.4, -0.2),
+        ];
+        let table = build_series_table(&z_ref, true);
+        assert!(table.is_julia);
+
+        // a_0 = 1 for Julia
+        assert!((table.coeffs[0].a - Complex64::new(1.0, 0.0)).norm() < 1e-10);
+        // a_1 = 2*Z_0*a_0 = 2*(0.5+0.3i)*1 = 1.0+0.6i
+        let expected_a1 = Complex64::new(1.0, 0.6);
+        assert!((table.coeffs[1].a - expected_a1).norm() < 1e-10);
     }
 }

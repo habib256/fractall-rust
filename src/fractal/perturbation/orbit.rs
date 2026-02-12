@@ -394,8 +394,9 @@ pub fn compute_reference_orbit_cached(
                 && (pixel_count >= 16_384 || params.iteration_max >= 10_000)));
 
     let t_series = Instant::now();
+    let is_julia = params.fractal_type == FractalType::Julia;
     let series_table = if should_build_series {
-        Some(build_series_table(&orbit.z_ref_f64))
+        Some(build_series_table(&orbit.z_ref_f64, is_julia))
     } else {
         None
     };
