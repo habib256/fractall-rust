@@ -397,7 +397,7 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
         if prev.len() <= step {
             break;
         }
-        let mut current = Vec::with_capacity(prev.len() - step);
+        let mut current = Vec::with_capacity(prev.len() - step + 1);
         // Merging BLA Steps:
         // If T_x skips l_x iterations from iteration m_x when |z| < R_x
         // and T_y skips l_y iterations from iteration m_x + l_x when |z| < R_y,
@@ -407,6 +407,22 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
         // iteration 0 always corresponds to a non-linear perturbation step as Z=0.
         // For subsequent levels, we can start from 0 as we're merging already-merged BLAs.
         let start_idx = if level == 1 { 1 } else { 0 };
+        // Insert a dummy node at index 0 for level 1 so that level_nodes[n] maps
+        // to iteration n at all levels (not just level 0). The dummy node has
+        // validity_radius=0.0, so it will never be selected by the BLA lookup.
+        if level == 1 {
+            current.push(BlaNode {
+                a: zero,
+                b: zero,
+                c: zero,
+                d: zero,
+                e: zero,
+                validity_radius: 0.0,
+                burning_ship_valid: false,
+                sign_re: 1.0,
+                sign_im: 1.0,
+            });
+        }
         for i in start_idx..(prev.len() - step) {
             let node1 = prev[i];      // T_x: skips l_x = step iterations from m_x = i
             let node2 = prev[i + step];  // T_y: skips l_y = step iterations from m_x + l_x = i + step
@@ -566,13 +582,22 @@ pub fn build_bla_table_nonconformal(ref_orbit: &[Complex64], params: &FractalPar
         if prev.len() <= step {
             break;
         }
-        let mut current = Vec::with_capacity(prev.len() - step);
+        let mut current = Vec::with_capacity(prev.len() - step + 1);
         // Start merge from iteration 1 for first level
         let start_idx = if level == 1 { 1 } else { 0 };
+        // Insert a dummy node at index 0 for level 1 so that level_nodes[n] maps
+        // to iteration n at all levels. The dummy node has validity_radius=0.0.
+        if level == 1 {
+            current.push(BlaNodeNonConformal {
+                a: Matrix2x2::zero(),
+                b: Matrix2x2::zero(),
+                validity_radius: 0.0,
+            });
+        }
         for i in start_idx..(prev.len() - step) {
             let node1 = prev[i];
             let node2 = prev[i + step];
-            
+
             // Merge using non-conformal formula
             let (az, bz, rz) = merge_nonconformal_bla(
                 node1.a,

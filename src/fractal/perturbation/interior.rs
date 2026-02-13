@@ -103,6 +103,19 @@ impl ExtendedDualComplex {
         }
     }
 
+    /// Apply sign transformation for Burning Ship BLA perturbation.
+    /// Multiplies real parts by sign_re and imaginary parts by sign_im
+    /// for both value and all dual components.
+    pub fn mul_signed(self, sign_re: f64, sign_im: f64) -> Self {
+        Self {
+            value: Complex64::new(self.value.re * sign_re, self.value.im * sign_im),
+            dual_re: Complex64::new(self.dual_re.re * sign_re, self.dual_re.im * sign_im),
+            dual_im: Complex64::new(self.dual_im.re * sign_re, self.dual_im.im * sign_im),
+            dual_z1_re: Complex64::new(self.dual_z1_re.re * sign_re, self.dual_z1_re.im * sign_im),
+            dual_z1_im: Complex64::new(self.dual_z1_im.re * sign_re, self.dual_z1_im.im * sign_im),
+        }
+    }
+
     /// Norme au carré de la valeur
     pub fn norm_sqr(self) -> f64 {
         self.value.norm_sqr()

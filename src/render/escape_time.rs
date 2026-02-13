@@ -5,7 +5,7 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 use rug::Float;
 
-use crate::fractal::{AlgorithmMode, FractalParams, FractalResult, FractalType, PlaneTransform};
+use crate::fractal::{AlgorithmMode, FractalParams, FractalResult, FractalType, OutColoringMode, PlaneTransform};
 use crate::fractal::iterations::iterate_point;
 use crate::fractal::orbit_traps::OrbitData;
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
@@ -150,10 +150,10 @@ fn render_escape_time_f64(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
         .zip(zs.par_chunks_mut(width))
         .enumerate()
         .for_each(|(j, (iter_row, z_row))| {
-            let y_ratio = j as f64 / params.height as f64;
+            let y_ratio = (j as f64 + 0.5) / params.height as f64;
             let yg = params.center_y + (y_ratio - 0.5) * params.span_y;
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
-                let x_ratio = i as f64 / params.width as f64;
+                let x_ratio = (i as f64 + 0.5) / params.width as f64;
                 let xg = params.center_x + (x_ratio - 0.5) * params.span_x;
                 let z_pixel = Complex64::new(xg, yg);
                 let z_pixel = params.plane_transform.transform(z_pixel);
@@ -239,15 +239,17 @@ fn render_escape_time_gmp(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
         .zip(zs.par_chunks_mut(width))
         .enumerate()
         .for_each(|(j, (iter_row, z_row))| {
-            let j_f = Float::with_val(prec, j as u32);
-            let mut y_ratio = j_f.clone();
+            let mut j_f = Float::with_val(prec, j as u32);
+            j_f += &half;
+            let mut y_ratio = j_f;
             y_ratio /= &height_f;
             y_ratio -= &half;
             let mut yg = span_y.clone();
             yg *= &y_ratio;
             yg += &center_y;
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
-                let i_f = Float::with_val(prec, i as u32);
+                let mut i_f = Float::with_val(prec, i as u32);
+                i_f += &half;
                 let mut x_ratio = i_f;
                 x_ratio /= &width_f;
                 x_ratio -= &half;
@@ -279,6 +281,16 @@ fn build_reuse<'a>(
     params: &FractalParams,
     reuse: Option<(&'a [u32], &'a [Complex64], u32, u32)>,
 ) -> Option<ReuseData<'a>> {
+    // Disable pixel reuse for coloring modes that need per-pixel orbit/distance data,
+    // since reused pixels don't carry this data and would create checkerboard artifacts.
+    let needs_extra_data = matches!(
+        params.out_coloring_mode,
+        OutColoringMode::Distance | OutColoringMode::DistanceAO | OutColoringMode::Distance3D
+        | OutColoringMode::OrbitTraps | OutColoringMode::Wings
+    );
+    if needs_extra_data {
+        return None;
+    }
     let (iterations, zs, width, height) = reuse?;
     if width == 0 || height == 0 {
         return None;
@@ -567,7 +579,7 @@ fn render_escape_time_f64_cancellable_with_reuse(
                 return;
             }
 
-            let y_ratio = j as f64 / params.height as f64;
+            let y_ratio = (j as f64 + 0.5) / params.height as f64;
             let yg = params.center_y + (y_ratio - 0.5) * params.span_y;
             for (i, (((iter, z), orbit_cell), dist_cell)) in iter_row
                 .iter_mut()
@@ -589,7 +601,7 @@ fn render_escape_time_f64_cancellable_with_reuse(
                         }
                     }
                 }
-                let x_ratio = i as f64 / params.width as f64;
+                let x_ratio = (i as f64 + 0.5) / params.width as f64;
                 let xg = params.center_x + (x_ratio - 0.5) * params.span_x;
                 let z_pixel = Complex64::new(xg, yg);
                 let z_pixel = params.plane_transform.transform(z_pixel);
@@ -715,8 +727,9 @@ fn render_escape_time_gmp_cancellable_with_reuse(
                 return;
             }
 
-            let j_f = Float::with_val(prec, j as u32);
-            let mut y_ratio = j_f.clone();
+            let mut j_f = Float::with_val(prec, j as u32);
+            j_f += &half;
+            let mut y_ratio = j_f;
             y_ratio /= &height_f;
             y_ratio -= &half;
             let mut yg = span_y.clone();
@@ -736,7 +749,8 @@ fn render_escape_time_gmp_cancellable_with_reuse(
                         }
                     }
                 }
-                let i_f = Float::with_val(prec, i as u32);
+                let mut i_f = Float::with_val(prec, i as u32);
+                i_f += &half;
                 let mut x_ratio = i_f;
                 x_ratio /= &width_f;
                 x_ratio -= &half;

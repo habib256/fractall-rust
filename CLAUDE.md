@@ -373,14 +373,14 @@ Note: les raccourcis +/=/-/0 sont desactives en mode preview Julia.
 
 **Parallelisme CPU**: rayon (par_chunks_mut) pour le calcul des pixels. AtomicBool pour signaler l'annulation.
 
-## Bugs connus restants (non corriges)
+## Bugs corriges recemment
 
-Les bugs suivants ont ete identifies mais necessitent une analyse plus approfondie:
+Les bugs suivants ont ete corriges:
 
-1. **BLA table off-by-one** (`perturbation/bla.rs`): `start_idx=1` au level 1 cause un decalage d'index entre la table BLA et les requetes `level_nodes[n]`. Impact visible aux zooms profonds.
-2. **GMP perturbation z_ref stale** (`perturbation/delta.rs:885-1062`): `iterate_pixel_gmp` utilise `z_ref[n]` apres avoir calcule `delta_{n+1}`. Le compteur `n` est incremente trop tard.
-3. **Burning Ship BLA sign manquant en dual-number** (`perturbation/delta.rs:1233-1238`): La transformation de signe pour Burning Ship n'est pas appliquee dans le path dual-number (distance estimation).
-4. **Fausse detection interieur avec perturbation** (`gui/app.rs`): `interior_flag_encoded` infere la detection interieur depuis `!distances.is_empty()` mais la perturbation alloue toujours un vecteur distances.
-5. **Reuse progressif sans orbit/distance** (`render/escape_time.rs`): Les pixels reutilises n'ont pas de donnees orbit/distance, causant un motif damier avec Distance/OrbitTraps.
-6. **Coordonnees pixel asymetriques** (`render/escape_time.rs`): Le mapping `i/width` au lieu de `(i+0.5)/width` cree un decalage d'un demi-pixel.
-7. **Preview palette ignore color space** (`color/palettes.rs`): `generate_palette_preview` utilise toujours RGB, pas HSB/LCH.
+1. **BLA table off-by-one** (`perturbation/bla.rs`): Insertion d'un noeud dummy a l'index 0 du level 1 pour aligner index=iteration a tous les niveaux.
+2. **GMP perturbation z_ref stale** (`perturbation/delta.rs`): Increment de `n` avant les checks bailout/rebase/glitch, utilisation de `z_ref[n+1]` pour le calcul correct de z_curr.
+3. **Burning Ship BLA sign en dual-number** (`perturbation/delta.rs`, `interior.rs`): Ajout de `mul_signed()` a ExtendedDualComplex, appliquee dans le path BLA dual.
+4. **Detection interieur avec perturbation** (`gui/app.rs`): Simplifie `interior_flag_encoded` pour ne dependre que de `enable_interior_detection`.
+5. **Reuse progressif sans orbit/distance** (`render/escape_time.rs`, `perturbation/mod.rs`): Desactive le pixel reuse pour les modes Distance/OrbitTraps/Wings.
+6. **Coordonnees pixel centrees** (`render/escape_time.rs`, `perturbation/mod.rs`): Mapping `(i+0.5)/width` pour centrer les pixels.
+7. **Preview palette avec color space** (`color/palettes.rs`): `generate_palette_preview` utilise `gradient_interpolate_with_space`.

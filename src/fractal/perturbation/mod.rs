@@ -88,7 +88,7 @@ use std::time::Instant;
 use num_complex::Complex64;
 use rayon::prelude::*;
 
-use crate::fractal::{FractalParams, FractalType};
+use crate::fractal::{FractalParams, FractalType, OutColoringMode};
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
 use crate::fractal::perturbation::delta::{iterate_pixel, iterate_pixel_gmp};
 use crate::fractal::perturbation::orbit::{compute_reference_orbit_cached, compute_reference_orbit};
@@ -291,6 +291,16 @@ fn build_reuse<'a>(
     params: &FractalParams,
     reuse: Option<(&'a [u32], &'a [Complex64], u32, u32)>,
 ) -> Option<ReuseData<'a>> {
+    // Disable pixel reuse for coloring modes that need per-pixel orbit/distance data,
+    // since reused pixels don't carry this data and would create checkerboard artifacts.
+    let needs_extra_data = matches!(
+        params.out_coloring_mode,
+        OutColoringMode::Distance | OutColoringMode::DistanceAO | OutColoringMode::Distance3D
+        | OutColoringMode::OrbitTraps | OutColoringMode::Wings
+    );
+    if needs_extra_data {
+        return None;
+    }
     let (iterations, zs, width, height) = reuse?;
     if width == 0 || height == 0 {
         return None;
@@ -465,9 +475,11 @@ pub fn compute_dc_gmp(
         }
     }
     
-    // dc_re = (i/width - 0.5) * x_range
-    let i_float = Float::with_val(prec, i as f64);
-    let j_float = Float::with_val(prec, j as f64);
+    // dc_re = ((i+0.5)/width - 0.5) * x_range  (center of pixel)
+    let mut i_float = Float::with_val(prec, i as f64);
+    i_float += &half;
+    let mut j_float = Float::with_val(prec, j as f64);
+    j_float += &half;
     let mut x_ratio = Float::with_val(prec, &i_float * &inv_width);
     let mut y_ratio = Float::with_val(prec, &j_float * &inv_height);
     x_ratio -= &half;
@@ -624,10 +636,10 @@ pub fn render_perturbation_with_cache(
     // Pré-calcul dc pour amortir le coût par pixel (surtout utile sur petites images).
     // Stocker directement en FloatExp pour éviter les conversions via Complex64.
     let dc_re_fexp: Vec<FloatExp> = (0..width)
-        .map(|i| FloatExp::from_f64((i as f64 * inv_width - 0.5) * x_range))
+        .map(|i| FloatExp::from_f64(((i as f64 + 0.5) * inv_width - 0.5) * x_range))
         .collect();
     let dc_im_fexp: Vec<FloatExp> = (0..height)
-        .map(|j| FloatExp::from_f64((j as f64 * inv_height - 0.5) * y_range))
+        .map(|j| FloatExp::from_f64(((j as f64 + 0.5) * inv_height - 0.5) * y_range))
         .collect();
 
     let t_pixels_start = Instant::now();
@@ -824,10 +836,10 @@ pub fn render_perturbation_with_cache(
                         let px = idx % width;
                         let py = idx / width;
 
-                        // Compute dc relative to secondary center
-                        let dc_re = (px as f64 * inv_width - 0.5) * x_range
+                        // Compute dc relative to secondary center (pixel center = (px+0.5)/width)
+                        let dc_re = ((px as f64 + 0.5) * inv_width - 0.5) * x_range
                             - (cluster.center_x - params.center_x);
-                        let dc_im = (py as f64 * inv_height - 0.5) * y_range
+                        let dc_im = ((py as f64 + 0.5) * inv_height - 0.5) * y_range
                             - (cluster.center_y - params.center_y);
 
                         let dc = ComplexExp::from_complex64(Complex64::new(dc_re, dc_im));
@@ -1220,8 +1232,9 @@ mod tests {
         for &(x, y) in indices {
             let idx = (y * params.width + x) as usize;
             // Utiliser center+span directement pour éviter les problèmes de précision
-            let x_ratio = x as f64 / params.width as f64;
-            let y_ratio = y as f64 / params.height as f64;
+            // +0.5 pour centrer sur le pixel (même convention que le rendu)
+            let x_ratio = (x as f64 + 0.5) / params.width as f64;
+            let y_ratio = (y as f64 + 0.5) / params.height as f64;
             let xg = params.center_x + (x_ratio - 0.5) * params.span_x;
             let yg = params.center_y + (y_ratio - 0.5) * params.span_y;
             let z_pixel = Complex64::new(xg, yg);
