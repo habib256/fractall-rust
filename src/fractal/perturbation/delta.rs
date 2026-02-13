@@ -13,6 +13,24 @@ use crate::fractal::perturbation::series::{
 };
 use crate::fractal::perturbation::distance::{DualComplex, compute_distance_estimate, transform_pixel_to_complex};
 use crate::fractal::perturbation::interior::{ExtendedDualComplex, is_interior};
+use crate::fractal::perturbation::nonconformal::Matrix2x2;
+
+/// Applies a 2×2 real matrix to all components (value + duals) of an ExtendedDualComplex.
+/// Used for non-conformal fractal formulas (Tricorn) where the Jacobian is a real 2×2 matrix.
+fn apply_nonconformal_matrix(m: Matrix2x2, dual: ExtendedDualComplex) -> ExtendedDualComplex {
+    let (v_re, v_im) = m.mul_vector(dual.value.re, dual.value.im);
+    let (dre_re, dre_im) = m.mul_vector(dual.dual_re.re, dual.dual_re.im);
+    let (dim_re, dim_im) = m.mul_vector(dual.dual_im.re, dual.dual_im.im);
+    let (dz1re_re, dz1re_im) = m.mul_vector(dual.dual_z1_re.re, dual.dual_z1_re.im);
+    let (dz1im_re, dz1im_im) = m.mul_vector(dual.dual_z1_im.re, dual.dual_z1_im.im);
+    ExtendedDualComplex {
+        value: Complex64::new(v_re, v_im),
+        dual_re: Complex64::new(dre_re, dre_im),
+        dual_im: Complex64::new(dim_re, dim_im),
+        dual_z1_re: Complex64::new(dz1re_re, dz1re_im),
+        dual_z1_im: Complex64::new(dz1im_re, dz1im_im),
+    }
+}
 
 fn rebase_stride() -> u32 {
     static STRIDE: OnceLock<u32> = OnceLock::new();
@@ -41,17 +59,17 @@ pub struct DeltaResult {
     pub phase_changed: bool,
 }
 
-/// Calcule diffabs(c, d) = d/dd |c + d|
-/// 
-/// Cette fonction calcule la dérivée de |c + d| par rapport à d.
-/// Utilisée pour Burning Ship où on a besoin de la dérivée de |x|.
-/// 
+/// Calcule diffabs(c, d) = |c + d| - |c|
+///
+/// Cette fonction calcule la différence |c + d| - |c| de manière stable.
+/// Utilisée pour Burning Ship où on a besoin de la variation de |x|.
+///
 /// # Arguments
 /// * `c` - Valeur de référence (haute précision)
 /// * `d` - Delta (basse précision)
-/// 
+///
 /// # Returns
-/// La dérivée de |c + d| par rapport à d
+/// La différence |c + d| - |c|
 /// 
 /// # Formule
 /// ```
@@ -1207,7 +1225,18 @@ pub(crate) fn iterate_pixel_with_duals(
     
     while n < max_iter {
         let mut stepped = false;
-        
+
+        // Rebase if we've reached the end of the effective orbit
+        if n >= effective_len {
+            let last_idx = effective_len.saturating_sub(1);
+            let z_ref = ref_orbit.get_z_ref_f64(last_idx).unwrap_or_else(|| {
+                ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+            });
+            // Rebase: update value to full z_curr, duals are preserved (z_ref is constant)
+            delta_dual.value = z_ref + delta_dual.value;
+            n = 0;
+        }
+
         // Check interior detection
         if enable_interior {
             if is_interior(delta_dual, params.interior_threshold) {
@@ -1226,7 +1255,7 @@ pub(crate) fn iterate_pixel_with_duals(
                 };
             }
         }
-        
+
         // Try BLA for conformal fractals
         if !is_tricorn && !bla_table.levels.is_empty() {
             let delta_norm_sqr = delta_dual.norm_sqr();
@@ -1281,14 +1310,11 @@ pub(crate) fn iterate_pixel_with_duals(
                         let node = &level_nodes[n as usize];
                         
                         if delta_norm_sqr_check < node.validity_radius * node.validity_radius {
-                            // Apply non-conformal BLA
-                            let dc_vec = (dc_dual.value.re, dc_dual.value.im);
-                            let linear_vec = node.a.mul_vector(delta_vec.0, delta_vec.1);
-                            let dc_term_vec = node.b.mul_vector(dc_vec.0, dc_vec.1);
-                            let next_vec = (linear_vec.0 + dc_term_vec.0, linear_vec.1 + dc_term_vec.1);
-                            
-                            // Update value (simplified - full dual propagation through matrices would be more complex)
-                            delta_dual.value = Complex64::new(next_vec.0, next_vec.1);
+                            // Apply non-conformal BLA with full dual propagation
+                            // z_{n+l} = A·z_n + B·dc (2×2 real matrices applied to all components)
+                            let linear_dual = apply_nonconformal_matrix(node.a, delta_dual);
+                            let dc_term_dual = apply_nonconformal_matrix(node.b, dc_dual);
+                            delta_dual = linear_dual.add(dc_term_dual);
                             n += 1u32 << level;
                             stepped = true;
                             break;
@@ -1302,142 +1328,124 @@ pub(crate) fn iterate_pixel_with_duals(
             // Standard perturbation iteration with dual propagation
             if is_burning_ship {
                 // Burning Ship: z' = (|Re(z)| + i|Im(z)|)² + c
+                // Perturbation: delta' = 2·z_abs·delta_diffabs + delta_diffabs² + dc
+                // where z_abs = (|Re(z_ref)|, |Im(z_ref)|)
+                //       delta_diffabs = (diffabs(Re(z_ref), Re(delta)), diffabs(Im(z_ref), Im(delta)))
                 //
-                // For non-complex-analytic formulas (like Burning Ship), you can use dual numbers
-                // with two dual parts, for each of the real and imaginary components. At the end they
-                // can be combined into a Jacobian matrix and used in the (directional) distance estimate
-                // formula for general iterations.
-                //
-                // Note: Current implementation is simplified - dual propagation for Burning Ship does not
-                // fully implement the Jacobian matrix approach. The absolute value operations create
-                // discontinuities that require special handling in the dual propagation. A full implementation
-                // would require propagating duals through the absolute value operations and combining into
-                // a Jacobian matrix for distance estimation.
+                // Dual propagation through abs(): d|x|/dk = sign(x) · dx/dk
+                // Applied via sign of z_curr = z_ref + delta (not z_ref)
                 let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
                     ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
                 });
-                let z_ref_dual = ExtendedDualComplex::from_complex(z_ref);
-                let z_curr_dual = z_ref_dual.add(delta_dual);
-                // For Burning Ship, we'd compute |z|² with duals
-                // Simplified: use standard path (duals not fully propagated through abs() operations)
-                let z_curr = z_curr_dual.value;
-                let re_abs = z_curr.re.abs();
-                let im_abs = z_curr.im.abs();
-                let z_abs_sq = Complex64::new(re_abs * re_abs - im_abs * im_abs, 2.0 * re_abs * im_abs);
-                let z_next = z_abs_sq + ref_orbit.cref + dc_dual.value;
-                // Hybrid BLA: rebase when reaching end of effective orbit for current phase
-                let effective_len = ref_orbit.effective_len() as u32;
-                if (n + 1) >= effective_len {
-                    // Rebase: delta_dual = z_next (which is z_curr for next iteration), reset n to 0
-                    // In Hybrid BLA, this switches to the reference for the current phase
-                    delta_dual = ExtendedDualComplex::from_complex(z_next);
-                    n = 0;
-                    continue;
-                }
-                let z_ref_next = ref_orbit.get_z_ref_f64(n + 1).unwrap_or_else(|| {
-                    ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
-                });
-                delta_dual = ExtendedDualComplex::from_complex(z_next - z_ref_next);
+                let z_curr_value = z_ref + delta_dual.value;
+                let sign_re = if z_curr_value.re >= 0.0 { 1.0 } else { -1.0 };
+                let sign_im = if z_curr_value.im >= 0.0 { 1.0 } else { -1.0 };
+
+                // delta_diffabs: value via diffabs, duals via sign(z_curr)
+                let delta_diffabs = ExtendedDualComplex {
+                    value: Complex64::new(
+                        diffabs(z_ref.re, delta_dual.value.re),
+                        diffabs(z_ref.im, delta_dual.value.im),
+                    ),
+                    dual_re: Complex64::new(delta_dual.dual_re.re * sign_re, delta_dual.dual_re.im * sign_im),
+                    dual_im: Complex64::new(delta_dual.dual_im.re * sign_re, delta_dual.dual_im.im * sign_im),
+                    dual_z1_re: Complex64::new(delta_dual.dual_z1_re.re * sign_re, delta_dual.dual_z1_re.im * sign_im),
+                    dual_z1_im: Complex64::new(delta_dual.dual_z1_im.re * sign_re, delta_dual.dual_z1_im.im * sign_im),
+                };
+
+                // z_abs = (|Re(z_ref)|, |Im(z_ref)|) — constant, zero derivatives
+                let z_abs = Complex64::new(z_ref.re.abs(), z_ref.im.abs());
+                let z_abs_2_dual = ExtendedDualComplex::from_complex(z_abs * 2.0);
+
+                // delta' = 2·z_abs·delta_diffabs + delta_diffabs² + dc
+                let linear = z_abs_2_dual.mul(delta_diffabs);
+                let nonlinear = delta_diffabs.square();
+                delta_dual = if is_julia {
+                    linear.add(nonlinear)
+                } else {
+                    linear.add(nonlinear).add(dc_dual)
+                };
                 n += 1;
             } else if is_multibrot {
                 // Multibrot: z^d + c
+                // Perturbation: delta' ≈ d·Z^(d-1)·delta + d(d-1)/2·Z^(d-2)·delta² + dc
                 let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
                     ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
                 });
-                let z_ref_dual = ExtendedDualComplex::from_complex(z_ref);
-                let z_curr_dual = z_ref_dual.add(delta_dual);
                 let d = multibrot_power;
-                let z_norm = z_curr_dual.value.norm();
+                let z_norm = z_ref.norm();
                 if z_norm > 1e-15 {
-                    // Simplified: use standard computation
-                    let z_pow = z_curr_dual.value.powf(d);
-                    let z_next = z_pow + ref_orbit.cref + dc_dual.value;
-                    // Hybrid BLA: rebase when reaching end of effective orbit for current phase
-                    let effective_len = ref_orbit.effective_len() as u32;
-                    if (n + 1) >= effective_len {
-                        // Rebase: switch to reference for current phase
-                        delta_dual = ExtendedDualComplex::from_complex(z_next);
-                        n = 0;
-                        continue;
-                    }
-                    let z_ref_next = ref_orbit.get_z_ref_f64(n + 1).unwrap_or_else(|| {
-                        ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
-                    });
-                    delta_dual = ExtendedDualComplex::from_complex(z_next - z_ref_next);
+                    // Linear coefficient A = d·Z^(d-1) — constant, zero derivatives
+                    let a = z_ref.powf(d - 1.0) * d;
+                    let a_dual = ExtendedDualComplex::from_complex(a);
+                    let linear = a_dual.mul(delta_dual);
+
+                    // Quadratic coefficient C = d(d-1)/2·Z^(d-2) — constant, zero derivatives
+                    let c_coeff = d * (d - 1.0) / 2.0;
+                    let c_val = z_ref.powf(d - 2.0) * c_coeff;
+                    let c_dual = ExtendedDualComplex::from_complex(c_val);
+                    let nonlinear = c_dual.mul(delta_dual.square());
+
+                    delta_dual = if is_julia {
+                        linear.add(nonlinear)
+                    } else {
+                        linear.add(nonlinear).add(dc_dual)
+                    };
                 } else {
                     delta_dual = dc_dual;
                 }
                 n += 1;
             } else if is_tricorn {
                 // Tricorn: z' = conj(z)² + c
-                // Use non-conformal matrices for perturbation
-                //
-                // For non-complex-analytic formulas (like Mandelbar/Tricorn), you can use dual numbers
-                // with two dual parts, for each of the real and imaginary components. At the end they
-                // can be combined into a Jacobian matrix and used in the (directional) distance estimate
-                // formula for general iterations.
-                //
-                // Note: Current implementation is simplified - dual propagation for Tricorn does not fully
-                // implement the Jacobian matrix approach. The duals are not correctly propagated through
-                // the non-conformal matrix operations. A full implementation would require:
-                // 1. Propagating dual_re and dual_im through 2×2 real matrices (Jacobian)
-                // 2. Combining the results into a proper distance estimate using the Jacobian norm
+                // Perturbation: delta' = A·delta + conj(delta)² + dc
+                // A = [[2X, -2Y], [-2Y, -2X]] where X=Re(z_ref), Y=Im(z_ref)
+                // Duals propagated through real 2×2 Jacobian matrices
                 let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
                     ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
                 });
                 let coeffs = crate::fractal::perturbation::nonconformal::compute_tricorn_bla_coefficients(z_ref);
-                let delta_vec = (delta_dual.value.re, delta_dual.value.im);
-                let linear_vec = coeffs.a.mul_vector(delta_vec.0, delta_vec.1);
-                // Nonlinear term: conj(δ)² = (δ_re - i·δ_im)² = (δ_re² - δ_im²) - i·2·δ_re·δ_im
-                let delta_conj_sq_re = delta_vec.0 * delta_vec.0 - delta_vec.1 * delta_vec.1;
-                let delta_conj_sq_im = -2.0 * delta_vec.0 * delta_vec.1;
-                let dc_vec = (dc_dual.value.re, dc_dual.value.im);
-                let dc_term_vec = coeffs.b.mul_vector(dc_vec.0, dc_vec.1);
-                let next_vec = (
-                    linear_vec.0 + delta_conj_sq_re + dc_term_vec.0,
-                    linear_vec.1 + delta_conj_sq_im + dc_term_vec.1,
-                );
-                // Update value, keep duals (simplified - full implementation would propagate duals
-                // through 2×2 real matrices and combine into Jacobian for distance estimation)
-                delta_dual.value = Complex64::new(next_vec.0, next_vec.1);
+
+                // Linear term: A·delta (with full dual propagation through 2×2 matrix)
+                let linear_dual = apply_nonconformal_matrix(coeffs.a, delta_dual);
+
+                // Nonlinear term: conj(δ)² = (d_re²-d_im², -2·d_re·d_im)
+                // Jacobian of conj(δ)²: J = [[2·d_re, -2·d_im], [-2·d_im, -2·d_re]]
+                let d_re = delta_dual.value.re;
+                let d_im = delta_dual.value.im;
+                let nonlin_jacobian = Matrix2x2 {
+                    m00: 2.0 * d_re, m01: -2.0 * d_im,
+                    m10: -2.0 * d_im, m11: -2.0 * d_re,
+                };
+                let mut nonlin_dual = apply_nonconformal_matrix(nonlin_jacobian, delta_dual);
+                // Override value: Jacobian gives 2×(conj(δ)²), but actual value is conj(δ)²
+                nonlin_dual.value = Complex64::new(d_re * d_re - d_im * d_im, -2.0 * d_re * d_im);
+
+                // dc term: B·dc (B = identity, propagated through matrix)
+                delta_dual = if is_julia {
+                    linear_dual.add(nonlin_dual)
+                } else {
+                    let dc_term_dual = apply_nonconformal_matrix(coeffs.b, dc_dual);
+                    linear_dual.add(nonlin_dual).add(dc_term_dual)
+                };
                 n += 1;
             } else {
-                // Mandelbrot/Julia: z² + c
-                // Use dual propagation: (z_ref + delta)² = z_ref² + 2·z_ref·delta + delta²
+                // Mandelbrot/Julia: delta_{n+1} = 2·Z_n·delta_n + delta_n² + dc
+                // Standard perturbation formula avoids precision-losing subtraction z_next - z_ref_next
                 let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
                     ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
                 });
-                let z_ref_dual = ExtendedDualComplex::from_complex(z_ref);
-                let z_curr_dual = z_ref_dual.add(delta_dual);
-                
-                // z² with dual propagation
-                let z_sq_dual = z_curr_dual.square();
-                
-                // Add c (cref + dc)
-                let c_dual = if is_julia {
-                    ExtendedDualComplex::from_complex(params.seed)
+                // 2·Z_n is a constant (zero derivatives)
+                let z_ref_2_dual = ExtendedDualComplex::from_complex(z_ref * 2.0);
+                // Linear term: 2·Z_n·delta (propagates duals: 2·Z_n·d(delta)/dk)
+                let linear = z_ref_2_dual.mul(delta_dual);
+                // Nonlinear term: delta² (propagates duals: 2·delta·d(delta)/dk)
+                let nonlinear = delta_dual.square();
+                // delta_{n+1} = linear + nonlinear [+ dc]
+                delta_dual = if is_julia {
+                    linear.add(nonlinear)
                 } else {
-                    let cref_dual = ExtendedDualComplex::from_complex(ref_orbit.cref);
-                    cref_dual.add(dc_dual)
+                    linear.add(nonlinear).add(dc_dual)
                 };
-                
-                let z_next_dual = z_sq_dual.add(c_dual);
-                
-                // Calculate delta for next iteration: z_next - z_ref_next
-                // Hybrid BLA: if we reach the end of the effective orbit, rebase instead of breaking
-                let effective_len = ref_orbit.effective_len() as u32;
-                if (n + 1) >= effective_len {
-                    // Rebase: delta_dual = z_next_dual (which is z_curr for next iteration), reset n to 0
-                    // In Hybrid BLA, this switches to the reference for the current phase
-                    delta_dual = z_next_dual;
-                    n = 0;
-                    continue;
-                }
-                let z_ref_next = ref_orbit.get_z_ref_f64(n + 1).unwrap_or_else(|| {
-                    ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
-                });
-                let z_ref_next_dual = ExtendedDualComplex::from_complex(z_ref_next);
-                delta_dual = z_next_dual.add(z_ref_next_dual.scale(-1.0));
                 n += 1;
             }
         }
@@ -1499,6 +1507,15 @@ pub(crate) fn iterate_pixel_with_duals(
                 is_interior: false,
                 phase_changed: false,
             };
+        }
+
+        // Rebasing: when |z_curr| < |delta|, replace delta with z_curr and reset n
+        // Duals are preserved because z_ref is constant (no dependence on pixel coords or z1)
+        let z_curr_norm_sqr = z_curr.norm_sqr();
+        if z_curr_norm_sqr > 0.0 && delta_norm_sqr > 0.0 && z_curr_norm_sqr < delta_norm_sqr {
+            delta_dual.value = z_curr;
+            n = 0;
+            continue;
         }
     }
     
