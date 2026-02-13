@@ -120,9 +120,9 @@ pub fn detect_glitch_clusters(
             let avg_x = sum_x as f64 / cluster.len() as f64;
             let avg_y = sum_y as f64 / cluster.len() as f64;
 
-            // Convertir les coordonnées pixel en coordonnées complexes
-            cluster.center_x = params.center_x + (avg_x / w as f64 - 0.5) * params.span_x;
-            cluster.center_y = params.center_y + (avg_y / h as f64 - 0.5) * params.span_y;
+            // Convertir les coordonnées pixel en coordonnées complexes (pixel center = (idx+0.5)/size)
+            cluster.center_x = params.center_x + ((avg_x + 0.5) / w as f64 - 0.5) * params.span_x;
+            cluster.center_y = params.center_y + ((avg_y + 0.5) / h as f64 - 0.5) * params.span_y;
 
             clusters.push(cluster);
         }

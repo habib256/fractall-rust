@@ -41,7 +41,7 @@ fn colorize_buffer(
     let color_rep = params.color_repeat;
     let out_mode = params.out_coloring_mode;
     let color_space = params.color_space;
-    let interior_flag_encoded = params.enable_interior_detection && !distances.is_empty();
+    let interior_flag_encoded = params.enable_interior_detection;
 
     (0..height as usize)
         .into_par_iter()
@@ -2131,7 +2131,7 @@ impl eframe::App for FractallApp {
                     // Afficher la prévisualisation de la palette
                     let palette_idx = self.palette_index as usize;
                     if self.palette_preview_textures[palette_idx].is_none() {
-                        let preview_image = generate_palette_preview(self.palette_index, 100, 12);
+                        let preview_image = generate_palette_preview(self.palette_index, 100, 12, self.params.color_space);
                         self.palette_preview_textures[palette_idx] = Some(ctx.load_texture(
                             format!("palette_preview_{}", self.palette_index),
                             preview_image,

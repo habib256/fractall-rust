@@ -992,14 +992,28 @@ pub fn iterate_pixel_gmp(
             delta = next_delta;
         }
         
-        // Check bailout
-        // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision prec
-        let z_ref_prec = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
+        // Advance iteration counter: delta now holds delta_{n+1}
+        n += 1;
+
+        // For Mandelbrot standard path, handle orbit end (BS/Tricorn already handled above)
+        if !is_burning_ship && !is_tricorn && n >= effective_len {
+            delta = Complex::with_val(prec, (delta.real(), delta.imag()));
+            // Orbit end reached, just continue to exit via while condition
+            break;
+        }
+
+        // Check bailout using z_ref[n] (the NEW n, i.e. the next reference point)
+        // IMPORTANT: After computing delta_{n+1}, the correct full z is z_ref[n+1] + delta_{n+1}
+        let z_ref_next = match ref_orbit.get_z_ref_gmp(n) {
+            Some(z) => z,
+            None => break,
+        };
+        let z_ref_next_prec = Complex::with_val(prec, (z_ref_next.real(), z_ref_next.imag()));
         let delta_prec = Complex::with_val(prec, (delta.real(), delta.imag()));
-        let mut z_curr = z_ref_prec.clone();
+        let mut z_curr = z_ref_next_prec.clone();
         z_curr += &delta_prec;
         let z_curr_norm_sqr = complex_norm_sqr(&z_curr, prec);
-        
+
         if !z_curr.real().is_finite() || !z_curr.imag().is_finite() {
             return DeltaResult {
                 iteration: n,
@@ -1011,7 +1025,7 @@ pub fn iterate_pixel_gmp(
                 phase_changed: false,
             };
         }
-        
+
         if z_curr_norm_sqr > bailout_sqr {
             return DeltaResult {
                 iteration: n,
@@ -1023,31 +1037,28 @@ pub fn iterate_pixel_gmp(
                 phase_changed: false,
             };
         }
-        
+
         // Check for rebasing: when |Z_m + z_n| < |z_n|
-        // IMPORTANT: Utiliser delta_prec qui a déjà la bonne précision
         let delta_norm_sqr = complex_norm_sqr(&delta_prec, prec);
-        if z_curr_norm_sqr > Float::with_val(prec, 0.0) 
-            && delta_norm_sqr > Float::with_val(prec, 0.0) 
+        if z_curr_norm_sqr > Float::with_val(prec, 0.0)
+            && delta_norm_sqr > Float::with_val(prec, 0.0)
             && z_curr_norm_sqr < delta_norm_sqr {
             // Rebasing: replace z_n with Z_m + z_n and reset m to 0
-            // IMPORTANT: z_curr a déjà la bonne précision prec
             delta = z_curr;
             n = 0;
             continue;
         }
-        
-        // Check for glitch: delta is too large relative to z_ref
-        // Use adaptive glitch tolerance based on zoom level
+
+        // Check for glitch: delta is too large relative to z_ref at current iteration
         let pixel_size = params.span_x / params.width as f64;
         let adaptive_tolerance = compute_adaptive_glitch_tolerance(pixel_size, params.glitch_tolerance);
         let glitch_tolerance_sqr = Float::with_val(prec, adaptive_tolerance * adaptive_tolerance);
-        let z_ref_norm_sqr = complex_norm_sqr(&z_ref_prec, prec);
+        let z_ref_norm_sqr = complex_norm_sqr(&z_ref_next_prec, prec);
         let mut glitch_scale = z_ref_norm_sqr.clone();
         glitch_scale += Float::with_val(prec, 1.0);
         let mut glitch_threshold = glitch_tolerance_sqr.clone();
         glitch_threshold *= &glitch_scale;
-        
+
         // Check if delta_norm_sqr is too large (glitch detected)
         if !delta_norm_sqr.is_finite() || delta_norm_sqr > glitch_threshold {
             return DeltaResult {
@@ -1060,8 +1071,6 @@ pub fn iterate_pixel_gmp(
                 phase_changed: false,
             };
         }
-        
-        n += 1;
     }
     
     // Final result
@@ -1233,8 +1242,7 @@ pub(crate) fn iterate_pixel_with_duals(
                 if delta_norm_sqr < node.validity_radius * node.validity_radius {
                     // Apply BLA with dual propagation
                     let work_delta = if is_burning_ship && node.burning_ship_valid {
-                        // For Burning Ship, we'd need to handle sign transformation
-                        delta_dual
+                        delta_dual.mul_signed(node.sign_re, node.sign_im)
                     } else {
                         delta_dual
                     };

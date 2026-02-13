@@ -265,17 +265,17 @@ fn palette_for(id: PaletteId) -> Gradient {
 
 /// Génère une petite image de prévisualisation de la palette.
 /// Retourne une ColorImage egui de taille width x height représentant le gradient de la palette.
-pub fn generate_palette_preview(palette_index: u8, width: u32, height: u32) -> egui::ColorImage {
+pub fn generate_palette_preview(palette_index: u8, width: u32, height: u32, color_space: ColorSpace) -> egui::ColorImage {
     let palette_id = PaletteId::from_u8(palette_index);
     let gradient = palette_for(palette_id);
-    
+
     let mut rgba = Vec::with_capacity((width * height * 4) as usize);
-    
+
     for _y in 0..height {
         for x in 0..width {
             // Calculer la position dans le gradient (0.0 à 1.0)
             let t = x as f64 / (width - 1) as f64;
-            let (r, g, b) = gradient_interpolate(gradient, t);
+            let (r, g, b) = gradient_interpolate_with_space(gradient, t, color_space);
             rgba.push(r);
             rgba.push(g);
             rgba.push(b);
