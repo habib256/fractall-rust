@@ -103,6 +103,7 @@ pub fn save_png_with_metadata(
 ///
 /// Retourne les FractalParams si le fichier contient les métadonnées fractall,
 /// ou une erreur si le fichier n'est pas un PNG valide ou ne contient pas de métadonnées.
+#[allow(dead_code)]
 pub fn load_png_metadata(path: &Path) -> Result<FractalParams, Box<dyn std::error::Error>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);

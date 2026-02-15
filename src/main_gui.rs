@@ -68,7 +68,7 @@ fn main() {
     if let Err(e) = eframe::run_native(
         "Fractall",
         options,
-        Box::new(|cc| Box::new(FractallApp::new(cc))),
+        Box::new(|cc| Ok(Box::new(FractallApp::new(cc)))),
     ) {
         eprintln!("Erreur lors du lancement de l'application: {}", e);
         std::process::exit(1);

@@ -360,6 +360,7 @@ impl OutColoringMode {
     }
 
     /// Modes proposés dans le menu GUI (Biomorph, Orbit Trap, Wings et distances exclus).
+    #[allow(dead_code)]
     pub fn menu_modes() -> &'static [OutColoringMode] {
         &[
             OutColoringMode::Iter,

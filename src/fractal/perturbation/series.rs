@@ -56,6 +56,7 @@ pub struct SeriesTable {
     /// Coefficients pour chaque itération (index = numéro d'itération)
     pub coeffs: Vec<SeriesCoefficients>,
     /// true si la table a été construite pour Julia (delta_0-series), false pour Mandelbrot (dc-series)
+    #[allow(dead_code)]
     pub is_julia: bool,
 }
 

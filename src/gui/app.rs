@@ -1904,7 +1904,7 @@ impl eframe::App for FractallApp {
                     if is_escape_time {
                         ui.label("Plane:");
                         let old_plane = self.params.plane_transform;
-                        egui::ComboBox::from_id_source("plane_transform")
+                        egui::ComboBox::from_id_salt("plane_transform")
                             .selected_text(self.params.plane_transform.name())
                             .show_ui(ui, |ui| {
                                 for plane in PlaneTransform::all() {
@@ -2156,7 +2156,7 @@ impl eframe::App for FractallApp {
 
                     ui.label("Outcoloring:");
                     let old_out_mode = self.out_coloring_mode;
-                    egui::ComboBox::from_id_source("outcoloring_mode")
+                    egui::ComboBox::from_id_salt("outcoloring_mode")
                         .selected_text(self.out_coloring_mode.name())
                         .show_ui(ui, |ui| {
                             for mode in OutColoringMode::menu_modes() {

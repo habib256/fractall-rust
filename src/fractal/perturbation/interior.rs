@@ -93,6 +93,7 @@ impl ExtendedDualComplex {
     }
 
     /// Multiplication par un scalaire réel
+    #[allow(dead_code)]
     pub fn scale(self, s: f64) -> Self {
         Self {
             value: self.value * s,

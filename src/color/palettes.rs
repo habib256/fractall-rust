@@ -265,6 +265,7 @@ fn palette_for(id: PaletteId) -> Gradient {
 
 /// Génère une petite image de prévisualisation de la palette.
 /// Retourne une ColorImage egui de taille width x height représentant le gradient de la palette.
+#[allow(dead_code)]
 pub fn generate_palette_preview(palette_index: u8, width: u32, height: u32, color_space: ColorSpace) -> egui::ColorImage {
     let palette_id = PaletteId::from_u8(palette_index);
     let gradient = palette_for(palette_id);

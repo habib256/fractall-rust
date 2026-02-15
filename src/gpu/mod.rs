@@ -452,9 +452,18 @@ impl GpuRenderer {
                 usage: wgpu::BufferUsages::STORAGE,
             });
 
+            // wgpu n'accepte pas les buffers de taille zéro dans un bind group
+            let bla_contents: Vec<BlaNode> = if flattened.is_empty() {
+                vec![BlaNode {
+                    a_re: 0.0, a_im: 0.0, b_re: 0.0, b_im: 0.0, c_re: 0.0, c_im: 0.0,
+                    validity: 0.0, _pad: 0.0,
+                }]
+            } else {
+                flattened
+            };
             let bla_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("perturb-bla-nodes-cached"),
-                contents: bytemuck::cast_slice(&flattened),
+                contents: bytemuck::cast_slice(&bla_contents),
                 usage: wgpu::BufferUsages::STORAGE,
             });
 
