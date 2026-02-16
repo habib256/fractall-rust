@@ -200,8 +200,8 @@ fn main(
     let pixel_size = params.span_x / f32(params.width);
     let inv_width = 1.0 / f32(params.width);
     let inv_height = 1.0 / f32(params.height);
-    let x_ratio = f32(gid.x) * inv_width - 0.5;
-    let y_ratio = f32(gid.y) * inv_height - 0.5;
+    let x_ratio = (f32(gid.x) + 0.5) * inv_width - 0.5;
+    let y_ratio = (f32(gid.y) + 0.5) * inv_height - 0.5;
     let dc_re = x_ratio * params.span_x;
     let dc_im = y_ratio * params.span_y;
 
