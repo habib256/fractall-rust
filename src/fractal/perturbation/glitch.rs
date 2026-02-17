@@ -154,8 +154,6 @@ mod tests {
     use super::*;
     use crate::fractal::definitions::default_params_for_type;
     use crate::fractal::{AlgorithmMode, FractalType};
-    use num_complex::Complex64;
-
     fn test_params() -> FractalParams {
         let mut p = default_params_for_type(FractalType::Mandelbrot, 10, 10);
         p.span_x = 4.0;

@@ -1561,6 +1561,7 @@ mod tests {
     use crate::fractal::definitions::default_params_for_type;
     use crate::fractal::{AlgorithmMode, FractalParams, FractalType};
 
+    #[allow(dead_code)]
     fn test_params() -> FractalParams {
         let mut p = default_params_for_type(FractalType::Mandelbrot, 100, 100);
         p.span_x = 4.0;
