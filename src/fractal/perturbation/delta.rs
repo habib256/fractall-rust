@@ -361,8 +361,12 @@ pub fn iterate_pixel(
             // Try to find and apply a BLA step
             let mut stepped = false;
 
-            // Try non-conformal BLA first for Tricorn
-            if is_tricorn {
+            // Try non-conformal BLA first for Tricorn and Burning Ship.
+            // Burning Ship uses non-conformal BLA (2×2 matrices) because the absolute
+            // value operation makes the Jacobian anti-conformal in the 2nd/4th quadrant.
+            // Complex multiplication cannot correctly compose these transformations
+            // across BLA levels.
+            if is_tricorn || is_burning_ship {
                 if let Some(ref nonconformal_levels) = bla_table.nonconformal_levels {
                     if !nonconformal_levels.is_empty() {
                         // Utiliser le cache de delta_approx (optimisation 1)
@@ -451,7 +455,9 @@ pub fn iterate_pixel(
             //
             // Search strategy: iterate levels in reverse order (largest skip first) to find the largest
             // valid skip l = 2^level satisfying |z_n| < R_{n,l}.
-            if !stepped && !bla_table.levels.is_empty() {
+            // Conformal BLA: only for Mandelbrot/Julia/Multibrot (NOT Burning Ship or Tricorn).
+            // Burning Ship and Tricorn use the non-conformal BLA path above.
+            if !stepped && !is_burning_ship && !is_tricorn && !bla_table.levels.is_empty() {
                 // Utiliser le cache de la norme au lieu de recalculer (optimisation 2)
                 let delta_norm_sqr = delta_norm_sqr_cached;
                 // Search from highest level (largest skip) to lowest level (smallest skip)
@@ -816,7 +822,10 @@ pub fn iterate_pixel(
             };
         }
 
-        let glitch_scale = z_ref_norm_sqr + 1.0;
+        // Pauldelbrot glitch criterion: |δ|² > G² · |Z_ref|²
+        // Use max(|Z_ref|², 1e-6) instead of |Z_ref|² + 1.0 for proper scaling.
+        // The +1.0 made detection too lenient when |Z_ref| < 1.
+        let glitch_scale = z_ref_norm_sqr.max(1e-6);
         if !delta_norm_sqr_check.is_finite() || delta_norm_sqr_check > glitch_tolerance_sqr * glitch_scale {
             return DeltaResult {
                 iteration: n,
@@ -1072,8 +1081,9 @@ pub fn iterate_pixel_gmp(
         let adaptive_tolerance = compute_adaptive_glitch_tolerance(pixel_size, params.glitch_tolerance);
         let glitch_tolerance_sqr = Float::with_val(prec, adaptive_tolerance * adaptive_tolerance);
         let z_ref_norm_sqr = complex_norm_sqr(&z_ref_next_prec, prec);
-        let mut glitch_scale = z_ref_norm_sqr.clone();
-        glitch_scale += Float::with_val(prec, 1.0);
+        // Pauldelbrot glitch criterion: |δ|² > G² · max(|Z_ref|², 1e-6)
+        let min_scale = Float::with_val(prec, 1e-6);
+        let glitch_scale = if z_ref_norm_sqr < min_scale { min_scale } else { z_ref_norm_sqr };
         let mut glitch_threshold = glitch_tolerance_sqr.clone();
         glitch_threshold *= &glitch_scale;
 
@@ -1123,8 +1133,9 @@ pub fn iterate_pixel_gmp(
     let glitch_tolerance_sqr = Float::with_val(prec, adaptive_tolerance * adaptive_tolerance);
     let z_ref_norm_sqr = complex_norm_sqr(&z_ref_prec, prec);
     let delta_norm_sqr = complex_norm_sqr(&delta_prec, prec);
-    let mut glitch_scale = z_ref_norm_sqr.clone();
-    glitch_scale += Float::with_val(prec, 1.0);
+    // Pauldelbrot glitch criterion: |δ|² > G² · max(|Z_ref|², 1e-6)
+    let min_scale = Float::with_val(prec, 1e-6);
+    let glitch_scale = if z_ref_norm_sqr < min_scale { min_scale } else { z_ref_norm_sqr };
     let mut glitch_threshold = glitch_tolerance_sqr.clone();
     glitch_threshold *= &glitch_scale;
     let is_glitched = !delta_norm_sqr.is_finite() || delta_norm_sqr > glitch_threshold;
@@ -1256,8 +1267,8 @@ pub(crate) fn iterate_pixel_with_duals(
             }
         }
 
-        // Try BLA for conformal fractals
-        if !is_tricorn && !bla_table.levels.is_empty() {
+        // Try BLA for conformal fractals (NOT Burning Ship or Tricorn which use non-conformal BLA)
+        if !is_tricorn && !is_burning_ship && !bla_table.levels.is_empty() {
             let delta_norm_sqr = delta_dual.norm_sqr();
             for level in (0..bla_table.levels.len()).rev() {
                 let level_nodes = &bla_table.levels[level];
@@ -1295,8 +1306,8 @@ pub(crate) fn iterate_pixel_with_duals(
             }
         }
         
-        // Try non-conformal BLA for Tricorn
-        if is_tricorn {
+        // Try non-conformal BLA for Tricorn and Burning Ship
+        if is_tricorn || is_burning_ship {
             if let Some(ref nonconformal_levels) = bla_table.nonconformal_levels {
                 if !nonconformal_levels.is_empty() {
                     let delta_vec = (delta_dual.value.re, delta_dual.value.im);
@@ -1496,7 +1507,8 @@ pub(crate) fn iterate_pixel_with_duals(
         // Check glitch
         let z_ref_norm_sqr = z_ref.norm_sqr();
         let delta_norm_sqr = delta_dual.norm_sqr();
-        let glitch_scale = z_ref_norm_sqr + 1.0;
+        // Pauldelbrot glitch criterion: |δ|² > G² · |Z_ref|²
+        let glitch_scale = z_ref_norm_sqr.max(1e-6);
         if !delta_norm_sqr.is_finite() || delta_norm_sqr > glitch_tolerance_sqr * glitch_scale {
             return DeltaResult {
                 iteration: n,

@@ -2,6 +2,7 @@ use num_complex::Complex64;
 
 use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::perturbation::nonconformal::{
+    self as nc,
     compute_tricorn_bla_coefficients,
     compute_nonconformal_validity_radius,
     merge_nonconformal_bla,
@@ -520,8 +521,13 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
     }
     // The resulting table has O(M) elements: M + M/2 + M/4 + ... = 2M - 1 = O(M)
 
-    // Build non-conformal table for Tricorn if applicable
-    let nonconformal_levels = if params.fractal_type == FractalType::Tricorn {
+    // Build non-conformal table for Tricorn and Burning Ship.
+    // Burning Ship uses non-conformal BLA (2×2 matrices) because the absolute value
+    // operation makes the Jacobian non-conformal in the 2nd/4th quadrant. Complex
+    // multiplication cannot correctly compose these transformations across BLA levels.
+    let nonconformal_levels = if params.fractal_type == FractalType::Tricorn
+        || params.fractal_type == FractalType::BurningShip
+    {
         build_bla_table_nonconformal(ref_orbit, params, cref)
     } else {
         None
@@ -533,10 +539,18 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
     }
 }
 
-/// Build non-conformal BLA table from the f64 reference orbit for Tricorn.
+/// Build non-conformal BLA table from the f64 reference orbit for Tricorn and Burning Ship.
 /// Uses 2×2 real matrices instead of complex numbers for coefficients.
+///
+/// For Burning Ship, this is necessary because the Jacobian of the absolute value operation
+/// is non-conformal (anti-conformal in the 2nd/4th quadrant). Using complex numbers for BLA
+/// coefficients leads to incorrect merging at higher levels when the reference orbit crosses
+/// quadrant boundaries. The 2×2 matrix approach correctly handles all quadrants via matrix
+/// multiplication.
 pub fn build_bla_table_nonconformal(ref_orbit: &[Complex64], params: &FractalParams, cref: Complex64) -> Option<Vec<Vec<BlaNodeNonConformal>>> {
-    if params.fractal_type != FractalType::Tricorn {
+    let is_tricorn = params.fractal_type == FractalType::Tricorn;
+    let is_burning_ship = params.fractal_type == FractalType::BurningShip;
+    if !is_tricorn && !is_burning_ship {
         return None;
     }
 
@@ -555,15 +569,28 @@ pub fn build_bla_table_nonconformal(ref_orbit: &[Complex64], params: &FractalPar
 
     // Build level 0: single-step BLAs
     for (_i, &z) in ref_orbit.iter().enumerate().take(base_len) {
-        let coeffs = compute_tricorn_bla_coefficients(z);
-        
+        let coeffs = if is_burning_ship {
+            nc::compute_burning_ship_bla_coefficients(z)
+        } else {
+            compute_tricorn_bla_coefficients(z)
+        };
+
         // Calculate validity radius using non-conformal formula
-        let validity = compute_nonconformal_validity_radius(
+        let mut validity = compute_nonconformal_validity_radius(
             coeffs.a,
             coeffs.b,
             base_threshold * validity_scale,
             cref_norm,
         ).min(max_validity).max(0.0);
+
+        // For Burning Ship, constrain validity by distance to folding lines (|X|=0, |Y|=0).
+        // The absolute value operation folds the plane at these lines, making the BLA
+        // invalid if delta could cross a fold. Fudge factor /2 for safety (matches Fraktaler-3).
+        if is_burning_ship {
+            let folding_re = z.re.abs() / 2.0;
+            let folding_im = z.im.abs() / 2.0;
+            validity = validity.min(folding_re).min(folding_im).max(0.0);
+        }
 
         level0.push(BlaNodeNonConformal {
             a: coeffs.a,

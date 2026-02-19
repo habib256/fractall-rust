@@ -109,12 +109,17 @@ pub fn build_series_table(z_ref: &[Complex64], is_julia: bool) -> SeriesTable {
         // Store current coefficients
         coeffs.push(SeriesCoefficients { a, b, c, d });
 
-        // Early termination if coefficients explode
-        let a_norm = a.norm();
-        if !a.re.is_finite() || !a.im.is_finite() || a_norm > 1e100 {
+        // Early termination if any coefficient explodes (check all, not just a and b)
+        if !a.re.is_finite() || !a.im.is_finite() || a.norm() > 1e100 {
             break;
         }
-        if !b.re.is_finite() || !b.im.is_finite() {
+        if !b.re.is_finite() || !b.im.is_finite() || b.norm() > 1e100 {
+            break;
+        }
+        if !c.re.is_finite() || !c.im.is_finite() || c.norm() > 1e100 {
+            break;
+        }
+        if !d.re.is_finite() || !d.im.is_finite() || d.norm() > 1e100 {
             break;
         }
 
