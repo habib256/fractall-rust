@@ -6,12 +6,12 @@ K.I. Martin (SuperFractalThing), Pauldelbrot (glitch detection), et Zhuoran (reb
 ## References
 
 - [Fraktaler-3](https://fraktaler.mathr.co.uk/) - Implementation de reference (C++)
-- [Fraktaler-3 source](https://github.com/icalvo/fraktaler-3) - Code source (miroir GitHub)
 - [Deep Zoom Theory and Practice](https://mathr.co.uk/blog/2021-05-14_deep_zoom_theory_and_practice.html) - Article fondateur
 - [Deep Zoom Theory and Practice (again)](https://mathr.co.uk/blog/2022-02-21_deep_zoom_theory_and_practice_again.html) - BLA + rebasing
 - [At the Helm of the Burning Ship](https://mathr.co.uk/web/helm.html) - Paper EVA 2019
 - [The Burning Ship](https://mathr.co.uk/blog/2018-01-04_the_burning_ship.html) - Perturbation pour Burning Ship
 - [Fractal Wiki - Perturbation theory](https://fractalwiki.org/wiki/Perturbation_theory)
+- [Wikibooks - Fractals/perturbation](https://en.wikibooks.org/wiki/Fractals/perturbation)
 
 ---
 
