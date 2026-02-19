@@ -62,6 +62,13 @@ impl ProgressiveConfig {
         Self { passes: vec![16, 8, 1] }
     }
 
+    /// Configuration pour perturbation (3 passes: 1/16, 1/4, pleine).
+    /// La perturbation a un overhead par passe (détection glitchs, références secondaires),
+    /// donc moins de passes réduit le coût total tout en offrant un aperçu progressif.
+    pub fn perturbation_mode() -> Self {
+        Self { passes: vec![16, 4, 1] }
+    }
+
     /// Configuration pour petites images (<256px): 4 passes progressives.
     pub fn fast() -> Self {
         Self { passes: vec![8, 4, 2, 1] }
@@ -80,7 +87,7 @@ impl ProgressiveConfig {
     /// Choisit la configuration appropriée selon les paramètres.
     #[allow(dead_code)]
     pub fn for_params(width: u32, height: u32, use_gmp: bool) -> Self {
-        Self::for_params_with_intermediate(width, height, use_gmp, true)
+        Self::for_params_with_intermediate(width, height, use_gmp, true, false)
     }
 
     /// Choisit la configuration en optionnant la passe intermédiaire.
@@ -89,6 +96,7 @@ impl ProgressiveConfig {
         height: u32,
         use_gmp: bool,
         allow_intermediate: bool,
+        use_perturbation: bool,
     ) -> Self {
         if width < 64 || height < 64 {
             // Image trop petite pour le progressif
@@ -96,6 +104,9 @@ impl ProgressiveConfig {
         } else if use_gmp {
             // GMP est déjà lent, moins de passes
             Self::gmp_mode()
+        } else if use_perturbation && allow_intermediate {
+            // Perturbation: overhead par passe (glitchs, refs secondaires), moins de passes
+            Self::perturbation_mode()
         } else if width < 256 || height < 256 {
             // Petite image
             if allow_intermediate {
@@ -231,5 +242,20 @@ mod tests {
         // Very small image -> single pass
         let config = ProgressiveConfig::for_params(32, 32, false);
         assert_eq!(config.passes, vec![1]);
+    }
+
+    #[test]
+    fn test_progressive_config_perturbation() {
+        // Large image, perturbation -> perturbation_mode (3 passes)
+        let config = ProgressiveConfig::for_params_with_intermediate(1024, 768, false, true, true);
+        assert_eq!(config.passes, vec![16, 4, 1]);
+
+        // Perturbation + GMP -> GMP prend priorité
+        let config = ProgressiveConfig::for_params_with_intermediate(1024, 768, true, true, true);
+        assert_eq!(config.passes, vec![16, 8, 1]);
+
+        // Perturbation sans allow_intermediate -> standard_basic (pas de perturbation_mode)
+        let config = ProgressiveConfig::for_params_with_intermediate(1024, 768, false, false, true);
+        assert_eq!(config.passes, vec![16, 4, 1]);
     }
 }

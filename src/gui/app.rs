@@ -581,11 +581,24 @@ impl FractallApp {
             FractalType::VonKoch | FractalType::Dragon | FractalType::Buddhabrot
                 | FractalType::Nebulabrot | FractalType::AntiBuddhabrot | FractalType::Lyapunov
         );
+        let will_use_perturbation = allow_intermediate
+            && matches!(
+                render_params.algorithm_mode,
+                AlgorithmMode::Auto | AlgorithmMode::Perturbation
+            )
+            && matches!(
+                render_params.fractal_type,
+                FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn
+            )
+            && render_params.plane_transform == PlaneTransform::Mu
+            && (render_params.algorithm_mode == AlgorithmMode::Perturbation
+                || crate::render::escape_time::should_use_perturbation(&render_params, false));
         let config = ProgressiveConfig::for_params_with_intermediate(
             render_width,
             render_height,
             render_params.use_gmp,
             allow_intermediate,
+            will_use_perturbation,
         );
 
         // Lancer le rendu progressif dans un thread séparé (multi-passes pour barre de progression)
@@ -709,11 +722,24 @@ impl FractallApp {
                 self.params.fractal_type,
                 FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
             );
+        let will_use_perturbation = allow_intermediate
+            && matches!(
+                self.params.algorithm_mode,
+                AlgorithmMode::Auto | AlgorithmMode::Perturbation
+            )
+            && matches!(
+                self.params.fractal_type,
+                FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn
+            )
+            && self.params.plane_transform == PlaneTransform::Mu
+            && (self.params.algorithm_mode == AlgorithmMode::Perturbation
+                || crate::render::escape_time::should_use_perturbation(&self.params, use_gpu));
         let config = ProgressiveConfig::for_params_with_intermediate(
             self.params.width,
             self.params.height,
             self.params.use_gmp,
             allow_intermediate,
+            will_use_perturbation,
         );
 
         self.total_passes = config.passes.len() as u8;

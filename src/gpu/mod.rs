@@ -514,11 +514,9 @@ impl GpuRenderer {
         let output_count = width * height;
         let output_size = (output_count * std::mem::size_of::<PixelOut>()) as u64;
 
-        // IMPORTANT: La perturbation ne supporte pas la réutilisation des pixels entre passes (dc change).
-        // Le CPU désactive déjà cette réutilisation pour éviter des artefacts. On fait pareil côté GPU.
-        // Pour debug, on peut forcer l'activation avec FRACTALL_GPU_PERTURB_ENABLE_REUSE=1.
-        let enable_reuse = env_flag("FRACTALL_GPU_PERTURB_ENABLE_REUSE");
-        let reuse = if enable_reuse { build_reuse(params, reuse) } else { None };
+        // Réutiliser les pixels alignés de la passe précédente.
+        // build_reuse() valide l'alignement et désactive le reuse pour les modes distance/orbit.
+        let reuse = build_reuse(params, reuse);
         let mut mask: Vec<u32> = vec![1u32; output_count];
         let mut initial_output = vec![
             PixelOut {
@@ -555,7 +553,7 @@ impl GpuRenderer {
                 }
             }
         }
-        if stats && enable_reuse {
+        if stats && reuse.is_some() {
             let mut zero_count = 0usize;
             let mut min_x = width;
             let mut min_y = height;
@@ -798,10 +796,10 @@ impl GpuRenderer {
             let center_z_im = if center_idx < zs.len() { zs[center_idx].im } else { 0.0 };
             
             eprintln!(
-                "[GPU PERTURB] {}x{} enable_reuse={} ref={:.3}s gpu+readback={:.3}s iter0={} flags!=0={} z0={} unwritten={} bbox=({},{})-({},{}) total={:.3}s",
+                "[GPU PERTURB] {}x{} reuse={} ref={:.3}s gpu+readback={:.3}s iter0={} flags!=0={} z0={} unwritten={} bbox=({},{})-({},{}) total={:.3}s",
                 params.width,
                 params.height,
-                enable_reuse as u8,
+                reuse.is_some() as u8,
                 dt_ref.as_secs_f64(),
                 dt_gpu.as_secs_f64(),
                 count_iter0,

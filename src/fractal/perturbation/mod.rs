@@ -550,7 +550,7 @@ pub fn render_perturbation_cancellable_with_reuse(
 pub fn render_perturbation_with_cache(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
-    _reuse: Option<(&[u32], &[Complex64], u32, u32)>,
+    reuse: Option<(&[u32], &[Complex64], u32, u32)>,
     orbit_cache: Option<&Arc<ReferenceOrbitCache>>,
 ) -> Option<((Vec<u32>, Vec<Complex64>, Vec<f64>), Arc<ReferenceOrbitCache>)> {
     let perf = perf_enabled();
@@ -567,15 +567,13 @@ pub fn render_perturbation_with_cache(
         return None;
     }
     
-    // IMPORTANT: Ne pas réutiliser les résultats de pixels entre passes progressives pour la perturbation.
-    // Chaque pixel doit être recalculé avec le bon dc (offset) pour sa position exacte dans la nouvelle résolution.
-    // La réutilisation des pixels cause des artefacts (comme un cercle au centre) car les pixels réutilisés
-    // ont été calculés avec un dc incorrect pour leur nouvelle position.
-    // Seule la référence et la BLA sont réutilisées (via orbit_cache), comme dans fraktaler-3.
-    // Référence: fraktaler-3 réutilise seulement reference_can_be_reused() et bla_can_be_reused(),
-    // mais recalcule toujours tous les pixels à chaque passe.
-    // Désactiver la réutilisation des pixels pour la perturbation
-    let reuse_for_pixels: Option<(&[u32], &[Complex64], u32, u32)> = None;
+    // Réutiliser les pixels de la passe précédente quand les résolutions s'alignent.
+    // Les pixels réutilisés sont à des positions alignées avec le même dc (à un sous-pixel près).
+    // La fonction build_reuse() désactive automatiquement le reuse pour les modes de colorisation
+    // nécessitant des données supplémentaires (Distance, OrbitTraps, Wings).
+    // Les artefacts historiques ("cercle au centre") étaient causés par des bugs corrigés depuis
+    // (BLA off-by-one, centrage pixels, glitch tolerance scaling, GMP z_ref stale).
+    let reuse_for_pixels = reuse;
 
     let mut orbit_params = params.clone();
     orbit_params.precision_bits = compute_perturbation_precision_bits(params);
@@ -605,8 +603,7 @@ pub fn render_perturbation_with_cache(
 
     // For very deep zooms, use full GMP perturbation path
     if use_full_gmp {
-        // Ne pas réutiliser les pixels pour GMP non plus
-        return render_perturbation_gmp_path(params, cancel, None, &cache, iterations, zs, distances);
+        return render_perturbation_gmp_path(params, cancel, reuse_for_pixels, &cache, iterations, zs, distances);
     }
 
     // Compute dc (pixel offset from center) directly to avoid precision loss.
@@ -1082,11 +1079,8 @@ fn render_perturbation_gmp_path(
     }
     
     let cancelled = AtomicBool::new(false);
-    // IMPORTANT: Ne pas réutiliser les résultats de pixels entre passes progressives pour la perturbation.
-    // Chaque pixel doit être recalculé avec le bon dc (offset) pour sa position exacte.
-    // La réutilisation cause des artefacts (comme un cercle au centre) car les pixels réutilisés
-    // ont été calculés avec un dc incorrect pour leur nouvelle position.
-    // Note: reuse est déjà None (passé depuis render_perturbation_with_cache), donc reuse_data sera None.
+    // Réutiliser les pixels alignés de la passe précédente (même logique que le chemin f64).
+    // build_reuse() valide l'alignement et désactive le reuse pour les modes distance/orbit.
     let reuse_data = build_reuse(params, reuse);
     
     // Clone cache for use in parallel iteration
