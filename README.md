@@ -4,7 +4,7 @@
 
 Fractall is a high-performance fractal explorer written in Rust, featuring real-time GPU rendering, arbitrary-precision arithmetic for deep zooms beyond 10^300, and a modern interactive GUI.
 
-![Mandelbrot Set](https://img.shields.io/badge/Fractals-31%20Types-blue)
+![Mandelbrot Set](https://img.shields.io/badge/Fractals-33%20Types-blue)
 ![GPU Accelerated](https://img.shields.io/badge/GPU-Vulkan%20%7C%20Metal%20%7C%20DX12-green)
 ![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange)
 
@@ -28,13 +28,13 @@ Fractall is a high-performance fractal explorer written in Rust, featuring real-
 - Automatic CPU fallback when GPU isn't available
 - Progressive rendering: see previews instantly, full quality follows
 
-### 31 Fractal Types
+### 33 Fractal Types
 | Mandelbrot-like | Julia variants | Special |
 |-----------------|----------------|---------|
-| Mandelbrot, Barnsley, Magnet | Julia, Barnsley Julia, Magnet Julia | Buddhabrot, Nebulabrot |
+| Mandelbrot, Barnsley, Magnet | Julia, Barnsley Julia, Magnet Julia | Buddhabrot, Nebulabrot, Anti-Buddhabrot |
 | Burning Ship, Perp. Burning Ship | Burning Ship Julia, Perp. Burning Ship Julia | Lyapunov |
 | Tricorn, Celtic, Buffalo, Multibrot, Alpha Mandelbrot | Tricorn Julia, Celtic Julia, Buffalo Julia, Multibrot Julia, Alpha Mandelbrot Julia | Von Koch, Dragon |
-| Mandelbulb | — | Julia Sin, Newton, Phoenix, Nova, Pickover Stalks |
+| Mandelbulb, Mandelbrot Sin | — | Julia Sin, Newton, Phoenix, Nova, Pickover Stalks |
 
 ### Rich Coloring Options
 - **13 beautiful palettes** with smooth gradients
@@ -104,7 +104,7 @@ cargo run --release --bin fractall-cli -- \
 fractall-cli [OPTIONS] --type <N> --output <FILE>
 
 OPTIONS:
-    --type <N>              Fractal type (1-24 standard, 25-31 Julia variants)
+    --type <N>              Fractal type (1-33)
     --width <W>             Image width [default: 1920]
     --height <H>            Image height [default: 1080]
     --center-x <X>          Center X coordinate
@@ -162,11 +162,11 @@ Please open an issue first to discuss major changes.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License.
 
 ## Acknowledgments
 
-- Inspired by [XaoS](https://xaos-project.github.io/), [Kalles Fraktaler](https://mathr.co.uk/kf/kf.html), and [Fraktaler-3](https://mathr.co.uk/web/fraktaler-3.html)
+- Inspired by [XaoS](https://xaos-project.github.io/), [Kalles Fraktaler](https://mathr.co.uk/kf/kf.html), and [Fraktaler-3](https://fraktaler.mathr.co.uk/)
 - Perturbation algorithms based on research by K.I. Martin and Claude Heiland-Allen
 - Built with [egui](https://github.com/emilk/egui), [wgpu](https://wgpu.rs/), and [rug](https://docs.rs/rug/)
 
