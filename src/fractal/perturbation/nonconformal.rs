@@ -185,6 +185,42 @@ pub fn compute_tricorn_bla_coefficients(z: Complex64) -> BlaCoefficientsNonConfo
     BlaCoefficientsNonConformal { a, b }
 }
 
+/// Calcule les coefficients BLA non-conformes pour Burning Ship.
+///
+/// Burning Ship is defined by: z_{n+1} = (|Re(z_n)| + i|Im(z_n)|)^2 + c
+///
+/// Written in real form:
+///   X' = |X|^2 - |Y|^2 + C_re
+///   Y' = 2|X||Y| + C_im
+///
+/// Partial derivatives at reference Z = X + iY:
+///   dX'/dX = 2|X|·sign(X) = 2X        dX'/dY = -2|Y|·sign(Y) = -2Y
+///   dY'/dX = 2·sign(X)·|Y|             dY'/dY = 2·|X|·sign(Y)
+///
+/// In the 1st/3rd quadrant (sign(X)=sign(Y)) this is conformal ([[2X,-2Y],[2Y,2X]]),
+/// but in the 2nd/4th quadrant (sign(X)≠sign(Y)) it becomes anti-conformal.
+/// The 2×2 matrix representation handles all quadrants correctly, unlike complex
+/// multiplication which can only represent conformal (angle-preserving) maps.
+pub fn compute_burning_ship_bla_coefficients(z: Complex64) -> BlaCoefficientsNonConformal {
+    let x = z.re;
+    let y = z.im;
+    let sign_x = if x >= 0.0 { 1.0 } else { -1.0 };
+    let sign_y = if y >= 0.0 { 1.0 } else { -1.0 };
+
+    // A = [[2X, -2Y], [2·sign(X)·|Y|, 2·|X|·sign(Y)]]
+    let a = Matrix2x2 {
+        m00: 2.0 * x,
+        m01: -2.0 * y,
+        m10: 2.0 * sign_x * y.abs(),
+        m11: 2.0 * x.abs() * sign_y,
+    };
+
+    // B = I (identity matrix) since dc contributes directly
+    let b = Matrix2x2::identity();
+
+    BlaCoefficientsNonConformal { a, b }
+}
+
 /// Calcule le rayon de validité pour un BLA non-conforme single-step (Section 4.1 of deep zoom theory).
 /// Formule: R = ε·inf|A| - sup|B|·|c| / inf|A|
 /// For non-conformal formulas, we use inf|A| and sup|B| (largest/smallest singular values)
@@ -305,5 +341,44 @@ mod tests {
         // B should be identity
         assert!((coeffs.b.m00 - 1.0).abs() < 1e-10);
         assert!((coeffs.b.m11 - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn burning_ship_coefficients_first_quadrant() {
+        // In 1st quadrant (X>=0, Y>=0): conformal, J = [[2X, -2Y], [2Y, 2X]]
+        let z = Complex64::new(2.0, 3.0);
+        let coeffs = compute_burning_ship_bla_coefficients(z);
+        // m00 = 2X = 4, m01 = -2Y = -6
+        // m10 = 2·sign(2)·|3| = 6, m11 = 2·|2|·sign(3) = 4
+        assert!((coeffs.a.m00 - 4.0).abs() < 1e-10);
+        assert!((coeffs.a.m01 - (-6.0)).abs() < 1e-10);
+        assert!((coeffs.a.m10 - 6.0).abs() < 1e-10);
+        assert!((coeffs.a.m11 - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn burning_ship_coefficients_second_quadrant() {
+        // In 2nd quadrant (X<0, Y>=0): anti-conformal
+        let z = Complex64::new(-2.0, 3.0);
+        let coeffs = compute_burning_ship_bla_coefficients(z);
+        // m00 = 2X = -4, m01 = -2Y = -6
+        // m10 = 2·sign(-2)·|3| = -6, m11 = 2·|-2|·sign(3) = 4
+        assert!((coeffs.a.m00 - (-4.0)).abs() < 1e-10);
+        assert!((coeffs.a.m01 - (-6.0)).abs() < 1e-10);
+        assert!((coeffs.a.m10 - (-6.0)).abs() < 1e-10);
+        assert!((coeffs.a.m11 - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn burning_ship_coefficients_third_quadrant() {
+        // In 3rd quadrant (X<0, Y<0): conformal, J = [[2X, -2Y], [2Y, 2X]]
+        let z = Complex64::new(-2.0, -3.0);
+        let coeffs = compute_burning_ship_bla_coefficients(z);
+        // m00 = 2X = -4, m01 = -2Y = 6
+        // m10 = 2·sign(-2)·|-3| = -6, m11 = 2·|-2|·sign(-3) = -4
+        assert!((coeffs.a.m00 - (-4.0)).abs() < 1e-10);
+        assert!((coeffs.a.m01 - 6.0).abs() < 1e-10);
+        assert!((coeffs.a.m10 - (-6.0)).abs() < 1e-10);
+        assert!((coeffs.a.m11 - (-4.0)).abs() < 1e-10);
     }
 }
