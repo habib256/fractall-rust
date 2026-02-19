@@ -129,6 +129,7 @@ impl GpuRenderer {
                         label: Some("gpu-device"),
                         required_features,
                         required_limits: wgpu::Limits::default(),
+                        memory_hints: wgpu::MemoryHints::default(),
                     },
                     None,
                 )
@@ -181,6 +182,8 @@ impl GpuRenderer {
                 layout: Some(&pipeline_layout),
                 module: &shader_f32,
                 entry_point: "main",
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
             });
 
             let shader_julia_f32 = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -193,6 +196,8 @@ impl GpuRenderer {
                 layout: Some(&pipeline_layout),
                 module: &shader_julia_f32,
                 entry_point: "main",
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
             });
 
             let shader_burning_ship_f32 =
@@ -209,6 +214,8 @@ impl GpuRenderer {
                     layout: Some(&pipeline_layout),
                     module: &shader_burning_ship_f32,
                     entry_point: "main",
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    cache: None,
                 });
 
             // Ne plus créer les pipelines f64 car on utilise uniquement f32
@@ -301,6 +308,8 @@ impl GpuRenderer {
                     layout: Some(&pipeline_layout_perturb),
                     module: &shader_perturb,
                     entry_point: "main",
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    cache: None,
                 });
 
             Some(Self {
