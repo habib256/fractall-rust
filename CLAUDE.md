@@ -10,7 +10,7 @@ cargo run --release --bin fractall-gui
 
 Prerequis: GMP/MPFR/MPC (pour `rug`).
 
-**Tests / CI**: Aucun test unitaire ni pipeline CI/CD dans le projet actuellement.
+**Tests / CI**: Tests unitaires dans les modules perturbation (bla, delta, series, nonconformal, distance, glitch, interior, types, mod), lyapunov et progressive. Commande: `cargo test --release --lib`. Pas de pipeline CI/CD.
 
 ## Architecture
 
@@ -70,8 +70,8 @@ src/
 | image | 0.25 | Support PNG |
 | num-complex | 0.4 | Arithmetique complexe |
 | rayon | 1.11 | Parallelisme multi-thread |
-| eframe | 0.27 | Framework GUI (wrapper egui) |
-| egui | 0.27 | UI immediate mode |
+| eframe | 0.29 | Framework GUI (wrapper egui) |
+| egui | 0.29 | UI immediate mode |
 | wgpu | 0.19 | GPU (Vulkan/Metal/DX12) |
 | pollster | 0.3 | Runtime async pour GPU |
 | bytemuck | 1.15 | Serialisation buffers GPU |
@@ -156,6 +156,8 @@ Precision GMP:
 - Option conservative: `log2(zoom) + margin`
 
 **Cache** (`ReferenceOrbitCache`): orbite + BLA reutilises si meme centre/type/precision.
+
+**Documentation complete**: voir `perturbation.md` a la racine du projet.
 
 ## Parametres perturbation
 
@@ -384,3 +386,6 @@ Les bugs suivants ont ete corriges:
 5. **Reuse progressif sans orbit/distance** (`render/escape_time.rs`, `perturbation/mod.rs`): Desactive le pixel reuse pour les modes Distance/OrbitTraps/Wings.
 6. **Coordonnees pixel centrees** (`render/escape_time.rs`, `perturbation/mod.rs`): Mapping `(i+0.5)/width` pour centrer les pixels.
 7. **Preview palette avec color space** (`color/palettes.rs`): `generate_palette_preview` utilise `gradient_interpolate_with_space`.
+8. **Burning Ship BLA non-conformal** (`perturbation/bla.rs`, `nonconformal.rs`, `delta.rs`): BLA pour Burning Ship utilise maintenant des matrices 2x2 au lieu de la multiplication complexe (conforme uniquement), conformement a Fraktaler-3.
+9. **Glitch tolerance scaling** (`perturbation/delta.rs`): `z_ref_norm_sqr + 1.0` remplace par `z_ref_norm_sqr.max(1e-6)` pour eviter de masquer les glitches pres de l'origine.
+10. **Series early termination** (`perturbation/series.rs`): Verification overflow/NaN sur les 4 coefficients (a, b, c, d) au lieu de a seul.
