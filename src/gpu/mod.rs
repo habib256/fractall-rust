@@ -129,6 +129,7 @@ impl GpuRenderer {
                         label: Some("gpu-device"),
                         required_features,
                         required_limits: wgpu::Limits::default(),
+                        memory_hints: wgpu::MemoryHints::default(),
                     },
                     None,
                 )
@@ -181,6 +182,8 @@ impl GpuRenderer {
                 layout: Some(&pipeline_layout),
                 module: &shader_f32,
                 entry_point: "main",
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
             });
 
             let shader_julia_f32 = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -193,6 +196,8 @@ impl GpuRenderer {
                 layout: Some(&pipeline_layout),
                 module: &shader_julia_f32,
                 entry_point: "main",
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
             });
 
             let shader_burning_ship_f32 =
@@ -209,6 +214,8 @@ impl GpuRenderer {
                     layout: Some(&pipeline_layout),
                     module: &shader_burning_ship_f32,
                     entry_point: "main",
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    cache: None,
                 });
 
             // Ne plus créer les pipelines f64 car on utilise uniquement f32
@@ -301,6 +308,8 @@ impl GpuRenderer {
                     layout: Some(&pipeline_layout_perturb),
                     module: &shader_perturb,
                     entry_point: "main",
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    cache: None,
                 });
 
             Some(Self {
@@ -906,77 +915,38 @@ impl GpuRenderer {
             let gmp_params = MpcParams::from_params(&orbit_params);
             let prec = gmp_params.prec;
             let width = params.width;
-            
-            // Collect results in parallel
-            // IMPORTANT: Utiliser la même formule que compute_dc_gmp pour garantir la cohérence
-            // Formule: dc = (pixel_index/dimension - 0.5) * range
-            // Cela évite les erreurs de précision lors de la soustraction de grands nombres
+
+            // Hoist center GMP parsing outside the parallel closure
+            let center_x_gmp = if let Some(ref cx_hp) = params.center_x_hp {
+                match rug::Float::parse(cx_hp) {
+                    Ok(parse_result) => rug::Float::with_val(prec, parse_result),
+                    Err(_) => rug::Float::with_val(prec, params.center_x),
+                }
+            } else {
+                rug::Float::with_val(prec, params.center_x)
+            };
+            let center_y_gmp = if let Some(ref cy_hp) = params.center_y_hp {
+                match rug::Float::parse(cy_hp) {
+                    Ok(parse_result) => rug::Float::with_val(prec, parse_result),
+                    Err(_) => rug::Float::with_val(prec, params.center_y),
+                }
+            } else {
+                rug::Float::with_val(prec, params.center_y)
+            };
+
+            // Use compute_dc_gmp for correct +0.5 pixel centering (matching CPU path)
             let corrections: Vec<_> = glitched_indices
                 .par_iter()
                 .map(|&idx| {
                     let i = (idx % width) as usize;
                     let j = (idx / width) as usize;
-                    
-                    // Utiliser la même formule que compute_dc_gmp pour la cohérence
-                    // Calculer dc directement sans soustraire center_x/center_y
-                    let inv_width = rug::Float::with_val(prec, 1.0) / rug::Float::with_val(prec, width as f64);
-                    let inv_height = rug::Float::with_val(prec, 1.0) / rug::Float::with_val(prec, params.height as f64);
-                    
-                    let i_float = rug::Float::with_val(prec, i as f64);
-                    let j_float = rug::Float::with_val(prec, j as f64);
-                    let mut x_ratio = rug::Float::with_val(prec, &i_float * &inv_width);
-                    let mut y_ratio = rug::Float::with_val(prec, &j_float * &inv_height);
-                    let half = rug::Float::with_val(prec, 0.5);
-                    x_ratio -= &half;
-                    y_ratio -= &half;
-                    
-                    // IMPORTANT: Utiliser les String haute précision si disponibles pour préserver la précision GMP
-                    // aux zooms profonds (>e16). Sinon fallback sur f64 pour compatibilité.
-                    let x_range = if let Some(ref sx_hp) = params.span_x_hp {
-                        match rug::Float::parse(sx_hp) {
-                            Ok(parse_result) => rug::Float::with_val(prec, parse_result),
-                            Err(_) => rug::Float::with_val(prec, params.span_x),
-                        }
-                    } else {
-                        rug::Float::with_val(prec, params.span_x)
-                    };
-                    
-                    let y_range = if let Some(ref sy_hp) = params.span_y_hp {
-                        match rug::Float::parse(sy_hp) {
-                            Ok(parse_result) => rug::Float::with_val(prec, parse_result),
-                            Err(_) => rug::Float::with_val(prec, params.span_y),
-                        }
-                    } else {
-                        rug::Float::with_val(prec, params.span_y)
-                    };
-                    
-                    let x_offset = rug::Float::with_val(prec, &x_ratio * &x_range);
-                    let y_offset = rug::Float::with_val(prec, &y_ratio * &y_range);
-                    
-                    // Calculer le point pixel = center + dc en GMP
-                    // IMPORTANT: Utiliser les String haute précision si disponibles
-                    let center_x_gmp = if let Some(ref cx_hp) = params.center_x_hp {
-                        match rug::Float::parse(cx_hp) {
-                            Ok(parse_result) => rug::Float::with_val(prec, parse_result),
-                            Err(_) => rug::Float::with_val(prec, params.center_x),
-                        }
-                    } else {
-                        rug::Float::with_val(prec, params.center_x)
-                    };
-                    
-                    let center_y_gmp = if let Some(ref cy_hp) = params.center_y_hp {
-                        match rug::Float::parse(cy_hp) {
-                            Ok(parse_result) => rug::Float::with_val(prec, parse_result),
-                            Err(_) => rug::Float::with_val(prec, params.center_y),
-                        }
-                    } else {
-                        rug::Float::with_val(prec, params.center_y)
-                    };
-                    let mut z_pixel_re = center_x_gmp;
-                    z_pixel_re += &x_offset;
-                    let mut z_pixel_im = center_y_gmp;
-                    z_pixel_im += &y_offset;
-                    
+
+                    let dc_gmp = compute_dc_gmp(i, j, params, &center_x_gmp, &center_y_gmp, prec);
+
+                    let mut z_pixel_re = center_x_gmp.clone();
+                    z_pixel_re += dc_gmp.real();
+                    let mut z_pixel_im = center_y_gmp.clone();
+                    z_pixel_im += dc_gmp.imag();
                     let z_pixel = complex_from_xy(prec, z_pixel_re, z_pixel_im);
                     let (iter_val, z_final) = iterate_point_mpc(&gmp_params, &z_pixel);
                     (idx as usize, iter_val, complex_to_complex64(&z_final))
