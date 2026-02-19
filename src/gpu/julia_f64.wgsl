@@ -32,8 +32,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let idx = gid.y * params.width + gid.x;
-    let fx = f64(gid.x) / f64(params.width);
-    let fy = f64(gid.y) / f64(params.height);
+    let fx = (f64(gid.x) + 0.5) / f64(params.width);
+    let fy = (f64(gid.y) + 0.5) / f64(params.height);
     // Compute offset from center directly to avoid precision loss
     let x = params.center_x + (fx - 0.5) * params.span_x;
     let y = params.center_y + (fy - 0.5) * params.span_y;
