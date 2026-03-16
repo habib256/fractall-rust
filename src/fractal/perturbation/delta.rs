@@ -907,7 +907,13 @@ pub fn iterate_pixel_gmp(
     let is_julia = params.fractal_type == FractalType::Julia;
     let is_burning_ship = params.fractal_type == FractalType::BurningShip;
     let is_tricorn = params.fractal_type == FractalType::Tricorn;
-    
+
+    // Precompute glitch tolerance outside the loop to avoid repeated GMP allocations
+    let pixel_size_gmp = params.span_x / params.width as f64;
+    let adaptive_tolerance_gmp = compute_adaptive_glitch_tolerance(pixel_size_gmp, params.glitch_tolerance);
+    let glitch_tolerance_sqr_gmp = Float::with_val(prec, adaptive_tolerance_gmp * adaptive_tolerance_gmp);
+    let min_scale_gmp = Float::with_val(prec, 1e-6);
+
     // Main iteration loop with full GMP precision
     while n < max_iter {
         // Get reference point at iteration n
@@ -1022,10 +1028,11 @@ pub fn iterate_pixel_gmp(
         // Advance iteration counter: delta now holds delta_{n+1}
         n += 1;
 
-        // For Mandelbrot standard path, handle orbit end (BS/Tricorn already handled above)
+        // For Mandelbrot standard path, handle orbit end (BS/Tricorn already handled above).
+        // Note: This is normally unreachable since max_iter <= effective_len - 1, but kept
+        // as a defensive guard. If hit, rebase instead of breaking (matches f64 path behavior).
         if !is_burning_ship && !is_tricorn && n >= effective_len {
-            delta = Complex::with_val(prec, (delta.real(), delta.imag()));
-            // Orbit end reached, just continue to exit via while condition
+            // Can't compute z_curr without z_ref[n], so just break
             break;
         }
 
@@ -1077,14 +1084,10 @@ pub fn iterate_pixel_gmp(
         }
 
         // Check for glitch: delta is too large relative to z_ref at current iteration
-        let pixel_size = params.span_x / params.width as f64;
-        let adaptive_tolerance = compute_adaptive_glitch_tolerance(pixel_size, params.glitch_tolerance);
-        let glitch_tolerance_sqr = Float::with_val(prec, adaptive_tolerance * adaptive_tolerance);
         let z_ref_norm_sqr = complex_norm_sqr(&z_ref_next_prec, prec);
         // Pauldelbrot glitch criterion: |δ|² > G² · max(|Z_ref|², 1e-6)
-        let min_scale = Float::with_val(prec, 1e-6);
-        let glitch_scale = if z_ref_norm_sqr < min_scale { min_scale } else { z_ref_norm_sqr };
-        let mut glitch_threshold = glitch_tolerance_sqr.clone();
+        let glitch_scale = if z_ref_norm_sqr < min_scale_gmp { min_scale_gmp.clone() } else { z_ref_norm_sqr };
+        let mut glitch_threshold = glitch_tolerance_sqr_gmp.clone();
         glitch_threshold *= &glitch_scale;
 
         // Check if delta_norm_sqr is too large (glitch detected)
@@ -1127,16 +1130,12 @@ pub fn iterate_pixel_gmp(
     let mut z_curr = z_ref_prec.clone();
     z_curr += &delta_prec;
     
-    // Final glitch check: verify delta is reasonable
-    let pixel_size = params.span_x / params.width as f64;
-    let adaptive_tolerance = compute_adaptive_glitch_tolerance(pixel_size, params.glitch_tolerance);
-    let glitch_tolerance_sqr = Float::with_val(prec, adaptive_tolerance * adaptive_tolerance);
+    // Final glitch check: verify delta is reasonable (reuse precomputed tolerance)
     let z_ref_norm_sqr = complex_norm_sqr(&z_ref_prec, prec);
     let delta_norm_sqr = complex_norm_sqr(&delta_prec, prec);
     // Pauldelbrot glitch criterion: |δ|² > G² · max(|Z_ref|², 1e-6)
-    let min_scale = Float::with_val(prec, 1e-6);
-    let glitch_scale = if z_ref_norm_sqr < min_scale { min_scale } else { z_ref_norm_sqr };
-    let mut glitch_threshold = glitch_tolerance_sqr.clone();
+    let glitch_scale = if z_ref_norm_sqr < min_scale_gmp { min_scale_gmp.clone() } else { z_ref_norm_sqr };
+    let mut glitch_threshold = glitch_tolerance_sqr_gmp.clone();
     glitch_threshold *= &glitch_scale;
     let is_glitched = !delta_norm_sqr.is_finite() || delta_norm_sqr > glitch_threshold;
     
