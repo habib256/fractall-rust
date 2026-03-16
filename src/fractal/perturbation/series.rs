@@ -203,9 +203,6 @@ pub fn compute_series_skip(
         return None;
     }
 
-    let dc_sq = dc_f64 * dc_f64;
-    let dc_cube = dc_sq * dc_f64;
-    let dc_4 = dc_sq * dc_sq;
     let dc_norm_sq = dc_norm * dc_norm;
 
     // Find the best (latest) iteration we can skip to.
@@ -216,15 +213,13 @@ pub fn compute_series_skip(
     let mut best_error = f64::MAX;
 
     for (n, coeffs) in table.coeffs.iter().enumerate() {
-        // Evaluate series: delta_n = a_n*dc + b_n*dc^2 + c_n*dc^3 + d_n*dc^4
-        let approx = coeffs.a * dc_f64
-            + coeffs.b * dc_sq
-            + coeffs.c * dc_cube
-            + coeffs.d * dc_4;
+        // Evaluate series using Horner's method for better numerical stability:
+        // delta_n = dc * (a + dc * (b + dc * (c + dc * d)))
+        // This reduces from 4 complex multiplies to 3, and is more stable.
+        let approx = dc_f64 * (coeffs.a + dc_f64 * (coeffs.b + dc_f64 * (coeffs.c + dc_f64 * coeffs.d)));
 
         // Estimate truncation error: O(dc^5) term
         // Error ~ |next_coeff| * |dc|^5
-        // We approximate |next_coeff| from coefficient growth rate
         let d_norm = coeffs.d.norm();
         let c_norm = coeffs.c.norm();
 
@@ -239,7 +234,8 @@ pub fn compute_series_skip(
 
         // Also check that the series hasn't diverged:
         // the last term should be small relative to the total
-        let last_term_norm = (coeffs.d * dc_4).norm();
+        let dc_4 = dc_norm_sq * dc_norm_sq;
+        let last_term_norm = d_norm * dc_4;
         let approx_norm = approx.norm();
         let term_ratio = if approx_norm > 1e-30 {
             last_term_norm / approx_norm
