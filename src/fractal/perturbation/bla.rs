@@ -288,7 +288,8 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
     // For pixel_size < 1e-15 (zoom > 10^15), f64 precision is insufficient
     // Disable BLA and use full GMP perturbation instead
     if params.width > 0 && params.height > 0 {
-        let pixel_size = params.span_x.abs().max(params.span_y.abs()) / params.width as f64;
+        let pixel_size = (params.span_x.abs() / params.width as f64)
+            .max(params.span_y.abs() / params.height as f64);
         if pixel_size.is_finite() && pixel_size > 0.0 && pixel_size < 1e-15 {
             // Zoom too deep for f64-based BLA: return empty table
             // The perturbation code will detect this and use full GMP path

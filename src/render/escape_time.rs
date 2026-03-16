@@ -475,7 +475,9 @@ fn compute_zoom(params: &FractalParams) -> Option<f64> {
     if params.width == 0 || params.height == 0 {
         return None;
     }
-    let pixel_size = params.span_x.abs().max(params.span_y.abs()) / params.width as f64;
+    // Use max of both axes to correctly handle non-square images
+    let pixel_size = (params.span_x.abs() / params.width as f64)
+        .max(params.span_y.abs() / params.height as f64);
     if !pixel_size.is_finite() || pixel_size <= 0.0 {
         return None;
     }
@@ -514,8 +516,10 @@ pub fn should_use_perturbation(params: &FractalParams, gpu_f32: bool) -> bool {
     ) {
         return false;
     }
-    let pixel_size = params.span_x.abs().max(params.span_y.abs()) / params.width as f64;
-    
+    // Use max of both axes to correctly handle non-square images
+    let pixel_size = (params.span_x.abs() / params.width as f64)
+        .max(params.span_y.abs() / params.height as f64);
+
     // Seuil maximum: au-delà de zoom ~4e15, la précision de ComplexExp (mantisse f64)
     // n'est plus suffisante. Forcer GMP pour ces zooms extrêmes.
     const MAX_ZOOM_THRESHOLD: f64 = 1e-15;

@@ -337,7 +337,9 @@ pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32
     if params.width == 0 || params.height == 0 {
         return params.precision_bits.max(128);
     }
-    let pixel_size = params.span_x.abs().max(params.span_y.abs()) / params.width as f64;
+    // Use max of both axes to correctly handle non-square images
+    let pixel_size = (params.span_x.abs() / params.width as f64)
+        .max(params.span_y.abs() / params.height as f64);
     if !pixel_size.is_finite() || pixel_size <= 0.0 {
         return params.precision_bits.max(128);
     }
@@ -408,7 +410,9 @@ pub fn should_use_full_gmp_perturbation(params: &FractalParams) -> bool {
     if params.width == 0 || params.height == 0 {
         return false;
     }
-    let pixel_size = params.span_x.abs().max(params.span_y.abs()) / params.width as f64;
+    // Use max of both axes to correctly handle non-square images
+    let pixel_size = (params.span_x.abs() / params.width as f64)
+        .max(params.span_y.abs() / params.height as f64);
     if !pixel_size.is_finite() || pixel_size <= 0.0 {
         return false;
     }
@@ -464,7 +468,8 @@ pub fn compute_dc_gmp(
     let half = Float::with_val(prec, 0.5);
     
     // Log de diagnostic pour quelques pixels (coin supérieur gauche) - une seule fois
-    let pixel_size = params.span_x.abs().max(params.span_y.abs()) / params.width as f64;
+    let pixel_size = (params.span_x.abs() / params.width as f64)
+        .max(params.span_y.abs() / params.height as f64);
     if pixel_size < 1e-15 && i == 0 && j == 0 {
         use std::sync::atomic::{AtomicBool, Ordering};
         static LOGGED_DC: AtomicBool = AtomicBool::new(false);
@@ -990,7 +995,8 @@ pub fn render_perturbation_with_cache(
         let t_post = t_post_start.elapsed();
 
         if perf {
-            let pixel_size = params.span_x.abs().max(params.span_y.abs()) / params.width.max(1) as f64;
+            let pixel_size = (params.span_x.abs() / params.width.max(1) as f64)
+            .max(params.span_y.abs() / params.height.max(1) as f64);
             let zoom = if pixel_size.is_finite() && pixel_size > 0.0 {
                 4.0 / pixel_size
             } else {
@@ -1035,12 +1041,15 @@ fn render_perturbation_gmp_path(
     // IMPORTANT: Vérifier que la précision du cache correspond à la précision calculée
     // Si la précision du cache est inférieure, cela peut causer des erreurs de précision
     if cache.precision_bits < prec {
+        let ps = (params.span_x.abs() / params.width as f64)
+            .max(params.span_y.abs() / params.height as f64);
         eprintln!("[PRECISION WARNING] Cache precision ({}) < required precision ({}) for zoom {:.2e}. Cache may need recomputation.",
-            cache.precision_bits, prec, params.span_x.abs().max(params.span_y.abs()) / params.width as f64);
+            cache.precision_bits, prec, ps);
     }
-    
+
     // Log de diagnostic - une seule fois
-    let pixel_size = params.span_x.abs().max(params.span_y.abs()) / params.width as f64;
+    let pixel_size = (params.span_x.abs() / params.width as f64)
+        .max(params.span_y.abs() / params.height as f64);
     if pixel_size < 1e-15 {
         use std::sync::atomic::{AtomicU32, Ordering};
         static LAST_LOGGED_GMP_PATH: AtomicU32 = AtomicU32::new(0);
