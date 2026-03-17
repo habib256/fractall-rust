@@ -25,7 +25,6 @@ use crate::fractal::perturbation::nonconformal::Matrix2x2;
 ///
 /// Returns `iteration as f64` if the point didn't escape or if the formula fails.
 #[inline]
-#[allow(dead_code)]
 pub fn compute_smooth_iteration(iteration: u32, z_final: Complex64, bailout: f64, power: f64) -> f64 {
     let norm_sqr = z_final.norm_sqr();
     if !norm_sqr.is_finite() || norm_sqr <= 0.0 || norm_sqr <= bailout * bailout {
@@ -49,6 +48,18 @@ pub fn compute_smooth_iteration(iteration: u32, z_final: Complex64, bailout: f64
     } else {
         iteration as f64
     }
+}
+
+/// Compute adaptive batch size based on fractal power.
+/// Inspired by rust-fractal-core's `iterations_before_check = 400 / power`.
+/// For standard Mandelbrot (power=2): 200 iterations per batch.
+/// For higher powers: smaller batches to check escape more frequently.
+#[inline]
+fn adaptive_batch_size(power: f64) -> u32 {
+    if power <= 0.0 || !power.is_finite() {
+        return 256;
+    }
+    (400.0 / power).round().clamp(64.0, 512.0) as u32
 }
 
 /// Applies a 2×2 real matrix to all components (value + duals) of an ExtendedDualComplex.
@@ -138,12 +149,11 @@ enum BatchResult {
 /// - NOT Burning Ship, Tricorn, or Multibrot (different formulas)
 /// - NOT when distance estimation or interior detection is enabled
 #[inline(never)]
-fn fast_mandelbrot_batch_f64(
+fn fast_mandelbrot_batch_f64<const IS_JULIA: bool>(
     ref_orbit: &ReferenceOrbit,
     n: &mut u32,
     delta: &mut ComplexExp,
     dc_f64: Complex64,
-    is_julia: bool,
     bailout_sqr: f64,
     glitch_tolerance_sqr: f64,
     max_iter: u32,
@@ -151,7 +161,8 @@ fn fast_mandelbrot_batch_f64(
     suspect: &mut bool,
     iters_ptb: &mut u32,
 ) -> BatchResult {
-    const BATCH_SIZE: u32 = 256;
+    // Adaptive batch size: 400/power for power=2 → 200
+    const BATCH_SIZE: u32 = 200;
 
     // Scaled delta approach (inspired by rust-fractal-core):
     // Keep delta as mantissa * 2^exponent, but do arithmetic on mantissa only,
@@ -210,7 +221,7 @@ fn fast_mandelbrot_batch_f64(
             let two_zr_im = 2.0 * z_ref.im * inv_scale;
             let new_re = two_zr_re * d_re - two_zr_im * d_im + sf * (d_re * d_re - d_im * d_im);
             let new_im = two_zr_re * d_im + two_zr_im * d_re + sf * (2.0 * d_re * d_im);
-            if is_julia {
+            if IS_JULIA {
                 d_re = new_re;
                 d_im = new_im;
             } else {
@@ -282,7 +293,7 @@ fn fast_mandelbrot_batch_f64(
         let two_zr_im = 2.0 * z_ref.im * inv_scale;
         let new_re = two_zr_re * d_re - two_zr_im * d_im + sf * (d_re * d_re - d_im * d_im);
         let new_im = two_zr_re * d_im + two_zr_im * d_re + sf * (2.0 * d_re * d_im);
-        if is_julia {
+        if IS_JULIA {
             d_re = new_re;
             d_im = new_im;
         } else {
@@ -370,7 +381,7 @@ fn fast_mandelbrot_batch_f64(
             };
             let linear = delta.mul(z_ref_2);
             let nonlinear = delta.mul(*delta);
-            *delta = if is_julia {
+            *delta = if IS_JULIA {
                 linear.add(nonlinear)
             } else {
                 linear.add(nonlinear).add(ComplexExp {
@@ -468,7 +479,8 @@ fn fast_burning_ship_batch_f64(
     suspect: &mut bool,
     iters_ptb: &mut u32,
 ) -> BatchResult {
-    const BATCH_SIZE: u32 = 256;
+    // Adaptive batch size: 400/power for power=2 → 200
+    const BATCH_SIZE: u32 = 200;
 
     let mut d_re = delta.re.mantissa;
     let mut d_im = delta.im.mantissa;
@@ -631,7 +643,8 @@ fn fast_tricorn_batch_f64(
     suspect: &mut bool,
     iters_ptb: &mut u32,
 ) -> BatchResult {
-    const BATCH_SIZE: u32 = 256;
+    // Adaptive batch size: 400/power for power=2 → 200
+    const BATCH_SIZE: u32 = 200;
 
     let orbit_f64 = &ref_orbit.z_ref_f64;
     let phase_offset = ref_orbit.phase_offset as usize;
@@ -800,7 +813,8 @@ fn fast_multibrot_batch_f64(
     suspect: &mut bool,
     iters_ptb: &mut u32,
 ) -> BatchResult {
-    const BATCH_SIZE: u32 = 256;
+    // Adaptive batch size based on fractal power (rust-fractal-core: 400/power)
+    let batch_size = adaptive_batch_size(power as f64);
 
     // Scaled delta approach (inspired by rust-fractal-core):
     // scale_factor = 2^exponent, keep mantissa in f64 range
@@ -842,7 +856,7 @@ fn fast_multibrot_batch_f64(
         .find(|&&iter| iter > *n)
         .copied()
         .unwrap_or(u32::MAX);
-    let batch_end = (*n + BATCH_SIZE).min(max_iter).min(next_extended);
+    let batch_end = (*n + batch_size).min(max_iter).min(next_extended);
 
     let make_delta = |d_re: f64, d_im: f64| -> ComplexExp {
         if use_scaling {
@@ -1111,6 +1125,7 @@ pub fn iterate_pixel(
     let is_multibrot = params.fractal_type == FractalType::Multibrot;
     let is_tricorn = params.fractal_type == FractalType::Tricorn;
     let multibrot_power = params.multibrot_power;
+    let smooth_power = if is_multibrot { params.multibrot_power } else { 2.0 };
     let series_config = SeriesConfig::from_params(params);
     let mut suspect = false;
 
@@ -1263,18 +1278,17 @@ pub fn iterate_pixel(
             // Complex multiplication cannot correctly compose these transformations
             // across BLA levels.
             if is_tricorn || is_burning_ship {
-                if let Some(ref nonconformal_levels) = bla_table.nonconformal_levels {
-                    if !nonconformal_levels.is_empty() {
+                if bla_table.nc_num_levels() > 0 {
+                    {
                         // Utiliser le cache de delta_approx (optimisation 1)
                         let delta_vec = (delta_approx_cached.re, delta_approx_cached.im);
                         let delta_norm_sqr_check = delta_vec.0 * delta_vec.0 + delta_vec.1 * delta_vec.1;
-                        
-                        for level in (0..nonconformal_levels.len()).rev() {
-                            let level_nodes = &nonconformal_levels[level];
-                            if (n as usize) >= level_nodes.len() {
+
+                        for level in (0..bla_table.nc_num_levels()).rev() {
+                            if (n as usize) >= bla_table.nc_level_len(level) {
                                 continue;
                             }
-                            let node = &level_nodes[n as usize];
+                            let node = bla_table.get_nc_node(level, n as usize).unwrap();
                             
                             if delta_norm_sqr_check < node.validity_radius * node.validity_radius {
                                 // Apply non-conformal BLA: z_{n+l} = A_{n,l}·z_n + B_{n,l}·c
@@ -1357,31 +1371,23 @@ pub fn iterate_pixel(
             // (which happens as perturbation proceeds), the valid level tends to decrease monotonically.
             // Conformal BLA: only for Mandelbrot/Julia/Multibrot (NOT Burning Ship or Tricorn).
             // Burning Ship and Tricorn use the non-conformal BLA path above.
-            if !stepped && !is_burning_ship && !is_tricorn && !bla_table.levels.is_empty() {
+            if !stepped && !is_burning_ship && !is_tricorn && bla_table.num_levels() > 0 {
                 // Utiliser le cache de la norme au lieu de recalculer (optimisation 2)
                 let delta_norm_sqr = delta_norm_sqr_cached;
                 // Search from highest level (largest skip) to lowest level (smallest skip)
-                for level in (0..bla_table.levels.len()).rev() {
-                    let level_nodes = &bla_table.levels[level];
-                    if (n as usize) >= level_nodes.len() {
+                for level in (0..bla_table.num_levels()).rev() {
+                    if (n as usize) >= bla_table.level_len(level) {
                         continue;
                     }
-                    let node = &level_nodes[n as usize];
-                    // Pour Burning Ship, vérifier que le BLA est valide (quadrant stable)
-                    if is_burning_ship && !node.burning_ship_valid {
-                        continue;
-                    }
+                    let node = bla_table.get_node(level, n as usize).unwrap();
                     // Single Step BLA validity condition: |z_n| < R_{n,l}
                     // Derived from: |z_n²| << |2·Z_n·z_n + c|
                     // Assuming negligibility of c: |z_n| << |2·Z_n| = |A_{n,1}|
                     // Therefore: |z_n| < R_{n,l} where R_{n,l} = ε·|A_{n,l}|
                     if delta_norm_sqr < node.validity_radius * node.validity_radius {
-                        // For Burning Ship, apply sign transformation to delta
-                        let work_delta = if is_burning_ship && node.burning_ship_valid {
-                            delta.mul_signed(node.sign_re, node.sign_im)
-                        } else {
-                            delta
-                        };
+                        // Note: Burning Ship/Tricorn use the non-conformal BLA path,
+                        // so work_delta == delta here (no sign transformation needed).
+                        let work_delta = delta;
 
                         if should_use_series(series_config, delta_norm_sqr, node.validity_radius) {
                             // Use series approximation with higher-order terms
@@ -1500,11 +1506,19 @@ pub fn iterate_pixel(
                         &mut suspect, &mut iters_ptb,
                     )
                 } else {
-                    fast_mandelbrot_batch_f64(
-                        ref_orbit, &mut n, &mut delta, dc_f64, is_julia,
-                        bailout_sqr, glitch_tolerance_sqr, max_iter,
-                        effective_len, &mut suspect, &mut iters_ptb,
-                    )
+                    if is_julia {
+                        fast_mandelbrot_batch_f64::<true>(
+                            ref_orbit, &mut n, &mut delta, dc_f64,
+                            bailout_sqr, glitch_tolerance_sqr, max_iter,
+                            effective_len, &mut suspect, &mut iters_ptb,
+                        )
+                    } else {
+                        fast_mandelbrot_batch_f64::<false>(
+                            ref_orbit, &mut n, &mut delta, dc_f64,
+                            bailout_sqr, glitch_tolerance_sqr, max_iter,
+                            effective_len, &mut suspect, &mut iters_ptb,
+                        )
+                    }
                 };
                 match batch_result {
                     BatchResult::Escaped { iteration, z_final } => {
@@ -1516,7 +1530,7 @@ pub fn iterate_pixel(
                             distance: f64::INFINITY,
                             is_interior: false,
                             phase_changed,
-                        smooth_iteration: 0.0,
+                            smooth_iteration: compute_smooth_iteration(iteration, z_final, params.bailout, smooth_power),
                         };
                     }
                     BatchResult::Glitched { iteration, z_final } => {
@@ -1756,7 +1770,7 @@ pub fn iterate_pixel(
                 distance: f64::INFINITY, // Distance estimation not computed for escaped points
                 is_interior: false,
                 phase_changed,
-            smooth_iteration: 0.0,
+                smooth_iteration: compute_smooth_iteration(n, z_curr, params.bailout, smooth_power),
             };
         }
 
@@ -1847,6 +1861,7 @@ pub fn iterate_pixel_gmp(
     let is_julia = params.fractal_type == FractalType::Julia;
     let is_burning_ship = params.fractal_type == FractalType::BurningShip;
     let is_tricorn = params.fractal_type == FractalType::Tricorn;
+    let smooth_power = if params.fractal_type == FractalType::Multibrot { params.multibrot_power } else { 2.0 };
 
     // Precompute glitch tolerance outside the loop to avoid repeated GMP allocations
     let pixel_size_gmp = params.span_x / params.width as f64;
@@ -2008,15 +2023,16 @@ pub fn iterate_pixel_gmp(
         }
 
         if z_curr_norm_sqr > bailout_sqr {
+            let z_final = crate::fractal::gmp::complex_to_complex64(&z_curr);
             return DeltaResult {
                 iteration: n,
-                z_final: crate::fractal::gmp::complex_to_complex64(&z_curr),
+                z_final,
                 glitched: false,
                 suspect: false,
                 distance: f64::INFINITY,
                 is_interior: false,
                 phase_changed: false,
-            smooth_iteration: 0.0,
+                smooth_iteration: compute_smooth_iteration(n, z_final, params.bailout, smooth_power),
             };
         }
 
@@ -2144,6 +2160,7 @@ pub(crate) fn iterate_pixel_with_duals(
     let is_multibrot = params.fractal_type == FractalType::Multibrot;
     let is_tricorn = params.fractal_type == FractalType::Tricorn;
     let multibrot_power = params.multibrot_power;
+    let smooth_power = if is_multibrot { params.multibrot_power } else { 2.0 };
     let _series_config = SeriesConfig::from_params(params);
     let suspect = false;
     
@@ -2198,8 +2215,10 @@ pub(crate) fn iterate_pixel_with_duals(
             n = 0;
         }
 
-        // Check interior detection
-        if enable_interior {
+        // Check interior detection periodically to reduce overhead.
+        // Interior convergence is gradual, so checking every N iterations is sufficient.
+        const INTERIOR_CHECK_STRIDE: u32 = 100;
+        if enable_interior && (n % INTERIOR_CHECK_STRIDE == 0) {
             if is_interior(delta_dual, params.interior_threshold) {
                 let z_ref = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
                     ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
@@ -2219,14 +2238,13 @@ pub(crate) fn iterate_pixel_with_duals(
         }
 
         // Try BLA for conformal fractals (NOT Burning Ship or Tricorn which use non-conformal BLA)
-        if !is_tricorn && !is_burning_ship && !bla_table.levels.is_empty() {
+        if !is_tricorn && !is_burning_ship && bla_table.num_levels() > 0 {
             let delta_norm_sqr = delta_dual.norm_sqr();
-            for level in (0..bla_table.levels.len()).rev() {
-                let level_nodes = &bla_table.levels[level];
-                if (n as usize) >= level_nodes.len() {
+            for level in (0..bla_table.num_levels()).rev() {
+                if (n as usize) >= bla_table.level_len(level) {
                     continue;
                 }
-                let node = &level_nodes[n as usize];
+                let node = bla_table.get_node(level, n as usize).unwrap();
                 if is_burning_ship && !node.burning_ship_valid {
                     continue;
                 }
@@ -2259,28 +2277,25 @@ pub(crate) fn iterate_pixel_with_duals(
         
         // Try non-conformal BLA for Tricorn and Burning Ship
         if is_tricorn || is_burning_ship {
-            if let Some(ref nonconformal_levels) = bla_table.nonconformal_levels {
-                if !nonconformal_levels.is_empty() {
-                    let delta_vec = (delta_dual.value.re, delta_dual.value.im);
-                    let delta_norm_sqr_check = delta_vec.0 * delta_vec.0 + delta_vec.1 * delta_vec.1;
-                    
-                    for level in (0..nonconformal_levels.len()).rev() {
-                        let level_nodes = &nonconformal_levels[level];
-                        if (n as usize) >= level_nodes.len() {
-                            continue;
-                        }
-                        let node = &level_nodes[n as usize];
-                        
-                        if delta_norm_sqr_check < node.validity_radius * node.validity_radius {
-                            // Apply non-conformal BLA with full dual propagation
-                            // z_{n+l} = A·z_n + B·dc (2×2 real matrices applied to all components)
-                            let linear_dual = apply_nonconformal_matrix(node.a, delta_dual);
-                            let dc_term_dual = apply_nonconformal_matrix(node.b, dc_dual);
-                            delta_dual = linear_dual.add(dc_term_dual);
-                            n += 1u32 << level;
-                            stepped = true;
-                            break;
-                        }
+            if bla_table.nc_num_levels() > 0 {
+                let delta_vec = (delta_dual.value.re, delta_dual.value.im);
+                let delta_norm_sqr_check = delta_vec.0 * delta_vec.0 + delta_vec.1 * delta_vec.1;
+
+                for level in (0..bla_table.nc_num_levels()).rev() {
+                    if (n as usize) >= bla_table.nc_level_len(level) {
+                        continue;
+                    }
+                    let node = bla_table.get_nc_node(level, n as usize).unwrap();
+
+                    if delta_norm_sqr_check < node.validity_radius * node.validity_radius {
+                        // Apply non-conformal BLA with full dual propagation
+                        // z_{n+l} = A·z_n + B·dc (2×2 real matrices applied to all components)
+                        let linear_dual = apply_nonconformal_matrix(node.a, delta_dual);
+                        let dc_term_dual = apply_nonconformal_matrix(node.b, dc_dual);
+                        delta_dual = linear_dual.add(dc_term_dual);
+                        n += 1u32 << level;
+                        stepped = true;
+                        break;
                     }
                 }
             }
@@ -2453,10 +2468,10 @@ pub(crate) fn iterate_pixel_with_duals(
                 distance,
                 is_interior: false,
                 phase_changed: false,
-            smooth_iteration: 0.0,
+                smooth_iteration: compute_smooth_iteration(n, z_curr, params.bailout, smooth_power),
             };
         }
-        
+
         // Check glitch
         let z_ref_norm_sqr = z_ref.norm_sqr();
         let delta_norm_sqr = delta_dual.norm_sqr();

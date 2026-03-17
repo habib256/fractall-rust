@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use num_complex::Complex64;
-use rug::{Complex, Float};
+use rug::{Assign, Complex, Float};
 
 use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::gmp::{complex_to_complex64, pow_f64_mpc};
@@ -524,18 +524,17 @@ pub fn compute_reference_orbit_cached(
         }
     }
 
-    // Compute fresh orbit and BLA table
-    let t_orbit = Instant::now();
-    let (orbit, center_x_gmp, center_y_gmp) = compute_reference_orbit(params, cancel)?;
-    let dt_orbit = t_orbit.elapsed();
+    // Auto-adjustment of iteration_max based on series skip ratio.
+    // Inspired by rust-fractal-core: if the series skips >25% of iterations,
+    // double iteration_max and recompute (up to 2 rounds, capped at 10M).
+    // This reveals detail hidden behind an insufficient iteration count.
+    const MAX_AUTO_ADJUST_ROUNDS: u32 = 2;
+    const SKIP_RATIO_INCREASE: f64 = 0.25;
+    const SKIP_RATIO_DECREASE: f64 = 0.125;
+    const MAX_ITERATION_CAP: u32 = 10_000_000;
 
-    // Use z_ref_f64 for BLA table building (BLA works with f64 coefficients)
-    let t_bla = Instant::now();
-    let bla_table = build_bla_table(&orbit.z_ref_f64, params, orbit.cref);
-    let dt_bla = t_bla.elapsed();
+    let mut adjusted_params = params.clone();
 
-    // Build series table for standalone series approximation (if enabled)
-    // Only for Mandelbrot and Julia; Burning Ship has abs() which breaks series
     let pixel_count = (params.width as u64).saturating_mul(params.height as u64);
     let small_image = params.width.max(params.height) <= 512;
     let disable_series = match std::env::var("FRACTALL_PERTURB_DISABLE_SERIES") {
@@ -546,72 +545,145 @@ pub fn compute_reference_orbit_cached(
         Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
         Err(_) => false,
     };
-    let should_build_series = !disable_series
-        && (force_series
-            || (params.series_standalone
-                && matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia)
-                // Heuristique: sur petites images, éviter de payer un coût fixe si iters faibles
-                && (!small_image || params.iteration_max >= 5000)
-                && (pixel_count >= 16_384 || params.iteration_max >= 10_000)));
-
-    let t_series = Instant::now();
     let is_julia = params.fractal_type == FractalType::Julia;
-    let series_table = if should_build_series {
-        // Adaptive series order based on zoom depth (inspired by rust-fractal-core).
-        // At deeper zooms, higher-order series provide more iteration skipping.
-        let pixel_size = (params.span_x.abs() / params.width.max(1) as f64)
-            .max(params.span_y.abs() / params.height.max(1) as f64);
-        let adaptive_order = compute_adaptive_series_order(
-            pixel_size,
-            params.iteration_max,
-            params.series_order,
-        );
-        let series_order = adaptive_order.max(4);
-        // Use data_storage_interval to reduce memory on deep zooms
-        let interval = if orbit.z_ref_f64.len() > 100_000 { 10 } else { 1 };
-        let mut table = build_series_table_ho(&orbit.z_ref_f64, is_julia, series_order, interval);
 
-        // Tiled probe-based validation (improved, inspired by rust-fractal-core's
-        // check_approximation() which supports per-region series skip).
-        // Uses a probe grid to determine per-pixel valid iteration counts instead
-        // of a single global minimum, allowing more aggressive skipping near center.
-        let pixel_size = (params.span_x.abs() / params.width.max(1) as f64)
-            .max(params.span_y.abs() / params.height.max(1) as f64);
-        if pixel_size > 0.0 && pixel_size.is_finite() {
-            let tiled = validate_series_with_probes_tiled(
-                &table,
-                &orbit.z_ref_f64,
-                is_julia,
-                pixel_size,
-                params.width as usize,
-                params.height as usize,
-                4, // probe_sampling: 4x4 grid = 16 probes
-            );
-            table.validated_skip = tiled.global_min;
-            table.tiled_validation = Some(tiled);
+    // Compute orbit + BLA + series, potentially re-running with doubled iteration_max
+    let t_orbit_first = Instant::now();
+    let (mut orbit, mut center_x_gmp, mut center_y_gmp) = compute_reference_orbit(&adjusted_params, cancel)?;
+    let mut dt_orbit = t_orbit_first.elapsed();
+
+    let t_bla_first = Instant::now();
+    let mut bla_table = build_bla_table(&orbit.z_ref_f64, &adjusted_params, orbit.cref);
+    let mut dt_bla = t_bla_first.elapsed();
+
+    let mut series_table: Option<SeriesTable> = None;
+    let mut dt_series = std::time::Duration::ZERO;
+
+    for round in 0..=MAX_AUTO_ADJUST_ROUNDS {
+        if round > 0 {
+            // Recompute orbit + BLA with adjusted iteration_max
+            let t_orbit_start = Instant::now();
+            let result = compute_reference_orbit(&adjusted_params, cancel)?;
+            orbit = result.0;
+            center_x_gmp = result.1;
+            center_y_gmp = result.2;
+            dt_orbit = t_orbit_start.elapsed();
+
+            let t_bla_start = Instant::now();
+            bla_table = build_bla_table(&orbit.z_ref_f64, &adjusted_params, orbit.cref);
+            dt_bla = t_bla_start.elapsed();
         }
 
-        Some(table)
-    } else {
-        None
-    };
-    let dt_series = t_series.elapsed();
+        // Build series table for standalone series approximation (if enabled)
+        let should_build_series = !disable_series
+            && (force_series
+                || (adjusted_params.series_standalone
+                    && matches!(adjusted_params.fractal_type, FractalType::Mandelbrot | FractalType::Julia)
+                    && (!small_image || adjusted_params.iteration_max >= 5000)
+                    && (pixel_count >= 16_384 || adjusted_params.iteration_max >= 10_000)));
+
+        let t_series_start = Instant::now();
+        series_table = if should_build_series {
+            let pixel_size = (adjusted_params.span_x.abs() / adjusted_params.width.max(1) as f64)
+                .max(adjusted_params.span_y.abs() / adjusted_params.height.max(1) as f64);
+            let adaptive_order = compute_adaptive_series_order(
+                pixel_size,
+                adjusted_params.iteration_max,
+                adjusted_params.series_order,
+            );
+            let series_order = adaptive_order.max(4);
+            let interval = if orbit.z_ref_f64.len() > 100_000 { 10 } else { 1 };
+            let mut table = build_series_table_ho(&orbit.z_ref_f64, is_julia, series_order, interval);
+
+            if pixel_size > 0.0 && pixel_size.is_finite() {
+                let tiled = validate_series_with_probes_tiled(
+                    &table,
+                    &orbit.z_ref_f64,
+                    is_julia,
+                    pixel_size,
+                    adjusted_params.width as usize,
+                    adjusted_params.height as usize,
+                    4,
+                );
+                table.validated_skip = tiled.global_min;
+                table.tiled_validation = Some(tiled);
+            }
+
+            Some(table)
+        } else {
+            None
+        };
+        dt_series = t_series_start.elapsed();
+
+        // Auto-adjust iteration_max based on series skip ratio
+        // (only on rounds before the last, and only if series is active)
+        if round < MAX_AUTO_ADJUST_ROUNDS {
+            if let Some(ref table) = series_table {
+                let skip = table.validated_skip as f64;
+                let max_iter = adjusted_params.iteration_max as f64;
+                if max_iter > 0.0 {
+                    let skip_ratio = skip / max_iter;
+                    if skip_ratio > SKIP_RATIO_INCREASE
+                        && adjusted_params.iteration_max < MAX_ITERATION_CAP
+                    {
+                        // Series skips >25% of iterations: double and recompute
+                        let new_max = (adjusted_params.iteration_max * 2).min(MAX_ITERATION_CAP);
+                        if perf {
+                            eprintln!(
+                                "[PERTURB AUTO-ADJUST] round={} skip_ratio={:.1}% ({}/{}) → doubling iteration_max {} → {}",
+                                round, skip_ratio * 100.0, table.validated_skip, adjusted_params.iteration_max,
+                                adjusted_params.iteration_max, new_max,
+                            );
+                        }
+                        adjusted_params.iteration_max = new_max;
+                        continue; // Recompute with higher iteration_max
+                    } else if skip_ratio < SKIP_RATIO_DECREASE
+                        && adjusted_params.iteration_max > params.iteration_max
+                    {
+                        // Series skips <12.5%: iteration_max may be too high (only reduce
+                        // back towards user's original value, never below it)
+                        let new_max = adjusted_params.iteration_max
+                            .min(adjusted_params.iteration_max / 2)
+                            .max(params.iteration_max);
+                        if new_max < adjusted_params.iteration_max {
+                            if perf {
+                                eprintln!(
+                                    "[PERTURB AUTO-ADJUST] round={} skip_ratio={:.1}% → reducing iteration_max {} → {}",
+                                    round, skip_ratio * 100.0, adjusted_params.iteration_max, new_max,
+                                );
+                            }
+                            adjusted_params.iteration_max = new_max;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        break; // No adjustment needed, use current results
+    }
 
     // Build Hybrid BLA references (detect cycles and create references for each phase)
     // For Hybrid BLA: you need one BLA table per reference
     let t_hybrid = Instant::now();
-    let hybrid_refs = build_hybrid_bla_references(&orbit, &bla_table, params, cancel);
+    let hybrid_refs = build_hybrid_bla_references(&orbit, &bla_table, &adjusted_params, cancel);
     let dt_hybrid = t_hybrid.elapsed();
 
     if perf {
+        let adjusted = if adjusted_params.iteration_max != params.iteration_max {
+            format!(" (auto-adjusted from {})", params.iteration_max)
+        } else {
+            String::new()
+        };
         eprintln!(
-            "[PERTURB PERF] reference_cache=miss size={}x{} pixels={} small_image={} type={:?} iters={} orbit={:.3}s bla={:.3}s series={:.3}s hybrid={:.3}s total={:.3}s",
+            "[PERTURB PERF] reference_cache=miss size={}x{} pixels={} small_image={} type={:?} iters={}{} orbit={:.3}s bla={:.3}s series={:.3}s hybrid={:.3}s total={:.3}s",
             params.width,
             params.height,
             pixel_count,
             small_image,
             params.fractal_type,
-            params.iteration_max,
+            adjusted_params.iteration_max,
+            adjusted,
             dt_orbit.as_secs_f64(),
             dt_bla.as_secs_f64(),
             dt_series.as_secs_f64(),
@@ -624,7 +696,7 @@ pub fn compute_reference_orbit_cached(
         orbit,
         bla_table,
         series_table,
-        params,
+        &adjusted_params,
         center_x_gmp,
         center_y_gmp,
         hybrid_refs,
@@ -800,6 +872,8 @@ pub fn compute_reference_orbit(
         0.0
     };
     let mut period_check_z = Complex::with_val(prec, (0, 0));
+    let mut period_diff = Complex::with_val(prec, (0, 0));
+    let period_tol_gmp = Float::with_val(prec, period_tolerance * period_tolerance);
     let mut period_check_iter = 0u32;
     let mut period_step = 1u32; // Floyd's cycle detection: double step size periodically
     let mut detected_period = 0u32;
@@ -818,10 +892,9 @@ pub fn compute_reference_orbit(
         // Compares z_n to a checkpoint value, doubling the step size when needed.
         // When |z_n - z_checkpoint| < tolerance, the orbit is periodic.
         if enable_period_detection && i > 0 {
-            let diff = Complex::with_val(prec, &z - &period_check_z);
-            let diff_norm = complex_norm_sqr(&diff, prec);
-            let tol_gmp = Float::with_val(prec, period_tolerance * period_tolerance);
-            if diff_norm < tol_gmp && i > period_check_iter {
+            period_diff.assign(&z - &period_check_z);
+            let diff_norm = complex_norm_sqr(&period_diff, prec);
+            if diff_norm < period_tol_gmp && i > period_check_iter {
                 detected_period = i - period_check_iter;
                 // Stop the orbit: we've detected periodicity, meaning the center
                 // is an interior point. The orbit will just repeat from here.

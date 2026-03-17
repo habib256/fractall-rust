@@ -512,7 +512,7 @@ pub fn should_use_perturbation(params: &FractalParams, gpu_f32: bool) -> bool {
     }
     if !matches!(
         params.fractal_type,
-        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn
+        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn | FractalType::Multibrot
     ) {
         return false;
     }

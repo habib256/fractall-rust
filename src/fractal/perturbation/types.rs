@@ -237,6 +237,7 @@ impl ComplexExp {
     /// result.re = sign_re * self.re
     /// result.im = sign_im * self.im
     #[inline(always)]
+    #[allow(dead_code)]
     pub fn mul_signed(self, sign_re: f64, sign_im: f64) -> Self {
         Self {
             re: FloatExp::new(self.re.mantissa * sign_re, self.re.exponent),

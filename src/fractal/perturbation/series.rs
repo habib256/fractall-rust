@@ -196,6 +196,7 @@ pub fn build_series_table_ho(
 }
 
 /// Build the series table (backward compatible, fixed order 4).
+#[cfg(test)]
 pub fn build_series_table(z_ref: &[Complex64], is_julia: bool) -> SeriesTable {
     build_series_table_ho(z_ref, is_julia, 4, 1)
 }

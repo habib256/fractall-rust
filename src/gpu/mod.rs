@@ -406,34 +406,33 @@ impl GpuRenderer {
         let bla_table = &cache.bla_table;
         let supports_bla = matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia);
         let bla_levels = if supports_bla {
-            bla_table.levels.len().min(MAX_LEVELS)
+            bla_table.num_levels().min(MAX_LEVELS)
         } else {
             0
         };
 
         // Check if we can reuse GPU buffers from the cache
         let current_orbit_id = PerturbationBufferCache::generate_orbit_id(&cache);
-        
+
         // Prepare buffer data outside the lock
+        // The BLA table is already flattened; we just need to compute per-level offsets/lengths
+        // for the GPU uniform and convert nodes to f32.
         let mut level_offsets = [0u32; MAX_LEVELS];
         let mut level_lengths = [0u32; MAX_LEVELS];
-        let mut flattened = Vec::new();
-        let mut offset = 0u32;
-        for (idx, level) in bla_table.levels.iter().enumerate().take(MAX_LEVELS) {
-            level_offsets[idx] = offset;
-            level_lengths[idx] = level.len() as u32;
-            offset += level.len() as u32;
-            flattened.extend(level.iter().map(|node| BlaNode {
-                a_re: node.a.re as f32,
-                a_im: node.a.im as f32,
-                b_re: node.b.re as f32,
-                b_im: node.b.im as f32,
-                c_re: node.c.re as f32,
-                c_im: node.c.im as f32,
-                validity: node.validity_radius as f32,
-                _pad: 0.0,
-            }));
+        for idx in 0..bla_table.num_levels().min(MAX_LEVELS) {
+            level_offsets[idx] = bla_table.level_offsets[idx] as u32;
+            level_lengths[idx] = bla_table.level_lengths[idx] as u32;
         }
+        let flattened: Vec<BlaNode> = bla_table.nodes.iter().map(|node| BlaNode {
+            a_re: node.a.re as f32,
+            a_im: node.a.im as f32,
+            b_re: node.b.re as f32,
+            b_im: node.b.im as f32,
+            c_re: node.c.re as f32,
+            c_im: node.c.im as f32,
+            validity: node.validity_radius as f32,
+            _pad: 0.0,
+        }).collect();
 
         let z_ref_data: Vec<ZRef> = ref_orbit
             .z_ref_f64
@@ -616,7 +615,13 @@ impl GpuRenderer {
                     FractalType::TricornJulia => 4,
                     _ => 0,
                 },
-                glitch_tolerance: params.glitch_tolerance as f32,
+                glitch_tolerance: {
+                    let pixel_size = span_x / params.width as f64;
+                    crate::fractal::perturbation::delta::compute_adaptive_glitch_tolerance(
+                        pixel_size,
+                        params.glitch_tolerance,
+                    ) as f32
+                },
                 series_order: params.series_order as u32,
                 series_threshold: params.series_threshold as f32,
                 _pad_align: 0,

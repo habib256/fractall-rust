@@ -45,25 +45,9 @@ const MAX_LEVELS: u32 = 17u;
 // FloatExp-style: keep mantissa in reasonable range while tracking scale separately
 const RESCALE_HI: f32 = 1.0e6;
 const RESCALE_LO: f32 = 1.0e-6;
-const DEFAULT_GLITCH_TOLERANCE: f32 = 1.0e-4;
 // ============================================================================
 
-// Calcule la tolérance de glitch adaptative basée sur le niveau de zoom
-fn compute_adaptive_glitch_tolerance(pixel_size: f32, user_tolerance: f32) -> f32 {
-    // Si l'utilisateur a défini une tolérance personnalisée, la respecter
-    if (abs(user_tolerance - DEFAULT_GLITCH_TOLERANCE) > 1.0e-10) {
-        return user_tolerance;
-    }
-
-    // Continuous adaptive tolerance scaling (inspired by rust-fractal-core).
-    // Instead of discrete steps, use a smooth logarithmic ramp:
-    //   tolerance = 10^(-5 + zoom_level * slope)
-    // This matches the CPU implementation for consistent glitch detection.
-    let zoom_level = log(4.0 / max(pixel_size, 1.0e-38)) / log(10.0);
-    let slope = 0.1;
-    let log_tol = -5.0 + max(zoom_level, 0.0) * slope;
-    return pow(10.0, clamp(log_tol, -6.0, -1.0));
-}
+// Adaptive glitch tolerance is pre-computed on CPU and passed via params.glitch_tolerance
 
 struct BlaMeta {
     level_offsets: array<u32, MAX_LEVELS>,
@@ -230,9 +214,8 @@ fn main(
     var n: u32 = 0u;
     let bailout_sqr = params.bailout * params.bailout;
     
-    // Tolérance adaptative basée sur le niveau de zoom
-    let adaptive_tolerance = compute_adaptive_glitch_tolerance(pixel_size, params.glitch_tolerance);
-    let glitch_tolerance_sqr = adaptive_tolerance * adaptive_tolerance;
+    // Adaptive glitch tolerance is pre-computed on CPU
+    let glitch_tolerance_sqr = params.glitch_tolerance * params.glitch_tolerance;
 
     loop {
         if (n >= params.iter_max) {

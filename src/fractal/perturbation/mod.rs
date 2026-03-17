@@ -567,7 +567,7 @@ pub fn render_perturbation_with_cache(
     }
     let supports = matches!(
         params.fractal_type,
-        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn
+        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn | FractalType::Multibrot
     );
     if !supports {
         return None;
@@ -591,6 +591,19 @@ pub fn render_perturbation_with_cache(
     let cache =
         compute_reference_orbit_cached(&orbit_params, Some(cancel.as_ref()), orbit_cache)?;
     let t_orbit = t_orbit_start.elapsed();
+
+    // Use the cache's iteration_max if it was auto-adjusted upward by series skip ratio.
+    // This ensures iterate_pixel uses the adjusted value to reveal detail that would
+    // otherwise be hidden behind an insufficient iteration count.
+    let params = if cache.iteration_max > params.iteration_max {
+        let mut adjusted = params.clone();
+        adjusted.iteration_max = cache.iteration_max;
+        std::borrow::Cow::Owned(adjusted)
+    } else {
+        std::borrow::Cow::Borrowed(params)
+    };
+    let params = params.as_ref();
+
     let width = params.width as usize;
     let height = params.height as usize;
     let pixel_count = width.saturating_mul(height);
@@ -857,7 +870,15 @@ pub fn render_perturbation_with_cache(
                         && matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia)
                     {
                         let is_julia = params.fractal_type == FractalType::Julia;
-                        Some(series::build_series_table(&sec_orbit.z_ref_f64, is_julia))
+                        let pixel_size = (params.span_x.abs() / params.width.max(1) as f64)
+                            .max(params.span_y.abs() / params.height.max(1) as f64);
+                        let adaptive_order = series::compute_adaptive_series_order(
+                            pixel_size,
+                            params.iteration_max,
+                            params.series_order,
+                        ).max(4);
+                        let interval = if sec_orbit.z_ref_f64.len() > 100_000 { 10 } else { 1 };
+                        Some(series::build_series_table_ho(&sec_orbit.z_ref_f64, is_julia, adaptive_order, interval))
                     } else {
                         None
                     };

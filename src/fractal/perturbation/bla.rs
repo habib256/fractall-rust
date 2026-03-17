@@ -1,4 +1,5 @@
 use num_complex::Complex64;
+use rayon::prelude::*;
 
 use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::perturbation::nonconformal::{
@@ -46,17 +47,75 @@ pub struct BlaNodeNonConformal {
 
 #[derive(Clone, Debug)]
 pub struct BlaTable {
-    pub levels: Vec<Vec<BlaNode>>,
-    /// Table BLA non-conforme pour formules non-analytiques (optionnelle)
-    pub nonconformal_levels: Option<Vec<Vec<BlaNodeNonConformal>>>,
+    /// Flat storage for all BLA nodes across all levels (contiguous for cache locality)
+    pub nodes: Vec<BlaNode>,
+    /// Offset into `nodes` for each level
+    pub level_offsets: Vec<usize>,
+    /// Number of nodes in each level
+    pub level_lengths: Vec<usize>,
+    /// Non-conformal flat node storage (for Tricorn/Burning Ship)
+    pub nc_nodes: Option<Vec<BlaNodeNonConformal>>,
+    pub nc_level_offsets: Option<Vec<usize>>,
+    pub nc_level_lengths: Option<Vec<usize>>,
 }
 
 impl BlaTable {
     pub fn empty() -> Self {
         Self {
-            levels: Vec::new(),
-            nonconformal_levels: None,
+            nodes: Vec::new(),
+            level_offsets: Vec::new(),
+            level_lengths: Vec::new(),
+            nc_nodes: None,
+            nc_level_offsets: None,
+            nc_level_lengths: None,
         }
+    }
+
+    #[inline]
+    pub fn num_levels(&self) -> usize {
+        self.level_offsets.len()
+    }
+
+    #[inline]
+    pub fn get_node(&self, level: usize, n: usize) -> Option<&BlaNode> {
+        if level < self.level_offsets.len() && n < self.level_lengths[level] {
+            Some(&self.nodes[self.level_offsets[level] + n])
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub fn level_len(&self, level: usize) -> usize {
+        if level < self.level_lengths.len() {
+            self.level_lengths[level]
+        } else {
+            0
+        }
+    }
+
+    #[inline]
+    pub fn get_nc_node(&self, level: usize, n: usize) -> Option<&BlaNodeNonConformal> {
+        let nc_nodes = self.nc_nodes.as_ref()?;
+        let offsets = self.nc_level_offsets.as_ref()?;
+        let lengths = self.nc_level_lengths.as_ref()?;
+        if level < offsets.len() && n < lengths[level] {
+            Some(&nc_nodes[offsets[level] + n])
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub fn nc_num_levels(&self) -> usize {
+        self.nc_level_offsets.as_ref().map_or(0, |v| v.len())
+    }
+
+    #[inline]
+    pub fn nc_level_len(&self, level: usize) -> usize {
+        self.nc_level_lengths.as_ref().map_or(0, |v| {
+            if level < v.len() { v[level] } else { 0 }
+        })
     }
 }
 
@@ -300,92 +359,96 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
     let is_burning_ship = params.fractal_type == FractalType::BurningShip;
     let mut levels: Vec<Vec<BlaNode>> = Vec::new();
     // Step 1: Create M BLAs each skipping 1 iteration (this can be done in parallel)
-    let mut level0 = Vec::with_capacity(base_len);
     let base_threshold = params.bla_threshold.max(1e-16);
     let validity_scale = params.bla_validity_scale.clamp(0.1, 100.0);
     let power = params.multibrot_power;
+    let fractal_type = params.fractal_type;
 
     // Cap maximum validity at a reasonable multiple of base_threshold
     // This allows larger radii when z_ref is small, while preventing unbounded growth
     let max_validity = base_threshold * validity_scale * 10.0;
 
-    for (i, &z) in ref_orbit.iter().enumerate().take(base_len) {
-        let (coeffs, bs_valid) = if is_burning_ship {
-            // Pour Burning Ship, vérifier la stabilité du quadrant
-            let quadrant_stable = burning_ship_bla_validity(ref_orbit, i, 1);
-            let coeffs = compute_burning_ship_bla_coefficients(z, quadrant_stable);
-            (coeffs, quadrant_stable)
-        } else {
-            let coeffs = compute_bla_coefficients(z, params.fractal_type, power);
-            (coeffs, true)  // Toujours valide pour les autres types
-        };
-        
-        let a_norm = coeffs.a.norm();
+    let level0: Vec<BlaNode> = (0..base_len)
+        .into_par_iter()
+        .map(|i| {
+            let z = ref_orbit[i];
+            let (coeffs, bs_valid) = if is_burning_ship {
+                // Pour Burning Ship, vérifier la stabilité du quadrant
+                let quadrant_stable = burning_ship_bla_validity(ref_orbit, i, 1);
+                let coeffs = compute_burning_ship_bla_coefficients(z, quadrant_stable);
+                (coeffs, quadrant_stable)
+            } else {
+                let coeffs = compute_bla_coefficients(z, fractal_type, power);
+                (coeffs, true)  // Toujours valide pour les autres types
+            };
 
-        // Single Step BLA validity formula:
-        // Approximation of a single step by bilinear form is valid when:
-        // |z_n²| << |2·Z_n·z_n + c|
-        // ⇑ assume negligibility of c << |2·Z_n·z_n|
-        // ⇑ factor out z_n
-        // |z_n| << |2·Z_n|
-        // ⇑ definition of A_{n,1}, B_{n,1} for single step
-        // |z_n| << |A_{n,1}| =: R_{n,1}
-        //
-        // Formula: R_{n,1} = ε·|A_{n,1}| where ε is the threshold (base_threshold * validity_scale)
-        let epsilon = base_threshold * validity_scale;
-        let validity = if a_norm > 1e-20 {
-            epsilon * a_norm  // R_{n,1} = ε·|A_{n,1}|
-        } else {
-            0.0
-        };
-        
-        // Cap at max_validity to prevent numerical issues
-        let mut validity = validity.min(max_validity);
-        
-        // Pour Burning Ship, réduire la validité si le quadrant n'est pas stable
-        if is_burning_ship && !bs_valid {
-            validity = 0.0;
-        } else if is_burning_ship && bs_valid {
-            // ABS Variation BLA for Burning Ship:
-            // The only problem with the Mandelbrot set is the non-linearity, but some other formulas
-            // have other problems, for example the Burning Ship, defined by:
-            // X + iY → (|X| + i|Y|)² + C
-            //
-            // The absolute value folds the plane when X or Y are near 0, so the single step BLA radius
-            // becomes the minimum of the non-linearity radius and the folding radii:
-            // R = max{0, min{ε·inf|A| - sup|B|·|c| / inf|A|, |X|, |Y|}}
-            //
-            // Currently Fraktaler 3 uses a fudge factor for paranoia, dividing |X| and |Y| by 2.
-            // The merged BLA step radius is unchanged.
-            //
-            // Note: For Burning Ship, since it's conformal within each stable quadrant,
-            // we have inf|A| = |A| and sup|B| = |B| = 1, so:
-            // ε·inf|A| - sup|B|·|c| / inf|A| ≈ ε·|A| - |c| / |A|
-            // For deep zooms where |c| << |A|, this simplifies to ε·|A|.
-            // We use ε·|A| as the non-linearity radius (valid in stable quadrant).
-            let nonlinearity_radius = validity;  // ε·|A| ≈ ε·inf|A| - sup|B|·|c| / inf|A| (for conformal case)
-            let folding_radius_re = z.re.abs() / 2.0;  // |X|/2 (fudge factor for paranoia)
-            let folding_radius_im = z.im.abs() / 2.0;  // |Y|/2 (fudge factor for paranoia)
-            // R = max{0, min{nonlinearity_radius, |X|/2, |Y|/2}}
-            validity = nonlinearity_radius.min(folding_radius_re).min(folding_radius_im).max(0.0);
-        }
+            let a_norm = coeffs.a.norm();
 
-        // Calculate quadrant signs for Burning Ship optimization
-        let sign_re = if z.re >= 0.0 { 1.0 } else { -1.0 };
-        let sign_im = if z.im >= 0.0 { 1.0 } else { -1.0 };
+            // Single Step BLA validity formula:
+            // Approximation of a single step by bilinear form is valid when:
+            // |z_n²| << |2·Z_n·z_n + c|
+            // ⇑ assume negligibility of c << |2·Z_n·z_n|
+            // ⇑ factor out z_n
+            // |z_n| << |2·Z_n|
+            // ⇑ definition of A_{n,1}, B_{n,1} for single step
+            // |z_n| << |A_{n,1}| =: R_{n,1}
+            //
+            // Formula: R_{n,1} = ε·|A_{n,1}| where ε is the threshold (base_threshold * validity_scale)
+            let epsilon = base_threshold * validity_scale;
+            let validity = if a_norm > 1e-20 {
+                epsilon * a_norm  // R_{n,1} = ε·|A_{n,1}|
+            } else {
+                0.0
+            };
 
-        level0.push(BlaNode {
-            a: coeffs.a,
-            b: coeffs.b,
-            c: coeffs.c,
-            d: coeffs.d,
-            e: coeffs.e,
-            validity_radius: validity,
-            burning_ship_valid: bs_valid,
-            sign_re,
-            sign_im,
-        });
-    }
+            // Cap at max_validity to prevent numerical issues
+            let mut validity = validity.min(max_validity);
+
+            // Pour Burning Ship, réduire la validité si le quadrant n'est pas stable
+            if is_burning_ship && !bs_valid {
+                validity = 0.0;
+            } else if is_burning_ship && bs_valid {
+                // ABS Variation BLA for Burning Ship:
+                // The only problem with the Mandelbrot set is the non-linearity, but some other formulas
+                // have other problems, for example the Burning Ship, defined by:
+                // X + iY → (|X| + i|Y|)² + C
+                //
+                // The absolute value folds the plane when X or Y are near 0, so the single step BLA radius
+                // becomes the minimum of the non-linearity radius and the folding radii:
+                // R = max{0, min{ε·inf|A| - sup|B|·|c| / inf|A|, |X|, |Y|}}
+                //
+                // Currently Fraktaler 3 uses a fudge factor for paranoia, dividing |X| and |Y| by 2.
+                // The merged BLA step radius is unchanged.
+                //
+                // Note: For Burning Ship, since it's conformal within each stable quadrant,
+                // we have inf|A| = |A| and sup|B| = |B| = 1, so:
+                // ε·inf|A| - sup|B|·|c| / inf|A| ≈ ε·|A| - |c| / |A|
+                // For deep zooms where |c| << |A|, this simplifies to ε·|A|.
+                // We use ε·|A| as the non-linearity radius (valid in stable quadrant).
+                let nonlinearity_radius = validity;  // ε·|A| ≈ ε·inf|A| - sup|B|·|c| / inf|A| (for conformal case)
+                let folding_radius_re = z.re.abs() / 2.0;  // |X|/2 (fudge factor for paranoia)
+                let folding_radius_im = z.im.abs() / 2.0;  // |Y|/2 (fudge factor for paranoia)
+                // R = max{0, min{nonlinearity_radius, |X|/2, |Y|/2}}
+                validity = nonlinearity_radius.min(folding_radius_re).min(folding_radius_im).max(0.0);
+            }
+
+            // Calculate quadrant signs for Burning Ship optimization
+            let sign_re = if z.re >= 0.0 { 1.0 } else { -1.0 };
+            let sign_im = if z.im >= 0.0 { 1.0 } else { -1.0 };
+
+            BlaNode {
+                a: coeffs.a,
+                b: coeffs.b,
+                c: coeffs.c,
+                d: coeffs.d,
+                e: coeffs.e,
+                validity_radius: validity,
+                burning_ship_valid: bs_valid,
+                sign_re,
+                sign_im,
+            }
+        })
+        .collect();
     levels.push(level0);
 
     let zero = Complex64::new(0.0, 0.0);
@@ -534,9 +597,38 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
         None
     };
 
+    // Flatten levels into contiguous storage for cache locality
+    let mut nodes = Vec::new();
+    let mut level_offsets = Vec::new();
+    let mut level_lengths = Vec::new();
+    for level in &levels {
+        level_offsets.push(nodes.len());
+        level_lengths.push(level.len());
+        nodes.extend_from_slice(level);
+    }
+
+    // Flatten non-conformal levels similarly
+    let (nc_nodes, nc_level_offsets, nc_level_lengths) = if let Some(ref nc_levels) = nonconformal_levels {
+        let mut nc_flat = Vec::new();
+        let mut nc_offs = Vec::new();
+        let mut nc_lens = Vec::new();
+        for level in nc_levels {
+            nc_offs.push(nc_flat.len());
+            nc_lens.push(level.len());
+            nc_flat.extend_from_slice(level);
+        }
+        (Some(nc_flat), Some(nc_offs), Some(nc_lens))
+    } else {
+        (None, None, None)
+    };
+
     BlaTable {
-        levels,
-        nonconformal_levels,
+        nodes,
+        level_offsets,
+        level_lengths,
+        nc_nodes,
+        nc_level_offsets,
+        nc_level_lengths,
     }
 }
 
@@ -566,39 +658,42 @@ pub fn build_bla_table_nonconformal(ref_orbit: &[Complex64], params: &FractalPar
     let cref_norm = cref.norm();  // |c| où c est le paramètre C réel
 
     let mut levels: Vec<Vec<BlaNodeNonConformal>> = Vec::new();
-    let mut level0 = Vec::with_capacity(base_len);
 
-    // Build level 0: single-step BLAs
-    for (_i, &z) in ref_orbit.iter().enumerate().take(base_len) {
-        let coeffs = if is_burning_ship {
-            nc::compute_burning_ship_bla_coefficients(z)
-        } else {
-            compute_tricorn_bla_coefficients(z)
-        };
+    // Build level 0: single-step BLAs (parallelized with rayon)
+    let level0: Vec<BlaNodeNonConformal> = (0..base_len)
+        .into_par_iter()
+        .map(|i| {
+            let z = ref_orbit[i];
+            let coeffs = if is_burning_ship {
+                nc::compute_burning_ship_bla_coefficients(z)
+            } else {
+                compute_tricorn_bla_coefficients(z)
+            };
 
-        // Calculate validity radius using non-conformal formula
-        let mut validity = compute_nonconformal_validity_radius(
-            coeffs.a,
-            coeffs.b,
-            base_threshold * validity_scale,
-            cref_norm,
-        ).min(max_validity).max(0.0);
+            // Calculate validity radius using non-conformal formula
+            let mut validity = compute_nonconformal_validity_radius(
+                coeffs.a,
+                coeffs.b,
+                base_threshold * validity_scale,
+                cref_norm,
+            ).min(max_validity).max(0.0);
 
-        // For Burning Ship, constrain validity by distance to folding lines (|X|=0, |Y|=0).
-        // The absolute value operation folds the plane at these lines, making the BLA
-        // invalid if delta could cross a fold. Fudge factor /2 for safety (matches Fraktaler-3).
-        if is_burning_ship {
-            let folding_re = z.re.abs() / 2.0;
-            let folding_im = z.im.abs() / 2.0;
-            validity = validity.min(folding_re).min(folding_im).max(0.0);
-        }
+            // For Burning Ship, constrain validity by distance to folding lines (|X|=0, |Y|=0).
+            // The absolute value operation folds the plane at these lines, making the BLA
+            // invalid if delta could cross a fold. Fudge factor /2 for safety (matches Fraktaler-3).
+            if is_burning_ship {
+                let folding_re = z.re.abs() / 2.0;
+                let folding_im = z.im.abs() / 2.0;
+                validity = validity.min(folding_re).min(folding_im).max(0.0);
+            }
 
-        level0.push(BlaNodeNonConformal {
-            a: coeffs.a,
-            b: coeffs.b,
-            validity_radius: validity,
-        });
-    }
+            BlaNodeNonConformal {
+                a: coeffs.a,
+                b: coeffs.b,
+                validity_radius: validity,
+            }
+        })
+        .collect();
     levels.push(level0);
 
     // Merge levels: start from iteration 1 (iteration 0 is always non-linear)
