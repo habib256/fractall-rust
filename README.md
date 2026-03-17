@@ -37,7 +37,7 @@ Fractall is a high-performance fractal explorer written in Rust, featuring real-
 | Mandelbulb, Mandelbrot Sin | — | Julia Sin, Newton, Phoenix, Nova, Pickover Stalks |
 
 ### Rich Coloring Options
-- **13 beautiful palettes** with smooth gradients
+- **27 color palettes** with smooth gradients (including palettes from [rust-fractal-core](https://github.com/rust-fractal/rust-fractal-core))
 - **3 color spaces**: RGB, HSB, LCH (perceptually uniform)
 - **15 coloring modes**: Smooth, Distance, Orbit Traps, Binary Decomposition, Biomorphs, and more
 - **7 plane transformations**: Explore alternative views of familiar fractals
@@ -110,7 +110,7 @@ OPTIONS:
     --center-x <X>          Center X coordinate
     --center-y <Y>          Center Y coordinate
     --iterations <N>        Maximum iterations
-    --palette <0-12>        Color palette [default: 6]
+    --palette <0-26>        Color palette [default: 6]
     --color_repeat <N>      Gradient repetitions [default: 40]
     --algorithm <MODE>      auto|f64|perturbation|gmp
     --outcoloring <MODE>    smooth|iter|distance|binary|biomorphs|...
@@ -167,6 +167,7 @@ This project is licensed under the MIT License.
 ## Acknowledgments
 
 - Inspired by [XaoS](https://xaos-project.github.io/), [Kalles Fraktaler](https://mathr.co.uk/kf/kf.html), and [Fraktaler-3](https://fraktaler.mathr.co.uk/)
+- Color palettes from [rust-fractal-core](https://github.com/rust-fractal/rust-fractal-core) (Blues, Coffee, Classic, Dimensions, Earth, FireIce, Habs, Jays, LightYears, Slice, Stardust, Strobe, SynthRed, SynthBlue)
 - Perturbation algorithms based on research by K.I. Martin and Claude Heiland-Allen
 - Built with [egui](https://github.com/emilk/egui), [wgpu](https://wgpu.rs/), and [rug](https://docs.rs/rug/)
 

@@ -105,23 +105,6 @@ pub struct DeltaResult {
     pub smooth_iteration: f64,
 }
 
-impl DeltaResult {
-    /// Compute and fill in the smooth_iteration field based on result state.
-    ///
-    /// Inspired by rust-fractal-core which computes smooth iteration inline
-    /// during pixel iteration rather than as a separate post-processing pass.
-    /// The `power` parameter is the fractal power (2.0 for standard Mandelbrot/Julia).
-    #[inline]
-    pub fn with_smooth(mut self, bailout: f64, power: f64) -> Self {
-        self.smooth_iteration = if self.glitched || self.is_interior {
-            self.iteration as f64
-        } else {
-            compute_smooth_iteration(self.iteration, self.z_final, bailout, power)
-        };
-        self
-    }
-}
-
 /// Result of a fast f64 batch perturbation loop.
 enum BatchResult {
     /// Batch completed, continue with BLA/next batch
@@ -2665,38 +2648,6 @@ mod tests {
         assert!((smooth_p2 - smooth_p3).abs() > 0.01);
     }
 
-    #[test]
-    fn delta_result_with_smooth() {
-        let result = DeltaResult {
-            iteration: 10,
-            z_final: Complex64::new(3.0, 0.0),
-            glitched: false,
-            suspect: false,
-            distance: f64::INFINITY,
-            is_interior: false,
-            phase_changed: false,
-            smooth_iteration: 0.0,
-        }.with_smooth(2.0, 2.0);
-        // Should compute smooth iteration for escaped point
-        assert!(result.smooth_iteration > 9.0);
-        assert!(result.smooth_iteration != 10.0);
-    }
-
-    #[test]
-    fn delta_result_with_smooth_glitched() {
-        let result = DeltaResult {
-            iteration: 10,
-            z_final: Complex64::new(3.0, 0.0),
-            glitched: true,
-            suspect: false,
-            distance: f64::INFINITY,
-            is_interior: false,
-            phase_changed: false,
-            smooth_iteration: 0.0,
-        }.with_smooth(2.0, 2.0);
-        // Glitched points should return integer iteration
-        assert_eq!(result.smooth_iteration, 10.0);
-    }
 }
 
 #[cfg(test)]

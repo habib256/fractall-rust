@@ -55,7 +55,7 @@ src/
 │   └── texture.rs
 ├── color/
 │   ├── mod.rs
-│   ├── palettes.rs      # 13 palettes predefinies (0-12)
+│   ├── palettes.rs      # 27 palettes predefinies (0-26)
 │   └── color_models.rs  # RGB, HSB, LCH conversions
 └── io/
     ├── mod.rs
@@ -72,7 +72,7 @@ src/
 | rayon | 1.11 | Parallelisme multi-thread |
 | eframe | 0.29 | Framework GUI (wrapper egui) |
 | egui | 0.29 | UI immediate mode |
-| wgpu | 0.19 | GPU (Vulkan/Metal/DX12) |
+| wgpu | 22.1 | GPU (Vulkan/Metal/DX12) |
 | pollster | 0.3 | Runtime async pour GPU |
 | bytemuck | 1.15 | Serialisation buffers GPU |
 | rug | 1.24 | Precision arbitraire (GMP/MPFR/MPC) |
@@ -175,8 +175,8 @@ Precision GMP:
 
 ## Couleur
 
-**Palettes** (13 disponibles, index 0-12):
-Fire, Ocean, Forest, Violet, Rainbow, Sunset, Plasma (defaut), Ice, Cosmic, Neon, Twilight, Emboss, Waves
+**Palettes** (27 disponibles, index 0-26):
+Fire, Ocean, Forest, Violet, Rainbow, Sunset, Plasma (defaut), Ice, Cosmic, Neon, Twilight, Emboss, Waves, SynthRed, LightYears, Blues, Coffee, Classic, Dimensions, Earth, FireIce, Habs, Jays, Slice, Stardust, Strobe, SynthBlue
 
 **Espaces couleur** (color_models.rs):
 - RGB: standard
@@ -269,16 +269,17 @@ Mandelbrot↔Julia, Barnsley↔Barnsley Julia, Magnet↔Magnet Julia, Burning Sh
 # Base
 --type N              # type fractale (1-33)
 --width/height        # dimensions (defaut 1920x1080)
---center-x/center-y   # centre
+--center-x/center-y   # centre (f64)
+--center-x-hp/center-y-hp # centre haute precision (string, deep zooms > 10^15)
+--zoom ZOOM           # magnification (span = 4/zoom), supporte notation scientifique (ex: 1.41e219)
 --xmin/xmax/ymin/ymax # alternative au centre+span
 --iterations          # max iterations
 --output FILE         # PNG sortie (avec metadonnees)
 
 # Couleur
---palette 0-12        # palette (13 disponibles, defaut 6=Plasma)
+--palette 0-26        # palette (27 disponibles, defaut 6=Plasma)
 --color-repeat        # repetitions gradient (1-120)
 --outcoloring MODE    # mode colorisation (smooth, distance, orbit-traps, wings...)
---color-space         # rgb|hsb|lch
 
 # Algorithme
 --algorithm           # auto|f64|perturbation|gmp
@@ -294,7 +295,7 @@ Mandelbrot↔Julia, Barnsley↔Barnsley Julia, Magnet↔Magnet Julia, Burning Sh
 --enable-distance-estimation  # estimation distance (dual numbers)
 --enable-interior-detection   # detection interieur
 --interior-threshold          # seuil interieur (defaut 0.001)
---enable-orbit-traps          # activer orbit traps
+--gpu                         # utiliser le GPU (wgpu: Metal/Vulkan/DX12)
 
 # Specifiques
 --multibrot-power     # puissance Multibrot
@@ -312,7 +313,7 @@ Mandelbrot↔Julia, Barnsley↔Barnsley Julia, Magnet↔Magnet Julia, Burning Sh
 - Linux: Vulkan (prioritaire) puis OpenGL
 - Windows: DirectX12 et Vulkan
 
-Selection automatique f32/f64 selon zoom et support materiel.
+GPU utilise f32 uniquement (f64 desactive).
 
 ## GUI (FractallApp)
 
@@ -350,7 +351,7 @@ Selection automatique f32/f64 selon zoom et support materiel.
 | Touche | Action |
 |--------|--------|
 | F1-F12 | Changer type fractale (F1=Mandelbrot, F2=Julia, F3=JuliaSin, ..., F12=Tricorn) |
-| C | Cycler palette (0-12) |
+| C | Cycler palette (0-26) |
 | R | Cycler color_repeat (+1; max 120, ou max 8 pour types densite) |
 | J | Basculer en Julia (utilise le seed du preview) ou activer le mode preview Julia |
 | S | Screenshot PNG (avec metadonnees) |

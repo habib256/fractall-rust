@@ -93,7 +93,7 @@ pub struct FractallApp {
     texture: Option<TextureHandle>,
     
     // Cache des textures de prévisualisation des palettes
-    palette_preview_textures: [Option<TextureHandle>; 13],
+    palette_preview_textures: [Option<TextureHandle>; 27],
     
     // État UI
     selected_type: FractalType,
@@ -262,9 +262,9 @@ impl FractallApp {
             orbits: Vec::new(),
             texture: None,
             palette_preview_textures: [
-                None, None, None, None, None,
-                None, None, None, None, None,
-                None, None, None,
+                None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None,
             ],
             selected_type: default_type,
             palette_index: 6, // SmoothPlasma par défaut
@@ -1312,6 +1312,7 @@ impl FractallApp {
         let version = self.recolor_version;
 
         // Spawner un thread pour la colorisation (ne bloque pas l'UI)
+        let repaint_ctx = ctx.clone();
         thread::spawn(move || {
             let display_buffer = colorize_buffer(
                 &iterations,
@@ -1328,10 +1329,8 @@ impl FractallApp {
                 height,
                 version,
             });
+            repaint_ctx.request_repaint();
         });
-
-        // Demander un repaint pour recevoir le résultat
-        ctx.request_repaint();
     }
 
     /// Demande un rendu asynchrone de la preview Julia pour le seed donné.
@@ -1669,7 +1668,7 @@ impl eframe::App for FractallApp {
             
             // C pour cycle palette
             if i.key_pressed(egui::Key::C) {
-                self.palette_index = (self.palette_index + 1) % 13;
+                self.palette_index = (self.palette_index + 1) % 27;
                 if !self.iterations.is_empty() {
                     self.update_texture(ctx);
                 }
@@ -2147,7 +2146,7 @@ impl eframe::App for FractallApp {
                 ui.horizontal(|ui| {
                     ui.label("Palette:");
                     if ui.button("<").clicked() {
-                        self.palette_index = if self.palette_index == 0 { 12 } else { self.palette_index - 1 };
+                        self.palette_index = if self.palette_index == 0 { 26 } else { self.palette_index - 1 };
                         self.params.color_mode = self.palette_index;
                         if !self.iterations.is_empty() {
                             self.update_texture(ctx);
@@ -2171,7 +2170,7 @@ impl eframe::App for FractallApp {
                     }
                     
                     if ui.button(">").clicked() {
-                        self.palette_index = (self.palette_index + 1) % 13; // 13 palettes maintenant (0-12)
+                        self.palette_index = (self.palette_index + 1) % 27; // 13 palettes maintenant (0-12)
                         self.params.color_mode = self.palette_index;
                         if !self.iterations.is_empty() {
                             self.update_texture(ctx);

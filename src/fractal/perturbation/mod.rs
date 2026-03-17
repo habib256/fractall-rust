@@ -104,42 +104,8 @@ pub mod glitch;
 pub mod nonconformal;
 pub mod distance;
 pub mod interior;
-pub mod period;
-
 pub use orbit::{ReferenceOrbitCache, HybridBlaReferences};
 pub use glitch::{detect_glitch_clusters, select_secondary_reference_points, segregate_glitches_by_iteration};
-pub use period::{BoxPeriod, find_atom_domain_period, suggest_iterations_from_period};
-
-/// Suggest whether max iterations should be adjusted based on the series approximation skip.
-///
-/// Inspired by rust-fractal-core's `adjust_iterations()`:
-/// - If the SA skip is > 25% of max_iter, max_iter is likely too low (increase by 50%)
-/// - If the SA skip is < 12.5% of max_iter, max_iter may be too high (decrease by 25%)
-///
-/// Returns Some(new_max_iter) if adjustment is recommended, None otherwise.
-pub fn suggest_iteration_adjustment(
-    current_max_iter: u32,
-    series_skip: u32,
-    min_iter: u32,
-) -> Option<u32> {
-    if series_skip == 0 {
-        return None;
-    }
-
-    // If SA skips more than 25% of max_iter, we likely need more iterations
-    if 4 * series_skip > current_max_iter {
-        let new_max = (current_max_iter as u64 * 3 / 2).min(u32::MAX as u64) as u32;
-        return Some(new_max.max(min_iter));
-    }
-
-    // If SA skips less than 12.5% of max_iter, we may have too many iterations
-    if 8 * series_skip < current_max_iter && current_max_iter > min_iter {
-        let new_max = (current_max_iter as u64 * 3 / 4).max(min_iter as u64) as u32;
-        return Some(new_max);
-    }
-
-    None
-}
 
 fn env_flag(name: &str) -> bool {
     match std::env::var(name) {

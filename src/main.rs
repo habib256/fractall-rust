@@ -1,15 +1,21 @@
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use clap::Parser;
+use rug::Float;
 
 mod fractal;
 mod color;
 mod render;
 mod io;
+mod gpu;
 
 use fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalType, LyapunovPreset, OutColoringMode, PlaneTransform};
 use render::render_escape_time;
+use render::escape_time::should_use_perturbation;
 use io::png::save_png_with_metadata;
+use gpu::GpuRenderer;
 
 /// Utilitaire CLI pour générer des fractales basées sur fractall.
 ///
@@ -42,6 +48,18 @@ struct Cli {
     /// Centre Y du plan complexe (optionnel, sinon valeurs par défaut du type)
     #[arg(long)]
     center_y: Option<f64>,
+
+    /// Centre X haute précision (string, pour deep zooms > 10^15)
+    #[arg(long)]
+    center_x_hp: Option<String>,
+
+    /// Centre Y haute précision (string, pour deep zooms > 10^15)
+    #[arg(long)]
+    center_y_hp: Option<String>,
+
+    /// Zoom (magnification, span = 4/zoom). Supporte notation scientifique (ex: 1.41e219)
+    #[arg(long)]
+    zoom: Option<String>,
 
     /// Coordonnée minimale X du plan complexe (prioritaire sur center_x/zoom)
     #[arg(long)]
@@ -124,6 +142,10 @@ struct Cli {
     #[arg(long, default_value_t = 0.001)]
     interior_threshold: f64,
 
+    /// Utiliser le GPU pour le rendu (wgpu: Metal/Vulkan/DX12)
+    #[arg(long)]
+    gpu: bool,
+
     /// Fichier de sortie PNG
     #[arg(long, value_name = "FICHIER")]
     output: PathBuf,
@@ -173,6 +195,43 @@ fn main() {
         if let Some(cy) = cli.center_y {
             params.center_y = cy;
         }
+    }
+
+    // Coordonnées haute précision (HP) pour deep zooms.
+    if let Some(ref cx_hp) = cli.center_x_hp {
+        params.center_x_hp = Some(cx_hp.clone());
+        // Mettre à jour le f64 aussi (approximation pour les paths non-HP)
+        if let Ok(v) = cx_hp.parse::<f64>() {
+            params.center_x = v;
+        }
+    }
+    if let Some(ref cy_hp) = cli.center_y_hp {
+        params.center_y_hp = Some(cy_hp.clone());
+        if let Ok(v) = cy_hp.parse::<f64>() {
+            params.center_y = v;
+        }
+    }
+
+    // Zoom -> span HP conversion.
+    if let Some(ref zoom_str) = cli.zoom {
+        // Parse zoom with GMP arbitrary precision
+        let prec = 1024u32;
+        let zoom_gmp = Float::parse(zoom_str)
+            .map(|parsed| Float::with_val(prec, parsed))
+            .unwrap_or_else(|_| {
+                eprintln!("Impossible de parser le zoom: '{}'", zoom_str);
+                std::process::exit(1);
+            });
+        let four = Float::with_val(prec, 4.0);
+        let span_x_gmp = four / &zoom_gmp;
+        let aspect = params.height as f64 / params.width as f64;
+        let span_y_gmp = Float::with_val(prec, &span_x_gmp * aspect);
+
+        params.span_x_hp = Some(span_x_gmp.to_string());
+        params.span_y_hp = Some(span_y_gmp.to_string());
+        // Approximation f64 (sera 0.0 pour deep zooms, mais HP est utilisé)
+        params.span_x = span_x_gmp.to_f64();
+        params.span_y = span_y_gmp.to_f64();
     }
 
     // Override des itérations si fourni.
@@ -286,18 +345,78 @@ fn main() {
         }
     }
 
-    // Calcul escape-time.
+    // Calcul escape-time (CPU ou GPU).
     let start_time = std::time::Instant::now();
-    let (iterations, zs) = render_escape_time(&params);
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    let (iterations, zs) = if cli.gpu {
+        match GpuRenderer::new() {
+            Some(gpu) => {
+                println!("GPU initialisé ({})", gpu.precision_label());
+
+                let use_perturbation = match params.algorithm_mode {
+                    AlgorithmMode::Auto => should_use_perturbation(&params, true),
+                    AlgorithmMode::Perturbation => true,
+                    _ => false,
+                };
+                let use_perturbation =
+                    use_perturbation && params.plane_transform == PlaneTransform::Mu;
+
+                let gpu_result = match params.fractal_type {
+                    FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
+                        if use_perturbation =>
+                    {
+                        println!("Mode: GPU perturbation");
+                        gpu.render_perturbation_with_cache(&params, &cancel, None, None)
+                            .map(|((iterations, zs), _cache)| (iterations, zs))
+                    }
+                    FractalType::Mandelbrot => {
+                        println!("Mode: GPU standard");
+                        gpu.render_mandelbrot(&params, &cancel)
+                    }
+                    FractalType::Julia => {
+                        println!("Mode: GPU standard");
+                        gpu.render_julia(&params, &cancel)
+                    }
+                    FractalType::BurningShip => {
+                        println!("Mode: GPU standard");
+                        gpu.render_burning_ship(&params, &cancel)
+                    }
+                    _ => {
+                        eprintln!(
+                            "Type {:?} non supporté par le GPU, fallback CPU",
+                            params.fractal_type
+                        );
+                        None
+                    }
+                };
+
+                match gpu_result {
+                    Some(result) => result,
+                    None => {
+                        println!("Fallback vers CPU...");
+                        render_escape_time(&params)
+                    }
+                }
+            }
+            None => {
+                eprintln!("GPU non disponible, fallback CPU");
+                render_escape_time(&params)
+            }
+        }
+    } else {
+        render_escape_time(&params)
+    };
+
     let render_time = start_time.elapsed();
 
     // Export PNG avec métadonnées.
     let save_start = std::time::Instant::now();
-    // Convertir les coordonnées f64 en strings pour les métadonnées HP
-    let center_x_hp = params.center_x.to_string();
-    let center_y_hp = params.center_y.to_string();
-    let span_x_hp = params.span_x.to_string();
-    let span_y_hp = params.span_y.to_string();
+    // Utiliser les strings HP si disponibles, sinon convertir f64
+    let center_x_hp = params.center_x_hp.clone().unwrap_or_else(|| params.center_x.to_string());
+    let center_y_hp = params.center_y_hp.clone().unwrap_or_else(|| params.center_y.to_string());
+    let span_x_hp = params.span_x_hp.clone().unwrap_or_else(|| params.span_x.to_string());
+    let span_y_hp = params.span_y_hp.clone().unwrap_or_else(|| params.span_y.to_string());
     if let Err(e) = save_png_with_metadata(
         &params,
         &iterations,

@@ -1,11 +1,13 @@
 # Perturbation Theory for Deep Zoom Fractals
 
 Documentation technique basee sur les travaux de Fraktaler-3 (Claude Heiland-Allen),
-K.I. Martin (SuperFractalThing), Pauldelbrot (glitch detection), et Zhuoran (rebasing + BLA).
+K.I. Martin (SuperFractalThing), Pauldelbrot (glitch detection), Zhuoran (rebasing + BLA),
+et rust-fractal-core (implementation Rust de reference).
 
 ## References
 
 - [Fraktaler-3](https://fraktaler.mathr.co.uk/) - Implementation de reference (C++)
+- [rust-fractal-core](https://github.com/rust-fractal/rust-fractal-core) - Implementation Rust de reference (verifie jusqu'a E50000)
 - [Deep Zoom Theory and Practice](https://mathr.co.uk/blog/2021-05-14_deep_zoom_theory_and_practice.html) - Article fondateur
 - [Deep Zoom Theory and Practice (again)](https://mathr.co.uk/blog/2022-02-21_deep_zoom_theory_and_practice_again.html) - BLA + rebasing
 - [At the Helm of the Burning Ship](https://mathr.co.uk/web/helm.html) - Paper EVA 2019
@@ -68,7 +70,7 @@ z_{n+1} = 2·Z_n·z_n + z_n^2 + c
 
 ---
 
-## 2. Representation en FloatExp
+## 2. Representation en FloatExp / ComplexExp
 
 Pour les zooms intermediaires (~10^13 a ~10^15), les deltas `z_n` peuvent etre trop petits
 pour f64 (denormalisations). La representation `FloatExp` utilise une mantisse f64 normalisee
@@ -83,6 +85,26 @@ que `2^{-2^31}` sans perte de precision sur la mantisse.
 
 **Operations**: Addition, multiplication et norme sont implementees en manipulant separement
 mantisse et exposant, avec renormalisation apres chaque operation.
+La methode `reduce()` est appelee periodiquement (toutes les 256 iterations) pour
+renormaliser la mantisse et prevenir la derive de precision.
+
+**ComplexExp** associe deux `FloatExp` (partie reelle et imaginaire). La methode
+`mul_signed(sign_re, sign_im)` applique la transformation de signe pour le Burning Ship.
+
+### Comparaison avec rust-fractal-core
+
+rust-fractal-core utilise une approche similaire mais structurellement differente:
+
+| Aspect | fractall-rust | rust-fractal-core |
+|--------|---------------|-------------------|
+| Type | `ComplexExp` (re: FloatExp, im: FloatExp) | `ComplexExtended` (Complex<f64> mantissa + i32 exponent) |
+| Stockage | Exposant separe par composante (re, im) | Exposant unique pour le nombre complexe |
+| Iteration rapide | Bascule f64 → ComplexExp selon extended_iterations | "Scaled doubles": mantisse `ComplexFixed<f64>` + `scale_factor_delta` via `ldexp` |
+| Seuil extended | `|re|` ou `|im| < 1e-300` → marque comme extended iteration | `|re|` ou `|im| < 1e-300` → marque comme extended iteration |
+
+L'approche "scaled doubles" de rust-fractal-core pre-calcule `scale_factor_delta = 1.0.ldexp(exponent)` et travaille
+avec des `Complex<f64>` multiplies par ce facteur. Cela evite le surcout de l'arithmetique FloatExp pour la majorite
+des iterations, ne basculant en `ComplexExtended` complet qu'aux iterations marquees comme "extended".
 
 ---
 
@@ -96,13 +118,31 @@ bits = max(24, 24 + floor(log2(zoom * height)))
 ```
 Clampee dans l'intervalle `[128, 8192]`.
 
+rust-fractal-core utilise une formule plus simple: `bits = max(64, -radius.exponent + 64)`.
+
 ### Stockage
 
-L'orbite de reference est stockee sous deux formes:
+L'orbite de reference est stockee sous plusieurs formes:
 - **GMP** (`Complex` rug): haute precision pour les calculs perturbation GMP
 - **f64** (`Complex64`): basse precision pour les calculs perturbation f64/BLA
+- **ComplexExp**: precision etendue pour les zooms intermediaires
+- **extended_iterations** (`Vec<u32>`): indices des iterations ou f64 sous-depasse (`< 1e-300`)
 
-La longueur effective de l'orbite est le nombre d'iterations avant escape (ou max_iterations).
+rust-fractal-core stocke de meme `reference_data` (f64), `reference_data_extended` (ComplexExtended),
+et `extended_iterations` (Vec<usize>), avec en plus `high_precision_data` (snapshots GMP a intervalles)
+pour la correction de glitchs econome en memoire.
+
+### Stockage haute precision a intervalles
+
+Pour les orbites longues (>1M iterations), stocker toutes les valeurs GMP est prohibitif en memoire.
+L'orbite peut stocker les donnees haute precision a intervalles (`data_storage_interval`):
+- `< 1M iterations`: interval = 1 (toutes les iterations)
+- `1M - 10M iterations`: interval = 10
+- `> 10M iterations`: interval = 100
+
+Lors de la correction de glitch, le point de depart le plus proche est retrouve par
+`iteration / interval`. rust-fractal-core utilise cette meme technique dans
+`get_glitch_resolving_reference()`.
 
 ### Cache
 
@@ -122,6 +162,9 @@ z_{n+l} ≈ A_{n,l}·z_n + B_{n,l}·c
 
 C'est valide quand la partie non-lineaire (z_n^2 et termes superieurs) est negligeable
 par rapport a la precision du type de donnees basse precision.
+
+**Note**: rust-fractal-core n'utilise **pas** de BLA. Il s'appuie uniquement sur l'approximation
+par series pour sauter des iterations. fractall-rust utilise les deux techniques (BLA + series).
 
 ### Representation des coefficients
 
@@ -209,8 +252,15 @@ le delta `z_n` peut devenir aussi grand que `Z_n`, rendant la perturbation impre
 
 ### Solution
 
-**Condition de rebasing**: Quand `|Z_m + z_n| < |z_n|`
+**Condition de rebasing**: Quand `|Z_m + z_n|^2 < |z_n|^2 * H`
 (le point pixel est plus pres de l'origine que son delta par rapport a la reference).
+
+**Hysteresis** (`H`): fractall-rust utilise `H = 0.5` (REBASE_HYSTERESIS) pour eviter
+les rebases oscillants. L'iteration n'est rebasee que si z_curr² < delta² * 0.5.
+De plus, le rebasing est desactive quand `z_ref² < 1e-20` (pres des zeros de l'orbite reference).
+
+rust-fractal-core utilise une condition plus simple: `z_norm < delta_norm_sqr` sans hysteresis,
+et rebase toujours a l'iteration 0.
 
 **Procedure**:
 1. Remplacer `z_n` par `Z_m + z_n` (delta absolu = position reelle du pixel)
@@ -218,6 +268,12 @@ le delta `z_n` peut devenir aussi grand que `Z_n`, rendant la perturbation impre
 
 Avec le rebasing, une seule orbite de reference suffit (au lieu de multiples references).
 Les glitchs sont **evites** plutot que **detectes**.
+
+### Rebasing stride
+
+Le stride de rebasing (frequence de verification) est configurable via la variable
+d'environnement `FRACTALL_PERTURB_REBASE_STRIDE` (defaut 1, plage 1-64).
+Un stride > 1 reduit le surcout de verification au prix d'une detection retardee.
 
 ### Rebasing pour formules hybrides
 
@@ -235,27 +291,51 @@ Malgre le rebasing, certains pixels peuvent encore etre imprecis. Le critere de 
 detecte ces "glitchs":
 
 ```
-|z_n|^2 > G^2 · |Z_n|^2
+|z_n|^2 > G^2 · max(|Z_n|^2, 1e-6)
 ```
 
 ou `G` est la tolerance de glitch (typiquement 1e-4).
 
-Equivalent: `|z_n| / |Z_n| > G` (le delta est devenu trop grand par rapport a la reference).
+Le denominateur utilise `max(|Z_n|^2, 1e-6)` au lieu de `|Z_n|^2 + 1.0` pour eviter
+de masquer les glitchs pres de l'origine (bug corrige).
+
+### Comparaison avec rust-fractal-core
+
+rust-fractal-core utilise une detection de glitch differente:
+- **Inline rebasing**: `z_norm < delta_norm_sqr` → rebase a iteration 0 immediatement
+- **Post-render resolution**: les pixels encore glitches apres le rendu sont regroupes par iteration,
+  et de nouvelles references sont calculees a partir des snapshots haute precision
+- **Pas de seuil Pauldelbrot**: la detection est implicite via le rebasing
+
+fractall-rust combine rebasing (prevention) + Pauldelbrot (detection) + clusters (correction).
 
 ### Tolerance adaptative
 
-La tolerance peut etre ajustee selon le niveau de zoom:
-- Zoom peu profond (0-6): `G = 1e-5`
-- Moyen (7-14): `G = 1e-4`
-- Profond (15-30): `G = 1e-3`
-- Tres profond (31-50): `G = 1e-2`
-- Extreme (>50): `G = 1e-1`
+La tolerance est calculee en continu selon le niveau de zoom:
+```
+tolerance = 10^(-5 + zoom_level * 0.1)    // clampee a [1e-6, 1e-1]
+zoom_level = log10(4.0 / pixel_size)
+```
+
+Valeurs typiques:
+- Zoom peu profond (zoom_level 0-10): `G ≈ 1e-5`
+- Moyen (10-20): `G ≈ 1e-4 a 1e-3`
+- Profond (20-40): `G ≈ 1e-3 a 1e-1`
+- Extreme (>40): `G = 1e-1`
 
 ### Correction des glitchs
 
 Les pixels detectes comme glitches sont regroupes en clusters (flood-fill).
-Pour chaque cluster suffisamment grand (> `min_cluster_size`), une **reference secondaire**
+Pour chaque cluster suffisamment grand (> `min_cluster_size`, defaut 100), une **reference secondaire**
 est calculee au centre du cluster, et les pixels sont recalcules avec cette nouvelle reference.
+
+Le processus est recursif (jusqu'a `max_secondary_refs` iterations, defaut 3).
+Si plus de 30% des pixels sont encore glitches apres correction, l'image entiere est
+recalculee en GMP complet (fallback).
+
+rust-fractal-core utilise une approche similaire via `get_glitch_resolving_reference()`:
+une nouvelle reference est creee en ajoutant le delta du pixel glitche au snapshot haute precision
+le plus proche. Le code actuel de rust-fractal-core a la resolution de glitch commentee.
 
 ---
 
@@ -296,6 +376,9 @@ diffabs(c, d) = {
 }
 ```
 
+rust-fractal-core utilise la meme fonction `diff_abs()` pour le Burning Ship, avec
+le const generic `FRACTAL_TYPE = 1` pour activer le path non-conforme.
+
 **Contrainte de pliage** (folding lines): Le rayon de validite BLA est contraint par la distance
 aux axes (Re=0, Im=0) car la valeur absolue "plie" le plan a ces endroits:
 ```
@@ -331,6 +414,18 @@ par un polynome de Taylor en `c` (l'offset du pixel):
 z_N(c) ≈ a_N·c + b_N·c^2 + c_N·c^3 + d_N·c^4
 ```
 
+fractall-rust supporte des ordres elevees (jusqu'a MAX_SERIES_ORDER = 32 termes),
+avec evaluation par la methode de Horner.
+
+### Ordre adaptatif
+
+L'ordre de la serie est choisi automatiquement (`compute_adaptive_series_order`) selon la profondeur:
+- Shallow (`< 10^8`): ordre 4
+- Medium (`10^8 - 10^15`): ordre 6-8
+- Deep (`10^15 - 10^30`): ordre 10-16
+- Ultra-deep (`> 10^30`): ordre 16-24
+- Bonus iterations: +4 pour >100k iterations, +2 pour >10k
+
 ### Relations de recurrence (Mandelbrot)
 
 ```
@@ -351,7 +446,7 @@ d_{n+1} = 2·Z_n·d_n + 2·a_n·c_n + b_n^2 (d_0 = 0)
 
 Difference: pas de `+1` pour Julia, et `a_0 = 1` au lieu de 0.
 
-### Estimation d'erreur
+### Estimation d'erreur et terminaison
 
 L'erreur de troncature est estimee heuristiquement:
 ```
@@ -359,6 +454,26 @@ erreur ≈ |d|^2/|c| · |dc|^5
 ```
 Le skip est accepte si `erreur < tolerance` et si le dernier terme est petit
 par rapport aux precedents (`term_ratio < 0.5`).
+
+La verification d'overflow/NaN porte sur **tous** les coefficients (a, b, c, d), pas seulement `a`.
+
+### Validation par sondes (probe-based)
+
+**fractall-rust et rust-fractal-core** utilisent tous deux une validation par sondes pour
+determiner le nombre d'iterations que la serie peut fiablement sauter.
+
+**Principe**: On place une grille de points-sonde sur l'image (configurable, 2-8 par axe),
+on calcule leur orbite par perturbation classique, puis on compare avec le resultat de la serie.
+Le skip valide est le maximum d'iterations ou la serie reste fidele a la perturbation.
+
+**Mode tile** (`validate_series_with_probes_tiled`): Chaque pixel peut sauter un nombre
+different d'iterations, interpole a partir des sondes les plus proches:
+- Pour chaque cellule 2×2 de sondes, le minimum des skips valides est utilise (conservateur)
+- Validation en deux phases: coins d'abord (tolerance large), puis sondes restantes
+- Reduction periodique (~250 iterations) pour maintenir la precision
+
+rust-fractal-core utilise une approche equivalente avec `probe_sampling` configurable
+et support du mode tile per-pixel.
 
 ### Limitation pour Burning Ship
 
@@ -382,6 +497,10 @@ La distance au bord de l'ensemble est estimee par:
 ```
 distance ≈ |z_n| · log|z_n| / |dz_n/dc|
 ```
+
+rust-fractal-core supporte l'estimation de distance via un tracking de Jacobien
+(DATA_TYPE 1 ou 3 via const generics), integre directement dans la boucle d'iteration.
+fractall-rust utilise des types dedies (DualComplex, ExtendedDualComplex).
 
 ### DualComplex
 
@@ -425,7 +544,36 @@ et colore en noir (ou selon le mode de coloration).
 
 ---
 
-## 11. Pipeline complet
+## 11. Optimisations de la boucle d'iteration
+
+### Iterations par lot (batch)
+
+fractall-rust utilise des lots de `BATCH_SIZE = 256` iterations pour le path f64 rapide,
+amortissant le surcout des verifications (bailout, glitch, rebasing).
+
+rust-fractal-core utilise une approche similaire: `iterations_before_check = 400 / power`
+(soit 200 pour Mandelbrot standard). De plus, quand `delta_current.exponent > -500`,
+les checks d'escape sont effectues; sinon ils sont sautes (valeurs trop petites pour s'echapper).
+
+### Extended iterations
+
+Les deux implementations tracent les iterations ou les valeurs f64 sous-depassent (< 1e-300).
+A ces iterations, l'arithmetique bascule de f64 pur vers la representation etendue
+(ComplexExp pour fractall-rust, ComplexExtended pour rust-fractal-core).
+
+L'orbite de reference stocke ces indices dans `extended_iterations: Vec<u32>` pour que
+la boucle pixel sache quand basculer sans verifier a chaque iteration.
+
+### Puissances generiques (Multibrot)
+
+rust-fractal-core supporte les puissances Mandelbrot arbitraires via des coefficients
+du triangle de Pascal (`const FRACTAL_POWER`), avec const generics pour specialiser
+le code a la compilation. fractall-rust supporte le Multibrot mais est principalement
+optimise pour la puissance 2.
+
+---
+
+## 12. Pipeline complet
 
 ### Vue d'ensemble
 
@@ -434,31 +582,47 @@ et colore en noir (ou selon le mode de coloration).
    ↓
 2. Construction de la table BLA (multi-niveaux, matrices 2×2)
    ↓
-3. Construction de la table de series (optionnel)
+3. Construction de la table de series (optionnel, avec validation par sondes)
    ↓
 4. Pour chaque pixel (en parallele avec rayon):
    a. Calculer dc = offset du pixel par rapport au centre
-   b. Initialiser delta (z_0 = 0 pour Mandelbrot, z_0 = dc pour Julia)
-   c. Boucle d'iteration:
+   b. Appliquer le skip de serie (global ou per-pixel en mode tile)
+   c. Initialiser delta (z_0 = 0 pour Mandelbrot, z_0 = dc pour Julia)
+   d. Boucle d'iteration (par lots de 256):
       i.   Essayer un skip par BLA (plus grand saut valide)
       ii.  Si pas de BLA valide, faire une iteration de perturbation
-      iii. Verifier le rebasing: |Z_m + z_n| < |z_n|
-      iv.  Verifier le bailout: |Z_m + z_n|^2 > 4
-      v.   Verifier le glitch: |z_n|^2 > G^2 · |Z_n|^2
-   d. Retourner: iteration, z_final, glitched, distance
+      iii. Verifier le rebasing: |Z_m + z_n|^2 < |z_n|^2 * 0.5
+      iv.  Verifier le bailout: |Z_m + z_n|^2 > bailout^2
+      v.   Verifier le glitch: |z_n|^2 > G^2 · max(|Z_n|^2, 1e-6)
+   e. Retourner: iteration, z_final, glitched, distance
    ↓
-5. Correction des glitchs (references secondaires)
+5. Correction des glitchs (clustering + references secondaires, jusqu'a 3 rounds)
    ↓
-6. Coloration
+6. Fallback GMP si >30% pixels glitches
+   ↓
+7. Coloration
+```
+
+rust-fractal-core utilise un pipeline simplifie (pas de BLA, pas de correction post-render active):
+```
+1. Orbite de reference (GMP)
+   ↓
+2. Approximation par series + validation par sondes
+   ↓
+3. Iteration perturbation par pixel (avec rebasing inline)
+   ↓
+4. [Correction glitchs - actuellement desactivee dans le code]
+   ↓
+5. Coloration
 ```
 
 ### Dispatch automatique (AlgorithmMode::Auto)
 
 ```
-zoom < ~1e13     → CPU f64 standard (rapide, pas de perturbation)
-zoom ~1e13-1e15  → perturbation f64 + BLA (reference f64, BLA table f64)
-zoom ~1e15-1e16  → perturbation FloatExp + BLA (reference GMP, BLA table f64)
-zoom > ~1e16     → perturbation GMP complete (pas de BLA, tout en GMP)
+pixel_size > ~1e-5   → GPU f32 standard (rapide, pas de perturbation)
+pixel_size > ~1e-13  → CPU f64 standard (rapide, pas de perturbation)
+pixel_size ~1e-13    → perturbation f64/ComplexExp + BLA + series
+pixel_size < ~4e-16  → reference GMP (zoom > 1e16)
 ```
 
 ### Precision GMP
@@ -472,20 +636,39 @@ dans `FractalParams` pour eviter la perte de precision lors du passage en f64.
 
 ---
 
-## 12. Differences avec Fraktaler-3
+## 13. Comparaison des implementations
+
+### fractall-rust vs Fraktaler-3
 
 | Aspect | Fraktaler-3 | fractall-rust |
 |--------|-------------|---------------|
 | BLA coefficients | Toujours `mat2<real>` | Complexes (conforme) ou `Matrix2x2` (non-conforme) |
-| Rebasing | Toujours actif | Actif avec stride configurable |
+| Rebasing | Toujours actif | Actif avec stride configurable + hysteresis |
 | Series approx | 2 series bivariees reelles (abs variations) | Series complexes uniquement |
 | Formules hybrides | Support complet | Support partiel (Hybrid BLA) |
-| GPU | OpenGL compute shaders | wgpu (Vulkan/Metal/DX12) |
+| GPU | OpenGL compute shaders | wgpu (Vulkan/Metal/DX12, f32 uniquement) |
 | Precision | floatexp + softfloat + mpfr | FloatExp + rug (GMP/MPFR) |
+
+### fractall-rust vs rust-fractal-core
+
+| Aspect | rust-fractal-core | fractall-rust |
+|--------|-------------------|---------------|
+| Skip iterations | Series uniquement (pas de BLA) | BLA + series |
+| Representation delta | Scaled doubles (mantisse f64 + scale_factor) | ComplexExp (mantisse + exposant par composante) |
+| Glitch detection | Rebasing inline (z_norm < delta_norm) | Pauldelbrot (|z|² > G² · |Z|²) + rebasing |
+| Glitch correction | Secondary refs depuis snapshots HP (desactive) | Clustering flood-fill + refs secondaires (actif) |
+| Series validation | Sondes + mode tile | Sondes + mode tile |
+| Puissances | Generique via triangle de Pascal (const generic) | Principalement puissance 2 |
+| Types fractales | Mandelbrot, Burning Ship | Mandelbrot, Julia, BurningShip, Tricorn |
+| Batch iterations | 400/power iterations | 256 iterations |
+| Interior detection | Non | Oui (ExtendedDualComplex) |
+| Distance estimation | Jacobien inline (const generic) | DualComplex / ExtendedDualComplex |
+| Profondeur verifiee | > E50000 | Non specifie |
+| GPU | Non | wgpu (perturbation.wgsl) |
 
 ---
 
-## 13. Glossaire
+## 14. Glossaire
 
 | Terme | Definition |
 |-------|-----------|
@@ -495,8 +678,13 @@ dans `FractalParams` pour eviter la perte de precision lors du passage en f64.
 | **Glitch** | Pixel mal calcule car le delta est devenu trop grand |
 | **Pauldelbrot** | Critere de detection de glitch base sur |z_n|/|Z_n| |
 | **diffabs** | Fonction |c+d|-|c| avec analyse de cas pour eviter l'annulation |
-| **FloatExp** | Representation mantisse+exposant pour les tres petits nombres |
+| **FloatExp / ComplexExp** | Representation mantisse+exposant pour les tres petits nombres |
+| **ComplexExtended** | Equivalent rust-fractal-core de ComplexExp (mantisse Complex<f64> + exposant i32) |
+| **Scaled doubles** | Technique ou un facteur d'echelle f64 est pre-calcule via ldexp |
+| **Extended iteration** | Iteration ou les valeurs f64 sous-depassent (< 1e-300), necessitant FloatExp |
 | **Conforme** | Transformation preservant les angles (representable par mult. complexe) |
 | **Non-conforme** | Transformation ne preservant pas les angles (necessite matrice 2×2) |
 | **Valeur singuliere** | sup\|M\| et inf\|M\| - normes operateur de la matrice |
 | **Folding line** | Ligne de pliage (axe Re=0 ou Im=0) ou la valeur absolue cree une discontinuite |
+| **Probe / Sonde** | Point-test utilise pour valider l'approximation par series |
+| **Tile mode** | Mode ou chaque pixel peut sauter un nombre different d'iterations (per-region) |

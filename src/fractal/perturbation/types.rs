@@ -253,44 +253,6 @@ impl ComplexExp {
         self.im.reduce();
     }
 
-    /// Adjust both components to share the same exponent (the larger of the two).
-    /// Inspired by rust-fractal-core's `scale_to_exponent()` for aligning
-    /// precision when combining extended values.
-    #[inline(always)]
-    pub fn scale_to_exponent(&mut self, target_exponent: i32) {
-        if self.re.mantissa != 0.0 {
-            let diff = self.re.exponent - target_exponent;
-            if diff != 0 && diff.abs() < 54 {
-                self.re.mantissa *= pow2i(diff);
-            } else if diff.abs() >= 54 {
-                self.re.mantissa = 0.0;
-            }
-            self.re.exponent = target_exponent;
-        }
-        if self.im.mantissa != 0.0 {
-            let diff = self.im.exponent - target_exponent;
-            if diff != 0 && diff.abs() < 54 {
-                self.im.mantissa *= pow2i(diff);
-            } else if diff.abs() >= 54 {
-                self.im.mantissa = 0.0;
-            }
-            self.im.exponent = target_exponent;
-        }
-    }
-
-    /// Get the dominant exponent (max of re and im exponents).
-    #[inline(always)]
-    pub fn dominant_exponent(self) -> i32 {
-        if self.re.mantissa == 0.0 && self.im.mantissa == 0.0 {
-            0
-        } else if self.re.mantissa == 0.0 {
-            self.im.exponent
-        } else if self.im.mantissa == 0.0 {
-            self.re.exponent
-        } else {
-            self.re.exponent.max(self.im.exponent)
-        }
-    }
 }
 
 #[inline(always)]
@@ -392,18 +354,6 @@ mod tests {
         let reduced_f64 = reduced.to_complex64_approx();
         assert!((orig_f64.re - reduced_f64.re).abs() < 1e-12);
         assert!((orig_f64.im - reduced_f64.im).abs() < 1e-12);
-    }
-
-    #[test]
-    fn complexexp_dominant_exponent() {
-        // FloatExp::new normalizes: new(1.0, 10) -> mantissa=0.5, exponent=11
-        let c = ComplexExp {
-            re: FloatExp::new(1.0, 10),
-            im: FloatExp::new(1.0, 20),
-        };
-        // After normalization, exponents are 11 and 21
-        assert_eq!(c.dominant_exponent(), c.re.exponent.max(c.im.exponent));
-        assert!(c.dominant_exponent() > 10);
     }
 
     #[test]

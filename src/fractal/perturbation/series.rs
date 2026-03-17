@@ -6,39 +6,6 @@ use crate::fractal::perturbation::types::ComplexExp;
 /// Maximum supported series order.
 pub const MAX_SERIES_ORDER: usize = 32;
 
-/// Higher-order series approximation coefficients.
-///
-/// Inspired by rust-fractal-core's arbitrary-order series approach.
-/// Stores coefficients for orders 1..=order so that:
-///   delta_n = sum_{k=1}^{order} coeffs[k] * dc^k
-///
-/// ## Mandelbrot dc-series (is_julia = false)
-///
-///   Recurrences (from delta_{n+1} = 2*Z_n*delta_n + delta_n^2 + dc):
-///     coeff[1]_{n+1} = 2*Z_n*coeff[1]_n + 1
-///     coeff[k]_{n+1} = 2*Z_n*coeff[k]_n + sum_{j=1}^{k-1} coeff[j]_n * coeff[k-j]_n
-///
-/// ## Julia delta-series (is_julia = true)
-///
-///   Recurrences (from delta_{n+1} = 2*Z_n*delta_n + delta_n^2):
-///     coeff[1]_{n+1} = 2*Z_n*coeff[1]_n      (no +1)
-///     coeff[k]_{n+1} = 2*Z_n*coeff[k]_n + sum_{j=1}^{k-1} coeff[j]_n * coeff[k-j]_n
-#[derive(Clone, Debug)]
-pub struct HighOrderCoefficients {
-    /// coeffs[k] for k in 0..=order, where coeffs[0] = Z_n (reference), coeffs[k>=1] = series coeff
-    pub coeffs: Vec<Complex64>,
-    pub order: usize,
-}
-
-impl HighOrderCoefficients {
-    pub fn new(order: usize) -> Self {
-        Self {
-            coeffs: vec![Complex64::new(0.0, 0.0); order + 1],
-            order,
-        }
-    }
-}
-
 /// Fixed-order (4) coefficients for backward compatibility.
 #[derive(Clone, Copy, Debug)]
 pub struct SeriesCoefficients {
@@ -74,7 +41,6 @@ pub struct SeriesTable {
     pub data_storage_interval: usize,
     /// Series order (number of terms, e.g. 4 = a*dc + b*dc^2 + c*dc^3 + d*dc^4)
     pub order: usize,
-    pub is_julia: bool,
     /// Validated iteration count from probe-based validation.
     /// Series is only valid up to this iteration (0 = not validated yet).
     pub validated_skip: usize,
@@ -91,7 +57,6 @@ impl SeriesTable {
             ho_coeffs: Vec::new(),
             data_storage_interval: 1,
             order: 4,
-            is_julia: false,
             validated_skip: 0,
             tiled_validation: None,
         }
@@ -225,7 +190,6 @@ pub fn build_series_table_ho(
         ho_coeffs: ho_coeffs_stored,
         data_storage_interval: interval,
         order,
-        is_julia,
         validated_skip: 0,
         tiled_validation: None,
     }
@@ -278,29 +242,6 @@ impl TiledSeriesValidation {
         let idx = iy * self.probe_cols + ix;
         self.probe_valid_iterations.get(idx).copied().unwrap_or(self.global_min)
     }
-}
-
-/// Probe-based series approximation validation.
-///
-/// Inspired by rust-fractal-core's check_approximation() method.
-/// Uses probe points (corners + grid) to validate that the series approximation
-/// is accurate by comparing series evaluation against actual perturbation iteration.
-///
-/// Returns the maximum iteration to which the series can safely be skipped.
-pub fn validate_series_with_probes(
-    table: &SeriesTable,
-    z_ref: &[Complex64],
-    is_julia: bool,
-    delta_pixel: f64,
-    image_width: usize,
-    image_height: usize,
-    probe_sampling: usize,
-) -> usize {
-    let tiled = validate_series_with_probes_tiled(
-        table, z_ref, is_julia, delta_pixel,
-        image_width, image_height, probe_sampling,
-    );
-    tiled.global_min
 }
 
 /// Tiled probe-based series approximation validation.
@@ -562,8 +503,6 @@ pub fn compute_series_skip(
         return None;
     }
 
-    let dc_norm_sq = dc_norm * dc_norm;
-
     // Respect probe validation if available
     let max_skip = if table.validated_skip > 0 {
         table.validated_skip
@@ -640,79 +579,6 @@ pub fn compute_series_skip(
     }
 }
 
-/// Compute series skip using higher-order coefficients and extended precision.
-///
-/// Uses ComplexExp for evaluation to avoid f64 underflow at deep zooms.
-/// Inspired by rust-fractal-core's extended precision evaluation.
-pub fn compute_series_skip_extended(
-    table: &SeriesTable,
-    dc: ComplexExp,
-    error_tolerance: f64,
-) -> Option<SeriesSkipResult> {
-    if table.ho_coeffs.is_empty() || error_tolerance <= 0.0 {
-        return compute_series_skip(table, dc, error_tolerance);
-    }
-
-    let dc_norm_sqr = dc.norm_sqr_approx();
-    if dc_norm_sqr <= 0.0 || !dc_norm_sqr.is_finite() {
-        return None;
-    }
-
-    let max_skip = if table.validated_skip > 0 {
-        table.validated_skip
-    } else {
-        usize::MAX
-    };
-
-    let mut best_skip = 0usize;
-    let mut best_delta = ComplexExp::zero();
-    let mut best_error = f64::MAX;
-
-    for (stored_idx, ho) in table.ho_coeffs.iter().enumerate() {
-        let n = stored_idx * table.data_storage_interval;
-        if n > max_skip || n >= table.coeffs.len() {
-            break;
-        }
-
-        // Evaluate using extended precision Horner
-        let mut result = ComplexExp::from_complex64(ho[ho.len() - 1]);
-        for coeff in ho[..ho.len() - 1].iter().rev() {
-            result = result.mul(dc).add(ComplexExp::from_complex64(*coeff));
-        }
-        result = result.mul(dc);
-
-        let result_norm = result.norm_sqr_approx();
-        if !result_norm.is_finite() {
-            break;
-        }
-
-        // Rough error estimate
-        let last_coeff_norm = ho.last().map(|c| c.norm()).unwrap_or(0.0);
-        let dc_norm = dc_norm_sqr.sqrt();
-        let error = last_coeff_norm * dc_norm.powi((table.order + 1) as i32);
-
-        if error < error_tolerance && result_norm > 0.0 {
-            best_skip = n;
-            best_delta = result;
-            best_error = error;
-        }
-
-        if error > error_tolerance * 100.0 {
-            break;
-        }
-    }
-
-    if best_skip >= 2 {
-        Some(SeriesSkipResult {
-            skip_to: best_skip,
-            delta: best_delta,
-            estimated_error: best_error,
-        })
-    } else {
-        compute_series_skip(table, dc, error_tolerance)
-    }
-}
-
 /// Compute an adaptive series order based on zoom depth.
 ///
 /// Inspired by rust-fractal-core which adjusts series order dynamically based on
@@ -785,31 +651,6 @@ impl SeriesConfig {
             error_tolerance: params.series_error_tolerance.max(0.0),
         }
     }
-}
-
-/// Suggest an adjusted iteration limit based on series approximation skip depth.
-///
-/// Inspired by rust-fractal-core's `adjust_iterations()` which automatically
-/// increases the maximum iteration count when the series approximation can
-/// skip many iterations. The idea is: if the series can skip N iterations,
-/// then the fractal likely has interesting detail at depth N, so we should
-/// allow at least N + margin iterations for the perturbation phase.
-///
-/// # Arguments
-/// * `current_max_iter` - Current maximum iteration count
-/// * `series_skip` - Number of iterations the series can skip
-///
-/// # Returns
-/// Suggested maximum iteration count (may be higher than current)
-pub fn suggest_adjusted_iterations(current_max_iter: u32, series_skip: usize) -> u32 {
-    if series_skip < 100 {
-        return current_max_iter;
-    }
-    // If series skips a lot of iterations, the detail is deep.
-    // Ensure we have at least 2x the skip depth as max iterations,
-    // with a minimum margin of 500 extra iterations for the perturbation phase.
-    let suggested = (series_skip as u32).saturating_mul(2).max(series_skip as u32 + 500);
-    current_max_iter.max(suggested)
 }
 
 pub fn should_use_series(config: SeriesConfig, delta_norm_sqr: f64, validity_radius: f64) -> bool {
@@ -926,7 +767,6 @@ mod tests {
         let z_ref = vec![Complex64::new(0.0, 0.0); 10];
         let table = build_series_table(&z_ref, false);
         assert!(!table.is_empty());
-        assert!(!table.is_julia);
 
         assert!((table.coeffs[0].a.norm()) < 1e-10);
         assert!((table.coeffs[1].a - Complex64::new(1.0, 0.0)).norm() < 1e-10);
@@ -948,21 +788,6 @@ mod tests {
         assert!(result.is_some(), "Series skip should work for small dc");
         let skip = result.unwrap();
         assert!(skip.skip_to >= 2, "Should skip at least 2 iterations, got {}", skip.skip_to);
-    }
-
-    #[test]
-    fn julia_series_coefficients() {
-        let z_ref = vec![
-            Complex64::new(0.5, 0.3),
-            Complex64::new(0.2, 0.1),
-            Complex64::new(0.4, -0.2),
-        ];
-        let table = build_series_table(&z_ref, true);
-        assert!(table.is_julia);
-
-        assert!((table.coeffs[0].a - Complex64::new(1.0, 0.0)).norm() < 1e-10);
-        let expected_a1 = Complex64::new(1.0, 0.6);
-        assert!((table.coeffs[1].a - expected_a1).norm() < 1e-10);
     }
 
     #[test]
@@ -998,20 +823,6 @@ mod tests {
         assert_eq!(table_4.order, 4);
         assert_eq!(table_8.order, 8);
         assert!(table_8.ho_coeffs[0].len() == 8);
-    }
-
-    #[test]
-    fn probe_validation_works() {
-        let z_ref = vec![Complex64::new(0.0, 0.0); 50];
-        let table = build_series_table(&z_ref, false);
-
-        let validated = validate_series_with_probes(
-            &table, &z_ref, false,
-            0.01, // delta_pixel
-            100, 100, // image size
-            3, // probe sampling
-        );
-        assert!(validated > 0, "Probe validation should find valid iterations");
     }
 
     #[test]
@@ -1068,16 +879,6 @@ mod tests {
         // Bottom-right cell (1,1): value = 20
         let val = tiled.valid_iteration_for_pixel(99, 99, 100, 100);
         assert_eq!(val, 20);
-    }
-
-    #[test]
-    fn suggest_adjusted_iterations_basic() {
-        // Small skip: no adjustment
-        assert_eq!(suggest_adjusted_iterations(1000, 50), 1000);
-        // Large skip: increase iterations
-        assert!(suggest_adjusted_iterations(500, 1000) >= 1500);
-        // Already sufficient
-        assert_eq!(suggest_adjusted_iterations(5000, 200), 5000);
     }
 
     #[test]
