@@ -564,6 +564,10 @@ pub fn generate_pascal_coefficients(power: usize) -> Vec<f64> {
 /// For power 2: delta' = 2*Z*delta + delta² + dc (standard Mandelbrot)
 /// For power 3: delta' = 3*Z²*delta + 3*Z*delta² + delta³ + dc
 /// For power d: uses Pascal coefficients for the binomial expansion
+///
+/// Uses scaled delta approach (ldexp-based) like Mandelbrot/BurningShip batches
+/// for better numerical stability. Previously used `to_complex64_approx()` per
+/// iteration which was slow and imprecise at deep zooms.
 #[inline(never)]
 fn fast_multibrot_batch_f64(
     ref_orbit: &ReferenceOrbit,
@@ -580,6 +584,38 @@ fn fast_multibrot_batch_f64(
 ) -> BatchResult {
     const BATCH_SIZE: u32 = 256;
 
+    // Scaled delta approach (inspired by rust-fractal-core):
+    // scale_factor = 2^exponent, keep mantissa in f64 range
+    let delta_exp = delta.re.exponent.max(delta.im.exponent);
+    let scale_factor = crate::fractal::perturbation::types::pow2i(delta_exp);
+    let inv_scale = if delta_exp > -500 && delta_exp < 500 {
+        crate::fractal::perturbation::types::pow2i(-delta_exp)
+    } else {
+        1.0
+    };
+
+    let use_scaling = scale_factor.is_finite() && scale_factor > 0.0
+        && inv_scale.is_finite() && delta_exp.abs() < 500;
+
+    let mut d_re;
+    let mut d_im;
+    if use_scaling {
+        d_re = delta.re.mantissa;
+        d_im = delta.im.mantissa;
+        // Scale to align exponents
+        if delta.re.exponent != delta_exp {
+            d_re *= crate::fractal::perturbation::types::pow2i(delta.re.exponent - delta_exp);
+        }
+        if delta.im.exponent != delta_exp {
+            d_im *= crate::fractal::perturbation::types::pow2i(delta.im.exponent - delta_exp);
+        }
+    } else {
+        d_re = delta.re.to_f64();
+        d_im = delta.im.to_f64();
+    }
+
+    let sf = if use_scaling { scale_factor } else { 1.0 };
+
     let orbit_f64 = &ref_orbit.z_ref_f64;
     let phase_offset = ref_orbit.phase_offset as usize;
 
@@ -590,28 +626,41 @@ fn fast_multibrot_batch_f64(
         .unwrap_or(u32::MAX);
     let batch_end = (*n + BATCH_SIZE).min(max_iter).min(next_extended);
 
+    let make_delta = |d_re: f64, d_im: f64| -> ComplexExp {
+        if use_scaling {
+            ComplexExp {
+                re: FloatExp::new(d_re, delta_exp),
+                im: FloatExp::new(d_im, delta_exp),
+            }
+        } else {
+            ComplexExp::from_complex64(Complex64::new(d_re, d_im))
+        }
+    };
+
     while *n < batch_end {
         let idx = *n as usize + phase_offset;
         if idx >= orbit_f64.len() {
             break;
         }
         let z_ref = orbit_f64[idx];
-        let delta_f64 = delta.to_complex64_approx();
 
-        let z_curr_re = z_ref.re + delta_f64.re;
-        let z_curr_im = z_ref.im + delta_f64.im;
+        // z_curr = z_ref + scale_factor * delta_mantissa
+        let z_curr_re = z_ref.re + sf * d_re;
+        let z_curr_im = z_ref.im + sf * d_im;
         let z_curr_norm_sqr = z_curr_re * z_curr_re + z_curr_im * z_curr_im;
 
         if z_curr_norm_sqr > bailout_sqr {
+            *delta = make_delta(d_re, d_im);
             return BatchResult::Escaped {
                 iteration: *n,
                 z_final: Complex64::new(z_curr_re, z_curr_im),
             };
         }
 
-        let d_norm_sqr = delta_f64.norm_sqr();
+        let d_norm_sqr = (sf * d_re) * (sf * d_re) + (sf * d_im) * (sf * d_im);
         let z_ref_norm_sqr = (z_ref.re * z_ref.re + z_ref.im * z_ref.im).max(1e-6);
         if !d_norm_sqr.is_finite() || d_norm_sqr > glitch_tolerance_sqr * z_ref_norm_sqr {
+            *delta = make_delta(d_re, d_im);
             return BatchResult::Glitched {
                 iteration: *n,
                 z_final: Complex64::new(z_curr_re, z_curr_im),
@@ -626,9 +675,9 @@ fn fast_multibrot_batch_f64(
         }
 
         // Generic power perturbation using binomial expansion (rust-fractal-core approach):
-        // delta' = sum_{k=1}^{d} C(d,k) * Z^(d-k) * delta^k + dc
-        //        = delta * (C(d,1)*Z^(d-1) + delta * (C(d,2)*Z^(d-2) + delta * (...)))
-        // This is computed using a modified Horner-like accumulation.
+        // delta' = delta * (C(d,1)*Z^(d-1) + delta * (C(d,2)*Z^(d-2) + ... + delta))
+        // Work in scaled space: delta_f64 = sf * (d_re, d_im), z_ref in absolute space
+        let delta_f64 = Complex64::new(sf * d_re, sf * d_im);
         let mut sum = Complex64::new(pascal[1], 0.0) * z_ref + delta_f64;
         let mut z_p = z_ref;
         for i in 2..power {
@@ -638,11 +687,19 @@ fn fast_multibrot_batch_f64(
         }
         let new_delta = delta_f64 * sum + dc_f64;
 
-        *delta = ComplexExp::from_complex64(new_delta);
+        // Store result back in scaled space
+        if use_scaling {
+            d_re = new_delta.re * inv_scale;
+            d_im = new_delta.im * inv_scale;
+        } else {
+            d_re = new_delta.re;
+            d_im = new_delta.im;
+        }
         *n += 1;
         *iters_ptb += 1;
 
         if !new_delta.re.is_finite() || !new_delta.im.is_finite() {
+            *delta = make_delta(d_re, d_im);
             *suspect = true;
             return BatchResult::Glitched {
                 iteration: *n,
@@ -651,6 +708,7 @@ fn fast_multibrot_batch_f64(
         }
     }
 
+    *delta = make_delta(d_re, d_im);
     BatchResult::Continue
 }
 

@@ -141,6 +141,19 @@ pub struct ReferenceOrbit {
     /// Inspired by rust-fractal-core's extended_iterations tracking.
     /// The fast f64 batch path should break at these iterations to avoid precision loss.
     pub extended_iterations: Vec<u32>,
+    /// Sparse high-precision orbit data stored at intervals for memory-efficient glitch resolution.
+    ///
+    /// Inspired by rust-fractal-core's `high_precision_data` + `data_storage_interval`:
+    /// Instead of storing full GMP data at every iteration (which uses O(N * precision_bits) memory),
+    /// we store it only every `data_storage_interval` iterations. For glitch resolution, we create
+    /// new references starting from the nearest stored checkpoint.
+    ///
+    /// Access: `high_precision_data[iteration / data_storage_interval]`
+    pub high_precision_data: Vec<Complex>,
+    /// Interval between stored high-precision orbit points.
+    /// Inspired by rust-fractal-core's `data_storage_interval`.
+    /// Default: 10 (stores every 10th iteration). 1 = store every iteration (original behavior).
+    pub data_storage_interval: usize,
 }
 
 impl ReferenceOrbit {
@@ -165,6 +178,24 @@ impl ReferenceOrbit {
     /// Get the effective length of the reference orbit for this phase
     pub fn effective_len(&self) -> usize {
         self.z_ref_f64.len().saturating_sub(self.phase_offset as usize)
+    }
+
+    /// Get the nearest stored high-precision orbit point at or before a given iteration.
+    ///
+    /// Inspired by rust-fractal-core's `get_central_glitch_resolving_reference()`:
+    /// When `data_storage_interval > 1`, high-precision data is only stored at
+    /// intervals. This method finds the nearest checkpoint and returns it along
+    /// with the checkpoint iteration index.
+    ///
+    /// Returns `(checkpoint_iteration, &Complex)` or None if no data is available.
+    pub fn get_nearest_high_precision(&self, iteration: usize) -> Option<(usize, &Complex)> {
+        if self.high_precision_data.is_empty() || self.data_storage_interval == 0 {
+            // Fall back to z_ref_gmp if available
+            return self.z_ref_gmp.get(iteration).map(|z| (iteration, z));
+        }
+        let interval = self.data_storage_interval.max(1);
+        let idx = iteration / interval;
+        self.high_precision_data.get(idx).map(|z| (idx * interval, z))
     }
 
     /// Create a glitch-resolving reference starting at a given iteration.
@@ -295,11 +326,109 @@ impl ReferenceOrbit {
             cref: cref_f64,
             z_ref,
             z_ref_f64,
-            z_ref_gmp,
+            z_ref_gmp: z_ref_gmp.clone(),
             cref_gmp: new_c,
             phase_offset: 0,
             extended_iterations,
+            // Glitch-resolving references store every iteration (interval=1)
+            // since they are short-lived and need full precision access.
+            high_precision_data: z_ref_gmp,
+            data_storage_interval: 1,
         })
+    }
+
+    /// Create a glitch-resolving reference using sparse high-precision data.
+    ///
+    /// Inspired by rust-fractal-core's `get_glitch_resolving_reference()`:
+    /// Uses the sparse `high_precision_data` (stored every `data_storage_interval` iterations)
+    /// to create a new reference starting from the nearest checkpoint to the glitch iteration.
+    /// This avoids needing to store full GMP data at every iteration.
+    ///
+    /// The new reference starts from `high_precision_data[iteration/interval] + current_delta`,
+    /// with `c = cref + reference_delta`.
+    pub fn create_glitch_reference_from_sparse(
+        &self,
+        iteration: u32,
+        reference_delta: ComplexExp,
+        current_delta: ComplexExp,
+        params: &FractalParams,
+        cancel: Option<&AtomicBool>,
+    ) -> Option<ReferenceOrbit> {
+        use crate::fractal::perturbation::compute_perturbation_precision_bits;
+        let prec = compute_perturbation_precision_bits(params);
+
+        // Find nearest stored high-precision checkpoint
+        let (checkpoint_iter, checkpoint_z) = self.get_nearest_high_precision(iteration as usize)?;
+
+        // New c = cref + reference_delta
+        let mut new_c = Complex::with_val(prec, (self.cref_gmp.real(), self.cref_gmp.imag()));
+        let ref_delta_re_f64 = reference_delta.re.to_f64();
+        let ref_delta_im_f64 = reference_delta.im.to_f64();
+        let ref_delta_re = Float::with_val(prec, ref_delta_re_f64);
+        let ref_delta_im = Float::with_val(prec, ref_delta_im_f64);
+        *new_c.mut_real() += &ref_delta_re;
+        *new_c.mut_imag() += &ref_delta_im;
+
+        // New z = checkpoint_z + current_delta
+        let mut z = Complex::with_val(prec, (checkpoint_z.real(), checkpoint_z.imag()));
+        let cur_delta_re_f64 = current_delta.re.to_f64();
+        let cur_delta_im_f64 = current_delta.im.to_f64();
+        let cur_delta_re = Float::with_val(prec, cur_delta_re_f64);
+        let cur_delta_im = Float::with_val(prec, cur_delta_im_f64);
+        *z.mut_real() += &cur_delta_re;
+        *z.mut_imag() += &cur_delta_im;
+
+        // If checkpoint is before the glitch iteration, advance z to the glitch point
+        // using GMP iteration from the checkpoint
+        let seed = Complex::with_val(prec, (params.seed.re, params.seed.im));
+        for _ in checkpoint_iter..(iteration as usize) {
+            if let Some(cancel) = cancel {
+                if cancel.load(Ordering::Relaxed) {
+                    return None;
+                }
+            }
+            z = match params.fractal_type {
+                FractalType::Mandelbrot => {
+                    let mut z_sq = z.clone();
+                    z_sq *= &z.clone();
+                    z_sq += &new_c;
+                    z_sq
+                }
+                FractalType::Julia => {
+                    let mut z_sq = z.clone();
+                    z_sq *= &z.clone();
+                    z_sq += &seed;
+                    z_sq
+                }
+                FractalType::BurningShip => {
+                    let re_abs = z.real().clone().abs();
+                    let im_abs = z.imag().clone().abs();
+                    let mut z_abs = Complex::with_val(prec, (re_abs, im_abs));
+                    z_abs *= z_abs.clone();
+                    z_abs += &new_c;
+                    z_abs
+                }
+                FractalType::Tricorn => {
+                    let z_conj = z.clone().conj();
+                    let mut z_temp = z_conj.clone();
+                    z_temp *= &z_conj;
+                    z_temp += &new_c;
+                    z_temp
+                }
+                _ => break,
+            };
+        }
+
+        // Now iterate from glitch point onward
+        self.create_glitch_reference(
+            iteration,
+            ref_delta_re_f64,
+            ref_delta_im_f64,
+            z.real().to_f64(),
+            z.imag().to_f64(),
+            params,
+            cancel,
+        )
     }
 }
 
@@ -455,6 +584,8 @@ fn build_hybrid_bla_references(
                 cref_gmp: primary_orbit.cref_gmp.clone(),
                 phase_offset,
                 extended_iterations: primary_orbit.extended_iterations.clone(),
+                high_precision_data: primary_orbit.high_precision_data.clone(),
+                data_storage_interval: primary_orbit.data_storage_interval,
             };
             
             // Build BLA table for this phase reference (one BLA table per reference)
@@ -706,10 +837,26 @@ pub fn compute_reference_orbit(
     let mut z_ref = Vec::with_capacity(params.iteration_max as usize + 1);
     let mut z_ref_f64 = Vec::with_capacity(params.iteration_max as usize + 1);
     let mut z_ref_gmp = Vec::with_capacity(params.iteration_max as usize + 1);
+
+    // Inspired by rust-fractal-core's data_storage_interval:
+    // Store high-precision orbit data at intervals to reduce memory usage.
+    // For orbits with >100k iterations, store every 10th; for >1M, every 100th.
+    let data_storage_interval = if params.iteration_max > 1_000_000 {
+        100
+    } else if params.iteration_max > 100_000 {
+        10
+    } else {
+        1
+    };
+    let mut high_precision_data = Vec::with_capacity(
+        (params.iteration_max as usize / data_storage_interval) + 2
+    );
+
     // Store high-precision, f64, and full GMP versions
     z_ref.push(ComplexExp::from_gmp(&z));
     z_ref_f64.push(complex_to_complex64(&z));
     z_ref_gmp.push(z.clone());
+    high_precision_data.push(z.clone());
 
     for i in 0..params.iteration_max {
         if let Some(cancel) = cancel {
@@ -722,8 +869,6 @@ pub fn compute_reference_orbit(
         }
         z = match params.fractal_type {
             FractalType::Mandelbrot => {
-                // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision prec
-                // Créer une copie avec la précision explicite pour garantir la cohérence
                 let z_prec = Complex::with_val(prec, (z.real(), z.imag()));
                 let mut z_sq = z_prec.clone();
                 z_sq *= &z_prec;
@@ -731,8 +876,6 @@ pub fn compute_reference_orbit(
                 z_sq
             }
             FractalType::Julia => {
-                // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision prec
-                // Créer une copie avec la précision explicite pour garantir la cohérence
                 let z_prec = Complex::with_val(prec, (z.real(), z.imag()));
                 let mut z_sq = z_prec.clone();
                 z_sq *= &z_prec;
@@ -740,8 +883,6 @@ pub fn compute_reference_orbit(
                 z_sq
             }
             FractalType::BurningShip => {
-                // IMPORTANT: Créer des copies avec la précision explicite pour éviter la perte de précision
-                // lors de la conversion Float -> f64 -> Float
                 let re_prec = Float::with_val(prec, z.real());
                 let im_prec = Float::with_val(prec, z.imag());
                 let re_abs = re_prec.abs();
@@ -752,16 +893,11 @@ pub fn compute_reference_orbit(
                 z_abs
             }
             FractalType::Multibrot => {
-                // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision prec
-                // pow_f64_mpc crée déjà une nouvelle valeur avec la précision prec, donc c'est OK
                 let mut z_pow = pow_f64_mpc(&z, params.multibrot_power, prec);
                 z_pow += &cref;
                 z_pow
             }
             FractalType::Tricorn => {
-                // Tricorn: z' = conj(z)² + c
-                // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision prec
-                // Créer une copie avec la précision explicite pour garantir la cohérence
                 let z_prec = Complex::with_val(prec, (z.real(), z.imag()));
                 let z_conj = z_prec.conj();
                 let mut z_temp = Complex::with_val(prec, (z_conj.real(), z_conj.imag()));
@@ -775,6 +911,12 @@ pub fn compute_reference_orbit(
         z_ref.push(ComplexExp::from_gmp(&z));
         z_ref_f64.push(complex_to_complex64(&z));
         z_ref_gmp.push(z.clone());
+
+        // Store sparse high-precision data at intervals (inspired by rust-fractal-core)
+        let iter_num = (i + 1) as usize;
+        if data_storage_interval == 1 || iter_num % data_storage_interval == 0 {
+            high_precision_data.push(z.clone());
+        }
     }
 
     // Track iterations where z_ref is very small (near f64 underflow).
@@ -796,6 +938,8 @@ pub fn compute_reference_orbit(
             cref_gmp: cref,
             phase_offset: 0,
             extended_iterations,
+            high_precision_data,
+            data_storage_interval,
         },
         cx_str,
         cy_str,
