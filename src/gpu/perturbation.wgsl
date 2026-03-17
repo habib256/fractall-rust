@@ -54,21 +54,15 @@ fn compute_adaptive_glitch_tolerance(pixel_size: f32, user_tolerance: f32) -> f3
     if (abs(user_tolerance - DEFAULT_GLITCH_TOLERANCE) > 1.0e-10) {
         return user_tolerance;
     }
-    
-    // Calculer le niveau de zoom: log10(4 / pixel_size)
+
+    // Continuous adaptive tolerance scaling (inspired by rust-fractal-core).
+    // Instead of discrete steps, use a smooth logarithmic ramp:
+    //   tolerance = 10^(-5 + zoom_level * slope)
+    // This matches the CPU implementation for consistent glitch detection.
     let zoom_level = log(4.0 / max(pixel_size, 1.0e-38)) / log(10.0);
-    
-    // Tolérance adaptative selon le niveau de zoom
-    if (zoom_level < 7.0) {
-        return 1.0e-5;      // Zoom peu profond : strict
-    } else if (zoom_level < 15.0) {
-        return 1.0e-4;      // Moyen : standard
-    } else if (zoom_level < 31.0) {
-        return 1.0e-3;      // Profond : relaxé
-    } else if (zoom_level < 51.0) {
-        return 1.0e-2;      // Très profond
-    }
-    return 1.0e-1;          // Extrême
+    let slope = 0.1;
+    let log_tol = -5.0 + max(zoom_level, 0.0) * slope;
+    return pow(10.0, clamp(log_tol, -6.0, -1.0));
 }
 
 struct BlaMeta {
@@ -207,6 +201,8 @@ fn main(
 
     let is_julia = params.fractal_kind == 1u;
     let is_burning_ship = params.fractal_kind == 2u;
+    let is_tricorn = params.fractal_kind == 3u;
+    let is_tricorn_julia = params.fractal_kind == 4u;
     var delta_re = select(0.0, dc_re, is_julia);
     var delta_im = select(0.0, dc_im, is_julia);
     var delta_scale = 1.0;
@@ -223,7 +219,7 @@ fn main(
         }
 
         var stepped = false;
-        if (!is_burning_ship && params.bla_levels > 0u) {
+        if (!is_burning_ship && !is_tricorn && !is_tricorn_julia && params.bla_levels > 0u) {
             var level: i32 = i32(params.bla_levels);
             loop {
                 level = level - 1;
@@ -273,7 +269,38 @@ fn main(
 
         if (!stepped) {
             let z = z_ref[n];
-            if (is_burning_ship) {
+            if (is_tricorn || is_tricorn_julia) {
+                // Tricorn perturbation: z' = conj(z)² + c
+                // Inspired by rust-fractal-core's non-conformal perturbation approach.
+                // Since Tricorn uses conjugation (anti-conformal), we compute z_curr = z_ref + delta,
+                // apply conj(z_curr)² + c, then subtract the next z_ref to get the new delta.
+                let delta_actual_re = delta_re * delta_scale;
+                let delta_actual_im = delta_im * delta_scale;
+                let z_re = z.re + delta_actual_re;
+                let z_im = z.im + delta_actual_im;
+                // conj(z) = (z_re, -z_im), then square: (z_re² - z_im², -2*z_re*z_im)
+                let z_sq = complex_mul(z_re, -z_im, z_re, -z_im);
+                var z_next_re: f32;
+                var z_next_im: f32;
+                if (is_tricorn_julia) {
+                    z_next_re = z_sq.x + params.cref_x;
+                    z_next_im = z_sq.y + params.cref_y;
+                } else {
+                    z_next_re = z_sq.x + (params.cref_x + dc_re);
+                    z_next_im = z_sq.y + (params.cref_y + dc_im);
+                }
+                n = n + 1u;
+                if (n >= params.iter_max) {
+                    break;
+                }
+                let z_next_ref = z_ref[n];
+                let next_re = z_next_re - z_next_ref.re;
+                let next_im = z_next_im - z_next_ref.im;
+                let scaled = rescale_delta(next_re, next_im, 1.0);
+                delta_re = scaled.x;
+                delta_im = scaled.y;
+                delta_scale = scaled.z;
+            } else if (is_burning_ship) {
                 let delta_actual_re = delta_re * delta_scale;
                 let delta_actual_im = delta_im * delta_scale;
                 let z_re = z.re + delta_actual_re;
@@ -327,8 +354,12 @@ fn main(
             let z_curr_norm_sqr = z_curr_re * z_curr_re + z_curr_im * z_curr_im;
             let delta_norm_sqr = delta_actual_re * delta_actual_re + delta_actual_im * delta_actual_im;
 
-            // Rebasing condition: |z_curr| < |delta| and both are non-zero
-            if (z_curr_norm_sqr > 0.0 && delta_norm_sqr > 0.0 && z_curr_norm_sqr < delta_norm_sqr) {
+            // Rebasing with hysteresis (inspired by rust-fractal-core):
+            // Only rebase if z_curr is meaningfully smaller than delta (factor 0.5),
+            // preventing ping-pong rebasing that wastes iterations.
+            // Also skip rebasing when z_ref is very small (near orbit zero).
+            let z_ref_ns = z_check.re * z_check.re + z_check.im * z_check.im;
+            if (z_curr_norm_sqr > 0.0 && delta_norm_sqr > 0.0 && z_curr_norm_sqr < delta_norm_sqr * 0.5 && z_ref_ns > 1.0e-20) {
                 // Rebase: delta = z_curr, restart from iteration 0
                 let scaled = rescale_delta(z_curr_re, z_curr_im, 1.0);
                 delta_re = scaled.x;
@@ -359,7 +390,12 @@ fn main(
         // Detect glitches when:
         // 1. NaN or Inf values (always invalid)
         // 2. Delta is too large relative to z_ref (indicates precision loss)
-        let glitch_scale = z_ref_norm_sqr + 1.0;
+        // Fix: use max(z_ref_norm_sqr, 1e-6) instead of z_ref_norm_sqr + 1.0
+        // Inspired by rust-fractal-core's Pauldelbrot criterion and matching our CPU implementation.
+        // The old formula (z_ref_norm_sqr + 1.0) masked glitches near the origin where z_ref is small,
+        // because the +1.0 dominated, making the tolerance too permissive.
+        // Using max(1e-6) provides a floor without distorting the scale relationship.
+        let glitch_scale = max(z_ref_norm_sqr, 1.0e-6);
         let delta_too_large = delta_norm_sqr > glitch_tolerance_sqr * glitch_scale;
         let glitched = (nan_re || nan_im || inf_re || inf_im || delta_too_large);
         
