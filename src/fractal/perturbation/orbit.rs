@@ -136,6 +136,11 @@ pub struct ReferenceOrbit {
     pub cref_gmp: Complex,
     /// Phase offset for Hybrid BLA (0 for single reference, >0 for multi-phase)
     pub phase_offset: u32,
+    /// Iterations where z_ref is very small (|re| < 1e-300 and |im| < 1e-300),
+    /// requiring extended precision for the perturbation formula.
+    /// Inspired by rust-fractal-core's extended_iterations tracking.
+    /// The fast f64 batch path should break at these iterations to avoid precision loss.
+    pub extended_iterations: Vec<u32>,
 }
 
 impl ReferenceOrbit {
@@ -314,6 +319,7 @@ fn build_hybrid_bla_references(
                 z_ref_gmp: primary_orbit.z_ref_gmp.clone(),
                 cref_gmp: primary_orbit.cref_gmp.clone(),
                 phase_offset,
+                extended_iterations: primary_orbit.extended_iterations.clone(),
             };
             
             // Build BLA table for this phase reference (one BLA table per reference)
@@ -610,6 +616,16 @@ pub fn compute_reference_orbit(
         z_ref_gmp.push(z.clone());
     }
 
+    // Track iterations where z_ref is very small (near f64 underflow).
+    // At these iterations, the f64 z_ref values lose precision, so the fast f64
+    // batch path should fall back to extended precision arithmetic.
+    let extended_iterations: Vec<u32> = z_ref_f64
+        .iter()
+        .enumerate()
+        .filter(|(_, z)| z.re.abs() < 1e-300 && z.im.abs() < 1e-300)
+        .map(|(i, _)| i as u32)
+        .collect();
+
     Some((
         ReferenceOrbit {
             cref: cref_f64,
@@ -617,7 +633,8 @@ pub fn compute_reference_orbit(
             z_ref_f64,
             z_ref_gmp,
             cref_gmp: cref,
-            phase_offset: 0, // Primary reference starts at phase 0
+            phase_offset: 0,
+            extended_iterations,
         },
         cx_str,
         cy_str,
