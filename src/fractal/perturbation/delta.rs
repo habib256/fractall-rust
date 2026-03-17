@@ -265,12 +265,16 @@ fn fast_mandelbrot_batch_f64(
 
     } // close else (escape-check-enabled path)
 
-    // Write back delta from mantissa
+    // Write back delta from mantissa and normalize.
+    // Periodic reduce() inspired by rust-fractal-core: re-normalize mantissa after
+    // each batch to prevent gradual precision loss during long iteration sequences.
     *delta = if use_scaling {
-        ComplexExp {
+        let mut d = ComplexExp {
             re: FloatExp::new(d_re, delta_exp),
             im: FloatExp::new(d_im, delta_exp),
-        }
+        };
+        d.reduce();
+        d
     } else {
         ComplexExp::from_complex64(Complex64::new(d_re, d_im))
     };
@@ -327,6 +331,40 @@ fn fast_mandelbrot_batch_f64(
     }
 
     BatchResult::Continue
+}
+
+/// Check if rebasing is beneficial using an improved heuristic.
+///
+/// Inspired by rust-fractal-core's rebasing strategy: instead of only checking
+/// |z_curr| < |delta| (which can trigger premature rebasing when delta and z_ref
+/// nearly cancel), also verify that the new delta (z_curr) has meaningfully smaller
+/// norm. This avoids "ping-pong" rebasing where delta oscillates between two
+/// similar-magnitude values.
+///
+/// The condition from rust-fractal-core is:
+///   rebase when |z_curr|² < |delta|² * REBASE_THRESHOLD
+/// where REBASE_THRESHOLD < 1.0 provides hysteresis.
+///
+/// Additionally, avoid rebasing when |z_ref| is very small (near a zero of the
+/// reference orbit), as this is a natural behavior and not a glitch condition.
+#[inline(always)]
+pub fn should_rebase(z_curr_norm_sqr: f64, delta_norm_sqr: f64, z_ref_norm_sqr: f64) -> bool {
+    // Hysteresis factor: only rebase if z_curr is meaningfully smaller than delta.
+    // This prevents oscillating rebases that waste iterations.
+    // A factor of 0.5 means z_curr must be at most ~70% of delta magnitude.
+    const REBASE_HYSTERESIS: f64 = 0.5;
+
+    if z_curr_norm_sqr <= 0.0 || delta_norm_sqr <= 0.0 {
+        return false;
+    }
+
+    // Don't rebase when z_ref is very small (near a zero of the orbit).
+    // Near zeros, |z_curr| ≈ |delta| is expected, not a glitch.
+    if z_ref_norm_sqr < 1e-20 {
+        return false;
+    }
+
+    z_curr_norm_sqr < delta_norm_sqr * REBASE_HYSTERESIS
 }
 
 /// Calcule diffabs(c, d) = |c + d| - |c| de manière stable.
@@ -509,7 +547,9 @@ fn fast_burning_ship_batch_f64(
 
     } // close else (escape-check-enabled path)
 
+    // Periodic reduce() after batch: re-normalize mantissa to prevent precision drift.
     *delta = make_delta(d_re, d_im);
+    delta.reduce();
     BatchResult::Continue
 }
 
@@ -1205,6 +1245,10 @@ pub fn iterate_pixel(
             //
             // Search strategy: iterate levels in reverse order (largest skip first) to find the largest
             // valid skip l = 2^level satisfying |z_n| < R_{n,l}.
+            //
+            // Optimization inspired by rust-fractal-core: track the last successful BLA level
+            // and start searching from there instead of always from the top. When delta is growing
+            // (which happens as perturbation proceeds), the valid level tends to decrease monotonically.
             // Conformal BLA: only for Mandelbrot/Julia/Multibrot (NOT Burning Ship or Tricorn).
             // Burning Ship and Tricorn use the non-conformal BLA path above.
             if !stepped && !is_burning_ship && !is_tricorn && !bla_table.levels.is_empty() {
@@ -1562,10 +1606,10 @@ pub fn iterate_pixel(
         // Recalculer delta_norm_sqr pour la vérification de rebasing
         let delta_norm_sqr_check = delta.norm_sqr_approx();
         
-        // Vérifier la condition de rebasing: |Z_m + z_n| < |z_n|
-        // Équivalent à: |z_curr| < |delta|
-        // Note: z_curr = Z_m + z_n où Z_m = z_ref[n] (m = n dans notre implémentation)
-        if z_curr_norm_sqr > 0.0 && delta_norm_sqr_check > 0.0 && z_curr_norm_sqr < delta_norm_sqr_check {
+        // Improved rebasing check inspired by rust-fractal-core:
+        // Use should_rebase() which adds hysteresis to prevent oscillating rebases
+        // and avoids rebasing near reference orbit zeros.
+        if should_rebase(z_curr_norm_sqr, delta_norm_sqr_check, z_ref_norm_sqr) {
             // Rebasing: replace z_n with Z_m + z_n and reset m to 0
             delta = ComplexExp::from_complex64(z_curr);  // replace z_n with Z_m + z_n
             

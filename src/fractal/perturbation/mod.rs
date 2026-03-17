@@ -870,6 +870,11 @@ pub fn render_perturbation_with_cache(
             // Process each secondary reference
             // Each reference corresponds to a different phase/starting point in the hybrid loop.
             // One BLA table per reference is computed.
+            //
+            // Improvement inspired by rust-fractal-core: parallelize pixel re-rendering
+            // within each cluster using rayon. The orbit computation is sequential (must be),
+            // but once the orbit + BLA table are ready, all pixels in the cluster can be
+            // re-rendered in parallel.
             for cluster in secondary_refs {
                 // Create params with new center for secondary orbit (different phase)
                 let mut sec_params = orbit_params.clone();
@@ -889,36 +894,44 @@ pub fn render_perturbation_with_cache(
                         None
                     };
 
-                    // Re-render cluster pixels with secondary reference
-                    for &idx in &cluster.pixel_indices {
-                        let px = idx % width;
-                        let py = idx / width;
+                    // Re-render cluster pixels with secondary reference (parallelized).
+                    // Inspired by rust-fractal-core: parallelize pixel iteration within each
+                    // glitch cluster for significant speedup on large clusters.
+                    let results: Vec<(usize, delta::DeltaResult)> = cluster.pixel_indices
+                        .par_iter()
+                        .map(|&idx| {
+                            let px = idx % width;
+                            let py = idx / width;
 
-                        // Compute dc relative to secondary center (pixel center = (px+0.5)/width)
-                        let dc_re = ((px as f64 + 0.5) * inv_width - 0.5) * x_range
-                            - (cluster.center_x - params.center_x);
-                        let dc_im = ((py as f64 + 0.5) * inv_height - 0.5) * y_range
-                            - (cluster.center_y - params.center_y);
+                            // Compute dc relative to secondary center (pixel center = (px+0.5)/width)
+                            let dc_re = ((px as f64 + 0.5) * inv_width - 0.5) * x_range
+                                - (cluster.center_x - params.center_x);
+                            let dc_im = ((py as f64 + 0.5) * inv_height - 0.5) * y_range
+                                - (cluster.center_y - params.center_y);
 
-                        let dc = ComplexExp::from_complex64(Complex64::new(dc_re, dc_im));
-                        let (delta0, dc_term) = if params.fractal_type == FractalType::Julia {
-                            (dc, ComplexExp::zero())
-                        } else {
-                            (ComplexExp::zero(), dc)
-                        };
+                            let dc = ComplexExp::from_complex64(Complex64::new(dc_re, dc_im));
+                            let (delta0, dc_term) = if params.fractal_type == FractalType::Julia {
+                                (dc, ComplexExp::zero())
+                            } else {
+                                (ComplexExp::zero(), dc)
+                            };
 
-                        let result = iterate_pixel(
-                            params,
-                            &sec_orbit,
-                            &sec_bla,
-                            sec_series.as_ref(),
-                            delta0,
-                            dc_term,
-                            None, // No phase change for secondary reference
-                            None, // No hybrid refs for secondary reference
-                        );
+                            let result = iterate_pixel(
+                                params,
+                                &sec_orbit,
+                                &sec_bla,
+                                sec_series.as_ref(),
+                                delta0,
+                                dc_term,
+                                None,
+                                None,
+                            );
+                            (idx, result)
+                        })
+                        .collect();
 
-                        // Only update if the secondary reference gave a good result
+                    // Apply results (sequential write to avoid race conditions)
+                    for (idx, result) in results {
                         if !result.glitched && !result.suspect {
                             iterations[idx] = result.iteration;
                             zs[idx] = result.z_final;
@@ -1021,34 +1034,40 @@ pub fn render_perturbation_with_cache(
 
                     let sec_bla = bla::build_bla_table(&sec_orbit.z_ref_f64, &orbit_params, sec_orbit.cref);
 
-                    for &idx in &cluster.pixel_indices {
-                        let px = idx % width;
-                        let py = idx / width;
+                    // Parallelize pixel iteration within each cluster (inspired by rust-fractal-core).
+                    let results: Vec<(usize, delta::DeltaResult)> = cluster.pixel_indices
+                        .par_iter()
+                        .map(|&idx| {
+                            let px = idx % width;
+                            let py = idx / width;
 
-                        // Compute dc relative to secondary center
-                        let dc_re = ((px as f64 + 0.5) * inv_width - 0.5) * x_range
-                            - (cluster.center_x - params.center_x);
-                        let dc_im = ((py as f64 + 0.5) * inv_height - 0.5) * y_range
-                            - (cluster.center_y - params.center_y);
+                            let dc_re = ((px as f64 + 0.5) * inv_width - 0.5) * x_range
+                                - (cluster.center_x - params.center_x);
+                            let dc_im = ((py as f64 + 0.5) * inv_height - 0.5) * y_range
+                                - (cluster.center_y - params.center_y);
 
-                        let dc = ComplexExp::from_complex64(Complex64::new(dc_re, dc_im));
-                        let (delta0, dc_term) = if params.fractal_type == FractalType::Julia {
-                            (dc, ComplexExp::zero())
-                        } else {
-                            (ComplexExp::zero(), dc)
-                        };
+                            let dc = ComplexExp::from_complex64(Complex64::new(dc_re, dc_im));
+                            let (delta0, dc_term) = if params.fractal_type == FractalType::Julia {
+                                (dc, ComplexExp::zero())
+                            } else {
+                                (ComplexExp::zero(), dc)
+                            };
 
-                        let result = iterate_pixel(
-                            params,
-                            &sec_orbit,
-                            &sec_bla,
-                            None,
-                            delta0,
-                            dc_term,
-                            None,
-                            None,
-                        );
+                            let result = iterate_pixel(
+                                params,
+                                &sec_orbit,
+                                &sec_bla,
+                                None,
+                                delta0,
+                                dc_term,
+                                None,
+                                None,
+                            );
+                            (idx, result)
+                        })
+                        .collect();
 
+                    for (idx, result) in results {
                         if !result.glitched && !result.suspect {
                             iterations[idx] = result.iteration;
                             zs[idx] = result.z_final;
@@ -1475,5 +1494,23 @@ mod tests {
         iterations[(2 * width + 2) as usize] = 200;
         let mask = super::mark_neighbor_glitches(&iterations, width, height, 50);
         assert!(mask[(2 * width + 2) as usize]);
+    }
+
+    #[test]
+    fn should_rebase_hysteresis() {
+        use super::delta::should_rebase;
+
+        // Standard rebase: z_curr much smaller than delta
+        assert!(should_rebase(0.1, 1.0, 0.5));
+
+        // No rebase: z_curr and delta are similar (within hysteresis)
+        assert!(!should_rebase(0.8, 1.0, 0.5));
+
+        // No rebase: z_ref is tiny (near orbit zero)
+        assert!(!should_rebase(0.1, 1.0, 1e-25));
+
+        // No rebase: zero values
+        assert!(!should_rebase(0.0, 1.0, 0.5));
+        assert!(!should_rebase(0.1, 0.0, 0.5));
     }
 }

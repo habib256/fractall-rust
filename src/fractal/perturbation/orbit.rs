@@ -9,7 +9,7 @@ use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::gmp::{complex_to_complex64, pow_f64_mpc};
 use crate::fractal::perturbation::bla::{BlaTable, build_bla_table};
 use crate::fractal::perturbation::types::ComplexExp;
-use crate::fractal::perturbation::series::{SeriesTable, build_series_table, build_series_table_ho, validate_series_with_probes, validate_series_with_probes_tiled};
+use crate::fractal::perturbation::series::{SeriesTable, build_series_table, build_series_table_ho, validate_series_with_probes, validate_series_with_probes_tiled, compute_adaptive_series_order};
 
 /// Hybrid BLA: Multiple references for different phases of a periodic loop.
 /// For a hybrid loop with multiple phases, you need multiple references, one starting at
@@ -668,8 +668,16 @@ pub fn compute_reference_orbit_cached(
     let t_series = Instant::now();
     let is_julia = params.fractal_type == FractalType::Julia;
     let series_table = if should_build_series {
-        // Use higher-order series if series_order > 4 (inspired by rust-fractal-core)
-        let series_order = (params.series_order as usize).max(4);
+        // Adaptive series order based on zoom depth (inspired by rust-fractal-core).
+        // At deeper zooms, higher-order series provide more iteration skipping.
+        let pixel_size = (params.span_x.abs() / params.width.max(1) as f64)
+            .max(params.span_y.abs() / params.height.max(1) as f64);
+        let adaptive_order = compute_adaptive_series_order(
+            pixel_size,
+            params.iteration_max,
+            params.series_order,
+        );
+        let series_order = adaptive_order.max(4);
         // Use data_storage_interval to reduce memory on deep zooms
         let interval = if orbit.z_ref_f64.len() > 100_000 { 10 } else { 1 };
         let mut table = build_series_table_ho(&orbit.z_ref_f64, is_julia, series_order, interval);
