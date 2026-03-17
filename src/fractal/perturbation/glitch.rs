@@ -149,6 +149,88 @@ pub fn select_secondary_reference_points(
     clusters.iter().take(max_refs).collect()
 }
 
+/// Segregate glitched pixels by their iteration depth.
+///
+/// Inspired by rust-fractal-core's glitch resolution which groups glitched
+/// pixels by their last valid iteration count, then creates dedicated
+/// reference orbits for each group. This is more effective than spatial
+/// clustering alone because pixels that glitch at the same iteration
+/// likely need the same reference correction.
+///
+/// # Arguments
+/// * `glitch_mask` - Boolean mask of glitched pixels
+/// * `iterations` - Iteration counts per pixel
+/// * `z_finals` - Final z values per pixel (for selecting reference center)
+/// * `width` - Image width
+/// * `height` - Image height
+/// * `params` - Fractal parameters
+/// * `min_group_size` - Minimum group size to warrant a dedicated reference
+///
+/// # Returns
+/// Groups sorted by size (largest first), each with the optimal reference center
+/// (the pixel with smallest |z| norm in the group).
+pub fn segregate_glitches_by_iteration(
+    glitch_mask: &[bool],
+    iterations: &[u32],
+    z_finals: &[num_complex::Complex64],
+    width: u32,
+    height: u32,
+    params: &FractalParams,
+    min_group_size: usize,
+) -> Vec<GlitchCluster> {
+    use std::collections::HashMap;
+
+    let w = width as usize;
+    let h = height as usize;
+    let total = w * h;
+    if glitch_mask.len() != total || iterations.len() != total || z_finals.len() != total {
+        return Vec::new();
+    }
+
+    // Group glitched pixels by iteration count
+    let mut groups: HashMap<u32, Vec<usize>> = HashMap::new();
+    for idx in 0..total {
+        if glitch_mask[idx] {
+            groups.entry(iterations[idx]).or_default().push(idx);
+        }
+    }
+
+    // Convert groups to GlitchClusters
+    let mut clusters: Vec<GlitchCluster> = groups
+        .into_iter()
+        .filter(|(_, pixels)| pixels.len() >= min_group_size)
+        .map(|(_iter_count, pixels)| {
+            // Find the pixel with smallest |z| norm as reference center.
+            // Inspired by rust-fractal-core which uses the pixel with smallest
+            // z_norm as the glitch-resolving reference center.
+            let best_idx = pixels
+                .iter()
+                .min_by(|&&a, &&b| {
+                    let na = z_finals[a].norm_sqr();
+                    let nb = z_finals[b].norm_sqr();
+                    na.partial_cmp(&nb).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .copied()
+                .unwrap_or(pixels[0]);
+
+            let bx = best_idx % w;
+            let by = best_idx / w;
+            let center_x = params.center_x + ((bx as f64 + 0.5) / w as f64 - 0.5) * params.span_x;
+            let center_y = params.center_y + ((by as f64 + 0.5) / h as f64 - 0.5) * params.span_y;
+
+            GlitchCluster {
+                center_x,
+                center_y,
+                pixel_indices: pixels,
+            }
+        })
+        .collect();
+
+    // Sort by size descending (largest groups first for best impact)
+    clusters.sort_by(|a, b| b.len().cmp(&a.len()));
+    clusters
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -882,6 +882,13 @@ pub struct FractalParams {
     pub enable_orbit_traps: bool,
     /// Type d'orbit trap à utiliser
     pub orbit_trap_type: OrbitTrapType,
+
+    /// Jitter scale for sub-pixel anti-aliasing in perturbation rendering.
+    /// Inspired by rust-fractal-core: adds a small random offset to each pixel's
+    /// position to reduce Moiré patterns and aliasing artifacts in deep zooms.
+    /// 0.0 = disabled (default), 1.0 = full pixel jitter, 0.5 = half pixel.
+    #[serde(default)]
+    pub jitter_scale: f64,
 }
 
 impl FractalParams {
