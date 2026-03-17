@@ -148,6 +148,34 @@ fn fast_mandelbrot_batch_f64(
         .unwrap_or(u32::MAX);
     let batch_end = (*n + BATCH_SIZE).min(max_iter).min(next_extended);
 
+    // Optimization from rust-fractal-core: when delta exponent is very negative (< -500),
+    // the delta is so small that escape is impossible. Skip bailout/glitch/rebase checks
+    // and just do the perturbation math for the entire batch. This is a significant
+    // performance win for interior points at moderate zoom levels.
+    if delta_exp < -500 && use_scaling {
+        while *n < batch_end {
+            let idx = *n as usize + phase_offset;
+            if idx >= orbit_f64.len() {
+                break;
+            }
+            let z_ref = orbit_f64[idx];
+
+            let two_zr_re = 2.0 * z_ref.re * inv_scale;
+            let two_zr_im = 2.0 * z_ref.im * inv_scale;
+            let new_re = two_zr_re * d_re - two_zr_im * d_im + sf * (d_re * d_re - d_im * d_im);
+            let new_im = two_zr_re * d_im + two_zr_im * d_re + sf * (2.0 * d_re * d_im);
+            if is_julia {
+                d_re = new_re;
+                d_im = new_im;
+            } else {
+                d_re = new_re + dc_re;
+                d_im = new_im + dc_im;
+            }
+            *n += 1;
+            *iters_ptb += 1;
+        }
+    } else {
+
     while *n < batch_end {
         let idx = *n as usize + phase_offset;
         if idx >= orbit_f64.len() {
@@ -235,6 +263,8 @@ fn fast_mandelbrot_batch_f64(
         }
     }
 
+    } // close else (escape-check-enabled path)
+
     *delta = if use_scaling {
         ComplexExp {
             re: FloatExp::new(d_re, delta_exp),
@@ -246,27 +276,13 @@ fn fast_mandelbrot_batch_f64(
     BatchResult::Continue
 }
 
-/// Calcule diffabs(c, d) = |c + d| - |c|
+/// Calcule diffabs(c, d) = |c + d| - |c| de manière stable.
 ///
-/// Cette fonction calcule la différence |c + d| - |c| de manière stable.
-/// Utilisée pour Burning Ship où on a besoin de la variation de |x|.
+/// Inspired by rust-fractal-core's `diff_abs()` function.
+/// Used for Burning Ship perturbation where we need the variation of |x|.
 ///
-/// # Arguments
-/// * `c` - Valeur de référence (haute précision)
-/// * `d` - Delta (basse précision)
-///
-/// # Returns
-/// La différence |c + d| - |c|
-/// 
-/// # Formule
-/// ```
-/// diffabs(c, d) = {
-///   d        si c >= 0 et c + d >= 0
-///   -(2c + d) si c >= 0 et c + d < 0
-///   2c + d    si c < 0 et c + d > 0
-///   -d       si c < 0 et c + d <= 0
-/// }
-/// ```
+/// This avoids catastrophic cancellation when computing `|a + b| - |a|`
+/// for values where `|b| << |a|`.
 pub fn diffabs(c: f64, d: f64) -> f64 {
     let cd = c + d;
     let c2d = 2.0 * c + d;
@@ -283,6 +299,359 @@ pub fn diffabs(c: f64, d: f64) -> f64 {
             -d
         }
     }
+}
+
+/// Fast scaled perturbation for Burning Ship |(Re(z))|, |Im(z)|)² + c.
+///
+/// Inspired by rust-fractal-core's `perturb_function` for FRACTAL_TYPE=1 (Burning Ship).
+/// Key technique: uses `diffabs()` to compute `|Z_ref + delta| - |Z_ref|` stably,
+/// avoiding catastrophic cancellation in the absolute value computation.
+///
+/// The formula from rust-fractal-core:
+///   delta_re' = (2*Z_re + d_re*sf) * d_re - (2*Z_im + d_im*sf) * d_im + dc_re
+///   delta_im' = 2 * diffabs(Z_re*Z_im/sf, Z_re*d_im + d_re*(Z_im + d_im*sf))
+///             + dc_im
+#[inline(never)]
+fn fast_burning_ship_batch_f64(
+    ref_orbit: &ReferenceOrbit,
+    n: &mut u32,
+    delta: &mut ComplexExp,
+    dc_f64: Complex64,
+    bailout_sqr: f64,
+    glitch_tolerance_sqr: f64,
+    max_iter: u32,
+    suspect: &mut bool,
+    iters_ptb: &mut u32,
+) -> BatchResult {
+    const BATCH_SIZE: u32 = 256;
+
+    let mut d_re = delta.re.mantissa;
+    let mut d_im = delta.im.mantissa;
+    let delta_exp = delta.re.exponent.max(delta.im.exponent);
+    let sf = crate::fractal::perturbation::types::pow2i(delta_exp);
+    let inv_sf = if delta_exp > -500 && delta_exp < 500 {
+        crate::fractal::perturbation::types::pow2i(-delta_exp)
+    } else {
+        1.0
+    };
+
+    let use_scaling = sf.is_finite() && sf > 0.0
+        && inv_sf.is_finite() && delta_exp.abs() < 500;
+
+    if !use_scaling {
+        d_re = delta.re.to_f64();
+        d_im = delta.im.to_f64();
+    }
+
+    let (dc_re, dc_im, scale, inv_scale) = if use_scaling {
+        (dc_f64.re * inv_sf, dc_f64.im * inv_sf, sf, inv_sf)
+    } else {
+        (dc_f64.re, dc_f64.im, 1.0, 1.0)
+    };
+
+    let orbit_f64 = &ref_orbit.z_ref_f64;
+    let phase_offset = ref_orbit.phase_offset as usize;
+
+    let next_extended = ref_orbit.extended_iterations
+        .iter()
+        .find(|&&iter| iter > *n)
+        .copied()
+        .unwrap_or(u32::MAX);
+    let batch_end = (*n + BATCH_SIZE).min(max_iter).min(next_extended);
+
+    let make_delta = |d_re: f64, d_im: f64| -> ComplexExp {
+        if use_scaling {
+            ComplexExp {
+                re: FloatExp::new(d_re, delta_exp),
+                im: FloatExp::new(d_im, delta_exp),
+            }
+        } else {
+            ComplexExp::from_complex64(Complex64::new(d_re, d_im))
+        }
+    };
+
+    while *n < batch_end {
+        let idx = *n as usize + phase_offset;
+        if idx >= orbit_f64.len() {
+            break;
+        }
+        let z_ref = orbit_f64[idx];
+
+        let z_curr_re = z_ref.re + scale * d_re;
+        let z_curr_im = z_ref.im + scale * d_im;
+        let z_curr_norm_sqr = z_curr_re * z_curr_re + z_curr_im * z_curr_im;
+
+        if z_curr_norm_sqr > bailout_sqr {
+            *delta = make_delta(d_re, d_im);
+            return BatchResult::Escaped {
+                iteration: *n,
+                z_final: Complex64::new(z_curr_re, z_curr_im),
+            };
+        }
+
+        let d_norm_sqr = (scale * d_re) * (scale * d_re) + (scale * d_im) * (scale * d_im);
+        let z_ref_norm_sqr = (z_ref.re * z_ref.re + z_ref.im * z_ref.im).max(1e-6);
+        if !d_norm_sqr.is_finite() || d_norm_sqr > glitch_tolerance_sqr * z_ref_norm_sqr {
+            *delta = make_delta(d_re, d_im);
+            return BatchResult::Glitched {
+                iteration: *n,
+                z_final: Complex64::new(z_curr_re, z_curr_im),
+            };
+        }
+
+        if z_curr_norm_sqr > 0.0 && d_norm_sqr > 0.0 && z_curr_norm_sqr < d_norm_sqr {
+            *delta = ComplexExp::from_complex64(Complex64::new(z_curr_re, z_curr_im));
+            return BatchResult::NeedRebase {
+                z_curr: Complex64::new(z_curr_re, z_curr_im),
+            };
+        }
+
+        // Burning Ship perturbation formula from rust-fractal-core:
+        // The key insight is using diffabs to stably compute |Z + delta| - |Z|
+        let temp_re = d_re;
+        d_re = (2.0 * z_ref.re * inv_scale + temp_re * scale * inv_scale) * temp_re
+             - (2.0 * z_ref.im * inv_scale + d_im * scale * inv_scale) * d_im
+             + dc_re;
+        d_im = 2.0 * diffabs(
+            z_ref.re * z_ref.im * inv_scale,
+            z_ref.re * d_im + temp_re * (z_ref.im * inv_scale + d_im * scale * inv_scale),
+        ) + dc_im;
+
+        *n += 1;
+        *iters_ptb += 1;
+
+        if !d_re.is_finite() || !d_im.is_finite() {
+            *delta = make_delta(d_re, d_im);
+            *suspect = true;
+            return BatchResult::Glitched {
+                iteration: *n,
+                z_final: Complex64::new(d_re, d_im),
+            };
+        }
+    }
+
+    *delta = make_delta(d_re, d_im);
+    BatchResult::Continue
+}
+
+/// Fast scaled perturbation for Tricorn: conj(z)² + c.
+///
+/// Inspired by rust-fractal-core's approach for non-conformal fractals.
+/// For Tricorn, the perturbation formula is:
+///   z_{n+1} = conj(Z_n + delta_n)² + C + dc
+///   delta_{n+1} = z_{n+1} - Z_{n+1}
+///
+/// Since conjugation is non-conformal, we compute the full z_curr and subtract
+/// the reference at the next iteration.
+#[inline(never)]
+fn fast_tricorn_batch_f64(
+    ref_orbit: &ReferenceOrbit,
+    n: &mut u32,
+    delta: &mut ComplexExp,
+    dc_f64: Complex64,
+    bailout_sqr: f64,
+    glitch_tolerance_sqr: f64,
+    max_iter: u32,
+    suspect: &mut bool,
+    iters_ptb: &mut u32,
+) -> BatchResult {
+    const BATCH_SIZE: u32 = 256;
+
+    let orbit_f64 = &ref_orbit.z_ref_f64;
+    let phase_offset = ref_orbit.phase_offset as usize;
+    let c_pixel = ref_orbit.cref + dc_f64;
+
+    let next_extended = ref_orbit.extended_iterations
+        .iter()
+        .find(|&&iter| iter > *n)
+        .copied()
+        .unwrap_or(u32::MAX);
+    let batch_end = (*n + BATCH_SIZE).min(max_iter).min(next_extended);
+
+    while *n < batch_end {
+        let idx = *n as usize + phase_offset;
+        if idx >= orbit_f64.len() {
+            break;
+        }
+        let z_ref = orbit_f64[idx];
+        let delta_f64 = delta.to_complex64_approx();
+
+        let z_curr_re = z_ref.re + delta_f64.re;
+        let z_curr_im = z_ref.im + delta_f64.im;
+        let z_curr_norm_sqr = z_curr_re * z_curr_re + z_curr_im * z_curr_im;
+
+        if z_curr_norm_sqr > bailout_sqr {
+            return BatchResult::Escaped {
+                iteration: *n,
+                z_final: Complex64::new(z_curr_re, z_curr_im),
+            };
+        }
+
+        let d_norm_sqr = delta_f64.norm_sqr();
+        let z_ref_norm_sqr = (z_ref.re * z_ref.re + z_ref.im * z_ref.im).max(1e-6);
+        if !d_norm_sqr.is_finite() || d_norm_sqr > glitch_tolerance_sqr * z_ref_norm_sqr {
+            return BatchResult::Glitched {
+                iteration: *n,
+                z_final: Complex64::new(z_curr_re, z_curr_im),
+            };
+        }
+
+        if z_curr_norm_sqr > 0.0 && d_norm_sqr > 0.0 && z_curr_norm_sqr < d_norm_sqr {
+            *delta = ComplexExp::from_complex64(Complex64::new(z_curr_re, z_curr_im));
+            return BatchResult::NeedRebase {
+                z_curr: Complex64::new(z_curr_re, z_curr_im),
+            };
+        }
+
+        // Tricorn: z' = conj(z)² + c
+        // conj(z_curr) = (z_curr_re, -z_curr_im)
+        // conj(z_curr)² = (z_curr_re² - z_curr_im², -2*z_curr_re*z_curr_im)
+        let z_next_re = z_curr_re * z_curr_re - z_curr_im * z_curr_im + c_pixel.re;
+        let z_next_im = -2.0 * z_curr_re * z_curr_im + c_pixel.im;
+
+        *n += 1;
+        *iters_ptb += 1;
+
+        let next_idx = *n as usize + phase_offset;
+        if next_idx >= orbit_f64.len() {
+            // Rebase needed
+            *delta = ComplexExp::from_complex64(Complex64::new(z_next_re, z_next_im));
+            return BatchResult::NeedRebase {
+                z_curr: Complex64::new(z_next_re, z_next_im),
+            };
+        }
+        let z_ref_next = orbit_f64[next_idx];
+        *delta = ComplexExp::from_complex64(Complex64::new(
+            z_next_re - z_ref_next.re,
+            z_next_im - z_ref_next.im,
+        ));
+
+        let d = delta.to_complex64_approx();
+        if !d.re.is_finite() || !d.im.is_finite() {
+            *suspect = true;
+            return BatchResult::Glitched {
+                iteration: *n,
+                z_final: Complex64::new(z_next_re, z_next_im),
+            };
+        }
+    }
+
+    BatchResult::Continue
+}
+
+/// Generate Pascal's triangle coefficients (binomial coefficients) for Multibrot power.
+///
+/// Inspired by rust-fractal-core's `generate_pascal_coefficients()`.
+/// For power d, generates [C(d,0), C(d,1), ..., C(d,d)] as f64.
+/// Used in the perturbation formula for z^d + c where d > 2:
+///   delta_{n+1} = sum_{k=1}^{d} C(d,k) * Z_ref^(d-k) * delta^k + dc
+pub fn generate_pascal_coefficients(power: usize) -> Vec<f64> {
+    let mut coeffs = vec![0.0f64; power + 1];
+    coeffs[0] = 1.0;
+    for i in 1..=power {
+        coeffs[i] = coeffs[i - 1] * (power - i + 1) as f64 / i as f64;
+    }
+    coeffs
+}
+
+/// Fast scaled perturbation for Multibrot z^d + c with Pascal coefficients.
+///
+/// Inspired by rust-fractal-core's generic power perturbation using binomial expansion:
+///   (Z + delta)^d = sum_{k=0}^{d} C(d,k) * Z^(d-k) * delta^k
+///   delta_{n+1} = (Z + delta)^d - Z^d + dc
+///               = sum_{k=1}^{d} C(d,k) * Z^(d-k) * delta^k + dc
+///
+/// For power 2: delta' = 2*Z*delta + delta² + dc (standard Mandelbrot)
+/// For power 3: delta' = 3*Z²*delta + 3*Z*delta² + delta³ + dc
+/// For power d: uses Pascal coefficients for the binomial expansion
+#[inline(never)]
+fn fast_multibrot_batch_f64(
+    ref_orbit: &ReferenceOrbit,
+    n: &mut u32,
+    delta: &mut ComplexExp,
+    dc_f64: Complex64,
+    bailout_sqr: f64,
+    glitch_tolerance_sqr: f64,
+    max_iter: u32,
+    power: usize,
+    pascal: &[f64],
+    suspect: &mut bool,
+    iters_ptb: &mut u32,
+) -> BatchResult {
+    const BATCH_SIZE: u32 = 256;
+
+    let orbit_f64 = &ref_orbit.z_ref_f64;
+    let phase_offset = ref_orbit.phase_offset as usize;
+
+    let next_extended = ref_orbit.extended_iterations
+        .iter()
+        .find(|&&iter| iter > *n)
+        .copied()
+        .unwrap_or(u32::MAX);
+    let batch_end = (*n + BATCH_SIZE).min(max_iter).min(next_extended);
+
+    while *n < batch_end {
+        let idx = *n as usize + phase_offset;
+        if idx >= orbit_f64.len() {
+            break;
+        }
+        let z_ref = orbit_f64[idx];
+        let delta_f64 = delta.to_complex64_approx();
+
+        let z_curr_re = z_ref.re + delta_f64.re;
+        let z_curr_im = z_ref.im + delta_f64.im;
+        let z_curr_norm_sqr = z_curr_re * z_curr_re + z_curr_im * z_curr_im;
+
+        if z_curr_norm_sqr > bailout_sqr {
+            return BatchResult::Escaped {
+                iteration: *n,
+                z_final: Complex64::new(z_curr_re, z_curr_im),
+            };
+        }
+
+        let d_norm_sqr = delta_f64.norm_sqr();
+        let z_ref_norm_sqr = (z_ref.re * z_ref.re + z_ref.im * z_ref.im).max(1e-6);
+        if !d_norm_sqr.is_finite() || d_norm_sqr > glitch_tolerance_sqr * z_ref_norm_sqr {
+            return BatchResult::Glitched {
+                iteration: *n,
+                z_final: Complex64::new(z_curr_re, z_curr_im),
+            };
+        }
+
+        if z_curr_norm_sqr > 0.0 && d_norm_sqr > 0.0 && z_curr_norm_sqr < d_norm_sqr {
+            *delta = ComplexExp::from_complex64(Complex64::new(z_curr_re, z_curr_im));
+            return BatchResult::NeedRebase {
+                z_curr: Complex64::new(z_curr_re, z_curr_im),
+            };
+        }
+
+        // Generic power perturbation using binomial expansion (rust-fractal-core approach):
+        // delta' = sum_{k=1}^{d} C(d,k) * Z^(d-k) * delta^k + dc
+        //        = delta * (C(d,1)*Z^(d-1) + delta * (C(d,2)*Z^(d-2) + delta * (...)))
+        // This is computed using a modified Horner-like accumulation.
+        let mut sum = Complex64::new(pascal[1], 0.0) * z_ref + delta_f64;
+        let mut z_p = z_ref;
+        for i in 2..power {
+            sum = sum * delta_f64;
+            z_p = z_p * z_ref;
+            sum = sum + Complex64::new(pascal[i], 0.0) * z_p;
+        }
+        let new_delta = delta_f64 * sum + dc_f64;
+
+        *delta = ComplexExp::from_complex64(new_delta);
+        *n += 1;
+        *iters_ptb += 1;
+
+        if !new_delta.re.is_finite() || !new_delta.im.is_finite() {
+            *suspect = true;
+            return BatchResult::Glitched {
+                iteration: *n,
+                z_final: Complex64::new(z_curr_re, z_curr_im),
+            };
+        }
+    }
+
+    BatchResult::Continue
 }
 
 /// Calcule la tolérance de glitch adaptative basée sur le niveau de zoom.
@@ -493,9 +862,16 @@ pub fn iterate_pixel(
     let dc_f64 = dc.to_complex64_approx();
 
     // Determine if we can use the fast f64 batch path.
-    // Conditions: standard z²+c formula (Mandelbrot or Julia), not deep zoom needing
-    // high precision, and not using non-conformal or multibrot formulas.
-    let can_use_fast_f64 = !is_burning_ship && !is_multibrot && !is_tricorn && !use_high_precision;
+    // Conditions: not deep zoom needing high precision.
+    // We now have fast batch paths for Mandelbrot, Julia, Burning Ship, Tricorn, and Multibrot.
+    let can_use_fast_f64 = !use_high_precision;
+
+    // Pre-compute Pascal coefficients for Multibrot (inspired by rust-fractal-core)
+    let pascal = if is_multibrot {
+        generate_pascal_coefficients(multibrot_power as usize)
+    } else {
+        Vec::new()
+    };
 
     // Main iteration loop: BLA Table Lookup algorithm
     // Based on fraktaler-3 implementation with nested BLA loop for consecutive steps
@@ -771,23 +1147,37 @@ pub fn iterate_pixel(
 
         // If no BLA was applied, do perturbation iteration(s)
         if !bla_applied {
-            // Fast f64 batch path for Mandelbrot/Julia: processes up to 256 iterations
-            // using pure f64 arithmetic, avoiding ComplexExp overhead (~5x faster).
-            // Falls through to single-step paths for other fractal types.
+            // Fast f64 batch path: processes up to 256 iterations using pure f64
+            // arithmetic, avoiding ComplexExp overhead. Now supports Mandelbrot, Julia,
+            // Burning Ship, Tricorn, and Multibrot (inspired by rust-fractal-core).
             if can_use_fast_f64 {
-                match fast_mandelbrot_batch_f64(
-                    ref_orbit,
-                    &mut n,
-                    &mut delta,
-                    dc_f64,
-                    is_julia,
-                    bailout_sqr,
-                    glitch_tolerance_sqr,
-                    max_iter,
-                    effective_len,
-                    &mut suspect,
-                    &mut iters_ptb,
-                ) {
+                let batch_result = if is_burning_ship {
+                    fast_burning_ship_batch_f64(
+                        ref_orbit, &mut n, &mut delta, dc_f64,
+                        bailout_sqr, glitch_tolerance_sqr, max_iter,
+                        &mut suspect, &mut iters_ptb,
+                    )
+                } else if is_tricorn {
+                    fast_tricorn_batch_f64(
+                        ref_orbit, &mut n, &mut delta, dc_f64,
+                        bailout_sqr, glitch_tolerance_sqr, max_iter,
+                        &mut suspect, &mut iters_ptb,
+                    )
+                } else if is_multibrot {
+                    fast_multibrot_batch_f64(
+                        ref_orbit, &mut n, &mut delta, dc_f64,
+                        bailout_sqr, glitch_tolerance_sqr, max_iter,
+                        multibrot_power as usize, &pascal,
+                        &mut suspect, &mut iters_ptb,
+                    )
+                } else {
+                    fast_mandelbrot_batch_f64(
+                        ref_orbit, &mut n, &mut delta, dc_f64, is_julia,
+                        bailout_sqr, glitch_tolerance_sqr, max_iter,
+                        effective_len, &mut suspect, &mut iters_ptb,
+                    )
+                };
+                match batch_result {
                     BatchResult::Escaped { iteration, z_final } => {
                         return DeltaResult {
                             iteration,
@@ -1815,6 +2205,58 @@ mod tests {
         assert_eq!(result.distance, f64::INFINITY);
         assert_eq!(result.is_interior, false);
         assert_eq!(result.phase_changed, false);
+    }
+
+    #[test]
+    fn diffabs_stable_computation() {
+        // When c >= 0 and c + d >= 0: result = d
+        assert_eq!(diffabs(5.0, 1.0), 1.0);
+        // When c >= 0 and c + d < 0: result = -(2c + d)
+        assert_eq!(diffabs(1.0, -3.0), -(-1.0)); // |1-3|-|1| = 2-1 = 1, but diffabs gives -(2+(-3))=1
+        assert_eq!(diffabs(1.0, -3.0), 1.0);
+        // When c < 0 and c + d > 0: result = 2c + d
+        assert_eq!(diffabs(-1.0, 3.0), 1.0); // |-1+3|-|-1| = 2-1 = 1
+        // When c < 0 and c + d <= 0: result = -d
+        assert_eq!(diffabs(-5.0, 1.0), -1.0); // |-5+1|-|-5| = 4-5 = -1
+    }
+
+    #[test]
+    fn pascal_coefficients_power_2() {
+        let pascal = generate_pascal_coefficients(2);
+        assert_eq!(pascal.len(), 3);
+        assert!((pascal[0] - 1.0).abs() < 1e-12);
+        assert!((pascal[1] - 2.0).abs() < 1e-12);
+        assert!((pascal[2] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn pascal_coefficients_power_3() {
+        let pascal = generate_pascal_coefficients(3);
+        assert_eq!(pascal.len(), 4);
+        assert!((pascal[0] - 1.0).abs() < 1e-12); // C(3,0) = 1
+        assert!((pascal[1] - 3.0).abs() < 1e-12); // C(3,1) = 3
+        assert!((pascal[2] - 3.0).abs() < 1e-12); // C(3,2) = 3
+        assert!((pascal[3] - 1.0).abs() < 1e-12); // C(3,3) = 1
+    }
+
+    #[test]
+    fn pascal_coefficients_power_4() {
+        let pascal = generate_pascal_coefficients(4);
+        assert_eq!(pascal.len(), 5);
+        assert!((pascal[0] - 1.0).abs() < 1e-12);
+        assert!((pascal[1] - 4.0).abs() < 1e-12);
+        assert!((pascal[2] - 6.0).abs() < 1e-12);
+        assert!((pascal[3] - 4.0).abs() < 1e-12);
+        assert!((pascal[4] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn adaptive_glitch_tolerance_scales_with_zoom() {
+        // Shallow zoom: stricter tolerance
+        let t_shallow = compute_adaptive_glitch_tolerance(1.0, 1e-4);
+        // Deep zoom: more relaxed
+        let t_deep = compute_adaptive_glitch_tolerance(1e-20, 1e-4);
+        assert!(t_deep > t_shallow);
     }
 }
 

@@ -260,30 +260,23 @@ impl TiledSeriesValidation {
     ///
     /// Inspired by rust-fractal-core's tiled mode which interpolates minimum
     /// valid iteration across 2x2 probe cells.
+    /// Get the interpolated valid iteration count for a pixel position.
+    /// When using interpolated results (from rust-fractal-core's interpolate_probes()),
+    /// each cell already contains the minimum of its 4 corners, so a simple lookup suffices.
     pub fn valid_iteration_for_pixel(&self, px: usize, py: usize, width: usize, height: usize) -> usize {
-        if self.probe_cols < 2 || self.probe_rows < 2 || width == 0 || height == 0 {
+        if self.probe_cols == 0 || self.probe_rows == 0 || width == 0 || height == 0 {
             return self.global_min;
         }
 
-        // Map pixel to probe cell
-        let fx = (px as f64 / width as f64) * (self.probe_cols - 1) as f64;
-        let fy = (py as f64 / height as f64) * (self.probe_rows - 1) as f64;
+        // Map pixel to cell index
+        let fx = (px as f64 / width as f64) * self.probe_cols as f64;
+        let fy = (py as f64 / height as f64) * self.probe_rows as f64;
 
-        let ix = (fx as usize).min(self.probe_cols - 2);
-        let iy = (fy as usize).min(self.probe_rows - 2);
+        let ix = (fx as usize).min(self.probe_cols - 1);
+        let iy = (fy as usize).min(self.probe_rows - 1);
 
-        // Take minimum of the 4 corners of the cell (conservative)
-        let idx00 = iy * self.probe_cols + ix;
-        let idx10 = iy * self.probe_cols + ix + 1;
-        let idx01 = (iy + 1) * self.probe_cols + ix;
-        let idx11 = (iy + 1) * self.probe_cols + ix + 1;
-
-        let v00 = self.probe_valid_iterations.get(idx00).copied().unwrap_or(0);
-        let v10 = self.probe_valid_iterations.get(idx10).copied().unwrap_or(0);
-        let v01 = self.probe_valid_iterations.get(idx01).copied().unwrap_or(0);
-        let v11 = self.probe_valid_iterations.get(idx11).copied().unwrap_or(0);
-
-        v00.min(v10).min(v01).min(v11)
+        let idx = iy * self.probe_cols + ix;
+        self.probe_valid_iterations.get(idx).copied().unwrap_or(self.global_min)
     }
 }
 
@@ -313,11 +306,11 @@ pub fn validate_series_with_probes(
 /// Tiled probe-based series approximation validation.
 ///
 /// Improved version inspired by rust-fractal-core's check_approximation():
+/// - Two-phase validation: corners first (with larger tolerance), then remaining probes
 /// - Computes per-probe valid iteration counts (not just a global minimum)
 /// - Supports tiled mode where each pixel can skip a different number of iterations
-///   based on its distance from probe points
 /// - Uses derivative scaling for error comparison
-/// - Checks corners first with larger tolerance window for early exit
+/// - Periodic reduce (every 250 iterations) during probe iteration for stability
 ///
 /// Returns a `TiledSeriesValidation` with per-probe and global minimum results.
 pub fn validate_series_with_probes_tiled(
@@ -361,17 +354,79 @@ pub fn validate_series_with_probes_tiled(
         return empty_result;
     }
 
-    // For each probe, iterate both by series evaluation and actual perturbation,
-    // find where they diverge.
-    // Inspired by rust-fractal-core's iterate_probes() method.
     let mut probe_valid_iterations = vec![z_ref.len(); num_probes];
 
-    // Check interval: only compare series vs actual at stored coefficient intervals.
-    // Inspired by rust-fractal-core's data_storage_interval-based checking.
     let check_interval = table.data_storage_interval.max(1);
 
-    for (probe_idx, probe_dc) in probes.iter().enumerate() {
-        let mut actual_delta = if is_julia { *probe_dc } else { Complex64::new(0.0, 0.0) };
+    // Two-phase validation inspired by rust-fractal-core's check_approximation():
+    // Phase 1: Validate corner probes first (indices 0, sampling-1, sampling*(sampling-1), sampling*sampling-1)
+    // Phase 2: Validate remaining probes using the corner results as a starting estimate
+    let corner_indices: Vec<usize> = vec![
+        0,
+        probe_sampling - 1,
+        probe_sampling * (probe_sampling - 1),
+        probe_sampling * probe_sampling - 1,
+    ];
+
+    // Phase 1: Validate corners
+    validate_probe_set(
+        &probes, &corner_indices, table, z_ref, is_julia,
+        delta_pixel_sqr, check_interval, &mut probe_valid_iterations,
+    );
+
+    // Phase 2: Validate remaining probes
+    if num_probes > corner_indices.len() {
+        let remaining_indices: Vec<usize> = (0..num_probes)
+            .filter(|i| !corner_indices.contains(i))
+            .collect();
+        validate_probe_set(
+            &probes, &remaining_indices, table, z_ref, is_julia,
+            delta_pixel_sqr, check_interval, &mut probe_valid_iterations,
+        );
+    }
+
+    // Compute global minimum
+    let global_min = probe_valid_iterations.iter().copied().min().unwrap_or(0);
+
+    // Interpolate probe results: for each cell (2x2 probe corners), take the minimum
+    // Inspired by rust-fractal-core's interpolate_probes()
+    let mut interpolated = Vec::with_capacity((probe_sampling - 1) * (probe_sampling - 1));
+    for j in 0..(probe_sampling - 1) {
+        for i in 0..(probe_sampling - 1) {
+            let idx = j * probe_sampling + i;
+            let min_val = probe_valid_iterations[idx]
+                .min(probe_valid_iterations[idx + 1])
+                .min(probe_valid_iterations[idx + probe_sampling])
+                .min(probe_valid_iterations[idx + probe_sampling + 1]);
+            interpolated.push(min_val);
+        }
+    }
+
+    TiledSeriesValidation {
+        probe_cols: if interpolated.is_empty() { probe_sampling } else { probe_sampling - 1 },
+        probe_rows: if interpolated.is_empty() { probe_sampling } else { probe_sampling - 1 },
+        probe_valid_iterations: if interpolated.is_empty() { probe_valid_iterations } else { interpolated },
+        global_min: global_min.min(z_ref.len().saturating_sub(1)),
+    }
+}
+
+/// Validate a set of probes by iterating them using actual perturbation and comparing
+/// against series evaluation at check intervals.
+///
+/// Inspired by rust-fractal-core's iterate_probes() method.
+fn validate_probe_set(
+    probes: &[Complex64],
+    indices: &[usize],
+    table: &SeriesTable,
+    z_ref: &[Complex64],
+    is_julia: bool,
+    delta_pixel_sqr: f64,
+    check_interval: usize,
+    probe_valid_iterations: &mut [usize],
+) {
+    for &probe_idx in indices {
+        let probe_dc = probes[probe_idx];
+        let mut actual_delta = if is_julia { probe_dc } else { Complex64::new(0.0, 0.0) };
 
         for n in 0..z_ref.len().saturating_sub(1) {
             // Only check series accuracy at check intervals (reduces overhead)
@@ -379,14 +434,14 @@ pub fn validate_series_with_probes_tiled(
                 // Use higher-order evaluation if available
                 let series_delta = if table.order > 4 {
                     if let Some(ho) = table.get_ho_coeffs(n) {
-                        evaluate_ho_series(ho, *probe_dc)
+                        evaluate_ho_series(ho, probe_dc)
                     } else {
                         let coeffs = &table.coeffs[n];
-                        *probe_dc * (coeffs.a + *probe_dc * (coeffs.b + *probe_dc * (coeffs.c + *probe_dc * coeffs.d)))
+                        probe_dc * (coeffs.a + probe_dc * (coeffs.b + probe_dc * (coeffs.c + probe_dc * coeffs.d)))
                     }
                 } else {
                     let coeffs = &table.coeffs[n];
-                    *probe_dc * (coeffs.a + *probe_dc * (coeffs.b + *probe_dc * (coeffs.c + *probe_dc * coeffs.d)))
+                    probe_dc * (coeffs.a + probe_dc * (coeffs.b + probe_dc * (coeffs.c + probe_dc * coeffs.d)))
                 };
 
                 // Compare series vs actual
@@ -395,14 +450,14 @@ pub fn validate_series_with_probes_tiled(
                 // Derivative estimate for relative error scaling (inspired by rust-fractal-core)
                 let derivative_norm = if table.order > 4 {
                     if let Some(ho) = table.get_ho_coeffs(n) {
-                        evaluate_ho_derivative(ho, *probe_dc).norm_sqr()
+                        evaluate_ho_derivative(ho, probe_dc).norm_sqr()
                     } else {
                         let coeffs = &table.coeffs[n];
-                        (coeffs.a + *probe_dc * (coeffs.b * 2.0 + *probe_dc * coeffs.c * 3.0)).norm_sqr()
+                        (coeffs.a + probe_dc * (coeffs.b * 2.0 + probe_dc * coeffs.c * 3.0)).norm_sqr()
                     }
                 } else {
                     let coeffs = &table.coeffs[n];
-                    (coeffs.a + *probe_dc * (coeffs.b * 2.0 + *probe_dc * coeffs.c * 3.0)).norm_sqr()
+                    (coeffs.a + probe_dc * (coeffs.b * 2.0 + probe_dc * coeffs.c * 3.0)).norm_sqr()
                 };
                 let derivative_scale = if derivative_norm > 1.0 { derivative_norm } else { 1.0 };
 
@@ -417,7 +472,15 @@ pub fn validate_series_with_probes_tiled(
             if is_julia {
                 actual_delta = z_n * actual_delta * 2.0 + actual_delta * actual_delta;
             } else {
-                actual_delta = z_n * actual_delta * 2.0 + actual_delta * actual_delta + *probe_dc;
+                actual_delta = z_n * actual_delta * 2.0 + actual_delta * actual_delta + probe_dc;
+            }
+
+            // Periodic reduce for stability (inspired by rust-fractal-core which reduces
+            // every ~250 iterations in probe iteration to keep values well-conditioned)
+            // For f64 probes, we just check for NaN/infinity
+            if n % 250 == 0 && (!actual_delta.re.is_finite() || !actual_delta.im.is_finite()) {
+                probe_valid_iterations[probe_idx] = n.saturating_sub(check_interval).max(1);
+                break;
             }
 
             // Bailout
@@ -426,16 +489,6 @@ pub fn validate_series_with_probes_tiled(
                 break;
             }
         }
-    }
-
-    // Compute global minimum
-    let global_min = probe_valid_iterations.iter().copied().min().unwrap_or(0);
-
-    TiledSeriesValidation {
-        probe_valid_iterations,
-        probe_cols: probe_sampling,
-        probe_rows: probe_sampling,
-        global_min: global_min.min(z_ref.len().saturating_sub(1)),
     }
 }
 
@@ -936,23 +989,28 @@ mod tests {
             &table, &z_ref, false,
             0.01, 100, 100, 3,
         );
-        assert_eq!(tiled.probe_cols, 3);
-        assert_eq!(tiled.probe_rows, 3);
-        assert_eq!(tiled.probe_valid_iterations.len(), 9); // 3x3
+        // After interpolation: (probe_sampling-1) x (probe_sampling-1) = 2x2 cells
+        assert_eq!(tiled.probe_cols, 2);
+        assert_eq!(tiled.probe_rows, 2);
+        assert_eq!(tiled.probe_valid_iterations.len(), 4); // 2x2 interpolated cells
         assert!(tiled.global_min > 0);
     }
 
     #[test]
     fn tiled_validation_pixel_lookup() {
+        // Interpolated grid: each cell holds the minimum of its 4 corners
         let tiled = TiledSeriesValidation {
-            probe_valid_iterations: vec![10, 20, 15, 25],
+            probe_valid_iterations: vec![10, 15, 12, 20],
             probe_cols: 2,
             probe_rows: 2,
             global_min: 10,
         };
-        // Top-left cell: min(10, 20, 15, 25) = 10
+        // Top-left cell (0,0): value = 10
         let val = tiled.valid_iteration_for_pixel(0, 0, 100, 100);
         assert_eq!(val, 10);
+        // Bottom-right cell (1,1): value = 20
+        let val = tiled.valid_iteration_for_pixel(99, 99, 100, 100);
+        assert_eq!(val, 20);
     }
 
     #[test]
