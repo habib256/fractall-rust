@@ -423,6 +423,64 @@ pub fn should_use_full_gmp_perturbation(params: &FractalParams) -> bool {
 ///
 /// # Returns
 /// Le complexe dc représentant l'offset du pixel par rapport au centre, en GMP
+
+/// Pre-computed constants for GMP dc computation.
+/// Avoids re-allocating shared GMP values for every pixel.
+pub struct DcGmpContext {
+    pub inv_width: Float,
+    pub inv_height: Float,
+    pub half: Float,
+    pub x_range: Float,
+    pub y_range: Float,
+    pub prec: u32,
+}
+
+impl DcGmpContext {
+    pub fn new(params: &FractalParams, prec: u32) -> Self {
+        let inv_width = Float::with_val(prec, 1.0) / Float::with_val(prec, params.width as f64);
+        let inv_height = Float::with_val(prec, 1.0) / Float::with_val(prec, params.height as f64);
+
+        let x_range = if let Some(ref sx_hp) = params.span_x_hp {
+            match Float::parse(sx_hp) {
+                Ok(parse_result) => Float::with_val(prec, parse_result),
+                Err(_) => Float::with_val(prec, params.span_x),
+            }
+        } else {
+            Float::with_val(prec, params.span_x)
+        };
+
+        let y_range = if let Some(ref sy_hp) = params.span_y_hp {
+            match Float::parse(sy_hp) {
+                Ok(parse_result) => Float::with_val(prec, parse_result),
+                Err(_) => Float::with_val(prec, params.span_y),
+            }
+        } else {
+            Float::with_val(prec, params.span_y)
+        };
+
+        let half = Float::with_val(prec, 0.5);
+
+        DcGmpContext { inv_width, inv_height, half, x_range, y_range, prec }
+    }
+
+    /// Compute dc for a pixel using pre-computed constants.
+    /// Only 2-3 GMP allocations per pixel instead of ~13.
+    pub fn compute_dc(&self, i: usize, j: usize) -> Complex {
+        let mut i_float = Float::with_val(self.prec, i as f64);
+        i_float += &self.half;
+        let mut j_float = Float::with_val(self.prec, j as f64);
+        j_float += &self.half;
+        let mut x_ratio = Float::with_val(self.prec, &i_float * &self.inv_width);
+        let mut y_ratio = Float::with_val(self.prec, &j_float * &self.inv_height);
+        x_ratio -= &self.half;
+        y_ratio -= &self.half;
+        let x_offset = Float::with_val(self.prec, &x_ratio * &self.x_range);
+        let y_offset = Float::with_val(self.prec, &y_ratio * &self.y_range);
+        Complex::with_val(self.prec, (x_offset, y_offset))
+    }
+}
+
+#[allow(dead_code)]
 pub fn compute_dc_gmp(
     i: usize,
     j: usize,
@@ -431,45 +489,8 @@ pub fn compute_dc_gmp(
     _center_y_gmp: &Float,
     prec: u32,
 ) -> Complex {
-    let inv_width = Float::with_val(prec, 1.0) / Float::with_val(prec, params.width as f64);
-    let inv_height = Float::with_val(prec, 1.0) / Float::with_val(prec, params.height as f64);
-    
-    // Utiliser les String haute précision si disponibles, sinon fallback sur f64
-    let x_range = if let Some(ref sx_hp) = params.span_x_hp {
-        match Float::parse(sx_hp) {
-            Ok(parse_result) => Float::with_val(prec, parse_result),
-            Err(_) => Float::with_val(prec, params.span_x)
-        }
-    } else {
-        Float::with_val(prec, params.span_x)
-    };
-    
-    let y_range = if let Some(ref sy_hp) = params.span_y_hp {
-        match Float::parse(sy_hp) {
-            Ok(parse_result) => Float::with_val(prec, parse_result),
-            Err(_) => Float::with_val(prec, params.span_y)
-        }
-    } else {
-        Float::with_val(prec, params.span_y)
-    };
-    
-    let half = Float::with_val(prec, 0.5);
-    
-    // dc_re = ((i+0.5)/width - 0.5) * x_range  (center of pixel)
-    let mut i_float = Float::with_val(prec, i as f64);
-    i_float += &half;
-    let mut j_float = Float::with_val(prec, j as f64);
-    j_float += &half;
-    let mut x_ratio = Float::with_val(prec, &i_float * &inv_width);
-    let mut y_ratio = Float::with_val(prec, &j_float * &inv_height);
-    x_ratio -= &half;
-    y_ratio -= &half;
-    let x_offset = Float::with_val(prec, &x_ratio * &x_range);
-    let y_offset = Float::with_val(prec, &y_ratio * &y_range);
-    
-    // Le point complexe du pixel est center + dc
-    // Mais dc seul est juste l'offset, donc on retourne juste l'offset
-    Complex::with_val(prec, (x_offset, y_offset))
+    let ctx = DcGmpContext::new(params, prec);
+    ctx.compute_dc(i, j)
 }
 
 #[allow(dead_code)]
@@ -1057,7 +1078,7 @@ pub fn render_perturbation_with_cache(
             let prec = compute_perturbation_precision_bits(params);
             let width_u32 = params.width;
 
-            // Utiliser compute_dc_gmp pour calculer directement en GMP
+            // Pre-compute shared GMP constants for dc computation
             let center_x_gmp = if let Some(ref cx_hp) = params.center_x_hp {
                 match Float::parse(cx_hp) {
                     Ok(parse_result) => Float::with_val(prec, parse_result),
@@ -1074,15 +1095,16 @@ pub fn render_perturbation_with_cache(
             } else {
                 Float::with_val(prec, params.center_y)
             };
-            
+            let dc_ctx = DcGmpContext::new(params, prec);
+
             let all_corrections: Vec<_> = (0..total_pixels)
                 .into_par_iter()
                 .map(|idx| {
                     let i = (idx as u32 % width_u32) as usize;
                     let j = (idx as u32 / width_u32) as usize;
-                    
+
                     // Calculer dc en GMP directement
-                    let dc_gmp = compute_dc_gmp(i, j, params, &center_x_gmp, &center_y_gmp, prec);
+                    let dc_gmp = dc_ctx.compute_dc(i, j);
                     
                     // Calculer le point pixel = center + dc en GMP
                     let mut z_pixel_re = center_x_gmp.clone();
@@ -1110,24 +1132,9 @@ pub fn render_perturbation_with_cache(
             let prec = compute_perturbation_precision_bits(params);
             let width_u32 = params.width;
             
-            // Utiliser les String haute précision si disponibles pour le calcul de dc
-            let center_x_gmp = if let Some(ref cx_hp) = params.center_x_hp {
-                match Float::parse(cx_hp) {
-                    Ok(parse_result) => Float::with_val(prec, parse_result),
-                    Err(_) => Float::with_val(prec, params.center_x),
-                }
-            } else {
-                Float::with_val(prec, params.center_x)
-            };
-            let center_y_gmp = if let Some(ref cy_hp) = params.center_y_hp {
-                match Float::parse(cy_hp) {
-                    Ok(parse_result) => Float::with_val(prec, parse_result),
-                    Err(_) => Float::with_val(prec, params.center_y),
-                }
-            } else {
-                Float::with_val(prec, params.center_y)
-            };
-            
+            // Pre-compute shared GMP constants for dc computation
+            let dc_ctx = DcGmpContext::new(params, prec);
+
             // Utiliser l'orbite de référence GMP déjà calculée (plus rapide que recalcul complet)
             use crate::fractal::perturbation::delta::iterate_pixel_gmp;
             let corrections: Vec<_> = glitched_indices
@@ -1135,9 +1142,9 @@ pub fn render_perturbation_with_cache(
                 .map(|&idx| {
                     let i = (idx as u32 % width_u32) as usize;
                     let j = (idx as u32 / width_u32) as usize;
-                    
+
                     // Calculer dc en GMP directement
-                    let dc_gmp = compute_dc_gmp(i, j, params, &center_x_gmp, &center_y_gmp, prec);
+                    let dc_gmp = dc_ctx.compute_dc(i, j);
                     
                     // Utiliser perturbation GMP avec l'orbite de référence (beaucoup plus rapide)
                     let result = iterate_pixel_gmp(
@@ -1239,7 +1246,10 @@ fn render_perturbation_gmp_path(
     let glitch_mask: Vec<AtomicBool> = (0..width * params.height as usize)
         .map(|_| AtomicBool::new(false))
         .collect();
-    
+
+    // Pre-compute shared GMP constants for dc computation
+    let dc_ctx = DcGmpContext::new(params, prec);
+
     iterations
         .par_chunks_mut(width)
         .zip(zs.par_chunks_mut(width))
@@ -1253,7 +1263,7 @@ fn render_perturbation_gmp_path(
             if cancelled.load(Ordering::Relaxed) {
                 return;
             }
-            
+
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
                 if let Some(reuse) = reuse_row {
                     let ratio = reuse.ratio as usize;
@@ -1268,16 +1278,9 @@ fn render_perturbation_gmp_path(
                         }
                     }
                 }
-                
+
                 // Compute dc in GMP precision
-                let dc_gmp = compute_dc_gmp(
-                    i,
-                    j,
-                    params,
-                    &center_x_gmp,
-                    &center_y_gmp,
-                    prec,
-                );
+                let dc_gmp = dc_ctx.compute_dc(i, j);
                 
                 // Iterate pixel with full GMP precision
                 let result = iterate_pixel_gmp(
@@ -1315,14 +1318,17 @@ fn render_perturbation_gmp_path(
             let gmp_params = MpcParams::from_params(&orbit_params);
             let width_u32 = params.width;
             
+            // Pre-compute shared GMP constants for dc computation
+            let dc_ctx = DcGmpContext::new(params, prec);
+
             let corrections: Vec<_> = glitched_indices
                 .par_iter()
                 .map(|&idx| {
                     let i = (idx as u32 % width_u32) as usize;
                     let j = (idx as u32 / width_u32) as usize;
-                    
+
                     // Calculate pixel point directly in GMP: center + dc
-                    let dc_gmp = compute_dc_gmp(i, j, params, &center_x_gmp, &center_y_gmp, prec);
+                    let dc_gmp = dc_ctx.compute_dc(i, j);
                     let mut z_pixel_re = center_x_gmp.clone();
                     z_pixel_re += dc_gmp.real();
                     let mut z_pixel_im = center_y_gmp.clone();

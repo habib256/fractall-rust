@@ -129,25 +129,30 @@ fn diffabs(c: f32, d: f32) -> f32 {
 }
 
 fn rescale_delta(re: f32, im: f32, scale: f32) -> vec3<f32> {
+    let abs_max = max(abs(re), abs(im));
+    // Fast path: no rescaling needed
+    if (abs_max <= RESCALE_HI && abs_max >= RESCALE_LO) {
+        return vec3<f32>(re, im, scale);
+    }
+    if (abs_max == 0.0) {
+        return vec3<f32>(re, im, scale);
+    }
+
     var new_re = re;
     var new_im = im;
     var new_scale = scale;
-    let abs_max = max(abs(new_re), abs(new_im));
-
-    // Clamp scale to avoid overflow/underflow
-    // f32 exponent range is roughly 2^-126 to 2^127
     let max_scale = 1.0e30;
     let min_scale = 1.0e-30;
 
     if (abs_max > RESCALE_HI && new_scale < max_scale) {
         let k = floor(log2(abs_max / RESCALE_HI));
-        let factor = exp2(min(k, 20.0)); // Limit single rescale step
+        let factor = exp2(min(k, 20.0));
         new_re = new_re / factor;
         new_im = new_im / factor;
         new_scale = min(new_scale * factor, max_scale);
-    } else if (abs_max > 0.0 && abs_max < RESCALE_LO && new_scale > min_scale) {
+    } else if (abs_max < RESCALE_LO && new_scale > min_scale) {
         let k = floor(log2(RESCALE_LO / abs_max));
-        let factor = exp2(min(k, 20.0)); // Limit single rescale step
+        let factor = exp2(min(k, 20.0));
         new_re = new_re * factor;
         new_im = new_im * factor;
         new_scale = max(new_scale / factor, min_scale);
@@ -356,11 +361,10 @@ fn main(
         }
 
         // ====================================================================================
-        // REBASING: Critical for avoiding glitches in perturbation
+        // REBASING + BAILOUT + GLITCH DETECTION (merged to compute delta_actual once)
         // ====================================================================================
-        // When |Z_m + z_n| < |z_n|, replace z_n with Z_m + z_n and reset m to 0.
-        // This prevents delta from diverging and causing widespread glitches.
-        // Without rebasing, delta grows uncontrollably at deeper zooms.
+        // Compute delta_actual once and reuse for rebase check, bailout, and glitch detection.
+        // small_delta flag skips rebase and glitch checks when delta is tiny (no precision loss).
         if (n > 0u && n < params.iter_max) {
             let z_check = z_ref[n];
             let delta_actual_re = delta_re * delta_scale;
@@ -369,68 +373,50 @@ fn main(
             let z_curr_im = z_check.im + delta_actual_im;
             let z_curr_norm_sqr = z_curr_re * z_curr_re + z_curr_im * z_curr_im;
             let delta_norm_sqr = delta_actual_re * delta_actual_re + delta_actual_im * delta_actual_im;
+            let small_delta = (delta_scale < 1.0e-15);
 
             // Rebasing with hysteresis (inspired by rust-fractal-core):
             // Only rebase if z_curr is meaningfully smaller than delta (factor 0.5),
             // preventing ping-pong rebasing that wastes iterations.
-            // Also skip rebasing when z_ref is very small (near orbit zero).
-            let z_ref_ns = z_check.re * z_check.re + z_check.im * z_check.im;
-            if (z_curr_norm_sqr > 0.0 && delta_norm_sqr > 0.0 && z_curr_norm_sqr < delta_norm_sqr * 0.5 && z_ref_ns > 1.0e-20) {
-                // Rebase: delta = z_curr, restart from iteration 0
-                let scaled = rescale_delta(z_curr_re, z_curr_im, 1.0);
-                delta_re = scaled.x;
-                delta_im = scaled.y;
-                delta_scale = scaled.z;
-                n = 0u;
-                continue;
+            // Skip rebasing when delta is tiny (no precision loss) or z_ref is very small.
+            if (!small_delta) {
+                let z_ref_ns = z_check.re * z_check.re + z_check.im * z_check.im;
+                if (z_curr_norm_sqr > 0.0 && delta_norm_sqr > 0.0 && z_curr_norm_sqr < delta_norm_sqr * 0.5 && z_ref_ns > 1.0e-20) {
+                    let scaled = rescale_delta(z_curr_re, z_curr_im, 1.0);
+                    delta_re = scaled.x;
+                    delta_im = scaled.y;
+                    delta_scale = scaled.z;
+                    n = 0u;
+                    continue;
+                }
             }
-        }
 
-        if (n >= params.iter_max) {
+            // Glitch detection: NaN/Inf always invalid, delta_too_large only when delta is not tiny
+            let nan_re = z_curr_re != z_curr_re;
+            let nan_im = z_curr_im != z_curr_im;
+            let inf_re = abs(z_curr_re) > 1e30;
+            let inf_im = abs(z_curr_im) > 1e30;
+            let z_ref_norm_sqr = z_check.re * z_check.re + z_check.im * z_check.im;
+            let glitch_scale = max(z_ref_norm_sqr, 1.0e-6);
+            let delta_too_large = delta_norm_sqr > glitch_tolerance_sqr * glitch_scale;
+            let glitched = (nan_re || nan_im || inf_re || inf_im || (!small_delta && delta_too_large));
+
+            if (glitched) {
+                out_pixels[idx].iter = n;
+                out_pixels[idx].z_re = z_check.re;
+                out_pixels[idx].z_im = z_check.im;
+                out_pixels[idx].flags = 1u;
+                return;
+            }
+            if (z_curr_norm_sqr > bailout_sqr) {
+                out_pixels[idx].iter = n;
+                out_pixels[idx].z_re = z_curr_re;
+                out_pixels[idx].z_im = z_curr_im;
+                out_pixels[idx].flags = 0u;
+                return;
+            }
+        } else if (n >= params.iter_max) {
             break;
-        }
-
-        let z = z_ref[n];
-        let delta_actual_re = delta_re * delta_scale;
-        let delta_actual_im = delta_im * delta_scale;
-        let z_re = z.re + delta_actual_re;
-        let z_im = z.im + delta_actual_im;
-        let z_ref_norm_sqr = z.re * z.re + z.im * z.im;
-        let delta_norm_sqr = delta_actual_re * delta_actual_re + delta_actual_im * delta_actual_im;
-        let nan_re = z_re != z_re;
-        let nan_im = z_im != z_im;
-        let inf_re = abs(z_re) > 1e30;
-        let inf_im = abs(z_im) > 1e30;
-
-        // Glitch detection: with rebasing enabled, delta-based detection is now stable
-        // Detect glitches when:
-        // 1. NaN or Inf values (always invalid)
-        // 2. Delta is too large relative to z_ref (indicates precision loss)
-        // Fix: use max(z_ref_norm_sqr, 1e-6) instead of z_ref_norm_sqr + 1.0
-        // Inspired by rust-fractal-core's Pauldelbrot criterion and matching our CPU implementation.
-        // The old formula (z_ref_norm_sqr + 1.0) masked glitches near the origin where z_ref is small,
-        // because the +1.0 dominated, making the tolerance too permissive.
-        // Using max(1e-6) provides a floor without distorting the scale relationship.
-        let glitch_scale = max(z_ref_norm_sqr, 1.0e-6);
-        let delta_too_large = delta_norm_sqr > glitch_tolerance_sqr * glitch_scale;
-        let glitched = (nan_re || nan_im || inf_re || inf_im || delta_too_large);
-        
-        if (glitched) {
-            // IMPORTANT: Ne pas stocker les valeurs invalides (NaN/Inf) qui causent des artefacts visuels
-            // Utiliser des valeurs par défaut valides qui seront remplacées par la correction CPU
-            // Utiliser z_ref comme valeur par défaut pour éviter les artefacts circulaires
-            out_pixels[idx].iter = n;
-            out_pixels[idx].z_re = z.re;  // Utiliser z_ref au lieu de z_re invalide
-            out_pixels[idx].z_im = z.im;  // Utiliser z_ref au lieu de z_im invalide
-            out_pixels[idx].flags = 1u;
-            return;
-        }
-        if (z_re * z_re + z_im * z_im > bailout_sqr) {
-            out_pixels[idx].iter = n;
-            out_pixels[idx].z_re = z_re;
-            out_pixels[idx].z_im = z_im;
-            out_pixels[idx].flags = 0u;
-            return;
         }
     }
 

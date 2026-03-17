@@ -3,6 +3,7 @@
 //! Buddhabrot: visualise la densité des trajectoires d'échappement de z²+c.
 //! Nebulabrot: version RGB avec différentes limites d'itérations par canal.
 
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
@@ -13,6 +14,10 @@ use rug::Float;
 
 use crate::fractal::FractalParams;
 use crate::fractal::gmp::complex_to_complex64;
+
+thread_local! {
+    static TRAJ_BUF: RefCell<Vec<Complex64>> = RefCell::new(Vec::new());
+}
 
 /// Générateur de nombres pseudo-aléatoires simple (LCG).
 struct Rng {
@@ -93,54 +98,57 @@ pub fn render_buddhabrot(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
         let c = Complex64::new(xg, yg);
 
         // Trajectoire
-        let mut trajectory = Vec::with_capacity(iter_max as usize);
-        let mut z = Complex64::new(0.0, 0.0);
-        let mut escaped = false;
+        TRAJ_BUF.with(|buf| {
+            let mut trajectory = buf.borrow_mut();
+            trajectory.clear();
+            let mut z = Complex64::new(0.0, 0.0);
+            let mut escaped = false;
 
-        for iter in 0..iter_max {
-            z = z * z + c;
+            for iter in 0..iter_max {
+                z = z * z + c;
 
-            if z.re.is_nan() || z.im.is_nan() || z.re.is_infinite() || z.im.is_infinite() {
-                break;
-            }
-
-            let mag2 = z.norm_sqr();
-
-            // Early exit: si le point est encore petit après many iterations,
-            // il est probablement dans l'ensemble
-            if iter == early_exit_threshold && mag2 < 0.25 {
-                break;
-            }
-
-            trajectory.push(z);
-
-            if mag2 > bailout_sq {
-                escaped = true;
-                break;
-            }
-        }
-
-        // Si le point s'est échappé, tracer sa trajectoire
-        if escaped && !trajectory.is_empty() {
-            let scale_x = width as f64 / xrange;
-            let scale_y = height as f64 / yrange;
-
-            for point in &trajectory {
-                if point.re.is_nan() || point.im.is_nan() {
-                    continue;
+                if z.re.is_nan() || z.im.is_nan() || z.re.is_infinite() || z.im.is_infinite() {
+                    break;
                 }
 
-                // Convertir en pixels en utilisant center+span directement
-                // px = ((point.re - center_x + span_x/2) / span_x) * width
-                let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
-                let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
+                let mag2 = z.norm_sqr();
 
-                if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
-                    let idx = py as usize * width + px as usize;
-                    density[idx].fetch_add(1, Ordering::Relaxed);
+                // Early exit: si le point est encore petit après many iterations,
+                // il est probablement dans l'ensemble
+                if iter == early_exit_threshold && mag2 < 0.25 {
+                    break;
+                }
+
+                trajectory.push(z);
+
+                if mag2 > bailout_sq {
+                    escaped = true;
+                    break;
                 }
             }
-        }
+
+            // Si le point s'est échappé, tracer sa trajectoire
+            if escaped && !trajectory.is_empty() {
+                let scale_x = width as f64 / xrange;
+                let scale_y = height as f64 / yrange;
+
+                for point in trajectory.iter() {
+                    if point.re.is_nan() || point.im.is_nan() {
+                        continue;
+                    }
+
+                    // Convertir en pixels en utilisant center+span directement
+                    // px = ((point.re - center_x + span_x/2) / span_x) * width
+                    let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
+                    let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
+
+                    if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
+                        let idx = py as usize * width + px as usize;
+                        density[idx].fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        });
     });
 
     // Trouver la densité maximale
@@ -237,52 +245,55 @@ pub fn render_buddhabrot_mpc_cancellable(
         let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
         let c = Complex::with_val(prec, (xg, yg));
 
-        let mut trajectory: Vec<Complex64> = Vec::with_capacity(iter_max as usize);
-        let mut z = Complex::with_val(prec, (0.0, 0.0));
-        let mut escaped = false;
+        TRAJ_BUF.with(|buf| {
+            let mut trajectory = buf.borrow_mut();
+            trajectory.clear();
+            let mut z = Complex::with_val(prec, (0.0, 0.0));
+            let mut escaped = false;
 
-        for iter in 0..iter_max {
-            let mut z_next = z.clone();
-            z_next *= &z;
-            z_next += &c;
-            z = z_next;
+            for iter in 0..iter_max {
+                let mut z_next = z.clone();
+                z_next *= &z;
+                z_next += &c;
+                z = z_next;
 
-            if z.real().is_nan() || z.imag().is_nan() || z.real().is_infinite() || z.imag().is_infinite() {
-                break;
-            }
-
-            let mag2 = complex_norm_sqr_mpc(&z, prec);
-            if iter == early_exit_threshold && mag2 < early_exit_limit {
-                break;
-            }
-
-            trajectory.push(complex_to_complex64(&z));
-
-            if mag2 > bailout_sq {
-                escaped = true;
-                break;
-            }
-        }
-
-        if escaped && !trajectory.is_empty() {
-            let scale_x = width as f64 / xrange;
-            let scale_y = height as f64 / yrange;
-
-            for point in &trajectory {
-                if point.re.is_nan() || point.im.is_nan() {
-                    continue;
+                if z.real().is_nan() || z.imag().is_nan() || z.real().is_infinite() || z.imag().is_infinite() {
+                    break;
                 }
 
-                // Convertir en pixels en utilisant center+span directement
-                let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
-                let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
+                let mag2 = complex_norm_sqr_mpc(&z, prec);
+                if iter == early_exit_threshold && mag2 < early_exit_limit {
+                    break;
+                }
 
-                if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
-                    let idx = py as usize * width + px as usize;
-                    density[idx].fetch_add(1, Ordering::Relaxed);
+                trajectory.push(complex_to_complex64(&z));
+
+                if mag2 > bailout_sq {
+                    escaped = true;
+                    break;
                 }
             }
-        }
+
+            if escaped && !trajectory.is_empty() {
+                let scale_x = width as f64 / xrange;
+                let scale_y = height as f64 / yrange;
+
+                for point in trajectory.iter() {
+                    if point.re.is_nan() || point.im.is_nan() {
+                        continue;
+                    }
+
+                    // Convertir en pixels en utilisant center+span directement
+                    let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
+                    let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
+
+                    if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
+                        let idx = py as usize * width + px as usize;
+                        density[idx].fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        });
     });
 
     if cancelled.load(Ordering::Relaxed) {
@@ -373,54 +384,57 @@ pub fn render_nebulabrot(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
         let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
         let c = Complex64::new(xg, yg);
 
-        let mut trajectory = Vec::with_capacity(ITER_MAX as usize);
-        let mut z = Complex64::new(0.0, 0.0);
-        let mut escaped = false;
-        let mut escape_iter = 0u32;
+        TRAJ_BUF.with(|buf| {
+            let mut trajectory = buf.borrow_mut();
+            trajectory.clear();
+            let mut z = Complex64::new(0.0, 0.0);
+            let mut escaped = false;
+            let mut escape_iter = 0u32;
 
-        for iter in 0..ITER_MAX {
-            z = z * z + c;
+            for iter in 0..ITER_MAX {
+                z = z * z + c;
 
-            if z.re.is_nan() || z.im.is_nan() || z.re.is_infinite() || z.im.is_infinite() {
-                break;
+                if z.re.is_nan() || z.im.is_nan() || z.re.is_infinite() || z.im.is_infinite() {
+                    break;
+                }
+
+                trajectory.push(z);
+
+                if z.norm_sqr() > bailout_sq {
+                    escaped = true;
+                    escape_iter = iter;
+                    break;
+                }
             }
 
-            trajectory.push(z);
+            if escaped && !trajectory.is_empty() {
+                let scale_x = width as f64 / xrange;
+                let scale_y = height as f64 / yrange;
 
-            if z.norm_sqr() > bailout_sq {
-                escaped = true;
-                escape_iter = iter;
-                break;
-            }
-        }
+                let contribute_r = escape_iter <= ITER_R;
+                let contribute_g = escape_iter <= ITER_G;
+                let contribute_b = escape_iter <= ITER_B;
 
-        if escaped && !trajectory.is_empty() {
-            let scale_x = width as f64 / xrange;
-            let scale_y = height as f64 / yrange;
+                for &point in trajectory.iter() {
+                    // Convertir en pixels en utilisant center+span directement
+                    let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
+                    let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
 
-            let contribute_r = escape_iter <= ITER_R;
-            let contribute_g = escape_iter <= ITER_G;
-            let contribute_b = escape_iter <= ITER_B;
-
-            for point in trajectory {
-                // Convertir en pixels en utilisant center+span directement
-                let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
-                let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
-
-                if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
-                    let idx = py as usize * width + px as usize;
-                    if contribute_r {
-                        density_r[idx].fetch_add(1, Ordering::Relaxed);
-                    }
-                    if contribute_g {
-                        density_g[idx].fetch_add(1, Ordering::Relaxed);
-                    }
-                    if contribute_b {
-                        density_b[idx].fetch_add(1, Ordering::Relaxed);
+                    if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
+                        let idx = py as usize * width + px as usize;
+                        if contribute_r {
+                            density_r[idx].fetch_add(1, Ordering::Relaxed);
+                        }
+                        if contribute_g {
+                            density_g[idx].fetch_add(1, Ordering::Relaxed);
+                        }
+                        if contribute_b {
+                            density_b[idx].fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 }
             }
-        }
+        });
     });
 
     // Trouver les maxima par canal
@@ -539,57 +553,60 @@ pub fn render_nebulabrot_mpc_cancellable(
         let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
         let c = Complex::with_val(prec, (xg, yg));
 
-        let mut trajectory: Vec<Complex64> = Vec::with_capacity(ITER_MAX as usize);
-        let mut z = Complex::with_val(prec, (0.0, 0.0));
-        let mut escaped = false;
-        let mut escape_iter = 0u32;
+        TRAJ_BUF.with(|buf| {
+            let mut trajectory = buf.borrow_mut();
+            trajectory.clear();
+            let mut z = Complex::with_val(prec, (0.0, 0.0));
+            let mut escaped = false;
+            let mut escape_iter = 0u32;
 
-        for iter in 0..ITER_MAX {
-            let mut z_next = z.clone();
-            z_next *= &z;
-            z_next += &c;
-            z = z_next;
+            for iter in 0..ITER_MAX {
+                let mut z_next = z.clone();
+                z_next *= &z;
+                z_next += &c;
+                z = z_next;
 
-            if z.real().is_nan() || z.imag().is_nan() || z.real().is_infinite() || z.imag().is_infinite() {
-                break;
+                if z.real().is_nan() || z.imag().is_nan() || z.real().is_infinite() || z.imag().is_infinite() {
+                    break;
+                }
+
+                trajectory.push(complex_to_complex64(&z));
+
+                if complex_norm_sqr_mpc(&z, prec) > bailout_sq {
+                    escaped = true;
+                    escape_iter = iter;
+                    break;
+                }
             }
 
-            trajectory.push(complex_to_complex64(&z));
+            if escaped && !trajectory.is_empty() {
+                let scale_x = width as f64 / xrange;
+                let scale_y = height as f64 / yrange;
 
-            if complex_norm_sqr_mpc(&z, prec) > bailout_sq {
-                escaped = true;
-                escape_iter = iter;
-                break;
-            }
-        }
+                let contribute_r = escape_iter <= ITER_R;
+                let contribute_g = escape_iter <= ITER_G;
+                let contribute_b = escape_iter <= ITER_B;
 
-        if escaped && !trajectory.is_empty() {
-            let scale_x = width as f64 / xrange;
-            let scale_y = height as f64 / yrange;
+                for &point in trajectory.iter() {
+                    // Convertir en pixels en utilisant center+span directement
+                    let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
+                    let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
 
-            let contribute_r = escape_iter <= ITER_R;
-            let contribute_g = escape_iter <= ITER_G;
-            let contribute_b = escape_iter <= ITER_B;
-
-            for point in trajectory {
-                // Convertir en pixels en utilisant center+span directement
-                let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
-                let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
-
-                if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
-                    let idx = py as usize * width + px as usize;
-                    if contribute_r {
-                        density_r[idx].fetch_add(1, Ordering::Relaxed);
-                    }
-                    if contribute_g {
-                        density_g[idx].fetch_add(1, Ordering::Relaxed);
-                    }
-                    if contribute_b {
-                        density_b[idx].fetch_add(1, Ordering::Relaxed);
+                    if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
+                        let idx = py as usize * width + px as usize;
+                        if contribute_r {
+                            density_r[idx].fetch_add(1, Ordering::Relaxed);
+                        }
+                        if contribute_g {
+                            density_g[idx].fetch_add(1, Ordering::Relaxed);
+                        }
+                        if contribute_b {
+                            density_b[idx].fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 }
             }
-        }
+        });
     });
 
     if cancelled.load(Ordering::Relaxed) {
@@ -694,48 +711,51 @@ pub fn render_buddhabrot_cancellable(
         let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
         let c = Complex64::new(xg, yg);
 
-        let mut trajectory = Vec::with_capacity(iter_max as usize);
-        let mut z = Complex64::new(0.0, 0.0);
-        let mut escaped = false;
+        TRAJ_BUF.with(|buf| {
+            let mut trajectory = buf.borrow_mut();
+            trajectory.clear();
+            let mut z = Complex64::new(0.0, 0.0);
+            let mut escaped = false;
 
-        for iter in 0..iter_max {
-            z = z * z + c;
+            for iter in 0..iter_max {
+                z = z * z + c;
 
-            if z.re.is_nan() || z.im.is_nan() || z.re.is_infinite() || z.im.is_infinite() {
-                break;
-            }
-
-            if iter == early_exit_threshold && z.norm_sqr() < 0.25 {
-                break;
-            }
-
-            trajectory.push(z);
-
-            if z.norm_sqr() > bailout_sq {
-                escaped = true;
-                break;
-            }
-        }
-
-        if escaped && !trajectory.is_empty() {
-            let scale_x = width as f64 / xrange;
-            let scale_y = height as f64 / yrange;
-
-            for point in &trajectory {
-                if point.re.is_nan() || point.im.is_nan() {
-                    continue;
+                if z.re.is_nan() || z.im.is_nan() || z.re.is_infinite() || z.im.is_infinite() {
+                    break;
                 }
 
-                // Convertir en pixels en utilisant center+span directement
-                let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
-                let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
+                if iter == early_exit_threshold && z.norm_sqr() < 0.25 {
+                    break;
+                }
 
-                if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
-                    let idx = py as usize * width + px as usize;
-                    density[idx].fetch_add(1, Ordering::Relaxed);
+                trajectory.push(z);
+
+                if z.norm_sqr() > bailout_sq {
+                    escaped = true;
+                    break;
                 }
             }
-        }
+
+            if escaped && !trajectory.is_empty() {
+                let scale_x = width as f64 / xrange;
+                let scale_y = height as f64 / yrange;
+
+                for point in trajectory.iter() {
+                    if point.re.is_nan() || point.im.is_nan() {
+                        continue;
+                    }
+
+                    // Convertir en pixels en utilisant center+span directement
+                    let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
+                    let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
+
+                    if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
+                        let idx = py as usize * width + px as usize;
+                        density[idx].fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        });
     });
 
     if cancelled.load(Ordering::Relaxed) {
@@ -828,54 +848,57 @@ pub fn render_nebulabrot_cancellable(
         let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
         let c = Complex64::new(xg, yg);
 
-        let mut trajectory = Vec::with_capacity(ITER_MAX as usize);
-        let mut z = Complex64::new(0.0, 0.0);
-        let mut escaped = false;
-        let mut escape_iter = 0u32;
+        TRAJ_BUF.with(|buf| {
+            let mut trajectory = buf.borrow_mut();
+            trajectory.clear();
+            let mut z = Complex64::new(0.0, 0.0);
+            let mut escaped = false;
+            let mut escape_iter = 0u32;
 
-        for iter in 0..ITER_MAX {
-            z = z * z + c;
+            for iter in 0..ITER_MAX {
+                z = z * z + c;
 
-            if z.re.is_nan() || z.im.is_nan() || z.re.is_infinite() || z.im.is_infinite() {
-                break;
+                if z.re.is_nan() || z.im.is_nan() || z.re.is_infinite() || z.im.is_infinite() {
+                    break;
+                }
+
+                trajectory.push(z);
+
+                if z.norm_sqr() > bailout_sq {
+                    escaped = true;
+                    escape_iter = iter;
+                    break;
+                }
             }
 
-            trajectory.push(z);
+            if escaped && !trajectory.is_empty() {
+                let scale_x = width as f64 / xrange;
+                let scale_y = height as f64 / yrange;
 
-            if z.norm_sqr() > bailout_sq {
-                escaped = true;
-                escape_iter = iter;
-                break;
-            }
-        }
+                let contribute_r = escape_iter <= ITER_R;
+                let contribute_g = escape_iter <= ITER_G;
+                let contribute_b = escape_iter <= ITER_B;
 
-        if escaped && !trajectory.is_empty() {
-            let scale_x = width as f64 / xrange;
-            let scale_y = height as f64 / yrange;
+                for &point in trajectory.iter() {
+                    // Convertir en pixels en utilisant center+span directement
+                    let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
+                    let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
 
-            let contribute_r = escape_iter <= ITER_R;
-            let contribute_g = escape_iter <= ITER_G;
-            let contribute_b = escape_iter <= ITER_B;
-
-            for point in trajectory {
-                // Convertir en pixels en utilisant center+span directement
-                let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
-                let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
-
-                if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
-                    let idx = py as usize * width + px as usize;
-                    if contribute_r {
-                        density_r[idx].fetch_add(1, Ordering::Relaxed);
-                    }
-                    if contribute_g {
-                        density_g[idx].fetch_add(1, Ordering::Relaxed);
-                    }
-                    if contribute_b {
-                        density_b[idx].fetch_add(1, Ordering::Relaxed);
+                    if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
+                        let idx = py as usize * width + px as usize;
+                        if contribute_r {
+                            density_r[idx].fetch_add(1, Ordering::Relaxed);
+                        }
+                        if contribute_g {
+                            density_g[idx].fetch_add(1, Ordering::Relaxed);
+                        }
+                        if contribute_b {
+                            density_b[idx].fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 }
             }
-        }
+        });
     });
 
     if cancelled.load(Ordering::Relaxed) {
@@ -956,46 +979,49 @@ pub fn render_antibuddhabrot(params: &FractalParams) -> (Vec<u32>, Vec<Complex64
         let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
         let c = Complex64::new(xg, yg);
 
-        let mut trajectory = Vec::with_capacity(iter_max as usize);
-        let mut z = Complex64::new(0.0, 0.0);
-        let mut escaped = false;
+        TRAJ_BUF.with(|buf| {
+            let mut trajectory = buf.borrow_mut();
+            trajectory.clear();
+            let mut z = Complex64::new(0.0, 0.0);
+            let mut escaped = false;
 
-        for _iter in 0..iter_max {
-            z = z * z + c;
+            for _iter in 0..iter_max {
+                z = z * z + c;
 
-            if z.re.is_nan() || z.im.is_nan() || z.re.is_infinite() || z.im.is_infinite() {
-                escaped = true;
-                break;
-            }
-
-            let mag2 = z.norm_sqr();
-            trajectory.push(z);
-
-            if mag2 > bailout_sq {
-                escaped = true;
-                break;
-            }
-        }
-
-        // Anti-Buddhabrot : tracer uniquement les trajectoires des points INTÉRIEURS
-        if !escaped && !trajectory.is_empty() {
-            let scale_x = width as f64 / xrange;
-            let scale_y = height as f64 / yrange;
-
-            for point in &trajectory {
-                if point.re.is_nan() || point.im.is_nan() {
-                    continue;
+                if z.re.is_nan() || z.im.is_nan() || z.re.is_infinite() || z.im.is_infinite() {
+                    escaped = true;
+                    break;
                 }
 
-                let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
-                let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
+                let mag2 = z.norm_sqr();
+                trajectory.push(z);
 
-                if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
-                    let idx = py as usize * width + px as usize;
-                    density[idx].fetch_add(1, Ordering::Relaxed);
+                if mag2 > bailout_sq {
+                    escaped = true;
+                    break;
                 }
             }
-        }
+
+            // Anti-Buddhabrot : tracer uniquement les trajectoires des points INTÉRIEURS
+            if !escaped && !trajectory.is_empty() {
+                let scale_x = width as f64 / xrange;
+                let scale_y = height as f64 / yrange;
+
+                for point in trajectory.iter() {
+                    if point.re.is_nan() || point.im.is_nan() {
+                        continue;
+                    }
+
+                    let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
+                    let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
+
+                    if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
+                        let idx = py as usize * width + px as usize;
+                        density[idx].fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        });
     });
 
     let max_density = density
@@ -1086,47 +1112,50 @@ pub fn render_antibuddhabrot_mpc_cancellable(
         let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
         let c = Complex::with_val(prec, (xg, yg));
 
-        let mut trajectory: Vec<Complex64> = Vec::with_capacity(iter_max as usize);
-        let mut z = Complex::with_val(prec, (0.0, 0.0));
-        let mut escaped = false;
+        TRAJ_BUF.with(|buf| {
+            let mut trajectory = buf.borrow_mut();
+            trajectory.clear();
+            let mut z = Complex::with_val(prec, (0.0, 0.0));
+            let mut escaped = false;
 
-        for _iter in 0..iter_max {
-            let mut z_next = z.clone();
-            z_next *= &z;
-            z_next += &c;
-            z = z_next;
+            for _iter in 0..iter_max {
+                let mut z_next = z.clone();
+                z_next *= &z;
+                z_next += &c;
+                z = z_next;
 
-            if z.real().is_nan() || z.imag().is_nan() || z.real().is_infinite() || z.imag().is_infinite() {
-                escaped = true;
-                break;
-            }
-
-            trajectory.push(complex_to_complex64(&z));
-
-            if complex_norm_sqr_mpc(&z, prec) > bailout_sq {
-                escaped = true;
-                break;
-            }
-        }
-
-        if !escaped && !trajectory.is_empty() {
-            let scale_x = width as f64 / xrange;
-            let scale_y = height as f64 / yrange;
-
-            for point in &trajectory {
-                if point.re.is_nan() || point.im.is_nan() {
-                    continue;
+                if z.real().is_nan() || z.imag().is_nan() || z.real().is_infinite() || z.imag().is_infinite() {
+                    escaped = true;
+                    break;
                 }
 
-                let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
-                let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
+                trajectory.push(complex_to_complex64(&z));
 
-                if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
-                    let idx = py as usize * width + px as usize;
-                    density[idx].fetch_add(1, Ordering::Relaxed);
+                if complex_norm_sqr_mpc(&z, prec) > bailout_sq {
+                    escaped = true;
+                    break;
                 }
             }
-        }
+
+            if !escaped && !trajectory.is_empty() {
+                let scale_x = width as f64 / xrange;
+                let scale_y = height as f64 / yrange;
+
+                for point in trajectory.iter() {
+                    if point.re.is_nan() || point.im.is_nan() {
+                        continue;
+                    }
+
+                    let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
+                    let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
+
+                    if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
+                        let idx = py as usize * width + px as usize;
+                        density[idx].fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        });
     });
 
     if cancelled.load(Ordering::Relaxed) {
@@ -1210,44 +1239,47 @@ pub fn render_antibuddhabrot_cancellable(
         let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
         let c = Complex64::new(xg, yg);
 
-        let mut trajectory = Vec::with_capacity(iter_max as usize);
-        let mut z = Complex64::new(0.0, 0.0);
-        let mut escaped = false;
+        TRAJ_BUF.with(|buf| {
+            let mut trajectory = buf.borrow_mut();
+            trajectory.clear();
+            let mut z = Complex64::new(0.0, 0.0);
+            let mut escaped = false;
 
-        for _iter in 0..iter_max {
-            z = z * z + c;
+            for _iter in 0..iter_max {
+                z = z * z + c;
 
-            if z.re.is_nan() || z.im.is_nan() || z.re.is_infinite() || z.im.is_infinite() {
-                escaped = true;
-                break;
-            }
-
-            trajectory.push(z);
-
-            if z.norm_sqr() > bailout_sq {
-                escaped = true;
-                break;
-            }
-        }
-
-        if !escaped && !trajectory.is_empty() {
-            let scale_x = width as f64 / xrange;
-            let scale_y = height as f64 / yrange;
-
-            for point in &trajectory {
-                if point.re.is_nan() || point.im.is_nan() {
-                    continue;
+                if z.re.is_nan() || z.im.is_nan() || z.re.is_infinite() || z.im.is_infinite() {
+                    escaped = true;
+                    break;
                 }
 
-                let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
-                let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
+                trajectory.push(z);
 
-                if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
-                    let idx = py as usize * width + px as usize;
-                    density[idx].fetch_add(1, Ordering::Relaxed);
+                if z.norm_sqr() > bailout_sq {
+                    escaped = true;
+                    break;
                 }
             }
-        }
+
+            if !escaped && !trajectory.is_empty() {
+                let scale_x = width as f64 / xrange;
+                let scale_y = height as f64 / yrange;
+
+                for point in trajectory.iter() {
+                    if point.re.is_nan() || point.im.is_nan() {
+                        continue;
+                    }
+
+                    let px = ((point.re - params.center_x + xrange * 0.5) * scale_x) as i32;
+                    let py = ((point.im - params.center_y + yrange * 0.5) * scale_y) as i32;
+
+                    if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
+                        let idx = py as usize * width + px as usize;
+                        density[idx].fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        });
     });
 
     if cancelled.load(Ordering::Relaxed) {

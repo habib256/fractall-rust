@@ -198,11 +198,10 @@ fn fast_mandelbrot_batch_f64<const IS_JULIA: bool>(
     let orbit_f64 = &ref_orbit.z_ref_f64;
     let phase_offset = ref_orbit.phase_offset as usize;
 
-    let next_extended = ref_orbit.extended_iterations
-        .iter()
-        .find(|&&iter| iter > *n)
-        .copied()
-        .unwrap_or(u32::MAX);
+    let next_extended = {
+        let idx = ref_orbit.extended_iterations.partition_point(|&iter| iter <= *n);
+        ref_orbit.extended_iterations.get(idx).copied().unwrap_or(u32::MAX)
+    };
     let batch_end = (*n + BATCH_SIZE).min(max_iter).min(next_extended);
 
     // Optimization from rust-fractal-core: when delta exponent is very negative (< -500),
@@ -510,11 +509,10 @@ fn fast_burning_ship_batch_f64(
     let orbit_f64 = &ref_orbit.z_ref_f64;
     let phase_offset = ref_orbit.phase_offset as usize;
 
-    let next_extended = ref_orbit.extended_iterations
-        .iter()
-        .find(|&&iter| iter > *n)
-        .copied()
-        .unwrap_or(u32::MAX);
+    let next_extended = {
+        let idx = ref_orbit.extended_iterations.partition_point(|&iter| iter <= *n);
+        ref_orbit.extended_iterations.get(idx).copied().unwrap_or(u32::MAX)
+    };
     let batch_end = (*n + BATCH_SIZE).min(max_iter).min(next_extended);
 
     let make_delta = |d_re: f64, d_im: f64| -> ComplexExp {
@@ -651,11 +649,10 @@ fn fast_tricorn_batch_f64(
     let phase_offset = ref_orbit.phase_offset as usize;
     let c_pixel = ref_orbit.cref + dc_f64;
 
-    let next_extended = ref_orbit.extended_iterations
-        .iter()
-        .find(|&&iter| iter > *n)
-        .copied()
-        .unwrap_or(u32::MAX);
+    let next_extended = {
+        let idx = ref_orbit.extended_iterations.partition_point(|&iter| iter <= *n);
+        ref_orbit.extended_iterations.get(idx).copied().unwrap_or(u32::MAX)
+    };
     let batch_end = (*n + BATCH_SIZE).min(max_iter).min(next_extended);
 
     // Check if delta is very small (optimization from rust-fractal-core).
@@ -852,11 +849,10 @@ fn fast_multibrot_batch_f64(
     let orbit_f64 = &ref_orbit.z_ref_f64;
     let phase_offset = ref_orbit.phase_offset as usize;
 
-    let next_extended = ref_orbit.extended_iterations
-        .iter()
-        .find(|&&iter| iter > *n)
-        .copied()
-        .unwrap_or(u32::MAX);
+    let next_extended = {
+        let idx = ref_orbit.extended_iterations.partition_point(|&iter| iter <= *n);
+        ref_orbit.extended_iterations.get(idx).copied().unwrap_or(u32::MAX)
+    };
     let batch_end = (*n + batch_size).min(max_iter).min(next_extended);
 
     let make_delta = |d_re: f64, d_im: f64| -> ComplexExp {

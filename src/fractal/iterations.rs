@@ -58,7 +58,26 @@ fn mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let mut z = p.seed;
     let mut dz = Complex64::new(0.0, 0.0); // dz_0/dc = 0 (seed is constant w.r.t. c)
     let mut i = 0u32;
+    let mut z_old = z;
+    let mut period = 0u32;
+    let mut check_period = 1u32;
+    let use_periodicity = !p.enable_orbit_traps && !p.enable_distance_estimation;
     let bailout_sqr = p.bailout * p.bailout;
+
+    // Cardioid and period-2 bulb detection (skip if orbit traps or distance estimation needed)
+    if !p.enable_orbit_traps && !p.enable_distance_estimation {
+        let re = z_pixel.re;
+        let im_sq = z_pixel.im * z_pixel.im;
+        // Cardioid: q*(q + re - 0.25) <= 0.25*im^2
+        let q = (re - 0.25) * (re - 0.25) + im_sq;
+        if q * (q + re - 0.25) <= 0.25 * im_sq {
+            return FractalResult { iteration: p.iteration_max, z: Complex64::new(0.0, 0.0), orbit: None, distance: None };
+        }
+        // Period-2 bulb: (re+1)^2 + im^2 <= 1/16
+        if (re + 1.0) * (re + 1.0) + im_sq <= 0.0625 {
+            return FractalResult { iteration: p.iteration_max, z: Complex64::new(0.0, 0.0), orbit: None, distance: None };
+        }
+    }
 
     // Initialiser orbit data si orbit traps activés
     let mut orbit_data = if p.enable_orbit_traps {
@@ -86,6 +105,18 @@ fn mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
             break;
         }
         i += 1;
+        if use_periodicity {
+            period += 1;
+            if (z - z_old).norm_sqr() < 1e-30 {
+                i = p.iteration_max;
+                break;
+            }
+            if period >= check_period {
+                z_old = z;
+                period = 0;
+                check_period = check_period.min(4096) << 1;
+            }
+        }
 
         // Stocker le point dans l'orbite si orbit traps activés
         if let Some(ref mut orbit) = orbit_data {
@@ -118,6 +149,10 @@ fn julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let mut z = z_pixel;
     let mut dz = Complex64::new(1.0, 0.0); // dz/dz_0
     let mut i = 0u32;
+    let mut z_old = z;
+    let mut period = 0u32;
+    let mut check_period = 1u32;
+    let use_periodicity = !p.enable_orbit_traps && !p.enable_distance_estimation;
     let bailout_sqr = p.bailout * p.bailout;
 
     let mut orbit_data = if p.enable_orbit_traps {
@@ -140,6 +175,18 @@ fn julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
             break;
         }
         i += 1;
+        if use_periodicity {
+            period += 1;
+            if (z - z_old).norm_sqr() < 1e-30 {
+                i = p.iteration_max;
+                break;
+            }
+            if period >= check_period {
+                z_old = z;
+                period = 0;
+                check_period = check_period.min(4096) << 1;
+            }
+        }
         if let Some(ref mut orbit) = orbit_data {
             orbit.add_point(z, i);
         }

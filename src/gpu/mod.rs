@@ -12,7 +12,7 @@ use wgpu::util::DeviceExt;
 
 use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
-use crate::fractal::perturbation::{compute_perturbation_precision_bits, compute_dc_gmp, mark_neighbor_glitches};
+use crate::fractal::perturbation::{compute_perturbation_precision_bits, DcGmpContext, mark_neighbor_glitches};
 use crate::fractal::perturbation::orbit::{compute_reference_orbit_cached, ReferenceOrbitCache};
 
 const WORKGROUP_SIZE: u32 = 16;
@@ -851,7 +851,7 @@ impl GpuRenderer {
             let prec = compute_perturbation_precision_bits(params);
             let width_u32 = params.width;
             
-            // Utiliser compute_dc_gmp pour calculer directement en GMP (comme fallback CPU)
+            // Pre-compute shared GMP constants for dc computation
             let center_x_gmp = if let Some(ref cx_hp) = params.center_x_hp {
                 match rug::Float::parse(cx_hp) {
                     Ok(parse_result) => rug::Float::with_val(prec, parse_result),
@@ -868,7 +868,8 @@ impl GpuRenderer {
             } else {
                 rug::Float::with_val(prec, params.center_y)
             };
-            
+            let dc_ctx = DcGmpContext::new(params, prec);
+
             // Recalculer tous les pixels en GMP (comme fallback CPU)
             let width_usize = width_u32 as usize;
             let all_corrections: Vec<_> = (0..output_count)
@@ -876,9 +877,9 @@ impl GpuRenderer {
                 .map(|idx| {
                     let i = idx % width_usize;
                     let j = idx / width_usize;
-                    
-                    // Calculer dc en GMP directement avec compute_dc_gmp
-                    let dc_gmp = compute_dc_gmp(i, j, params, &center_x_gmp, &center_y_gmp, prec);
+
+                    // Calculer dc en GMP directement
+                    let dc_gmp = dc_ctx.compute_dc(i, j);
                     
                     // Calculer le point pixel = center + dc en GMP
                     let mut z_pixel_re = center_x_gmp.clone();
@@ -932,14 +933,16 @@ impl GpuRenderer {
                 rug::Float::with_val(prec, params.center_y)
             };
 
-            // Use compute_dc_gmp for correct +0.5 pixel centering (matching CPU path)
+            // Pre-compute shared GMP constants for dc computation
+            let dc_ctx = DcGmpContext::new(params, prec);
+
             let corrections: Vec<_> = glitched_indices
                 .par_iter()
                 .map(|&idx| {
                     let i = (idx % width) as usize;
                     let j = (idx / width) as usize;
 
-                    let dc_gmp = compute_dc_gmp(i, j, params, &center_x_gmp, &center_y_gmp, prec);
+                    let dc_gmp = dc_ctx.compute_dc(i, j);
 
                     let mut z_pixel_re = center_x_gmp.clone();
                     z_pixel_re += dc_gmp.real();

@@ -167,8 +167,8 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.iteration_max = 2500;
         }
         FractalType::MagnetMandelbrot => {
-            // Magnet1m_def: xmin=-3.0, xmax=2.0, ymin=-2.0, ymax=2.0
-            params.center_x = -0.5;
+            // Magnet1m: centré sur la structure principale
+            params.center_x = 0.7;
             params.center_y = 0.0;
             params.span_x = 5.0;
             params.span_y = 4.0;
