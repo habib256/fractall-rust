@@ -713,6 +713,63 @@ pub fn compute_series_skip_extended(
     }
 }
 
+/// Compute an adaptive series order based on zoom depth.
+///
+/// Inspired by rust-fractal-core which adjusts series order dynamically based on
+/// the zoom level. At deeper zooms, higher-order series provide more iteration
+/// skipping, which is critical for performance since reference orbit computation
+/// and perturbation iteration both become more expensive.
+///
+/// The key insight from rust-fractal-core: the optimal series order grows roughly
+/// logarithmically with zoom depth. At shallow zooms, order 4 suffices. At extreme
+/// zooms (>10^50), order 16-32 can skip millions of iterations.
+///
+/// # Arguments
+/// * `pixel_size` - Size of a pixel in complex plane coordinates
+/// * `iteration_max` - Maximum iteration count
+/// * `user_order` - User-specified series order (0 = auto)
+///
+/// # Returns
+/// The recommended series order (4..=MAX_SERIES_ORDER)
+pub fn compute_adaptive_series_order(pixel_size: f64, iteration_max: u32, user_order: u8) -> usize {
+    // If user specified a non-zero order, respect it
+    if user_order > 0 {
+        return (user_order as usize).clamp(4, MAX_SERIES_ORDER);
+    }
+
+    if !pixel_size.is_finite() || pixel_size <= 0.0 {
+        return 4;
+    }
+
+    // Compute zoom level: log10(4 / pixel_size)
+    let zoom_level = (4.0 / pixel_size).log10().max(0.0);
+
+    // Adaptive order based on zoom depth (inspired by rust-fractal-core):
+    // - Shallow zoom (<10^8): order 4 (minimal overhead, series not very useful)
+    // - Medium zoom (10^8 - 10^15): order 6-8 (series starts being useful)
+    // - Deep zoom (10^15 - 10^30): order 10-16 (series critical for performance)
+    // - Ultra-deep zoom (>10^30): order 16-24 (maximum series benefit)
+    let base_order = match zoom_level as u32 {
+        0..=7 => 4,
+        8..=14 => 6,
+        15..=20 => 8,
+        21..=30 => 12,
+        31..=50 => 16,
+        _ => 24,
+    };
+
+    // Also consider iteration count: higher iterations benefit from higher order
+    let iter_bonus = if iteration_max > 100_000 {
+        4
+    } else if iteration_max > 10_000 {
+        2
+    } else {
+        0
+    };
+
+    (base_order + iter_bonus).clamp(4, MAX_SERIES_ORDER)
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct SeriesConfig {
     pub order: u8,
@@ -1021,5 +1078,33 @@ mod tests {
         assert!(suggest_adjusted_iterations(500, 1000) >= 1500);
         // Already sufficient
         assert_eq!(suggest_adjusted_iterations(5000, 200), 5000);
+    }
+
+    #[test]
+    fn adaptive_series_order_shallow_zoom() {
+        // Shallow zoom (pixel_size = 1e-3, ~10^3 zoom): should use order 4
+        let order = compute_adaptive_series_order(1e-3, 1000, 0);
+        assert_eq!(order, 4);
+    }
+
+    #[test]
+    fn adaptive_series_order_deep_zoom() {
+        // Deep zoom (pixel_size = 1e-20, ~10^20 zoom): should use higher order
+        let order = compute_adaptive_series_order(1e-20, 10000, 0);
+        assert!(order >= 8, "Expected order >= 8 for deep zoom, got {}", order);
+    }
+
+    #[test]
+    fn adaptive_series_order_ultra_deep_zoom() {
+        // Ultra-deep zoom (pixel_size = 1e-40, ~10^40 zoom): should use high order
+        let order = compute_adaptive_series_order(1e-40, 100000, 0);
+        assert!(order >= 16, "Expected order >= 16 for ultra-deep zoom, got {}", order);
+    }
+
+    #[test]
+    fn adaptive_series_order_respects_user() {
+        // User specified order 6: should respect it
+        let order = compute_adaptive_series_order(1e-20, 10000, 6);
+        assert_eq!(order, 6);
     }
 }
