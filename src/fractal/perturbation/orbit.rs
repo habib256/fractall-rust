@@ -946,7 +946,7 @@ pub fn compute_reference_orbit(
         }
     }
 
-    if detected_period > 0 {
+    if detected_period > 0 && crate::fractal::perturbation::perf_enabled() {
         eprintln!("[PERIOD] Detected period {} at iteration {} (orbit len={}). Center is interior.",
             detected_period, z_ref_f64.len(), z_ref_f64.len());
     }
