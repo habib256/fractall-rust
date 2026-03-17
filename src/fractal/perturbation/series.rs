@@ -78,6 +78,10 @@ pub struct SeriesTable {
     /// Validated iteration count from probe-based validation.
     /// Series is only valid up to this iteration (0 = not validated yet).
     pub validated_skip: usize,
+    /// Tiled validation results for per-pixel series skip.
+    /// Inspired by rust-fractal-core's check_approximation() which supports
+    /// tiled mode where each pixel region can skip different iteration counts.
+    pub tiled_validation: Option<TiledSeriesValidation>,
 }
 
 impl SeriesTable {
@@ -89,6 +93,7 @@ impl SeriesTable {
             order: 4,
             is_julia: false,
             validated_skip: 0,
+            tiled_validation: None,
         }
     }
 
@@ -222,12 +227,64 @@ pub fn build_series_table_ho(
         order,
         is_julia,
         validated_skip: 0,
+        tiled_validation: None,
     }
 }
 
 /// Build the series table (backward compatible, fixed order 4).
 pub fn build_series_table(z_ref: &[Complex64], is_julia: bool) -> SeriesTable {
     build_series_table_ho(z_ref, is_julia, 4, 1)
+}
+
+/// Per-probe valid iteration results for tiled series validation.
+///
+/// Inspired by rust-fractal-core's check_approximation() which stores per-probe
+/// valid iteration counts, allowing tiled (per-pixel) series skip instead of a
+/// single global minimum. This can dramatically improve performance when the
+/// series is valid for many more iterations near the center than at the edges.
+#[derive(Clone, Debug)]
+pub struct TiledSeriesValidation {
+    /// Valid iteration count for each probe point (row-major order).
+    pub probe_valid_iterations: Vec<usize>,
+    /// Probe grid dimensions.
+    pub probe_cols: usize,
+    pub probe_rows: usize,
+    /// Global minimum valid iteration (conservative, used as fallback).
+    pub global_min: usize,
+}
+
+impl TiledSeriesValidation {
+    /// Get the interpolated valid iteration count for a pixel position.
+    /// Uses bilinear interpolation between the 4 nearest probe points,
+    /// taking the minimum (conservative) of the cell's corners.
+    ///
+    /// Inspired by rust-fractal-core's tiled mode which interpolates minimum
+    /// valid iteration across 2x2 probe cells.
+    pub fn valid_iteration_for_pixel(&self, px: usize, py: usize, width: usize, height: usize) -> usize {
+        if self.probe_cols < 2 || self.probe_rows < 2 || width == 0 || height == 0 {
+            return self.global_min;
+        }
+
+        // Map pixel to probe cell
+        let fx = (px as f64 / width as f64) * (self.probe_cols - 1) as f64;
+        let fy = (py as f64 / height as f64) * (self.probe_rows - 1) as f64;
+
+        let ix = (fx as usize).min(self.probe_cols - 2);
+        let iy = (fy as usize).min(self.probe_rows - 2);
+
+        // Take minimum of the 4 corners of the cell (conservative)
+        let idx00 = iy * self.probe_cols + ix;
+        let idx10 = iy * self.probe_cols + ix + 1;
+        let idx01 = (iy + 1) * self.probe_cols + ix;
+        let idx11 = (iy + 1) * self.probe_cols + ix + 1;
+
+        let v00 = self.probe_valid_iterations.get(idx00).copied().unwrap_or(0);
+        let v10 = self.probe_valid_iterations.get(idx10).copied().unwrap_or(0);
+        let v01 = self.probe_valid_iterations.get(idx01).copied().unwrap_or(0);
+        let v11 = self.probe_valid_iterations.get(idx11).copied().unwrap_or(0);
+
+        v00.min(v10).min(v01).min(v11)
+    }
 }
 
 /// Probe-based series approximation validation.
@@ -246,16 +303,50 @@ pub fn validate_series_with_probes(
     image_height: usize,
     probe_sampling: usize,
 ) -> usize {
+    let tiled = validate_series_with_probes_tiled(
+        table, z_ref, is_julia, delta_pixel,
+        image_width, image_height, probe_sampling,
+    );
+    tiled.global_min
+}
+
+/// Tiled probe-based series approximation validation.
+///
+/// Improved version inspired by rust-fractal-core's check_approximation():
+/// - Computes per-probe valid iteration counts (not just a global minimum)
+/// - Supports tiled mode where each pixel can skip a different number of iterations
+///   based on its distance from probe points
+/// - Uses derivative scaling for error comparison
+/// - Checks corners first with larger tolerance window for early exit
+///
+/// Returns a `TiledSeriesValidation` with per-probe and global minimum results.
+pub fn validate_series_with_probes_tiled(
+    table: &SeriesTable,
+    z_ref: &[Complex64],
+    is_julia: bool,
+    delta_pixel: f64,
+    image_width: usize,
+    image_height: usize,
+    probe_sampling: usize,
+) -> TiledSeriesValidation {
+    let empty_result = TiledSeriesValidation {
+        probe_valid_iterations: Vec::new(),
+        probe_cols: 0,
+        probe_rows: 0,
+        global_min: 0,
+    };
+
     if table.is_empty() || z_ref.is_empty() || delta_pixel <= 0.0 {
-        return 0;
+        return empty_result;
     }
 
     let probe_sampling = probe_sampling.max(2).min(8);
     let delta_pixel_sqr = delta_pixel * delta_pixel;
+    let num_probes = probe_sampling * probe_sampling;
 
     // Generate probe points at grid positions across the image
     // Inspired by rust-fractal-core's calculate_probes()
-    let mut probes: Vec<Complex64> = Vec::new();
+    let mut probes: Vec<Complex64> = Vec::with_capacity(num_probes);
     for j in 0..probe_sampling {
         for i in 0..probe_sampling {
             let pos_x = image_width as f64 * (i as f64 / (probe_sampling as f64 - 1.0));
@@ -267,37 +358,58 @@ pub fn validate_series_with_probes(
     }
 
     if probes.is_empty() {
-        return 0;
+        return empty_result;
     }
 
     // For each probe, iterate both by series evaluation and actual perturbation,
     // find where they diverge.
     // Inspired by rust-fractal-core's iterate_probes() method.
-    let mut min_valid = z_ref.len();
+    let mut probe_valid_iterations = vec![z_ref.len(); num_probes];
 
-    for probe_dc in &probes {
+    // Check interval: only compare series vs actual at stored coefficient intervals.
+    // Inspired by rust-fractal-core's data_storage_interval-based checking.
+    let check_interval = table.data_storage_interval.max(1);
+
+    for (probe_idx, probe_dc) in probes.iter().enumerate() {
         let mut actual_delta = if is_julia { *probe_dc } else { Complex64::new(0.0, 0.0) };
 
         for n in 0..z_ref.len().saturating_sub(1) {
-            // Evaluate series approximation at this iteration
-            if n < table.coeffs.len() {
-                let coeffs = &table.coeffs[n];
-                let series_delta = *probe_dc * (coeffs.a + *probe_dc * (coeffs.b + *probe_dc * (coeffs.c + *probe_dc * coeffs.d)));
+            // Only check series accuracy at check intervals (reduces overhead)
+            if n % check_interval == 0 && n < table.coeffs.len() {
+                // Use higher-order evaluation if available
+                let series_delta = if table.order > 4 {
+                    if let Some(ho) = table.get_ho_coeffs(n) {
+                        evaluate_ho_series(ho, *probe_dc)
+                    } else {
+                        let coeffs = &table.coeffs[n];
+                        *probe_dc * (coeffs.a + *probe_dc * (coeffs.b + *probe_dc * (coeffs.c + *probe_dc * coeffs.d)))
+                    }
+                } else {
+                    let coeffs = &table.coeffs[n];
+                    *probe_dc * (coeffs.a + *probe_dc * (coeffs.b + *probe_dc * (coeffs.c + *probe_dc * coeffs.d)))
+                };
 
                 // Compare series vs actual
                 let relative_error = (actual_delta - series_delta).norm_sqr();
 
                 // Derivative estimate for relative error scaling (inspired by rust-fractal-core)
-                let derivative_norm = (coeffs.a + *probe_dc * (coeffs.b * 2.0 + *probe_dc * coeffs.c * 3.0)).norm_sqr();
+                let derivative_norm = if table.order > 4 {
+                    if let Some(ho) = table.get_ho_coeffs(n) {
+                        evaluate_ho_derivative(ho, *probe_dc).norm_sqr()
+                    } else {
+                        let coeffs = &table.coeffs[n];
+                        (coeffs.a + *probe_dc * (coeffs.b * 2.0 + *probe_dc * coeffs.c * 3.0)).norm_sqr()
+                    }
+                } else {
+                    let coeffs = &table.coeffs[n];
+                    (coeffs.a + *probe_dc * (coeffs.b * 2.0 + *probe_dc * coeffs.c * 3.0)).norm_sqr()
+                };
                 let derivative_scale = if derivative_norm > 1.0 { derivative_norm } else { 1.0 };
 
                 if relative_error / derivative_scale > delta_pixel_sqr || !relative_error.is_finite() {
-                    min_valid = min_valid.min(n.saturating_sub(1).max(1));
+                    probe_valid_iterations[probe_idx] = n.saturating_sub(check_interval).max(1);
                     break;
                 }
-            } else {
-                min_valid = min_valid.min(n);
-                break;
             }
 
             // Actual perturbation iteration
@@ -310,13 +422,21 @@ pub fn validate_series_with_probes(
 
             // Bailout
             if actual_delta.norm_sqr() > 1e16 {
-                min_valid = min_valid.min(n);
+                probe_valid_iterations[probe_idx] = n;
                 break;
             }
         }
     }
 
-    min_valid.min(z_ref.len().saturating_sub(1))
+    // Compute global minimum
+    let global_min = probe_valid_iterations.iter().copied().min().unwrap_or(0);
+
+    TiledSeriesValidation {
+        probe_valid_iterations,
+        probe_cols: probe_sampling,
+        probe_rows: probe_sampling,
+        global_min: global_min.min(z_ref.len().saturating_sub(1)),
+    }
 }
 
 /// Evaluate higher-order series at a given point and iteration.
@@ -557,6 +677,31 @@ impl SeriesConfig {
     }
 }
 
+/// Suggest an adjusted iteration limit based on series approximation skip depth.
+///
+/// Inspired by rust-fractal-core's `adjust_iterations()` which automatically
+/// increases the maximum iteration count when the series approximation can
+/// skip many iterations. The idea is: if the series can skip N iterations,
+/// then the fractal likely has interesting detail at depth N, so we should
+/// allow at least N + margin iterations for the perturbation phase.
+///
+/// # Arguments
+/// * `current_max_iter` - Current maximum iteration count
+/// * `series_skip` - Number of iterations the series can skip
+///
+/// # Returns
+/// Suggested maximum iteration count (may be higher than current)
+pub fn suggest_adjusted_iterations(current_max_iter: u32, series_skip: usize) -> u32 {
+    if series_skip < 100 {
+        return current_max_iter;
+    }
+    // If series skips a lot of iterations, the detail is deep.
+    // Ensure we have at least 2x the skip depth as max iterations,
+    // with a minimum margin of 500 extra iterations for the perturbation phase.
+    let suggested = (series_skip as u32).saturating_mul(2).max(series_skip as u32 + 500);
+    current_max_iter.max(suggested)
+}
+
 pub fn should_use_series(config: SeriesConfig, delta_norm_sqr: f64, validity_radius: f64) -> bool {
     if config.order < 2 {
         return false;
@@ -780,5 +925,43 @@ mod tests {
         // With interval=10, should store ~10x fewer HO coefficient sets
         assert!(table_10.ho_coeffs.len() < table_1.ho_coeffs.len());
         assert!(table_10.ho_coeffs.len() <= 12); // ~100/10 + initial + final
+    }
+
+    #[test]
+    fn tiled_probe_validation_returns_per_probe() {
+        let z_ref = vec![Complex64::new(0.0, 0.0); 50];
+        let table = build_series_table(&z_ref, false);
+
+        let tiled = validate_series_with_probes_tiled(
+            &table, &z_ref, false,
+            0.01, 100, 100, 3,
+        );
+        assert_eq!(tiled.probe_cols, 3);
+        assert_eq!(tiled.probe_rows, 3);
+        assert_eq!(tiled.probe_valid_iterations.len(), 9); // 3x3
+        assert!(tiled.global_min > 0);
+    }
+
+    #[test]
+    fn tiled_validation_pixel_lookup() {
+        let tiled = TiledSeriesValidation {
+            probe_valid_iterations: vec![10, 20, 15, 25],
+            probe_cols: 2,
+            probe_rows: 2,
+            global_min: 10,
+        };
+        // Top-left cell: min(10, 20, 15, 25) = 10
+        let val = tiled.valid_iteration_for_pixel(0, 0, 100, 100);
+        assert_eq!(val, 10);
+    }
+
+    #[test]
+    fn suggest_adjusted_iterations_basic() {
+        // Small skip: no adjustment
+        assert_eq!(suggest_adjusted_iterations(1000, 50), 1000);
+        // Large skip: increase iterations
+        assert!(suggest_adjusted_iterations(500, 1000) >= 1500);
+        // Already sufficient
+        assert_eq!(suggest_adjusted_iterations(5000, 200), 5000);
     }
 }

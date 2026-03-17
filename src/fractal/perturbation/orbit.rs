@@ -9,7 +9,7 @@ use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::gmp::{complex_to_complex64, pow_f64_mpc};
 use crate::fractal::perturbation::bla::{BlaTable, build_bla_table};
 use crate::fractal::perturbation::types::ComplexExp;
-use crate::fractal::perturbation::series::{SeriesTable, build_series_table, build_series_table_ho, validate_series_with_probes};
+use crate::fractal::perturbation::series::{SeriesTable, build_series_table, build_series_table_ho, validate_series_with_probes, validate_series_with_probes_tiled};
 
 /// Hybrid BLA: Multiple references for different phases of a periodic loop.
 /// For a hybrid loop with multiple phases, you need multiple references, one starting at
@@ -543,11 +543,14 @@ pub fn compute_reference_orbit_cached(
         let interval = if orbit.z_ref_f64.len() > 100_000 { 10 } else { 1 };
         let mut table = build_series_table_ho(&orbit.z_ref_f64, is_julia, series_order, interval);
 
-        // Probe-based validation (inspired by rust-fractal-core's check_approximation)
+        // Tiled probe-based validation (improved, inspired by rust-fractal-core's
+        // check_approximation() which supports per-region series skip).
+        // Uses a probe grid to determine per-pixel valid iteration counts instead
+        // of a single global minimum, allowing more aggressive skipping near center.
         let pixel_size = (params.span_x.abs() / params.width.max(1) as f64)
             .max(params.span_y.abs() / params.height.max(1) as f64);
         if pixel_size > 0.0 && pixel_size.is_finite() {
-            let validated = validate_series_with_probes(
+            let tiled = validate_series_with_probes_tiled(
                 &table,
                 &orbit.z_ref_f64,
                 is_julia,
@@ -556,7 +559,8 @@ pub fn compute_reference_orbit_cached(
                 params.height as usize,
                 4, // probe_sampling: 4x4 grid = 16 probes
             );
-            table.validated_skip = validated;
+            table.validated_skip = tiled.global_min;
+            table.tiled_validation = Some(tiled);
         }
 
         Some(table)

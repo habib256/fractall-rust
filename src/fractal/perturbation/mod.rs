@@ -106,7 +106,7 @@ pub mod distance;
 pub mod interior;
 
 pub use orbit::{ReferenceOrbitCache, HybridBlaReferences};
-pub use glitch::{detect_glitch_clusters, select_secondary_reference_points};
+pub use glitch::{detect_glitch_clusters, select_secondary_reference_points, segregate_glitches_by_iteration};
 
 fn env_flag(name: &str) -> bool {
     match std::env::var(name) {
@@ -635,8 +635,14 @@ pub fn render_perturbation_with_cache(
     // Clone cache for use in parallel iteration
     let cache_ref = Arc::clone(&cache);
 
+    // Jitter scale for sub-pixel anti-aliasing (inspired by rust-fractal-core).
+    // When enabled, each pixel gets a small random offset to reduce Moiré patterns.
+    let jitter_scale = params.jitter_scale;
+    let use_jitter = jitter_scale > 0.0 && jitter_scale.is_finite();
+
     // Pré-calcul dc pour amortir le coût par pixel (surtout utile sur petites images).
     // Stocker directement en FloatExp pour éviter les conversions via Complex64.
+    // When jitter is disabled, pre-compute; when enabled, compute per-pixel with jitter.
     let dc_re_fexp: Vec<FloatExp> = (0..width)
         .map(|i| FloatExp::from_f64(((i as f64 + 0.5) * inv_width - 0.5) * x_range))
         .collect();
@@ -676,11 +682,28 @@ pub fn render_perturbation_with_cache(
                     }
                 }
 
-                let dc = ComplexExp {
-                    re: dc_re_fexp[i],
-                    im: dc_im,
+                // Apply jitter if enabled (inspired by rust-fractal-core).
+                // Uses a simple hash-based pseudo-random offset per pixel to
+                // reduce aliasing artifacts at deep zooms.
+                let dc = if use_jitter {
+                    // Simple hash-based jitter: mix pixel coordinates to get
+                    // pseudo-random offsets in [-0.5, 0.5) per pixel
+                    let hash = ((i as u64).wrapping_mul(0x517cc1b727220a95))
+                        .wrapping_add((j as u64).wrapping_mul(0x6c62272e07bb0142))
+                        .wrapping_add(0x9e3779b97f4a7c15);
+                    let jx = ((hash & 0xFFFF) as f64 / 65536.0 - 0.5) * jitter_scale;
+                    let jy = (((hash >> 16) & 0xFFFF) as f64 / 65536.0 - 0.5) * jitter_scale;
+                    ComplexExp {
+                        re: FloatExp::from_f64(((i as f64 + 0.5 + jx) * inv_width - 0.5) * x_range),
+                        im: FloatExp::from_f64(((j as f64 + 0.5 + jy) * inv_height - 0.5) * y_range),
+                    }
+                } else {
+                    ComplexExp {
+                        re: dc_re_fexp[i],
+                        im: dc_im,
+                    }
                 };
-                
+
                 // Initialisation du delta selon le type de fractale:
                 // - Mandelbrot: z_0 = 0, donc delta0 = 0, et c = dc dans la formule
                 // - Julia: z_0 = c (le point C du pixel), donc delta0 = dc, et pas de terme c
@@ -867,6 +890,73 @@ pub fn render_perturbation_with_cache(
                             iterations[idx] = result.iteration;
                             zs[idx] = result.z_final;
                             glitch_mask[idx] = false;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Second pass: iteration-based glitch segregation (inspired by rust-fractal-core).
+        // Groups remaining glitched pixels by their iteration depth and creates
+        // dedicated references using the pixel with smallest |z| as center.
+        // This is more effective than spatial clustering for glitches that occur at
+        // similar iteration depths but are spatially dispersed.
+        if !small_image && params.max_secondary_refs > 0 {
+            let remaining_glitches: usize = glitch_mask.iter().filter(|v| **v).count();
+            let remaining_ratio = remaining_glitches as f64 / (width * height) as f64;
+            // Only apply iteration-based segregation if >1% pixels still glitched
+            if remaining_ratio > 0.01 {
+                let iter_clusters = segregate_glitches_by_iteration(
+                    &glitch_mask,
+                    &iterations,
+                    &zs,
+                    params.width,
+                    params.height,
+                    params,
+                    params.min_glitch_cluster_size as usize,
+                );
+
+                let max_iter_refs = (params.max_secondary_refs as usize).min(iter_clusters.len());
+                for cluster in iter_clusters.iter().take(max_iter_refs) {
+                    let mut sec_params = orbit_params.clone();
+                    sec_params.center_x = cluster.center_x;
+                    sec_params.center_y = cluster.center_y;
+
+                    if let Some((sec_orbit, _, _)) = compute_reference_orbit(&sec_params, Some(cancel.as_ref())) {
+                        let sec_bla = bla::build_bla_table(&sec_orbit.z_ref_f64, &sec_params, sec_orbit.cref);
+
+                        for &idx in &cluster.pixel_indices {
+                            let px = idx % width;
+                            let py = idx / width;
+
+                            let dc_re = ((px as f64 + 0.5) * inv_width - 0.5) * x_range
+                                - (cluster.center_x - params.center_x);
+                            let dc_im = ((py as f64 + 0.5) * inv_height - 0.5) * y_range
+                                - (cluster.center_y - params.center_y);
+
+                            let dc = ComplexExp::from_complex64(Complex64::new(dc_re, dc_im));
+                            let (delta0, dc_term) = if params.fractal_type == FractalType::Julia {
+                                (dc, ComplexExp::zero())
+                            } else {
+                                (ComplexExp::zero(), dc)
+                            };
+
+                            let result = iterate_pixel(
+                                params,
+                                &sec_orbit,
+                                &sec_bla,
+                                None,
+                                delta0,
+                                dc_term,
+                                None,
+                                None,
+                            );
+
+                            if !result.glitched && !result.suspect {
+                                iterations[idx] = result.iteration;
+                                zs[idx] = result.z_final;
+                                glitch_mask[idx] = false;
+                            }
                         }
                     }
                 }

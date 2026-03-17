@@ -938,6 +938,12 @@ pub fn iterate_pixel(
                 };
                 n += 1;
             }
+            // Periodic reduce() to re-normalize mantissa and prevent gradual precision
+            // loss during long iteration sequences. Inspired by rust-fractal-core which
+            // calls reduce() every ~250 iterations to keep mantissas well-conditioned.
+            if iters_ptb % 250 == 0 {
+                delta.reduce();
+            }
             // Update caches after single-step perturbation
             delta_approx_cached = delta.to_complex64_approx();
             delta_norm_sqr_cached = delta.norm_sqr_approx();
