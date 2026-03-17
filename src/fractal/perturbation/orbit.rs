@@ -264,23 +264,24 @@ impl ReferenceOrbit {
             z = match params.fractal_type {
                 FractalType::Mandelbrot => {
                     let mut z_sq = z.clone();
-                    z_sq *= &z.clone();
+                    z_sq *= &z;
                     z_sq += &new_c;
                     z_sq
                 }
                 FractalType::Julia => {
                     let mut z_sq = z.clone();
-                    z_sq *= &z.clone();
+                    z_sq *= &z;
                     z_sq += &seed;
                     z_sq
                 }
                 FractalType::BurningShip => {
                     let re_abs = z.real().clone().abs();
                     let im_abs = z.imag().clone().abs();
-                    let mut z_abs = Complex::with_val(prec, (re_abs, im_abs));
-                    z_abs *= z_abs.clone();
-                    z_abs += &new_c;
-                    z_abs
+                    let z_abs_val = Complex::with_val(prec, (re_abs, im_abs));
+                    let mut z_sq = z_abs_val.clone();
+                    z_sq *= &z_abs_val;
+                    z_sq += &new_c;
+                    z_sq
                 }
                 FractalType::Tricorn => {
                     let z_conj = z.clone().conj();
@@ -767,22 +768,6 @@ pub fn compute_reference_orbit(
         Float::with_val(prec, params.center_y)
     };
     
-    // Log de diagnostic pour zoom profond (une seule fois)
-    let pixel_size = params.span_x.abs().max(params.span_y.abs()) / params.width as f64;
-    if pixel_size < 1e-15 {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static LAST_LOGGED_ORBIT: AtomicU64 = AtomicU64::new(0);
-        let log_key = (prec as u64) << 32 | (params.center_x_hp.is_some() as u64);
-        let last_logged = LAST_LOGGED_ORBIT.load(Ordering::Relaxed);
-        if log_key != last_logged {
-            LAST_LOGGED_ORBIT.store(log_key, Ordering::Relaxed);
-            eprintln!("[PRECISION DEBUG] compute_reference_orbit: prec={}, using_hp={}, center_x f64={:.20e}, center_y f64={:.20e}",
-                prec, params.center_x_hp.is_some(), params.center_x, params.center_y);
-            eprintln!("[PRECISION DEBUG] center_x_gmp={}, center_y_gmp={}",
-                center_x_gmp.to_string_radix(10, Some(30)), center_y_gmp.to_string_radix(10, Some(30)));
-        }
-    }
-
     // Nucleus optimization (inspired by rust-fractal-core's root_finding):
     // Try to snap the reference point to the nearest Mandelbrot nucleus.
     // This makes the reference orbit exactly periodic, reducing glitches
@@ -928,10 +913,11 @@ pub fn compute_reference_orbit(
                 let im_prec = Float::with_val(prec, z.imag());
                 let re_abs = re_prec.abs();
                 let im_abs = im_prec.abs();
-                let mut z_abs = Complex::with_val(prec, (re_abs, im_abs));
-                z_abs *= z_abs.clone();
-                z_abs += &cref;
-                z_abs
+                let z_abs_val = Complex::with_val(prec, (re_abs, im_abs));
+                let mut z_sq = z_abs_val.clone();
+                z_sq *= &z_abs_val;
+                z_sq += &cref;
+                z_sq
             }
             FractalType::Multibrot => {
                 let mut z_pow = pow_f64_mpc(&z, params.multibrot_power, prec);

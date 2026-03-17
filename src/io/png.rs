@@ -6,7 +6,7 @@ use num_complex::Complex64;
 use png::{Decoder, Encoder};
 use rayon::prelude::*;
 
-use crate::color::{color_for_pixel, color_for_nebulabrot_pixel, color_for_buddhabrot_pixel};
+use crate::color::{color_for_pixel_with_lut, color_for_nebulabrot_pixel, color_for_buddhabrot_pixel, PaletteLut};
 use crate::fractal::{FractalParams, FractalType};
 
 /// Clé du chunk tEXt pour les métadonnées fractales.
@@ -36,6 +36,11 @@ pub fn save_png_with_metadata(
 
     let is_nebulabrot = params.fractal_type == FractalType::Nebulabrot;
     let is_buddhabrot = params.fractal_type == FractalType::Buddhabrot;
+    let lut = if !is_nebulabrot && !is_buddhabrot {
+        Some(PaletteLut::new(params.color_mode, params.color_space))
+    } else {
+        None
+    };
 
     // Parallélisation de la colorisation par lignes
     let buffer: Vec<u8> = (0..height as usize)
@@ -52,7 +57,7 @@ pub fn save_png_with_metadata(
                     } else if is_buddhabrot {
                         color_for_buddhabrot_pixel(z, params.color_mode, params.color_repeat)
                     } else {
-                        color_for_pixel(
+                        color_for_pixel_with_lut(
                             iter,
                             z,
                             params.iteration_max,
@@ -63,6 +68,7 @@ pub fn save_png_with_metadata(
                             None,
                             None,
                             false,
+                            lut.as_ref(),
                         )
                     };
 

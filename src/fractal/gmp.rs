@@ -234,14 +234,13 @@ pub fn complex_to_complex64(value: &Complex) -> Complex64 {
     Complex64::new(re_finite, im_finite)
 }
 
-pub fn complex_norm_sqr(value: &Complex, prec: u32) -> Float {
+pub fn complex_norm_sqr(value: &Complex, _prec: u32) -> Float {
     let mut re2 = value.real().clone();
     re2 *= value.real();
     let mut im2 = value.imag().clone();
     im2 *= value.imag();
-    let mut sum = Float::with_val(prec, re2);
-    sum += im2;
-    sum
+    re2 += im2;
+    re2
 }
 
 fn pow_u32_mpc(value: &Complex, mut exp: u32, prec: u32) -> Complex {

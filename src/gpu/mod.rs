@@ -94,9 +94,6 @@ impl GpuRenderer {
             pollster::block_on(async {
             // Sélectionner les backends appropriés selon l'OS
             let backends = select_backends_for_platform();
-            let os_name = std::env::consts::OS;
-            eprintln!("OS détecté: {}, Backends wgpu sélectionnés: {:?}", os_name, backends);
-            
             let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
                 backends,
                 ..Default::default()
@@ -113,11 +110,7 @@ impl GpuRenderer {
             let info = adapter.get_info();
             // Sur Apple Silicon, info.name contient le CPU/GPU unifié (ex: "Apple M1")
             // et info.backend contient le backend (Metal)
-            if !info.driver.is_empty() {
-                eprintln!("GPU détecté: {} (Backend: {:?}), Driver: {}", info.name, info.backend, info.driver);
-            } else {
-                eprintln!("CPU/GPU détecté: {} (Backend: {:?})", info.name, info.backend);
-            }
+            eprintln!("[GPU] {} ({:?})", info.name, info.backend);
 
             // Ne plus utiliser f64 en mode GPU, toujours utiliser f32
             let supports_f64 = false;

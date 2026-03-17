@@ -8,7 +8,7 @@ use image::RgbImage;
 use num_complex::Complex64;
 use rug::Float;
 
-use crate::color::{color_for_pixel, color_for_nebulabrot_pixel, color_for_buddhabrot_pixel, generate_palette_preview};
+use crate::color::{color_for_pixel_with_lut, color_for_nebulabrot_pixel, color_for_buddhabrot_pixel, generate_palette_preview, PaletteLut};
 use crate::fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalParams, FractalType, LyapunovPreset, OutColoringMode, PlaneTransform};
 use crate::fractal::perturbation::ReferenceOrbitCache;
 use crate::render::render_escape_time_cancellable_with_reuse;
@@ -42,6 +42,11 @@ fn colorize_buffer(
     let out_mode = params.out_coloring_mode;
     let color_space = params.color_space;
     let interior_flag_encoded = params.enable_interior_detection;
+    let lut = if !is_nebulabrot && !is_buddhabrot {
+        Some(PaletteLut::new(palette_idx, color_space))
+    } else {
+        None
+    };
 
     (0..height as usize)
         .into_par_iter()
@@ -59,7 +64,7 @@ fn colorize_buffer(
                     } else if is_buddhabrot {
                         color_for_buddhabrot_pixel(z, palette_idx, color_rep)
                     } else {
-                        color_for_pixel(
+                        color_for_pixel_with_lut(
                             iter,
                             z,
                             iter_max,
@@ -70,6 +75,7 @@ fn colorize_buffer(
                             orbit,
                             distance,
                             interior_flag_encoded,
+                            lut.as_ref(),
                         )
                     };
 
@@ -530,7 +536,6 @@ impl FractallApp {
                 self.orbit_cache = None;
                 self.start_render();
 
-                println!("État restauré depuis: {}", path.display());
             }
             Err(e) => {
                 eprintln!("Erreur chargement PNG: {}", e);

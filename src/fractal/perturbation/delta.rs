@@ -439,6 +439,7 @@ pub fn should_rebase(z_curr_norm_sqr: f64, delta_norm_sqr: f64, z_ref_norm_sqr: 
 ///
 /// This avoids catastrophic cancellation when computing `|a + b| - |a|`
 /// for values where `|b| << |a|`.
+#[inline]
 pub fn diffabs(c: f64, d: f64) -> f64 {
     let cd = c + d;
     let c2d = 2.0 * c + d;
@@ -672,9 +673,9 @@ fn fast_tricorn_batch_f64(
                 break;
             }
             let z_ref = orbit_f64[idx];
-            let delta_f64 = delta.to_complex64_approx();
-            let z_curr_re = z_ref.re + delta_f64.re;
-            let z_curr_im = z_ref.im + delta_f64.im;
+            let d_f64 = delta.to_complex64_approx();
+            let z_curr_re = z_ref.re + d_f64.re;
+            let z_curr_im = z_ref.im + d_f64.im;
 
             let z_next_re = z_curr_re * z_curr_re - z_curr_im * z_curr_im + c_pixel.re;
             let z_next_im = -2.0 * z_curr_re * z_curr_im + c_pixel.im;
@@ -1883,104 +1884,72 @@ pub fn iterate_pixel_gmp(
         // their type-specific handling).
         if is_burning_ship {
             // Burning Ship: z' = (|Re(z)|, |Im(z)|)² + c
-            // For deep zooms, compute full orbit: z_curr = z_ref + delta
-            // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision prec
-            let z_ref_prec_bs = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
-            let delta_prec_bs = Complex::with_val(prec, (delta.real(), delta.imag()));
-            let mut z_curr = z_ref_prec_bs;
-            z_curr += &delta_prec_bs;
-            
+            // z_curr = z_ref + delta
+            let mut z_curr = Complex::with_val(prec, z_ref);
+            z_curr += &delta;
+
             // Apply abs() to real and imaginary parts
             let re_abs = z_curr.real().clone().abs();
             let im_abs = z_curr.imag().clone().abs();
-            let mut z_abs = Complex::with_val(prec, (re_abs, im_abs));
-            z_abs *= z_abs.clone();
-            
+            let z_abs_val = Complex::with_val(prec, (re_abs, im_abs));
+            let mut z_next = z_abs_val.clone();
+            z_next *= &z_abs_val;
+
             // Add cref + dc
-            // IMPORTANT: S'assurer que toutes les valeurs utilisent la même précision
-            let mut z_next = Complex::with_val(prec, (z_abs.real(), z_abs.imag()));
-            let cref_prec = Complex::with_val(prec, (ref_orbit.cref_gmp.real(), ref_orbit.cref_gmp.imag()));
-            z_next += &cref_prec;
+            z_next += &ref_orbit.cref_gmp;
             if !is_julia {
-                let dc_gmp_prec = Complex::with_val(prec, (dc_gmp.real(), dc_gmp.imag()));
-                z_next += &dc_gmp_prec;
+                z_next += dc_gmp;
             }
-            
+
             // Calculate delta for next iteration: z_next - z_ref_next
             if (n + 1) >= effective_len {
-                // Rebase: delta = z_next, reset n to 0
-                // IMPORTANT: S'assurer que delta utilise la bonne précision
-                delta = Complex::with_val(prec, (z_next.real(), z_next.imag()));
+                delta = z_next;
                 n = 0;
                 continue;
             }
-            
+
             let z_ref_next = match ref_orbit.get_z_ref_gmp(n + 1) {
                 Some(z) => z,
                 None => break,
             };
-            // IMPORTANT: Créer de nouvelles valeurs avec la précision explicite pour la soustraction
-            let z_next_prec = Complex::with_val(prec, (z_next.real(), z_next.imag()));
-            let z_ref_next_prec = Complex::with_val(prec, (z_ref_next.real(), z_ref_next.imag()));
-            delta = z_next_prec - z_ref_next_prec;
+            delta = z_next - Complex::with_val(prec, z_ref_next);
         } else if is_tricorn {
             // Tricorn: z' = conj(z)² + c
-            // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision prec
-            let z_ref_prec_tc = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
-            let delta_prec_tc = Complex::with_val(prec, (delta.real(), delta.imag()));
-            let mut z_curr = z_ref_prec_tc;
-            z_curr += &delta_prec_tc;
-            let z_conj = z_curr.clone().conj();
-            let mut z_temp = Complex::with_val(prec, (z_conj.real(), z_conj.imag()));
+            let mut z_curr = Complex::with_val(prec, z_ref);
+            z_curr += &delta;
+            let z_conj = z_curr.conj();
+            let mut z_temp = z_conj.clone();
             z_temp *= &z_conj;
-            // IMPORTANT: S'assurer que cref_gmp utilise la même précision
-            let cref_prec = Complex::with_val(prec, (ref_orbit.cref_gmp.real(), ref_orbit.cref_gmp.imag()));
-            z_temp += &cref_prec;
+            z_temp += &ref_orbit.cref_gmp;
             if !is_julia {
-                let dc_gmp_prec = Complex::with_val(prec, (dc_gmp.real(), dc_gmp.imag()));
-                z_temp += &dc_gmp_prec;
+                z_temp += dc_gmp;
             }
-            
+
             if (n + 1) >= effective_len {
-                // IMPORTANT: S'assurer que delta utilise la bonne précision
-                delta = Complex::with_val(prec, (z_temp.real(), z_temp.imag()));
+                delta = z_temp;
                 n = 0;
                 continue;
             }
-            
+
             let z_ref_next = match ref_orbit.get_z_ref_gmp(n + 1) {
                 Some(z) => z,
                 None => break,
             };
-            // IMPORTANT: Créer de nouvelles valeurs avec la précision explicite pour la soustraction
-            let z_temp_prec = Complex::with_val(prec, (z_temp.real(), z_temp.imag()));
-            let z_ref_next_prec = Complex::with_val(prec, (z_ref_next.real(), z_ref_next.imag()));
-            delta = z_temp_prec - z_ref_next_prec;
+            delta = z_temp - Complex::with_val(prec, z_ref_next);
         } else {
             // Standard Mandelbrot/Julia: delta_{n+1} = 2·z_ref·delta + delta² + dc
-            //
-            // Optimized GMP path (inspired by rust-fractal-core's reference iteration):
-            // Compute using in-place operations where possible to reduce allocations.
-            // Formula: delta' = 2*z_ref*delta + delta^2 + dc
-            //        = delta * (2*z_ref + delta) + dc
-            // This "Horner form" uses one less multiplication.
-            let delta_prec = Complex::with_val(prec, (delta.real(), delta.imag()));
-            let z_ref_prec = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
+            // Horner form: delta * (2*z_ref + delta) + dc
+            let mut sum = Complex::with_val(prec, z_ref);
+            sum *= 2;
+            sum += &delta;
 
-            // Compute (2*z_ref + delta) in-place
-            let mut sum = z_ref_prec;
-            let two = Float::with_val(prec, 2.0);
-            sum *= &two;
-            sum += &delta_prec;
-
-            // Multiply by delta: delta * (2*z_ref + delta)
-            let mut next_delta = delta_prec;
+            // Multiply by delta in-place
+            let mut next_delta = delta.clone();
             next_delta *= &sum;
 
             // Add dc for Mandelbrot
             if !is_julia {
-                let dc_gmp_prec = Complex::with_val(prec, (dc_gmp.real(), dc_gmp.imag()));
-                next_delta += &dc_gmp_prec;
+                next_delta += dc_gmp;
             }
 
             delta = next_delta;
@@ -2003,10 +1972,8 @@ pub fn iterate_pixel_gmp(
             Some(z) => z,
             None => break,
         };
-        let z_ref_next_prec = Complex::with_val(prec, (z_ref_next.real(), z_ref_next.imag()));
-        let delta_prec = Complex::with_val(prec, (delta.real(), delta.imag()));
-        let mut z_curr = z_ref_next_prec.clone();
-        z_curr += &delta_prec;
+        let mut z_curr = Complex::with_val(prec, z_ref_next);
+        z_curr += &delta;
         let z_curr_norm_sqr = complex_norm_sqr(&z_curr, prec);
 
         if !z_curr.real().is_finite() || !z_curr.imag().is_finite() {
@@ -2037,9 +2004,9 @@ pub fn iterate_pixel_gmp(
         }
 
         // Check for rebasing: when |Z_m + z_n| < |z_n|
-        let delta_norm_sqr = complex_norm_sqr(&delta_prec, prec);
-        if z_curr_norm_sqr > Float::with_val(prec, 0.0)
-            && delta_norm_sqr > Float::with_val(prec, 0.0)
+        let delta_norm_sqr = complex_norm_sqr(&delta, prec);
+        if z_curr_norm_sqr.is_sign_positive()
+            && delta_norm_sqr.is_sign_positive()
             && z_curr_norm_sqr < delta_norm_sqr {
             // Rebasing: replace z_n with Z_m + z_n and reset m to 0
             delta = z_curr;
@@ -2048,7 +2015,7 @@ pub fn iterate_pixel_gmp(
         }
 
         // Check for glitch: delta is too large relative to z_ref at current iteration
-        let z_ref_norm_sqr = complex_norm_sqr(&z_ref_next_prec, prec);
+        let z_ref_norm_sqr = complex_norm_sqr(z_ref_next, prec);
         // Pauldelbrot glitch criterion: |δ|² > G² · max(|Z_ref|², 1e-6)
         let glitch_scale = if z_ref_norm_sqr < min_scale_gmp { min_scale_gmp.clone() } else { z_ref_norm_sqr };
         let mut glitch_threshold = glitch_tolerance_sqr_gmp.clone();

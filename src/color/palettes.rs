@@ -71,6 +71,47 @@ impl PaletteId {
     }
 }
 
+/// Pre-computed palette lookup table for fast per-pixel coloring.
+/// Eliminates expensive HSB/LCH trigonometric conversions by pre-computing
+/// 4096 RGB entries covering the full [0, 1) gradient range.
+pub struct PaletteLut {
+    entries: Vec<(u8, u8, u8)>,
+}
+
+const PALETTE_LUT_SIZE: usize = 4096;
+
+impl PaletteLut {
+    /// Build a LUT for the given palette and color space.
+    pub fn new(palette_index: u8, color_space: ColorSpace) -> Self {
+        let palette = palette_for(PaletteId::from_u8(palette_index));
+        let mut entries = Vec::with_capacity(PALETTE_LUT_SIZE);
+        for i in 0..PALETTE_LUT_SIZE {
+            let t = i as f64 / PALETTE_LUT_SIZE as f64;
+            entries.push(gradient_interpolate_with_space(palette, t, color_space));
+        }
+        Self { entries }
+    }
+
+    /// Look up RGB color for t in [0, 1) with linear interpolation between adjacent entries.
+    #[inline]
+    pub fn lookup(&self, t: f64) -> (u8, u8, u8) {
+        let t_clamped = t.clamp(0.0, 0.999_999);
+        let pos = t_clamped * PALETTE_LUT_SIZE as f64;
+        let idx = pos as usize;
+        let frac = pos - idx as f64;
+
+        let (r0, g0, b0) = self.entries[idx];
+        if frac < 0.001 || idx + 1 >= PALETTE_LUT_SIZE {
+            return (r0, g0, b0);
+        }
+        let (r1, g1, b1) = self.entries[idx + 1];
+        let r = (r0 as f64 + (r1 as f64 - r0 as f64) * frac) as u8;
+        let g = (g0 as f64 + (g1 as f64 - g0 as f64) * frac) as u8;
+        let b = (b0 as f64 + (b1 as f64 - b0 as f64) * frac) as u8;
+        (r, g, b)
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct GradientStop {
     position: f64, // [0.0, 1.0]
@@ -1197,6 +1238,7 @@ fn compute_distance_3d(distance: f64, z: Complex64, iteration: u32, iter_max: u3
 /// Supporte interior detection encodé dans z:
 /// - Si z.im < 0: point intérieur (interior detection flag encoded in sign)
 ///   Les points intérieurs sont coloriés en noir (sauf pour BinaryDecomposition).
+#[allow(dead_code)]
 pub fn color_for_pixel(
     iteration: u32,
     z: Complex64,
@@ -1208,6 +1250,25 @@ pub fn color_for_pixel(
     orbit: Option<&OrbitData>,
     distance: Option<f64>,
     interior_flag_encoded: bool,
+) -> (u8, u8, u8) {
+    color_for_pixel_with_lut(iteration, z, iter_max, palette_index, color_repeat,
+        out_coloring_mode, color_space, orbit, distance, interior_flag_encoded, None)
+}
+
+/// Optimized version of color_for_pixel that uses a pre-computed palette LUT
+/// to avoid expensive HSB/LCH conversions per pixel.
+pub fn color_for_pixel_with_lut(
+    iteration: u32,
+    z: Complex64,
+    iter_max: u32,
+    palette_index: u8,
+    color_repeat: u32,
+    out_coloring_mode: OutColoringMode,
+    color_space: ColorSpace,
+    orbit: Option<&OrbitData>,
+    distance: Option<f64>,
+    interior_flag_encoded: bool,
+    lut: Option<&PaletteLut>,
 ) -> (u8, u8, u8) {
     // Points dans l'ensemble : noir
     if iteration >= iter_max {
@@ -1278,8 +1339,12 @@ pub fn color_for_pixel(
         t_repeat = 1.0 - t_repeat;
     }
 
-    let palette = palette_for(PaletteId::from_u8(palette_index));
-    let (r, g, b) = gradient_interpolate_with_space(palette, t_repeat, color_space);
+    let (r, g, b) = if let Some(lut) = lut {
+        lut.lookup(t_repeat)
+    } else {
+        let palette = palette_for(PaletteId::from_u8(palette_index));
+        gradient_interpolate_with_space(palette, t_repeat, color_space)
+    };
 
     // Binary decomposition: invert color when original z.im < 0
     if out_coloring_mode == OutColoringMode::BinaryDecomposition && original_z_im_negative {

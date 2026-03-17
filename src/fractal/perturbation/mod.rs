@@ -383,19 +383,6 @@ pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32
         needed_bits.clamp(128, 8192)
     };
 
-    // Log de diagnostic pour zoom profond (une seule fois par appel avec un cache statique)
-    if zoom > 1e15 {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static LAST_LOGGED_ZOOM: AtomicU64 = AtomicU64::new(0);
-        let zoom_bits_u64 = (final_bits as u64) << 32 | (zoom.to_bits() >> 32);
-        let last_logged = LAST_LOGGED_ZOOM.load(Ordering::Relaxed);
-        if zoom_bits_u64 != last_logged {
-            LAST_LOGGED_ZOOM.store(zoom_bits_u64, Ordering::Relaxed);
-            eprintln!("[PRECISION DEBUG] zoom={:.2e}, pixel_size={:.2e}, final_bits={}, preset_bits={}, reference_formula={}",
-                zoom, pixel_size, final_bits, params.precision_bits, params.use_reference_precision_formula);
-        }
-    }
-
     final_bits
 }
 
@@ -468,19 +455,6 @@ pub fn compute_dc_gmp(
     
     let half = Float::with_val(prec, 0.5);
     
-    // Log de diagnostic pour quelques pixels (coin supérieur gauche) - une seule fois
-    let pixel_size = (params.span_x.abs() / params.width as f64)
-        .max(params.span_y.abs() / params.height as f64);
-    if pixel_size < 1e-15 && i == 0 && j == 0 {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        static LOGGED_DC: AtomicBool = AtomicBool::new(false);
-        if !LOGGED_DC.swap(true, Ordering::Relaxed) {
-            eprintln!("[PRECISION DEBUG] compute_dc_gmp: pixel (0,0), using_hp={}, span_x f64={:.20e}, span_y f64={:.20e}, x_range_gmp={}, y_range_gmp={}",
-                params.span_x_hp.is_some(), params.span_x, params.span_y,
-                x_range.to_string_radix(10, Some(30)), y_range.to_string_radix(10, Some(30)));
-        }
-    }
-    
     // dc_re = ((i+0.5)/width - 0.5) * x_range  (center of pixel)
     let mut i_float = Float::with_val(prec, i as f64);
     i_float += &half;
@@ -492,16 +466,6 @@ pub fn compute_dc_gmp(
     y_ratio -= &half;
     let x_offset = Float::with_val(prec, &x_ratio * &x_range);
     let y_offset = Float::with_val(prec, &y_ratio * &y_range);
-    
-    // Log de diagnostic pour quelques pixels - une seule fois
-    if pixel_size < 1e-15 && i == 0 && j == 0 {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        static LOGGED_DC_OFFSET: AtomicBool = AtomicBool::new(false);
-        if !LOGGED_DC_OFFSET.swap(true, Ordering::Relaxed) {
-            eprintln!("[PRECISION DEBUG] dc_gmp: x_offset={}, y_offset={}",
-                x_offset.to_string_radix(10, Some(30)), y_offset.to_string_radix(10, Some(30)));
-        }
-    }
     
     // Le point complexe du pixel est center + dc
     // Mais dc seul est juste l'offset, donc on retourne juste l'offset
@@ -1247,20 +1211,6 @@ fn render_perturbation_gmp_path(
             cache.precision_bits, prec, ps);
     }
 
-    // Log de diagnostic - une seule fois
-    let pixel_size = (params.span_x.abs() / params.width as f64)
-        .max(params.span_y.abs() / params.height as f64);
-    if pixel_size < 1e-15 {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        static LAST_LOGGED_GMP_PATH: AtomicU32 = AtomicU32::new(0);
-        let last_logged = LAST_LOGGED_GMP_PATH.load(Ordering::Relaxed);
-        if prec != last_logged {
-            LAST_LOGGED_GMP_PATH.store(prec, Ordering::Relaxed);
-            eprintln!("[PRECISION DEBUG] render_perturbation_gmp_path: prec={}, preset_bits={}, cache.precision_bits={}, cache.center_x_gmp={}, cache.center_y_gmp={}",
-                prec, params.precision_bits, cache.precision_bits, cache.center_x_gmp, cache.center_y_gmp);
-        }
-    }
-    
     // Parse center from GMP strings stored in cache
     let center_x_gmp = match Float::parse(&cache.center_x_gmp) {
         Ok(parse_result) => Float::with_val(prec, parse_result),
@@ -1276,16 +1226,6 @@ fn render_perturbation_gmp_path(
             return None;
         },
     };
-    
-    // Log de diagnostic pour vérifier la conversion String → GMP - une seule fois
-    if pixel_size < 1e-15 {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        static LOGGED_PARSED: AtomicBool = AtomicBool::new(false);
-        if !LOGGED_PARSED.swap(true, Ordering::Relaxed) {
-            eprintln!("[PRECISION DEBUG] Parsed center_x_gmp={}, center_y_gmp={}",
-                center_x_gmp.to_string_radix(10, Some(30)), center_y_gmp.to_string_radix(10, Some(30)));
-        }
-    }
     
     let cancelled = AtomicBool::new(false);
     // Réutiliser les pixels alignés de la passe précédente (même logique que le chemin f64).

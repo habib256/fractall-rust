@@ -440,6 +440,7 @@ fn validate_probe_set(
 ///   delta = dc * (c[1] + dc * (c[2] + dc * (c[3] + ... + dc * c[order])))
 ///
 /// Inspired by rust-fractal-core's evaluate() method.
+#[inline]
 pub fn evaluate_ho_series(
     coefficients: &[Complex64],
     point_delta: Complex64,
@@ -462,6 +463,7 @@ pub fn evaluate_ho_series(
 /// d/d(dc) [sum c[k] * dc^k] = sum k * c[k] * dc^(k-1)
 ///
 /// Inspired by rust-fractal-core's evaluate_derivative() method.
+#[inline]
 pub fn evaluate_ho_derivative(
     coefficients: &[Complex64],
     point_delta: Complex64,

@@ -178,8 +178,6 @@ pub fn segregate_glitches_by_iteration(
     params: &FractalParams,
     min_group_size: usize,
 ) -> Vec<GlitchCluster> {
-    use std::collections::HashMap;
-
     let w = width as usize;
     let h = height as usize;
     let total = w * h;
@@ -187,19 +185,26 @@ pub fn segregate_glitches_by_iteration(
         return Vec::new();
     }
 
-    // Group glitched pixels by iteration count
-    let mut groups: HashMap<u32, Vec<usize>> = HashMap::new();
+    // Find max iteration among glitched pixels to size the Vec
+    let max_iter = glitch_mask.iter().enumerate()
+        .filter(|(_, &g)| g)
+        .map(|(idx, _)| iterations[idx])
+        .max()
+        .unwrap_or(0) as usize;
+
+    // Group glitched pixels by iteration count using Vec instead of HashMap
+    let mut groups: Vec<Vec<usize>> = vec![Vec::new(); max_iter + 1];
     for idx in 0..total {
         if glitch_mask[idx] {
-            groups.entry(iterations[idx]).or_default().push(idx);
+            groups[iterations[idx] as usize].push(idx);
         }
     }
 
     // Convert groups to GlitchClusters
     let mut clusters: Vec<GlitchCluster> = groups
         .into_iter()
-        .filter(|(_, pixels)| pixels.len() >= min_group_size)
-        .map(|(_iter_count, pixels)| {
+        .filter(|pixels| pixels.len() >= min_group_size)
+        .map(|pixels| {
             // Find the pixel with smallest |z| norm as reference center.
             // Inspired by rust-fractal-core which uses the pixel with smallest
             // z_norm as the glitch-resolving reference center.
