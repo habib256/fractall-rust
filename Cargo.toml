@@ -35,6 +35,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # Accès bas-niveau aux chunks PNG pour métadonnées
 png = "0.17"
+# Parsing de fichiers de localisation TOML (rust-fractal-core)
+toml = "0.8"
 
 [profile.release]
 lto = "fat"

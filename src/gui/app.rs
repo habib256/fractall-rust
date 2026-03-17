@@ -543,6 +543,97 @@ impl FractallApp {
         }
     }
 
+    /// Charge l'état de la fractale depuis un fichier TOML (format rust-fractal-core).
+    fn load_from_toml(&mut self, path: &std::path::Path) {
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Erreur lecture TOML: {}", e);
+                return;
+            }
+        };
+        let table: toml::Table = match content.parse() {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("Erreur parsing TOML: {}", e);
+                return;
+            }
+        };
+
+        let real_str = match table.get("real").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => {
+                eprintln!("TOML: champ 'real' manquant");
+                return;
+            }
+        };
+        let imag_str = match table.get("imag").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => {
+                eprintln!("TOML: champ 'imag' manquant");
+                return;
+            }
+        };
+        let zoom_str = match table.get("zoom").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => {
+                eprintln!("TOML: champ 'zoom' manquant");
+                return;
+            }
+        };
+        let iterations = table.get("iterations")
+            .and_then(|v| v.as_integer())
+            .map(|i| i as u32)
+            .unwrap_or(self.params.iteration_max);
+
+        // Parse zoom with GMP and compute span = 4/zoom
+        let prec = 1024u32;
+        let zoom_gmp = match Float::parse(&zoom_str) {
+            Ok(parsed) => Float::with_val(prec, parsed),
+            Err(_) => {
+                eprintln!("TOML: impossible de parser le zoom: '{}'", zoom_str);
+                return;
+            }
+        };
+        let four = Float::with_val(prec, 4.0);
+        let span_x_gmp = four / &zoom_gmp;
+        let aspect = self.params.height as f64 / self.params.width as f64;
+        let span_y_gmp = Float::with_val(prec, &span_x_gmp * aspect);
+
+        // Set HP coordinates
+        self.center_x_hp = real_str.clone();
+        self.center_y_hp = imag_str.clone();
+        self.span_x_hp = span_x_gmp.to_string();
+        self.span_y_hp = span_y_gmp.to_string();
+
+        // Set f64 approximations
+        self.params.center_x = Float::with_val(prec, Float::parse(&real_str).unwrap()).to_f64();
+        self.params.center_y = Float::with_val(prec, Float::parse(&imag_str).unwrap()).to_f64();
+        self.params.span_x = span_x_gmp.to_f64();
+        self.params.span_y = span_y_gmp.to_f64();
+
+        // HP strings in params
+        self.params.center_x_hp = Some(real_str);
+        self.params.center_y_hp = Some(imag_str);
+        self.params.span_x_hp = Some(self.span_x_hp.clone());
+        self.params.span_y_hp = Some(self.span_y_hp.clone());
+
+        // Iterations
+        self.params.iteration_max = iterations;
+        self.iteration_input = iterations.to_string();
+
+        // Default to Mandelbrot
+        self.selected_type = FractalType::Mandelbrot;
+        self.params.fractal_type = FractalType::Mandelbrot;
+
+        // Sync and render
+        self.sync_hp_to_params();
+        self.orbit_cache = None;
+        self.start_render();
+
+        eprintln!("TOML chargé: zoom={}, iterations={}", zoom_str, iterations);
+    }
+
     /// Lance un rendu haute résolution asynchrone et sauvegarde le résultat.
     fn render_high_quality(&mut self) {
         let (render_width, render_height) = self.render_resolution_preset.resolution(
@@ -1639,8 +1730,10 @@ impl eframe::App for FractallApp {
         ctx.input(|i| {
             for file in &i.raw.dropped_files {
                 if let Some(path) = &file.path {
-                    if path.extension().map(|e| e == "png").unwrap_or(false) {
-                        self.load_from_png(path);
+                    match path.extension().and_then(|e| e.to_str()) {
+                        Some("png") => self.load_from_png(path),
+                        Some("toml") => self.load_from_toml(path),
+                        _ => {}
                     }
                 }
             }
