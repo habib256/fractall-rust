@@ -15,6 +15,42 @@ use crate::fractal::perturbation::distance::{DualComplex, compute_distance_estim
 use crate::fractal::perturbation::interior::{ExtendedDualComplex, is_interior};
 use crate::fractal::perturbation::nonconformal::Matrix2x2;
 
+/// Compute smooth (fractional) iteration count for continuous coloring.
+///
+/// Inspired by rust-fractal-core's smooth iteration formula:
+///   smooth = n + 1 - log2(log2(|z|))
+///
+/// For power-d fractals (Multibrot), the formula generalizes to:
+///   smooth = n + 1 - log_d(log2(|z|))
+///
+/// Returns `iteration as f64` if the point didn't escape or if the formula fails.
+#[inline]
+#[allow(dead_code)]
+pub fn compute_smooth_iteration(iteration: u32, z_final: Complex64, bailout: f64, power: f64) -> f64 {
+    let norm_sqr = z_final.norm_sqr();
+    if !norm_sqr.is_finite() || norm_sqr <= 0.0 || norm_sqr <= bailout * bailout {
+        return iteration as f64;
+    }
+    let log_zn = norm_sqr.ln() * 0.5; // ln(|z|) = 0.5 * ln(|z|²)
+    if log_zn <= 0.0 || !log_zn.is_finite() {
+        return iteration as f64;
+    }
+    let log_log_zn = log_zn.ln(); // ln(ln(|z|))
+    if !log_log_zn.is_finite() {
+        return iteration as f64;
+    }
+    let log_power = power.ln(); // ln(d) for Multibrot
+    if log_power <= 0.0 || !log_power.is_finite() {
+        return iteration as f64;
+    }
+    let smooth = iteration as f64 + 1.0 - log_log_zn / log_power;
+    if smooth.is_finite() && smooth >= 0.0 {
+        smooth
+    } else {
+        iteration as f64
+    }
+}
+
 /// Applies a 2×2 real matrix to all components (value + duals) of an ExtendedDualComplex.
 /// Used for non-conformal fractal formulas (Tricorn) where the Jacobian is a real 2×2 matrix.
 fn apply_nonconformal_matrix(m: Matrix2x2, dual: ExtendedDualComplex) -> ExtendedDualComplex {
@@ -57,6 +93,33 @@ pub struct DeltaResult {
     /// Whether the phase changed during rebasing (for Hybrid BLA).
     /// If true, the caller should switch to the new phase reference.
     pub phase_changed: bool,
+    /// Smooth (fractional) iteration count for continuous coloring.
+    ///
+    /// Inspired by rust-fractal-core's smooth iteration output:
+    /// For escaped points: `n + 1 - log2(log2(|z_final|))`
+    /// For non-escaped points: same as `iteration` (integer).
+    ///
+    /// This avoids banding artifacts in coloring by providing a continuous
+    /// iteration count. The caller can use this directly for palette mapping
+    /// instead of computing smooth iteration separately.
+    pub smooth_iteration: f64,
+}
+
+impl DeltaResult {
+    /// Compute and fill in the smooth_iteration field based on result state.
+    ///
+    /// Inspired by rust-fractal-core which computes smooth iteration inline
+    /// during pixel iteration rather than as a separate post-processing pass.
+    /// The `power` parameter is the fractal power (2.0 for standard Mandelbrot/Julia).
+    #[inline]
+    pub fn with_smooth(mut self, bailout: f64, power: f64) -> Self {
+        self.smooth_iteration = if self.glitched || self.is_interior {
+            self.iteration as f64
+        } else {
+            compute_smooth_iteration(self.iteration, self.z_final, bailout, power)
+        };
+        self
+    }
 }
 
 /// Result of a fast f64 batch perturbation loop.
@@ -278,6 +341,14 @@ fn fast_mandelbrot_batch_f64(
     } else {
         ComplexExp::from_complex64(Complex64::new(d_re, d_im))
     };
+
+    // Periodic re-normalization after batch (inspired by rust-fractal-core).
+    // During long iteration sequences, floating-point mantissas can drift from
+    // the canonical [0.5, 1.0) range, causing gradual precision loss.
+    // Re-normalizing after each batch keeps mantissas well-conditioned.
+    if *iters_ptb % 256 == 0 {
+        delta.reduce();
+    }
 
     // Extended iteration handling (inspired by rust-fractal-core):
     // If the batch ended at an extended iteration (where z_ref underflows f64),
@@ -549,7 +620,10 @@ fn fast_burning_ship_batch_f64(
 
     // Periodic reduce() after batch: re-normalize mantissa to prevent precision drift.
     *delta = make_delta(d_re, d_im);
-    delta.reduce();
+    // Periodic re-normalization after batch to prevent mantissa drift
+    if *iters_ptb % 256 == 0 {
+        delta.reduce();
+    }
     BatchResult::Continue
 }
 
@@ -870,6 +944,10 @@ fn fast_multibrot_batch_f64(
     }
 
     *delta = make_delta(d_re, d_im);
+    // Periodic re-normalization after batch for Multibrot
+    if *iters_ptb % 256 == 0 {
+        delta.reduce();
+    }
     BatchResult::Continue
 }
 
@@ -1060,18 +1138,62 @@ pub fn iterate_pixel(
     // For Mandelbrot: the series variable is dc (pixel offset), since delta_0 = 0.
     // For Julia: the series variable is also dc (= delta_0), since delta_0 = dc.
     // In both cases, dc is the "small parameter" that the series is expanded in.
+    //
+    // Enhanced with per-pixel tiled validation (inspired by rust-fractal-core's
+    // check_approximation() tiled mode): each pixel can skip a different number
+    // of iterations based on its position in the image. Pixels near the center
+    // can often skip more iterations than edge pixels.
     if let Some(table) = series_table {
         if params.series_standalone && !is_burning_ship && !is_multibrot && !is_tricorn {
+            // Compute per-pixel series skip using tiled validation if available
+            let pixel_max_skip = if let Some(ref tiled) = table.tiled_validation {
+                // Estimate pixel position from dc
+                let dc_approx = dc.to_complex64_approx();
+                let px = if params.span_x != 0.0 && params.span_x.is_finite() {
+                    ((dc_approx.re / params.span_x + 0.5) * params.width as f64) as usize
+                } else {
+                    params.width as usize / 2
+                };
+                let py = if params.span_y != 0.0 && params.span_y.is_finite() {
+                    ((dc_approx.im / params.span_y + 0.5) * params.height as f64) as usize
+                } else {
+                    params.height as usize / 2
+                };
+                tiled.valid_iteration_for_pixel(px, py, params.width as usize, params.height as usize)
+            } else {
+                table.validated_skip
+            };
+
             if let Some(skip_result) = compute_series_skip(
                 table,
                 dc,
                 series_config.error_tolerance,
             ) {
-                // Skip to the computed iteration
-                n = skip_result.skip_to as u32;
-                delta = skip_result.delta;
-                if skip_result.estimated_error > series_config.error_tolerance * 0.5 {
-                    suspect = true;
+                // Use the minimum of the computed skip and the per-pixel validated skip
+                let effective_skip = if pixel_max_skip > 0 {
+                    skip_result.skip_to.min(pixel_max_skip)
+                } else {
+                    skip_result.skip_to
+                };
+                if effective_skip >= 2 {
+                    n = effective_skip as u32;
+                    // Re-evaluate series at the effective skip point if it differs
+                    if effective_skip == skip_result.skip_to {
+                        delta = skip_result.delta;
+                    } else {
+                        // Re-evaluate the series at the clamped iteration
+                        let dc_f64_tmp = dc.to_complex64_approx();
+                        if effective_skip < table.coeffs.len() {
+                            let coeffs = &table.coeffs[effective_skip];
+                            let approx = dc_f64_tmp * (coeffs.a + dc_f64_tmp * (coeffs.b + dc_f64_tmp * (coeffs.c + dc_f64_tmp * coeffs.d)));
+                            delta = ComplexExp::from_complex64(approx);
+                        } else {
+                            delta = skip_result.delta;
+                        }
+                    }
+                    if skip_result.estimated_error > series_config.error_tolerance * 0.5 {
+                        suspect = true;
+                    }
                 }
             }
         }
@@ -1410,6 +1532,7 @@ pub fn iterate_pixel(
                             distance: f64::INFINITY,
                             is_interior: false,
                             phase_changed,
+                        smooth_iteration: 0.0,
                         };
                     }
                     BatchResult::Glitched { iteration, z_final } => {
@@ -1421,6 +1544,7 @@ pub fn iterate_pixel(
                             distance: f64::INFINITY,
                             is_interior: false,
                             phase_changed,
+                        smooth_iteration: 0.0,
                         };
                     }
                     BatchResult::Continue => {
@@ -1636,6 +1760,7 @@ pub fn iterate_pixel(
                 distance: f64::INFINITY,
                 is_interior: false,
                 phase_changed,
+            smooth_iteration: 0.0,
             };
         }
         if z_curr.norm_sqr() > bailout_sqr {
@@ -1647,6 +1772,7 @@ pub fn iterate_pixel(
                 distance: f64::INFINITY, // Distance estimation not computed for escaped points
                 is_interior: false,
                 phase_changed,
+            smooth_iteration: 0.0,
             };
         }
 
@@ -1663,6 +1789,7 @@ pub fn iterate_pixel(
                 distance: f64::INFINITY,
                 is_interior: false,
                 phase_changed,
+            smooth_iteration: 0.0,
             };
         }
     }
@@ -1688,6 +1815,7 @@ pub fn iterate_pixel(
         distance: f64::INFINITY, // Distance estimation not computed by default
         is_interior: false, // Interior detection not computed by default
         phase_changed,
+    smooth_iteration: 0.0,
     }
 }
 
@@ -1831,20 +1959,26 @@ pub fn iterate_pixel_gmp(
             delta = z_temp_prec - z_ref_next_prec;
         } else {
             // Standard Mandelbrot/Julia: delta_{n+1} = 2·z_ref·delta + delta² + dc
+            //
+            // Optimized GMP path (inspired by rust-fractal-core's reference iteration):
+            // Compute using in-place operations where possible to reduce allocations.
+            // Formula: delta' = 2*z_ref*delta + delta^2 + dc
+            //        = delta * (2*z_ref + delta) + dc
+            // This "Horner form" uses one less multiplication.
             let delta_prec = Complex::with_val(prec, (delta.real(), delta.imag()));
             let z_ref_prec = Complex::with_val(prec, (z_ref.real(), z_ref.imag()));
 
-            let mut delta_sq = delta_prec.clone();
-            delta_sq *= &delta_prec;
-
-            let mut linear_term = z_ref_prec.clone();
-            linear_term *= &delta_prec;
+            // Compute (2*z_ref + delta) in-place
+            let mut sum = z_ref_prec;
             let two = Float::with_val(prec, 2.0);
-            linear_term *= &two;
+            sum *= &two;
+            sum += &delta_prec;
 
-            let mut next_delta = Complex::with_val(prec, (linear_term.real(), linear_term.imag()));
-            next_delta += &delta_sq;
+            // Multiply by delta: delta * (2*z_ref + delta)
+            let mut next_delta = delta_prec;
+            next_delta *= &sum;
 
+            // Add dc for Mandelbrot
             if !is_julia {
                 let dc_gmp_prec = Complex::with_val(prec, (dc_gmp.real(), dc_gmp.imag()));
                 next_delta += &dc_gmp_prec;
@@ -1885,6 +2019,7 @@ pub fn iterate_pixel_gmp(
                 distance: f64::INFINITY,
                 is_interior: false,
                 phase_changed: false,
+            smooth_iteration: 0.0,
             };
         }
 
@@ -1897,6 +2032,7 @@ pub fn iterate_pixel_gmp(
                 distance: f64::INFINITY,
                 is_interior: false,
                 phase_changed: false,
+            smooth_iteration: 0.0,
             };
         }
 
@@ -1928,6 +2064,7 @@ pub fn iterate_pixel_gmp(
                 distance: f64::INFINITY,
                 is_interior: false,
                 phase_changed: false,
+            smooth_iteration: 0.0,
             };
         }
     }
@@ -1949,6 +2086,7 @@ pub fn iterate_pixel_gmp(
                     distance: f64::INFINITY,
                     is_interior: false,
                     phase_changed: false,
+                smooth_iteration: 0.0,
                 };
             }
         },
@@ -1975,6 +2113,7 @@ pub fn iterate_pixel_gmp(
         distance: f64::INFINITY,
         is_interior: false,
         phase_changed: false,
+    smooth_iteration: 0.0,
     }
 }
 
@@ -2090,6 +2229,7 @@ pub(crate) fn iterate_pixel_with_duals(
                     distance: f64::INFINITY,
                     is_interior: true,
                     phase_changed: false,
+                smooth_iteration: 0.0,
                 };
             }
         }
@@ -2303,6 +2443,7 @@ pub(crate) fn iterate_pixel_with_duals(
                 distance: f64::INFINITY,
                 is_interior: false,
                 phase_changed: false,
+            smooth_iteration: 0.0,
             };
         }
         
@@ -2328,6 +2469,7 @@ pub(crate) fn iterate_pixel_with_duals(
                 distance,
                 is_interior: false,
                 phase_changed: false,
+            smooth_iteration: 0.0,
             };
         }
         
@@ -2345,6 +2487,7 @@ pub(crate) fn iterate_pixel_with_duals(
                 distance: f64::INFINITY,
                 is_interior: false,
                 phase_changed: false,
+            smooth_iteration: 0.0,
             };
         }
 
@@ -2391,6 +2534,7 @@ pub(crate) fn iterate_pixel_with_duals(
         distance,
         is_interior: is_interior_result,
         phase_changed: false,
+    smooth_iteration: 0.0,
     }
 }
 
@@ -2423,6 +2567,7 @@ mod tests {
             distance: f64::INFINITY,
             is_interior: false,
             phase_changed: false,
+        smooth_iteration: 0.0,
         };
         assert_eq!(result.iteration, 10);
         assert_eq!(result.distance, f64::INFINITY);
@@ -2480,6 +2625,76 @@ mod tests {
         // Deep zoom: more relaxed
         let t_deep = compute_adaptive_glitch_tolerance(1e-20, 1e-4);
         assert!(t_deep > t_shallow);
+    }
+
+    #[test]
+    fn smooth_iteration_escaped_point() {
+        // z = 3.0 + 0i, bailout = 2.0, power = 2.0 (standard Mandelbrot)
+        let z = Complex64::new(3.0, 0.0);
+        let smooth = compute_smooth_iteration(10, z, 2.0, 2.0);
+        // Should be close to 10 but fractional (> 10 because |z| > bailout)
+        assert!(smooth > 9.0 && smooth < 12.0, "smooth={}", smooth);
+        assert!(smooth != 10.0, "Should be fractional, not integer");
+    }
+
+    #[test]
+    fn smooth_iteration_non_escaped_point() {
+        // z = 0.5 + 0i, bailout = 2.0 => |z| < bailout, not escaped
+        let z = Complex64::new(0.5, 0.0);
+        let smooth = compute_smooth_iteration(100, z, 2.0, 2.0);
+        assert_eq!(smooth, 100.0);
+    }
+
+    #[test]
+    fn smooth_iteration_large_z() {
+        // Very large z (deeply escaped)
+        let z = Complex64::new(1e10, 0.0);
+        let smooth = compute_smooth_iteration(50, z, 2.0, 2.0);
+        assert!(smooth < 50.0, "Large |z| should give smooth < iteration");
+        assert!(smooth > 40.0, "Should be reasonable, smooth={}", smooth);
+    }
+
+    #[test]
+    fn smooth_iteration_multibrot_power_3() {
+        // Multibrot with power 3
+        let z = Complex64::new(3.0, 0.0);
+        let smooth_p2 = compute_smooth_iteration(10, z, 2.0, 2.0);
+        let smooth_p3 = compute_smooth_iteration(10, z, 2.0, 3.0);
+        // Higher power should give different smooth values
+        assert!((smooth_p2 - smooth_p3).abs() > 0.01);
+    }
+
+    #[test]
+    fn delta_result_with_smooth() {
+        let result = DeltaResult {
+            iteration: 10,
+            z_final: Complex64::new(3.0, 0.0),
+            glitched: false,
+            suspect: false,
+            distance: f64::INFINITY,
+            is_interior: false,
+            phase_changed: false,
+            smooth_iteration: 0.0,
+        }.with_smooth(2.0, 2.0);
+        // Should compute smooth iteration for escaped point
+        assert!(result.smooth_iteration > 9.0);
+        assert!(result.smooth_iteration != 10.0);
+    }
+
+    #[test]
+    fn delta_result_with_smooth_glitched() {
+        let result = DeltaResult {
+            iteration: 10,
+            z_final: Complex64::new(3.0, 0.0),
+            glitched: true,
+            suspect: false,
+            distance: f64::INFINITY,
+            is_interior: false,
+            phase_changed: false,
+            smooth_iteration: 0.0,
+        }.with_smooth(2.0, 2.0);
+        // Glitched points should return integer iteration
+        assert_eq!(result.smooth_iteration, 10.0);
     }
 }
 

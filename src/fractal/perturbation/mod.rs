@@ -232,9 +232,10 @@ fn iterate_pixel_hybrid_bla(
                 distance: result.distance,
                 is_interior: result.is_interior,
                 phase_changed: result.phase_changed,
+                smooth_iteration: result.smooth_iteration,
             };
         }
-        
+
         // Check if phase changed during rebasing
         if result.phase_changed {
             // Phase changed: update delta and continue with new phase
@@ -264,6 +265,7 @@ fn iterate_pixel_hybrid_bla(
                 distance: result.distance,
                 is_interior: result.is_interior,
                 phase_changed: result.phase_changed,
+                smooth_iteration: result.smooth_iteration,
             };
         }
     }

@@ -866,6 +866,32 @@ pub fn compute_reference_orbit(
     z_ref_gmp.push(z.clone());
     high_precision_data.push(z.clone());
 
+    // Period detection state for early termination (inspired by rust-fractal-core).
+    //
+    // rust-fractal-core detects when the reference orbit becomes periodic and stops
+    // the orbit computation early. This saves enormous memory and time for orbits
+    // that converge to an attracting cycle (interior points of the Mandelbrot set).
+    //
+    // Algorithm: Track z at previous "checkpoint" iterations. When |z_n - z_checkpoint|²
+    // falls below a tolerance proportional to precision, a cycle is detected.
+    // The tolerance is computed as 2^(-prec/2) to match the GMP precision level.
+    //
+    // Only for Mandelbrot (for Julia, every pixel has a different c, so the reference
+    // orbit periodicity doesn't help).
+    let enable_period_detection = matches!(params.fractal_type, FractalType::Mandelbrot);
+    let period_tolerance = if enable_period_detection {
+        // Tolerance scales with GMP precision: smaller precision = larger tolerance
+        // Using 2^(-prec * 0.4) as a balance between sensitivity and false positives
+        let tol_exp = -(prec as f64) * 0.4;
+        10.0f64.powf(tol_exp * 0.301) // 2^tol_exp ≈ 10^(tol_exp * log10(2))
+    } else {
+        0.0
+    };
+    let mut period_check_z = Complex::with_val(prec, (0, 0));
+    let mut period_check_iter = 0u32;
+    let mut period_step = 1u32; // Floyd's cycle detection: double step size periodically
+    let mut detected_period = 0u32;
+
     for i in 0..params.iteration_max {
         if let Some(cancel) = cancel {
             if i % 256 == 0 && cancel.load(Ordering::Relaxed) {
@@ -875,6 +901,28 @@ pub fn compute_reference_orbit(
         if complex_norm_sqr(&z, prec) > bailout_sqr {
             break;
         }
+
+        // Period detection using Brent's algorithm variant (inspired by rust-fractal-core).
+        // Compares z_n to a checkpoint value, doubling the step size when needed.
+        // When |z_n - z_checkpoint| < tolerance, the orbit is periodic.
+        if enable_period_detection && i > 0 {
+            let diff = Complex::with_val(prec, (&z - &period_check_z));
+            let diff_norm = complex_norm_sqr(&diff, prec);
+            let tol_gmp = Float::with_val(prec, period_tolerance * period_tolerance);
+            if diff_norm < tol_gmp && i > period_check_iter {
+                detected_period = i - period_check_iter;
+                // Stop the orbit: we've detected periodicity, meaning the center
+                // is an interior point. The orbit will just repeat from here.
+                break;
+            }
+            // Brent's algorithm: after period_step iterations, update checkpoint
+            if i - period_check_iter >= period_step {
+                period_check_z = z.clone();
+                period_check_iter = i;
+                period_step *= 2;
+            }
+        }
+
         z = match params.fractal_type {
             FractalType::Mandelbrot => {
                 let z_prec = Complex::with_val(prec, (z.real(), z.imag()));
@@ -925,6 +973,11 @@ pub fn compute_reference_orbit(
         if data_storage_interval == 1 || iter_num % data_storage_interval == 0 {
             high_precision_data.push(z.clone());
         }
+    }
+
+    if detected_period > 0 {
+        eprintln!("[PERIOD] Detected period {} at iteration {} (orbit len={}). Center is interior.",
+            detected_period, z_ref_f64.len(), z_ref_f64.len());
     }
 
     // Track iterations where z_ref is very small (near f64 underflow).
