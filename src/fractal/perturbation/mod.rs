@@ -104,9 +104,11 @@ pub mod glitch;
 pub mod nonconformal;
 pub mod distance;
 pub mod interior;
+pub mod period;
 
 pub use orbit::{ReferenceOrbitCache, HybridBlaReferences};
 pub use glitch::{detect_glitch_clusters, select_secondary_reference_points, segregate_glitches_by_iteration};
+pub use period::{BoxPeriod, find_atom_domain_period, suggest_iterations_from_period};
 
 fn env_flag(name: &str) -> bool {
     match std::env::var(name) {
