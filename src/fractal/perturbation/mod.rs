@@ -110,6 +110,37 @@ pub use orbit::{ReferenceOrbitCache, HybridBlaReferences};
 pub use glitch::{detect_glitch_clusters, select_secondary_reference_points, segregate_glitches_by_iteration};
 pub use period::{BoxPeriod, find_atom_domain_period, suggest_iterations_from_period};
 
+/// Suggest whether max iterations should be adjusted based on the series approximation skip.
+///
+/// Inspired by rust-fractal-core's `adjust_iterations()`:
+/// - If the SA skip is > 25% of max_iter, max_iter is likely too low (increase by 50%)
+/// - If the SA skip is < 12.5% of max_iter, max_iter may be too high (decrease by 25%)
+///
+/// Returns Some(new_max_iter) if adjustment is recommended, None otherwise.
+pub fn suggest_iteration_adjustment(
+    current_max_iter: u32,
+    series_skip: u32,
+    min_iter: u32,
+) -> Option<u32> {
+    if series_skip == 0 {
+        return None;
+    }
+
+    // If SA skips more than 25% of max_iter, we likely need more iterations
+    if 4 * series_skip > current_max_iter {
+        let new_max = (current_max_iter as u64 * 3 / 2).min(u32::MAX as u64) as u32;
+        return Some(new_max.max(min_iter));
+    }
+
+    // If SA skips less than 12.5% of max_iter, we may have too many iterations
+    if 8 * series_skip < current_max_iter && current_max_iter > min_iter {
+        let new_max = (current_max_iter as u64 * 3 / 4).max(min_iter as u64) as u32;
+        return Some(new_max);
+    }
+
+    None
+}
+
 fn env_flag(name: &str) -> bool {
     match std::env::var(name) {
         Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
@@ -898,16 +929,31 @@ pub fn render_perturbation_with_cache(
             }
         }
 
-        // Second pass: iteration-based glitch segregation (inspired by rust-fractal-core).
-        // Groups remaining glitched pixels by their iteration depth and creates
-        // dedicated references using the pixel with smallest |z| as center.
-        // This is more effective than spatial clustering for glitches that occur at
-        // similar iteration depths but are spatially dispersed.
+        // Second pass: recursive iteration-based glitch resolution (inspired by rust-fractal-core).
+        //
+        // rust-fractal-core's `resolve_glitches()` groups glitched pixels by iteration depth,
+        // creates delta-based references using the pixel with smallest |z| as center,
+        // and recursively resolves remaining glitches. This is more effective than spatial
+        // clustering for glitches at similar iterations but spatially dispersed.
+        //
+        // Key improvements over previous approach:
+        // 1. Delta-based reference: uses existing orbit + delta offset (faster than full recompute)
+        // 2. Recursive: after resolving one level, remaining glitches are re-resolved
+        // 3. Selects optimal reference pixel (smallest |z| norm in each group)
         if !small_image && params.max_secondary_refs > 0 {
-            let remaining_glitches: usize = glitch_mask.iter().filter(|v| **v).count();
-            let remaining_ratio = remaining_glitches as f64 / (width * height) as f64;
-            // Only apply iteration-based segregation if >1% pixels still glitched
-            if remaining_ratio > 0.01 {
+            let max_resolution_rounds = 3; // Limit recursion depth to avoid infinite loops
+            for _round in 0..max_resolution_rounds {
+                let remaining_glitches: usize = glitch_mask.iter().filter(|v| **v).count();
+                let remaining_ratio = remaining_glitches as f64 / (width * height) as f64;
+                // Only apply if >0.5% pixels still glitched (lowered from 1% for more thorough resolution)
+                if remaining_ratio < 0.005 {
+                    break;
+                }
+
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+
                 let iter_clusters = segregate_glitches_by_iteration(
                     &glitch_mask,
                     &iterations,
@@ -918,49 +964,103 @@ pub fn render_perturbation_with_cache(
                     params.min_glitch_cluster_size as usize,
                 );
 
+                if iter_clusters.is_empty() {
+                    break;
+                }
+
                 let max_iter_refs = (params.max_secondary_refs as usize).min(iter_clusters.len());
+                let mut resolved_any = false;
+
                 for cluster in iter_clusters.iter().take(max_iter_refs) {
-                    let mut sec_params = orbit_params.clone();
-                    sec_params.center_x = cluster.center_x;
-                    sec_params.center_y = cluster.center_y;
+                    // Try delta-based reference creation from existing orbit first
+                    // (inspired by rust-fractal-core's get_glitch_resolving_reference).
+                    // This is much faster than computing a full new orbit from scratch.
+                    let best_idx = cluster.pixel_indices.iter()
+                        .min_by(|&&a, &&b| {
+                            let na = zs[a].norm_sqr();
+                            let nb = zs[b].norm_sqr();
+                            na.partial_cmp(&nb).unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .copied()
+                        .unwrap_or(cluster.pixel_indices[0]);
+                    let best_iter = iterations[best_idx];
 
-                    if let Some((sec_orbit, _, _)) = compute_reference_orbit(&sec_params, Some(cancel.as_ref())) {
-                        let sec_bla = bla::build_bla_table(&sec_orbit.z_ref_f64, &sec_params, sec_orbit.cref);
+                    // Compute deltas for the best pixel (reference center for this group)
+                    let bpx = best_idx % width;
+                    let bpy = best_idx / width;
+                    let best_dc_re = ((bpx as f64 + 0.5) * inv_width - 0.5) * x_range;
+                    let best_dc_im = ((bpy as f64 + 0.5) * inv_height - 0.5) * y_range;
+                    let best_z_final = zs[best_idx];
 
-                        for &idx in &cluster.pixel_indices {
-                            let px = idx % width;
-                            let py = idx / width;
+                    // Try delta-based reference from existing orbit (fast path)
+                    let sec_orbit_opt = cache_ref.orbit.create_glitch_reference(
+                        best_iter,
+                        best_dc_re,
+                        best_dc_im,
+                        best_z_final.re - cache_ref.orbit.z_ref_f64.get(best_iter as usize)
+                            .map_or(0.0, |z| z.re),
+                        best_z_final.im - cache_ref.orbit.z_ref_f64.get(best_iter as usize)
+                            .map_or(0.0, |z| z.im),
+                        params,
+                        Some(cancel.as_ref()),
+                    );
 
-                            let dc_re = ((px as f64 + 0.5) * inv_width - 0.5) * x_range
-                                - (cluster.center_x - params.center_x);
-                            let dc_im = ((py as f64 + 0.5) * inv_height - 0.5) * y_range
-                                - (cluster.center_y - params.center_y);
-
-                            let dc = ComplexExp::from_complex64(Complex64::new(dc_re, dc_im));
-                            let (delta0, dc_term) = if params.fractal_type == FractalType::Julia {
-                                (dc, ComplexExp::zero())
-                            } else {
-                                (ComplexExp::zero(), dc)
-                            };
-
-                            let result = iterate_pixel(
-                                params,
-                                &sec_orbit,
-                                &sec_bla,
-                                None,
-                                delta0,
-                                dc_term,
-                                None,
-                                None,
-                            );
-
-                            if !result.glitched && !result.suspect {
-                                iterations[idx] = result.iteration;
-                                zs[idx] = result.z_final;
-                                glitch_mask[idx] = false;
+                    // Fall back to full orbit computation if delta-based fails
+                    let sec_orbit = match sec_orbit_opt {
+                        Some(orbit) => orbit,
+                        None => {
+                            let mut sec_params = orbit_params.clone();
+                            sec_params.center_x = cluster.center_x;
+                            sec_params.center_y = cluster.center_y;
+                            match compute_reference_orbit(&sec_params, Some(cancel.as_ref())) {
+                                Some((orbit, _, _)) => orbit,
+                                None => continue,
                             }
                         }
+                    };
+
+                    let sec_bla = bla::build_bla_table(&sec_orbit.z_ref_f64, &orbit_params, sec_orbit.cref);
+
+                    for &idx in &cluster.pixel_indices {
+                        let px = idx % width;
+                        let py = idx / width;
+
+                        // Compute dc relative to secondary center
+                        let dc_re = ((px as f64 + 0.5) * inv_width - 0.5) * x_range
+                            - (cluster.center_x - params.center_x);
+                        let dc_im = ((py as f64 + 0.5) * inv_height - 0.5) * y_range
+                            - (cluster.center_y - params.center_y);
+
+                        let dc = ComplexExp::from_complex64(Complex64::new(dc_re, dc_im));
+                        let (delta0, dc_term) = if params.fractal_type == FractalType::Julia {
+                            (dc, ComplexExp::zero())
+                        } else {
+                            (ComplexExp::zero(), dc)
+                        };
+
+                        let result = iterate_pixel(
+                            params,
+                            &sec_orbit,
+                            &sec_bla,
+                            None,
+                            delta0,
+                            dc_term,
+                            None,
+                            None,
+                        );
+
+                        if !result.glitched && !result.suspect {
+                            iterations[idx] = result.iteration;
+                            zs[idx] = result.z_final;
+                            glitch_mask[idx] = false;
+                            resolved_any = true;
+                        }
                     }
+                }
+
+                // If no pixels were resolved in this round, stop recursing
+                if !resolved_any {
+                    break;
                 }
             }
         }
