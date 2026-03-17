@@ -265,6 +265,7 @@ fn fast_mandelbrot_batch_f64(
 
     } // close else (escape-check-enabled path)
 
+    // Write back delta from mantissa
     *delta = if use_scaling {
         ComplexExp {
             re: FloatExp::new(d_re, delta_exp),
@@ -273,6 +274,58 @@ fn fast_mandelbrot_batch_f64(
     } else {
         ComplexExp::from_complex64(Complex64::new(d_re, d_im))
     };
+
+    // Extended iteration handling (inspired by rust-fractal-core):
+    // If the batch ended at an extended iteration (where z_ref underflows f64),
+    // perform one step using ComplexExtended arithmetic, then continue.
+    // This avoids the overhead of re-entering the outer BLA loop just for one iteration.
+    if *n == next_extended && *n < max_iter {
+        let idx = *n as usize + phase_offset;
+        if idx < ref_orbit.z_ref.len() {
+            let z_ref_ext = ref_orbit.z_ref[idx];
+
+            // Check bailout using extended arithmetic
+            let z_curr = delta.add(z_ref_ext);
+            let z_curr_norm_sqr = z_curr.norm_sqr_approx();
+
+            if z_curr_norm_sqr > bailout_sqr {
+                let z_curr_f64 = z_curr.to_complex64_approx();
+                return BatchResult::Escaped {
+                    iteration: *n,
+                    z_final: z_curr_f64,
+                };
+            }
+
+            // Rebasing check
+            let delta_norm_sqr = delta.norm_sqr_approx();
+            if z_curr_norm_sqr > 0.0 && delta_norm_sqr > 0.0 && z_curr_norm_sqr < delta_norm_sqr {
+                *delta = ComplexExp::from_complex64(z_curr.to_complex64_approx());
+                return BatchResult::NeedRebase {
+                    z_curr: z_curr.to_complex64_approx(),
+                };
+            }
+
+            // Perturbation step using ComplexExtended (full exponent tracking)
+            let z_ref_2 = ComplexExp {
+                re: FloatExp::new(z_ref_ext.re.mantissa * 2.0, z_ref_ext.re.exponent),
+                im: FloatExp::new(z_ref_ext.im.mantissa * 2.0, z_ref_ext.im.exponent),
+            };
+            let linear = delta.mul(z_ref_2);
+            let nonlinear = delta.mul(*delta);
+            *delta = if is_julia {
+                linear.add(nonlinear)
+            } else {
+                linear.add(nonlinear).add(ComplexExp {
+                    re: FloatExp::from_f64(dc_f64.re),
+                    im: FloatExp::from_f64(dc_f64.im),
+                })
+            };
+            delta.reduce();
+            *n += 1;
+            *iters_ptb += 1;
+        }
+    }
+
     BatchResult::Continue
 }
 
@@ -370,6 +423,30 @@ fn fast_burning_ship_batch_f64(
         }
     };
 
+    // Optimization from rust-fractal-core: when delta exponent is very negative (< -500),
+    // the delta is so small that escape is impossible. Skip bailout/glitch/rebase checks
+    // and just do the perturbation math for the entire batch.
+    if delta_exp < -500 && use_scaling {
+        while *n < batch_end {
+            let idx = *n as usize + phase_offset;
+            if idx >= orbit_f64.len() {
+                break;
+            }
+            let z_ref = orbit_f64[idx];
+
+            let temp_re = d_re;
+            d_re = (2.0 * z_ref.re * inv_scale + temp_re * scale * inv_scale) * temp_re
+                 - (2.0 * z_ref.im * inv_scale + d_im * scale * inv_scale) * d_im
+                 + dc_re;
+            d_im = 2.0 * diffabs(
+                z_ref.re * z_ref.im * inv_scale,
+                z_ref.re * d_im + temp_re * (z_ref.im * inv_scale + d_im * scale * inv_scale),
+            ) + dc_im;
+            *n += 1;
+            *iters_ptb += 1;
+        }
+    } else {
+
     while *n < batch_end {
         let idx = *n as usize + phase_offset;
         if idx >= orbit_f64.len() {
@@ -430,6 +507,8 @@ fn fast_burning_ship_batch_f64(
         }
     }
 
+    } // close else (escape-check-enabled path)
+
     *delta = make_delta(d_re, d_im);
     BatchResult::Continue
 }
@@ -467,6 +546,46 @@ fn fast_tricorn_batch_f64(
         .copied()
         .unwrap_or(u32::MAX);
     let batch_end = (*n + BATCH_SIZE).min(max_iter).min(next_extended);
+
+    // Check if delta is very small (optimization from rust-fractal-core).
+    // For Tricorn, delta is tracked as z_curr - z_ref, not scaled mantissa,
+    // so we check exponent of the initial delta.
+    let delta_exp = delta.re.exponent.max(delta.im.exponent);
+
+    // Optimization from rust-fractal-core: when delta exponent is very negative (< -500),
+    // the delta is so small that escape is impossible. Skip bailout/glitch/rebase checks
+    // and just do the perturbation math.
+    if delta_exp < -500 {
+        while *n < batch_end {
+            let idx = *n as usize + phase_offset;
+            if idx >= orbit_f64.len() {
+                break;
+            }
+            let z_ref = orbit_f64[idx];
+            let delta_f64 = delta.to_complex64_approx();
+            let z_curr_re = z_ref.re + delta_f64.re;
+            let z_curr_im = z_ref.im + delta_f64.im;
+
+            let z_next_re = z_curr_re * z_curr_re - z_curr_im * z_curr_im + c_pixel.re;
+            let z_next_im = -2.0 * z_curr_re * z_curr_im + c_pixel.im;
+
+            *n += 1;
+            *iters_ptb += 1;
+
+            let next_idx = *n as usize + phase_offset;
+            if next_idx >= orbit_f64.len() {
+                *delta = ComplexExp::from_complex64(Complex64::new(z_next_re, z_next_im));
+                return BatchResult::NeedRebase {
+                    z_curr: Complex64::new(z_next_re, z_next_im),
+                };
+            }
+            let z_ref_next = orbit_f64[next_idx];
+            *delta = ComplexExp::from_complex64(Complex64::new(
+                z_next_re - z_ref_next.re,
+                z_next_im - z_ref_next.im,
+            ));
+        }
+    } else {
 
     while *n < batch_end {
         let idx = *n as usize + phase_offset;
@@ -535,6 +654,8 @@ fn fast_tricorn_batch_f64(
             };
         }
     }
+
+    } // close else (escape-check-enabled path)
 
     BatchResult::Continue
 }
