@@ -9,8 +9,8 @@ Fractall is a high-performance fractal explorer written in Rust, featuring real-
 ![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange)
 
 <p align="center">
-  <img src="fractal.png" alt="Deep Mandelbrot zoom - Geometric patterns" width="48%">
-  <img src="Deepfractal.png" alt="Deep Mandelbrot zoom - Fiery spiral" width="48%">
+  <img src="locations/fractal.png" alt="Deep Mandelbrot zoom - Geometric patterns" width="48%">
+  <img src="locations/Deepfractal.png" alt="Deep Mandelbrot zoom - Fiery spiral" width="48%">
 </p>
 <p align="center">
   <em>Mandelbrot set revealing infinite complexity</em>
