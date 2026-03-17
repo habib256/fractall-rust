@@ -123,6 +123,27 @@ fn complex_mul(a_re: f32, a_im: f32, b_re: f32, b_im: f32) -> vec2<f32> {
     return vec2<f32>(a_re * b_re - a_im * b_im, a_re * b_im + a_im * b_re);
 }
 
+// Stable computation of |c + d| - |c| avoiding catastrophic cancellation.
+// Inspired by rust-fractal-core's diff_abs() function.
+// Used for Burning Ship perturbation where we need the variation of |x|.
+fn diffabs(c: f32, d: f32) -> f32 {
+    let cd = c + d;
+    let c2d = 2.0 * c + d;
+    if (c >= 0.0) {
+        if (cd >= 0.0) {
+            return d;
+        } else {
+            return -c2d;
+        }
+    } else {
+        if (cd > 0.0) {
+            return c2d;
+        } else {
+            return -d;
+        }
+    }
+}
+
 fn rescale_delta(re: f32, im: f32, scale: f32) -> vec3<f32> {
     var new_re = re;
     var new_im = im;
@@ -301,37 +322,49 @@ fn main(
                 delta_im = scaled.y;
                 delta_scale = scaled.z;
             } else if (is_burning_ship) {
-                let delta_actual_re = delta_re * delta_scale;
-                let delta_actual_im = delta_im * delta_scale;
-                let z_re = z.re + delta_actual_re;
-                let z_im = z.im + delta_actual_im;
-                let re_abs = abs(z_re);
-                let im_abs = abs(z_im);
-                let z_sq = complex_mul(re_abs, im_abs, re_abs, im_abs);
-                let z_next_re = z_sq.x + (params.cref_x + dc_re);
-                let z_next_im = z_sq.y + (params.cref_y + dc_im);
-                n = n + 1u;
-                if (n >= params.iter_max) {
-                    break;
-                }
-                let z_next_ref = z_ref[n];
-                let next_re = z_next_re - z_next_ref.re;
-                let next_im = z_next_im - z_next_ref.im;
-                let scaled = rescale_delta(next_re, next_im, 1.0);
+                // Burning Ship perturbation using diffabs (inspired by rust-fractal-core).
+                // Uses the scaled delta approach for better precision, matching the CPU path.
+                // Key insight: diffabs(c, d) = |c + d| - |c| computed stably.
+                //
+                // Formula from rust-fractal-core:
+                //   delta_re' = (2*Z_re + d_re*sf) * d_re - (2*Z_im + d_im*sf) * d_im + dc_re
+                //   delta_im' = 2 * diffabs(Z_re*Z_im/sf, Z_re*d_im + d_re*(Z_im + d_im*sf)) + dc_im
+                let sf = delta_scale;
+                let inv_sf = 1.0 / max(sf, 1.0e-38);
+                let d_re = delta_re;
+                let d_im = delta_im;
+                let temp_re = d_re;
+                let new_re = (2.0 * z.re * inv_sf + temp_re * sf * inv_sf) * temp_re
+                           - (2.0 * z.im * inv_sf + d_im * sf * inv_sf) * d_im
+                           + dc_re * inv_sf;
+                let new_im = 2.0 * diffabs(
+                    z.re * z.im * inv_sf,
+                    z.re * d_im + temp_re * (z.im * inv_sf + d_im * sf * inv_sf)
+                ) + dc_im * inv_sf;
+                let scaled = rescale_delta(new_re, new_im, sf);
                 delta_re = scaled.x;
                 delta_im = scaled.y;
                 delta_scale = scaled.z;
+                n = n + 1u;
             } else {
-                let delta_actual_re = delta_re * delta_scale;
-                let delta_actual_im = delta_im * delta_scale;
-                let linear = complex_mul(2.0 * z.re, 2.0 * z.im, delta_actual_re, delta_actual_im);
-                let nonlinear = complex_mul(delta_actual_re, delta_actual_im, delta_actual_re, delta_actual_im);
-                // IMPORTANT: Pour Mandelbrot, on ajoute dc à chaque itération. Pour Julia, dc est déjà dans delta initial.
-                // WGSL: select(false_val, true_val, cond) => cond ? true_val : false_val
-                // Donc ici on veut dc si !is_julia, sinon 0.
-                let next_re = linear.x + nonlinear.x + select(0.0, dc_re, !is_julia);
-                let next_im = linear.y + nonlinear.y + select(0.0, dc_im, !is_julia);
-                let scaled = rescale_delta(next_re, next_im, 1.0);
+                // Mandelbrot/Julia perturbation using scaled delta approach
+                // (inspired by rust-fractal-core's perturb_function).
+                // Keeps delta as mantissa * scale_factor, doing arithmetic in scaled space
+                // for better precision. Formula:
+                //   delta' = delta * (2*z_ref + delta*sf) + dc
+                // In scaled space (dividing by sf):
+                //   d' = (2*z_ref/sf)*d + sf*(d*d) + dc/sf
+                let sf = delta_scale;
+                let inv_sf = 1.0 / max(sf, 1.0e-38);
+                let d_re = delta_re;
+                let d_im = delta_im;
+                let two_zr_re = 2.0 * z.re * inv_sf;
+                let two_zr_im = 2.0 * z.im * inv_sf;
+                let new_re = two_zr_re * d_re - two_zr_im * d_im + sf * (d_re * d_re - d_im * d_im)
+                           + select(0.0, dc_re * inv_sf, !is_julia);
+                let new_im = two_zr_re * d_im + two_zr_im * d_re + sf * (2.0 * d_re * d_im)
+                           + select(0.0, dc_im * inv_sf, !is_julia);
+                let scaled = rescale_delta(new_re, new_im, sf);
                 delta_re = scaled.x;
                 delta_im = scaled.y;
                 delta_scale = scaled.z;
