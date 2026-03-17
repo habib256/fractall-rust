@@ -252,7 +252,7 @@ fn frexp(value: f64) -> (f64, i32) {
 }
 
 #[inline(always)]
-fn pow2i(exp: i32) -> f64 {
+pub fn pow2i(exp: i32) -> f64 {
     if exp < -1022 {
         return 0.0;
     }

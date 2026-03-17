@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::perturbation::bla::BlaTable;
 use crate::fractal::perturbation::orbit::{ReferenceOrbit, HybridBlaReferences};
-use crate::fractal::perturbation::types::ComplexExp;
+use crate::fractal::perturbation::types::{ComplexExp, FloatExp};
 use crate::fractal::gmp::complex_norm_sqr;
 use crate::fractal::perturbation::series::{
     SeriesConfig, SeriesTable, should_use_series, estimate_series_error,
@@ -72,20 +72,24 @@ enum BatchResult {
     NeedRebase { z_curr: Complex64 },
 }
 
-/// Fast f64 batch perturbation for Mandelbrot z²+c (and Julia).
+/// Fast scaled perturbation for Mandelbrot z²+c (and Julia).
 ///
-/// Processes up to `batch_size` iterations using pure f64 arithmetic, avoiding
-/// the overhead of ComplexExp (mantissa+exponent) operations in the inner loop.
-/// This is ~5x faster than the ComplexExp path since it avoids ~20 frexp/ldexp
-/// calls per iteration.
+/// Inspired by rust-fractal-core's scaled delta approach: uses ldexp/frexp scaling
+/// to keep the delta mantissa in f64 range while tracking the exponent separately.
+/// This avoids the overhead of full ComplexExp operations (mantissa+exponent) in the
+/// inner loop while maintaining precision across a much wider range than plain f64.
 ///
-/// Inspired by rust-fractal-core's scaled delta approach, but simplified to use
-/// plain f64 when values are within f64 range.
+/// The key insight from rust-fractal-core is:
+///   scale_factor = 2^(delta.exponent)
+///   scaled_delta = delta.mantissa (in f64)
+///   z_curr = z_ref + scale_factor * scaled_delta
+///
+/// After each iteration, the scale_factor is updated via reduce() (re-normalize).
+/// At extended iterations (where z_ref underflows f64), we fall back to ComplexExtended.
 ///
 /// # When to use
 /// - Mandelbrot or Julia (standard z²+c perturbation)
 /// - NOT Burning Ship, Tricorn, or Multibrot (different formulas)
-/// - NOT when using high precision path (pixel_size < 1e-14)
 /// - NOT when distance estimation or interior detection is enabled
 #[inline(never)]
 fn fast_mandelbrot_batch_f64(
@@ -101,20 +105,42 @@ fn fast_mandelbrot_batch_f64(
     suspect: &mut bool,
     iters_ptb: &mut u32,
 ) -> BatchResult {
-    // Batch size: process up to 256 iterations before returning to check BLA
     const BATCH_SIZE: u32 = 256;
 
-    let mut d_re = delta.re.to_f64();
-    let mut d_im = delta.im.to_f64();
-    let dc_re = dc_f64.re;
-    let dc_im = dc_f64.im;
+    // Scaled delta approach (inspired by rust-fractal-core):
+    // Keep delta as mantissa * 2^exponent, but do arithmetic on mantissa only,
+    // using scale_factor = 2^exponent to convert between delta and z_ref space.
+    let mut d_re = delta.re.mantissa;
+    let mut d_im = delta.im.mantissa;
+    let delta_exp = delta.re.exponent.max(delta.im.exponent);
+    let scale_factor = crate::fractal::perturbation::types::pow2i(delta_exp);
+
+    // Scale dc into delta space: dc_scaled = dc * 2^(-delta_exp)
+    let inv_scale = if delta_exp > -500 && delta_exp < 500 {
+        crate::fractal::perturbation::types::pow2i(-delta_exp)
+    } else {
+        1.0
+    };
+    let dc_re_scaled = dc_f64.re * inv_scale;
+    let dc_im_scaled = dc_f64.im * inv_scale;
+
+    // If scale factor is degenerate, fall back to plain f64
+    let use_scaling = scale_factor.is_finite() && scale_factor > 0.0
+        && inv_scale.is_finite() && delta_exp.abs() < 500;
+
+    if !use_scaling {
+        // Fall back to plain f64 path (no scaling)
+        d_re = delta.re.to_f64();
+        d_im = delta.im.to_f64();
+    }
+
+    let dc_re = if use_scaling { dc_re_scaled } else { dc_f64.re };
+    let dc_im = if use_scaling { dc_im_scaled } else { dc_f64.im };
+    let sf = if use_scaling { scale_factor } else { 1.0 };
+
     let orbit_f64 = &ref_orbit.z_ref_f64;
     let phase_offset = ref_orbit.phase_offset as usize;
 
-    // Find the next extended iteration (where z_ref underflows f64) so we can stop
-    // before it and fall back to ComplexExp arithmetic. We use iter > *n because
-    // the current iteration *n is handled with a normal f64 check; we only need
-    // to stop BEFORE the next problematic iteration.
     let next_extended = ref_orbit.extended_iterations
         .iter()
         .find(|&&iter| iter > *n)
@@ -123,41 +149,51 @@ fn fast_mandelbrot_batch_f64(
     let batch_end = (*n + BATCH_SIZE).min(max_iter).min(next_extended);
 
     while *n < batch_end {
-        // Bounds check for reference orbit
         let idx = *n as usize + phase_offset;
         if idx >= orbit_f64.len() {
             break;
         }
         let z_ref = orbit_f64[idx];
 
-        // Compute z_curr = z_ref + delta (in f64)
-        let z_curr_re = z_ref.re + d_re;
-        let z_curr_im = z_ref.im + d_im;
+        // z_curr = z_ref + scale_factor * delta_mantissa
+        let z_curr_re = z_ref.re + sf * d_re;
+        let z_curr_im = z_ref.im + sf * d_im;
         let z_curr_norm_sqr = z_curr_re * z_curr_re + z_curr_im * z_curr_im;
 
-        // Bailout check
         if z_curr_norm_sqr > bailout_sqr {
-            *delta = ComplexExp::from_complex64(Complex64::new(d_re, d_im));
+            *delta = if use_scaling {
+                ComplexExp {
+                    re: FloatExp::new(d_re, delta_exp),
+                    im: FloatExp::new(d_im, delta_exp),
+                }
+            } else {
+                ComplexExp::from_complex64(Complex64::new(d_re, d_im))
+            };
             return BatchResult::Escaped {
                 iteration: *n,
                 z_final: Complex64::new(z_curr_re, z_curr_im),
             };
         }
 
-        // Glitch check: |delta|² > tolerance² * max(|z_ref|², 1e-6)
-        let d_norm_sqr = d_re * d_re + d_im * d_im;
+        // Glitch check (scaled): |sf * delta|² > tolerance² * max(|z_ref|², 1e-6)
+        let d_norm_sqr = (sf * d_re) * (sf * d_re) + (sf * d_im) * (sf * d_im);
         let z_ref_norm_sqr = (z_ref.re * z_ref.re + z_ref.im * z_ref.im).max(1e-6);
         if !d_norm_sqr.is_finite() || d_norm_sqr > glitch_tolerance_sqr * z_ref_norm_sqr {
-            *delta = ComplexExp::from_complex64(Complex64::new(d_re, d_im));
+            *delta = if use_scaling {
+                ComplexExp {
+                    re: FloatExp::new(d_re, delta_exp),
+                    im: FloatExp::new(d_im, delta_exp),
+                }
+            } else {
+                ComplexExp::from_complex64(Complex64::new(d_re, d_im))
+            };
             return BatchResult::Glitched {
                 iteration: *n,
                 z_final: Complex64::new(z_curr_re, z_curr_im),
             };
         }
 
-        // Rebasing check: when |z_curr| < |delta|, replace delta with z_curr
-        // and restart from n=0. Return NeedRebase so the outer loop can
-        // handle phase tracking for Hybrid BLA.
+        // Rebasing check
         if z_curr_norm_sqr > 0.0 && d_norm_sqr > 0.0 && z_curr_norm_sqr < d_norm_sqr {
             *delta = ComplexExp::from_complex64(Complex64::new(z_curr_re, z_curr_im));
             return BatchResult::NeedRebase {
@@ -165,11 +201,13 @@ fn fast_mandelbrot_batch_f64(
             };
         }
 
-        // Perturbation step: delta' = 2*z_ref*delta + delta^2 + dc
-        let two_zr_re = 2.0 * z_ref.re;
-        let two_zr_im = 2.0 * z_ref.im;
-        let new_re = two_zr_re * d_re - two_zr_im * d_im + d_re * d_re - d_im * d_im;
-        let new_im = two_zr_re * d_im + two_zr_im * d_re + 2.0 * d_re * d_im;
+        // Perturbation step in scaled space:
+        // delta' = 2*z_ref*delta + delta^2 * scale_factor + dc_scaled
+        // (note: delta^2 needs to be multiplied by sf because delta is in scaled space)
+        let two_zr_re = 2.0 * z_ref.re * inv_scale;
+        let two_zr_im = 2.0 * z_ref.im * inv_scale;
+        let new_re = two_zr_re * d_re - two_zr_im * d_im + sf * (d_re * d_re - d_im * d_im);
+        let new_im = two_zr_re * d_im + two_zr_im * d_re + sf * (2.0 * d_re * d_im);
         if is_julia {
             d_re = new_re;
             d_im = new_im;
@@ -180,9 +218,15 @@ fn fast_mandelbrot_batch_f64(
         *n += 1;
         *iters_ptb += 1;
 
-        // Overflow check
         if !d_re.is_finite() || !d_im.is_finite() {
-            *delta = ComplexExp::from_complex64(Complex64::new(d_re, d_im));
+            *delta = if use_scaling {
+                ComplexExp {
+                    re: FloatExp::new(d_re, delta_exp),
+                    im: FloatExp::new(d_im, delta_exp),
+                }
+            } else {
+                ComplexExp::from_complex64(Complex64::new(d_re, d_im))
+            };
             *suspect = true;
             return BatchResult::Glitched {
                 iteration: *n,
@@ -191,7 +235,14 @@ fn fast_mandelbrot_batch_f64(
         }
     }
 
-    *delta = ComplexExp::from_complex64(Complex64::new(d_re, d_im));
+    *delta = if use_scaling {
+        ComplexExp {
+            re: FloatExp::new(d_re, delta_exp),
+            im: FloatExp::new(d_im, delta_exp),
+        }
+    } else {
+        ComplexExp::from_complex64(Complex64::new(d_re, d_im))
+    };
     BatchResult::Continue
 }
 

@@ -9,7 +9,7 @@ use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::gmp::{complex_to_complex64, pow_f64_mpc};
 use crate::fractal::perturbation::bla::{BlaTable, build_bla_table};
 use crate::fractal::perturbation::types::ComplexExp;
-use crate::fractal::perturbation::series::{SeriesTable, build_series_table};
+use crate::fractal::perturbation::series::{SeriesTable, build_series_table, build_series_table_ho, validate_series_with_probes};
 
 /// Hybrid BLA: Multiple references for different phases of a periodic loop.
 /// For a hybrid loop with multiple phases, you need multiple references, one starting at
@@ -165,6 +165,141 @@ impl ReferenceOrbit {
     /// Get the effective length of the reference orbit for this phase
     pub fn effective_len(&self) -> usize {
         self.z_ref_f64.len().saturating_sub(self.phase_offset as usize)
+    }
+
+    /// Create a glitch-resolving reference starting at a given iteration.
+    ///
+    /// Inspired by rust-fractal-core's `get_glitch_resolving_reference()`:
+    /// Creates a new reference orbit starting from z_ref[iteration] + current_delta,
+    /// with c = cref + reference_delta. This produces a reference centered on the
+    /// glitch cluster, starting from the iteration where the glitch was detected.
+    ///
+    /// This is more efficient than computing a full orbit from scratch because
+    /// we only need to iterate from the glitch point onward.
+    pub fn create_glitch_reference(
+        &self,
+        iteration: u32,
+        reference_delta_re: f64,
+        reference_delta_im: f64,
+        current_delta_re: f64,
+        current_delta_im: f64,
+        params: &FractalParams,
+        cancel: Option<&AtomicBool>,
+    ) -> Option<ReferenceOrbit> {
+        use crate::fractal::perturbation::compute_perturbation_precision_bits;
+        let prec = compute_perturbation_precision_bits(params);
+
+        let iter_idx = iteration as usize;
+        if iter_idx >= self.z_ref_gmp.len() {
+            return None;
+        }
+
+        // New c = cref + reference_delta (center of glitch cluster)
+        let mut new_c = Complex::with_val(prec, (self.cref_gmp.real(), self.cref_gmp.imag()));
+        let ref_delta_re = Float::with_val(prec, reference_delta_re);
+        let ref_delta_im = Float::with_val(prec, reference_delta_im);
+        *new_c.mut_real() += &ref_delta_re;
+        *new_c.mut_imag() += &ref_delta_im;
+
+        // New z = z_ref[iteration] + current_delta
+        let mut z = Complex::with_val(prec, (self.z_ref_gmp[iter_idx].real(), self.z_ref_gmp[iter_idx].imag()));
+        let cur_delta_re = Float::with_val(prec, current_delta_re);
+        let cur_delta_im = Float::with_val(prec, current_delta_im);
+        *z.mut_real() += &cur_delta_re;
+        *z.mut_imag() += &cur_delta_im;
+
+        let cref_f64 = Complex64::new(
+            new_c.real().to_f64(),
+            new_c.imag().to_f64(),
+        );
+
+        let bailout = Float::with_val(prec, params.bailout);
+        let mut bailout_sqr = bailout.clone();
+        bailout_sqr *= &bailout;
+
+        let seed = Complex::with_val(prec, (params.seed.re, params.seed.im));
+        let _is_julia = params.fractal_type == FractalType::Julia;
+        let remaining_iters = params.iteration_max.saturating_sub(iteration);
+
+        let mut z_ref = Vec::with_capacity(remaining_iters as usize + 1);
+        let mut z_ref_f64 = Vec::with_capacity(remaining_iters as usize + 1);
+        let mut z_ref_gmp = Vec::with_capacity(remaining_iters as usize + 1);
+
+        z_ref.push(ComplexExp::from_gmp(&z));
+        z_ref_f64.push(complex_to_complex64(&z));
+        z_ref_gmp.push(z.clone());
+
+        for i in 0..remaining_iters {
+            if let Some(cancel) = cancel {
+                if i % 256 == 0 && cancel.load(Ordering::Relaxed) {
+                    return None;
+                }
+            }
+
+            let z_norm_sqr = {
+                let re = Float::with_val(prec, z.real());
+                let im = Float::with_val(prec, z.imag());
+                let mut re2 = re.clone(); re2 *= &re;
+                let mut im2 = im.clone(); im2 *= &im;
+                re2 += &im2;
+                re2
+            };
+            if z_norm_sqr > bailout_sqr {
+                break;
+            }
+
+            z = match params.fractal_type {
+                FractalType::Mandelbrot => {
+                    let mut z_sq = z.clone();
+                    z_sq *= &z.clone();
+                    z_sq += &new_c;
+                    z_sq
+                }
+                FractalType::Julia => {
+                    let mut z_sq = z.clone();
+                    z_sq *= &z.clone();
+                    z_sq += &seed;
+                    z_sq
+                }
+                FractalType::BurningShip => {
+                    let re_abs = z.real().clone().abs();
+                    let im_abs = z.imag().clone().abs();
+                    let mut z_abs = Complex::with_val(prec, (re_abs, im_abs));
+                    z_abs *= z_abs.clone();
+                    z_abs += &new_c;
+                    z_abs
+                }
+                FractalType::Tricorn => {
+                    let z_conj = z.clone().conj();
+                    let mut z_temp = z_conj.clone();
+                    z_temp *= &z_conj;
+                    z_temp += &new_c;
+                    z_temp
+                }
+                _ => break,
+            };
+
+            z_ref.push(ComplexExp::from_gmp(&z));
+            z_ref_f64.push(complex_to_complex64(&z));
+            z_ref_gmp.push(z.clone());
+        }
+
+        let extended_iterations: Vec<u32> = z_ref_f64
+            .iter()
+            .enumerate()
+            .filter(|(_, z)| z.re.abs() < 1e-300 && z.im.abs() < 1e-300)
+            .map(|(i, _)| i as u32)
+            .collect();
+
+        Some(ReferenceOrbit {
+            cref: cref_f64,
+            z_ref,
+            z_ref_f64,
+            z_ref_gmp,
+            cref_gmp: new_c,
+            phase_offset: 0,
+            extended_iterations,
+        })
     }
 }
 
@@ -402,7 +537,29 @@ pub fn compute_reference_orbit_cached(
     let t_series = Instant::now();
     let is_julia = params.fractal_type == FractalType::Julia;
     let series_table = if should_build_series {
-        Some(build_series_table(&orbit.z_ref_f64, is_julia))
+        // Use higher-order series if series_order > 4 (inspired by rust-fractal-core)
+        let series_order = (params.series_order as usize).max(4);
+        // Use data_storage_interval to reduce memory on deep zooms
+        let interval = if orbit.z_ref_f64.len() > 100_000 { 10 } else { 1 };
+        let mut table = build_series_table_ho(&orbit.z_ref_f64, is_julia, series_order, interval);
+
+        // Probe-based validation (inspired by rust-fractal-core's check_approximation)
+        let pixel_size = (params.span_x.abs() / params.width.max(1) as f64)
+            .max(params.span_y.abs() / params.height.max(1) as f64);
+        if pixel_size > 0.0 && pixel_size.is_finite() {
+            let validated = validate_series_with_probes(
+                &table,
+                &orbit.z_ref_f64,
+                is_julia,
+                pixel_size,
+                params.width as usize,
+                params.height as usize,
+                4, // probe_sampling: 4x4 grid = 16 probes
+            );
+            table.validated_skip = validated;
+        }
+
+        Some(table)
     } else {
         None
     };
