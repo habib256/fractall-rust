@@ -39,3 +39,5 @@ png = "0.17"
 [profile.release]
 lto = "fat"
 codegen-units = 1
+panic = "abort"
+strip = true

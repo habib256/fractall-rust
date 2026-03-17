@@ -244,19 +244,42 @@ fn newton(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     // Degree polynomial (pris sur la partie réelle du seed)
     let degree = p.seed.re.round() as i32;
     let degree = if degree <= 0 { 3 } else { degree }; // garde-fou
-    while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
-        let p_c = degree as f64;
-        let z_pow = z.powc(Complex64::new(p_c, 0.0));
-        let z_pow_deriv = z.powc(Complex64::new(p_c - 1.0, 0.0));
+    let one = Complex64::new(1.0, 0.0);
 
-        let numerator = z_pow - Complex64::new(1.0, 0.0);
-        let denominator = Complex64::new(p_c, 0.0) * z_pow_deriv;
-        if denominator.norm_sqr() < 1e-24 {
-            break;
+    if degree == 2 {
+        // Fast-path: z^2 - 1, derivative = 2*z
+        while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
+            let z_sq = z * z;
+            let numerator = z_sq - one;
+            let denominator = Complex64::new(2.0, 0.0) * z;
+            if denominator.norm_sqr() < 1e-24 { break; }
+            z = z - numerator / denominator;
+            i += 1;
         }
-        let z_quot = numerator / denominator;
-        z = z - z_quot;
-        i += 1;
+    } else if degree == 3 {
+        // Fast-path: z^3 - 1, derivative = 3*z^2
+        while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
+            let z_sq = z * z;
+            let z_cube = z_sq * z;
+            let numerator = z_cube - one;
+            let denominator = Complex64::new(3.0, 0.0) * z_sq;
+            if denominator.norm_sqr() < 1e-24 { break; }
+            z = z - numerator / denominator;
+            i += 1;
+        }
+    } else {
+        // General path with powc
+        while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
+            let p_c = degree as f64;
+            let z_pow = z.powc(Complex64::new(p_c, 0.0));
+            let z_pow_deriv = z.powc(Complex64::new(p_c - 1.0, 0.0));
+
+            let numerator = z_pow - one;
+            let denominator = Complex64::new(p_c, 0.0) * z_pow_deriv;
+            if denominator.norm_sqr() < 1e-24 { break; }
+            z = z - numerator / denominator;
+            i += 1;
+        }
     }
     FractalResult { iteration: i, z, orbit: None, distance: None }
 }
@@ -575,44 +598,44 @@ fn pickover_stalks(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
 
 #[inline]
 fn nova(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
-    // Nova_Iteration
+    // Nova_Iteration - fast-path for p=3 (hardcoded default)
     let mut z = Complex64::new(1.0, 0.0); // z0 = 1
     let mut z_prev;
-    let a_relax = Complex64::new(1.0, 0.0);
-    let p_poly = 3.0;
     let conv_epsilon = 1e-7;
     let conv_epsilon_sq = conv_epsilon * conv_epsilon;
     let bailout_sqr = p.bailout * p.bailout;
+    let one = Complex64::new(1.0, 0.0);
+    let three = Complex64::new(3.0, 0.0);
 
     let mut i = 0u32;
     while i < p.iteration_max {
-        let z_pow = z.powc(Complex64::new(p_poly, 0.0));
-        let z_pow_deriv = z.powc(Complex64::new(p_poly - 1.0, 0.0));
+        // z^3 and z^2 via multiplication (eliminates 2 powc calls per iteration)
+        let z_sq = z * z;
+        let z_cube = z_sq * z;
 
-        // p(z) = z^p - 1
-        let numerator = z_pow - Complex64::new(1.0, 0.0);
-        // p'(z) = p * z^(p-1)
-        let denominator = Complex64::new(p_poly, 0.0) * z_pow_deriv;
+        // p(z) = z^3 - 1
+        let numerator = z_cube - one;
+        // p'(z) = 3 * z^2
+        let denominator = three * z_sq;
 
         if denominator.norm_sqr() < 1e-20 {
             break;
         }
 
-        let mut newton_step = numerator / denominator;
-        newton_step *= a_relax;
+        let newton_step = numerator / denominator;
 
         z_prev = z;
         z = z - newton_step + z_pixel;
 
         let diff_sq = (z - z_prev).norm_sqr();
-        let z_sq = z.norm_sqr();
-        let denom = if z_sq < 1.0 { 1.0 } else { z_sq };
+        let z_sq_norm = z.norm_sqr();
+        let denom = if z_sq_norm < 1.0 { 1.0 } else { z_sq_norm };
 
         if diff_sq / denom < conv_epsilon_sq {
             break;
         }
 
-        if z.norm_sqr() > bailout_sqr {
+        if z_sq_norm > bailout_sqr {
             break;
         }
 
@@ -630,13 +653,42 @@ fn multibrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let d = p.multibrot_power;
     let bailout_sqr = p.bailout * p.bailout;
 
-    while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
-        let z_pow = z.powf(d);
-        if !z_pow.re.is_finite() || !z_pow.im.is_finite() {
-            break;
-        }
-        z = z_pow + z_pixel;
-        i += 1;
+    // Check once if power is integer for fast-path
+    let d_round = d.round();
+    let is_integer = (d - d_round).abs() < 1e-10;
+    let int_power = if is_integer { d_round as i32 } else { 0 };
+
+    match int_power {
+        2 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
+            z = z * z + z_pixel;
+            i += 1;
+        },
+        3 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
+            let z_sq = z * z;
+            z = z_sq * z + z_pixel;
+            i += 1;
+        },
+        4 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
+            let z2 = z * z;
+            z = z2 * z2 + z_pixel;
+            i += 1;
+        },
+        n if is_integer && n > 4 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
+            // Chain multiply for larger integer powers
+            let mut z_pow = z;
+            for _ in 1..n {
+                z_pow = z_pow * z;
+            }
+            if !z_pow.re.is_finite() || !z_pow.im.is_finite() { break; }
+            z = z_pow + z_pixel;
+            i += 1;
+        },
+        _ => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
+            let z_pow = z.powf(d);
+            if !z_pow.re.is_finite() || !z_pow.im.is_finite() { break; }
+            z = z_pow + z_pixel;
+            i += 1;
+        },
     }
 
     FractalResult { iteration: i, z, orbit: None, distance: None }
@@ -714,14 +766,44 @@ fn multibrot_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let mut i = 0u32;
     let d = p.multibrot_power;
     let bailout_sqr = p.bailout * p.bailout;
-    while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
-        let z_pow = z.powf(d);
-        if !z_pow.re.is_finite() || !z_pow.im.is_finite() {
-            break;
-        }
-        z = z_pow + p.seed;
-        i += 1;
+
+    // Check once if power is integer for fast-path
+    let d_round = d.round();
+    let is_integer = (d - d_round).abs() < 1e-10;
+    let int_power = if is_integer { d_round as i32 } else { 0 };
+
+    match int_power {
+        2 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
+            z = z * z + p.seed;
+            i += 1;
+        },
+        3 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
+            let z_sq = z * z;
+            z = z_sq * z + p.seed;
+            i += 1;
+        },
+        4 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
+            let z2 = z * z;
+            z = z2 * z2 + p.seed;
+            i += 1;
+        },
+        n if is_integer && n > 4 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
+            let mut z_pow = z;
+            for _ in 1..n {
+                z_pow = z_pow * z;
+            }
+            if !z_pow.re.is_finite() || !z_pow.im.is_finite() { break; }
+            z = z_pow + p.seed;
+            i += 1;
+        },
+        _ => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
+            let z_pow = z.powf(d);
+            if !z_pow.re.is_finite() || !z_pow.im.is_finite() { break; }
+            z = z_pow + p.seed;
+            i += 1;
+        },
     }
+
     FractalResult { iteration: i, z, orbit: None, distance: None }
 }
 

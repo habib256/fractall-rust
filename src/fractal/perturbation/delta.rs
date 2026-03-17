@@ -1220,6 +1220,12 @@ pub fn iterate_pixel(
     // Limites séparées (C++: iters_ptb < PerturbIterations && steps_bla < BLASteps)
     let limit_ptb = params.max_perturb_iterations;
     let limit_bla = params.max_bla_steps;
+
+    // BLA level hint: track last successful level to avoid scanning from the top each time.
+    // As delta grows, the valid BLA level tends to decrease monotonically, so starting
+    // the search near the last successful level amortizes to O(1).
+    let mut last_nc_bla_level: usize = if bla_table.nc_num_levels() > 0 { bla_table.nc_num_levels() - 1 } else { 0 };
+    let mut last_conf_bla_level: usize = if bla_table.num_levels() > 0 { bla_table.num_levels() - 1 } else { 0 };
     'outer: while n < max_iter
         && (limit_ptb == 0 || iters_ptb < limit_ptb)
         && (limit_bla == 0 || steps_bla < limit_bla)
@@ -1264,8 +1270,11 @@ pub fn iterate_pixel(
                     }
                 }
                 n = 0;
+                // Reset BLA level hints after rebase (delta is small again)
+                last_nc_bla_level = if bla_table.nc_num_levels() > 0 { bla_table.nc_num_levels() - 1 } else { 0 };
+                last_conf_bla_level = if bla_table.num_levels() > 0 { bla_table.num_levels() - 1 } else { 0 };
             }
-            
+
             // Try to find and apply a BLA step
             let mut stepped = false;
 
@@ -1281,33 +1290,37 @@ pub fn iterate_pixel(
                         let delta_vec = (delta_approx_cached.re, delta_approx_cached.im);
                         let delta_norm_sqr_check = delta_vec.0 * delta_vec.0 + delta_vec.1 * delta_vec.1;
 
-                        for level in (0..bla_table.nc_num_levels()).rev() {
+                        // BLA level hint: start from last successful level + 1 (clamped)
+                        let start_nc_level = last_nc_bla_level.min(bla_table.nc_num_levels() - 1);
+                        for level in (0..=start_nc_level).rev() {
                             if (n as usize) >= bla_table.nc_level_len(level) {
                                 continue;
                             }
                             let node = bla_table.get_nc_node(level, n as usize).unwrap();
-                            
+
                             if delta_norm_sqr_check < node.validity_radius * node.validity_radius {
                                 // Apply non-conformal BLA: z_{n+l} = A_{n,l}·z_n + B_{n,l}·c
                                 // For non-conformal fractals (Tricorn), A and B are 2×2 real matrices
                                 // instead of complex numbers, as angles are not preserved.
                                 let dc_approx = dc.to_complex64_approx();
                                 let dc_vec = (dc_approx.re, dc_approx.im);
-                                
+
                                 // Linear term: A_{n,l}·z_n
                                 let linear_vec = node.a.mul_vector(delta_vec.0, delta_vec.1);
-                                
+
                                 // Add dc term: B_{n,l}·c
                                 let dc_term_vec = node.b.mul_vector(dc_vec.0, dc_vec.1);
-                                
+
                                 let next_vec = (linear_vec.0 + dc_term_vec.0, linear_vec.1 + dc_term_vec.1);
-                                
+
                                 // Convert back to ComplexExp
                                 delta = ComplexExp::from_complex64(Complex64::new(next_vec.0, next_vec.1));
                                 n += 1u32 << level;  // Skip l = 2^level iterations
                                 stepped = true;
                                 bla_applied = true;
                                 steps_bla += 1;  // C++: steps_bla++ après chaque pas BLA
+                                // Update BLA level hint for next iteration
+                                last_nc_bla_level = level;
                                 // Mettre à jour les caches après application BLA
                                 delta_approx_cached = delta.to_complex64_approx();
                                 delta_norm_sqr_cached = delta.norm_sqr_approx();
@@ -1337,6 +1350,9 @@ pub fn iterate_pixel(
                                             }
                                         }
                                         n = 0;
+                                        // Reset BLA level hints after rebase
+                                        last_nc_bla_level = if bla_table.nc_num_levels() > 0 { bla_table.nc_num_levels() - 1 } else { 0 };
+                                        last_conf_bla_level = if bla_table.num_levels() > 0 { bla_table.num_levels() - 1 } else { 0 };
                                     }
                                 }
                                 break; // Found a BLA step, continue nested loop to try another
@@ -1371,8 +1387,9 @@ pub fn iterate_pixel(
             if !stepped && !is_burning_ship && !is_tricorn && bla_table.num_levels() > 0 {
                 // Utiliser le cache de la norme au lieu de recalculer (optimisation 2)
                 let delta_norm_sqr = delta_norm_sqr_cached;
-                // Search from highest level (largest skip) to lowest level (smallest skip)
-                for level in (0..bla_table.num_levels()).rev() {
+                // Search from last successful level (BLA level hint) to lowest level
+                let start_conf_level = last_conf_bla_level.min(bla_table.num_levels() - 1);
+                for level in (0..=start_conf_level).rev() {
                     if (n as usize) >= bla_table.level_len(level) {
                         continue;
                     }
@@ -1435,10 +1452,12 @@ pub fn iterate_pixel(
                         stepped = true;
                         bla_applied = true;
                         steps_bla += 1;  // C++: steps_bla++ après chaque pas BLA
+                        // Update BLA level hint for next iteration
+                        last_conf_bla_level = level;
                         // Mettre à jour les caches après application BLA
                         delta_approx_cached = delta.to_complex64_approx();
                         delta_norm_sqr_cached = delta.norm_sqr_approx();
-                        
+
                         // Optimisation 4: Vérifier rebasing après application BLA (plus efficace que à chaque itération)
                         if n < effective_len && (rebase_stride == 1 || (n % rebase_stride) == 0) {
                             let z_ref_check = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
@@ -1464,13 +1483,16 @@ pub fn iterate_pixel(
                                     }
                                 }
                                 n = 0;
+                                // Reset BLA level hints after rebase
+                                last_nc_bla_level = if bla_table.nc_num_levels() > 0 { bla_table.nc_num_levels() - 1 } else { 0 };
+                                last_conf_bla_level = if bla_table.num_levels() > 0 { bla_table.num_levels() - 1 } else { 0 };
                             }
                         }
                         break; // Found a BLA step, continue nested loop to try another
                     }
                 }
             }
-            
+
             // If no BLA step was found, exit the nested loop
             if !stepped {
                 break;
@@ -1563,6 +1585,9 @@ pub fn iterate_pixel(
                             }
                         }
                         n = 0;
+                        // Reset BLA level hints after rebase
+                        last_nc_bla_level = if bla_table.nc_num_levels() > 0 { bla_table.nc_num_levels() - 1 } else { 0 };
+                        last_conf_bla_level = if bla_table.num_levels() > 0 { bla_table.num_levels() - 1 } else { 0 };
                         continue 'outer;
                     }
                 }
@@ -1743,6 +1768,9 @@ pub fn iterate_pixel(
                 }
             }
             n = 0;  // reset m to 0 (car m = n)
+            // Reset BLA level hints after rebase
+            last_nc_bla_level = if bla_table.nc_num_levels() > 0 { bla_table.nc_num_levels() - 1 } else { 0 };
+            last_conf_bla_level = if bla_table.num_levels() > 0 { bla_table.num_levels() - 1 } else { 0 };
             continue;
         }
 
@@ -2164,6 +2192,10 @@ pub(crate) fn iterate_pixel_with_duals(
     // Try standalone series skip (simplified - doesn't propagate duals fully)
     // For now, skip series when using duals to avoid complexity
     
+    // BLA level hints for dual path
+    let mut last_conf_bla_level_dual: usize = if bla_table.num_levels() > 0 { bla_table.num_levels() - 1 } else { 0 };
+    let mut last_nc_bla_level_dual: usize = if bla_table.nc_num_levels() > 0 { bla_table.nc_num_levels() - 1 } else { 0 };
+
     while n < max_iter {
         let mut stepped = false;
 
@@ -2176,6 +2208,9 @@ pub(crate) fn iterate_pixel_with_duals(
             // Rebase: update value to full z_curr, duals are preserved (z_ref is constant)
             delta_dual.value = z_ref + delta_dual.value;
             n = 0;
+            // Reset BLA level hints after rebase (delta is small again)
+            last_conf_bla_level_dual = if bla_table.num_levels() > 0 { bla_table.num_levels() - 1 } else { 0 };
+            last_nc_bla_level_dual = if bla_table.nc_num_levels() > 0 { bla_table.nc_num_levels() - 1 } else { 0 };
         }
 
         // Check interior detection periodically to reduce overhead.
@@ -2203,7 +2238,8 @@ pub(crate) fn iterate_pixel_with_duals(
         // Try BLA for conformal fractals (NOT Burning Ship or Tricorn which use non-conformal BLA)
         if !is_tricorn && !is_burning_ship && bla_table.num_levels() > 0 {
             let delta_norm_sqr = delta_dual.norm_sqr();
-            for level in (0..bla_table.num_levels()).rev() {
+            let start_level = last_conf_bla_level_dual.min(bla_table.num_levels() - 1);
+            for level in (0..=start_level).rev() {
                 if (n as usize) >= bla_table.level_len(level) {
                     continue;
                 }
@@ -2232,19 +2268,21 @@ pub(crate) fn iterate_pixel_with_duals(
                     
                     delta_dual = next_dual;
                     n += 1u32 << level;
+                    last_conf_bla_level_dual = level;
                     stepped = true;
                     break;
                 }
             }
         }
-        
+
         // Try non-conformal BLA for Tricorn and Burning Ship
         if is_tricorn || is_burning_ship {
             if bla_table.nc_num_levels() > 0 {
                 let delta_vec = (delta_dual.value.re, delta_dual.value.im);
                 let delta_norm_sqr_check = delta_vec.0 * delta_vec.0 + delta_vec.1 * delta_vec.1;
 
-                for level in (0..bla_table.nc_num_levels()).rev() {
+                let start_nc_level = last_nc_bla_level_dual.min(bla_table.nc_num_levels() - 1);
+                for level in (0..=start_nc_level).rev() {
                     if (n as usize) >= bla_table.nc_level_len(level) {
                         continue;
                     }
@@ -2257,6 +2295,7 @@ pub(crate) fn iterate_pixel_with_duals(
                         let dc_term_dual = apply_nonconformal_matrix(node.b, dc_dual);
                         delta_dual = linear_dual.add(dc_term_dual);
                         n += 1u32 << level;
+                        last_nc_bla_level_dual = level;
                         stepped = true;
                         break;
                     }

@@ -520,20 +520,15 @@ pub fn should_use_perturbation(params: &FractalParams, gpu_f32: bool) -> bool {
     let pixel_size = (params.span_x.abs() / params.width as f64)
         .max(params.span_y.abs() / params.height as f64);
 
-    // Seuil maximum: au-delà de zoom ~4e15, la précision de ComplexExp (mantisse f64)
-    // n'est plus suffisante. Forcer GMP pour ces zooms extrêmes.
-    const MAX_ZOOM_THRESHOLD: f64 = 1e-15;
-    if pixel_size < MAX_ZOOM_THRESHOLD {
-        return false;
-    }
-    
     if gpu_f32 {
         // En mode GPU fp32: basculer sur perturbation pour zoom > e5 (pixel_size < 1e-5)
         const GPU_PERTURBATION_THRESHOLD: f64 = 1e-5;
         return pixel_size < GPU_PERTURBATION_THRESHOLD;
     } else {
-        // En mode CPU fp64: basculer sur perturbation pour zoom > e13 (pixel_size < 1e-13)
-        const CPU_PERTURBATION_THRESHOLD: f64 = 1e-13;
+        // En mode CPU fp64: basculer sur perturbation dès zoom > ~1e12 (pixel_size < 1e-12)
+        // Pour les zooms très profonds (>1e15), la référence GMP est utilisée automatiquement
+        // par should_use_gmp_reference() dans le pipeline de perturbation.
+        const CPU_PERTURBATION_THRESHOLD: f64 = 1e-12;
         return pixel_size < CPU_PERTURBATION_THRESHOLD;
     }
 }

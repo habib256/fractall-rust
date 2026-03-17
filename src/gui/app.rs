@@ -905,17 +905,16 @@ impl FractallApp {
                         }
                     }
                 } else {
-                    // CPU rendering - La perturbation f64 est désactivée en mode Auto car trop lente.
-                    // On utilise CPU f64 standard jusqu'à zoom ~10^16, puis GMP reference au-delà.
+                    // CPU rendering - utilise perturbation dès zoom > ~1e12 en mode Auto
                     let use_perturbation = match pass_params.algorithm_mode {
-                        AlgorithmMode::Auto => false, // Désactivé: trop lent comparé à CPU f64 standard et GMP reference
+                        AlgorithmMode::Auto => crate::render::escape_time::should_use_perturbation(&pass_params, false),
                         AlgorithmMode::Perturbation => true,
                         _ => false,
                     };
                     let use_perturbation =
                         use_perturbation && pass_params.plane_transform == PlaneTransform::Mu;
 
-                    if use_perturbation && matches!(pass_params.fractal_type, FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip) {
+                    if use_perturbation && matches!(pass_params.fractal_type, FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn | FractalType::Multibrot) {
                         // Use cache-aware CPU perturbation rendering
                         use crate::fractal::perturbation::render_perturbation_with_cache;
                         render_perturbation_with_cache(&pass_params, &cancel, reuse, current_orbit_cache.as_ref())
