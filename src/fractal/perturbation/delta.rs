@@ -979,16 +979,17 @@ pub fn compute_adaptive_glitch_tolerance(pixel_size: f64, user_tolerance: f64) -
         0.0
     };
 
-    // Tolérance adaptative selon le niveau de zoom
-    // Ajustée pour réduire les faux positifs et améliorer les performances
-    // La perturbation devrait être rapide, donc on évite de marquer trop de pixels comme glitched
-    match zoom_level as u32 {
-        0..=6 => 1e-5,    // Zoom peu profond : modéré (relaxé de 1e-6)
-        7..=14 => 1e-4,   // Moyen : standard (relaxé de 1e-5)
-        15..=30 => 1e-3,  // Profond : relaxé (relaxé de 1e-4 pour éviter trop de recalculs)
-        31..=50 => 1e-2,  // Très profond : très relaxé (relaxé de 1e-3)
-        _ => 1e-1,        // Extrême (>50) : très tolérant (relaxé de 1e-2)
-    }
+    // Continuous adaptive tolerance scaling (inspired by rust-fractal-core).
+    // Instead of discrete steps, use a smooth logarithmic ramp:
+    //   tolerance = 10^(-5 + zoom_level * slope)
+    // This avoids discontinuities at zoom level boundaries and provides
+    // a smoother glitch detection experience across all zoom depths.
+    //
+    // Clamped to [1e-6, 1e-1] range.
+    let slope = 0.1; // tolerance increases by 10x every 10 zoom levels
+    let log_tol = -5.0 + zoom_level * slope;
+    let tolerance = 10.0f64.powf(log_tol.clamp(-6.0, -1.0));
+    tolerance
 }
 
 /// Iterate a pixel using perturbation theory (Section 2 of deep zoom theory).

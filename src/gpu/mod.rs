@@ -612,6 +612,8 @@ impl GpuRenderer {
                     FractalType::Mandelbrot => 0,
                     FractalType::Julia => 1,
                     FractalType::BurningShip => 2,
+                    FractalType::Tricorn => 3,
+                    FractalType::TricornJulia => 4,
                     _ => 0,
                 },
                 glitch_tolerance: params.glitch_tolerance as f32,

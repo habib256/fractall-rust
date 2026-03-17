@@ -822,12 +822,35 @@ pub fn compute_reference_orbit(
         }
     }
 
-    // Store GMP strings for cache validation
+    // Nucleus optimization (inspired by rust-fractal-core's root_finding):
+    // Try to snap the reference point to the nearest Mandelbrot nucleus.
+    // This makes the reference orbit exactly periodic, reducing glitches
+    // and improving stability for surrounding pixels.
+    let (ref_center_x, ref_center_y) = if matches!(params.fractal_type, FractalType::Mandelbrot) {
+        if let Some(nucleus) = optimize_reference_center(
+            &center_x_gmp, &center_y_gmp,
+            params.span_x, params.span_y,
+            prec,
+        ) {
+            let nx = Float::with_val(prec, nucleus.real());
+            let ny = Float::with_val(prec, nucleus.imag());
+            eprintln!("[NUCLEUS] Reference snapped to nucleus at ({}, {})",
+                nx.to_string_radix(10, Some(15)),
+                ny.to_string_radix(10, Some(15)));
+            (nx, ny)
+        } else {
+            (center_x_gmp.clone(), center_y_gmp.clone())
+        }
+    } else {
+        (center_x_gmp.clone(), center_y_gmp.clone())
+    };
+
+    // Store GMP strings for cache validation (use original center, not nucleus)
     let cx_str = center_x_gmp.to_string_radix(10, None);
     let cy_str = center_y_gmp.to_string_radix(10, None);
 
-    let cref = Complex::with_val(prec, (&center_x_gmp, &center_y_gmp));
-    let cref_f64 = Complex64::new(center_x_gmp.to_f64(), center_y_gmp.to_f64());
+    let cref = Complex::with_val(prec, (&ref_center_x, &ref_center_y));
+    let cref_f64 = Complex64::new(ref_center_x.to_f64(), ref_center_y.to_f64());
 
     let mut z = match params.fractal_type {
         FractalType::Mandelbrot | FractalType::BurningShip | FractalType::Multibrot | FractalType::Tricorn => {
@@ -1012,13 +1035,184 @@ fn complex_norm_sqr(value: &Complex, prec: u32) -> Float {
     // lors de la conversion Float -> f64 -> Float
     let re_prec = Float::with_val(prec, value.real());
     let im_prec = Float::with_val(prec, value.imag());
-    
+
     let mut re2 = re_prec.clone();
     re2 *= &re_prec;
     let mut im2 = im_prec.clone();
     im2 *= &im_prec;
-    
+
     let mut sum = Float::with_val(prec, &re2);
     sum += &im2;
     sum
+}
+
+/// Newton-Raphson nucleus finding for Mandelbrot set reference point optimization.
+///
+/// Inspired by rust-fractal-core's `root_finding.rs` module, which implements
+/// Newton-Raphson iteration to find the nearest nucleus (periodic point) of the
+/// Mandelbrot set. Placing the reference orbit at a nucleus reduces glitches
+/// because the orbit is exactly periodic, making the perturbation formula more
+/// stable for surrounding pixels.
+///
+/// The algorithm finds c such that f^p(0, c) = 0 where f(z,c) = z² + c
+/// and p is the period. The Newton step is:
+///   c_new = c - f^p(0, c) / (df^p/dc)(0, c)
+///
+/// Returns the refined center if convergence is achieved, None otherwise.
+pub fn find_nucleus(
+    center: &Complex,
+    period: u32,
+    prec: u32,
+    max_newton_iters: u32,
+) -> Option<Complex> {
+    if period == 0 {
+        return None;
+    }
+
+    let mut c = Complex::with_val(prec, (center.real(), center.imag()));
+    let epsilon_sqr = {
+        // Convergence threshold: 2^(-prec * 0.8) squared
+        let exp = -(prec as f64) * 0.8;
+        let eps = 2.0f64.powf(exp);
+        Float::with_val(prec, eps * eps)
+    };
+
+    for _ in 0..max_newton_iters {
+        // Iterate z → z² + c for `period` steps, accumulating df/dc
+        let mut z = Complex::with_val(prec, (0, 0));
+        let mut dz_dc = Complex::with_val(prec, (0, 0));
+
+        for _ in 0..period {
+            // dz_dc = 2*z*dz_dc + 1
+            let mut two_z = Complex::with_val(prec, (z.real(), z.imag()));
+            *two_z.mut_real() *= 2;
+            *two_z.mut_imag() *= 2;
+            dz_dc *= &two_z;
+            *dz_dc.mut_real() += 1;
+
+            // z = z² + c
+            let z_clone = z.clone();
+            z *= &z_clone;
+            z += &c;
+        }
+
+        // Newton step: c_new = c - z / dz_dc
+        let dz_dc_norm = complex_norm_sqr(&dz_dc, prec);
+        let dz_dc_norm_f64 = dz_dc_norm.to_f64();
+        if dz_dc_norm_f64 < 1e-300 {
+            // Derivative too small, can't converge
+            return None;
+        }
+
+        // Compute z / dz_dc using conjugate division
+        let dz_dc_conj = dz_dc.clone().conj();
+        let mut quotient = Complex::with_val(prec, (&z * &dz_dc_conj));
+        *quotient.mut_real() /= &dz_dc_norm;
+        *quotient.mut_imag() /= &dz_dc_norm;
+
+        // c = c - quotient
+        c -= &quotient;
+
+        // Check convergence: |quotient|² < epsilon²
+        let step_norm = complex_norm_sqr(&quotient, prec);
+        if step_norm < epsilon_sqr {
+            return Some(c);
+        }
+    }
+
+    None
+}
+
+/// Detect the period of the nearest nucleus to the given center point.
+///
+/// Inspired by rust-fractal-core's approach: iterate z → z² + c and look for
+/// near-zero |z| values. The first iteration where |z| is very small likely
+/// indicates the period of the nearest nucleus.
+///
+/// Returns the detected period, or None if no period is found within max_period.
+pub fn detect_nucleus_period(
+    center: &Complex,
+    prec: u32,
+    max_period: u32,
+) -> Option<u32> {
+    let mut z = Complex::with_val(prec, (0, 0));
+    let c = Complex::with_val(prec, (center.real(), center.imag()));
+
+    // Track the minimum |z|² and its iteration
+    let mut min_norm = Float::with_val(prec, f64::MAX);
+    let mut min_period = 0u32;
+
+    for i in 1..=max_period {
+        let z_clone = z.clone();
+        z *= &z_clone;
+        z += &c;
+
+        let norm = complex_norm_sqr(&z, prec);
+        if norm < min_norm {
+            min_norm = norm.clone();
+            min_period = i;
+        }
+
+        // If |z|² is extremely small, we've found the period
+        let norm_f64 = norm.to_f64();
+        if norm_f64 < 1e-6 {
+            return Some(i);
+        }
+    }
+
+    // Return the period with minimum |z| if it's reasonably small
+    let min_f64 = min_norm.to_f64();
+    if min_f64 < 1.0 {
+        Some(min_period)
+    } else {
+        None
+    }
+}
+
+/// Try to optimize the reference point by finding the nearest Mandelbrot nucleus.
+///
+/// Inspired by rust-fractal-core's root_finding module. This function:
+/// 1. Detects the likely period of the nearest nucleus
+/// 2. Uses Newton-Raphson to refine the center to the exact nucleus
+/// 3. Validates that the refined point is within the pixel's visible area
+///
+/// Returns the optimized center point, or None if optimization fails or
+/// the nucleus is too far from the original center.
+pub fn optimize_reference_center(
+    center_x: &Float,
+    center_y: &Float,
+    span_x: f64,
+    span_y: f64,
+    prec: u32,
+) -> Option<Complex> {
+    let center = Complex::with_val(prec, (center_x, center_y));
+
+    // Detect period (limit search to reasonable range)
+    let max_period = 1000u32;
+    let period = detect_nucleus_period(&center, prec, max_period)?;
+
+    // Find the nucleus using Newton-Raphson
+    let nucleus = find_nucleus(&center, period, prec, 64)?;
+
+    // Validate: the nucleus should be within the visible area
+    // (within half the span from the original center)
+    let dx = {
+        let mut d = Float::with_val(prec, nucleus.real());
+        d -= center_x;
+        d.to_f64().abs()
+    };
+    let dy = {
+        let mut d = Float::with_val(prec, nucleus.imag());
+        d -= center_y;
+        d.to_f64().abs()
+    };
+
+    // Only use the nucleus if it's within the visible area
+    let max_offset_x = span_x.abs() * 0.4;
+    let max_offset_y = span_y.abs() * 0.4;
+    if dx <= max_offset_x && dy <= max_offset_y {
+        Some(nucleus)
+    } else {
+        None
+    }
 }
