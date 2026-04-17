@@ -6,11 +6,14 @@
 cargo build --release
 cargo run --release --bin fractall-cli -- --type 3 --width 1920 --height 1080 --output out.png
 cargo run --release --bin fractall-gui
+cargo run --release --bin fractall-quality -- suite
 ```
 
 Prerequis: GMP/MPFR/MPC (pour `rug`).
 
 **Tests / CI**: Tests unitaires dans les modules perturbation (bla, delta, series, nonconformal, distance, glitch, interior, types, mod), lyapunov et progressive. Commande: `cargo test --release --lib`. Pas de pipeline CI/CD.
+
+**QA perturbation vs GMP** (`fractall-quality`, voir §"Qualite / Auto-amelioration"): outil de regression qui compare le chemin perturbation au rendu GMP pur par pixel a des zooms profonds.
 
 ## Architecture
 
@@ -18,6 +21,7 @@ Prerequis: GMP/MPFR/MPC (pour `rug`).
 src/
 ├── main.rs              # CLI (clap)
 ├── main_gui.rs          # GUI (egui/eframe)
+├── main_quality.rs      # QA: compare perturbation vs GMP (clap subcommands)
 ├── fractal/
 │   ├── mod.rs           # exports + default_params_for_type()
 │   ├── types.rs         # FractalType, FractalParams, AlgorithmMode, ColorSpace, PlaneTransform
@@ -57,9 +61,14 @@ src/
 │   ├── mod.rs
 │   ├── palettes.rs      # 27 palettes predefinies (0-26)
 │   └── color_models.rs  # RGB, HSB, LCH conversions
-└── io/
-    ├── mod.rs
-    └── png.rs           # save_png_with_metadata(), load_png_metadata()
+├── io/
+│   ├── mod.rs
+│   └── png.rs           # save_png_with_metadata(), load_png_metadata()
+└── quality/
+    ├── mod.rs           # compare(), params_from_preset(), apply_zoom()
+    ├── metrics.rs       # iter_diff, z_distance, verdict PASS/WARN/FAIL
+    ├── presets.rs       # 8 deep-zoom presets (Mandelbrot/Julia/BS/Tricorn)
+    └── report.rs        # PNG (pert/gmp/diff) + markdown + suite-summary.md
 ```
 
 ## Dependances principales (Cargo.toml)
@@ -79,7 +88,7 @@ src/
 | serde / serde_json | 1.0 | Serialisation JSON (metadonnees PNG) |
 | png | 0.17 | Acces chunks PNG bas niveau |
 
-Deux binaires: `fractall-cli` (src/main.rs) et `fractall-gui` (src/main_gui.rs).
+Trois binaires: `fractall-cli` (src/main.rs), `fractall-gui` (src/main_gui.rs), `fractall-quality` (src/main_quality.rs).
 
 ## Systeme de coordonnees
 
@@ -375,6 +384,41 @@ Note: les raccourcis +/=/-/0 sont desactives en mode preview Julia.
 **Rendu HQ**: Thread dedie avec messages de progression (Progress/Done/Error).
 
 **Parallelisme CPU**: rayon (par_chunks_mut) pour le calcul des pixels. AtomicBool pour signaler l'annulation.
+
+## Qualite / Auto-amelioration
+
+Binaire `fractall-quality` (`src/main_quality.rs` + `src/quality/`): compare le chemin perturbation a une verite-terrain GMP pur par pixel et produit un rapport de regression utilisable a chaque modification du module `perturbation/`.
+
+**Usage**:
+
+```bash
+cargo run --release --bin fractall-quality -- list
+cargo run --release --bin fractall-quality -- preset seahorse-valley --width 128 --height 128
+cargo run --release --bin fractall-quality -- suite --width 256 --height 256
+cargo run --release --bin fractall-quality -- compare --type 3 \
+    --center-x-hp "-0.743643887037158" --center-y-hp "0.131825904205311" --zoom 1e10
+```
+
+**Sorties** (dans `quality-reports/<preset>/`):
+- `pert.png` / `gmp.png` (rendu avec metadonnees, drag-and-drop reouvrable dans fractall-gui)
+- `diff.png` heatmap des differences d'iterations par pixel (noir=match, rouge-jaune=divergence)
+- `report.md` tableau complet des metriques + top 10 pixels divergents
+- `suite-summary.md` a la racine pour le mode suite (verdict PASS/WARN/FAIL par preset)
+
+**Metriques par pixel**: `|iter_pert - iter_gmp|` (max, mean, rms, p50/p95/p99), ratio de pixels divergents (>1), `|z_pert - z_gmp|`, erreur relative, desaccord d'echappement, temps perturbation vs GMP.
+
+**Seuils par defaut**: PASS si max_iter_diff <= 1 et divergence_ratio <= 0.001 ; WARN si max_iter_diff <= 3 et divergence_ratio <= 0.01 ; sinon FAIL. Ajustables via `--pass-max-iter-diff`, `--warn-divergence-ratio`, etc.
+
+**Presets** (`src/quality/presets.rs`): 8 scenes couvrant Mandelbrot (seahorse 1e8, activation 1e13, GMP perturbation 1e17, Misiurewicz 1e12, minibrot 1e18), Julia (seed -0.8+0.156i a 1e10), Burning Ship antenna 1e9 (non-conformal BLA) et Tricorn spiral 1e8.
+
+**Rappel perf**: le rendu GMP pur est O(1e3-1e4) plus lent que la perturbation ; c'est pourquoi la resolution par defaut est 256x256. La suite complete peut prendre plusieurs minutes au-dela de zoom 1e15.
+
+**Boucle d'auto-amelioration recommandee**:
+1. Apres toute modification du module `perturbation/`, lancer `cargo run --release --bin fractall-quality -- suite`
+2. Lire `quality-reports/suite-summary.md` et identifier les presets FAIL
+3. Pour chaque FAIL, lire `report.md` et la liste "Top 10 divergent pixels" pour localiser l'origine du probleme
+4. Correler avec les modules concernes (bla, delta, nonconformal, glitch, orbit) via les coordonnees pixel et la difference d'iterations
+5. Patcher, relancer la suite, verifier l'amelioration des ratios
 
 ## Bugs corriges recemment
 
