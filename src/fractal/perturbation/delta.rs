@@ -1830,10 +1830,19 @@ pub fn iterate_pixel(
         });
         z_ref + delta.to_complex64_approx()
     };
+    // If the loop exited because we ran out of reference orbit (rather than hitting
+    // the user's iteration cap), the pixel's true iteration count is unknown: all such
+    // pixels would otherwise inherit z_ref[effective_len-1] + delta, producing identical
+    // (iter, z) for an entire cluster. Mark as glitched so the downstream recovery
+    // (secondary references / per-pixel GMP fallback) resolves them correctly.
+    // See quality preset mandelbrot-e30 regression: centers outside the M-set produce
+    // short non-periodic reference orbits that terminate before many surrounding pixels.
+    let ref_exhausted = effective_len.saturating_sub(1) < params.iteration_max
+        && n >= effective_len.saturating_sub(1);
     DeltaResult {
         iteration: final_index,
         z_final: z_curr,
-        glitched: false,
+        glitched: ref_exhausted,
         suspect,
         distance: f64::INFINITY, // Distance estimation not computed by default
         is_interior: false, // Interior detection not computed by default
@@ -2086,7 +2095,7 @@ pub fn iterate_pixel_gmp(
     let delta_prec = Complex::with_val(prec, (delta.real(), delta.imag()));
     let mut z_curr = z_ref_prec.clone();
     z_curr += &delta_prec;
-    
+
     // Final glitch check: verify delta is reasonable (reuse precomputed tolerance)
     let z_ref_norm_sqr = complex_norm_sqr(&z_ref_prec, prec);
     let delta_norm_sqr = complex_norm_sqr(&delta_prec, prec);
@@ -2095,7 +2104,75 @@ pub fn iterate_pixel_gmp(
     let mut glitch_threshold = glitch_tolerance_sqr_gmp.clone();
     glitch_threshold *= &glitch_scale;
     let is_glitched = !delta_norm_sqr.is_finite() || delta_norm_sqr > glitch_threshold;
-    
+
+    // Continuation via pure per-pixel GMP iteration when the reference orbit
+    // was exhausted before the user's iteration cap (centers outside the M-set
+    // produce short non-periodic reference orbits). Without this, every pixel
+    // that outlives the reference inherits z_ref[effective_len-1] + delta,
+    // yielding identical (iter, z) for spatially distinct pixels.
+    let ref_exhausted = effective_len.saturating_sub(1) < params.iteration_max
+        && n >= effective_len.saturating_sub(1);
+    let z_curr_norm_sqr = complex_norm_sqr(&z_curr, prec);
+    if ref_exhausted && !is_glitched && z_curr_norm_sqr < bailout_sqr {
+        let c_mandel = {
+            let mut c = Complex::with_val(prec, &ref_orbit.cref_gmp);
+            c += dc_gmp;
+            c
+        };
+        let seed_complex = Complex::with_val(prec, (params.seed.re, params.seed.im));
+        let multibrot_power = params.multibrot_power;
+        while n < params.iteration_max {
+            let z_new = if is_burning_ship {
+                let re_abs = z_curr.real().clone().abs();
+                let im_abs = z_curr.imag().clone().abs();
+                let z_abs = Complex::with_val(prec, (re_abs, im_abs));
+                let mut zn = z_abs.clone();
+                zn *= &z_abs;
+                zn += &c_mandel;
+                zn
+            } else if is_tricorn {
+                let z_conj = z_curr.clone().conj();
+                let mut zn = z_conj.clone();
+                zn *= &z_conj;
+                zn += &c_mandel;
+                zn
+            } else if params.fractal_type == FractalType::Multibrot {
+                let mut zn = crate::fractal::gmp::pow_f64_mpc(&z_curr, multibrot_power, prec);
+                zn += &c_mandel;
+                zn
+            } else {
+                // Mandelbrot / Julia: z_new = z² + c
+                let mut zn = z_curr.clone();
+                zn *= &z_curr;
+                if is_julia {
+                    zn += &seed_complex;
+                } else {
+                    zn += &c_mandel;
+                }
+                zn
+            };
+            z_curr = z_new;
+            n += 1;
+            if !z_curr.real().is_finite() || !z_curr.imag().is_finite() {
+                break;
+            }
+            let zn2 = complex_norm_sqr(&z_curr, prec);
+            if zn2 > bailout_sqr {
+                break;
+            }
+        }
+        return DeltaResult {
+            iteration: n,
+            z_final: crate::fractal::gmp::complex_to_complex64(&z_curr),
+            glitched: false,
+            suspect: false,
+            distance: f64::INFINITY,
+            is_interior: false,
+            phase_changed: false,
+            smooth_iteration: 0.0,
+        };
+    }
+
     DeltaResult {
         iteration: final_index,
         z_final: crate::fractal::gmp::complex_to_complex64(&z_curr),

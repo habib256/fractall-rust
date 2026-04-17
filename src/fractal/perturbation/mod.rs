@@ -383,7 +383,11 @@ pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32
         needed_bits.clamp(128, 8192)
     };
 
-    final_bits
+    // Respect params.precision_bits as a floor: if the user (or a preset) explicitly
+    // requests higher precision than the auto-formula, honor it. This keeps GMP pure
+    // and perturbation aligned under MpcParams::from_params and avoids precision-
+    // mismatch divergences at extreme zooms (seen at e50 with 170k+ iterations).
+    final_bits.max(params.precision_bits.clamp(128, 8192))
 }
 
 /// Détermine si le zoom est trop profond pour utiliser la perturbation standard (f64/ComplexExp).
