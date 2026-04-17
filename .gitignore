@@ -16,3 +16,6 @@ Thumbs.db
 ## Environment
 .env
 .env.*
+
+## fractall-quality output
+/quality-reports/
