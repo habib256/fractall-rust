@@ -129,7 +129,10 @@ pub fn params_from_preset(preset: &Preset, opt: &ComparisonOptions) -> FractalPa
     apply_zoom(&mut params, preset.zoom);
 
     params.iteration_max = opt.max_iterations.unwrap_or(preset.iterations);
+    // Precedence: CLI --precision-bits > preset override > default (256 via default_params_for_type).
     if let Some(bits) = opt.precision_bits {
+        params.precision_bits = bits;
+    } else if let Some(bits) = preset.precision_bits {
         params.precision_bits = bits;
     }
 

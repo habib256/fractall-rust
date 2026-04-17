@@ -11,10 +11,16 @@ pub struct Preset {
     pub iterations: u32,
     pub multibrot_power: Option<f64>,
     pub julia_seed: Option<(f64, f64)>,
+    /// Override GMP precision in bits. If None, uses default 256.
+    /// Required for zooms > 1e70 where 256 bits is insufficient.
+    pub precision_bits: Option<u32>,
 }
 
 /// Fixed deep-zoom scenes covering the risk areas of the perturbation pipeline.
-/// Zooms range from 1e8 (f64 threshold) to 1e18 (GMP reference mandatory).
+/// Shallow scenes (1e8-1e18) validate the fast paths; deep scenes (1e30+) validate
+/// that perturbation's GMP path matches pure GMP at extreme zoom factors.
+/// Deep-zoom coordinates (e30, e50, e100) are sourced from the `locations/` TOML
+/// collection (rust-fractal-core format, verified against Fraktaler-3).
 pub const PRESETS: &[Preset] = &[
     Preset {
         name: "seahorse-valley",
@@ -26,6 +32,7 @@ pub const PRESETS: &[Preset] = &[
         iterations: 4096,
         multibrot_power: None,
         julia_seed: None,
+        precision_bits: None,
     },
     Preset {
         name: "mandelbrot-e13",
@@ -37,6 +44,7 @@ pub const PRESETS: &[Preset] = &[
         iterations: 16384,
         multibrot_power: None,
         julia_seed: None,
+        precision_bits: None,
     },
     Preset {
         name: "mandelbrot-e17",
@@ -48,6 +56,7 @@ pub const PRESETS: &[Preset] = &[
         iterations: 32768,
         multibrot_power: None,
         julia_seed: None,
+        precision_bits: None,
     },
     Preset {
         name: "misiurewicz-m32",
@@ -59,6 +68,7 @@ pub const PRESETS: &[Preset] = &[
         iterations: 8192,
         multibrot_power: None,
         julia_seed: None,
+        precision_bits: None,
     },
     Preset {
         name: "julia-siegel-disk",
@@ -70,6 +80,7 @@ pub const PRESETS: &[Preset] = &[
         iterations: 4096,
         multibrot_power: None,
         julia_seed: Some((-0.8, 0.156)),
+        precision_bits: None,
     },
     Preset {
         name: "burning-ship-antenna",
@@ -81,6 +92,7 @@ pub const PRESETS: &[Preset] = &[
         iterations: 4096,
         multibrot_power: None,
         julia_seed: None,
+        precision_bits: None,
     },
     Preset {
         name: "tricorn-spiral",
@@ -92,10 +104,11 @@ pub const PRESETS: &[Preset] = &[
         iterations: 2048,
         multibrot_power: None,
         julia_seed: None,
+        precision_bits: None,
     },
     Preset {
         name: "mandelbrot-e18-minibrot",
-        description: "Mandelbrot deep minibrot at zoom 1e18 — extreme regime, GMP only.",
+        description: "Mandelbrot deep minibrot at zoom 1e18.",
         fractal_type: FractalType::Mandelbrot,
         center_x_hp: "-1.74995376835370872152085408159254600000000",
         center_y_hp: "0.0",
@@ -103,6 +116,44 @@ pub const PRESETS: &[Preset] = &[
         iterations: 65536,
         multibrot_power: None,
         julia_seed: None,
+        precision_bits: None,
+    },
+    // --- Deep scenes sourced from locations/*.toml (rust-fractal-core format) ---
+    Preset {
+        name: "mandelbrot-e30",
+        description: "Mandelbrot deep scene at zoom 1e30 (coords from locations/e50.toml, zoomed out). 256 bits GMP.",
+        fractal_type: FractalType::Mandelbrot,
+        center_x_hp: "-0.0494700290631040937516922267273536301187457124882248793181049402326421947726869034279915499747594190000000000000000000",
+        center_y_hp: "-0.6747875758446753640113920531305976563347707068224034806979997947909941983454845111514208499540310299999999999999999880",
+        zoom: "1e30",
+        iterations: 131072,
+        multibrot_power: None,
+        julia_seed: None,
+        precision_bits: Some(256),
+    },
+    Preset {
+        name: "mandelbrot-e50",
+        description: "Mandelbrot at zoom 1e50, full precision coords from locations/e50.toml. Pure GMP slow but feasible.",
+        fractal_type: FractalType::Mandelbrot,
+        center_x_hp: "-0.0494700290631040937516922267273536301187457124882248793181049402326421947726869034279915499747594190000000000000000000",
+        center_y_hp: "-0.6747875758446753640113920531305976563347707068224034806979997947909941983454845111514208499540310299999999999999999880",
+        zoom: "1e50",
+        iterations: 263010,
+        multibrot_power: None,
+        julia_seed: None,
+        precision_bits: Some(384),
+    },
+    Preset {
+        name: "mandelbrot-e100",
+        description: "Mandelbrot at zoom 1e100 (coords from locations/e113.toml, zoomed out). 500 bits GMP.",
+        fractal_type: FractalType::Mandelbrot,
+        center_x_hp: "-1.47981577613247326072298452597877854692240725774045369689878510139864920741002293820250517329282011227363313053159203914640783415609608168660705123082446357179491909705403381200",
+        center_y_hp: "-0.00063911193261361727152139632255671572957303918943984736047394936471220951961813321928573067036466151147195436388486168819318341208023229522609015461543581599807510715681229605",
+        zoom: "1e100",
+        iterations: 35494,
+        multibrot_power: None,
+        julia_seed: None,
+        precision_bits: Some(500),
     },
 ];
 
