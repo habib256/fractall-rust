@@ -654,23 +654,38 @@ pub fn render_perturbation_with_cache(
         .collect();
 
     let t_pixels_start = Instant::now();
+    // Finer chunk granularity to improve rayon work-stealing. Whole rows
+    // (width pixels) caused load imbalance when a row straddles fast-escaping
+    // exterior pixels and slow interior/glitched ones. Target ~16 chunks per
+    // thread so stragglers are redistributed, with a floor of 64 pixels to
+    // avoid per-chunk overhead dominating on small images.
+    let num_threads = rayon::current_num_threads().max(1);
+    let chunk_size = {
+        let target = pixel_count / (num_threads * 16).max(1);
+        target.max(64).min(width.saturating_mul(4).max(64))
+    };
     iterations
-        .par_chunks_mut(width)
-        .zip(zs.par_chunks_mut(width))
-        .zip(distances.par_chunks_mut(width))
+        .par_chunks_mut(chunk_size)
+        .zip(zs.par_chunks_mut(chunk_size))
+        .zip(distances.par_chunks_mut(chunk_size))
         .enumerate()
-        .for_each(|(j, ((iter_row, z_row), dist_row))| {
+        .for_each(|(chunk_idx, ((iter_chunk, z_chunk), dist_chunk))| {
             let reuse_row = reuse.as_ref();
-            if j % 16 == 0 && cancel.load(Ordering::Relaxed) {
+            let chunk_start = chunk_idx * chunk_size;
+            // Cooperative cancel: poll once per chunk rather than per row.
+            if cancel.load(Ordering::Relaxed) {
                 cancelled.store(true, Ordering::Relaxed);
                 return;
             }
             if cancelled.load(Ordering::Relaxed) {
                 return;
             }
-            let dc_im = dc_im_fexp[j];
 
-            for (i, ((iter, z), dist)) in iter_row.iter_mut().zip(z_row.iter_mut()).zip(dist_row.iter_mut()).enumerate() {
+            for (local_idx, ((iter, z), dist)) in iter_chunk.iter_mut().zip(z_chunk.iter_mut()).zip(dist_chunk.iter_mut()).enumerate() {
+                let pixel_idx = chunk_start + local_idx;
+                let i = pixel_idx % width;
+                let j = pixel_idx / width;
+                let dc_im = dc_im_fexp[j];
                 if let Some(reuse) = reuse_row {
                     let ratio = reuse.ratio as usize;
                     if j % ratio == 0 && i % ratio == 0 {

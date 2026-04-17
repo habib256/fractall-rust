@@ -1130,6 +1130,11 @@ pub fn iterate_pixel(
     // This helps avoid precision loss when z_ref values are at extreme ranges
     let use_high_precision = pixel_size < 1e-14;
 
+    // Pre-cache dc as f64: loop invariant reused by tiled series validation,
+    // series re-evaluation, and the main BLA/perturbation loop (especially the
+    // non-conformal BLA hot path which previously reconverted dc on every step).
+    let dc_f64 = dc.to_complex64_approx();
+
     // Try standalone series skip BEFORE BLA (if enabled and series table is available).
     // For Mandelbrot: the series variable is dc (pixel offset), since delta_0 = 0.
     // For Julia: the series variable is also dc (= delta_0), since delta_0 = dc.
@@ -1143,15 +1148,14 @@ pub fn iterate_pixel(
         if params.series_standalone && !is_burning_ship && !is_multibrot && !is_tricorn {
             // Compute per-pixel series skip using tiled validation if available
             let pixel_max_skip = if let Some(ref tiled) = table.tiled_validation {
-                // Estimate pixel position from dc
-                let dc_approx = dc.to_complex64_approx();
+                // Estimate pixel position from dc (reuse pre-cached dc_f64)
                 let px = if params.span_x != 0.0 && params.span_x.is_finite() {
-                    ((dc_approx.re / params.span_x + 0.5) * params.width as f64) as usize
+                    ((dc_f64.re / params.span_x + 0.5) * params.width as f64) as usize
                 } else {
                     params.width as usize / 2
                 };
                 let py = if params.span_y != 0.0 && params.span_y.is_finite() {
-                    ((dc_approx.im / params.span_y + 0.5) * params.height as f64) as usize
+                    ((dc_f64.im / params.span_y + 0.5) * params.height as f64) as usize
                 } else {
                     params.height as usize / 2
                 };
@@ -1177,11 +1181,10 @@ pub fn iterate_pixel(
                     if effective_skip == skip_result.skip_to {
                         delta = skip_result.delta;
                     } else {
-                        // Re-evaluate the series at the clamped iteration
-                        let dc_f64_tmp = dc.to_complex64_approx();
+                        // Re-evaluate the series at the clamped iteration (reuse dc_f64)
                         if effective_skip < table.coeffs.len() {
                             let coeffs = &table.coeffs[effective_skip];
-                            let approx = dc_f64_tmp * (coeffs.a + dc_f64_tmp * (coeffs.b + dc_f64_tmp * (coeffs.c + dc_f64_tmp * coeffs.d)));
+                            let approx = dc_f64 * (coeffs.a + dc_f64 * (coeffs.b + dc_f64 * (coeffs.c + dc_f64 * coeffs.d)));
                             delta = ComplexExp::from_complex64(approx);
                         } else {
                             delta = skip_result.delta;
@@ -1194,9 +1197,6 @@ pub fn iterate_pixel(
             }
         }
     }
-
-    // Pre-cache dc as f64 (loop invariant, avoids repeated ComplexExp -> f64 conversion)
-    let dc_f64 = dc.to_complex64_approx();
 
     // Determine if we can use the fast f64 batch path.
     // Conditions: not deep zoom needing high precision.
@@ -1302,8 +1302,7 @@ pub fn iterate_pixel(
                                 // Apply non-conformal BLA: z_{n+l} = A_{n,l}·z_n + B_{n,l}·c
                                 // For non-conformal fractals (Tricorn), A and B are 2×2 real matrices
                                 // instead of complex numbers, as angles are not preserved.
-                                let dc_approx = dc.to_complex64_approx();
-                                let dc_vec = (dc_approx.re, dc_approx.im);
+                                let dc_vec = (dc_f64.re, dc_f64.im);
 
                                 // Linear term: A_{n,l}·z_n
                                 let linear_vec = node.a.mul_vector(delta_vec.0, delta_vec.1);
