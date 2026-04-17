@@ -863,13 +863,31 @@ pub fn compute_reference_orbit(
     let mut period_step = 1u32; // Floyd's cycle detection: double step size periodically
     let mut detected_period = 0u32;
 
+    // Reusable GMP scratch buffers to eliminate per-iteration allocations.
+    // The hot orbit loop previously created 4-6 fresh Float/Complex values per
+    // iteration (norm sqr components, z_prec clone, z_sq clone). For deep zooms
+    // (170k+ iterations) that adds up to millions of redundant GMP allocations.
+    let mut scratch = Complex::with_val(prec, (0, 0));
+    let mut norm_re = Float::with_val(prec, 0);
+    let mut norm_im = Float::with_val(prec, 0);
+    let mut norm_sqr = Float::with_val(prec, 0);
+    let ftype = params.fractal_type;
+    let multibrot_power = params.multibrot_power;
+
     for i in 0..params.iteration_max {
         if let Some(cancel) = cancel {
             if i % 256 == 0 && cancel.load(Ordering::Relaxed) {
                 return None;
             }
         }
-        if complex_norm_sqr(&z, prec) > bailout_sqr {
+        // Inline bailout check using scratch buffers (avoids 4 allocs per iter).
+        norm_re.assign(z.real());
+        norm_re.square_mut();
+        norm_im.assign(z.imag());
+        norm_im.square_mut();
+        norm_sqr.assign(&norm_re);
+        norm_sqr += &norm_im;
+        if norm_sqr > bailout_sqr {
             break;
         }
 
@@ -887,53 +905,47 @@ pub fn compute_reference_orbit(
             }
             // Brent's algorithm: after period_step iterations, update checkpoint
             if i - period_check_iter >= period_step {
-                period_check_z = z.clone();
+                period_check_z.assign(&z);
                 period_check_iter = i;
                 period_step *= 2;
             }
         }
 
-        z = match params.fractal_type {
+        // In-place iteration update using a scratch Complex. Previously each
+        // match arm allocated 2-3 fresh Complex values per iteration.
+        match ftype {
             FractalType::Mandelbrot => {
-                let z_prec = Complex::with_val(prec, (z.real(), z.imag()));
-                let mut z_sq = z_prec.clone();
-                z_sq *= &z_prec;
-                z_sq += &cref;
-                z_sq
+                scratch.assign(&z);
+                z *= &scratch;   // z = z * z
+                z += &cref;      // z = z² + cref
             }
             FractalType::Julia => {
-                let z_prec = Complex::with_val(prec, (z.real(), z.imag()));
-                let mut z_sq = z_prec.clone();
-                z_sq *= &z_prec;
-                z_sq += &seed;
-                z_sq
+                scratch.assign(&z);
+                z *= &scratch;
+                z += &seed;
             }
             FractalType::BurningShip => {
-                let re_prec = Float::with_val(prec, z.real());
-                let im_prec = Float::with_val(prec, z.imag());
-                let re_abs = re_prec.abs();
-                let im_abs = im_prec.abs();
-                let z_abs_val = Complex::with_val(prec, (re_abs, im_abs));
-                let mut z_sq = z_abs_val.clone();
-                z_sq *= &z_abs_val;
-                z_sq += &cref;
-                z_sq
+                // z = (|Re(z)| + i|Im(z)|)² + cref
+                z.mut_real().abs_mut();
+                z.mut_imag().abs_mut();
+                scratch.assign(&z);
+                z *= &scratch;
+                z += &cref;
             }
             FractalType::Multibrot => {
-                let mut z_pow = pow_f64_mpc(&z, params.multibrot_power, prec);
+                let mut z_pow = pow_f64_mpc(&z, multibrot_power, prec);
                 z_pow += &cref;
-                z_pow
+                z = z_pow;
             }
             FractalType::Tricorn => {
-                let z_prec = Complex::with_val(prec, (z.real(), z.imag()));
-                let z_conj = z_prec.conj();
-                let mut z_temp = Complex::with_val(prec, (z_conj.real(), z_conj.imag()));
-                z_temp *= &z_conj;
-                z_temp += &cref;
-                z_temp
+                // z = conj(z)² + cref
+                z.conj_mut();
+                scratch.assign(&z);
+                z *= &scratch;
+                z += &cref;
             }
             _ => return None,
-        };
+        }
         // Store high-precision, f64, and full GMP versions
         z_ref.push(ComplexExp::from_gmp(&z));
         z_ref_f64.push(complex_to_complex64(&z));
