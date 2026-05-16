@@ -1,35 +1,105 @@
 # TODO
 
-## Dette technique / vigilance
+> **Objectif declare** : etre le meilleur renderer deep-zoom open-source en Rust. Fraktaler-3 = source de verite algorithmique (cf. `docs/fraktaler-3-analysis.md`).
 
-- [ ] **Découpe `gui/app.rs` (2854 lignes)** : trop gros, candidat a refacto avant que la dette ne s'installe. Pistes : extraire le menu Type, la gestion drag-and-drop, le rendu HQ asynchrone, les raccourcis clavier dans des modules separes.
-- [ ] **Découpe `perturbation/mod.rs` (1451 lignes)** : meme remarque. La fonction `render_perturbation_cancellable_with_reuse()` et le dispatch CPU/GMP peuvent etre eclates.
-- [ ] **Mettre en place une CI** : sur ce projet les regressions numeriques sont silencieuses (un pixel faux != un crash). Workflow minimal :
-  - `cargo test --release --lib` sur push/PR
-  - Tests d'images de reference : rendre quelques locations connues (depuis `locations/`) et comparer un hash (perceptual hash ou hash exact sur des zones stables)
-  - Coût faible, gain enorme pour detecter les regressions sur perturbation / BLA / glitch.
-- [ ] **GPU f32 uniquement : documenter explicitement le tradeoff**. Probablement choix conscient (compatibilite Metal qui ne supporte pas f64), mais il faudrait :
-  - Documenter dans le README / CLAUDE.md la limite de zoom GPU (~10^7 en f32)
-  - Indiquer clairement le seuil de fallback CPU dans la doc utilisateur
-  - Eventuellement evaluer si `softfloat` (cf. Fraktaler-3 §11) serait pertinent pour les devices sans fp64
+---
 
-## Aligner sur Fraktaler-3 (source de verite)
+## Roadmap strategique
 
-Voir `docs/fraktaler-3-analysis.md` pour le detail. Ecarts notables a evaluer :
+### Priorite 1 — Qualite numerique deep-zoom
 
-- [ ] **Rebasing proactif vs glitch detection a posteriori** : Fraktaler-3 a abandonne Pauldelbrot et le clustering au profit d'un rebasing par pixel/iteration (`if |Z+z| < |z| → reseat`). Notre implementation (`glitch_tolerance`, `max_secondary_refs`, `min_glitch_cluster_size`, `glitch.rs`) suit l'ancienne approche Kalles Fraktaler. Decision a prendre : garder, hybrider, ou migrer.
-- [ ] **BLA matrices 2x2 partout** : F3 utilise `mat2<real>` unconditionnellement, meme pour Mandelbrot (conformal). Notre code branche conformal/non-conformal. A unifier pour simplifier ?
-- [ ] **Formule de precision GMP** : la valeur reelle dans F3 est `prec = max(24, 24 + (zoom * height).exp)` sans clamp `[128, 8192]`. Notre clamp est une protection raisonnable mais a documenter comme un ecart conscient.
-- [ ] **Reference bailout `1e10` hardcoded** : F3 utilise 1e10 pour le bailout de l'orbite reference (different du bailout pixel `ER=25`). Verifier notre valeur.
-- [ ] **Series approximation** : F3 ne l'implemente pas (BLA suffit, et series est incompatible avec hybrides). Notre `series_order` est un superset legitime, a garder.
-- [ ] **Pixel spacing pour BLA** : F3 utilise `4/zoom/height` (verbatim `engine.cc`). A reverifier apres bugfix #11.
-- [ ] **Seuil BLA `1/2^24 ≈ 6e-8`** : hardcoded dans F3, non type-dependant. Notre `bla_threshold = 1e-8` est plus strict mais comparable.
-- [ ] **Architecture hybride / opcode interpreter** : F3 n'a pas d'enum FractalType ; tout est compile en bytecode (8 opcodes : add, store, sqr, mul, absx, absy, negx, negy) et tous les Mandelbrot/Burning Ship/Tricorn/Celtic/Buffalo/Multibrot/hybrides decoulent de combinaisons de phases. C'est un changement architectural majeur, a evaluer pour une v2 si on veut ajouter des hybrides.
-- [ ] **`diffabs(c, d)` pour Burning Ship perturbation** : 4-case piecewise qui evite la cancellation catastrophique sur `|c+d| - |c|`. Verifier qu'on a un equivalent.
-- [ ] **Phase-aware reference orbits** : pour hybrides, F3 stocke `k` orbites (une par rotation de phase) et le rebasing choisit entre elles. Pas applicable tant qu'on n'a pas d'hybrides.
-- [ ] **Wisdom-driven backend selection** : F3 benchmark chaque `(device, type)` au premier run et choisit le plus rapide viable. Tres elegant, a considerer si on veut multi-GPU.
+Changements qui rendent les images plus correctes et les zooms plus profonds plus rapides.
+
+#### P1.1 — Migrer vers le rebasing proactif (gros chantier, gros gain)
+- [ ] Implementer le rebasing F3 (`if |Z+z| < |z| → reseat sur reference la plus proche, m=0`) a cote de l'existant, derriere un flag `use_rebasing: bool`.
+- [ ] Tests A/B sur les locations connues (`locations/`) : comparer images, profondeurs atteintes, temps de calcul vs path Pauldelbrot+clustering.
+- [ ] Si valide, retirer `glitch.rs`, `glitch_tolerance`, `max_secondary_refs`, `min_glitch_cluster_size`, `min_glitch_cluster_size` des params + UI.
+- **Pourquoi** : F3 a demontre (blog 2022-02-21) que le rebasing elimine la classe entiere de bugs glitch. Code plus simple, moins de params a tuner, prerequis pour hybrides.
+- **Risque** : peut etre moins efficient sur certaines locations specifiques. Rare.
+
+#### P1.2 — Unifier BLA en `mat2` partout
+- [ ] Remplacer le path conformal (complex) par `mat2<real>` partout, comme F3.
+- [ ] Verifier que `sup`/`inf` (normes operateur 2 via trace/det de AᵀA, formule fermee — cf. analyse §4) sont implementees.
+- [ ] Retirer la branche conformal/non-conformal dans `bla.rs`, `delta.rs`, `nonconformal.rs`.
+- **Pourquoi** : simplification code, prerequis hybrides, coût constant ~1.5-2× sur Mandelbrot pur (negligeable vs gains BLA eux-memes).
+
+#### P1.3 — Aligner les constantes critiques sur F3 (quick wins, <1h chacun)
+- [ ] Reference bailout = `1e10` hardcoded dans `hybrid_reference` equivalent.
+- [ ] Escape radius pixel par defaut = `25` (carre 625) si pas deja le cas — meilleur conditionnement smooth.
+- [ ] BLA threshold = `1/2²⁴ ≈ 6e-8`, independant du type (actuellement `1e-8`).
+- [ ] Precision GMP : retirer le clamp `[128, 8192]` ou passer a `[24, ∞]`.
+- [ ] Pixel spacing BLA = `4/zoom/height` strictement (reverifier apres bugfix #11).
+
+#### P1.4 — Verifier `diffabs` Burning Ship
+- [ ] Verifier qu'on a un equivalent de `diffabs(c, d)` 4-cas piecewise dans `nonconformal.rs` ou `delta.rs`.
+- **Pourquoi** : `|c+d| − |c|` en perturbation Burning Ship peut subir cancellation catastrophique. F3 a la fonction depuis 2018-01-04 (blog).
+
+#### P1.5 — Anti-aliasing par subframes jitterés
+- [ ] Implementer wrapper N samples avec offsets jitterés (`burtle_hash`/`radical_inverse` ou equivalent low-discrepancy) → moyenne.
+- [ ] Combinable avec progressive rendering (1 subframe = 1 pass).
+- **Pourquoi** : AA propre pour les bords fins, surtout en mode DE/Distance. F3 le fait par defaut.
+
+### Priorite 2 — Infrastructure
+
+#### P2.1 — CI + tests d'images de reference (non-negociable)
+- [ ] GitHub Actions : `cargo test --release --lib` sur push/PR.
+- [ ] Job rendu d'images : 5-10 locations dans `locations/`, headless, comparer hash exact (ou diff perceptuel avec seuil) vs golden image versionnee.
+- [ ] Inclure zooms profonds (10¹⁰, 10¹⁵, 10²⁰) sur Mandelbrot/BS/Tricorn/Julia pour couvrir tous les paths.
+- **Pourquoi** : sans ça, chaque modif de perturbation/BLA est une roulette russe. Indispensable vu l'objectif.
+
+#### P2.2 — Decoupe gros fichiers
+- [ ] **`gui/app.rs` (2854 lignes)** : extraire le menu Type, drag-and-drop, rendu HQ asynchrone, raccourcis clavier dans modules separes.
+- [ ] **`perturbation/mod.rs` (1451 lignes)** : `render_perturbation_cancellable_with_reuse()` et dispatch CPU/GMP eclates.
+- **Pourquoi** : a faire avant les gros refactors P1 pour pouvoir naviguer.
+
+#### P2.3 — Documenter le tradeoff GPU f32
+- [ ] Documenter dans README/CLAUDE.md la limite de zoom GPU (~10⁷ en f32).
+- [ ] Indiquer le seuil de fallback CPU dans la doc utilisateur.
+- [ ] Evaluer si softfloat (cf. F3 §11) pertinent pour devices sans fp64 — peu probable que ça vaille le coup avec wgpu.
+
+### Priorite 3 — Scope strategic (a arbitrer)
+
+#### P3.1 — Architecture hybride bytecode (le gros refactor v2.0)
+- [ ] Decision strategique avant tout autre P1 majeur : on s'engage ou pas ?
+- [ ] Remplacer enum `FractalType` (33 valeurs pour la famille escape-time) par systeme phase + bytecode 8-opcodes : `add, store, sqr, mul, absx, absy, negx, negy`.
+- [ ] Compilateur formule → bytecode (cf. F3 `param.cc::compile_formula`).
+- [ ] Interpreteur CPU + generateur kernel GPU a partir du bytecode.
+- [ ] Phase-aware reference orbits : pour hybrides, stocker `k` orbites (une par rotation de phase), rebasing choisit entre elles.
+- **Pourquoi** : permet hybrides first-class (Mandelbrot×3 + BS×2, etc.) — feature unique vs Kalles Fraktaler et competiteurs. Code unifie. Newton/Phoenix/Magnet/Lyapunov/Buddhabrot/Mandelbulb restent en codepaths speciaux.
+- **Coût** : refonte de `fractal/types.rs`, `iterations.rs`, `perturbation/`, `gpu/`. 1-3 semaines.
+- **Si on s'engage** : faire avant P1.1/P1.2 pour eviter de refactorer deux fois.
+
+#### P3.2 — Wisdom-driven backend selection
+- [ ] Benchmark `(device, type)` au premier run, JSON persiste.
+- [ ] Choisir le type le plus rapide viable pour le zoom courant.
+- **Pourquoi** : vraie valeur sur materiel exotique, pas critique sur desktop moderne.
+
+#### P3.3 — EXR raw export
+- [ ] Format compatible KFR/zoomasm pour assemblage vidéo-zoom.
+- [ ] Permet de recolorer/animer sans re-rendre.
+- **Pourquoi** : niche mais différenciateur si tu cibles les createurs de zoom-videos.
+
+### A NE PAS regresser (superset assume vs F3)
+
+- 27 palettes built-in + RGB/HSB/LCH (UX win).
+- 15 modes coloring + 4 orbit traps built-in.
+- 7 plane transforms XaoS-style.
+- Drag-and-drop PNG avec metadata JSON.
+- Catalogue de formules non-escape-time : Newton, Phoenix, Magnet, Lyapunov (6 presets), Buddhabrot/Nebulabrot/Anti, Von Koch, Dragon, Pickover Stalks, Nova, Sin, Alpha Mandelbrot, Barnsley, Mandelbulb — F3 n'y va pas, c'est notre terrain de differenciation.
+- Preview Julia au survol + raccourci `J`.
+- Recolorisation asynchrone.
+
+---
 
 ## Format / I/O
 
-- [ ] **TOML parameter files** : F3 utilise TOML (et KFR pour raw + params). On a deja un loader TOML (cf. commit `ef5ffea`). Verifier la compatibilite avec le format F3 si on veut interop.
-- [ ] **EXR raw export** : F3 sauve les donnees brutes d'iteration en OpenEXR (compatible KF2+ et `zoomasm`). Permet de recolorer sans re-rendre. A considerer pour les rendus longs.
+- [ ] **TOML parameter files** : F3 utilise TOML (et KFR pour raw + params). On a deja un loader TOML (cf. commit `ef5ffea`). Verifier compatibilite avec format F3 si interop souhaitee.
+
+---
+
+## Ordre d'attaque recommande
+
+1. **Cette semaine** : P1.3 (quick wins constantes) + P2.1 (CI + golden images) en parallele.
+2. **Decision strategique** : P3.1 (hybride bytecode) on s'engage ou pas ?
+3. Si P3.1 = oui → faire P3.1, puis P1.1 + P1.2 dans la foulee.
+4. Si P3.1 = non/plus tard → P2.2 (decoupe), puis P1.1 (rebasing), puis P1.2 (BLA mat2), puis P1.4 (diffabs), puis P1.5 (AA subframes).
