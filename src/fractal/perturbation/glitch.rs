@@ -1,3 +1,17 @@
+//! Glitch detection legacy (Pauldelbrot tolerance + clustering + secondary
+//! references).
+//!
+//! **Statut depuis P3.1 Session E** : voie historique conservée pour le
+//! path GMP deep zoom et le path dual-numbers (distance estimation,
+//! interior detection). Pour le path f64 standard, remplacée par le
+//! pixel loop unifié bytecode (`fractal/bytecode/pixel_loop.rs`) qui
+//! utilise rebasing F3 proactif au lieu de glitch detection corrective.
+//!
+//! À retirer complètement quand le path bytecode supportera ComplexExp
+//! (deep zoom GMP) et les dual numbers (distance/interior). D'ici là,
+//! les fonctions de ce module restent actives mais sont gated par
+//! `params.use_legacy_glitch_detection` (defaut true).
+
 use crate::fractal::FractalParams;
 
 /// Représente un cluster de pixels glitchés.

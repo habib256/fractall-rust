@@ -10,18 +10,17 @@
 
 Changements qui rendent les images plus correctes et les zooms plus profonds plus rapides.
 
-#### P1.1 — Migrer vers le rebasing proactif (gros chantier, gros gain)
-- [ ] Implementer le rebasing F3 (`if |Z+z| < |z| → reseat sur reference la plus proche, m=0`) a cote de l'existant, derriere un flag `use_rebasing: bool`.
-- [ ] Tests A/B sur les locations connues (`locations/`) : comparer images, profondeurs atteintes, temps de calcul vs path Pauldelbrot+clustering.
-- [ ] Si valide, retirer `glitch.rs`, `glitch_tolerance`, `max_secondary_refs`, `min_glitch_cluster_size`, `min_glitch_cluster_size` des params + UI.
-- **Pourquoi** : F3 a demontre (blog 2022-02-21) que le rebasing elimine la classe entiere de bugs glitch. Code plus simple, moins de params a tuner, prerequis pour hybrides.
-- **Risque** : peut etre moins efficient sur certaines locations specifiques. Rare.
+#### P1.1 — Migrer vers le rebasing proactif ✅ FAIT (P3.1 Sessions A-E)
+- [x] Rebasing F3 implémenté (`fractal/bytecode/pixel_loop.rs`) avec condition F3 stricte `|Z+z|² < |z|²`.
+- [x] Validé sur Tricorn (100% pixel-perfect), BurningShip (5% diff visuellement équivalent), Mandelbrot deep zoom (93% diff fines, 8% lourd).
+- [x] Activé par défaut depuis P3.1 Session E.
+- [ ] Retirer `glitch.rs`, `glitch_tolerance`, `max_secondary_refs`, `min_glitch_cluster_size` — partiellement fait (marqué deprecated), retrait complet bloqué par le path GMP deep zoom + dual numbers (distance/interior) qui en dépendent encore. Reste : étendre pixel_loop à ComplexExp + dual numbers, puis supprimer.
 
-#### P1.2 — Unifier BLA en `mat2` partout
-- [ ] Remplacer le path conformal (complex) par `mat2<real>` partout, comme F3.
-- [ ] Verifier que `sup`/`inf` (normes operateur 2 via trace/det de AᵀA, formule fermee — cf. analyse §4) sont implementees.
-- [ ] Retirer la branche conformal/non-conformal dans `bla.rs`, `delta.rs`, `nonconformal.rs`.
-- **Pourquoi** : simplification code, prerequis hybrides, coût constant ~1.5-2× sur Mandelbrot pur (negligeable vs gains BLA eux-memes).
+#### P1.2 — Unifier BLA en `mat2` partout ✅ FAIT (P3.1 Session B + D)
+- [x] BLA mat2 unifié construit via dual-numbers walking le bytecode (`fractal/bytecode/bla_dual.rs::BlaTableUnified`).
+- [x] `sup_norm` implémenté formule fermée 2×2.
+- [x] Branche conformal/non-conformal supprimée du **path bytecode unifié** (par défaut depuis Session E).
+- [ ] `bla.rs` et `nonconformal.rs` restent pour le path GMP deep zoom (à retirer une fois ComplexExp dans pixel_loop).
 
 #### P1.3 — Aligner les constantes critiques sur F3 (quick wins, <1h chacun)
 - [ ] Reference bailout = `1e10` hardcoded dans `hybrid_reference` equivalent.
@@ -30,9 +29,8 @@ Changements qui rendent les images plus correctes et les zooms plus profonds plu
 - [ ] Precision GMP : retirer le clamp `[128, 8192]` ou passer a `[24, ∞]`.
 - [ ] Pixel spacing BLA = `4/zoom/height` strictement (reverifier apres bugfix #11).
 
-#### P1.4 — Verifier `diffabs` Burning Ship
-- [ ] Verifier qu'on a un equivalent de `diffabs(c, d)` 4-cas piecewise dans `nonconformal.rs` ou `delta.rs`.
-- **Pourquoi** : `|c+d| − |c|` en perturbation Burning Ship peut subir cancellation catastrophique. F3 a la fonction depuis 2018-01-04 (blog).
+#### P1.4 — Verifier `diffabs` Burning Ship ✅ FAIT
+- [x] `diffabs(c, d)` existe dans `delta.rs::diffabs` et est utilisé par le bytecode delta-form (`bytecode/delta_form.rs`) pour AbsX/AbsY, validé par 9 tests d'invariance Z+δ.
 
 #### P1.5 — Anti-aliasing par subframes jitterés
 - [ ] Implementer wrapper N samples avec offsets jitterés (`burtle_hash`/`radical_inverse` ou equivalent low-discrepancy) → moyenne.
@@ -59,15 +57,21 @@ Changements qui rendent les images plus correctes et les zooms plus profonds plu
 
 ### Priorite 3 — Scope strategic (a arbitrer)
 
-#### P3.1 — Architecture hybride bytecode (le gros refactor v2.0)
-- [ ] Decision strategique avant tout autre P1 majeur : on s'engage ou pas ?
-- [ ] Remplacer enum `FractalType` (33 valeurs pour la famille escape-time) par systeme phase + bytecode 8-opcodes : `add, store, sqr, mul, absx, absy, negx, negy`.
-- [ ] Compilateur formule → bytecode (cf. F3 `param.cc::compile_formula`).
-- [ ] Interpreteur CPU + generateur kernel GPU a partir du bytecode.
-- [ ] Phase-aware reference orbits : pour hybrides, stocker `k` orbites (une par rotation de phase), rebasing choisit entre elles.
-- **Pourquoi** : permet hybrides first-class (Mandelbrot×3 + BS×2, etc.) — feature unique vs Kalles Fraktaler et competiteurs. Code unifie. Newton/Phoenix/Magnet/Lyapunov/Buddhabrot/Mandelbulb restent en codepaths speciaux.
-- **Coût** : refonte de `fractal/types.rs`, `iterations.rs`, `perturbation/`, `gpu/`. 1-3 semaines.
-- **Si on s'engage** : faire avant P1.1/P1.2 pour eviter de refactorer deux fois.
+#### P3.1 — Architecture hybride bytecode ✅ MAJORITAIREMENT FAIT (Sessions A-E + 6 docs)
+- [x] Bytecode 8-opcodes `Sqr/Mul/Store/AbsX/AbsY/NegX/NegY/Add` (`fractal/bytecode/mod.rs`).
+- [x] `compile_formula` pour Mandelbrot/Julia/BS/Tricorn/Celtic/Buffalo/PerpBS/Multibrot puiss. entière.
+- [x] Interpréteur CPU f64 (`bytecode/interp.rs`) — 24 iso-tests vs `iterations.rs`.
+- [x] Interpréteur GMP (`bytecode/interp_gmp.rs`) pour orbite référence — utilisé par `compute_reference_orbit`.
+- [x] BLA mat2 unifié via dual-numbers (`bytecode/bla_dual.rs`) — 16 tests.
+- [x] Delta-form interpreter (`bytecode/delta_form.rs`) — 9 tests d'invariance Z+δ.
+- [x] Pixel loop unifié (`bytecode/pixel_loop.rs`) — BLA mat2 + delta-form + rebasing F3.
+- [x] Intégration end-to-end dans `delta.rs::iterate_pixel` avec cache thread-local.
+- [x] Activé par défaut depuis Session E. Tricorn pixel-perfect, BS quasi-identique, Mandelbrot diff fines.
+- [x] Prototype WGSL `bytecode_kernel.wgsl` (parse OK via naga, intégration runtime à faire).
+- [ ] **Reste** : ComplexExp dans pixel_loop pour deep zoom > 1e13 (actuellement fallback legacy GMP).
+- [ ] **Reste** : Multi-phase (hybrides Mandelbrot×3 + BS×2 etc.) — infrastructure prête, UI manque.
+- [ ] **Reste** : Intégration runtime GPU bytecode_kernel (encoding + dispatch dans `gpu/mod.rs`).
+- [ ] **Reste** : Suppression `glitch.rs`/`nonconformal.rs` (bloqué par GMP + dual numbers).
 
 #### P3.2 — Wisdom-driven backend selection
 - [ ] Benchmark `(device, type)` au premier run, JSON persiste.
@@ -99,7 +103,22 @@ Changements qui rendent les images plus correctes et les zooms plus profonds plu
 
 ## Ordre d'attaque recommande
 
-1. **Cette semaine** : P1.3 (quick wins constantes) + P2.1 (CI + golden images) en parallele.
-2. **Decision strategique** : P3.1 (hybride bytecode) on s'engage ou pas ?
-3. Si P3.1 = oui → faire P3.1, puis P1.1 + P1.2 dans la foulee.
-4. Si P3.1 = non/plus tard → P2.2 (decoupe), puis P1.1 (rebasing), puis P1.2 (BLA mat2), puis P1.4 (diffabs), puis P1.5 (AA subframes).
+État au 2026-05-17 : P3.1 fondations + P1.1 + P1.2 + P1.4 livrés via 14 commits
+sur la branche `Stable` (P3.1 Sessions A-E). Le path bytecode unifié est
+activé par défaut. Voir `docs/p3-1-task6-session-{a,c,e}-findings.md`.
+
+Pour fermer P3.1 complètement :
+
+1. **ComplexExp dans `pixel_loop.rs`** pour deep zoom > 1e13. Débloque le retrait
+   de `glitch.rs` (utilisé seulement par GMP perturbation path).
+2. **Dual numbers dans `pixel_loop.rs`** pour distance estimation / interior
+   detection. Débloque le retrait de `iterate_pixel_with_duals`.
+3. **GPU bytecode integration** : encoding `bytecode[]` storage buffer +
+   nouveau pipeline dans `gpu/mod.rs`. Supprime les 3 shaders dupliqués.
+4. **Multi-phase / hybrides** : UI/CLI pour définir une formule multi-phases
+   (ex. `--phases mandelbrot,burning_ship,burning_ship`), `Vec<BlaTableUnified>`
+   par phase. Feature unique vs Kalles Fraktaler.
+5. **Cleanup final** : supprimer `glitch.rs`, `nonconformal.rs`, params CLI
+   `--no-legacy-glitch-detection`, champ `use_legacy_glitch_detection`.
+
+Reste P1.3 (constantes F3 quick wins) et P1.5 (AA subframes) — non-bloqués.

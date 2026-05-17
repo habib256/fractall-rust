@@ -113,9 +113,12 @@ struct Cli {
     #[arg(long)]
     glitch_tolerance: Option<f64>,
 
-    /// Desactive la detection de glitch legacy (Pauldelbrot + clustering + secondary refs).
-    /// Defaut: legacy actif. Passer --no-legacy-glitch-detection pour tester rebasing seul.
-    #[arg(long)]
+    /// [DEPRECATED depuis P3.1 Session E] Désactive la detection de glitch
+    /// legacy (Pauldelbrot + clustering + secondary refs). Conservé pour
+    /// debug du path legacy GMP/deep-zoom uniquement — pour le path f64
+    /// standard utiliser plutôt `--no-bytecode` qui désactive le bytecode
+    /// unifié (BLA mat2 + rebasing F3) et retombe sur le legacy.
+    #[arg(long, hide = true)]
     no_legacy_glitch_detection: bool,
 
     /// Puissance pour Multibrot (z^d + c), défaut 2.5
