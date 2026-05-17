@@ -102,8 +102,6 @@ pub mod delta;
 pub mod series;
 pub mod glitch;
 pub mod nonconformal;
-pub mod distance;
-pub mod interior;
 #[cfg(test)]
 pub mod debug_pure_f3;
 pub use orbit::{ReferenceOrbitCache, HybridBlaReferences};
