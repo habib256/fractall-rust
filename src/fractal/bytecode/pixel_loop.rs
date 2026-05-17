@@ -26,6 +26,7 @@ use num_complex::Complex64;
 use super::bla_dual::BlaTableUnified;
 use super::delta_form::DeltaState;
 use super::{Formula, Phase};
+use crate::fractal::orbit_traps::{OrbitData, OrbitTrapType};
 use crate::fractal::perturbation::orbit::ReferenceOrbit;
 
 /// Résultat d'un pixel via le pixel loop unifié.
@@ -38,6 +39,10 @@ pub struct UnifiedPixelResult {
     /// Nombre de pas BLA appliqués (utile pour stats/debug).
     #[allow(dead_code)]
     pub bla_steps: u32,
+    /// Orbit data (uniquement si demandé via param). Stocke les z_abs
+    /// traversés pour le calcul de orbit traps (distance min à un point/
+    /// ligne/croix/cercle).
+    pub orbit: Option<OrbitData>,
 }
 
 /// Pixel loop unifié pour TOUS les types escape-time supportés par le bytecode :
@@ -64,6 +69,26 @@ pub fn iterate_pixel_unified(
     iteration_max: u32,
     bailout: f64,
 ) -> UnifiedPixelResult {
+    iterate_pixel_unified_with_options(
+        ref_orbit, bla, formula, c_ref, dc, delta_initial, iteration_max, bailout, None,
+    )
+}
+
+/// Variante avec orbit_trap_type optionnel. Quand `Some`, désactive la BLA
+/// (pour tracker chaque z_abs individuel) et construit un `OrbitData` qu'on
+/// retourne dans le résultat. Hook pour `OutColoringMode::OrbitTraps` et
+/// `Wings` qui ont besoin de l'orbite complète.
+pub fn iterate_pixel_unified_with_options(
+    ref_orbit: &ReferenceOrbit,
+    bla: &BlaTableUnified,
+    formula: &Formula,
+    c_ref: Complex64,
+    dc: Complex64,
+    delta_initial: Complex64,
+    iteration_max: u32,
+    bailout: f64,
+    orbit_trap_type: Option<OrbitTrapType>,
+) -> UnifiedPixelResult {
     // Mono-phase : path optimisé direct.
     if formula.phases.len() == 1 {
         return iterate_pixel_unified_single_phase(
@@ -75,6 +100,7 @@ pub fn iterate_pixel_unified(
             delta_initial,
             iteration_max,
             bailout,
+            orbit_trap_type,
         );
     }
     // Multi-phase : cycle de phases. Pour l'instant on partage la même BLA
@@ -117,6 +143,7 @@ fn iterate_pixel_unified_multi_phase(
             z_final: Complex64::new(0.0, 0.0),
             rebase_count: 0,
             bla_steps: 0,
+            orbit: None,
         };
     }
     let n_phases = formula.phases.len();
@@ -135,6 +162,7 @@ fn iterate_pixel_unified_multi_phase(
                 z_final: z_abs,
                 rebase_count,
                 bla_steps,
+                orbit: None,
             };
         }
         // En multi-phase, on n'utilise pas la BLA pour simplifier
@@ -156,6 +184,7 @@ fn iterate_pixel_unified_multi_phase(
                 z_final: ref_orbit.z_ref_f64[m.min((ref_len - 1) as u32) as usize] + delta,
                 rebase_count,
                 bla_steps,
+                orbit: None,
             };
         }
 
@@ -181,6 +210,7 @@ fn iterate_pixel_unified_multi_phase(
         z_final: ref_orbit.z_ref_f64[final_m as usize] + delta,
         rebase_count,
         bla_steps,
+                orbit: None,
     }
 }
 
@@ -193,6 +223,7 @@ fn iterate_pixel_unified_single_phase(
     delta_initial: Complex64,
     iteration_max: u32,
     bailout: f64,
+    orbit_trap_type: Option<OrbitTrapType>,
 ) -> UnifiedPixelResult {
     let bailout_sqr = bailout * bailout;
     let ref_len = ref_orbit.z_ref_f64.len();
@@ -202,14 +233,24 @@ fn iterate_pixel_unified_single_phase(
             z_final: Complex64::new(0.0, 0.0),
             rebase_count: 0,
             bla_steps: 0,
+            orbit: orbit_trap_type.map(OrbitData::new),
         };
     }
+
+    // Quand orbit traps demandé, on tracke chaque z_abs → désactive la BLA.
+    let mut orbit_data = orbit_trap_type.map(OrbitData::new);
+    let bla_enabled = orbit_data.is_none();
 
     let mut delta = delta_initial;
     let mut n = 0u32;
     let mut m = 0u32;
     let mut rebase_count = 0u32;
     let mut bla_steps = 0u32;
+
+    // Point initial pour orbit traps.
+    if let Some(ref mut od) = orbit_data {
+        od.add_point(ref_orbit.z_ref_f64[0] + delta, 0);
+    }
 
     while n < iteration_max {
         let z_m = ref_orbit.z_ref_f64[m as usize];
@@ -220,39 +261,43 @@ fn iterate_pixel_unified_single_phase(
                 z_final: z_abs,
                 rebase_count,
                 bla_steps,
+                orbit: orbit_data,
             };
         }
 
-        // BLA lookup
+        // BLA lookup (skipped when orbit traps demande tracking par itération).
         let delta_norm_sqr = delta.norm_sqr();
-        if let Some(node) = bla.lookup(m as usize, delta_norm_sqr) {
-            let new_n = n.saturating_add(node.l);
-            let new_m = m.saturating_add(node.l);
-            if new_n <= iteration_max && (new_m as usize) < ref_len {
-                let a = node.a;
-                let b = node.b;
-                let (a_re, a_im) = (
-                    a.m00 * delta.re + a.m01 * delta.im,
-                    a.m10 * delta.re + a.m11 * delta.im,
-                );
-                let (b_re, b_im) = (
-                    b.m00 * dc.re + b.m01 * dc.im,
-                    b.m10 * dc.re + b.m11 * dc.im,
-                );
-                delta = Complex64::new(a_re + b_re, a_im + b_im);
-                n = new_n;
-                m = new_m;
-                bla_steps += 1;
+        if bla_enabled {
+            if let Some(node) = bla.lookup(m as usize, delta_norm_sqr) {
+                let new_n = n.saturating_add(node.l);
+                let new_m = m.saturating_add(node.l);
+                if new_n <= iteration_max && (new_m as usize) < ref_len {
+                    let a = node.a;
+                    let b = node.b;
+                    let (a_re, a_im) = (
+                        a.m00 * delta.re + a.m01 * delta.im,
+                        a.m10 * delta.re + a.m11 * delta.im,
+                    );
+                    let (b_re, b_im) = (
+                        b.m00 * dc.re + b.m01 * dc.im,
+                        b.m10 * dc.re + b.m11 * dc.im,
+                    );
+                    delta = Complex64::new(a_re + b_re, a_im + b_im);
+                    n = new_n;
+                    m = new_m;
+                    bla_steps += 1;
 
-                if !delta.re.is_finite() || !delta.im.is_finite() {
-                    return UnifiedPixelResult {
-                        iteration: n,
-                        z_final: ref_orbit.z_ref_f64[m as usize] + delta,
-                        rebase_count,
-                        bla_steps,
-                    };
+                    if !delta.re.is_finite() || !delta.im.is_finite() {
+                        return UnifiedPixelResult {
+                            iteration: n,
+                            z_final: ref_orbit.z_ref_f64[m as usize] + delta,
+                            rebase_count,
+                            bla_steps,
+                            orbit: orbit_data,
+                        };
+                    }
+                    continue;
                 }
-                continue;
             }
         }
 
@@ -270,7 +315,18 @@ fn iterate_pixel_unified_single_phase(
                 z_final: ref_orbit.z_ref_f64[m.min((ref_len - 1) as u32) as usize] + delta,
                 rebase_count,
                 bla_steps,
+                orbit: orbit_data,
             };
+        }
+
+        // Hook orbit traps : ajouter z_abs après le pas perturbation.
+        if let Some(ref mut od) = orbit_data {
+            let z_m_new = if (m as usize) < ref_len {
+                ref_orbit.z_ref_f64[m as usize]
+            } else {
+                ref_orbit.z_ref_f64[ref_len - 1]
+            };
+            od.add_point(z_m_new + delta, n);
         }
 
         // Rebase F3
@@ -299,6 +355,7 @@ fn iterate_pixel_unified_single_phase(
         z_final: ref_orbit.z_ref_f64[final_m as usize] + delta,
         rebase_count,
         bla_steps,
+        orbit: orbit_data,
     }
 }
 
@@ -328,6 +385,7 @@ pub fn iterate_pixel_unified_mandelbrot(
             z_final: Complex64::new(0.0, 0.0),
             rebase_count: 0,
             bla_steps: 0,
+            orbit: None,
         };
     }
 
@@ -347,6 +405,7 @@ pub fn iterate_pixel_unified_mandelbrot(
                 z_final: z_abs,
                 rebase_count,
                 bla_steps,
+                orbit: None,
             };
         }
 
@@ -380,6 +439,7 @@ pub fn iterate_pixel_unified_mandelbrot(
                         z_final: ref_orbit.z_ref_f64[m as usize] + delta,
                         rebase_count,
                         bla_steps,
+                orbit: None,
                     };
                 }
                 continue;
@@ -400,6 +460,7 @@ pub fn iterate_pixel_unified_mandelbrot(
                 z_final: ref_orbit.z_ref_f64[m.min((ref_len - 1) as u32) as usize] + delta,
                 rebase_count,
                 bla_steps,
+                orbit: None,
             };
         }
 
@@ -429,6 +490,7 @@ pub fn iterate_pixel_unified_mandelbrot(
         z_final: ref_orbit.z_ref_f64[final_m as usize] + delta,
         rebase_count,
         bla_steps,
+                orbit: None,
     }
 }
 

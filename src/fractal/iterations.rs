@@ -8,20 +8,20 @@ use crate::fractal::orbit_traps::OrbitData;
 ///
 /// Conditions :
 /// - `use_bytecode_engine` activé ;
-/// - le type compile en bytecode ;
-/// - aucune feature qui sort du cœur escape-time (orbit traps, distance
-///   estimation, interior detection) — ces features dépendent encore du
-///   path dédié pour le moment.
+/// - le type compile en bytecode.
+///
+/// `enable_orbit_traps`, `enable_distance_estimation`, `enable_interior_detection`
+/// sont tous supportés par le bytecode f64 standard via tracking de dz dans
+/// iterate_via_bytecode. Pour la perturbation, ces features tombent sur le
+/// path legacy (cf. delta.rs::try_bytecode_unified_path).
 #[inline]
 fn can_use_bytecode(params: &FractalParams) -> bool {
     params.use_bytecode_engine
-        && !params.enable_orbit_traps
-        && !params.enable_distance_estimation
-        && !params.enable_interior_detection
         && compile_formula(params.fractal_type, params.multibrot_power).is_some()
 }
 
 /// Dispatch interpréteur : (z₀, c) selon convention Mandelbrot/Julia.
+/// Construit aussi un OrbitData si orbit_traps est demandé.
 #[inline]
 fn iterate_via_bytecode(params: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let formula = compile_formula(params.fractal_type, params.multibrot_power)
@@ -31,6 +31,136 @@ fn iterate_via_bytecode(params: &FractalParams, z_pixel: Complex64) -> FractalRe
     } else {
         (params.seed, z_pixel)
     };
+
+    let needs_orbit = params.enable_orbit_traps;
+    let needs_distance = params.enable_distance_estimation;
+    let needs_interior = params.enable_interior_detection;
+
+    if needs_orbit || needs_distance || needs_interior {
+        // Path avec tracking : itère manuellement pour hooker orbit_data,
+        // propager dz (dérivée pour distance + interior detection).
+        //
+        // Pour la distance estimation :
+        // - Mandelbrot-like : dz/dc, init=0 (z₀=seed ne dépend pas de c).
+        //   Sur Op::Add, dz += 1. Formule : d = 2·|z|·ln(|z|) / |dz|
+        // - Julia-like : dz/dz₀, init=1. Add inchangé. d = |z|·ln(|z|)/|dz|
+        //
+        // Pour interior detection :
+        // - On utilise le MÊME dz tracker (dz/dz_critical où z_critical = 0
+        //   pour Mandelbrot, pixel pour Julia). |dz| < threshold = interior.
+        let is_julia = Formula::is_julia_for(params.fractal_type);
+        let mut z = z0;
+        let mut stored_z = z;
+        let mut dz = if is_julia {
+            Complex64::new(1.0, 0.0)
+        } else {
+            Complex64::new(0.0, 0.0)
+        };
+        let mut stored_dz = dz;
+        let mut iter = 0u32;
+        let bailout_sqr = params.bailout * params.bailout;
+        let phase = &formula.phases[0]; // mono-phase
+        let mut orbit_data = if needs_orbit {
+            let mut od = OrbitData::new(params.orbit_trap_type);
+            od.add_point(z, 0);
+            Some(od)
+        } else {
+            None
+        };
+
+        while iter < params.iteration_max {
+            if z.norm_sqr() >= bailout_sqr {
+                break;
+            }
+            for op in &phase.ops {
+                use crate::fractal::bytecode::Op;
+                match op {
+                    Op::Sqr => {
+                        // dz' = 2·z·dz, puis z' = z²
+                        dz = z * dz * 2.0;
+                        z = z * z;
+                    }
+                    Op::Mul => {
+                        // dz' = stored·dz + z·stored_dz, puis z' = z·stored
+                        dz = stored_z * dz + z * stored_dz;
+                        z = z * stored_z;
+                    }
+                    Op::Store => {
+                        stored_z = z;
+                        stored_dz = dz;
+                    }
+                    Op::AbsX => {
+                        // d|x|/dx = sign(x). Si z.re < 0, flip dz.re.
+                        if z.re < 0.0 {
+                            dz = Complex64::new(-dz.re, dz.im);
+                        }
+                        z = Complex64::new(z.re.abs(), z.im);
+                    }
+                    Op::AbsY => {
+                        if z.im < 0.0 {
+                            dz = Complex64::new(dz.re, -dz.im);
+                        }
+                        z = Complex64::new(z.re, z.im.abs());
+                    }
+                    Op::NegX => {
+                        z = Complex64::new(-z.re, z.im);
+                        dz = Complex64::new(-dz.re, dz.im);
+                    }
+                    Op::NegY => {
+                        z = Complex64::new(z.re, -z.im);
+                        dz = Complex64::new(dz.re, -dz.im);
+                    }
+                    Op::Add => {
+                        z += c;
+                        // dz += 1 si c dépend du pixel (Mandelbrot-like),
+                        // sinon dz inchangé (Julia-like, c = seed constant).
+                        if !is_julia {
+                            dz += Complex64::new(1.0, 0.0);
+                        }
+                        iter += 1;
+                    }
+                }
+            }
+            if !z.re.is_finite() || !z.im.is_finite() {
+                break;
+            }
+            if let Some(ref mut od) = orbit_data {
+                od.add_point(z, iter);
+            }
+        }
+
+        // Distance estimation : formule selon Mandelbrot ou Julia.
+        let distance = if needs_distance && iter > 0 && iter < params.iteration_max {
+            let z_norm = z.norm().max(2.0);
+            let dz_norm = dz.norm();
+            if dz_norm > 1e-300 && z_norm > 1.0 {
+                let factor = if is_julia { 1.0 } else { 2.0 };
+                Some(factor * z_norm * z_norm.ln() / dz_norm)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Interior detection : |dz| < threshold indique un cycle attracteur.
+        // Encoder via le signe de z.im (convention legacy : z.im négatif = interior).
+        let mut z_out = z;
+        if needs_interior && iter >= params.iteration_max {
+            let dz_norm = dz.norm();
+            if dz_norm.is_finite() && dz_norm > 0.0 && dz_norm < params.interior_threshold {
+                z_out = Complex64::new(z.re, -z.im.abs());
+            }
+        }
+
+        return FractalResult {
+            iteration: iter,
+            z: z_out,
+            orbit: orbit_data,
+            distance,
+        };
+    }
+
     let r = iterate_bytecode_f64(&formula, z0, c, params.iteration_max, params.bailout);
     FractalResult {
         iteration: r.iteration,

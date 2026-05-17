@@ -111,6 +111,11 @@ fn try_bytecode_unified_path(
     dc: &ComplexExp,
 ) -> Option<DeltaResult> {
     // Conditions d'éligibilité.
+    // Note : pour orbit_traps + perturbation, le path legacy iterate_pixel
+    // ne support pas non plus (DeltaResult n'a pas d'orbit field). Pour
+    // utiliser orbit_traps, l'utilisateur doit rester en f64 standard
+    // (pas d'algorithm_mode=perturbation) ; le bytecode iterate_point()
+    // dans iterations.rs gère ce cas.
     if params.enable_distance_estimation
         || params.enable_interior_detection
         || params.enable_orbit_traps
@@ -197,6 +202,7 @@ fn try_bytecode_unified_path(
                 z_final: res_exp.z_final,
                 rebase_count: res_exp.rebase_count,
                 bla_steps: res_exp.bla_steps,
+                orbit: None,
             });
         }
 
