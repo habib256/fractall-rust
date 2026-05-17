@@ -57,21 +57,21 @@ Changements qui rendent les images plus correctes et les zooms plus profonds plu
 
 ### Priorite 3 — Scope strategic (a arbitrer)
 
-#### P3.1 — Architecture hybride bytecode ✅ MAJORITAIREMENT FAIT (Sessions A-E + 6 docs)
+#### P3.1 — Architecture hybride bytecode ✅ FAIT (Sessions A-E + cleanup, 18 docs)
 - [x] Bytecode 8-opcodes `Sqr/Mul/Store/AbsX/AbsY/NegX/NegY/Add` (`fractal/bytecode/mod.rs`).
 - [x] `compile_formula` pour Mandelbrot/Julia/BS/Tricorn/Celtic/Buffalo/PerpBS/Multibrot puiss. entière.
-- [x] Interpréteur CPU f64 (`bytecode/interp.rs`) — 24 iso-tests vs `iterations.rs`.
-- [x] Interpréteur GMP (`bytecode/interp_gmp.rs`) pour orbite référence — utilisé par `compute_reference_orbit`.
-- [x] BLA mat2 unifié via dual-numbers (`bytecode/bla_dual.rs`) — 16 tests.
-- [x] Delta-form interpreter (`bytecode/delta_form.rs`) — 9 tests d'invariance Z+δ.
-- [x] Pixel loop unifié (`bytecode/pixel_loop.rs`) — BLA mat2 + delta-form + rebasing F3.
+- [x] Interpréteur CPU f64 + GMP (`bytecode/interp{,_gmp}.rs`).
+- [x] BLA mat2 unifié via dual-numbers (`bytecode/bla_dual.rs`) — Vec multi-niveaux avec merge F3.
+- [x] Delta-form interpreter (`bytecode/delta_form.rs`) — f64 + ComplexExp (`DeltaState`/`DeltaStateExp`).
+- [x] Pixel loop unifié (`bytecode/pixel_loop.rs` + `pixel_loop_exp.rs`) — BLA mat2 + delta-form + rebasing F3.
 - [x] Intégration end-to-end dans `delta.rs::iterate_pixel` avec cache thread-local.
-- [x] Activé par défaut depuis Session E. Tricorn pixel-perfect, BS quasi-identique, Mandelbrot diff fines.
-- [x] Prototype WGSL `bytecode_kernel.wgsl` (parse OK via naga, intégration runtime à faire).
-- [ ] **Reste** : ComplexExp dans pixel_loop pour deep zoom > 1e13 (actuellement fallback legacy GMP).
-- [ ] **Reste** : Multi-phase (hybrides Mandelbrot×3 + BS×2 etc.) — infrastructure prête, UI manque.
-- [ ] **Reste** : Intégration runtime GPU bytecode_kernel (encoding + dispatch dans `gpu/mod.rs`).
-- [ ] **Reste** : Suppression `glitch.rs`/`nonconformal.rs` (bloqué par GMP + dual numbers).
+- [x] Activé par défaut depuis Session E. Pixel-perfect ou diff < 5 % vs legacy.
+- [x] **ComplexExp dans pixel_loop** pour deep zoom > 1e13 — pixel-perfect à zoom 1e15 et 1e30.
+- [x] **Multi-phase** infrastructure (`Formula::hybrid`) prête (UI/CLI manque).
+- [x] **GPU bytecode runtime intégré** (`pipeline_bytecode` + `bytecode_kernel.wgsl`) — Mandelbrot/Julia/BS pixel-perfect ou diff < 1.5 %. Étend la couverture GPU à Tricorn/Celtic/Buffalo/PerpBS/Multibrot sans shaders dédiés.
+- [x] **Dual numbers dans bytecode** (`iterations.rs::iterate_via_bytecode`) — distance estimation, interior detection, orbit traps pixel-perfect vs legacy en f64 standard.
+- [x] **Cleanup partiel** : suppression `use_legacy_glitch_detection` field + CLI flag.
+- [ ] **Reste mineur** : suppression complète de `glitch.rs` et `nonconformal.rs`. Bloquée par `iterate_pixel_with_duals` (perturbation + dual numbers) qui les utilise encore. Pour les retirer définitivement : étendre `pixel_loop.rs` avec dual-numbers tracking en mode perturbation (~300 lignes, session dédiée).
 
 #### P3.2 — Wisdom-driven backend selection
 - [ ] Benchmark `(device, type)` au premier run, JSON persiste.
