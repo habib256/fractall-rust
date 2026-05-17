@@ -16,3 +16,8 @@ Thumbs.db
 ## Environment
 .env
 .env.*
+
+## Generated test artifacts (CLI renders dropped at repo root)
+/out.png
+/fractal_*.png
+/fractall_*.png
