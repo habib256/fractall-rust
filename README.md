@@ -1,10 +1,10 @@
 # Fractall
 
-**Explore the infinite beauty of fractals with unlimited zoom depth for the Mandelbrot.**
+**Explore the infinite beauty of fractals with unlimited zoom depth.**
 
-Fractall is a high-performance fractal explorer written in Rust, featuring real-time GPU rendering, arbitrary-precision arithmetic for deep zooms beyond 10^300, and a modern interactive GUI.
+Fractall is a high-performance fractal explorer written in Rust, featuring GPU rendering, arbitrary-precision arithmetic for deep zooms beyond 10^300, and a modern interactive GUI.
 
-![Mandelbrot Set](https://img.shields.io/badge/Fractals-33%20Types-blue)
+![Fractals](https://img.shields.io/badge/Fractals-33%20Types-blue)
 ![GPU Accelerated](https://img.shields.io/badge/GPU-Vulkan%20%7C%20Metal%20%7C%20DX12-green)
 ![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange)
 
@@ -19,33 +19,35 @@ Fractall is a high-performance fractal explorer written in Rust, featuring real-
 ## Features
 
 ### Unlimited Zoom Depth
-- **Standard precision (f64)**: Instant rendering up to 10^16 zoom
+- **Standard precision (f64)**: Instant rendering up to ~10^15 zoom
 - **Arbitrary precision (GMP)**: Explore beyond 10^300 with automatic precision scaling
-- **Perturbation theory**: Optimized deep zoom calculations with BLA (Bilinear Approximation)
+- **Perturbation theory + unified bytecode engine**: Deep zoom computed via a Fraktaler-3 style hybrid (BLA `mat2`, delta-form interpreter, proactive F3 rebasing) — pixel-perfect or sub-percent differences against the legacy path
 
 ### GPU-Accelerated Rendering
-- Real-time exploration powered by **wgpu** (Vulkan, Metal, DX12)
-- Automatic CPU fallback when GPU isn't available
-- Progressive rendering: see previews instantly, full quality follows
+- Powered by **wgpu** (Vulkan, Metal, DX12)
+- f32 shaders on GPU — automatic CPU fallback past ~10⁷ zoom or for types without a dedicated shader
+- Unified bytecode kernel extends GPU coverage to Tricorn / Celtic / Buffalo / Perp. Burning Ship / Multibrot without writing per-type shaders
+- Progressive rendering: instant previews, full quality follows
 
 ### 33 Fractal Types
 | Mandelbrot-like | Julia variants | Special |
 |-----------------|----------------|---------|
 | Mandelbrot, Barnsley, Magnet | Julia, Barnsley Julia, Magnet Julia | Buddhabrot, Nebulabrot, Anti-Buddhabrot |
-| Burning Ship, Perp. Burning Ship | Burning Ship Julia, Perp. Burning Ship Julia | Lyapunov |
+| Burning Ship, Perp. Burning Ship | Burning Ship Julia, Perp. Burning Ship Julia | Lyapunov (6 presets) |
 | Tricorn, Celtic, Buffalo, Multibrot, Alpha Mandelbrot | Tricorn Julia, Celtic Julia, Buffalo Julia, Multibrot Julia, Alpha Mandelbrot Julia | Von Koch, Dragon |
 | Mandelbulb, Mandelbrot Sin | — | Julia Sin, Newton, Phoenix, Nova, Pickover Stalks |
 
 ### Rich Coloring Options
 - **27 color palettes** with smooth gradients (including palettes from [rust-fractal-core](https://github.com/rust-fractal/rust-fractal-core))
 - **3 color spaces**: RGB, HSB, LCH (perceptually uniform)
-- **15 coloring modes**: Smooth, Distance, Orbit Traps, Binary Decomposition, Biomorphs, and more
-- **7 plane transformations**: Explore alternative views of familiar fractals
+- **15 coloring modes**: Smooth (default), Distance, Distance AO, Distance 3D, Orbit Traps, Wings, Binary Decomposition, Biomorphs, and more
+- **7 plane transformations**: explore alternative views (1/μ, λ = 4μ(1-μ), …) of familiar fractals
 
 ### Smart Session Management
 - **Drag & drop** any saved PNG to instantly restore your exact view
-- All parameters embedded in PNG metadata (coordinates, zoom, colors, fractal type)
-- Share your discoveries - recipients can continue exploring from where you left off!
+- All parameters embedded in PNG metadata as JSON (coordinates including HP strings, zoom, colors, fractal type)
+- Share your discoveries — recipients can continue exploring from where you left off
+- TOML parameter files for batch generation (see the `toml/` directory)
 
 ## Quick Start
 
@@ -65,17 +67,17 @@ sudo pacman -S gmp mpfr libmpc
 ### Build & Run
 
 ```bash
-# Clone the repository
+# Clone
 git clone https://github.com/habib256/fractall-rust.git
 cd fractall-rust
 
-# Build in release mode (important for performance!)
+# Build (release mode is mandatory for usable performance)
 cargo build --release
 
 # Launch the interactive GUI
 cargo run --release --bin fractall-gui
 
-# Or generate images from command line
+# Or generate images from the command line
 cargo run --release --bin fractall-cli -- \
     --type 3 \
     --width 3840 --height 2160 \
@@ -83,93 +85,134 @@ cargo run --release --bin fractall-cli -- \
     --output mandelbrot_4k.png
 ```
 
+### Tests
+
+```bash
+# Unit tests (perturbation modules, bytecode, etc.)
+cargo test --release --bin fractall-cli
+
+# Pixel-exact golden image tests (regression guard for the render pipeline)
+cargo test --release --test golden_images
+```
+
 ## GUI Controls
 
 | Action | Control |
 |--------|---------|
-| **Zoom in** | Click / Drag rectangle / Mouse wheel / `+` |
-| **Zoom out** | Right-click / `-` |
-| **Pan** | Middle-click drag |
-| **Reset view** | `0` |
-| **Change fractal** | Type menu: Mandelbrots at root, **Julia all** folder for all Julia sets |
-| **Julia preview** | Hover over Mandelbrot-like types; **J** to switch to full Julia view |
-| **Cycle palette** | `C` |
-| **Cycle color repeat** | `R` |
-| **Save screenshot** | `S` |
-| **Load state** | Drag & drop PNG onto window |
+| Zoom in | Click / drag rectangle / mouse wheel / `+` |
+| Zoom out | Right-click / `-` |
+| Pan | Middle-click drag |
+| Reset view | `0` |
+| Change fractal | Type menu — Mandelbrots at root, **Julia all** folder for Julia sets |
+| Julia preview | Hover over Mandelbrot-like types; `J` switches to the full Julia view |
+| Cycle palette | `C` |
+| Cycle color repeat | `R` |
+| Save screenshot | `S` |
+| Switch fractal type | `F1`–`F12` |
+| Load state | Drag & drop a PNG onto the window |
 
 ## CLI Reference
 
 ```bash
 fractall-cli [OPTIONS] --type <N> --output <FILE>
 
-OPTIONS:
+Geometry
     --type <N>              Fractal type (1-33)
-    --width <W>             Image width [default: 1920]
+    --width <W>             Image width  [default: 1920]
     --height <H>            Image height [default: 1080]
-    --center-x <X>          Center X coordinate
-    --center-y <Y>          Center Y coordinate
-    --iterations <N>        Maximum iterations
-    --palette <0-26>        Color palette [default: 6]
-    --color_repeat <N>      Gradient repetitions [default: 40]
-    --algorithm <MODE>      auto|f64|perturbation|gmp
-    --outcoloring <MODE>    smooth|iter|distance|binary|biomorphs|...
-    --plane <N>             Plane transformation (0-6)
-    --output <FILE>         Output PNG file
+    --center-x <X>          Center X
+    --center-y <Y>          Center Y
+    --center-x-hp <STRING>  High-precision center X (string, deep zooms > 10^15)
+    --center-y-hp <STRING>  High-precision center Y
+    --zoom <STRING>         Magnification (span = 4/zoom). Scientific notation OK (e.g. 1.41e219)
+    --xmin / --xmax         Alternative bounds
+    --ymin / --ymax
+    --iterations <N>        Max iterations
+
+Coloring
+    --palette <0-26>        Color palette [default: 6 = Plasma]
+    --color-repeat <N>      Gradient repetitions [default: 40]
+    --outcoloring <MODE>    smooth (default) | iter | iter+real | iter+imag |
+                            iter+all | binary | biomorphs | potential | color-decomp |
+                            orbit-traps | wings | distance | distance-ao | distance-3d
+
+Algorithm
+    --algorithm <MODE>      auto | f64 | perturbation | gmp
+    --precision-bits <N>    GMP precision [default: 256]
+    --plane <N>             Plane transform 0-6 (mu, 1/mu, lambda, …)
+    --no-bytecode           Disable the unified bytecode engine (debug only)
+
+Perturbation tuning
+    --bla-threshold <F>
+    --bla-validity-scale <F>
+    --glitch-tolerance <F>
+
+Advanced features
+    --enable-distance-estimation
+    --enable-interior-detection
+    --interior-threshold <F>  [default: 0.001]
+    --gpu                     Use GPU (Metal/Vulkan/DX12) when available
+
+Type-specific
+    --multibrot-power <F>     Power for Multibrot [default: 2.5]
+    --lyapunov-preset <NAME>  standard | zircon-city | jellyfish |
+                              asymmetric | spaceship | heavy-blocks
+
+Output
+    --output <FILE>           Output PNG (embeds JSON metadata)
 ```
 
 ### Examples
 
 ```bash
 # Classic Mandelbrot in 4K
-fractall-cli --type 3 -w 3840 -h 2160 -o mandelbrot.png
+fractall-cli --type 3 --width 3840 --height 2160 --output mandelbrot.png
 
-# Deep zoom into a spiral
+# Deep zoom on a spiral, GMP arbitrary precision
 fractall-cli --type 3 \
     --center-x=-0.7435669 --center-y=0.1314023 \
+    --zoom 1e6 \
     --iterations 5000 \
     --algorithm gmp \
-    -o spiral.png
+    --output spiral.png
 
 # Burning Ship fractal
-fractall-cli --type 13 --palette 2 -o burning_ship.png
+fractall-cli --type 13 --palette 2 --output burning_ship.png
 
-# Julia set with custom seed
-fractall-cli --type 4 --center-x=-0.8 --center-y=0.156 -o julia.png
+# Julia set with a custom seed
+fractall-cli --type 4 --center-x=-0.8 --center-y=0.156 --output julia.png
 
 # Lyapunov fractal (Zircon City preset)
-fractall-cli --type 17 --lyapunov_preset zircon-city -o lyapunov.png
+fractall-cli --type 17 --lyapunov-preset zircon-city --output lyapunov.png
+
+# GPU-accelerated deep zoom Mandelbrot
+fractall-cli --type 3 --gpu --zoom 5e6 --iterations 2000 --output gpu_deep.png
 ```
 
 ## Technical Highlights
 
-- **Perturbation Theory**: Compute deep zooms efficiently by calculating deltas from a high-precision reference orbit
-- **BLA Tables**: Skip iterations using bilinear approximation when pixel deltas are small
-- **Glitch Detection**: Automatically detect and correct rendering artifacts at extreme zoom levels
-- **Reference Orbit Caching**: Reuse expensive GMP calculations when panning at the same zoom level
-- **Progressive Rendering**: Multi-pass rendering shows quick previews before full quality
+- **Unified bytecode engine**: a small 8-opcode IR (`Sqr / Mul / Store / AbsX / AbsY / NegX / NegY / Add`) encodes Mandelbrot, Burning Ship, Tricorn, Celtic, Buffalo, Perpendicular Burning Ship, Multibrot and their Julia variants. A single CPU pixel loop + WGSL kernel cover all of them.
+- **`mat2` BLA via dual-numbers**: bilinear approximation tables are built by walking the bytecode with dual numbers, so the non-conformal case (Burning Ship, Tricorn) is handled exactly like the conformal one.
+- **Fraktaler-3 style rebasing**: proactive `|Z+δ|² < |δ|²` check replaces Pauldelbrot glitch detection on the default path — fewer artifacts, less heuristic tuning.
+- **Perturbation theory**: deep zoom delegated to a high-precision GMP reference orbit, pixels carry only the delta (`ComplexExp` for zooms > 10¹³).
+- **Reference Orbit Caching**: re-pan at the same zoom level reuses the expensive GMP orbit + BLA tables.
+- **Progressive Rendering**: multi-pass rendering shows quick previews before full quality.
+- **Pixel-exact golden tests**: `cargo test --release --test golden_images` guards the render pipeline against regressions.
 
 ## Contributing
 
-Contributions are welcome! Whether it's:
-- New fractal types
-- Performance optimizations
-- Additional color palettes
-- Bug fixes
-- Documentation improvements
-
-Please open an issue first to discuss major changes.
+Contributions welcome — new fractal types, performance optimizations, palettes, bug fixes, documentation. Please open an issue first to discuss major changes.
 
 ## License
 
-This project is licensed under the MIT License.
+MIT.
 
 ## Acknowledgments
 
-- Inspired by [XaoS](https://xaos-project.github.io/), [Kalles Fraktaler](https://mathr.co.uk/kf/kf.html), and [Fraktaler-3](https://fraktaler.mathr.co.uk/)
+- Inspired by [XaoS](https://xaos-project.github.io/), [Kalles Fraktaler](https://mathr.co.uk/kf/kf.html) and [Fraktaler-3](https://fraktaler.mathr.co.uk/) (the latter is the algorithmic reference for the deep-zoom engine — see `docs/fraktaler-3-analysis.md`)
 - Color palettes from [rust-fractal-core](https://github.com/rust-fractal/rust-fractal-core) (Blues, Coffee, Classic, Dimensions, Earth, FireIce, Habs, Jays, LightYears, Slice, Stardust, Strobe, SynthRed, SynthBlue)
-- Perturbation algorithms based on research by K.I. Martin and Claude Heiland-Allen
-- Built with [egui](https://github.com/emilk/egui), [wgpu](https://wgpu.rs/), and [rug](https://docs.rs/rug/)
+- Perturbation algorithms based on research by K. I. Martin and Claude Heiland-Allen
+- Built with [egui](https://github.com/emilk/egui), [wgpu](https://wgpu.rs/) and [rug](https://docs.rs/rug/)
 
 ---
 

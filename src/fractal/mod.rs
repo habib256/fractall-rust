@@ -1,6 +1,7 @@
 pub mod types;
 pub mod definitions;
 pub mod iterations;
+pub mod bytecode;
 pub mod gmp;
 pub mod lyapunov;
 pub mod vectorial;

@@ -19,3 +19,11 @@ Thumbs.db
 
 ## fractall-quality output
 /quality-reports/
+
+## fraktaler-3-3.1 (vendored F3 sources / binary)
+fraktaler-3-3.1
+
+## Generated test artifacts (CLI renders dropped at repo root)
+/out.png
+/fractal_*.png
+/fractall_*.png

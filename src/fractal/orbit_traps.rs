@@ -3,10 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
 /// Type d'Orbit Trap (forme géométrique pour détecter la proximité de l'orbite)
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Default, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub enum OrbitTrapType {
     /// Distance minimale à un point (généralement l'origine)
+    #[default]
     Point,
     /// Distance minimale à une ligne (horizontale, verticale, ou diagonale)
     Line { angle: f64 }, // angle en radians

@@ -6,6 +6,7 @@ use num_complex::Complex64;
 use rug::{Assign, Complex, Float};
 
 use crate::fractal::{FractalParams, FractalType};
+use crate::fractal::bytecode::{compile_formula, GmpInterpState, Formula};
 use crate::fractal::gmp::{complex_to_complex64, pow_f64_mpc};
 use crate::fractal::perturbation::bla::{BlaTable, build_bla_table};
 use crate::fractal::perturbation::types::ComplexExp;
@@ -677,12 +678,13 @@ pub fn compute_reference_orbit_cached(
             String::new()
         };
         eprintln!(
-            "[PERTURB PERF] reference_cache=miss size={}x{} pixels={} small_image={} type={:?} iters={}{} orbit={:.3}s bla={:.3}s series={:.3}s hybrid={:.3}s total={:.3}s",
+            "[PERTURB PERF] reference_cache=miss size={}x{} pixels={} small_image={} type={:?} prec={}b iters={}{} orbit={:.3}s bla={:.3}s series={:.3}s hybrid={:.3}s total={:.3}s",
             params.width,
             params.height,
             pixel_count,
             small_image,
             params.fractal_type,
+            adjusted_params.precision_bits,
             adjusted_params.iteration_max,
             adjusted,
             dt_orbit.as_secs_f64(),
@@ -807,6 +809,26 @@ pub fn compute_reference_orbit(
     };
     let seed = Complex::with_val(prec, (params.seed.re, params.seed.im));
 
+    // Path bytecode (P3.1) : si activé et type supporté, on remplace le match
+    // per-type dans la boucle d'itération par un interpréteur unifié. La
+    // constante `c` ajoutée par Op::Add est `seed` pour les variantes Julia,
+    // `cref` sinon (cf. F3 `hybrid_reference`).
+    let bytecode_formula: Option<Formula> = if params.use_bytecode_engine {
+        compile_formula(params.fractal_type, params.multibrot_power)
+    } else {
+        None
+    };
+    let bytecode_c: Option<&Complex> = bytecode_formula.as_ref().map(|_| {
+        if Formula::is_julia_for(params.fractal_type) {
+            &seed
+        } else {
+            &cref
+        }
+    });
+    let mut bytecode_state: Option<GmpInterpState> = bytecode_formula
+        .as_ref()
+        .map(|_| GmpInterpState::new(prec, z.clone()));
+
     let bailout = Float::with_val(prec, params.bailout);
     let mut bailout_sqr = bailout.clone();
     bailout_sqr *= &bailout;
@@ -911,40 +933,47 @@ pub fn compute_reference_orbit(
             }
         }
 
-        // In-place iteration update using a scratch Complex. Previously each
-        // match arm allocated 2-3 fresh Complex values per iteration.
-        match ftype {
-            FractalType::Mandelbrot => {
-                scratch.assign(&z);
-                z *= &scratch;   // z = z * z
-                z += &cref;      // z = z² + cref
+        if let (Some(state), Some(formula), Some(c_phase)) =
+            (bytecode_state.as_mut(), bytecode_formula.as_ref(), bytecode_c)
+        {
+            state.step(formula, c_phase);
+            z.assign(&state.z);
+        } else {
+            // In-place iteration update using a scratch Complex. Previously each
+            // match arm allocated 2-3 fresh Complex values per iteration.
+            match ftype {
+                FractalType::Mandelbrot => {
+                    scratch.assign(&z);
+                    z *= &scratch; // z = z * z
+                    z += &cref; // z = z² + cref
+                }
+                FractalType::Julia => {
+                    scratch.assign(&z);
+                    z *= &scratch;
+                    z += &seed;
+                }
+                FractalType::BurningShip => {
+                    // z = (|Re(z)| + i|Im(z)|)² + cref
+                    z.mut_real().abs_mut();
+                    z.mut_imag().abs_mut();
+                    scratch.assign(&z);
+                    z *= &scratch;
+                    z += &cref;
+                }
+                FractalType::Multibrot => {
+                    let mut z_pow = pow_f64_mpc(&z, multibrot_power, prec);
+                    z_pow += &cref;
+                    z = z_pow;
+                }
+                FractalType::Tricorn => {
+                    // z = conj(z)² + cref
+                    z.conj_mut();
+                    scratch.assign(&z);
+                    z *= &scratch;
+                    z += &cref;
+                }
+                _ => return None,
             }
-            FractalType::Julia => {
-                scratch.assign(&z);
-                z *= &scratch;
-                z += &seed;
-            }
-            FractalType::BurningShip => {
-                // z = (|Re(z)| + i|Im(z)|)² + cref
-                z.mut_real().abs_mut();
-                z.mut_imag().abs_mut();
-                scratch.assign(&z);
-                z *= &scratch;
-                z += &cref;
-            }
-            FractalType::Multibrot => {
-                let mut z_pow = pow_f64_mpc(&z, multibrot_power, prec);
-                z_pow += &cref;
-                z = z_pow;
-            }
-            FractalType::Tricorn => {
-                // z = conj(z)² + cref
-                z.conj_mut();
-                scratch.assign(&z);
-                z *= &scratch;
-                z += &cref;
-            }
-            _ => return None,
         }
         // Store high-precision, f64, and full GMP versions
         z_ref.push(ComplexExp::from_gmp(&z));

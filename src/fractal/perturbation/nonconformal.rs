@@ -1,3 +1,14 @@
+//! Non-conformal BLA (matrices 2×2 réelles) pour Tricorn et Burning Ship.
+//!
+//! **Statut depuis P3.1 Session E** : voie historique conservée pour le
+//! path GMP deep zoom et le path dual-numbers. Pour le path f64 standard,
+//! remplacée par le BLA mat2 unifié construit via dual-numbers walking
+//! le bytecode (`fractal/bytecode/bla_dual.rs`), qui fonctionne
+//! uniformément pour tous les types (Mandelbrot/Julia/BS/Tricorn/Celtic/
+//! Buffalo/PerpBS/Multibrot) sans branche conformal/non-conformal.
+//!
+//! À retirer quand le path bytecode supportera ComplexExp + dual numbers.
+
 use num_complex::Complex64;
 
 /// # Non-Conformal BLA

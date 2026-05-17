@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html>
+  <head profile="http://www.w3.org/2005/10/profile">
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <title>Fraktaler 3 :: mathr</title>
+    <!--
+
+    fraktaler.mathr.co.uk -- Fraktaler 3 - fast deep hybrid escape time fractals
+    Copyright (C) 2021-2025 Claude Heiland-Allen
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU Affero General Public License as
+    published by the Free Software Foundation, version 3 of the License.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU Affero General Public License for more details.
+
+    You should have received a copy of the GNU Affero General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+    -->
+    <meta name="description" content="fast deep hybrid escape time fractals">
+    <meta name="keywords" content="escape time, Mandelbrot set, Burning Ship, fractal, hybrid, deep zoom">
+    <meta name="author" content="Claude Heiland-Allen">
+    <meta property="og:title" content="Fraktaler 3 :: mathr">
+    <meta property="og:description" content="fast deep hybrid escape time fractals">
+    <!--
+    setting these makes embedded card link forget parameters, at least when shared on Mastodon
+    <link rel="canonical" href="https://mathr.co.uk/f3">
+    <meta property="og:url" content="https://mathr.co.uk/f3">
+    -->
+    <meta property="og:locale" content="en_GB">
+    <meta property="og:type" content="website">
+    <meta property="og:image" content="https://fraktaler.mathr.co.uk/fraktaler-3.png">
+    <link rel="icon" href="https://fraktaler.mathr.co.uk/fraktaler-3.ico">
+    <link rel="icon" href="https://fraktaler.mathr.co.uk/fraktaler-3.png" type="image/png">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+      body, canvas
+      {
+        margin: 0;
+        border: 0;
+        padding: 0;
+      }
+      canvas
+      {
+        position: fixed;
+        width: 100vw;
+        height: 100vh;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex=-1></canvas>
+    <script type='text/javascript'>
+
+      // Don't pass Ctrl-V as a key event to Emscripten/SDL2.
+      // Instead let the browser interpret it as a paste event.
+      // Do the same with F11 (for fullscreen).
+      // FIXME probably fails on macOS?
+      // <https://github.com/emscripten-ports/SDL2/issues/125#issuecomment-657606557>
+      var original_addEventListener = window.addEventListener;
+      window.addEventListener = function (type, handler, opts)
+      {
+        if (type === "keyup" || type === "keydown" || type === "keypress")
+        {
+          original_addEventListener(type, function (e) {
+            let key = e.which || e.keyCode;
+            let ctrl = e.ctrlKey ? e.ctrlKey : ((key === 17) ? true : false);
+            if ((ctrl && (key == /*V*/86)) || (key == /*F11*/122))
+              return false;
+            handler(e);
+          }, opts);
+        }
+        else
+        {
+          original_addEventListener(type, handler, opts);
+        }
+      };
+
+      var canvasElement = document.querySelector('canvas');
+      var Module = {
+            arguments: [], /* "--url=" + window.location.hash ], */
+            print(...args) { console.log(...args); },
+            canvas: canvasElement,
+            setStatus(text) { },
+            monitorRunDependencies(left) { },
+            onRuntimeInitialized() {
+              // As a default initial behavior, pop up an alert when webgl context is lost. To make your
+              // application robust, you may want to override this behavior before shipping!
+              // See http://www.khronos.org/registry/webgl/specs/latest/1.0/#5.15.2
+              canvasElement.addEventListener("webglcontextlost", function(e) { alert('WebGL context lost. You will need to reload the page.'); e.preventDefault(); }, false);
+/*
+              var c_hashchange = Module.cwrap('hashchange', 'null', ['string']);
+              window.addEventListener("hashchange", () => {
+                c_hashchange(window.location.hash);
+              });
+              var c_contextlost = Module.cwrap('contextlost', 'null', []);
+              canvasElement.addEventListener("webglcontextlost", function(event) {
+                event.preventDefault();
+                c_contextlost();
+                document.body.innerText = "WebGL context lost: please reload the page to retry";
+              }, false);
+*/
+            }
+          };
+
+    </script>
+    <script async type="text/javascript" src="fraktaler-3.js"></script>
+    <noscript>
+      <h1>Fraktaler 3</h1>
+      <p>Fast deep hybrid escape time fractals.  Copyright (C) 2021-2025 Claude Heiland-Allen, license: <a href="https://www.gnu.org/licenses/agpl-3.0.en.html">AGPLv3</a> with NO WARRANTY</p>
+      <h2>Javascript Required</h2>
+      <p>You have no javascript, sorry.</p>
+      <h2>Home Pages</h2>
+      <p><a href="https://fraktaler.mathr.co.uk">fraktaler.mathr.co.uk</a></p>
+      <p><a href="https://mathr.co.uk/web/fraktaler.html">mathr.co.uk/web/fraktaler.html</a></p>
+    </noscript>
+  </body>
+</html>

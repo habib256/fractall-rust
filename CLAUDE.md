@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+> Carte rapide du repo pour reprendre une session sans relire tout le code.
+
 ## Build & Run
 
 ```bash
@@ -9,9 +11,17 @@ cargo run --release --bin fractall-gui
 cargo run --release --bin fractall-quality -- suite
 ```
 
-Prerequis: GMP/MPFR/MPC (pour `rug`).
+Prérequis natifs : GMP / MPFR / MPC (pour `rug`).
 
-**Tests / CI**: Tests unitaires dans les modules perturbation (bla, delta, series, nonconformal, distance, glitch, interior, types, mod), lyapunov et progressive. Commande: `cargo test --release --lib`. Pas de pipeline CI/CD.
+## Tests
+
+- **Unit tests** : `cargo test --release --bin fractall-cli`. Couvre `perturbation/{bla,delta,series,nonconformal,distance,interior,glitch,orbit,types,mod}`, `lyapunov`, `progressive`, et tout le `bytecode/` (`compile`, `interp{,_gmp}`, `bla_dual`, `delta_form`, `pixel_loop{,_exp}`).
+- **Golden image tests** (`tests/golden_images.rs`) : 10 cas couvrant les paths f64 standard, perturbation, deep zoom GMP et types non-bytecode. Le binaire `fractall-cli` est invoqué pour chaque cas, le PNG décodé, et les pixels comparés à `tests/golden/<name>.png` — une régression d'un seul pixel fait échouer le test.
+  - Lancer : `cargo test --release --test golden_images`
+  - Régénérer (après modification intentionnelle) : `FRACTALL_UPDATE_GOLDENS=1 cargo test --release --test golden_images`. **Toujours** ouvrir visuellement les nouveaux PNG avant de les commit.
+  - À utiliser comme garde-fou pour tout refactor du moteur (perturbation, BLA, color pipeline, bytecode P3.1, etc.).
+
+Pas de pipeline CI/CD (cf. TODO P2.1).
 
 **QA perturbation vs GMP** (`fractall-quality`, voir §"Qualite / Auto-amelioration"): outil de regression qui compare le chemin perturbation au rendu GMP pur par pixel a des zooms profonds.
 
@@ -26,40 +36,51 @@ src/
 │   ├── mod.rs           # exports + default_params_for_type()
 │   ├── types.rs         # FractalType, FractalParams, AlgorithmMode, ColorSpace, PlaneTransform
 │   ├── definitions.rs   # constantes par type + LyapunovPreset
-│   ├── iterations.rs    # escape-time f64
-│   ├── gmp.rs           # precision arbitraire (rug/mpc)
+│   ├── iterations.rs    # escape-time f64 + dispatch bytecode unifié (iterate_via_bytecode)
+│   ├── gmp.rs           # précision arbitraire (rug / mpc)
 │   ├── lyapunov.rs      # Lyapunov exponent
-│   ├── buddhabrot.rs    # Buddhabrot/Nebulabrot/Anti-Buddhabrot
+│   ├── buddhabrot.rs    # Buddhabrot / Nebulabrot / Anti-Buddhabrot
 │   ├── vectorial.rs     # Von Koch, Dragon
 │   ├── orbit_traps.rs   # Orbit trap detection (Point, Line, Cross, Circle)
-│   └── perturbation/
-│       ├── mod.rs       # render_perturbation_cancellable_with_reuse()
-│       ├── types.rs     # ComplexExp, FloatExp (mantisse + exposant)
-│       ├── orbit.rs     # ReferenceOrbitCache
-│       ├── bla.rs       # BlaTable (Bilinear Approximation)
-│       ├── delta.rs     # iterate_pixel()
-│       ├── series.rs    # Taylor series approximation
-│       ├── distance.rs  # Distance estimation (dual numbers)
-│       ├── interior.rs  # Interior detection (ExtendedDualComplex)
-│       ├── nonconformal.rs # Non-conformal BLA (Tricorn, Burning Ship)
-│       └── glitch.rs    # Glitch cluster detection
+│   ├── bytecode/        # Moteur unifié Fraktaler-3 (P3.1, défaut)
+│   │   ├── mod.rs          # Op, Phase, Formula (mono / hybride multi-phase)
+│   │   ├── compile.rs      # compile_formula(type, multibrot_power) -> Formula
+│   │   ├── interp.rs       # iterate_bytecode_f64 (path standard)
+│   │   ├── interp_gmp.rs   # interpréteur GMP pour orbite référence
+│   │   ├── delta_form.rs   # DeltaState (f64) / DeltaStateExp (ComplexExp) — règle de chaîne par opcode
+│   │   ├── bla_dual.rs     # BLA mat2 unifié construit via dual-numbers (BlaTableUnified, merge F3)
+│   │   ├── pixel_loop.rs   # BLA mat2 + delta-form + rebasing F3 (f64)
+│   │   ├── pixel_loop_exp.rs # idem avec ComplexExp (deep zoom > 1e13)
+│   │   └── tests.rs        # tests d'invariance + intégration
+│   └── perturbation/    # Path GMP deep zoom (legacy + ponts vers bytecode)
+│       ├── mod.rs          # render_perturbation_cancellable_with_reuse() — dispatcher
+│       ├── types.rs        # ComplexExp, FloatExp (mantisse + exposant)
+│       ├── orbit.rs        # ReferenceOrbit, ReferenceOrbitCache, HybridBlaReferences
+│       ├── bla.rs          # BlaTable conformal (utilisée par path GMP deep zoom)
+│       ├── nonconformal.rs # BLA matriciel pour Tricorn/Burning Ship (path GMP)
+│       ├── delta.rs        # iterate_pixel{,_gmp} — passe par bytecode si use_bytecode_engine
+│       ├── series.rs       # Taylor series approximation
+│       ├── glitch.rs       # Clustering Pauldelbrot (path legacy uniquement)
+│       └── debug_pure_f3.rs # Helpers de debug pour le path F3 pur
 ├── render/
 │   ├── mod.rs
-│   └── escape_time.rs   # dispatcher + should_use_gmp_reference()
+│   └── escape_time.rs   # dispatcher + should_use_perturbation() / should_use_gmp_reference()
 ├── gpu/
-│   ├── mod.rs           # GpuRenderer (wgpu)
-│   ├── mandelbrot_f32.wgsl / mandelbrot_f64.wgsl
-│   ├── julia_f32.wgsl / julia_f64.wgsl
-│   ├── burning_ship_f32.wgsl / burning_ship_f64.wgsl
-│   └── perturbation.wgsl  # BLA cache, series approx, adaptive glitch
+│   ├── mod.rs              # GpuRenderer (wgpu) + pipeline bytecode (P3.1 #7)
+│   ├── mandelbrot_f32.wgsl # path standard f32
+│   ├── julia_f32.wgsl
+│   ├── burning_ship_f32.wgsl
+│   ├── perturbation.wgsl   # BLA cache, series approx, adaptive glitch
+│   ├── bytecode_kernel.wgsl # runtime bytecode (étend la couverture GPU à BS/Tricorn/Celtic/Buffalo/PerpBS/Multibrot sans shader dédié)
+│   └── bytecode_kernel_test.rs # tests d'équivalence GPU vs CPU bytecode
 ├── gui/
 │   ├── mod.rs
-│   ├── app.rs           # FractallApp (egui) + drag-and-drop + HQ render
+│   ├── app.rs           # FractallApp (egui) — menu, drag-and-drop, HQ render, raccourcis
 │   ├── progressive.rs   # rendu multi-passes
 │   └── texture.rs
 ├── color/
 │   ├── mod.rs
-│   ├── palettes.rs      # 27 palettes predefinies (0-26)
+│   ├── palettes.rs      # 27 palettes prédéfinies (0-26)
 │   └── color_models.rs  # RGB, HSB, LCH conversions
 ├── io/
 │   ├── mod.rs
@@ -71,153 +92,156 @@ src/
     └── report.rs        # PNG (pert/gmp/diff) + markdown + suite-summary.md
 ```
 
-## Dependances principales (Cargo.toml)
+## Dépendances principales (Cargo.toml)
 
-| Crate | Version | Role |
+| Crate | Version | Rôle |
 |-------|---------|------|
 | clap | 4.5 | Parsing CLI (derive) |
 | image | 0.25 | Support PNG |
-| num-complex | 0.4 | Arithmetique complexe |
-| rayon | 1.11 | Parallelisme multi-thread |
-| eframe | 0.29 | Framework GUI (wrapper egui) |
+| num-complex | 0.4 | Arithmétique complexe |
+| rayon | 1.11 | Parallélisme multi-thread |
+| eframe | 0.29 | Framework GUI (wrapper egui, backend wgpu) |
 | egui | 0.29 | UI immediate mode |
 | wgpu | 22.1 | GPU (Vulkan/Metal/DX12) |
 | pollster | 0.3 | Runtime async pour GPU |
-| bytemuck | 1.15 | Serialisation buffers GPU |
-| rug | 1.24 | Precision arbitraire (GMP/MPFR/MPC) |
-| serde / serde_json | 1.0 | Serialisation JSON (metadonnees PNG) |
-| png | 0.17 | Acces chunks PNG bas niveau |
+| bytemuck | 1.15 | Sérialisation buffers GPU |
+| rug | 1.24 | Précision arbitraire (GMP/MPFR/MPC) |
+| serde / serde_json | 1.0 | Sérialisation JSON (métadonnées PNG) |
+| png | 0.17 | Accès chunks PNG bas niveau |
+| toml | 0.8 | Loader de fichiers de paramètres (cf. `toml/`) |
+| naga (dev) | 22.1 | Validation des shaders WGSL en tests |
 
 Trois binaires: `fractall-cli` (src/main.rs), `fractall-gui` (src/main_gui.rs), `fractall-quality` (src/main_quality.rs).
 
-## Systeme de coordonnees
+## Système de coordonnées
 
-Le code utilise **center + span** au lieu de xmin/xmax/ymin/ymax:
+Le code utilise **center + span** plutôt que xmin/xmax/ymin/ymax :
+
 ```rust
 pub struct FractalParams {
     pub center_x: f64,              // centre X (GPU/CPU standard)
-    pub center_y: f64,              // centre Y
+    pub center_y: f64,
     pub span_x: f64,                // largeur totale
-    pub span_y: f64,                // hauteur totale
+    pub span_y: f64,
 
-    // Haute precision (String) pour zooms >10^15
+    // Haute précision (String GMP) pour zooms > 10^15
     pub center_x_hp: Option<String>,
     pub center_y_hp: Option<String>,
     pub span_x_hp: Option<String>,
     pub span_y_hp: Option<String>,
 }
 ```
-Avantage: evite la soustraction de grands nombres proches lors de zooms profonds.
 
-## Metadonnees PNG
+Avantage : évite la soustraction de grands nombres proches lors des zooms profonds.
 
-Les images PNG generees contiennent les parametres complets de la fractale dans un chunk tEXt:
-- Cle: `fractall-params`
-- Valeur: JSON serialise de `FractalParams` (incluant coordonnees HP)
+## Métadonnées PNG
 
-**Fonctions** (`io/png.rs`):
-- `save_png_with_metadata()`: Sauvegarde PNG + metadonnees JSON
-- `load_png_metadata()`: Charge les FractalParams depuis un PNG
+Les PNG générés contiennent l'intégralité des paramètres dans un chunk `tEXt` :
+- Clé : `fractall-params`
+- Valeur : JSON sérialisé de `FractalParams` (incluant coordonnées HP)
 
-**Drag-and-drop**: Glisser un PNG sur la fenetre GUI restaure l'etat exact de la fractale.
+API (`io/png.rs`) :
+- `save_png_with_metadata()` : PNG + métadonnées JSON
+- `load_png_metadata()` : restaure `FractalParams` depuis un PNG
 
-## Dispatch rendu (escape_time.rs)
+**Drag-and-drop** : glisser un PNG sur la fenêtre GUI restaure l'état exact.
+
+## Dispatch rendu (`render/escape_time.rs`)
 
 ```
-AlgorithmMode::Auto:
-  - Types speciaux:
-    - VonKoch, Dragon -> rendu vectoriel
-    - Buddhabrot/Nebulabrot/AntiBuddhabrot -> rendu densite (f64 ou GMP)
-    - Lyapunov -> calcul exposant (f64 ou GMP)
-  - Types escape-time (Mandelbrot, Julia, BurningShip, Tricorn):
-    - should_use_perturbation() true (zoom > ~1e15) -> perturbation + BLA
-    - should_use_gmp_reference() true (zoom > 1e16) -> GMP reference
-    - sinon -> CPU f64 standard (rapide)
+AlgorithmMode::Auto :
+  - Types spéciaux :
+    - VonKoch, Dragon                                  -> rendu vectoriel
+    - Buddhabrot / Nebulabrot / Anti-Buddhabrot        -> rendu densité (f64 ou GMP)
+    - Lyapunov                                         -> calcul exposant (f64 ou GMP)
+  - Types escape-time (Mandelbrot, Julia, BurningShip, Tricorn) :
+    - should_use_perturbation() (zoom > ~1e13)         -> perturbation + BLA
+    - should_use_gmp_reference() (zoom > 1e16)         -> GMP reference
+    - sinon                                            -> CPU f64 standard
   - Perturbation incompatible avec plane_transform != Mu -> fallback f64/GMP
-  - Autres types -> f64 ou GMP selon use_gmp
+  - Autres types                                       -> f64 ou GMP selon use_gmp
 
-Modes forces: StandardF64 | Perturbation | ReferenceGmp
-
-Precision GMP:
-  - Calcul auto via compute_perturbation_precision_bits()
-  - Utilise les String HP si disponibles
-  - Propagation precision via Complex::with_val(prec, ...)
+Modes forcés : StandardF64 | Perturbation | ReferenceGmp
 ```
 
-## Perturbation (deep zoom)
+### Moteur bytecode (défaut depuis P3.1 Session E)
 
-**Supporte**: Mandelbrot, Julia, BurningShip, Tricorn
+Si `params.use_bytecode_engine` (true par défaut) ET `compile_formula(type, power)`
+réussit, le pixel est servi par le path bytecode unifié :
 
-**Pipeline**:
-1. Orbite reference au centre (GMP, precision auto)
-2. Table BLA pour sauter des iterations
-3. Pixels = delta par rapport a reference (ComplexExp ou GMP)
-4. Detection glitchs + correction
+- **CPU f64 standard** : `iterations.rs::iterate_via_bytecode` (Mandelbrot, Julia,
+  BS, Tricorn, Celtic, Buffalo, PerpBS, Multibrot puiss. entière, + variantes Julia).
+  Supporte distance estimation, interior detection, orbit traps via tracking de `dz`.
+- **CPU perturbation** : `perturbation/delta.rs::try_bytecode_unified_path` →
+  `bytecode/pixel_loop.rs::iterate_pixel_unified_full` (f64) ou
+  `pixel_loop_exp.rs::iterate_pixel_unified_exp` (ComplexExp, deep zoom > 1e13).
+  Rebasing F3 strict (`|Z[m+1] + δ|² < |δ|²`) remplace la glitch detection
+  Pauldelbrot legacy.
+- **GPU** : `gpu/mod.rs::try_render_bytecode` → `bytecode_kernel.wgsl`. Encode
+  `Formula` en `Vec<u32>` storage buffer, interprété en parallèle. Couvre toute
+  la famille escape-time supportée par le bytecode sur n'importe quel device wgpu.
 
-**Modules specialises**:
-- `distance.rs`: Estimation distance via DualComplex (differentiation auto)
-- `interior.rs`: Detection interieur via ExtendedDualComplex (5 composantes)
-- `nonconformal.rs`: BLA matriciel pour Tricorn/Burning Ship (valeurs singulieres)
-- `glitch.rs`: Clustering de pixels glitches (flood-fill) + references secondaires
+Fallback automatique sur le path legacy si : type non compilable, `--no-bytecode`,
+ou path GMP deep zoom + features avancées qui ne sont pas encore portées sur
+pixel_loop (cas marginal).
 
-**Precision GMP** (`compute_perturbation_precision_bits()`):
-- Formule C++ Fraktaler-3: `bits = max(24, 24 + floor(log2(zoom * height)))`, clamp 128..8192
-- Option conservative: `log2(zoom) + margin`
+### Précision GMP perturbation
 
-**Cache** (`ReferenceOrbitCache`): orbite + BLA reutilises si meme centre/type/precision.
+Formule C++ Fraktaler-3 : `bits = max(24, 24 + floor(log2(zoom * height)))`,
+clamp `[128, 8192]`. Option conservative : `log2(zoom) + margin`. Voir
+`compute_perturbation_precision_bits()`.
 
-**Documentation complete**: voir `perturbation.md` a la racine du projet.
+**Cache** (`ReferenceOrbitCache`) : orbite + BLA réutilisées si même
+centre / type / précision.
 
-## Parametres perturbation
+**Documentation détaillée** : `perturbation.md` à la racine et `docs/fraktaler-3-analysis.md`.
 
-| Champ | Description | Defaut |
+## Paramètres perturbation
+
+| Champ | Description | Défaut |
 |-------|-------------|--------|
 | `bla_threshold` | seuil delta BLA | 1e-8 |
 | `bla_validity_scale` | multiplicateur rayon BLA | 1.0 |
-| `glitch_tolerance` | tolerance Pauldelbrot | 1e-4 |
-| `series_order` | ordre serie (0=off) | 0 |
-| `max_secondary_refs` | references secondaires (0=off) | 3 |
-| `min_glitch_cluster_size` | taille min cluster | 100 |
-| `max_perturb_iterations` | cap iterations | 1024 |
-| `max_bla_steps` | cap pas BLA | 1024 |
-| `use_reference_precision_formula` | formule C++ | true |
+| `glitch_tolerance` | tolerance Pauldelbrot (path legacy) | 1e-4 |
+| `series_order` | ordre série (0 = off) | 2 |
+| `max_secondary_refs` | références secondaires (0 = off, path legacy) | 3 |
+| `min_glitch_cluster_size` | taille min cluster (path legacy) | 100 |
+| `max_perturb_iterations` | cap itérations par pixel | 1024 |
+| `max_bla_steps` | cap pas BLA par pixel | 1024 |
+| `use_reference_precision_formula` | formule C++ F3 | true |
+| `use_bytecode_engine` | path unifié BLA mat2 + rebasing F3 | true |
+| `jitter_scale` | sub-pixel AA (0 = off, 1 = full pixel) | 0.0 |
 
 ## Couleur
 
-**Palettes** (27 disponibles, index 0-26):
-Fire, Ocean, Forest, Violet, Rainbow, Sunset, Plasma (defaut), Ice, Cosmic, Neon, Twilight, Emboss, Waves, SynthRed, LightYears, Blues, Coffee, Classic, Dimensions, Earth, FireIce, Habs, Jays, Slice, Stardust, Strobe, SynthBlue
+**Palettes** (27, index 0-26) : Fire, Ocean, Forest, Violet, Rainbow, Sunset,
+**Plasma** (défaut), Ice, Cosmic, Neon, Twilight, Emboss, Waves, SynthRed,
+LightYears, Blues, Coffee, Classic, Dimensions, Earth, FireIce, Habs, Jays, Slice,
+Stardust, Strobe, SynthBlue.
 
-**Espaces couleur** (color_models.rs):
-- RGB: standard
-- HSB: Teinte-Saturation-Luminosite (interpolation circulaire)
-- LCH: Luminance-Chroma-Hue via CIE Lab (perceptuellement uniforme)
+**Espaces couleur** (`color_models.rs`) :
+- RGB : standard
+- HSB : Teinte / Saturation / Brillance (interpolation circulaire)
+- LCH : Luminance / Chroma / Hue via CIE Lab (perceptuellement uniforme)
 
-**Modes de colorisation** (OutColoringMode, 15 modes):
+**Modes de colorisation** (`OutColoringMode`, 15 modes) :
+
 | Mode | Description |
 |------|-------------|
-| Iterations | Couleur basee sur nombre d'iterations |
-| IterReal | Iterations + partie reelle de z |
-| IterImag | Iterations + partie imaginaire de z |
-| IterRealImag | Iterations + re/im |
-| IterAll | Combinaison complete |
-| Binary | Noir/blanc binaire |
+| Iter | Couleur basée sur nombre d'itérations |
+| IterPlusReal / IterPlusImag / IterPlusRealImag / IterPlusAll | Iter + composantes de z |
+| BinaryDecomposition | Noir/blanc selon signe z.im |
 | Biomorphs | Motifs biologiques |
-| Potential | Potentiel electrique |
-| ColorDecomp | Decomposition par angle |
-| Smooth | Lissage logarithmique (defaut) |
-| OrbitTraps | Distance aux pieges geometriques |
+| Potential | Potentiel électrique |
+| ColorDecomposition | Décomposition par angle |
+| Smooth | Lissage logarithmique (**défaut**) |
+| OrbitTraps | Distance aux pièges géométriques |
 | Wings | Motifs ailes via sinh() |
-| Distance | Gradient base sur distance estimee |
+| Distance | Gradient distance |
 | DistanceAO | Distance + ambient occlusion |
 | Distance3D | Effet 3D via gradient distance |
 
-**Orbit traps** (orbit_traps.rs):
-| Type | Description |
-|------|-------------|
-| Point | Distance a l'origine |
-| Line | Distance a une ligne (angle configurable) |
-| Cross | Distance a une croix H+V |
-| Circle | Distance a un cercle (centre, rayon) |
+**Orbit traps** (`orbit_traps.rs`) : Point, Line, Cross, Circle.
 
 ## Transformations de plan (XaoS-style)
 
@@ -226,154 +250,164 @@ Fire, Ocean, Forest, Violet, Rainbow, Sunset, Plasma (defaut), Ice, Cosmic, Neon
 | 0 | Mu | c (normal) |
 | 1 | Inversion | 1/c |
 | 2 | InversionShifted | 1/(c + 0.25) |
-| 3 | Lambda | 4*c*(1-c) |
-| 4 | InversionLambda | 1/(4*c*(1-c)) |
-| 5 | InversionLambdaMinus1 | 1/(4*c*(1-c)) - 1 |
+| 3 | Lambda | 4·c·(1-c) |
+| 4 | InversionLambda | 1/(4·c·(1-c)) |
+| 5 | InversionLambdaMinus1 | 1/(4·c·(1-c)) - 1 |
 | 6 | InversionSpecial | 1/(c - 1.40115) |
 
-## Types de fractales (--type N)
+## Types de fractales (`--type N`)
 
 | ID | Type | Algo |
 |----|------|------|
-| 1 | Von Koch | vectoriel |
-| 2 | Dragon | vectoriel |
-| 3 | Mandelbrot | escape-time + perturbation |
-| 4 | Julia | escape-time + perturbation |
-| 5 | Julia Sin | f64/GMP |
-| 6 | Newton | f64/GMP |
-| 7 | Phoenix | f64/GMP |
-| 8 | Buffalo | f64/GMP |
-| 9 | Barnsley Julia | f64/GMP |
-| 10 | Barnsley Mandelbrot | f64/GMP |
-| 11 | Magnet Julia | f64/GMP |
-| 12 | Magnet Mandelbrot | f64/GMP |
-| 13 | Burning Ship | escape-time + perturbation |
-| 14 | Tricorn | escape-time + perturbation |
-| 15 | Mandelbulb | f64/GMP |
-| 16 | Buddhabrot | densite |
-| 17 | Lyapunov | special (6 presets) |
-| 18 | Perpendicular Burning Ship | f64/GMP |
-| 19 | Celtic | f64/GMP |
-| 20 | Alpha Mandelbrot | f64/GMP |
-| 21 | Pickover Stalks | f64/GMP |
-| 22 | Nova | f64/GMP |
-| 23 | Multibrot | f64/GMP |
-| 24 | Nebulabrot | densite |
-| 25 | Burning Ship Julia | f64/GMP |
-| 26 | Tricorn Julia | f64/GMP |
-| 27 | Celtic Julia | f64/GMP |
-| 28 | Buffalo Julia | f64/GMP |
-| 29 | Multibrot Julia | f64/GMP |
-| 30 | Perp. Burning Ship Julia | f64/GMP |
-| 31 | Alpha Mandelbrot Julia | f64/GMP |
-| 32 | Mandelbrot Sin | f64/GMP |
-| 33 | Anti-Buddhabrot | densite |
+| 1  | Von Koch | vectoriel |
+| 2  | Dragon | vectoriel |
+| 3  | Mandelbrot | bytecode + perturbation |
+| 4  | Julia | bytecode + perturbation |
+| 5  | Julia Sin | f64 / GMP |
+| 6  | Newton | f64 / GMP |
+| 7  | Phoenix | f64 / GMP |
+| 8  | Buffalo | bytecode |
+| 9  | Barnsley Julia | f64 / GMP |
+| 10 | Barnsley Mandelbrot | f64 / GMP |
+| 11 | Magnet Julia | f64 / GMP |
+| 12 | Magnet Mandelbrot | f64 / GMP |
+| 13 | Burning Ship | bytecode + perturbation |
+| 14 | Tricorn | bytecode + perturbation |
+| 15 | Mandelbulb | f64 / GMP |
+| 16 | Buddhabrot | densité |
+| 17 | Lyapunov | spécial (6 presets) |
+| 18 | Perpendicular Burning Ship | bytecode |
+| 19 | Celtic | bytecode |
+| 20 | Alpha Mandelbrot | f64 / GMP |
+| 21 | Pickover Stalks | f64 / GMP |
+| 22 | Nova | f64 / GMP |
+| 23 | Multibrot | bytecode (puissances entières) sinon f64/GMP |
+| 24 | Nebulabrot | densité |
+| 25 | Burning Ship Julia | bytecode |
+| 26 | Tricorn Julia | bytecode |
+| 27 | Celtic Julia | bytecode |
+| 28 | Buffalo Julia | bytecode |
+| 29 | Multibrot Julia | bytecode (puissances entières) |
+| 30 | Perp. Burning Ship Julia | bytecode |
+| 31 | Alpha Mandelbrot Julia | f64 / GMP |
+| 32 | Mandelbrot Sin | f64 / GMP |
+| 33 | Anti-Buddhabrot | densité |
 
-**Paires Mandelbrot / Julia** (preview Julia et touche J en GUI):
-Mandelbrot↔Julia, Barnsley↔Barnsley Julia, Magnet↔Magnet Julia, Burning Ship↔Burning Ship Julia, Tricorn↔Tricorn Julia, Celtic↔Celtic Julia, Buffalo↔Buffalo Julia, Multibrot↔Multibrot Julia, Perpendicular Burning Ship↔Perp. Burning Ship Julia, Alpha Mandelbrot↔Alpha Mandelbrot Julia, Mandelbrot Sin↔Julia Sin.
+**Paires Mandelbrot ↔ Julia** (preview Julia + touche J en GUI) :
+Mandelbrot↔Julia, Barnsley↔Barnsley Julia, Magnet↔Magnet Julia,
+Burning Ship↔Burning Ship Julia, Tricorn↔Tricorn Julia, Celtic↔Celtic Julia,
+Buffalo↔Buffalo Julia, Multibrot↔Multibrot Julia,
+Perpendicular Burning Ship↔Perp. Burning Ship Julia,
+Alpha Mandelbrot↔Alpha Mandelbrot Julia, Mandelbrot Sin↔Julia Sin.
 
 ## CLI
 
 ```
 # Base
---type N              # type fractale (1-33)
---width/height        # dimensions (defaut 1920x1080)
---center-x/center-y   # centre (f64)
---center-x-hp/center-y-hp # centre haute precision (string, deep zooms > 10^15)
---zoom ZOOM           # magnification (span = 4/zoom), supporte notation scientifique (ex: 1.41e219)
---xmin/xmax/ymin/ymax # alternative au centre+span
---iterations          # max iterations
---output FILE         # PNG sortie (avec metadonnees)
+--type N                     # type fractale (1-33)
+--width / --height           # dimensions (défaut 1920×1080)
+--center-x / --center-y      # centre (f64)
+--center-x-hp / --center-y-hp # centre haute précision (string, deep zooms > 10^15)
+--zoom ZOOM                  # magnification (span = 4/zoom), notation scientifique OK (ex: 1.41e219)
+--xmin / --xmax / --ymin / --ymax # alternative au centre+span
+--iterations N               # max itérations
+--output FILE                # PNG sortie (avec métadonnées)
 
 # Couleur
---palette 0-26        # palette (27 disponibles, defaut 6=Plasma)
---color-repeat        # repetitions gradient (1-120)
---outcoloring MODE    # mode colorisation (smooth, distance, orbit-traps, wings...)
+--palette 0-26               # défaut 6 = Plasma
+--color-repeat N             # répétitions gradient (1-120)
+--outcoloring MODE           # smooth (défaut), iter, distance, orbit-traps, wings...
+                             # cf. OutColoringMode::from_cli_name pour la liste exhaustive
 
 # Algorithme
---algorithm           # auto|f64|perturbation|gmp
---precision-bits      # bits GMP (defaut 256)
---plane N             # transformation de plan (0-6)
+--algorithm                  # auto | f64 | perturbation | gmp
+--precision-bits N           # bits GMP (défaut 256)
+--plane N                    # transformation de plan (0-6 ou alias)
+--no-bytecode                # désactive le moteur bytecode (path legacy glitch detection)
 
 # Perturbation
---bla-threshold       # seuil BLA
---bla-validity-scale  # multiplicateur rayon BLA
---glitch-tolerance    # tolerance glitch
+--bla-threshold              # seuil BLA
+--bla-validity-scale         # multiplicateur rayon BLA
+--glitch-tolerance           # tolerance glitch (path legacy)
 
-# Features avancees
---enable-distance-estimation  # estimation distance (dual numbers)
---enable-interior-detection   # detection interieur
---interior-threshold          # seuil interieur (defaut 0.001)
---gpu                         # utiliser le GPU (wgpu: Metal/Vulkan/DX12)
+# Features avancées
+--enable-distance-estimation # estimation distance (dual numbers, défaut off)
+--enable-interior-detection  # détection intérieur
+--interior-threshold         # seuil intérieur (défaut 0.001)
+--gpu                        # rendu GPU (wgpu Metal/Vulkan/DX12)
 
-# Specifiques
---multibrot-power     # puissance Multibrot
---lyapunov-preset     # standard|zircon-city|jellyfish|asymmetric|spaceship|heavy-blocks
+# Spécifiques
+--multibrot-power            # puissance Multibrot (défaut 2.5)
+--lyapunov-preset            # standard | zircon-city | jellyfish | asymmetric | spaceship | heavy-blocks
 ```
 
 ## GPU (wgpu)
 
-**Shaders** (7 fichiers WGSL, workgroup 16x16):
-- `mandelbrot_f32/f64.wgsl`, `julia_f32/f64.wgsl`, `burning_ship_f32/f64.wgsl`
-- `perturbation.wgsl` (BLA cache workgroup, series approx, adaptive glitch tolerance)
+**Shaders** (workgroup 16×16) :
+- `mandelbrot_f32.wgsl`, `julia_f32.wgsl`, `burning_ship_f32.wgsl` — paths legacy f32 par type
+- `perturbation.wgsl` — BLA cache workgroup, série, glitch tolerance adaptative
+- `bytecode_kernel.wgsl` — runtime bytecode unifié (P3.1 Task 7)
 
-**Selection backend**:
-- macOS: Metal
-- Linux: Vulkan (prioritaire) puis OpenGL
-- Windows: DirectX12 et Vulkan
+Tout est en **f32 GPU** (les shaders f64 ont été retirés). Pour deep zoom > ~10⁷
+le CPU prend le relais via la perturbation + GMP.
 
-GPU utilise f32 uniquement (f64 desactive).
+**Sélection backend** :
+- macOS : Metal
+- Linux : Vulkan (prioritaire), puis OpenGL
+- Windows : DirectX12 et Vulkan
 
-## GUI (FractallApp)
+## GUI (`FractallApp`)
 
-**Menu Type** (racine):
-- Mandelbrots a la racine: Mandelbrot, Barnsley Mandelbrot, Magnet Mandelbrot, Burning Ship, Perp. Burning Ship, Tricorn, Celtic, Buffalo, Multibrot, Alpha Mandelbrot, Mandelbrot Sin
-- Dossier **Julia all** (apres les Mandelbrots): toutes les variantes Julia
-- Separateur puis Mandelbulb, Julia Sin, Newton, Phoenix, Pickover Stalks, Nova
-- Dossier **Densite**: Buddhabrot, Nebulabrot, Anti-Buddhabrot
-- Dossier **Lyapunov**: 6 presets
-- Vector (Von Koch, Dragon) retire du menu
+### Menu Type
+- Mandelbrots à la racine : Mandelbrot, Barnsley Mandelbrot, Magnet Mandelbrot,
+  Burning Ship, Perp. Burning Ship, Tricorn, Celtic, Buffalo, Multibrot,
+  Alpha Mandelbrot, Mandelbrot Sin
+- Dossier **Julia all** : toutes les variantes Julia
+- Mandelbulb, Julia Sin, Newton, Phoenix, Pickover Stalks, Nova en racine après séparateur
+- Dossier **Densité** : Buddhabrot, Nebulabrot, Anti-Buddhabrot
+- Dossier **Lyapunov** : 6 presets
+- Von Koch / Dragon retirés du menu (toujours accessibles via CLI `--type 1/2`)
 
-**Rendu**:
-- Rendu progressif multi-passes (preview -> full)
-- Recolorisation asynchrone (ne bloque pas l'UI lors du changement de palette/color_repeat)
-- Cache orbite/BLA entre re-rendus
+### Rendu
+- Rendu progressif multi-passes (preview → full)
+- Recolorisation asynchrone (changement palette/color_repeat sans bloquer l'UI)
+- Cache orbite + BLA entre re-rendus
 
-**Fonctionnalites**:
-- Coordonnees HP en String, sync vers FractalParams
-- Selection rectangulaire pour zoom
-- Switch CPU/GPU
-- Stats: centre, iterations, zoom
-- Apercu palettes
-- Preview Julia au survol (types ayant une variante Julia) + touche J pour basculer en vue Julia
+### Fonctionnalités
+- Coordonnées HP (String) synchronisées vers `FractalParams`
+- Sélection rectangulaire pour zoom
+- Switch CPU / GPU
+- Stats : centre, itérations, zoom
+- Aperçu palettes
+- Preview Julia au survol (types ayant une variante Julia) + touche `J` pour basculer
 
-**Rendu haute resolution**:
-- Presets: Window, 4K (3840x2160), 8K (7680x4320)
-- Rendu asynchrone avec barre de progression
+### Rendu haute résolution
+Presets Window, 4K (3840×2160), 8K (7680×4320). Rendu asynchrone avec barre de
+progression.
 
-**Import/Export**:
-- **Drag-and-drop**: Glisser un PNG pour restaurer l'etat
-- **Sauvegarde (S)**: PNG avec metadonnees integrees
+### Import / Export
+- **Drag-and-drop** : glisser un PNG pour restaurer l'état
+- **Sauvegarde (S)** : PNG avec métadonnées intégrées
 
 ## Raccourcis clavier GUI
 
 | Touche | Action |
 |--------|--------|
-| F1-F12 | Changer type fractale (F1=Mandelbrot, F2=Julia, F3=JuliaSin, ..., F12=Tricorn) |
+| F1-F12 | Type fractale (F1=Mandelbrot, F2=Julia, F3=JuliaSin, …, F12=Tricorn) |
 | C | Cycler palette (0-26) |
-| R | Cycler color_repeat (+1; max 120, ou max 8 pour types densite) |
-| J | Basculer en Julia (utilise le seed du preview) ou activer le mode preview Julia |
-| S | Screenshot PNG (avec metadonnees) |
-| +/= | Zoom avant (1.5x au centre) |
-| - | Zoom arriere (1.5x) |
-| 0 | Reset vue par defaut (ignore si focus sur champ iterations) |
-| Enter | Valider le champ iterations |
-| Molette souris | Zoom avant/arriere |
-| Clic gauche + drag | Selection rectangle pour zoom |
-| Clic droit | Zoom arriere |
-| Clic milieu + drag | Deplacement (pan) |
+| R | Cycler color_repeat (+1, max 120 ou max 8 pour types densité) |
+| J | Basculer en Julia (utilise le seed du preview) ou activer le mode preview |
+| S | Screenshot PNG (avec métadonnées) |
+| +/= | Zoom avant (×1.5 au centre) |
+| - | Zoom arrière (×1.5) |
+| 0 | Reset vue par défaut (ignoré si focus sur champ itérations) |
+| Enter | Valider le champ itérations |
+| Molette | Zoom avant/arrière |
+| Clic gauche + drag | Sélection rectangle pour zoom |
+| Clic droit | Zoom arrière |
+| Clic milieu + drag | Déplacement (pan) |
 
-Note: les raccourcis +/=/-/0 sont desactives en mode preview Julia.
+Les raccourcis +/=/-/0 sont désactivés en mode preview Julia.
 
 ## Threading
 

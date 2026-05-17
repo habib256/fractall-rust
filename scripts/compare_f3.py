@@ -1,0 +1,478 @@
+#!/usr/bin/env python3
+"""Orchestre la comparaison Fraktaler-3 ↔ Fractall pour le corpus toml/.
+
+Pour chaque `toml/<name>.toml`:
+  1. Génère un wrapper F3 TOML temporaire (escape_radius alignée avec Fractall=4)
+  2. Lance F3 batch → `<name>_f3.exr`
+  3. Lance `fractall-cli --export-iterations` → `<name>_fr.exr` (+ PNG)
+  4. Décode les deux EXR (channels N=uint32 iter+Nbias, NF=float smooth fraction)
+  5. Calcule smooth_iter = (N - Nbias) + NF, masque inside (N == 0xFFFFFFFF)
+  6. Métriques : pixels concordants (même inside/outside, |Δiter| ≤ tol),
+     mean |Δsmooth|, max |Δsmooth|, RMS
+  7. Colorize les deux smooth_iter via colormap commun (matplotlib.viridis ou
+     fallback Pillow) → side-by-side + diff amplifié
+
+Sortie:
+  bench/compare/<name>__f3.png    (F3 colorisé)
+  bench/compare/<name>__fr.png    (Fractall colorisé)
+  bench/compare/<name>__diff.png  (composite 3-up + |Δ| amplifié)
+  bench/compare/_summary.{csv,md} (tri par mean |Δsmooth| croissant)
+
+Usage:
+  python3 scripts/compare_f3.py
+  python3 scripts/compare_f3.py --only seahorse,spiral --width 400 --height 400
+  python3 scripts/compare_f3.py --iterations 1024  # cap commun aux deux côtés
+  python3 scripts/compare_f3.py --escape-radius 4.0  # ER aligné (défaut 4.0 = Fractall)
+  python3 scripts/compare_f3.py --rebuild  # cargo build avant + rebuild F3
+
+Pré-requis:
+  - F3 build avec EXR: `cd fraktaler-3-3.1 && make SYSTEM=macos-batch`
+    (cf. build/macos-batch.mk, requiert `brew install openexr`)
+  - Python : pip install OpenEXR (déjà installé sur la machine de l'utilisateur)
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+try:
+    import numpy as np
+except ImportError:
+    sys.exit("numpy requis (devrait venir avec OpenEXR)")
+try:
+    import OpenEXR
+    import Imath
+except ImportError:
+    sys.exit("Python OpenEXR requis : pip3 install --break-system-packages OpenEXR")
+try:
+    from PIL import Image
+except ImportError:
+    sys.exit("Pillow requis")
+
+REPO = Path(__file__).resolve().parent.parent
+CLI = REPO / "target" / "release" / "fractall-cli"
+F3 = REPO / "fraktaler-3-3.1" / "fraktaler-3.macos"
+TOML_DIR = REPO / "toml"
+OUT_DIR = REPO / "bench" / "compare"
+
+NBIAS = 1024
+INSIDE_MARKER = 0xFFFFFFFF
+
+
+# ---------------------------------------------------------------------------
+# I/O
+# ---------------------------------------------------------------------------
+
+@dataclass
+class LightToml:
+    real: str
+    imag: str
+    zoom: str
+    iterations: int | None
+    rotate: float | None
+
+
+def parse_light_toml(path: Path) -> LightToml:
+    real = imag = zoom = None
+    iters = None
+    rotate = None
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k = k.strip()
+        v = v.strip().strip('"')
+        if k == "real": real = v
+        elif k == "imag": imag = v
+        elif k == "zoom": zoom = v
+        elif k == "iterations":
+            try: iters = int(v)
+            except ValueError: pass
+        elif k == "rotate":
+            try: rotate = float(v)
+            except ValueError: pass
+    if real is None or imag is None or zoom is None:
+        raise ValueError(f"TOML {path} sans champ real/imag/zoom")
+    return LightToml(real, imag, zoom, iters, rotate)
+
+
+def write_f3_wrapper(
+    src: LightToml,
+    out_dir: Path,
+    name: str,
+    width: int,
+    height: int,
+    iterations: int,
+    escape_radius: float,
+) -> Path:
+    """Écrit un fichier TOML au format F3 pointant vers les coordonnées de src."""
+    # F3 stocke les iters en count_t (int64) — pas d'overflow comme nous.
+    f3 = out_dir / f"{name}_f3.toml"
+    base = out_dir / f"{name}_f3"
+    text = (
+        'program = "fraktaler-3"\n'
+        'version = "3.1"\n'
+        f'location.real = "{src.real}"\n'
+        f'location.imag = "{src.imag}"\n'
+        f'location.zoom = "{src.zoom}"\n'
+        f'bailout.iterations = {iterations}\n'
+        f'bailout.maximum_reference_iterations = {iterations}\n'
+        f'bailout.maximum_perturb_iterations = {iterations}\n'
+        f'bailout.maximum_bla_steps = {iterations}\n'
+        f'bailout.escape_radius = {escape_radius}\n'
+        f'image.width = {width}\n'
+        f'image.height = {height}\n'
+        'image.subframes = 1\n'
+        f'render.filename = "{base}"\n'
+        'render.save_exr = true\n'
+        'render.exr_channels = ["N0", "NF"]\n'
+    )
+    if src.rotate is not None and src.rotate != 0.0:
+        text += f"transform.rotate = {src.rotate}\n"
+    f3.write_text(text)
+    return f3
+
+
+def read_exr_iterations(path: Path) -> tuple[np.ndarray, np.ndarray, int, int]:
+    """Renvoie (N: uint32, NF: float32, width, height). N == INSIDE_MARKER signale l'intérieur."""
+    f = OpenEXR.InputFile(str(path))
+    h = f.header()
+    dw = h["dataWindow"]
+    W = dw.max.x - dw.min.x + 1
+    H = dw.max.y - dw.min.y + 1
+    chs = list(h["channels"].keys())
+    if "N" not in chs:
+        raise ValueError(f"EXR {path} sans channel 'N' (chans={chs})")
+    n = np.frombuffer(
+        f.channel("N", Imath.PixelType(Imath.PixelType.UINT)),
+        dtype=np.uint32,
+    ).reshape(H, W)
+    nf = np.frombuffer(
+        f.channel("NF", Imath.PixelType(Imath.PixelType.FLOAT)),
+        dtype=np.float32,
+    ).reshape(H, W)
+    return n, nf, W, H
+
+
+def smooth_iter(n: np.ndarray, nf: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Convertit (N, NF) en (smooth_iter: float, inside_mask: bool).
+    smooth_iter vaut 0 pour les pixels inside (marqueur — toujours filtrer avec mask).
+    """
+    inside = n == INSIDE_MARKER
+    raw = np.where(inside, 0, n.astype(np.int64) - NBIAS)
+    si = raw.astype(np.float64) + nf.astype(np.float64)
+    return si, inside
+
+
+# ---------------------------------------------------------------------------
+# Render orchestration
+# ---------------------------------------------------------------------------
+
+def run_f3(toml_path: Path, timeout: float) -> tuple[int, str]:
+    t0 = time.monotonic()
+    try:
+        proc = subprocess.run(
+            [str(F3), "-b", "-P", str(toml_path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            text=True,
+        )
+        return proc.returncode, f"{time.monotonic()-t0:.2f}s"
+    except subprocess.TimeoutExpired:
+        return -1, f"timeout {timeout}s"
+
+
+def run_fractall(
+    toml_path: Path,
+    out_png: Path,
+    out_exr: Path,
+    width: int,
+    height: int,
+    iterations: int,
+    escape_radius: float,
+    timeout: float,
+) -> tuple[int, str]:
+    cmd = [
+        str(CLI),
+        "--toml", str(toml_path),
+        "--width", str(width),
+        "--height", str(height),
+        "--iterations", str(iterations),
+        "--output", str(out_png),
+        "--export-iterations", str(out_exr),
+    ]
+    # bailout ER matching: --bailout n'existe pas en CLI (default 4) — il faudra
+    # l'ajouter si on veut le piloter, pour l'instant on doit s'aligner sur la
+    # valeur par défaut Fractall (4.0).
+    if abs(escape_radius - 4.0) > 1e-9:
+        # Pas encore exposé en CLI ; on signale et continue avec ER=4.
+        pass
+    t0 = time.monotonic()
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            text=True,
+        )
+        return proc.returncode, f"{time.monotonic()-t0:.2f}s"
+    except subprocess.TimeoutExpired:
+        return -1, f"timeout {timeout}s"
+
+
+# ---------------------------------------------------------------------------
+# Colorize & diff visualisation
+# ---------------------------------------------------------------------------
+
+def colormap_smooth(si: np.ndarray, inside: np.ndarray, repeat: float = 0.05) -> np.ndarray:
+    """Colormap déterministe et identique pour les deux côtés.
+    Utilise un mapping hsv simple : hue = (si * repeat) mod 1, sat=1, val=1.
+    inside → noir.
+    """
+    h = (si.astype(np.float64) * repeat) % 1.0
+    s = np.ones_like(h)
+    v = np.ones_like(h)
+    # hsv → rgb (vectorisé)
+    i = (h * 6.0).astype(np.int64)
+    f = (h * 6.0) - i
+    p = v * (1 - s)
+    q = v * (1 - f * s)
+    t = v * (1 - (1 - f) * s)
+    i6 = i % 6
+    r = np.where(i6 == 0, v, np.where(i6 == 1, q, np.where(i6 == 2, p,
+        np.where(i6 == 3, p, np.where(i6 == 4, t, v)))))
+    g = np.where(i6 == 0, t, np.where(i6 == 1, v, np.where(i6 == 2, v,
+        np.where(i6 == 3, q, np.where(i6 == 4, p, p)))))
+    b = np.where(i6 == 0, p, np.where(i6 == 1, p, np.where(i6 == 2, t,
+        np.where(i6 == 3, v, np.where(i6 == 4, v, q)))))
+    rgb = np.stack([r, g, b], axis=-1)
+    rgb = np.where(inside[..., None], 0.0, rgb)
+    return (rgb * 255).clip(0, 255).astype(np.uint8)
+
+
+def diff_rgb(diff: np.ndarray, amplify: float) -> np.ndarray:
+    """Convertit un array de diff en RGB (gris amplifié)."""
+    d = np.abs(diff)
+    if d.max() > 0:
+        v = np.clip(d * amplify, 0, 255).astype(np.uint8)
+    else:
+        v = np.zeros_like(d, dtype=np.uint8)
+    return np.stack([v, v, v], axis=-1)
+
+
+def compose_3up(a: np.ndarray, b: np.ndarray, d: np.ndarray, labels=("f3", "fractall", "|diff|")) -> Image.Image:
+    H, W = a.shape[:2]
+    out = Image.new("RGB", (W * 3 + 4, H + 16), (40, 40, 40))
+    out.paste(Image.fromarray(a), (0, 16))
+    out.paste(Image.fromarray(b), (W + 2, 16))
+    out.paste(Image.fromarray(d), (2 * W + 4, 16))
+    from PIL import ImageDraw
+    drw = ImageDraw.Draw(out)
+    drw.text((4, 1), labels[0], fill=(255, 255, 255))
+    drw.text((W + 6, 1), labels[1], fill=(255, 255, 255))
+    drw.text((2 * W + 8, 1), labels[2], fill=(255, 255, 255))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Main loop
+# ---------------------------------------------------------------------------
+
+def process_one(
+    toml_path: Path,
+    tmp_dir: Path,
+    out_dir: Path,
+    width: int,
+    height: int,
+    iterations: int,
+    escape_radius: float,
+    timeout: float,
+    color_repeat: float,
+    amplify: float,
+) -> dict:
+    name = toml_path.stem
+    row: dict = {"name": name, "status": "?"}
+
+    src = parse_light_toml(toml_path)
+    iters_used = iterations if iterations > 0 else (src.iterations or 1024)
+    if iters_used > 2**31 - 1:
+        # F3 utilise count_t (int64) mais on garde un cap raisonnable.
+        iters_used = 2**31 - 1
+    row["iterations"] = iters_used
+
+    f3_toml = write_f3_wrapper(src, tmp_dir, name, width, height, iters_used, escape_radius)
+    f3_exr = tmp_dir / f"{name}_f3.exr"
+    fr_exr = out_dir / f"{name}__fractall.exr"
+    fr_png = out_dir / f"{name}__fractall.png"
+
+    rc_f3, t_f3 = run_f3(f3_toml, timeout)
+    row["f3_sec"] = t_f3
+    if rc_f3 != 0 or not f3_exr.exists():
+        row["status"] = "f3_fail"
+        return row
+
+    rc_fr, t_fr = run_fractall(toml_path, fr_png, fr_exr, width, height, iters_used, escape_radius, timeout)
+    row["fr_sec"] = t_fr
+    if rc_fr != 0 or not fr_exr.exists():
+        row["status"] = "fractall_fail"
+        return row
+
+    # Décode
+    n_f3, nf_f3, W3, H3 = read_exr_iterations(f3_exr)
+    n_fr, nf_fr, Wf, Hf = read_exr_iterations(fr_exr)
+    if (W3, H3) != (Wf, Hf):
+        row["status"] = f"size_mismatch {W3}x{H3} vs {Wf}x{Hf}"
+        return row
+
+    si_f3, in_f3 = smooth_iter(n_f3, nf_f3)
+    si_fr, in_fr = smooth_iter(n_fr, nf_fr)
+
+    inside_diff = int((in_f3 != in_fr).sum())
+    both_out = (~in_f3) & (~in_fr)
+    if both_out.any():
+        delta = si_f3[both_out] - si_fr[both_out]
+        mean_abs = float(np.mean(np.abs(delta)))
+        max_abs = float(np.max(np.abs(delta)))
+        rms = float(np.sqrt(np.mean(delta ** 2)))
+    else:
+        mean_abs = max_abs = rms = 0.0
+
+    total = W3 * H3
+    row["status"] = "ok"
+    row["inside_f3"] = int(in_f3.sum())
+    row["inside_fr"] = int(in_fr.sum())
+    row["inside_mismatch"] = inside_diff
+    row["both_out"] = int(both_out.sum())
+    row["mean_abs_dsi"] = f"{mean_abs:.4f}"
+    row["max_abs_dsi"] = f"{max_abs:.4f}"
+    row["rms_dsi"] = f"{rms:.4f}"
+    row["px_total"] = total
+
+    # Colorize
+    rgb_f3 = colormap_smooth(si_f3, in_f3, repeat=color_repeat)
+    rgb_fr = colormap_smooth(si_fr, in_fr, repeat=color_repeat)
+    diff_si = si_f3 - si_fr
+    # Affiche aussi inside_mismatch en rouge dans le diff
+    d_rgb = diff_rgb(diff_si, amplify)
+    if inside_diff:
+        mismatch = in_f3 != in_fr
+        d_rgb[mismatch] = [255, 0, 0]
+    Image.fromarray(rgb_f3).save(out_dir / f"{name}__f3.png")
+    Image.fromarray(rgb_fr).save(out_dir / f"{name}__fr.png")
+    compose_3up(rgb_f3, rgb_fr, d_rgb).save(out_dir / f"{name}__diff.png")
+
+    return row
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("--width", type=int, default=400)
+    ap.add_argument("--height", type=int, default=400)
+    ap.add_argument("--iterations", type=int, default=0,
+                    help="Cap commun aux deux côtés (0 = utilise celui du TOML)")
+    ap.add_argument("--escape-radius", type=float, default=4.0,
+                    help="ER aligné entre F3 et Fractall (défaut 4.0 = bailout Fractall actuel)")
+    ap.add_argument("--timeout", type=float, default=120.0)
+    ap.add_argument("--only", type=str, help="liste CSV de stems")
+    ap.add_argument("--out", type=Path, default=OUT_DIR)
+    ap.add_argument("--keep-tmp", action="store_true", help="Conserve les fichiers temp F3")
+    ap.add_argument("--rebuild", action="store_true")
+    ap.add_argument("--color-repeat", type=float, default=0.05)
+    ap.add_argument("--amplify", type=float, default=20.0)
+    args = ap.parse_args()
+
+    if not F3.exists():
+        sys.exit(f"F3 binaire introuvable: {F3}\n→ rebuild: cd fraktaler-3-3.1 && make SYSTEM=macos-batch")
+
+    if args.rebuild or not CLI.exists():
+        r = subprocess.run(["cargo", "build", "--release", "--bin", "fractall-cli"], cwd=REPO)
+        if r.returncode != 0:
+            sys.exit("cargo build failed")
+    if not CLI.exists():
+        sys.exit(f"fractall-cli introuvable: {CLI}")
+
+    args.out.mkdir(parents=True, exist_ok=True)
+
+    files = sorted(TOML_DIR.glob("*.toml"))
+    if args.only:
+        wanted = set(s.strip() for s in args.only.split(","))
+        files = [p for p in files if p.stem in wanted]
+        if not files:
+            sys.exit(f"Aucun TOML pour {wanted}")
+
+    tmp_root = Path(tempfile.mkdtemp(prefix="fractall_f3_compare_"))
+    print(f"Tmp: {tmp_root}  Out: {args.out.relative_to(REPO)}")
+    print(f"Resolution: {args.width}x{args.height}  ER: {args.escape_radius}")
+    if args.iterations:
+        print(f"Iterations cap: {args.iterations} (forcé)")
+
+    rows = []
+    try:
+        for i, toml_path in enumerate(files, 1):
+            print(f"[{i:>3}/{len(files)}] {toml_path.stem:30s}", end=" ", flush=True)
+            row = process_one(
+                toml_path, tmp_root, args.out,
+                args.width, args.height, args.iterations, args.escape_radius,
+                args.timeout, args.color_repeat, args.amplify,
+            )
+            rows.append(row)
+            if row["status"] == "ok":
+                print(f"✓ Δmean={row['mean_abs_dsi']:>7s} Δmax={row['max_abs_dsi']:>7s} "
+                      f"inside_mismatch={row['inside_mismatch']:>5d}  (F3 {row['f3_sec']}, Fr {row['fr_sec']})")
+            else:
+                print(f"✗ {row['status']}")
+    finally:
+        if not args.keep_tmp:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+        else:
+            print(f"Tmp conservé: {tmp_root}")
+
+    rows_ok = [r for r in rows if r["status"] == "ok"]
+    rows_ok.sort(key=lambda r: float(r["mean_abs_dsi"]))
+
+    if rows:
+        # CSV (toutes lignes)
+        fieldnames = sorted({k for r in rows for k in r.keys()})
+        with (args.out / "_summary.csv").open("w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+            for r in rows: w.writerow(r)
+        # MD
+        with (args.out / "_summary.md").open("w") as f:
+            f.write("# Parité F3 — résumé\n\n")
+            f.write(f"Resolution {args.width}x{args.height} | ER aligné {args.escape_radius}\n\n")
+            f.write("| Cas | inside_mm | both_out | mean |Δsi| | max |Δsi| | rms |Δsi| |\n")
+            f.write("|-----|----------:|---------:|-----------:|----------:|----------:|\n")
+            for r in rows_ok:
+                f.write(f"| `{r['name']}` | {r['inside_mismatch']} | {r['both_out']} | "
+                        f"{r['mean_abs_dsi']} | {r['max_abs_dsi']} | {r['rms_dsi']} |\n")
+            fails = [r for r in rows if r["status"] != "ok"]
+            if fails:
+                f.write("\n## Échecs\n\n")
+                for r in fails:
+                    f.write(f"- `{r['name']}` : {r['status']}\n")
+
+    n_ok = len(rows_ok)
+    print()
+    print(f"OK: {n_ok}/{len(rows)}  →  {args.out.relative_to(REPO)}/_summary.md")
+
+
+if __name__ == "__main__":
+    main()
