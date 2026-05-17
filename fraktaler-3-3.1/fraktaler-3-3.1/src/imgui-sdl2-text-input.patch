@@ -1,0 +1,16 @@
+diff --git a/backends/imgui_impl_sdl2.cpp b/backends/imgui_impl_sdl2.cpp
+index 892fe905..c3f6a343 100644
+--- a/backends/imgui_impl_sdl2.cpp
++++ b/backends/imgui_impl_sdl2.cpp
+@@ -160,6 +160,11 @@ static void ImGui_ImplSDL2_SetPlatformImeData(ImGuiViewport*, ImGuiPlatformImeDa
+         r.w = 1;
+         r.h = (int)data->InputLineHeight;
+         SDL_SetTextInputRect(&r);
++        SDL_StartTextInput();
++    }
++    else
++    {
++        SDL_StopTextInput();
+     }
+ }
+ 

@@ -66,23 +66,35 @@ pub fn save_iterations_exr(
     debug_assert_eq!(iterations.len(), width * height);
     debug_assert_eq!(zs.len(), width * height);
 
-    // Construit les deux buffers — pixel order = ligne par ligne, identique à F3.
+    // The `exr` crate writes FlatSamples in y-up order: buffer index 0 lands on
+    // the BOTTOM-left pixel of the resulting EXR (mathematical convention),
+    // while OpenEXR's standard INCREASING_Y line order — and Fraktaler-3's
+    // image_raw.cc — places buffer index 0 at the TOP-left. Without flipping,
+    // every fractall EXR comes out vertically mirrored relative to F3, which
+    // both invalidates pixel-by-pixel parity tests and surfaces visually as
+    // "same image, Y-flipped" when viewed alongside F3's output. Mirror the
+    // rows here so the on-disk layout matches F3's INCREASING_Y convention.
     let mut n_buf: Vec<u32> = Vec::with_capacity(width * height);
     let mut nf_buf: Vec<f32> = Vec::with_capacity(width * height);
-    for i in 0..(width * height) {
-        let iter = iterations[i];
-        let n_val: u32 = if iter >= iter_max {
-            u32::MAX
-        } else {
-            let biased = iter as u64 + NBIAS as u64;
-            if biased >= u32::MAX as u64 {
-                u32::MAX - 1
+    for j in 0..height {
+        let src_row = height - 1 - j;
+        let row_start = src_row * width;
+        for i in 0..width {
+            let idx = row_start + i;
+            let iter = iterations[idx];
+            let n_val: u32 = if iter >= iter_max {
+                u32::MAX
             } else {
-                biased as u32
-            }
-        };
-        n_buf.push(n_val);
-        nf_buf.push(nf_f3(zs[i], iter, iter_max, bailout_sq, degree));
+                let biased = iter as u64 + NBIAS as u64;
+                if biased >= u32::MAX as u64 {
+                    u32::MAX - 1
+                } else {
+                    biased as u32
+                }
+            };
+            n_buf.push(n_val);
+            nf_buf.push(nf_f3(zs[idx], iter, iter_max, bailout_sq, degree));
+        }
     }
 
     let size = Vec2(width, height);

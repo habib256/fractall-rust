@@ -169,7 +169,9 @@ mod tests {
             "use_bytecode_engine doit défauter à true sur PNG legacy"
         );
         assert_eq!(params.jitter_scale, 0.0);
-        assert_eq!(params.bla_threshold, 1e-8);
+        // Aligné F3 `engine.cc:283` : 1.0 / (1 << 24) ≈ 5.96e-8 (cf. P1.3
+        // dans TODO.md). Anciennement 1e-8.
+        assert_eq!(params.bla_threshold, 1.0 / (1u64 << 24) as f64);
         assert_eq!(params.glitch_tolerance, 1e-4);
         assert_eq!(params.multibrot_power, 2.5);
         assert_eq!(params.max_perturb_iterations, 1024);

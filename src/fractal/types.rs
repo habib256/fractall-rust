@@ -906,6 +906,14 @@ pub struct FractalParams {
     #[serde(default)]
     pub plane_transform: PlaneTransform,
 
+    /// Rotation appliquée au mapping pixel→c, en degrés (CCW).
+    /// 0.0 = pas de rotation. Équivalent à `transform.rotate` de Fraktaler-3
+    /// (cf. F3 hybrid.cc:234 `K = mat2(cos, -sin, sin, cos)` puis
+    /// `c = K * c + offset`). Plusieurs TOML du corpus l'utilisent
+    /// (olbaid*, opus*, x.toml).
+    #[serde(default)]
+    pub rotation: f64,
+
     /// Active le calcul d'orbit traps (nécessite stockage de l'orbite complète)
     #[serde(default)]
     pub enable_orbit_traps: bool,
@@ -1014,6 +1022,20 @@ impl FractalParams {
         self.center_y = (ymin + ymax) * 0.5;
         self.span_x = xmax - xmin;
         self.span_y = ymax - ymin;
+    }
+
+    /// Matrice de rotation 2×2 à appliquer au delta pixel→c (CCW).
+    /// Renvoie `None` si `rotation == 0` (cas dominant : skip le calcul + le coût trigo).
+    /// Sinon `Some((cos, -sin, sin, cos))` au format row-major (R[0][0], R[0][1], R[1][0], R[1][1]).
+    /// Aligné F3 (matrix.h:202, hybrid.cc:234) : R = mat2(cos, -sin, sin, cos).
+    #[inline]
+    pub fn rotation_matrix(&self) -> Option<(f64, f64, f64, f64)> {
+        if self.rotation == 0.0 || !self.rotation.is_finite() {
+            return None;
+        }
+        let theta = self.rotation * std::f64::consts::PI / 180.0;
+        let (s, c) = theta.sin_cos();
+        Some((c, -s, s, c))
     }
 }
 

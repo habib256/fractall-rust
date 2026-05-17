@@ -141,8 +141,12 @@ fn render_escape_time_f64(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
     }
 
     // Utiliser center+span directement pour éviter les problèmes de précision
-    // xg = center_x + (i/width - 0.5) * span_x
-    // yg = center_y + (j/height - 0.5) * span_y
+    // xg = center_x + R * (i/width - 0.5) * span_x
+    // yg = center_y + R * (j/height - 0.5) * span_y
+    // R = rotation_matrix() (cf. FractalParams::apply_rotation, aligné F3 hybrid.cc:265).
+
+    // Pré-calcul de la matrice de rotation (None si rotation == 0 → no-op).
+    let rot = params.rotation_matrix();
 
     // Parallélisation par lignes avec rayon (beaucoup plus élégant que std::thread)
     iterations
@@ -151,11 +155,15 @@ fn render_escape_time_f64(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
         .enumerate()
         .for_each(|(j, (iter_row, z_row))| {
             let y_ratio = (j as f64 + 0.5) / params.height as f64;
-            let yg = params.center_y + (y_ratio - 0.5) * params.span_y;
+            let dy = (y_ratio - 0.5) * params.span_y;
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
                 let x_ratio = (i as f64 + 0.5) / params.width as f64;
-                let xg = params.center_x + (x_ratio - 0.5) * params.span_x;
-                let z_pixel = Complex64::new(xg, yg);
+                let dx = (x_ratio - 0.5) * params.span_x;
+                let (dx_r, dy_r) = match rot {
+                    Some((a, b, c, d)) => (a * dx + b * dy, c * dx + d * dy),
+                    None => (dx, dy),
+                };
+                let z_pixel = Complex64::new(params.center_x + dx_r, params.center_y + dy_r);
                 let z_pixel = params.plane_transform.transform(z_pixel);
                 let FractalResult { iteration, z: z_final, orbit: _, distance: _ } = iterate_point(params, z_pixel);
                 *iter = iteration;
@@ -233,6 +241,9 @@ fn render_escape_time_gmp(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
     let width_f = Float::with_val(prec, params.width);
     let height_f = Float::with_val(prec, params.height);
     let half = Float::with_val(prec, 0.5);
+    // Rotation : appliquée au delta pixel→centre avant d'ajouter center_x/y.
+    // Aligné F3 hybrid.cc:265 (`c = K * c + offset`).
+    let rot = params.rotation_matrix();
 
     iterations
         .par_chunks_mut(width)
@@ -244,21 +255,35 @@ fn render_escape_time_gmp(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
             let mut y_ratio = j_f;
             y_ratio /= &height_f;
             y_ratio -= &half;
-            let mut yg = span_y.clone();
-            yg *= &y_ratio;
-            yg += &center_y;
+            let mut dy = span_y.clone();
+            dy *= &y_ratio;
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
                 let mut i_f = Float::with_val(prec, i as u32);
                 i_f += &half;
                 let mut x_ratio = i_f;
                 x_ratio /= &width_f;
                 x_ratio -= &half;
-                let mut xg = span_x.clone();
-                xg *= &x_ratio;
-                xg += &center_x;
+                let mut dx = span_x.clone();
+                dx *= &x_ratio;
+                let (xg, yg) = match rot {
+                    Some((a, b, c, d)) => {
+                        // dx' = a*dx + b*dy ; dy' = c*dx + d*dy. Coefficients f64 suffisants
+                        // (la précision GMP est dans dx/dy ; la rotation est ~unitaire).
+                        let dx_r = Float::with_val(prec, &dx * a) + Float::with_val(prec, &dy * b);
+                        let dy_r = Float::with_val(prec, &dx * c) + Float::with_val(prec, &dy * d);
+                        (
+                            Float::with_val(prec, &dx_r + &center_x),
+                            Float::with_val(prec, &dy_r + &center_y),
+                        )
+                    }
+                    None => (
+                        Float::with_val(prec, &dx + &center_x),
+                        Float::with_val(prec, &dy + &center_y),
+                    ),
+                };
                 // IMPORTANT: Utiliser la version GMP de plane_transform pour éviter la perte de précision
                 // aux zooms profonds (>e16). La conversion GMP → f64 → GMP perdait toute la précision.
-                let z_gmp = complex_from_xy(prec, xg, yg.clone());
+                let z_gmp = complex_from_xy(prec, xg, yg);
                 let z_transformed = params.plane_transform.transform_gmp(&z_gmp, prec);
                 let z_pixel = z_transformed;
                 let (iter_val, z_final) = iterate_point_mpc(&gmp, &z_pixel);
@@ -561,6 +586,8 @@ fn render_escape_time_f64_cancellable_with_reuse(
     let cancelled = AtomicBool::new(false);
     let need_orbits = params.enable_orbit_traps;
     let need_distances = params.enable_distance_estimation;
+    // Pré-calcul de la matrice de rotation (None si rotation == 0 → no-op).
+    let rot = params.rotation_matrix();
 
     iterations
         .par_chunks_mut(width)
@@ -579,7 +606,7 @@ fn render_escape_time_f64_cancellable_with_reuse(
             }
 
             let y_ratio = (j as f64 + 0.5) / params.height as f64;
-            let yg = params.center_y + (y_ratio - 0.5) * params.span_y;
+            let dy = (y_ratio - 0.5) * params.span_y;
             for (i, (((iter, z), orbit_cell), dist_cell)) in iter_row
                 .iter_mut()
                 .zip(z_row.iter_mut())
@@ -601,8 +628,12 @@ fn render_escape_time_f64_cancellable_with_reuse(
                     }
                 }
                 let x_ratio = (i as f64 + 0.5) / params.width as f64;
-                let xg = params.center_x + (x_ratio - 0.5) * params.span_x;
-                let z_pixel = Complex64::new(xg, yg);
+                let dx = (x_ratio - 0.5) * params.span_x;
+                let (dx_r, dy_r) = match rot {
+                    Some((a, b, c, d)) => (a * dx + b * dy, c * dx + d * dy),
+                    None => (dx, dy),
+                };
+                let z_pixel = Complex64::new(params.center_x + dx_r, params.center_y + dy_r);
                 let z_pixel = params.plane_transform.transform(z_pixel);
                 let FractalResult {
                     iteration,
@@ -707,6 +738,8 @@ fn render_escape_time_gmp_cancellable_with_reuse(
     let width_f = Float::with_val(prec, params.width);
     let height_f = Float::with_val(prec, params.height);
     let half = Float::with_val(prec, 0.5);
+    // Rotation : appliquée au delta pixel→centre avant d'ajouter center_x/y.
+    let rot = params.rotation_matrix();
 
     let cancelled = AtomicBool::new(false);
 
@@ -731,9 +764,8 @@ fn render_escape_time_gmp_cancellable_with_reuse(
             let mut y_ratio = j_f;
             y_ratio /= &height_f;
             y_ratio -= &half;
-            let mut yg = span_y.clone();
-            yg *= &y_ratio;
-            yg += &center_y;
+            let mut dy = span_y.clone();
+            dy *= &y_ratio;
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
                 if let Some(reuse) = reuse_row {
                     let ratio = reuse.ratio as usize;
@@ -753,12 +785,25 @@ fn render_escape_time_gmp_cancellable_with_reuse(
                 let mut x_ratio = i_f;
                 x_ratio /= &width_f;
                 x_ratio -= &half;
-                let mut xg = span_x.clone();
-                xg *= &x_ratio;
-                xg += &center_x;
+                let mut dx = span_x.clone();
+                dx *= &x_ratio;
+                let (xg, yg) = match rot {
+                    Some((a, b, c, d)) => {
+                        let dx_r = Float::with_val(prec, &dx * a) + Float::with_val(prec, &dy * b);
+                        let dy_r = Float::with_val(prec, &dx * c) + Float::with_val(prec, &dy * d);
+                        (
+                            Float::with_val(prec, &dx_r + &center_x),
+                            Float::with_val(prec, &dy_r + &center_y),
+                        )
+                    }
+                    None => (
+                        Float::with_val(prec, &dx + &center_x),
+                        Float::with_val(prec, &dy + &center_y),
+                    ),
+                };
                 // IMPORTANT: Utiliser la version GMP de plane_transform pour éviter la perte de précision
                 // aux zooms profonds (>e16). La conversion GMP → f64 → GMP perdait toute la précision.
-                let z_gmp = complex_from_xy(prec, xg, yg.clone());
+                let z_gmp = complex_from_xy(prec, xg, yg);
                 let z_transformed = params.plane_transform.transform_gmp(&z_gmp, prec);
                 let z_pixel = z_transformed;
                 let (iter_val, z_final) = iterate_point_mpc(&gmp, &z_pixel);

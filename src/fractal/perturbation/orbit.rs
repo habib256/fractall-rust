@@ -12,6 +12,19 @@ use crate::fractal::perturbation::bla::{BlaTable, build_bla_table};
 use crate::fractal::perturbation::types::ComplexExp;
 use crate::fractal::perturbation::series::{SeriesTable, build_series_table_ho, validate_series_with_probes_tiled, compute_adaptive_series_order};
 
+/// Squared escape radius used while iterating the reference orbit.
+///
+/// Matches Fraktaler-3 `hybrid.cc:87` (`norm(Zp[i]) < 1e10`). Using
+/// `params.bailout²` here (typically 16 when ER=4) cuts the reference orbit
+/// short whenever the center sits outside the M-set: each surviving pixel
+/// then inherits `z_ref[effective_len-1] + delta`, collapsing the entire
+/// frame to a single iteration count (see line.toml @ zoom 1e28 +
+/// triangle/dragon @ zoom > 1e190).
+///
+/// The pixel-side bailout is independent — pixel escape is tested against
+/// `params.bailout` in `iterate_pixel` / `pixel_loop` / `pixel_loop_exp`.
+pub const REFERENCE_BAILOUT_SQR: f64 = 1e10;
+
 /// Hybrid BLA: Multiple references for different phases of a periodic loop.
 /// For a hybrid loop with multiple phases, you need multiple references, one starting at
 /// each phase in the loop. Rebasing switches to the reference for the current phase.
@@ -227,9 +240,9 @@ impl ReferenceOrbit {
             new_c.imag().to_f64(),
         );
 
-        let bailout = Float::with_val(prec, params.bailout);
-        let mut bailout_sqr = bailout.clone();
-        bailout_sqr *= &bailout;
+        // Reference orbit uses the F3-style fixed bailout (1e10 squared norm),
+        // not the per-pixel bailout. See REFERENCE_BAILOUT_SQR doc.
+        let bailout_sqr = Float::with_val(prec, REFERENCE_BAILOUT_SQR);
 
         let seed = Complex::with_val(prec, (params.seed.re, params.seed.im));
         let _is_julia = params.fractal_type == FractalType::Julia;
@@ -829,9 +842,9 @@ pub fn compute_reference_orbit(
         .as_ref()
         .map(|_| GmpInterpState::new(prec, z.clone()));
 
-    let bailout = Float::with_val(prec, params.bailout);
-    let mut bailout_sqr = bailout.clone();
-    bailout_sqr *= &bailout;
+    // Reference orbit uses the F3-style fixed bailout (1e10 squared norm),
+    // not the per-pixel bailout. See REFERENCE_BAILOUT_SQR doc.
+    let bailout_sqr = Float::with_val(prec, REFERENCE_BAILOUT_SQR);
 
     let mut z_ref = Vec::with_capacity(params.iteration_max as usize + 1);
     let mut z_ref_f64 = Vec::with_capacity(params.iteration_max as usize + 1);
@@ -1002,6 +1015,19 @@ pub fn compute_reference_orbit(
         .map(|(i, _)| i as u32)
         .collect();
 
+    if std::env::var("FRACTALL_DEBUG_ORBIT").as_deref() == Ok("1") {
+        let len = z_ref_f64.len();
+        let max_norm = z_ref_f64.iter().map(|z| z.norm_sqr()).fold(0.0f64, f64::max);
+        let first_over_pixel_er = z_ref_f64
+            .iter()
+            .position(|z| z.norm_sqr() > 16.0)
+            .map(|i| i as i64)
+            .unwrap_or(-1);
+        eprintln!(
+            "[DEBUG_ORBIT] len={} max_|z|²={:.3e} first_|z|²>16 at iter={}",
+            len, max_norm, first_over_pixel_er
+        );
+    }
     Some((
         ReferenceOrbit {
             cref: cref_f64,

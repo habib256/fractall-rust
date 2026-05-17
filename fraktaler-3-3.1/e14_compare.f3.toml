@@ -1,0 +1,17 @@
+program = "fraktaler-3"
+version = "3.1"
+location.real = "-1.7598171308048478"
+location.imag = "-0.012593310799749865"
+location.zoom = "1e14"
+bailout.iterations = 4036
+bailout.maximum_reference_iterations = 4036
+bailout.maximum_perturb_iterations = 4036
+bailout.maximum_bla_steps = 4036
+bailout.escape_radius = 625.0
+image.width = 1920
+image.height = 1080
+image.subframes = 1
+render.filename = "/tmp/e14_f3"
+render.save_exr = true
+render.exr_channels = ["N0", "N1", "NF", "T"]
+

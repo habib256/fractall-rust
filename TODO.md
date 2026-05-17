@@ -21,7 +21,16 @@ sur une résolution standard (1920×1080 par défaut), avec ε à définir empir
 
 **Plan d'attaque (sous-tâches trackées)** :
 1. CLI `--toml <path>` pour `fractall-cli` (charge real/imag/zoom/iterations + rotate).
-2. Support du champ `rotate` dans le loader TOML (plusieurs fichiers du corpus l'utilisent).
+2. ✅ Support du champ `rotate` dans le loader TOML (plusieurs fichiers du corpus
+   l'utilisent : olbaid1/3/4/5, opus, opus2, x). Appliqué via `K = mat2(cos,-sin,sin,cos)`
+   au mapping pixel→c (aligné F3 `hybrid.cc:265`). Champ `FractalParams::rotation`
+   + helper `rotation_matrix()`, câblé dans le path standard f64, GMP escape-time,
+   perturbation/bytecode `FloatExp`, et `DcGmpContext::compute_dc` pour le path
+   GMP-per-pixel. CLI flag `--rotation` aussi disponible (override le TOML).
+   **Path legacy non couvert** : la résolution de glitches Pauldelbrot dans
+   `perturbation/mod.rs` (lignes ~1109, 1247) ne tient pas compte de la rotation
+   pour les références secondaires — à corriger en même temps que la suppression
+   du path legacy (cf. P1.1 reste).
 3. Harness `scripts/compare_f3.*` qui lance F3 batch + fractall-cli sur chaque TOML,
    produit PNG + diff + métriques. F3 binaire dispo à `fraktaler-3-3.1/fraktaler-3.macos`.
 4. Audit initial sur 5 cas représentatifs (zoom moyen, deep, très deep, rotate, glitchy)

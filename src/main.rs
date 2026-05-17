@@ -162,6 +162,11 @@ struct Cli {
     #[arg(long)]
     no_bytecode: bool,
 
+    /// Rotation du plan en degrés (CCW). Appliquée au mapping pixel→c
+    /// (équivalent F3 `transform.rotate`). Override la valeur du TOML si fournie.
+    #[arg(long)]
+    rotation: Option<f64>,
+
     /// Fichier de sortie PNG
     #[arg(long, value_name = "FICHIER")]
     output: PathBuf,
@@ -311,16 +316,19 @@ fn main() {
 
         if let Some(iters) = t.iterations {
             params.iteration_max = iters;
+            // F3 batch sets maximum_perturb_iterations / maximum_bla_steps to the user
+            // `iterations` field (see fraktaler-3-3.1/src/param.h:38 defaults + the F3
+            // wrapper we write in scripts/compare_f3.py). Fractall's defaults (1024) cap
+            // pixel iteration way below iter_max for deep zooms, collapsing every pixel
+            // onto a single iter count (e.g. e1000 stopped at 1028 while F3 reached
+            // 16616+). Mirror F3's semantics here so a TOML in toml/ produces the same
+            // effective caps on both engines.
+            params.max_perturb_iterations = iters;
+            params.max_bla_steps = iters;
         }
 
         if let Some(rot) = t.rotate {
-            if rot != 0.0 {
-                eprintln!(
-                    "TOML {}: rotate={} non encore appliqué (TODO P0 — voir TODO.md)",
-                    toml_path.display(),
-                    rot
-                );
-            }
+            params.rotation = rot;
         }
     }
 
@@ -454,6 +462,11 @@ fn main() {
         params.use_bytecode_engine = false;
     }
     let _ = cli.bytecode; // legacy flag, no-op (default already true)
+
+    // Rotation CLI : prioritaire sur la valeur TOML (cf. doc --rotation).
+    if let Some(rot) = cli.rotation {
+        params.rotation = rot;
+    }
 
     match params.algorithm_mode {
         AlgorithmMode::ReferenceGmp => params.use_gmp = true,

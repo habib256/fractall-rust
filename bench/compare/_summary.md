@@ -1,7 +1,7 @@
 # Parité F3 — résumé
 
-Resolution 400x400 | ER aligné 4.0
+Resolution 64x64 | ER aligné 4.0
 
 | Cas | inside_mm | both_out | mean |Δsi| | max |Δsi| | rms |Δsi| |
 |-----|----------:|---------:|-----------:|----------:|----------:|
-| `spiral` | 57 | 159943 | 38.8303 | 784.1995 | 80.6549 |
+| `test` | 0 | 4096 | 1.2249 | 78.2299 | 2.9844 |
