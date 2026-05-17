@@ -6,6 +6,7 @@ use num_complex::Complex64;
 use rug::{Assign, Complex, Float};
 
 use crate::fractal::{FractalParams, FractalType};
+use crate::fractal::bytecode::{compile_formula, GmpInterpState, Formula};
 use crate::fractal::gmp::{complex_to_complex64, pow_f64_mpc};
 use crate::fractal::perturbation::bla::{BlaTable, build_bla_table};
 use crate::fractal::perturbation::types::ComplexExp;
@@ -807,6 +808,26 @@ pub fn compute_reference_orbit(
     };
     let seed = Complex::with_val(prec, (params.seed.re, params.seed.im));
 
+    // Path bytecode (P3.1) : si activé et type supporté, on remplace le match
+    // per-type dans la boucle d'itération par un interpréteur unifié. La
+    // constante `c` ajoutée par Op::Add est `seed` pour les variantes Julia,
+    // `cref` sinon (cf. F3 `hybrid_reference`).
+    let bytecode_formula: Option<Formula> = if params.use_bytecode_engine {
+        compile_formula(params.fractal_type, params.multibrot_power)
+    } else {
+        None
+    };
+    let bytecode_c: Option<&Complex> = bytecode_formula.as_ref().map(|_| {
+        if Formula::is_julia_for(params.fractal_type) {
+            &seed
+        } else {
+            &cref
+        }
+    });
+    let mut bytecode_state: Option<GmpInterpState> = bytecode_formula
+        .as_ref()
+        .map(|_| GmpInterpState::new(prec, z.clone()));
+
     let bailout = Float::with_val(prec, params.bailout);
     let mut bailout_sqr = bailout.clone();
     bailout_sqr *= &bailout;
@@ -893,47 +914,54 @@ pub fn compute_reference_orbit(
             }
         }
 
-        z = match params.fractal_type {
-            FractalType::Mandelbrot => {
-                let z_prec = Complex::with_val(prec, (z.real(), z.imag()));
-                let mut z_sq = z_prec.clone();
-                z_sq *= &z_prec;
-                z_sq += &cref;
-                z_sq
-            }
-            FractalType::Julia => {
-                let z_prec = Complex::with_val(prec, (z.real(), z.imag()));
-                let mut z_sq = z_prec.clone();
-                z_sq *= &z_prec;
-                z_sq += &seed;
-                z_sq
-            }
-            FractalType::BurningShip => {
-                let re_prec = Float::with_val(prec, z.real());
-                let im_prec = Float::with_val(prec, z.imag());
-                let re_abs = re_prec.abs();
-                let im_abs = im_prec.abs();
-                let z_abs_val = Complex::with_val(prec, (re_abs, im_abs));
-                let mut z_sq = z_abs_val.clone();
-                z_sq *= &z_abs_val;
-                z_sq += &cref;
-                z_sq
-            }
-            FractalType::Multibrot => {
-                let mut z_pow = pow_f64_mpc(&z, params.multibrot_power, prec);
-                z_pow += &cref;
-                z_pow
-            }
-            FractalType::Tricorn => {
-                let z_prec = Complex::with_val(prec, (z.real(), z.imag()));
-                let z_conj = z_prec.conj();
-                let mut z_temp = Complex::with_val(prec, (z_conj.real(), z_conj.imag()));
-                z_temp *= &z_conj;
-                z_temp += &cref;
-                z_temp
-            }
-            _ => return None,
-        };
+        if let (Some(state), Some(formula), Some(c_phase)) =
+            (bytecode_state.as_mut(), bytecode_formula.as_ref(), bytecode_c)
+        {
+            state.step(formula, c_phase);
+            z.assign(&state.z);
+        } else {
+            z = match params.fractal_type {
+                FractalType::Mandelbrot => {
+                    let z_prec = Complex::with_val(prec, (z.real(), z.imag()));
+                    let mut z_sq = z_prec.clone();
+                    z_sq *= &z_prec;
+                    z_sq += &cref;
+                    z_sq
+                }
+                FractalType::Julia => {
+                    let z_prec = Complex::with_val(prec, (z.real(), z.imag()));
+                    let mut z_sq = z_prec.clone();
+                    z_sq *= &z_prec;
+                    z_sq += &seed;
+                    z_sq
+                }
+                FractalType::BurningShip => {
+                    let re_prec = Float::with_val(prec, z.real());
+                    let im_prec = Float::with_val(prec, z.imag());
+                    let re_abs = re_prec.abs();
+                    let im_abs = im_prec.abs();
+                    let z_abs_val = Complex::with_val(prec, (re_abs, im_abs));
+                    let mut z_sq = z_abs_val.clone();
+                    z_sq *= &z_abs_val;
+                    z_sq += &cref;
+                    z_sq
+                }
+                FractalType::Multibrot => {
+                    let mut z_pow = pow_f64_mpc(&z, params.multibrot_power, prec);
+                    z_pow += &cref;
+                    z_pow
+                }
+                FractalType::Tricorn => {
+                    let z_prec = Complex::with_val(prec, (z.real(), z.imag()));
+                    let z_conj = z_prec.conj();
+                    let mut z_temp = Complex::with_val(prec, (z_conj.real(), z_conj.imag()));
+                    z_temp *= &z_conj;
+                    z_temp += &cref;
+                    z_temp
+                }
+                _ => return None,
+            };
+        }
         // Store high-precision, f64, and full GMP versions
         z_ref.push(ComplexExp::from_gmp(&z));
         z_ref_f64.push(complex_to_complex64(&z));

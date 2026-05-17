@@ -14,12 +14,14 @@ use crate::fractal::FractalType;
 
 pub mod compile;
 pub mod interp;
+pub mod interp_gmp;
 
 #[cfg(test)]
 mod tests;
 
 pub use compile::compile_formula;
 pub use interp::iterate_bytecode_f64;
+pub use interp_gmp::GmpInterpState;
 
 /// Jeu d'opcodes Fraktaler-3 (`hybrid.h`).
 ///
