@@ -15,7 +15,6 @@ use crate::fractal::perturbation::series::{
     SeriesConfig, SeriesTable, should_use_series, estimate_series_error,
     compute_series_skip,
 };
-use crate::fractal::perturbation::nonconformal::Matrix2x2;
 
 /// Compute smooth (fractional) iteration count for continuous coloring.
 ///

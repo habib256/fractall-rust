@@ -27,8 +27,9 @@
 //! - `multibrot_pow3` : Multibrot puissance 3 (path bytecode-éligible)
 //! - `mandelbrot_perturb_1e6` : Mandelbrot perturbation zoom 1e6 (path GMP+BLA)
 //! - `burning_ship_perturb_1e3` : BS perturbation zoom 1e3 (path nonconformal BLA)
-//! - `tricorn_perturb_1e2` : Tricorn perturbation zoom 1e2 (path GMP)
 //! - `newton_default` : Newton (type qui NE compile PAS en bytecode → reste sur path dédié)
+//! - `mandelbrot_minibrot_1e8` : Mandelbrot zoom 1e8 sur minibrot (BLA + glitch detect)
+//! - `mandelbrot_deep_e113` : Mandelbrot deep zoom 5e113 (toml/e113.toml) — stress GMP+BLA
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -88,15 +89,6 @@ const CASES: &[Case] = &[
         ],
     },
     Case {
-        name: "tricorn_perturb_1e2",
-        args: &[
-            "--type", "14", "--algorithm", "perturbation",
-            "--center-x=-0.5", "--center-y=0.1",
-            "--zoom", "1e2",
-            "--width", "160", "--height", "100", "--iterations", "800",
-        ],
-    },
-    Case {
         name: "newton_default",
         args: &["--type", "6", "--width", "160", "--height", "100", "--iterations", "200"],
     },
@@ -113,14 +105,17 @@ const CASES: &[Case] = &[
             "--width", "160", "--height", "100", "--iterations", "3000",
         ],
     },
-    // Zoom moyennement profond Burning Ship — path nonconformal BLA.
+    // Deep zoom Mandelbrot 5e113 (cf. toml/e113.toml) — exerce le path GMP
+    // reference + BLA en très haute précision. Plusieurs dizaines de secondes
+    // de rendu : c'est le but, on veut tester ce régime profond.
     Case {
-        name: "burning_ship_zoom_1e5",
+        name: "mandelbrot_deep_e113",
         args: &[
-            "--type", "13", "--algorithm", "perturbation",
-            "--center-x=-1.7625", "--center-y=-0.0289",
-            "--zoom", "1e5",
-            "--width", "160", "--height", "100", "--iterations", "2000",
+            "--type", "3", "--algorithm", "perturbation",
+            "--center-x-hp=-1.47981577613247326072298452597877854692240725774045369689878510139864920741002293820250517329282011227363313053159203914640783415609608168660705123082446357179491909705403381200",
+            "--center-y-hp=-0.00063911193261361727152139632255671572957303918943984736047394936471220951961813321928573067036466151147195436388486168819318341208023229522609015461543581599807510715681229605",
+            "--zoom", "5e113",
+            "--width", "160", "--height", "100", "--iterations", "35494",
         ],
     },
 ];

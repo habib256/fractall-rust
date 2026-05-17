@@ -42,6 +42,7 @@ pub struct UnifiedPixelResult {
     /// Orbit data (uniquement si demandé via param). Stocke les z_abs
     /// traversés pour le calcul de orbit traps (distance min à un point/
     /// ligne/croix/cercle).
+    #[allow(dead_code)]
     pub orbit: Option<OrbitData>,
     /// Distance estimate à la frontière du set (formule 2|z|·ln|z|/|dz|).
     /// `None` si non demandé ou pixel intérieur.
@@ -78,6 +79,7 @@ pub struct UnifiedOptions {
 /// - `c_ref` : constante ajoutée à la reference (cref pour Mandelbrot-like,
 ///   seed pour Julia-like).
 /// - `dc` : offset = c_pixel - c_ref.
+#[allow(dead_code)]
 pub fn iterate_pixel_unified(
     ref_orbit: &ReferenceOrbit,
     bla: &BlaTableUnified,
@@ -97,6 +99,7 @@ pub fn iterate_pixel_unified(
 /// (pour tracker chaque z_abs individuel) et construit un `OrbitData` qu'on
 /// retourne dans le résultat. Hook pour `OutColoringMode::OrbitTraps` et
 /// `Wings` qui ont besoin de l'orbite complète.
+#[allow(dead_code)]
 pub fn iterate_pixel_unified_with_options(
     ref_orbit: &ReferenceOrbit,
     bla: &BlaTableUnified,
