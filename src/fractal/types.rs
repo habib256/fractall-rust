@@ -240,8 +240,9 @@ impl FractalType {
 }
 
 /// Mode d'algorithme pour le rendu escape-time.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum AlgorithmMode {
+    #[default]
     Auto,
     StandardF64,
     Perturbation,
@@ -806,45 +807,61 @@ pub struct FractalParams {
 
     pub fractal_type: FractalType,
 
-    /// Palette (0-8) comme dans la version C.
+    /// Palette (0-26).
+    #[serde(default = "default_color_mode")]
     pub color_mode: u8,
-    /// Nombre de répétitions du gradient (2-40).
+    /// Nombre de répétitions du gradient (2-120).
+    #[serde(default = "default_color_repeat")]
     pub color_repeat: u32,
     /// Espace colorimétrique pour les gradients (RGB, HSB, LCH)
+    #[serde(default)]
     pub color_space: ColorSpace,
 
     /// Active le chemin GMP pour la haute précision.
+    #[serde(default)]
     pub use_gmp: bool,
     /// Précision GMP en bits (ex. 128, 256, 512).
+    #[serde(default = "default_precision_bits")]
     pub precision_bits: u32,
 
     /// Mode d'algorithme pour Mandelbrot (auto/f64/perturbation/GMP).
+    #[serde(default)]
     pub algorithm_mode: AlgorithmMode,
     /// Seuil delta pour activer BLA.
+    #[serde(default = "default_bla_threshold")]
     pub bla_threshold: f64,
     /// Multiplicateur du rayon de validité BLA (1.0 = conservateur, >1 = agressif).
+    #[serde(default = "default_one_f64")]
     pub bla_validity_scale: f64,
     /// Tolérance de glitch (Pauldelbrot).
+    #[serde(default = "default_glitch_tolerance")]
     pub glitch_tolerance: f64,
     /// Ordre de la série (0=off, 1=linéaire, 2=quadratique).
+    #[serde(default = "default_series_order")]
     pub series_order: u8,
     /// Seuil de delta pour activer la série.
+    #[serde(default = "default_series_threshold")]
     pub series_threshold: f64,
     /// Tolérance d'erreur estimée pour la série.
+    #[serde(default = "default_series_error_tolerance")]
     pub series_error_tolerance: f64,
     /// Active la passe voisinage pour détecter les glitches.
+    #[serde(default = "default_true")]
     pub glitch_neighbor_pass: bool,
 
     /// Active l'approximation par série standalone (sans BLA).
     /// Permet de sauter des itérations initiales en utilisant une série de Taylor.
+    #[serde(default = "default_true")]
     pub series_standalone: bool,
 
     /// Nombre maximum de références secondaires pour la correction de glitchs.
     /// 0 = désactivé, 3 = valeur recommandée pour un bon compromis performance/qualité.
+    #[serde(default = "default_max_secondary_refs")]
     pub max_secondary_refs: u8,
 
     /// Taille minimale d'un cluster de glitchs pour justifier une référence secondaire.
     /// Les petits clusters sont recalculés en GMP directement.
+    #[serde(default = "default_min_glitch_cluster_size")]
     pub min_glitch_cluster_size: u32,
 
     /// Active la detection de glitch Pauldelbrot + clustering + secondary refs (path historique).
@@ -852,42 +869,56 @@ pub struct FractalParams {
     /// false = rebasing seul (style Fraktaler-3) — NOTE: actuellement produit des glitches
     /// visibles, le rebasing isole ne couvre pas les pixels rescue par secondary refs.
     /// A garder a true tant que le gap n'est pas comble (voir TODO.md).
+    #[serde(default = "default_true")]
     pub use_legacy_glitch_detection: bool,
 
     /// Puissance pour Multibrot (z^d + c), défaut 2.5. Utilisé aussi pour le calcul BLA.
+    #[serde(default = "default_multibrot_power")]
     pub multibrot_power: f64,
 
     /// Nombre maximum d'itérations de perturbation par pixel (aligné C++ Fraktaler-3: PerturbIterations).
     /// 0 = illimité (comportement historique). Défaut 1024.
+    #[serde(default = "default_perturb_cap")]
     pub max_perturb_iterations: u32,
     /// Nombre maximum de pas BLA par pixel (aligné C++ Fraktaler-3: BLASteps).
     /// 0 = illimité. Défaut 1024.
+    #[serde(default = "default_perturb_cap")]
     pub max_bla_steps: u32,
     /// Utiliser la formule de précision de la référence C++ (prec = max(24, 24 + exp(zoom*height))).
     /// Si true (défaut), utilise la formule C++ Fraktaler-3. Si false, utilise une politique plus conservative (log2(zoom) + marge par palier).
+    #[serde(default = "default_true")]
     pub use_reference_precision_formula: bool,
 
     /// Preset Lyapunov sélectionné.
+    #[serde(default)]
     pub lyapunov_preset: LyapunovPreset,
     /// Séquence Lyapunov (true=A, false=B). Si vide, utilise la séquence par défaut.
+    #[serde(default)]
     pub lyapunov_sequence: Vec<bool>,
 
     /// Active le calcul de distance estimation (nécessite DualComplex, ajoute overhead)
+    #[serde(default)]
     pub enable_distance_estimation: bool,
     /// Active la détection d'intérieur (nécessite ExtendedDualComplex, ajoute overhead)
+    #[serde(default)]
     pub enable_interior_detection: bool,
     /// Seuil pour détection d'intérieur (défaut 0.001)
+    #[serde(default = "default_interior_threshold")]
     pub interior_threshold: f64,
 
     /// Mode de colorisation pour les pixels extérieurs (XaoS-style).
+    #[serde(default)]
     pub out_coloring_mode: OutColoringMode,
 
     /// Complex plane transformation (XaoS-style).
+    #[serde(default)]
     pub plane_transform: PlaneTransform,
-    
+
     /// Active le calcul d'orbit traps (nécessite stockage de l'orbite complète)
+    #[serde(default)]
     pub enable_orbit_traps: bool,
     /// Type d'orbit trap à utiliser
+    #[serde(default)]
     pub orbit_trap_type: OrbitTrapType,
 
     /// Jitter scale for sub-pixel anti-aliasing in perturbation rendering.
@@ -898,14 +929,41 @@ pub struct FractalParams {
     pub jitter_scale: f64,
 
     /// Active le moteur d'itération bytecode hybride (Fraktaler-3 style).
-    /// Quand `true` et que le type est supporté par `bytecode::compile_formula`,
-    /// le path f64 standard utilise l'interpréteur bytecode au lieu de la
-    /// fonction dédiée de `iterations.rs`. Pour validation iso-image avant
-    /// migration complète. Pas d'effet sur les paths GMP/perturbation/GPU
-    /// (à venir dans les étapes suivantes de P3.1).
-    #[serde(default)]
+    /// Activé par défaut depuis P3.1 Session E. Path unifié BLA mat2 +
+    /// delta-form + rebasing F3 pour les types escape-time supportés
+    /// (Mandelbrot/Julia, BurningShip/J, Tricorn/J, Celtic/J, Buffalo/J,
+    /// PerpBS/J, Multibrot/J). Fallback automatique sur le path legacy
+    /// pour les autres types, deep zoom GMP, ou features avancées
+    /// (distance/interior/orbit_traps).
+    ///
+    /// Note serde : default à `true` côté deserialization pour que les
+    /// anciens PNG (sauvegardés avant P3.1) chargés dans le nouveau
+    /// fractall bénéficient du path bytecode par défaut. Si l'utilisateur
+    /// veut explicitement le path legacy il peut passer `--no-bytecode`.
+    #[serde(default = "default_true")]
     pub use_bytecode_engine: bool,
 }
+
+// Helpers pour `#[serde(default = "...")]`. Permettent de charger des PNG
+// sauvegardés avant l'introduction d'un champ : le champ manquant prend
+// sa valeur canonique au lieu du `Default::default()` de Rust (qui est
+// souvent inadapté, ex. `bla_threshold = 0.0` casserait BLA).
+
+fn default_true() -> bool { true }
+fn default_one_f64() -> f64 { 1.0 }
+fn default_color_mode() -> u8 { 6 } // Plasma
+fn default_color_repeat() -> u32 { 40 }
+fn default_precision_bits() -> u32 { 256 }
+fn default_bla_threshold() -> f64 { 1e-8 }
+fn default_glitch_tolerance() -> f64 { 1e-4 }
+fn default_series_order() -> u8 { 2 }
+fn default_series_threshold() -> f64 { 1e-6 }
+fn default_series_error_tolerance() -> f64 { 1e-9 }
+fn default_max_secondary_refs() -> u8 { 3 }
+fn default_min_glitch_cluster_size() -> u32 { 100 }
+fn default_multibrot_power() -> f64 { 2.5 }
+fn default_perturb_cap() -> u32 { 1024 }
+fn default_interior_threshold() -> f64 { 0.001 }
 
 impl FractalParams {
     /// Borne minimale X (calculée à la demande).

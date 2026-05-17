@@ -83,10 +83,10 @@ fn apply_nonconformal_matrix(m: Matrix2x2, dual: ExtendedDualComplex) -> Extende
     }
 }
 
-/// Cache thread-local de la BlaTableUnified par worker rayon.
-/// Évite la reconstruction par pixel (O(M log M) en taille d'orbite).
-/// Stocke l'identité de l'orbite (ptr de `z_ref_f64` + len) + le type/power
-/// pour invalider quand on change de render.
+// Cache thread-local de la BlaTableUnified par worker rayon.
+// Évite la reconstruction par pixel (O(M log M) en taille d'orbite).
+// Stocke l'identité de l'orbite (ptr de `z_ref_f64` + len) + le type/power
+// pour invalider quand on change de render.
 thread_local! {
     static BLA_UNIFIED_CACHE: RefCell<Option<BlaUnifiedCacheEntry>> = const { RefCell::new(None) };
 }

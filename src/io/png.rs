@@ -129,3 +129,123 @@ pub fn load_png_metadata(path: &Path) -> Result<FractalParams, Box<dyn std::erro
     Err("Aucune métadonnée fractall trouvée dans le PNG".into())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Vérifie qu'on peut désérialiser un JSON legacy (sauvegardé avant
+    /// l'ajout récent de champs comme use_legacy_glitch_detection,
+    /// jitter_scale, use_bytecode_engine). Les champs manquants doivent
+    /// prendre leur default canonique sans casser.
+    ///
+    /// Régression cible : "Erreur chargement PNG: missing field
+    /// `use_legacy_glitch_detection`" (rapporté par l'utilisateur sur les
+    /// PNG d'avant Session E).
+    #[test]
+    fn deserialize_legacy_minimal_json() {
+        // JSON minimum d'avant Session E : que les champs vraiment requis,
+        // sans aucun des champs récents.
+        let minimal = r#"{
+            "width": 1920,
+            "height": 1080,
+            "center_x": -0.5,
+            "center_y": 0.0,
+            "span_x": 4.0,
+            "span_y": 3.0,
+            "seed": [0.0, 0.0],
+            "fractal_type": "Mandelbrot",
+            "iteration_max": 1000,
+            "bailout": 4.0
+        }"#;
+        let params: FractalParams = serde_json::from_str(minimal)
+            .expect("Minimal JSON should deserialize with defaults");
+        // Champs requis fidèlement restaurés.
+        assert_eq!(params.width, 1920);
+        assert_eq!(params.iteration_max, 1000);
+        assert_eq!(params.bailout, 4.0);
+        // Champs récents : defaults canoniques.
+        assert!(
+            params.use_bytecode_engine,
+            "use_bytecode_engine doit défauter à true sur PNG legacy"
+        );
+        assert!(
+            params.use_legacy_glitch_detection,
+            "use_legacy_glitch_detection doit défauter à true"
+        );
+        assert_eq!(params.jitter_scale, 0.0);
+        assert_eq!(params.bla_threshold, 1e-8);
+        assert_eq!(params.glitch_tolerance, 1e-4);
+        assert_eq!(params.multibrot_power, 2.5);
+        assert_eq!(params.max_perturb_iterations, 1024);
+        assert_eq!(params.max_bla_steps, 1024);
+        assert_eq!(params.interior_threshold, 0.001);
+        assert_eq!(params.max_secondary_refs, 3);
+    }
+
+    /// Vérifie qu'un JSON avec quelques-uns des champs récents présents
+    /// préserve leur valeur (ne se fait pas écraser par le default).
+    #[test]
+    fn deserialize_respects_explicit_values() {
+        let json = r#"{
+            "width": 800,
+            "height": 600,
+            "center_x": 0.0,
+            "center_y": 0.0,
+            "span_x": 4.0,
+            "span_y": 3.0,
+            "seed": [0.0, 0.0],
+            "fractal_type": "Julia",
+            "iteration_max": 500,
+            "bailout": 8.0,
+            "use_bytecode_engine": false,
+            "use_legacy_glitch_detection": false,
+            "multibrot_power": 3.5
+        }"#;
+        let params: FractalParams = serde_json::from_str(json).expect("deserialize");
+        assert!(!params.use_bytecode_engine);
+        assert!(!params.use_legacy_glitch_detection);
+        assert_eq!(params.multibrot_power, 3.5);
+        assert_eq!(params.bailout, 8.0);
+    }
+
+    /// Test exhaustif sur les PNG du dossier `png/` du repo : tous doivent
+    /// se charger sans erreur.
+    #[test]
+    fn deserialize_all_legacy_png_in_repo() {
+        let png_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("png");
+        if !png_dir.exists() {
+            eprintln!("png/ dir not found, skipping");
+            return;
+        }
+        let mut total = 0;
+        let mut errors: Vec<String> = Vec::new();
+        for entry in std::fs::read_dir(&png_dir).expect("read png/") {
+            let path = entry.expect("entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("png") {
+                continue;
+            }
+            total += 1;
+            match load_png_metadata(&path) {
+                Ok(_) => {}
+                Err(e) => {
+                    errors.push(format!(
+                        "{}: {}",
+                        path.file_name().unwrap().to_string_lossy(),
+                        e
+                    ));
+                }
+            }
+        }
+        eprintln!(
+            "PNG legacy : {}/{} se chargent",
+            total - errors.len(),
+            total
+        );
+        if !errors.is_empty() {
+            panic!(
+                "Échecs de chargement legacy PNG :\n  - {}",
+                errors.join("\n  - ")
+            );
+        }
+    }
+}

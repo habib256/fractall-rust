@@ -19,6 +19,7 @@ pub struct GmpInterpState {
     im_scratch: Float,
     /// Scratch complexe pour `Sqr` (z = z * z).
     cplx_scratch: Complex,
+    #[allow(dead_code)]
     prec: u32,
 }
 
@@ -87,6 +88,7 @@ impl GmpInterpState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn prec(&self) -> u32 {
         self.prec
     }

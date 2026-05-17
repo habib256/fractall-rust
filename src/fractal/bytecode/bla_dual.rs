@@ -25,6 +25,7 @@ pub struct Mat2 {
 }
 
 impl Mat2 {
+    #[allow(dead_code)]
     pub const ZERO: Self = Self { m00: 0.0, m01: 0.0, m10: 0.0, m11: 0.0 };
     pub const IDENTITY: Self = Self { m00: 1.0, m01: 0.0, m10: 0.0, m11: 1.0 };
 

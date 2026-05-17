@@ -33,8 +33,10 @@ pub struct UnifiedPixelResult {
     pub iteration: u32,
     pub z_final: Complex64,
     /// Nombre de rebases effectués (utile pour stats/debug).
+    #[allow(dead_code)]
     pub rebase_count: u32,
     /// Nombre de pas BLA appliqués (utile pour stats/debug).
+    #[allow(dead_code)]
     pub bla_steps: u32,
 }
 
