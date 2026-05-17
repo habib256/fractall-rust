@@ -16,10 +16,12 @@ pub mod bla_dual;
 pub mod compile;
 pub mod interp;
 pub mod interp_gmp;
+pub mod pixel_loop;
 
 #[cfg(test)]
 mod tests;
 
+pub use bla_dual::build_bla_table_for_formula;
 pub use compile::compile_formula;
 pub use interp::iterate_bytecode_f64;
 pub use interp_gmp::GmpInterpState;

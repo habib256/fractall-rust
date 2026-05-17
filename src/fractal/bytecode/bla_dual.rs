@@ -13,7 +13,7 @@
 //! `{ value: (x, y), jac: Mat2 }` initialisé à `value = Z_ref, jac = I`.
 //! Chaque opcode met à jour value et jac selon la règle de la chaîne.
 
-use crate::fractal::bytecode::{Op, Phase};
+use crate::fractal::bytecode::{Formula, Op, Phase};
 
 /// Matrice 2×2 réelle (compatible avec `nonconformal::Matrix2x2`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -305,6 +305,35 @@ impl BlaMultiStep {
             l: x.l + y.l,
         }
     }
+}
+
+/// Construit une `BlaTableUnified` pour une formule donnée à partir
+/// de l'orbite référence.
+///
+/// `epsilon` recommandé : `1.0 / 2^24 ≈ 5.96e-8` (matche le `bla_threshold`
+/// F3 par défaut, soit la précision relative de f32). Pour les zooms très
+/// profonds, on peut serrer (ex: `1e-10`) ; pour la performance brute on
+/// peut élargir (`1e-6`).
+///
+/// Renvoie `None` si la formule n'est pas compilable en bytecode ou si
+/// l'orbite est trop courte pour bâtir une table utile (M < 2).
+pub fn build_bla_table_for_formula(
+    formula: &Formula,
+    ref_orbit: &[num_complex::Complex64],
+    c_norm: f64,
+    epsilon: f64,
+) -> Option<Vec<BlaTableUnified>> {
+    // Pour chaque phase de la formule, une table BLA séparée (préparation
+    // hybrides multi-phases ; en mono-phase Vec contient 1 entrée).
+    if ref_orbit.len() < 2 {
+        return None;
+    }
+    let tables = formula
+        .phases
+        .iter()
+        .map(|phase| BlaTableUnified::build(ref_orbit, phase, c_norm, epsilon))
+        .collect();
+    Some(tables)
 }
 
 /// Table BLA unifiée multi-niveaux. `levels[k][i]` est le BLA pour les
