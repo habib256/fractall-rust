@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 
 use crate::fractal::bytecode::bla_dual::BlaTableUnified;
 use crate::fractal::bytecode::pixel_loop::iterate_pixel_unified;
+use crate::fractal::bytecode::pixel_loop_exp::iterate_pixel_unified_exp;
 use crate::fractal::bytecode::{build_bla_table_for_formula, compile_formula, Formula};
 use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::perturbation::bla::BlaTable;
@@ -121,11 +122,14 @@ fn try_bytecode_unified_path(
         // Multi-phase pas encore supporté.
         return None;
     }
-    // f64 path : si le pixel_size est trop petit (deep zoom > 1e13), on
-    // laisse le path GMP gérer (le path unifié actuel est f64 only).
+    // Dispatch selon pixel_size :
+    // - pixel_size > 1e-13 : path f64 (rapide, mantissa f64 suffit)
+    // - 1e-150 < pixel_size < 1e-13 : path ComplexExp (mantissa+exp pour delta)
+    // - pixel_size < 1e-150 : fallback GMP legacy (z_ref_f64 underflow)
     let pixel_size = (params.span_x.abs() / params.width.max(1) as f64)
         .max(params.span_y.abs() / params.height.max(1) as f64);
-    if pixel_size < 1e-13 {
+    let use_exp_path = pixel_size < 1e-13;
+    if pixel_size < 1e-150 {
         return None;
     }
 
@@ -162,16 +166,43 @@ fn try_bytecode_unified_path(
         let entry = cache.as_ref()?;
         let bla = &entry.tables[0];
 
-        // Convertir delta0, dc en Complex64 pour le path f64.
-        let delta_init = delta0.to_complex64_approx();
-        let dc_approx = dc.to_complex64_approx();
-
-        // Pour Julia : z0 = pixel, c = seed. Le caller fournit
-        // delta_init = pixel - cref (non-zéro). La constante ajoutée par
-        // Add côté delta-form est `seed` (c_pixel = c_ref = seed pour Julia,
-        // donc dc_for_add = 0).
+        // Pour Julia : delta_init = pixel - cref (caller fournit delta0
+        // non-zéro), c_for_add = seed (constant), dc_for_add = 0.
         // Pour Mandelbrot : delta_init = 0, c_for_add = cref, dc_for_add = dc.
         let is_julia = Formula::is_julia_for(params.fractal_type);
+
+        if use_exp_path {
+            // Path ComplexExp pour deep zoom > 1e13.
+            let (c_for_add, dc_for_add_exp) = if is_julia {
+                (
+                    Complex64::new(params.seed.re, params.seed.im),
+                    ComplexExp::zero(),
+                )
+            } else {
+                (c_ref, *dc)
+            };
+            let res_exp = iterate_pixel_unified_exp(
+                ref_orbit,
+                bla,
+                &entry.formula,
+                c_for_add,
+                dc_for_add_exp,
+                *delta0,
+                params.iteration_max,
+                params.bailout,
+            );
+            // Conversion vers UnifiedPixelResult (même shape, juste typage).
+            return Some(crate::fractal::bytecode::pixel_loop::UnifiedPixelResult {
+                iteration: res_exp.iteration,
+                z_final: res_exp.z_final,
+                rebase_count: res_exp.rebase_count,
+                bla_steps: res_exp.bla_steps,
+            });
+        }
+
+        // Path f64 standard (rapide).
+        let delta_init = delta0.to_complex64_approx();
+        let dc_approx = dc.to_complex64_approx();
         let (c_for_add, dc_for_add) = if is_julia {
             (
                 Complex64::new(params.seed.re, params.seed.im),
