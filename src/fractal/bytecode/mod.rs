@@ -12,6 +12,7 @@
 
 use crate::fractal::FractalType;
 
+pub mod bla_dual;
 pub mod compile;
 pub mod interp;
 pub mod interp_gmp;
