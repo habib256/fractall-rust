@@ -1666,6 +1666,7 @@ impl FractallApp {
         new_params.algorithm_mode = AlgorithmMode::Auto;
         new_params.bla_threshold = self.params.bla_threshold;
         new_params.glitch_tolerance = self.params.glitch_tolerance;
+        new_params.use_legacy_glitch_detection = self.params.use_legacy_glitch_detection;
 
         // Toujours utiliser le domaine par défaut pour bien centrer la fractale
         self.params = new_params;

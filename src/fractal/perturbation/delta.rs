@@ -413,22 +413,26 @@ fn fast_mandelbrot_batch_f64<const IS_JULIA: bool>(
 /// reference orbit), as this is a natural behavior and not a glitch condition.
 #[inline(always)]
 pub fn should_rebase(z_curr_norm_sqr: f64, delta_norm_sqr: f64, z_ref_norm_sqr: f64) -> bool {
-    // Hysteresis factor: only rebase if z_curr is meaningfully smaller than delta.
-    // This prevents oscillating rebases that waste iterations.
-    // A factor of 0.5 means z_curr must be at most ~70% of delta magnitude.
-    const REBASE_HYSTERESIS: f64 = 0.5;
+    // Hysteresis factor configurable via env. Defaults to 1.0 (F3-strict: z_curr < delta).
+    // Valeurs <1.0 introduisent une marge anti-oscillation (style rust-fractal-core).
+    static HYS: OnceLock<f64> = OnceLock::new();
+    let hys = *HYS.get_or_init(|| {
+        std::env::var("FRACTALL_REBASE_HYSTERESIS")
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .unwrap_or(1.0)
+            .clamp(0.01, 1.0)
+    });
 
     if z_curr_norm_sqr <= 0.0 || delta_norm_sqr <= 0.0 {
         return false;
     }
 
-    // Don't rebase when z_ref is very small (near a zero of the orbit).
-    // Near zeros, |z_curr| ≈ |delta| is expected, not a glitch.
     if z_ref_norm_sqr < 1e-20 {
         return false;
     }
 
-    z_curr_norm_sqr < delta_norm_sqr * REBASE_HYSTERESIS
+    z_curr_norm_sqr < delta_norm_sqr * hys
 }
 
 /// Calcule diffabs(c, d) = |c + d| - |c| de manière stable.
@@ -1116,7 +1120,13 @@ pub fn iterate_pixel(
     // let delta_threshold = pixel_size_sqr * 1e-8;
     // let is_center_like = dc_norm_sqr < center_threshold && delta_norm_sqr_initial < delta_threshold;
     let adaptive_tolerance = compute_adaptive_glitch_tolerance(pixel_size, params.glitch_tolerance);
-    let glitch_tolerance_sqr = adaptive_tolerance * adaptive_tolerance;
+    // Pauldelbrot threshold: rendu effectivement infini quand legacy desactivee
+    // → seul !is_finite() declenche encore Glitched (vrais NaN/Inf, pas glitches detectes par tolerance).
+    let glitch_tolerance_sqr = if params.use_legacy_glitch_detection {
+        adaptive_tolerance * adaptive_tolerance
+    } else {
+        f64::INFINITY
+    };
     let is_julia = params.fractal_type == FractalType::Julia;
     let is_burning_ship = params.fractal_type == FractalType::BurningShip;
     let is_multibrot = params.fractal_type == FractalType::Multibrot;
@@ -1325,22 +1335,20 @@ pub fn iterate_pixel(
                                 delta_approx_cached = delta.to_complex64_approx();
                                 delta_norm_sqr_cached = delta.norm_sqr_approx();
                                 
-                                // Optimisation 4: Vérifier rebasing après application BLA
+                                // Rebasing post-BLA avec hysteresis via should_rebase().
                                 if n < effective_len && (rebase_stride == 1 || (n % rebase_stride) == 0) {
                                     let z_ref_check = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
                                         ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
                                     });
                                     let z_curr_check = z_ref_check + delta_approx_cached;
                                     let z_curr_norm_sqr_check = z_curr_check.norm_sqr();
-                                    
-                                    if z_curr_norm_sqr_check > 0.0 && delta_norm_sqr_cached > 0.0 && z_curr_norm_sqr_check < delta_norm_sqr_cached {
-                                        // Rebasing: replace z_n with Z_m + z_n and reset m to 0
+                                    let z_ref_norm_sqr_check = z_ref_check.norm_sqr();
+
+                                    if should_rebase(z_curr_norm_sqr_check, delta_norm_sqr_cached, z_ref_norm_sqr_check) {
                                         delta = ComplexExp::from_complex64(z_curr_check);
-                                        // Mettre à jour les caches après rebasing
                                         delta_approx_cached = delta.to_complex64_approx();
                                         delta_norm_sqr_cached = delta.norm_sqr_approx();
-                                        
-                                        // Hybrid BLA: change phase on rebasing: phase = (phase + n) % cycle_period
+
                                         if let Some(ref mut phase) = current_phase {
                                             if let Some(refs) = hybrid_refs {
                                                 if refs.cycle_period > 0 {
@@ -1350,12 +1358,11 @@ pub fn iterate_pixel(
                                             }
                                         }
                                         n = 0;
-                                        // Reset BLA level hints after rebase
                                         last_nc_bla_level = if bla_table.nc_num_levels() > 0 { bla_table.nc_num_levels() - 1 } else { 0 };
                                         last_conf_bla_level = if bla_table.num_levels() > 0 { bla_table.num_levels() - 1 } else { 0 };
                                     }
                                 }
-                                break; // Found a BLA step, continue nested loop to try another
+                                break;
                             }
                         }
                     }
@@ -1458,22 +1465,20 @@ pub fn iterate_pixel(
                         delta_approx_cached = delta.to_complex64_approx();
                         delta_norm_sqr_cached = delta.norm_sqr_approx();
 
-                        // Optimisation 4: Vérifier rebasing après application BLA (plus efficace que à chaque itération)
+                        // Rebasing post-BLA avec hysteresis via should_rebase().
                         if n < effective_len && (rebase_stride == 1 || (n % rebase_stride) == 0) {
                             let z_ref_check = ref_orbit.get_z_ref_f64(n).unwrap_or_else(|| {
                                 ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
                             });
                             let z_curr_check = z_ref_check + delta_approx_cached;
                             let z_curr_norm_sqr_check = z_curr_check.norm_sqr();
-                            
-                            if z_curr_norm_sqr_check > 0.0 && delta_norm_sqr_cached > 0.0 && z_curr_norm_sqr_check < delta_norm_sqr_cached {
-                                // Rebasing: replace z_n with Z_m + z_n and reset m to 0
+                            let z_ref_norm_sqr_check = z_ref_check.norm_sqr();
+
+                            if should_rebase(z_curr_norm_sqr_check, delta_norm_sqr_cached, z_ref_norm_sqr_check) {
                                 delta = ComplexExp::from_complex64(z_curr_check);
-                                // Mettre à jour les caches après rebasing
                                 delta_approx_cached = delta.to_complex64_approx();
                                 delta_norm_sqr_cached = delta.norm_sqr_approx();
-                                
-                                // Hybrid BLA: change phase on rebasing: phase = (phase + n) % cycle_period
+
                                 if let Some(ref mut phase) = current_phase {
                                     if let Some(refs) = hybrid_refs {
                                         if refs.cycle_period > 0 {
@@ -1483,7 +1488,6 @@ pub fn iterate_pixel(
                                     }
                                 }
                                 n = 0;
-                                // Reset BLA level hints after rebase
                                 last_nc_bla_level = if bla_table.nc_num_levels() > 0 { bla_table.nc_num_levels() - 1 } else { 0 };
                                 last_conf_bla_level = if bla_table.num_levels() > 0 { bla_table.num_levels() - 1 } else { 0 };
                             }
@@ -1891,7 +1895,12 @@ pub fn iterate_pixel_gmp(
     // Precompute glitch tolerance outside the loop to avoid repeated GMP allocations
     let pixel_size_gmp = params.span_x / params.width as f64;
     let adaptive_tolerance_gmp = compute_adaptive_glitch_tolerance(pixel_size_gmp, params.glitch_tolerance);
-    let glitch_tolerance_sqr_gmp = Float::with_val(prec, adaptive_tolerance_gmp * adaptive_tolerance_gmp);
+    // Pauldelbrot threshold GMP: rendu effectivement infini quand legacy desactivee.
+    let glitch_tolerance_sqr_gmp = if params.use_legacy_glitch_detection {
+        Float::with_val(prec, adaptive_tolerance_gmp * adaptive_tolerance_gmp)
+    } else {
+        Float::with_val(prec, f64::INFINITY)
+    };
     let min_scale_gmp = Float::with_val(prec, 1e-6);
 
     // Main iteration loop with full GMP precision
@@ -2145,7 +2154,13 @@ pub(crate) fn iterate_pixel_with_duals(
     
     let pixel_size = params.span_x / params.width as f64;
     let adaptive_tolerance = compute_adaptive_glitch_tolerance(pixel_size, params.glitch_tolerance);
-    let glitch_tolerance_sqr = adaptive_tolerance * adaptive_tolerance;
+    // Pauldelbrot threshold: rendu effectivement infini quand legacy desactivee
+    // → seul !is_finite() declenche encore Glitched (vrais NaN/Inf, pas glitches detectes par tolerance).
+    let glitch_tolerance_sqr = if params.use_legacy_glitch_detection {
+        adaptive_tolerance * adaptive_tolerance
+    } else {
+        f64::INFINITY
+    };
     let is_julia = params.fractal_type == FractalType::Julia;
     let is_burning_ship = params.fractal_type == FractalType::BurningShip;
     let is_multibrot = params.fractal_type == FractalType::Multibrot;

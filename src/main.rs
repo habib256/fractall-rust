@@ -113,6 +113,11 @@ struct Cli {
     #[arg(long)]
     glitch_tolerance: Option<f64>,
 
+    /// Desactive la detection de glitch legacy (Pauldelbrot + clustering + secondary refs).
+    /// Defaut: legacy actif. Passer --no-legacy-glitch-detection pour tester rebasing seul.
+    #[arg(long)]
+    no_legacy_glitch_detection: bool,
+
     /// Puissance pour Multibrot (z^d + c), défaut 2.5
     #[arg(long)]
     multibrot_power: Option<f64>,
@@ -279,6 +284,9 @@ fn main() {
         if glitch_tolerance > 0.0 {
             params.glitch_tolerance = glitch_tolerance;
         }
+    }
+    if cli.no_legacy_glitch_detection {
+        params.use_legacy_glitch_detection = false;
     }
     if let Some(multibrot_power) = cli.multibrot_power {
         if multibrot_power > 0.0 {

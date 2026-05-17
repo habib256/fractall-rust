@@ -790,7 +790,7 @@ pub fn render_perturbation_with_cache(
         // Marquer seulement si déjà détecté comme glitched/suspect par iterate_pixel.
 
         // Fast-path petites images: éviter le post-traitement voisinage (coût fixe non négligeable)
-        if !small_image && params.glitch_neighbor_pass {
+        if !small_image && params.glitch_neighbor_pass && params.use_legacy_glitch_detection {
             let neighbor_threshold = (params.iteration_max / 50).max(8);
             let neighbor_mask = mark_neighbor_glitches(
                 &iterations,
@@ -819,7 +819,7 @@ pub fn render_perturbation_with_cache(
         // same reference. A full Hybrid BLA implementation would switch to a different reference
         // corresponding to the current phase when rebasing.
         // Fast-path petites images: désactiver références secondaires (coût fixe + peu de pixels)
-        if !small_image && params.max_secondary_refs > 0 {
+        if !small_image && params.max_secondary_refs > 0 && params.use_legacy_glitch_detection {
             let clusters = detect_glitch_clusters(
                 &glitch_mask,
                 params.width,
@@ -927,7 +927,7 @@ pub fn render_perturbation_with_cache(
         // 1. Delta-based reference: uses existing orbit + delta offset (faster than full recompute)
         // 2. Recursive: after resolving one level, remaining glitches are re-resolved
         // 3. Selects optimal reference pixel (smallest |z| norm in each group)
-        if !small_image && params.max_secondary_refs > 0 {
+        if !small_image && params.max_secondary_refs > 0 && params.use_legacy_glitch_detection {
             let max_resolution_rounds = 3; // Limit recursion depth to avoid infinite loops
             for _round in 0..max_resolution_rounds {
                 let remaining_glitches: usize = glitch_mask.iter().filter(|v| **v).count();
@@ -1435,16 +1435,21 @@ mod tests {
     fn should_rebase_hysteresis() {
         use super::delta::should_rebase;
 
-        // Standard rebase: z_curr much smaller than delta
+        // Defaut: hysteresis=1.0 (F3-strict), rebase si z_curr < delta.
+        // L'hysteresis <1.0 est opt-in via FRACTALL_REBASE_HYSTERESIS env var.
+
+        // Standard rebase: z_curr < delta
         assert!(should_rebase(0.1, 1.0, 0.5));
+        // Rebase aussi quand z_curr est proche mais inferieur (sans hysteresis)
+        assert!(should_rebase(0.8, 1.0, 0.5));
+        // Pas de rebase quand z_curr >= delta
+        assert!(!should_rebase(1.0, 1.0, 0.5));
+        assert!(!should_rebase(1.2, 1.0, 0.5));
 
-        // No rebase: z_curr and delta are similar (within hysteresis)
-        assert!(!should_rebase(0.8, 1.0, 0.5));
-
-        // No rebase: z_ref is tiny (near orbit zero)
+        // No rebase: z_ref est minuscule (pres d'un zero de l'orbite)
         assert!(!should_rebase(0.1, 1.0, 1e-25));
 
-        // No rebase: zero values
+        // No rebase: valeurs nulles
         assert!(!should_rebase(0.0, 1.0, 0.5));
         assert!(!should_rebase(0.1, 0.0, 0.5));
     }

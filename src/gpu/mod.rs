@@ -608,12 +608,14 @@ impl GpuRenderer {
                     FractalType::TricornJulia => 4,
                     _ => 0,
                 },
-                glitch_tolerance: {
+                glitch_tolerance: if params.use_legacy_glitch_detection {
                     let pixel_size = span_x / params.width as f64;
                     crate::fractal::perturbation::delta::compute_adaptive_glitch_tolerance(
                         pixel_size,
                         params.glitch_tolerance,
                     ) as f32
+                } else {
+                    f32::INFINITY
                 },
                 series_order: params.series_order as u32,
                 series_threshold: params.series_threshold as f32,
@@ -821,7 +823,7 @@ impl GpuRenderer {
         // Fast-path petites images: éviter le post-traitement voisinage (coût fixe non négligeable)
         // Comme côté CPU, désactiver neighbor_pass pour petites images
         let small_image = params.width.max(params.height) <= 512;
-        if !small_image && params.glitch_neighbor_pass {
+        if !small_image && params.glitch_neighbor_pass && params.use_legacy_glitch_detection {
             let neighbor_threshold = (params.iteration_max / 50).max(8);
             let neighbor_mask =
                 mark_neighbor_glitches(&iterations, params.width, params.height, neighbor_threshold);
