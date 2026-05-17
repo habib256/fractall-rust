@@ -42,9 +42,9 @@ Changements qui rendent les images plus correctes et les zooms plus profonds plu
 ### Priorite 2 — Infrastructure
 
 #### P2.1 — CI + tests d'images de reference (non-negociable)
-- [ ] GitHub Actions : `cargo test --release --lib` sur push/PR.
-- [ ] Job rendu d'images : 5-10 locations dans `locations/`, headless, comparer hash exact (ou diff perceptuel avec seuil) vs golden image versionnee.
-- [ ] Inclure zooms profonds (10¹⁰, 10¹⁵, 10²⁰) sur Mandelbrot/BS/Tricorn/Julia pour couvrir tous les paths.
+- [x] **Harness golden images local** : `tests/golden_images.rs` + 10 cas dans `tests/golden/` couvrant Mandelbrot/Julia/BS/Tricorn/Celtic/Multibrot pow 3/perturbation 1e6/perturbation 1e3/Tricorn perturb 1e2/Newton. Comparaison pixel exact. Regen via `FRACTALL_UPDATE_GOLDENS=1`. Documenté dans CLAUDE.md.
+- [ ] GitHub Actions : `cargo test --release --bin fractall-cli` + `cargo test --release --test golden_images` sur push/PR.
+- [ ] Inclure zooms encore plus profonds (10¹⁰, 10¹⁵, 10²⁰) une fois le rebasing en place.
 - **Pourquoi** : sans ça, chaque modif de perturbation/BLA est une roulette russe. Indispensable vu l'objectif.
 
 #### P2.2 — Decoupe gros fichiers
