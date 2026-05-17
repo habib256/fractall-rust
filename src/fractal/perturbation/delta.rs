@@ -110,18 +110,8 @@ fn try_bytecode_unified_path(
     delta0: &ComplexExp,
     dc: &ComplexExp,
 ) -> Option<DeltaResult> {
-    // Conditions d'éligibilité.
-    // Note : pour orbit_traps + perturbation, le path legacy iterate_pixel
-    // ne support pas non plus (DeltaResult n'a pas d'orbit field). Pour
-    // utiliser orbit_traps, l'utilisateur doit rester en f64 standard
-    // (pas d'algorithm_mode=perturbation) ; le bytecode iterate_point()
-    // dans iterations.rs gère ce cas.
-    if params.enable_distance_estimation
-        || params.enable_interior_detection
-        || params.enable_orbit_traps
-    {
-        return None;
-    }
+    // Le path bytecode supporte désormais distance/interior/orbit_traps
+    // en perturbation via ddelta tracking (cf. UnifiedOptions).
     let formula = compile_formula(params.fractal_type, params.multibrot_power)?;
     if formula.phases.len() != 1 {
         // Multi-phase pas encore supporté.
@@ -203,6 +193,8 @@ fn try_bytecode_unified_path(
                 rebase_count: res_exp.rebase_count,
                 bla_steps: res_exp.bla_steps,
                 orbit: None,
+                distance: None,
+                is_interior: false,
             });
         }
 
@@ -218,7 +210,18 @@ fn try_bytecode_unified_path(
             (c_ref, dc_approx)
         };
 
-        let pixel_result = iterate_pixel_unified(
+        let options = crate::fractal::bytecode::pixel_loop::UnifiedOptions {
+            orbit_trap: if params.enable_orbit_traps {
+                Some(params.orbit_trap_type)
+            } else {
+                None
+            },
+            enable_distance: params.enable_distance_estimation,
+            enable_interior: params.enable_interior_detection,
+            interior_threshold: params.interior_threshold,
+            is_julia,
+        };
+        let pixel_result = crate::fractal::bytecode::pixel_loop::iterate_pixel_unified_full(
             ref_orbit,
             bla,
             &entry.formula,
@@ -227,6 +230,7 @@ fn try_bytecode_unified_path(
             delta_init,
             params.iteration_max,
             params.bailout,
+            options,
         );
 
         Some(pixel_result)
@@ -248,8 +252,8 @@ fn try_bytecode_unified_path(
         z_final: result.z_final,
         glitched: false,
         suspect: false,
-        distance: f64::INFINITY,
-        is_interior: false,
+        distance: result.distance.unwrap_or(f64::INFINITY),
+        is_interior: result.is_interior,
         phase_changed: false,
         smooth_iteration,
     })

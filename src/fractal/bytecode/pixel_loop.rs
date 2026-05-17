@@ -43,6 +43,25 @@ pub struct UnifiedPixelResult {
     /// traversés pour le calcul de orbit traps (distance min à un point/
     /// ligne/croix/cercle).
     pub orbit: Option<OrbitData>,
+    /// Distance estimate à la frontière du set (formule 2|z|·ln|z|/|dz|).
+    /// `None` si non demandé ou pixel intérieur.
+    pub distance: Option<f64>,
+    /// `true` si le pixel est détecté comme intérieur (|dz| < threshold à
+    /// `iter_max`). Encoder éventuellement via signe z.im pour le pipeline
+    /// coloring (cf. convention legacy).
+    pub is_interior: bool,
+}
+
+/// Options pour le pixel loop unifié (dual-numbers features).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UnifiedOptions {
+    pub orbit_trap: Option<OrbitTrapType>,
+    pub enable_distance: bool,
+    pub enable_interior: bool,
+    pub interior_threshold: f64,
+    /// `true` si Julia-like : ddelta init=1, dc=0, distance factor=1.
+    /// `false` si Mandelbrot-like : ddelta init=0, dc≠0, distance factor=2.
+    pub is_julia: bool,
 }
 
 /// Pixel loop unifié pour TOUS les types escape-time supportés par le bytecode :
@@ -89,6 +108,42 @@ pub fn iterate_pixel_unified_with_options(
     bailout: f64,
     orbit_trap_type: Option<OrbitTrapType>,
 ) -> UnifiedPixelResult {
+    iterate_pixel_unified_full(
+        ref_orbit,
+        bla,
+        formula,
+        c_ref,
+        dc,
+        delta_initial,
+        iteration_max,
+        bailout,
+        UnifiedOptions {
+            orbit_trap: orbit_trap_type,
+            ..Default::default()
+        },
+    )
+}
+
+/// Version complète avec toutes les options dual-numbers (distance,
+/// interior, orbit_traps). Propage `ddelta = ∂δ/∂dc` à travers la boucle
+/// pour permettre :
+/// - Distance estimation : `d = factor·|z|·ln|z|/|dz|` à l'évasion
+/// - Interior detection : `|dz| < threshold` à `iter_max`
+///
+/// Le caller doit fournir `options.is_julia` correctement (Julia-like
+/// utilise ddelta init = 1 et Add n'incrémente pas ddelta ; Mandelbrot-like
+/// utilise ddelta init = 0 et Add fait ddelta += 1).
+pub fn iterate_pixel_unified_full(
+    ref_orbit: &ReferenceOrbit,
+    bla: &BlaTableUnified,
+    formula: &Formula,
+    c_ref: Complex64,
+    dc: Complex64,
+    delta_initial: Complex64,
+    iteration_max: u32,
+    bailout: f64,
+    options: UnifiedOptions,
+) -> UnifiedPixelResult {
     // Mono-phase : path optimisé direct.
     if formula.phases.len() == 1 {
         return iterate_pixel_unified_single_phase(
@@ -100,7 +155,7 @@ pub fn iterate_pixel_unified_with_options(
             delta_initial,
             iteration_max,
             bailout,
-            orbit_trap_type,
+            options,
         );
     }
     // Multi-phase : cycle de phases. Pour l'instant on partage la même BLA
@@ -144,6 +199,8 @@ fn iterate_pixel_unified_multi_phase(
             rebase_count: 0,
             bla_steps: 0,
             orbit: None,
+            distance: None,
+            is_interior: false,
         };
     }
     let n_phases = formula.phases.len();
@@ -163,6 +220,8 @@ fn iterate_pixel_unified_multi_phase(
                 rebase_count,
                 bla_steps,
                 orbit: None,
+            distance: None,
+            is_interior: false,
             };
         }
         // En multi-phase, on n'utilise pas la BLA pour simplifier
@@ -185,6 +244,8 @@ fn iterate_pixel_unified_multi_phase(
                 rebase_count,
                 bla_steps,
                 orbit: None,
+            distance: None,
+            is_interior: false,
             };
         }
 
@@ -211,6 +272,8 @@ fn iterate_pixel_unified_multi_phase(
         rebase_count,
         bla_steps,
                 orbit: None,
+            distance: None,
+            is_interior: false,
     }
 }
 
@@ -223,7 +286,7 @@ fn iterate_pixel_unified_single_phase(
     delta_initial: Complex64,
     iteration_max: u32,
     bailout: f64,
-    orbit_trap_type: Option<OrbitTrapType>,
+    options: UnifiedOptions,
 ) -> UnifiedPixelResult {
     let bailout_sqr = bailout * bailout;
     let ref_len = ref_orbit.z_ref_f64.len();
@@ -233,15 +296,25 @@ fn iterate_pixel_unified_single_phase(
             z_final: Complex64::new(0.0, 0.0),
             rebase_count: 0,
             bla_steps: 0,
-            orbit: orbit_trap_type.map(OrbitData::new),
+            orbit: options.orbit_trap.map(OrbitData::new),
+            distance: None,
+            is_interior: false,
         };
     }
 
     // Quand orbit traps demandé, on tracke chaque z_abs → désactive la BLA.
-    let mut orbit_data = orbit_trap_type.map(OrbitData::new);
+    let mut orbit_data = options.orbit_trap.map(OrbitData::new);
     let bla_enabled = orbit_data.is_none();
+    let track_ddelta = options.enable_distance || options.enable_interior;
 
     let mut delta = delta_initial;
+    // ddelta init : 0 pour Mandelbrot-like (δ₀=0 indépendant de dc),
+    //               1 pour Julia-like (δ₀ = dc, ∂/∂dc = I).
+    let mut ddelta = if options.is_julia {
+        Complex64::new(1.0, 0.0)
+    } else {
+        Complex64::new(0.0, 0.0)
+    };
     let mut n = 0u32;
     let mut m = 0u32;
     let mut rebase_count = 0u32;
@@ -256,12 +329,20 @@ fn iterate_pixel_unified_single_phase(
         let z_m = ref_orbit.z_ref_f64[m as usize];
         let z_abs = z_m + delta;
         if z_abs.norm_sqr() >= bailout_sqr {
+            // Distance estimation à l'évasion.
+            let distance = if options.enable_distance && n > 0 {
+                compute_distance_from_dz(z_abs, ddelta, options.is_julia)
+            } else {
+                None
+            };
             return UnifiedPixelResult {
                 iteration: n,
                 z_final: z_abs,
                 rebase_count,
                 bla_steps,
                 orbit: orbit_data,
+                distance,
+                is_interior: false,
             };
         }
 
@@ -282,6 +363,14 @@ fn iterate_pixel_unified_single_phase(
                         b.m00 * dc.re + b.m01 * dc.im,
                         b.m10 * dc.re + b.m11 * dc.im,
                     );
+                    // ddelta : applique aussi le BLA. ddelta' = A·ddelta + B (col0 pour dc).
+                    if track_ddelta {
+                        let (dd_re, dd_im) = (
+                            a.m00 * ddelta.re + a.m01 * ddelta.im + b.m00,
+                            a.m10 * ddelta.re + a.m11 * ddelta.im + b.m10,
+                        );
+                        ddelta = Complex64::new(dd_re, dd_im);
+                    }
                     delta = Complex64::new(a_re + b_re, a_im + b_im);
                     n = new_n;
                     m = new_m;
@@ -294,6 +383,8 @@ fn iterate_pixel_unified_single_phase(
                             rebase_count,
                             bla_steps,
                             orbit: orbit_data,
+                            distance: None,
+                            is_interior: false,
                         };
                     }
                     continue;
@@ -301,11 +392,22 @@ fn iterate_pixel_unified_single_phase(
             }
         }
 
-        // Pas perturbation via delta-form interpreter
-        // (généralise la formule Mandelbrot hardcodée à tous les types).
-        let mut state = DeltaState::new(z_m, delta);
-        state.step(phase, c_ref, dc);
+        // Pas perturbation via delta-form interpreter (avec tracking ddelta
+        // si demandé via track_ddelta).
+        let mut state = if track_ddelta {
+            DeltaState::with_ddelta(z_m, delta, ddelta)
+        } else {
+            DeltaState::new(z_m, delta)
+        };
+        if track_ddelta {
+            state.step_with_julia(phase, c_ref, dc, options.is_julia);
+        } else {
+            state.step(phase, c_ref, dc);
+        }
         delta = state.delta;
+        if track_ddelta {
+            ddelta = state.ddelta;
+        }
         n += 1;
         m += 1;
 
@@ -316,6 +418,8 @@ fn iterate_pixel_unified_single_phase(
                 rebase_count,
                 bla_steps,
                 orbit: orbit_data,
+                distance: None,
+                is_interior: false,
             };
         }
 
@@ -329,7 +433,7 @@ fn iterate_pixel_unified_single_phase(
             od.add_point(z_m_new + delta, n);
         }
 
-        // Rebase F3
+        // Rebase F3 (ddelta inchangé par rebase : δ_new = Z+δ, d(Z+δ)/d(dc) = d(δ)/d(dc)).
         let end_of_ref = (m as usize) + 1 >= ref_len;
         if end_of_ref {
             let z_m_new = ref_orbit.z_ref_f64[m as usize];
@@ -349,13 +453,42 @@ fn iterate_pixel_unified_single_phase(
         }
     }
 
+    // Pixel intérieur (n == iteration_max) : check interior.
     let final_m = m.min((ref_len - 1) as u32);
+    let z_final = ref_orbit.z_ref_f64[final_m as usize] + delta;
+    let is_interior = if options.enable_interior {
+        let dd_norm = ddelta.norm();
+        dd_norm.is_finite() && dd_norm > 0.0 && dd_norm < options.interior_threshold
+    } else {
+        false
+    };
+    // Encoder is_interior via le signe de z.im (convention legacy).
+    let z_out = if is_interior {
+        Complex64::new(z_final.re, -z_final.im.abs())
+    } else {
+        z_final
+    };
     UnifiedPixelResult {
         iteration: n,
-        z_final: ref_orbit.z_ref_f64[final_m as usize] + delta,
+        z_final: z_out,
         rebase_count,
         bla_steps,
         orbit: orbit_data,
+        distance: None,
+        is_interior,
+    }
+}
+
+/// Formule distance estimation à l'évasion. `z_abs` = Z + δ au moment de
+/// bailout, `dz` = ddelta = ∂δ/∂dc. Factor 2 pour Mandelbrot, 1 pour Julia.
+fn compute_distance_from_dz(z_abs: Complex64, dz: Complex64, is_julia: bool) -> Option<f64> {
+    let z_norm = z_abs.norm().max(2.0);
+    let dz_norm = dz.norm();
+    if dz_norm > 1e-300 && z_norm > 1.0 {
+        let factor = if is_julia { 1.0 } else { 2.0 };
+        Some(factor * z_norm * z_norm.ln() / dz_norm)
+    } else {
+        None
     }
 }
 
@@ -386,6 +519,8 @@ pub fn iterate_pixel_unified_mandelbrot(
             rebase_count: 0,
             bla_steps: 0,
             orbit: None,
+            distance: None,
+            is_interior: false,
         };
     }
 
@@ -406,6 +541,8 @@ pub fn iterate_pixel_unified_mandelbrot(
                 rebase_count,
                 bla_steps,
                 orbit: None,
+            distance: None,
+            is_interior: false,
             };
         }
 
@@ -440,6 +577,8 @@ pub fn iterate_pixel_unified_mandelbrot(
                         rebase_count,
                         bla_steps,
                 orbit: None,
+            distance: None,
+            is_interior: false,
                     };
                 }
                 continue;
@@ -461,6 +600,8 @@ pub fn iterate_pixel_unified_mandelbrot(
                 rebase_count,
                 bla_steps,
                 orbit: None,
+            distance: None,
+            is_interior: false,
             };
         }
 
@@ -491,6 +632,8 @@ pub fn iterate_pixel_unified_mandelbrot(
         rebase_count,
         bla_steps,
                 orbit: None,
+            distance: None,
+            is_interior: false,
     }
 }
 

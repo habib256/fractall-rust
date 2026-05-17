@@ -41,6 +41,13 @@ pub struct DeltaState {
     pub stored_z: Complex64,
     /// `Store` snapshot du δ courant.
     pub stored_delta: Complex64,
+    /// Dérivée ∂δ/∂dc (Complex64, hypothèse conformal).
+    /// Permet distance estimation + interior detection en perturbation.
+    /// Pour les types non-conformes (BS/Tricorn) c'est une approximation
+    /// — comme dans `iterate_pixel_with_duals` legacy.
+    pub ddelta: Complex64,
+    /// Snapshot Store de ddelta.
+    pub stored_ddelta: Complex64,
 }
 
 impl DeltaState {
@@ -50,6 +57,23 @@ impl DeltaState {
             delta,
             stored_z: z_ref,
             stored_delta: delta,
+            ddelta: Complex64::new(0.0, 0.0),
+            stored_ddelta: Complex64::new(0.0, 0.0),
+        }
+    }
+
+    /// Constructeur avec ddelta initial (pour distance/interior tracking).
+    /// `ddelta_init` = état initial de ∂δ/∂dc :
+    /// - Mandelbrot-like : 0 (δ₀ = 0 ne dépend pas de dc)
+    /// - Julia-like : 1 (δ₀ = dc, donc ∂δ/∂dc = 1)
+    pub fn with_ddelta(z_ref: Complex64, delta: Complex64, ddelta_init: Complex64) -> Self {
+        Self {
+            z_ref,
+            delta,
+            stored_z: z_ref,
+            stored_delta: delta,
+            ddelta: ddelta_init,
+            stored_ddelta: ddelta_init,
         }
     }
 
@@ -60,15 +84,38 @@ impl DeltaState {
     /// seed pour Julia-like).
     /// `dc` = constante ajoutée au delta = c_pixel - c_ref.
     pub fn step(&mut self, phase: &Phase, c_ref: Complex64, dc: Complex64) {
+        // is_julia signal pour l'Op::Add ddelta : pour Julia c=seed (constant)
+        // donc ddelta inchangé sur Add ; pour Mandelbrot dc dépend du pixel
+        // donc ddelta += 1. On infère via `dc.norm() == 0 && delta != 0` au
+        // début : si dc est 0 alors c'est Julia (caller passe dc=0). Sinon
+        // Mandelbrot. Cette heuristique est cohérente avec how iterate_pixel_unified
+        // configure dc_for_add (Julia=0, Mandelbrot=dc).
+        let dc_contributes = dc.norm_sqr() > 0.0
+            || (self.delta.norm_sqr() == 0.0 && self.ddelta.norm_sqr() == 0.0);
+        self.step_with_julia(phase, c_ref, dc, !dc_contributes)
+    }
+
+    /// Variante avec is_julia explicite pour le tracking ddelta. Utilisée
+    /// quand distance/interior tracking est activé.
+    pub fn step_with_julia(
+        &mut self,
+        phase: &Phase,
+        c_ref: Complex64,
+        dc: Complex64,
+        is_julia: bool,
+    ) {
         for op in &phase.ops {
             match op {
                 Op::Sqr => {
                     // δ' = 2·Z·δ + δ²
+                    // ddelta' = 2·Z·ddelta + 2·δ·ddelta = 2·(Z+δ)·ddelta
                     let two_z = self.z_ref * 2.0;
                     let new_delta = two_z * self.delta + self.delta * self.delta;
-                    // Z' = Z²
+                    let z_plus_delta = self.z_ref + self.delta;
+                    let new_ddelta = (z_plus_delta * 2.0) * self.ddelta;
                     let new_z = self.z_ref * self.z_ref;
                     self.delta = new_delta;
+                    self.ddelta = new_ddelta;
                     self.z_ref = new_z;
                 }
                 Op::Mul => {
@@ -76,36 +123,58 @@ impl DeltaState {
                     let new_delta = self.stored_z * self.delta
                         + self.z_ref * self.stored_delta
                         + self.delta * self.stored_delta;
-                    // Z' = Z·stored_Z
+                    // ddelta' = d(z·stored)/dc =
+                    //   stored_Z·ddelta + Z·stored_ddelta + δ·stored_ddelta + ddelta·stored_δ
+                    //   = (stored_Z + stored_δ)·ddelta + (Z + δ)·stored_ddelta
+                    let new_ddelta = (self.stored_z + self.stored_delta) * self.ddelta
+                        + (self.z_ref + self.delta) * self.stored_ddelta;
                     let new_z = self.z_ref * self.stored_z;
                     self.delta = new_delta;
+                    self.ddelta = new_ddelta;
                     self.z_ref = new_z;
                 }
                 Op::Store => {
                     self.stored_z = self.z_ref;
                     self.stored_delta = self.delta;
+                    self.stored_ddelta = self.ddelta;
                 }
                 Op::AbsX => {
                     // (Z+δ).re_abs - Z.re_abs = diffabs(Z.re, δ.re)
+                    // ddelta.re' = sign(Z.re + δ.re) · ddelta.re (chain rule)
+                    let abs_arg = self.z_ref.re + self.delta.re;
+                    if abs_arg < 0.0 {
+                        self.ddelta = Complex64::new(-self.ddelta.re, self.ddelta.im);
+                    }
                     let new_delta_re = diffabs(self.z_ref.re, self.delta.re);
                     self.delta = Complex64::new(new_delta_re, self.delta.im);
                     self.z_ref = Complex64::new(self.z_ref.re.abs(), self.z_ref.im);
                 }
                 Op::AbsY => {
+                    let abs_arg = self.z_ref.im + self.delta.im;
+                    if abs_arg < 0.0 {
+                        self.ddelta = Complex64::new(self.ddelta.re, -self.ddelta.im);
+                    }
                     let new_delta_im = diffabs(self.z_ref.im, self.delta.im);
                     self.delta = Complex64::new(self.delta.re, new_delta_im);
                     self.z_ref = Complex64::new(self.z_ref.re, self.z_ref.im.abs());
                 }
                 Op::NegX => {
                     self.delta = Complex64::new(-self.delta.re, self.delta.im);
+                    self.ddelta = Complex64::new(-self.ddelta.re, self.ddelta.im);
                     self.z_ref = Complex64::new(-self.z_ref.re, self.z_ref.im);
                 }
                 Op::NegY => {
                     self.delta = Complex64::new(self.delta.re, -self.delta.im);
+                    self.ddelta = Complex64::new(self.ddelta.re, -self.ddelta.im);
                     self.z_ref = Complex64::new(self.z_ref.re, -self.z_ref.im);
                 }
                 Op::Add => {
                     self.delta += dc;
+                    // ddelta += 1 si c_pixel dépend du pixel (Mandelbrot-like).
+                    // Pour Julia, c = seed constant → ddelta inchangé.
+                    if !is_julia {
+                        self.ddelta += Complex64::new(1.0, 0.0);
+                    }
                     self.z_ref += c_ref;
                 }
             }
