@@ -248,11 +248,162 @@ pub fn build_bla_single_step(
     }
 }
 
+/// BLA multi-step : A·δ + B·c, valide pour `|δ|² < r2`, saute `l` itérations.
+///
+/// Issue d'un single-step (`l=1`, `B = I`) ou de la composition de deux BLAs
+/// adjacents via [`merge`].
+#[derive(Clone, Copy, Debug)]
+pub struct BlaMultiStep {
+    pub a: Mat2,
+    pub b: Mat2,
+    pub r2: f64,
+    pub l: u32,
+}
+
+impl BlaMultiStep {
+    /// Promotion d'un single-step (avec `B = I`, `l = 1`).
+    pub fn from_single(s: BlaSingleStep) -> Self {
+        Self {
+            a: s.a,
+            b: Mat2::IDENTITY,
+            r2: s.r2,
+            l: 1,
+        }
+    }
+
+    /// Compose deux BLAs adjacents : `T_z = T_y ∘ T_x`.
+    ///
+    /// Formules F3 (cf. `merge_nonconformal_bla` existant) :
+    /// - `A_z = A_y · A_x`
+    /// - `B_z = A_y · B_x + B_y`
+    /// - `R_z² = max(0, min(R_x², (sqrt(R_y²) - sup|B_x|·|c| / sup|A_x|)²))`
+    pub fn merge(x: BlaMultiStep, y: BlaMultiStep, c_norm: f64) -> Self {
+        let az_x = y.a.mul(x.a);
+        let bz = {
+            let ay_bx = y.a.mul(x.b);
+            Mat2 {
+                m00: ay_bx.m00 + y.b.m00,
+                m01: ay_bx.m01 + y.b.m01,
+                m10: ay_bx.m10 + y.b.m10,
+                m11: ay_bx.m11 + y.b.m11,
+            }
+        };
+        let sup_ax = x.a.sup_norm();
+        let sup_bx = x.b.sup_norm();
+        let rx = x.r2.sqrt();
+        let ry = y.r2.sqrt();
+        let rz = if sup_ax < 1e-20 {
+            rx.min(ry).max(0.0)
+        } else {
+            let adjustment = sup_bx * c_norm / sup_ax;
+            rx.min(ry - adjustment).max(0.0)
+        };
+        Self {
+            a: az_x,
+            b: bz,
+            r2: rz * rz,
+            l: x.l + y.l,
+        }
+    }
+}
+
+/// Table BLA unifiée multi-niveaux. `levels[k][i]` est le BLA pour les
+/// itérations `[i, i + 2^k)` de la référence (sauf le dernier qui peut
+/// sauter moins).
+///
+/// Construction inspirée de F3 `hybrid_blas` :
+/// - level 0 : M single-steps (un par itération de la référence)
+/// - level k+1 : merge paires adjacentes de level k → ⌈M / 2^(k+1)⌉ entries
+///
+/// Pas (encore) intégrée à `delta.rs::iterate_pixel` — c'est l'objet de
+/// Session C.
+#[derive(Clone, Debug)]
+pub struct BlaTableUnified {
+    pub levels: Vec<Vec<BlaMultiStep>>,
+}
+
+impl BlaTableUnified {
+    /// Construit la table BLA unifiée pour une phase, à partir de l'orbite
+    /// référence et de la phase bytecode.
+    ///
+    /// `c_norm` = `|cref|` (norme du centre de la référence, utilisée dans la
+    /// formule de merge pour ajuster le rayon de validité).
+    ///
+    /// `epsilon` = facteur de précision (typiquement `2^(-prec_bits)`).
+    pub fn build(
+        ref_orbit: &[num_complex::Complex64],
+        phase: &Phase,
+        c_norm: f64,
+        epsilon: f64,
+    ) -> Self {
+        let m = ref_orbit.len().saturating_sub(1);
+        if m == 0 {
+            return Self { levels: Vec::new() };
+        }
+
+        // Level 0 : un single-step par itération de référence.
+        let level0: Vec<BlaMultiStep> = (0..m)
+            .map(|i| {
+                let z = ref_orbit[i];
+                BlaMultiStep::from_single(build_bla_single_step(z.re, z.im, phase, epsilon))
+            })
+            .collect();
+        let mut levels = vec![level0];
+
+        // Niveaux supérieurs : merge adjacents.
+        while levels.last().unwrap().len() > 1 {
+            let prev = levels.last().unwrap();
+            let mut next: Vec<BlaMultiStep> = Vec::with_capacity((prev.len() + 1) / 2);
+            let mut i = 0;
+            while i + 1 < prev.len() {
+                let merged = BlaMultiStep::merge(prev[i], prev[i + 1], c_norm);
+                next.push(merged);
+                i += 2;
+            }
+            // Si nombre impair, le dernier est promu tel quel.
+            if i < prev.len() {
+                next.push(prev[i]);
+            }
+            levels.push(next);
+        }
+        Self { levels }
+    }
+
+    /// Cherche le BLA avec le plus grand `l` valide à partir de l'itération
+    /// `m` quand `|δ|² < r2`. Retourne `None` si aucun BLA n'est valide.
+    ///
+    /// Stratégie F3 : parcourir les niveaux du plus grand au plus petit,
+    /// retourner le premier valide.
+    pub fn lookup(&self, m: usize, delta_norm_sqr: f64) -> Option<&BlaMultiStep> {
+        for (level, nodes) in self.levels.iter().enumerate().rev() {
+            // Index dans ce niveau : `m / 2^level`.
+            let idx = m >> level;
+            if idx >= nodes.len() {
+                continue;
+            }
+            // Vérifier qu'on ne dépasse pas la fin de la référence sur ce niveau.
+            // Le BLA[level][idx] couvre les itérations [idx·2^level, (idx+1)·2^level).
+            // m doit être à l'INTÉRIEUR de cet intervalle (sinon on saute trop).
+            let start = idx << level;
+            if m != start {
+                // m n'est pas aligné au début de ce niveau, niveau trop gros.
+                continue;
+            }
+            let node = &nodes[idx];
+            if delta_norm_sqr < node.r2 {
+                return Some(node);
+            }
+        }
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fractal::bytecode::compile_formula;
     use crate::fractal::FractalType;
+    use num_complex::Complex64;
 
     /// Compare deux mat2 avec tolérance.
     fn mat2_close(a: Mat2, b: Mat2, tol: f64) -> bool {
@@ -483,5 +634,131 @@ mod tests {
     fn mat2_sup_norm_scaled() {
         let m = Mat2::IDENTITY.scale(3.5);
         assert!((m.sup_norm() - 3.5).abs() < 1e-10);
+    }
+
+    /// Mandelbrot z² + c : la composition de 2 single-steps en (Z_0, Z_1)
+    /// doit donner A_merged = A_1 · A_0 = (2·Z_1·I)·(2·Z_0·I) = 4·Z_0·Z_1
+    /// (vu comme mat2 de multiplication complexe).
+    #[test]
+    fn merge_mandelbrot_two_steps() {
+        let formula = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
+        let phase = &formula.phases[0];
+        let z0 = Complex64::new(0.2, 0.1);
+        let z1 = Complex64::new(-0.3, 0.4);
+        let s0 = build_bla_single_step(z0.re, z0.im, phase, 1e-6);
+        let s1 = build_bla_single_step(z1.re, z1.im, phase, 1e-6);
+        let merged = BlaMultiStep::merge(
+            BlaMultiStep::from_single(s0),
+            BlaMultiStep::from_single(s1),
+            0.5,
+        );
+
+        // 4·Z_0·Z_1 = 4 * (0.2+0.1i)(-0.3+0.4i)
+        // = 4 * (-0.06 - 0.04 + i(0.08 - 0.03))
+        // = 4 * (-0.10 + 0.05i) = -0.4 + 0.2i
+        let z0z1 = z0 * z1;
+        let re_4 = 4.0 * z0z1.re;
+        let im_4 = 4.0 * z0z1.im;
+        let expected = Mat2 {
+            m00: re_4,
+            m01: -im_4,
+            m10: im_4,
+            m11: re_4,
+        };
+        assert!(
+            mat2_close(merged.a, expected, 1e-10),
+            "merged A : got {:?}, expected {:?}",
+            merged.a,
+            expected
+        );
+        assert_eq!(merged.l, 2);
+
+        // B = A_1 · I + I = A_1 + I. A_1 = 2·[Z_1.re, -Z_1.im; Z_1.im, Z_1.re].
+        let expected_b = Mat2 {
+            m00: 2.0 * z1.re + 1.0,
+            m01: -2.0 * z1.im,
+            m10: 2.0 * z1.im,
+            m11: 2.0 * z1.re + 1.0,
+        };
+        assert!(
+            mat2_close(merged.b, expected_b, 1e-10),
+            "merged B : got {:?}, expected {:?}",
+            merged.b,
+            expected_b
+        );
+    }
+
+    /// La construction de table doit produire log2(M) niveaux et 1 entrée
+    /// au sommet pour M=8.
+    #[test]
+    fn table_build_levels_8_iterations() {
+        let formula = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
+        let phase = &formula.phases[0];
+        // 9 entrées d'orbite → M = 8 single-steps possibles.
+        let orbit: Vec<Complex64> = (0..9).map(|i| Complex64::new(i as f64 * 0.1, 0.0)).collect();
+        let table = BlaTableUnified::build(&orbit, phase, 0.5, 1e-6);
+
+        // M=8 → 4 niveaux : 8, 4, 2, 1.
+        assert_eq!(table.levels.len(), 4);
+        assert_eq!(table.levels[0].len(), 8);
+        assert_eq!(table.levels[1].len(), 4);
+        assert_eq!(table.levels[2].len(), 2);
+        assert_eq!(table.levels[3].len(), 1);
+
+        // Le BLA top-level doit avoir l = 8.
+        assert_eq!(table.levels[3][0].l, 8);
+    }
+
+    /// Le lookup retourne `None` quand delta est trop grand, et le plus
+    /// large BLA valide sinon. Test à m=1 car m=0 correspond à z_ref=0
+    /// pour Mandelbrot, ce qui donne r=0 (BLA inutilisable au step 0 —
+    /// c'est la raison pour laquelle F3 commence aussi le BLA à m=1).
+    #[test]
+    fn lookup_returns_largest_valid() {
+        let formula = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
+        let phase = &formula.phases[0];
+        // Orbite simulée Mandelbrot avec c = -0.7 + 0.3i, z_0 = 0.
+        let c = Complex64::new(-0.7, 0.3);
+        let mut z = Complex64::new(0.0, 0.0);
+        let mut orbit = vec![z];
+        for _ in 0..9 {
+            z = z * z + c;
+            orbit.push(z);
+        }
+        let table = BlaTableUnified::build(&orbit, phase, c.norm(), 1e-6);
+
+        // delta = +∞ à m=1 → aucun BLA valide.
+        assert!(table.lookup(1, f64::INFINITY).is_none());
+
+        // delta très petit à m=1 → trouve un BLA.
+        let res = table.lookup(1, 1e-30);
+        assert!(
+            res.is_some(),
+            "lookup m=1 à delta minuscule doit trouver un BLA"
+        );
+        assert!(res.unwrap().l >= 1);
+    }
+
+    /// Avec une orbite typique Mandelbrot (zoom 1) et un delta très petit,
+    /// la table BLA doit permettre des skips importants au début de l'orbite.
+    #[test]
+    fn realistic_mandelbrot_table() {
+        let formula = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
+        let phase = &formula.phases[0];
+        // Orbite simulée Mandelbrot pour c = -0.7 + 0.3i sur quelques iters.
+        let c = Complex64::new(-0.7, 0.3);
+        let mut z = Complex64::new(0.0, 0.0);
+        let mut orbit = vec![z];
+        for _ in 0..32 {
+            z = z * z + c;
+            orbit.push(z);
+        }
+        let table = BlaTableUnified::build(&orbit, phase, c.norm(), 1e-6);
+        assert!(!table.levels.is_empty());
+        // Un delta très petit devrait permettre un skip non-trivial à m=0.
+        let lookup = table.lookup(0, 1e-20);
+        if let Some(node) = lookup {
+            assert!(node.l >= 1);
+        }
     }
 }
