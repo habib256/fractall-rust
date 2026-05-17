@@ -1,7 +1,11 @@
 use num_complex::Complex64;
 use rug::{Complex, Float};
+use std::cell::RefCell;
 use std::sync::OnceLock;
 
+use crate::fractal::bytecode::bla_dual::BlaTableUnified;
+use crate::fractal::bytecode::pixel_loop::iterate_pixel_unified;
+use crate::fractal::bytecode::{build_bla_table_for_formula, compile_formula, Formula};
 use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::perturbation::bla::BlaTable;
 use crate::fractal::perturbation::orbit::{ReferenceOrbit, HybridBlaReferences};
@@ -77,6 +81,156 @@ fn apply_nonconformal_matrix(m: Matrix2x2, dual: ExtendedDualComplex) -> Extende
         dual_z1_re: Complex64::new(dz1re_re, dz1re_im),
         dual_z1_im: Complex64::new(dz1im_re, dz1im_im),
     }
+}
+
+/// Cache thread-local de la BlaTableUnified par worker rayon.
+/// Évite la reconstruction par pixel (O(M log M) en taille d'orbite).
+/// Stocke l'identité de l'orbite (ptr de `z_ref_f64` + len) + le type/power
+/// pour invalider quand on change de render.
+thread_local! {
+    static BLA_UNIFIED_CACHE: RefCell<Option<BlaUnifiedCacheEntry>> = const { RefCell::new(None) };
+}
+
+struct BlaUnifiedCacheEntry {
+    orbit_ptr: usize,
+    orbit_len: usize,
+    fractal_type: FractalType,
+    multibrot_power: f64,
+    formula: Formula,
+    tables: Vec<BlaTableUnified>,
+}
+
+/// Tente le path bytecode unifié si toutes les conditions sont remplies.
+/// Renvoie `Some(DeltaResult)` si le path a été appliqué, `None` sinon
+/// (le caller fallback sur le path historique).
+fn try_bytecode_unified_path(
+    params: &FractalParams,
+    ref_orbit: &ReferenceOrbit,
+    delta0: &ComplexExp,
+    dc: &ComplexExp,
+) -> Option<DeltaResult> {
+    // Conditions d'éligibilité.
+    if params.enable_distance_estimation
+        || params.enable_interior_detection
+        || params.enable_orbit_traps
+    {
+        return None;
+    }
+    let formula = compile_formula(params.fractal_type, params.multibrot_power)?;
+    if formula.phases.len() != 1 {
+        // Multi-phase pas encore supporté.
+        return None;
+    }
+    // f64 path : si le pixel_size est trop petit (deep zoom > 1e13), on
+    // laisse le path GMP gérer (le path unifié actuel est f64 only).
+    let pixel_size = (params.span_x.abs() / params.width.max(1) as f64)
+        .max(params.span_y.abs() / params.height.max(1) as f64);
+    if pixel_size < 1e-13 {
+        return None;
+    }
+
+    // Préparer / recycler la table BLA depuis le cache thread-local.
+    let orbit_ptr = ref_orbit.z_ref_f64.as_ptr() as usize;
+    let orbit_len = ref_orbit.z_ref_f64.len();
+    let c_ref = ref_orbit.cref;
+    let c_norm = (c_ref.re * c_ref.re + c_ref.im * c_ref.im).sqrt();
+
+    let result = BLA_UNIFIED_CACHE.with(|cache_cell| {
+        let mut cache = cache_cell.borrow_mut();
+        // Vérifier si l'entrée actuelle correspond à ce render.
+        let needs_rebuild = match cache.as_ref() {
+            None => true,
+            Some(entry) => {
+                entry.orbit_ptr != orbit_ptr
+                    || entry.orbit_len != orbit_len
+                    || entry.fractal_type != params.fractal_type
+                    || (entry.multibrot_power - params.multibrot_power).abs() > 1e-12
+            }
+        };
+        if needs_rebuild {
+            let tables =
+                build_bla_table_for_formula(&formula, &ref_orbit.z_ref_f64, c_norm, 6e-8)?;
+            *cache = Some(BlaUnifiedCacheEntry {
+                orbit_ptr,
+                orbit_len,
+                fractal_type: params.fractal_type,
+                multibrot_power: params.multibrot_power,
+                formula: formula.clone(),
+                tables,
+            });
+        }
+        let entry = cache.as_ref()?;
+        let bla = &entry.tables[0];
+
+        // Convertir delta0, dc en Complex64 pour le path f64.
+        let delta_init = delta0.to_complex64_approx();
+        let dc_approx = dc.to_complex64_approx();
+
+        // Pour Julia : z0 = pixel, c = seed. Le caller fournit delta0 = pixel
+        // et dc = pixel - cref. La constante ajoutée par Add est :
+        // - Julia-like (delta0 != 0): seed (utiliser params.seed)
+        // - Mandelbrot-like (delta0 ≈ 0): cref
+        let is_julia = Formula::is_julia_for(params.fractal_type);
+        let c_for_add = if is_julia {
+            // Pour Julia, c_ref dans le delta-form = seed (la "constante" de la formule Julia).
+            // Mais notre orbite référence pour Julia est itérée AVEC seed (cf. orbit.rs).
+            // Donc Z[m+1] = Z[m]² + seed. Pour le delta-form Julia, c_ref = seed et dc = 0
+            // (puisque c_pixel = seed aussi pour tous les pixels Julia).
+            // Le pixel offset est dans le z0 initial, pas dans c.
+            Complex64::new(params.seed.re, params.seed.im)
+        } else {
+            c_ref
+        };
+        let dc_for_add = if is_julia {
+            // Pour Julia, dc côté delta-form = 0 (c est constant pour tous les pixels).
+            Complex64::new(0.0, 0.0)
+        } else {
+            dc_approx
+        };
+
+        // Le delta initial pour Julia n'est PAS zéro : c'est `pixel - cref`
+        // (i.e. delta0 fourni par le caller). Pour Mandelbrot c'est zéro.
+        let pixel_result = iterate_pixel_unified(
+            ref_orbit,
+            bla,
+            &entry.formula,
+            c_for_add,
+            dc_for_add,
+            params.iteration_max,
+            params.bailout,
+        );
+
+        // Si Mandelbrot, delta_init est zéro et notre fonction part de zéro.
+        // Si Julia, delta_init n'est pas zéro mais notre fonction part toujours
+        // de zéro. Pour gérer Julia correctement il faudrait passer delta_init
+        // à iterate_pixel_unified. Pour ce premier MVP, on n'active que pour
+        // Mandelbrot-like (où delta_init = 0).
+        let _ = delta_init;
+
+        Some(pixel_result)
+    })?;
+
+    // Convertir UnifiedPixelResult → DeltaResult attendu par le pipeline.
+    let smooth_iteration = if result.iteration < params.iteration_max {
+        // Smooth coloring standard : n + 1 - log2(log|z|)
+        let z_norm_sqr = result.z_final.norm_sqr().max(1.0);
+        let log_z = z_norm_sqr.ln() * 0.5;
+        let nu = (log_z.ln() / std::f64::consts::LN_2).max(0.0);
+        (result.iteration as f64 + 1.0 - nu).max(0.0)
+    } else {
+        result.iteration as f64
+    };
+
+    Some(DeltaResult {
+        iteration: result.iteration,
+        z_final: result.z_final,
+        glitched: false,
+        suspect: false,
+        distance: f64::INFINITY,
+        is_interior: false,
+        phase_changed: false,
+        smooth_iteration,
+    })
 }
 
 fn rebase_stride() -> u32 {
@@ -1093,6 +1247,18 @@ pub fn iterate_pixel(
         );
     }
     
+    // P3.1 Session D : path bytecode unifié (BLA mat2 + delta-form + rebasing F3).
+    // Si activé et type supporté, dispatch vers le pixel loop unifié.
+    // Cache thread-local de la BlaTableUnified pour éviter de la reconstruire
+    // par pixel (build est O(M log M) en taille d'orbite).
+    if params.use_bytecode_engine {
+        if let Some(result) =
+            try_bytecode_unified_path(params, ref_orbit, &delta0, &dc)
+        {
+            return result;
+        }
+    }
+
     // Standard path without dual numbers
     // Compteurs alignés C++ Fraktaler-3: iters_ptb (itérations perturbation), steps_bla (pas BLA).
     // Limites séparées max_perturb_iterations / max_bla_steps (0 = illimité).

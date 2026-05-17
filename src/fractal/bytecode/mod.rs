@@ -14,6 +14,7 @@ use crate::fractal::FractalType;
 
 pub mod bla_dual;
 pub mod compile;
+pub mod delta_form;
 pub mod interp;
 pub mod interp_gmp;
 pub mod pixel_loop;
