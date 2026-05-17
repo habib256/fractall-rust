@@ -37,6 +37,8 @@ serde_json = "1.0"
 png = "0.17"
 # Parsing de fichiers de localisation TOML (rust-fractal-core)
 toml = "0.8"
+# Export EXR raw (N0+NF channels, format Fraktaler-3) pour le harness de parité.
+exr = "1.72"
 
 [dev-dependencies]
 # Validation des shaders WGSL en tests unitaires (sans GPU).

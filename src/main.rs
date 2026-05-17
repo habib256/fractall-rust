@@ -15,6 +15,7 @@ use fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, Fra
 use render::render_escape_time;
 use render::escape_time::should_use_perturbation;
 use io::png::save_png_with_metadata;
+use io::exr::save_iterations_exr;
 use gpu::GpuRenderer;
 
 /// Utilitaire CLI pour générer des fractales basées sur fractall.
@@ -29,9 +30,11 @@ use gpu::GpuRenderer;
     author = "Arnaud Verhille et contributeurs"
 )]
 struct Cli {
-    /// Type de fractale (3=Mandelbrot, 4=Julia, 5=JuliaSin, ..., 23=Multibrot)
+    /// Type de fractale (3=Mandelbrot, 4=Julia, 5=JuliaSin, ..., 23=Multibrot).
+    /// Optionnel quand --toml est fourni (défaut : 3 = Mandelbrot, format
+    /// rust-fractal-core / corpus toml/).
     #[arg(long = "type")]
-    fractal_type: u8,
+    fractal_type: Option<u8>,
 
     /// Largeur de l'image de sortie en pixels
     #[arg(long, default_value_t = 1920)]
@@ -162,18 +165,108 @@ struct Cli {
     /// Fichier de sortie PNG
     #[arg(long, value_name = "FICHIER")]
     output: PathBuf,
+
+    /// Charge un fichier TOML de paramètres (format rust-fractal-core léger:
+    /// real/imag/zoom/iterations[/rotate]). Les overrides CLI restent prioritaires.
+    /// Utilisé pour le harness de parité Fraktaler-3 (corpus toml/).
+    #[arg(long, value_name = "FICHIER")]
+    toml: Option<PathBuf>,
+
+    /// Exporte les itérations brutes en EXR au format Fraktaler-3
+    /// (channels N0=uint32 iter, NF=float smooth fraction). Permet la
+    /// comparaison apples-to-apples via scripts/compare_f3.py. Le PNG --output
+    /// reste produit en plus.
+    #[arg(long, value_name = "FICHIER.exr")]
+    export_iterations: Option<PathBuf>,
+}
+
+/// Champs extraits d'un TOML de paramètres (format léger rust-fractal-core,
+/// compatible avec le corpus `toml/`).
+struct TomlParams {
+    real: String,
+    imag: String,
+    zoom: String,
+    iterations: Option<u32>,
+    rotate: Option<f64>,
+}
+
+fn load_toml_params(path: &std::path::Path) -> TomlParams {
+    let content = std::fs::read_to_string(path).unwrap_or_else(|e| {
+        eprintln!("Erreur lecture TOML {}: {}", path.display(), e);
+        std::process::exit(1);
+    });
+    let table: toml::Table = content.parse().unwrap_or_else(|e| {
+        eprintln!("Erreur parsing TOML {}: {}", path.display(), e);
+        std::process::exit(1);
+    });
+
+    let take_str = |key: &str| -> Option<String> {
+        let v = table.get(key)?;
+        if let Some(s) = v.as_str() {
+            Some(s.to_string())
+        } else if let Some(f) = v.as_float() {
+            Some(f.to_string())
+        } else if let Some(i) = v.as_integer() {
+            Some(i.to_string())
+        } else {
+            None
+        }
+    };
+
+    let real = take_str("real").unwrap_or_else(|| {
+        eprintln!("TOML {}: champ 'real' manquant", path.display());
+        std::process::exit(1);
+    });
+    let imag = take_str("imag").unwrap_or_else(|| {
+        eprintln!("TOML {}: champ 'imag' manquant", path.display());
+        std::process::exit(1);
+    });
+    let zoom = take_str("zoom").unwrap_or_else(|| {
+        eprintln!("TOML {}: champ 'zoom' manquant", path.display());
+        std::process::exit(1);
+    });
+    let iterations = table.get("iterations").and_then(|v| v.as_integer()).map(|i| {
+        if i > u32::MAX as i64 {
+            eprintln!(
+                "TOML {}: iterations={} > u32::MAX, clamp à {}. TODO: passer iteration_max en u64.",
+                path.display(),
+                i,
+                u32::MAX
+            );
+            u32::MAX
+        } else if i < 0 {
+            eprintln!("TOML {}: iterations négatif ({}), forcé à 1024", path.display(), i);
+            1024
+        } else {
+            i as u32
+        }
+    });
+    let rotate = table
+        .get("rotate")
+        .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
+
+    TomlParams { real, imag, zoom, iterations, rotate }
 }
 
 fn main() {
     let cli = Cli::parse();
 
-    // Conversion du type numérique vers l'enum interne.
-    let fractal_type = match FractalType::from_id(cli.fractal_type) {
+    // Si --toml est fourni sans --type, défaut Mandelbrot (le corpus toml/ ne
+    // contient que des Mandelbrot deep zoom au format rust-fractal-core).
+    let fractal_type_id = match (cli.fractal_type, &cli.toml) {
+        (Some(id), _) => id,
+        (None, Some(_)) => 3,
+        (None, None) => {
+            eprintln!("--type est requis (ou utilisez --toml <FICHIER> pour le format rust-fractal-core)");
+            std::process::exit(2);
+        }
+    };
+    let fractal_type = match FractalType::from_id(fractal_type_id) {
         Some(t) => t,
         None => {
             eprintln!(
                 "Type de fractale invalide: {} (attendu entre 3 et 23, sauf types spéciaux)",
-                cli.fractal_type
+                fractal_type_id
             );
             std::process::exit(1);
         }
@@ -181,6 +274,55 @@ fn main() {
 
     // Paramètres par défaut pour ce type.
     let mut params = default_params_for_type(fractal_type, cli.width, cli.height);
+
+    // Applique d'abord les paramètres TOML (les overrides CLI explicites
+    // restent prioritaires car traités après).
+    if let Some(ref toml_path) = cli.toml {
+        let t = load_toml_params(toml_path);
+        let prec = 1024u32;
+
+        // Centre HP (string GMP).
+        params.center_x_hp = Some(t.real.clone());
+        params.center_y_hp = Some(t.imag.clone());
+        if let Ok(p) = Float::parse(&t.real) {
+            params.center_x = Float::with_val(prec, p).to_f64();
+        }
+        if let Ok(p) = Float::parse(&t.imag) {
+            params.center_y = Float::with_val(prec, p).to_f64();
+        }
+
+        // Zoom -> span (utilise la résolution effective courante, qui peut
+        // encore changer si --width/--height sont fournis ; on recalcule plus
+        // bas si besoin).
+        let zoom_gmp = Float::parse(&t.zoom)
+            .map(|p| Float::with_val(prec, p))
+            .unwrap_or_else(|_| {
+                eprintln!("TOML {}: zoom illisible: '{}'", toml_path.display(), t.zoom);
+                std::process::exit(1);
+            });
+        let four = Float::with_val(prec, 4.0);
+        let span_x_gmp = four / &zoom_gmp;
+        let aspect = params.height as f64 / params.width as f64;
+        let span_y_gmp = Float::with_val(prec, &span_x_gmp * aspect);
+        params.span_x_hp = Some(span_x_gmp.to_string());
+        params.span_y_hp = Some(span_y_gmp.to_string());
+        params.span_x = span_x_gmp.to_f64();
+        params.span_y = span_y_gmp.to_f64();
+
+        if let Some(iters) = t.iterations {
+            params.iteration_max = iters;
+        }
+
+        if let Some(rot) = t.rotate {
+            if rot != 0.0 {
+                eprintln!(
+                    "TOML {}: rotate={} non encore appliqué (TODO P0 — voir TODO.md)",
+                    toml_path.display(),
+                    rot
+                );
+            }
+        }
+    }
 
     // Override des coordonnées si demandé (bornes xmin/xmax/ymin/ymax).
     // Les bornes CLI sont converties en centre + span.
@@ -429,6 +571,31 @@ fn main() {
     };
 
     let render_time = start_time.elapsed();
+
+    // Export EXR raw au format F3 si demandé (--export-iterations).
+    if let Some(ref exr_path) = cli.export_iterations {
+        // Doit matcher l'escape radius effectif du renderer pour que NF soit cohérent
+        // — sinon les pixels qui viennent juste d'échapper (z² ≈ bailout²) tombent
+        // sous le seuil F3 et NF s'effondre à 0.
+        let bailout_sq = params.bailout * params.bailout;
+        let degree = params.multibrot_power.max(2.0);
+        match save_iterations_exr(
+            exr_path,
+            params.width as usize,
+            params.height as usize,
+            &iterations,
+            &zs,
+            params.iteration_max,
+            bailout_sq,
+            degree,
+        ) {
+            Ok(()) => println!("EXR raw écrit: {}", exr_path.display()),
+            Err(e) => {
+                eprintln!("Erreur écriture EXR {}: {}", exr_path.display(), e);
+                std::process::exit(1);
+            }
+        }
+    }
 
     // Export PNG avec métadonnées.
     let save_start = std::time::Instant::now();

@@ -6,6 +6,33 @@
 
 ---
 
+## P0 — Goal actif : parité F3 sur le corpus `toml/`
+
+**Objectif** : Fractall doit produire les mêmes images que Fraktaler-3 pour les
+**84 fichiers** de `toml/` (tous Mandelbrot deep zoom au format léger
+rust-fractal-core — aucun n'utilise `[[formula]]` / `bailout.*` / `transform.*`
+F3-natif). C'est la **mesure de vérité** de l'objectif global du projet : on n'est
+pas crédible comme "meilleur deep-zoom open-source en Rust" tant qu'on n'égale
+pas F3 visuellement sur ce corpus.
+
+**Critère d'acceptation** : pour chaque `toml/X.toml`, le diff `mean_abs(F3, fractall) ≤ ε`
+sur une résolution standard (1920×1080 par défaut), avec ε à définir empiriquement
+(viser pixel-perfect là où c'est possible, équivalence visuelle ailleurs).
+
+**Plan d'attaque (sous-tâches trackées)** :
+1. CLI `--toml <path>` pour `fractall-cli` (charge real/imag/zoom/iterations + rotate).
+2. Support du champ `rotate` dans le loader TOML (plusieurs fichiers du corpus l'utilisent).
+3. Harness `scripts/compare_f3.*` qui lance F3 batch + fractall-cli sur chaque TOML,
+   produit PNG + diff + métriques. F3 binaire dispo à `fraktaler-3-3.1/fraktaler-3.macos`.
+4. Audit initial sur 5 cas représentatifs (zoom moyen, deep, très deep, rotate, glitchy)
+   pour prioriser les fixes.
+5. **P1.3 quick wins** (constantes F3) — déjà listé en P1, monte en priorité ici.
+6. **P1.5 AA subframes jitterés** — F3 le fait par défaut, indispensable pour parité
+   visuelle bords fins.
+7. Itérer jusqu'à convergence sur l'ensemble du corpus.
+
+---
+
 ## Priorité 1 — Qualité numérique deep-zoom
 
 ### P1.1 — Rebasing proactif ✅ FAIT (P3.1 Sessions A-E)
