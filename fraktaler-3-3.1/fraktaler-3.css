@@ -1,0 +1,29 @@
+body * { max-width: 1024px; margin-left: auto; margin-right: auto; }
+li, dd { width: 90%; }
+a { text-decoration: none; border: 1px solid; line-height: 200%; padding: 5px; }
+
+nav#TOC ul { margin: 0; border-width: 0; padding: 0; display: inline; vertical-align: middle; }
+nav#TOC ul li { margin: 0; border-width: 0; padding: 0; display: inline; vertical-align: middle; font-size: 150%; }
+nav#TOC ul li ul { margin: 0; border-width: 0; padding: 0; display: inline; vertical-align: middle; }
+nav#TOC ul li ul li { margin: 0; border-width: 0; padding: 0; display: inline; vertical-align: middle; font-size: 80%; }
+nav#TOC ul li ul li ul { margin: 0; border-width: 0; padding: 0; display: inline; vertical-align: middle; }
+nav#TOC ul li ul li ul li { margin: 0; border-width: 0; padding: 0; display: inline; vertical-align: middle; font-size: 80%; }
+
+/* default color scheme is light */
+/* @media (prefers-color-scheme: light) { */
+  * { background-color: white; color: black; }
+  h1, h2, h3, h1 *, h2 *, h3 * { background-color: black; color: white; }
+  a { color: blue; background-color: white; border-color: blue; }
+  a:hover { color: blue; background-color: lightcyan; border-color: blue; }
+  a:visited { color: darkblue; background-color: white; border-color: darkblue; }
+  a:visited:hover { color: blue; background-color: lightcyan; border-color: blue; }
+/* } */
+
+@media (prefers-color-scheme: dark) {
+  * { background-color: black; color: white; }
+  h1, h2, h3, h1 *, h2 *, h3 * { background-color: white; color: black; }
+  a { color: cyan; background-color: black; border-color: cyan; }
+  a:hover { color: cyan; background-color: blue; border-color: cyan; }
+  a:visited { color: blue; background-color: black; border-color: blue; }
+  a:visited:hover { color: blue; background-color: darkblue; border-color: blue; }
+}

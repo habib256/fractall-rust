@@ -1,0 +1,58 @@
+program = "fraktaler-3"
+version = "2-167-g0ccd6ff"
+location.real = "-1.2657028558571091821223945167430467461933078355433184"
+location.imag = "0.028235031793137406532783172320993007681533139265628707"
+location.zoom = "4.4049010e40"
+bailout.iterations = 65536
+bailout.maximum_reference_iterations = 65536
+bailout.maximum_perturb_iterations = 8192
+bailout.maximum_bla_steps = 4096
+bailout.escape_radius = 40.0
+bailout.inscape_radius = 0.000976562
+image.width = 960
+image.height = 540
+image.subframes = 4
+transform.rotate = -8.44477
+
+[[formula]]
+opcodes = "sqr add"
+[[formula]]
+opcodes = "sqr rot{-1} add"
+[[formula]]
+opcodes = "sqr add"
+[[formula]]
+opcodes = "sqr rot{1} add"
+
+
+
+[colour]
+uniforms = []
+shader = """
+vec3 colour(void)
+{
+  const float offset = 1.0;
+  const float gamma = 2.0;
+  float h = 0.6;
+  float s = abs(fract(getT() + 0.5) - 0.5) > 0.05 * pow(0.5, getNF()) ? 0.3 : 0.6;
+  float v = 0.25 + 0.25 * log2(length(getDE()));
+  h -= floor(h);
+  v += offset;
+  v = clamp(v, 0.0, 1.0);
+  vec3 rgb = hsv2rgb(vec3(h, s, v));
+  if (length(getDE()) <= 0.0)
+  {
+    rgb = vec3(0.0, 0.001, 0.01);
+  }
+  rgb = clamp(rgb, vec3(0.0), vec3(1.0));
+  rgb = pow(rgb, vec3(1.0 / gamma));
+  return rgb;
+}
+\
+"""
+
+[colour.background]
+r = 0.5
+g = 0.5
+b = 0.5
+
+

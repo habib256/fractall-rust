@@ -1,0 +1,49 @@
+program = "fraktaler-3"
+version = "2-167-g0ccd6ff"
+location.real = "-0.78724782520919643069992980621"
+location.imag = "0.139272036399918718996556519"
+location.zoom = "4.8718572e17"
+bailout.iterations = 65536
+bailout.maximum_reference_iterations = 65536
+bailout.maximum_perturb_iterations = 8192
+bailout.maximum_bla_steps = 2048
+image.width = 960
+image.height = 540
+image.subframes = 4
+transform.rotate = 24.0106
+
+[[formula]]
+opcodes = "sqr add"
+[[formula]]
+opcodes = "absx absy negy sqr add"
+[[formula]]
+opcodes = "sqr add"
+[[formula]]
+opcodes = "sqr add"
+
+
+
+[colour]
+uniforms = []
+shader = """
+// black on white with a rainbow fringe
+
+vec3 colour(void)
+{
+  const float gamma = 2.0;
+  vec2 DE = getDE();
+  float hue = atan(DE.y, DE.x) / 6.283185307179586;
+  hue -= floor(hue);
+  float sat = clamp(1.0 / (1.0 + 4.0 * length(DE)), 0.0, 1.0);
+  float val = clamp(2.0 * length(DE), 0.0, 1.0);
+  vec3 rgb = hsv2rgb(vec3(hue, sat, val));
+  rgb = pow(rgb, vec3(1.0 / gamma));
+  return rgb; 
+}
+\
+"""
+
+[colour.background]
+r = 0.5
+g = 0.5
+b = 0.5

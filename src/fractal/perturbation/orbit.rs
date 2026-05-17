@@ -678,12 +678,13 @@ pub fn compute_reference_orbit_cached(
             String::new()
         };
         eprintln!(
-            "[PERTURB PERF] reference_cache=miss size={}x{} pixels={} small_image={} type={:?} iters={}{} orbit={:.3}s bla={:.3}s series={:.3}s hybrid={:.3}s total={:.3}s",
+            "[PERTURB PERF] reference_cache=miss size={}x{} pixels={} small_image={} type={:?} prec={}b iters={}{} orbit={:.3}s bla={:.3}s series={:.3}s hybrid={:.3}s total={:.3}s",
             params.width,
             params.height,
             pixel_count,
             small_image,
             params.fractal_type,
+            adjusted_params.precision_bits,
             adjusted_params.iteration_max,
             adjusted,
             dt_orbit.as_secs_f64(),

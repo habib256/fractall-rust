@@ -1,0 +1,51 @@
+program = "fraktaler-3"
+version = "2-167-g0ccd6ff"
+location.real = "0.216369453769794830101708169855704878"
+location.imag = "0.546207922452972406074398692990483065"
+location.zoom = "6.66e23"
+reference.period = 10594
+bailout.iterations = 131072
+bailout.maximum_reference_iterations = 131072
+bailout.maximum_perturb_iterations = 8192
+bailout.maximum_bla_steps = 2048
+image.width = 960
+image.height = 540
+image.subframes = 4
+transform.rotate = 69.3845
+transform.stretch_angle = 41.4081
+transform.stretch_amount = 453.736
+
+[[formula]]
+[[formula]]
+abs_y = true
+
+
+
+[colour]
+uniforms = []
+shader = """
+vec3 colour(void)
+{
+  const float gamma = 2.0;
+  // FIXME hue loses precision at higher iteration counts
+  float h = (float(getN0()) + getNF()) / 1024.0;
+  float v = 0.25 + 0.25 * log2(length(getDE()));
+  float s = clamp(0.25 - v, 0.0, 1.0);
+  h -= floor(h);
+  v += 1.5;
+  v = clamp(v, 0.0, 1.0);
+  vec3 rgb = hsv2rgb(vec3(h, s, v));
+  if (length(getDE()) <= 0.0)
+  {
+    rgb = vec3(0.0);
+  }
+  rgb = pow(rgb, vec3(1.0 / gamma));
+  return rgb;
+}
+\
+"""
+
+[colour.background]
+r = 0.5
+g = 0.5
+b = 0.5

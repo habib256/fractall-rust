@@ -107,18 +107,18 @@ pub mod debug_pure_f3;
 pub use orbit::{ReferenceOrbitCache, HybridBlaReferences};
 pub use glitch::{detect_glitch_clusters, select_secondary_reference_points, segregate_glitches_by_iteration};
 
-fn env_flag(name: &str) -> bool {
+fn env_flag_off(name: &str) -> bool {
     match std::env::var(name) {
-        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"),
         Err(_) => false,
     }
 }
 
-/// Active l'instrumentation de performance (timings + compteurs) via env var.
-/// Exemple: `FRACTALL_PERTURB_STATS=1`.
+/// Affiche le breakdown timing perturbation par défaut sur stderr.
+/// Opt-out : `FRACTALL_PERTURB_STATS=0`.
 pub(crate) fn perf_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| env_flag("FRACTALL_PERTURB_STATS"))
+    *ENABLED.get_or_init(|| !env_flag_off("FRACTALL_PERTURB_STATS"))
 }
 
 /// Iterate a pixel using Hybrid BLA with multiple references (one per phase).
@@ -1173,8 +1173,26 @@ pub fn render_perturbation_with_cache(
             } else {
                 0.0
             };
+            // Effective work per pixel = smoking gun for BLA / rebasing efficiency.
+            // avg ≪ params.iteration_max → BLA + rebasing skipping correctly.
+            // avg ≈ params.iteration_max → BLA not helping, the pixel loop is
+            // doing the full iteration count per pixel and the cost scales linearly
+            // with iteration_max regardless of zoom depth.
+            let total_iters: u64 = iterations.iter().map(|&n| n as u64).sum();
+            let max_iter = iterations.iter().copied().max().unwrap_or(0);
+            let avg_iter = if pixel_count > 0 {
+                total_iters as f64 / pixel_count as f64
+            } else {
+                0.0
+            };
+            let total = t_all_start.elapsed().as_secs_f64();
+            let ns_per_iter = if total_iters > 0 {
+                t_pixels.as_secs_f64() * 1e9 / total_iters as f64
+            } else {
+                0.0
+            };
             eprintln!(
-                "[PERTURB PERF] {}x{} pixels={} zoom={:.2e} small_image={} orbit={:.3}s pixels={:.3}s post={:.3}s total={:.3}s glitched_initial={} corrections={} fallback_ratio={:.3}",
+                "[PERTURB PERF] {}x{} pixels={} zoom={:.2e} small_image={} orbit={:.3}s pixels={:.3}s post={:.3}s total={:.3}s avg_iter/px={:.0} max_iter/px={} ns/iter={:.1} glitched_initial={} corrections={} fallback_ratio={:.3}",
                 params.width,
                 params.height,
                 pixel_count,
@@ -1183,7 +1201,10 @@ pub fn render_perturbation_with_cache(
                 t_orbit.as_secs_f64(),
                 t_pixels.as_secs_f64(),
                 t_post.as_secs_f64(),
-                t_all_start.elapsed().as_secs_f64(),
+                total,
+                avg_iter,
+                max_iter,
+                ns_per_iter,
                 glitched_initial,
                 corrections_requested,
                 glitch_ratio,

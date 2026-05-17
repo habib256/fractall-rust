@@ -1,0 +1,55 @@
+program = "fraktaler-3"
+version = "2-82-g8e4eee8+"
+location.real = "-0.57"
+location.zoom = "1.1e0"
+bailout.iterations = 4096
+bailout.maximum_reference_iterations = 4096
+bailout.maximum_perturb_iterations = 4096
+bailout.maximum_bla_steps = 4096
+bailout.escape_radius = 8.12053
+image.width = 256
+image.height = 256
+image.subframes = 64
+
+[colour]
+shader = """
+uniform int count;
+
+vec3 colour(void)
+{
+  uint N = getN0();
+  if (N < 1028u)
+  {
+    return vec3(1.0, 0.0, 0.0);
+  }
+  float T = getT();
+  int m = count;
+  if (m <= 1)
+  {
+    m = 2;
+  }
+  T -= floor(T);
+  T *= float(m);
+  T = floor(T);
+
+  if ((N % 2u) == 0u)
+  {
+    T = float(2) - T;
+  }
+  else
+  {
+    T = float(3) + T;
+  }
+  T = mod(T, float(m));
+  T /= float(m - 1);
+  return vec3(T);
+}
+\
+"""
+
+[[colour.uniforms]]
+value = 3
+type = "int"
+name = "count"
+index = 0
+component = 0
