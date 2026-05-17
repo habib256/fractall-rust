@@ -91,7 +91,7 @@ use rayon::prelude::*;
 use crate::fractal::{FractalParams, FractalType, OutColoringMode};
 use crate::fractal::bytecode::compile_formula;
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
-use crate::fractal::perturbation::delta::{iterate_pixel, iterate_pixel_gmp};
+use crate::fractal::perturbation::delta::{bytecode_path_label, iterate_pixel, iterate_pixel_gmp};
 use crate::fractal::perturbation::orbit::{compute_reference_orbit_cached, compute_reference_orbit};
 use crate::fractal::perturbation::types::{ComplexExp, FloatExp};
 use rug::{Complex, Float};
@@ -1370,8 +1370,9 @@ pub fn render_perturbation_with_cache(
         progress.tile.store(100, Ordering::Relaxed);
         progress.done.store(true, Ordering::Relaxed);
         let _ = reporter.join();
+        let path_label = bytecode_path_label(params).unwrap_or("legacy_fexp");
         print_fractall_summary(
-            "perturbation_fexp",
+            path_label,
             params.fractal_type,
             orbit_params.precision_bits,
             params.iteration_max,

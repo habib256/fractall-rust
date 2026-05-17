@@ -84,6 +84,34 @@ struct BlaUnifiedCacheEntry {
 /// Tente le path bytecode unifié si toutes les conditions sont remplies.
 /// Renvoie `Some(DeltaResult)` si le path a été appliqué, `None` sinon
 /// (le caller fallback sur le path historique).
+/// Seuils de basculement entre paths perturbation (utilisés par
+/// `try_bytecode_unified_path` ET `bytecode_path_label` pour rester cohérents).
+pub const PIXEL_SIZE_EXP_THRESHOLD: f64 = 1e-100;
+pub const PIXEL_SIZE_GMP_THRESHOLD: f64 = 1e-150;
+
+/// Renvoie le label du path bytecode qui sera emprunté par `try_bytecode_unified_path`.
+/// Utilisé par la couche d'affichage perf pour étiqueter `[FRACTALL] path=...`
+/// avec la valeur réellement prise. `None` si bytecode désactivé ou pas applicable.
+pub fn bytecode_path_label(params: &FractalParams) -> Option<&'static str> {
+    if !params.use_bytecode_engine {
+        return None;
+    }
+    let formula = compile_formula(params.fractal_type, params.multibrot_power)?;
+    if formula.phases.len() != 1 {
+        return None;
+    }
+    let pixel_size = (params.span_x.abs() / params.width.max(1) as f64)
+        .max(params.span_y.abs() / params.height.max(1) as f64);
+    if pixel_size < PIXEL_SIZE_GMP_THRESHOLD {
+        return None;
+    }
+    if pixel_size < PIXEL_SIZE_EXP_THRESHOLD {
+        Some("bytecode_exp")
+    } else {
+        Some("bytecode_f64")
+    }
+}
+
 fn try_bytecode_unified_path(
     params: &FractalParams,
     ref_orbit: &ReferenceOrbit,
@@ -109,10 +137,10 @@ fn try_bytecode_unified_path(
     // résultat identique au pixel près).
     let pixel_size = (params.span_x.abs() / params.width.max(1) as f64)
         .max(params.span_y.abs() / params.height.max(1) as f64);
-    let use_exp_path = pixel_size < 1e-100;
-    if pixel_size < 1e-150 {
+    if pixel_size < PIXEL_SIZE_GMP_THRESHOLD {
         return None;
     }
+    let use_exp_path = pixel_size < PIXEL_SIZE_EXP_THRESHOLD;
 
     // Préparer / recycler la table BLA depuis le cache thread-local.
     let orbit_ptr = ref_orbit.z_ref_f64.as_ptr() as usize;
