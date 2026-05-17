@@ -1302,13 +1302,7 @@ pub fn iterate_pixel(
     // let delta_threshold = pixel_size_sqr * 1e-8;
     // let is_center_like = dc_norm_sqr < center_threshold && delta_norm_sqr_initial < delta_threshold;
     let adaptive_tolerance = compute_adaptive_glitch_tolerance(pixel_size, params.glitch_tolerance);
-    // Pauldelbrot threshold: rendu effectivement infini quand legacy desactivee
-    // → seul !is_finite() declenche encore Glitched (vrais NaN/Inf, pas glitches detectes par tolerance).
-    let glitch_tolerance_sqr = if params.use_legacy_glitch_detection {
-        adaptive_tolerance * adaptive_tolerance
-    } else {
-        f64::INFINITY
-    };
+    let glitch_tolerance_sqr = adaptive_tolerance * adaptive_tolerance;
     let is_julia = params.fractal_type == FractalType::Julia;
     let is_burning_ship = params.fractal_type == FractalType::BurningShip;
     let is_multibrot = params.fractal_type == FractalType::Multibrot;
@@ -2077,12 +2071,7 @@ pub fn iterate_pixel_gmp(
     // Precompute glitch tolerance outside the loop to avoid repeated GMP allocations
     let pixel_size_gmp = params.span_x / params.width as f64;
     let adaptive_tolerance_gmp = compute_adaptive_glitch_tolerance(pixel_size_gmp, params.glitch_tolerance);
-    // Pauldelbrot threshold GMP: rendu effectivement infini quand legacy desactivee.
-    let glitch_tolerance_sqr_gmp = if params.use_legacy_glitch_detection {
-        Float::with_val(prec, adaptive_tolerance_gmp * adaptive_tolerance_gmp)
-    } else {
-        Float::with_val(prec, f64::INFINITY)
-    };
+    let glitch_tolerance_sqr_gmp = Float::with_val(prec, adaptive_tolerance_gmp * adaptive_tolerance_gmp);
     let min_scale_gmp = Float::with_val(prec, 1e-6);
 
     // Main iteration loop with full GMP precision
@@ -2336,13 +2325,7 @@ pub(crate) fn iterate_pixel_with_duals(
     
     let pixel_size = params.span_x / params.width as f64;
     let adaptive_tolerance = compute_adaptive_glitch_tolerance(pixel_size, params.glitch_tolerance);
-    // Pauldelbrot threshold: rendu effectivement infini quand legacy desactivee
-    // → seul !is_finite() declenche encore Glitched (vrais NaN/Inf, pas glitches detectes par tolerance).
-    let glitch_tolerance_sqr = if params.use_legacy_glitch_detection {
-        adaptive_tolerance * adaptive_tolerance
-    } else {
-        f64::INFINITY
-    };
+    let glitch_tolerance_sqr = adaptive_tolerance * adaptive_tolerance;
     let is_julia = params.fractal_type == FractalType::Julia;
     let is_burning_ship = params.fractal_type == FractalType::BurningShip;
     let is_multibrot = params.fractal_type == FractalType::Multibrot;

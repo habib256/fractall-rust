@@ -134,13 +134,13 @@ mod tests {
     use super::*;
 
     /// Vérifie qu'on peut désérialiser un JSON legacy (sauvegardé avant
-    /// l'ajout récent de champs comme use_legacy_glitch_detection,
-    /// jitter_scale, use_bytecode_engine). Les champs manquants doivent
-    /// prendre leur default canonique sans casser.
+    /// l'ajout récent de champs comme jitter_scale, use_bytecode_engine).
+    /// Les champs manquants doivent prendre leur default canonique sans
+    /// casser.
     ///
-    /// Régression cible : "Erreur chargement PNG: missing field
-    /// `use_legacy_glitch_detection`" (rapporté par l'utilisateur sur les
-    /// PNG d'avant Session E).
+    /// Régression historique : "Erreur chargement PNG: missing field
+    /// `use_legacy_glitch_detection`" (rapporté par l'utilisateur avant
+    /// la suppression de ce champ).
     #[test]
     fn deserialize_legacy_minimal_json() {
         // JSON minimum d'avant Session E : que les champs vraiment requis,
@@ -168,10 +168,6 @@ mod tests {
             params.use_bytecode_engine,
             "use_bytecode_engine doit défauter à true sur PNG legacy"
         );
-        assert!(
-            params.use_legacy_glitch_detection,
-            "use_legacy_glitch_detection doit défauter à true"
-        );
         assert_eq!(params.jitter_scale, 0.0);
         assert_eq!(params.bla_threshold, 1e-8);
         assert_eq!(params.glitch_tolerance, 1e-4);
@@ -198,14 +194,32 @@ mod tests {
             "iteration_max": 500,
             "bailout": 8.0,
             "use_bytecode_engine": false,
-            "use_legacy_glitch_detection": false,
             "multibrot_power": 3.5
         }"#;
         let params: FractalParams = serde_json::from_str(json).expect("deserialize");
         assert!(!params.use_bytecode_engine);
-        assert!(!params.use_legacy_glitch_detection);
         assert_eq!(params.multibrot_power, 3.5);
         assert_eq!(params.bailout, 8.0);
+    }
+
+    /// Régression : un PNG legacy avec `use_legacy_glitch_detection` (champ
+    /// supprimé) doit charger sans erreur (le champ inconnu est ignoré par
+    /// serde_json par défaut).
+    #[test]
+    fn deserialize_ignores_removed_legacy_field() {
+        let json = r#"{
+            "width": 800, "height": 600,
+            "center_x": 0.0, "center_y": 0.0,
+            "span_x": 4.0, "span_y": 3.0,
+            "seed": [0.0, 0.0],
+            "fractal_type": "Mandelbrot",
+            "iteration_max": 500,
+            "bailout": 4.0,
+            "use_legacy_glitch_detection": false
+        }"#;
+        let params: FractalParams = serde_json::from_str(json)
+            .expect("Removed champ doit être ignoré");
+        assert_eq!(params.iteration_max, 500);
     }
 
     /// Test exhaustif sur les PNG du dossier `png/` du repo : tous doivent

@@ -215,7 +215,11 @@ mod tests {
         params.span_y = span_y;
         params.iteration_max = iter_max;
         params.algorithm_mode = AlgorithmMode::Perturbation;
-        params.use_legacy_glitch_detection = false; // ← path F3-pure de production
+        // Note historique : avant Session E, ce test forçait
+        // use_legacy_glitch_detection=false pour exercer le path F3-pur de
+        // production. Depuis Session E + cleanup, le path bytecode est par
+        // défaut et le champ a été supprimé. Le test reste valide car
+        // iterate_pixel est devenu F3-pur via le dispatch bytecode.
 
         let (orbit, _, _) = compute_reference_orbit(&params, None)
             .expect("compute_reference_orbit failed");

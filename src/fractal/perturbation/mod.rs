@@ -792,7 +792,7 @@ pub fn render_perturbation_with_cache(
         // Marquer seulement si déjà détecté comme glitched/suspect par iterate_pixel.
 
         // Fast-path petites images: éviter le post-traitement voisinage (coût fixe non négligeable)
-        if !small_image && params.glitch_neighbor_pass && params.use_legacy_glitch_detection {
+        if !small_image && params.glitch_neighbor_pass {
             let neighbor_threshold = (params.iteration_max / 50).max(8);
             let neighbor_mask = mark_neighbor_glitches(
                 &iterations,
@@ -821,7 +821,7 @@ pub fn render_perturbation_with_cache(
         // same reference. A full Hybrid BLA implementation would switch to a different reference
         // corresponding to the current phase when rebasing.
         // Fast-path petites images: désactiver références secondaires (coût fixe + peu de pixels)
-        if !small_image && params.max_secondary_refs > 0 && params.use_legacy_glitch_detection {
+        if !small_image && params.max_secondary_refs > 0 {
             let clusters = detect_glitch_clusters(
                 &glitch_mask,
                 params.width,
@@ -929,7 +929,7 @@ pub fn render_perturbation_with_cache(
         // 1. Delta-based reference: uses existing orbit + delta offset (faster than full recompute)
         // 2. Recursive: after resolving one level, remaining glitches are re-resolved
         // 3. Selects optimal reference pixel (smallest |z| norm in each group)
-        if !small_image && params.max_secondary_refs > 0 && params.use_legacy_glitch_detection {
+        if !small_image && params.max_secondary_refs > 0 {
             let max_resolution_rounds = 3; // Limit recursion depth to avoid infinite loops
             for _round in 0..max_resolution_rounds {
                 let remaining_glitches: usize = glitch_mask.iter().filter(|v| **v).count();

@@ -7,10 +7,10 @@
 //! pixel loop unifié bytecode (`fractal/bytecode/pixel_loop.rs`) qui
 //! utilise rebasing F3 proactif au lieu de glitch detection corrective.
 //!
-//! À retirer complètement quand le path bytecode supportera ComplexExp
-//! (deep zoom GMP) et les dual numbers (distance/interior). D'ici là,
-//! les fonctions de ce module restent actives mais sont gated par
-//! `params.use_legacy_glitch_detection` (defaut true).
+//! Depuis P3.1 cleanup final : le champ `use_legacy_glitch_detection`
+//! a été supprimé. Ces fonctions sont toujours appelées par le path
+//! legacy (fallback bytecode) — à retirer complètement quand le path
+//! bytecode supportera les dual numbers (distance/interior/orbit_traps).
 
 use crate::fractal::FractalParams;
 

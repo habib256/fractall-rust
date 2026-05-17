@@ -864,14 +864,6 @@ pub struct FractalParams {
     #[serde(default = "default_min_glitch_cluster_size")]
     pub min_glitch_cluster_size: u32,
 
-    /// Active la detection de glitch Pauldelbrot + clustering + secondary refs (path historique).
-    /// true (defaut) = path complet, ne pas regresser visuellement sur deep zooms.
-    /// false = rebasing seul (style Fraktaler-3) — NOTE: actuellement produit des glitches
-    /// visibles, le rebasing isole ne couvre pas les pixels rescue par secondary refs.
-    /// A garder a true tant que le gap n'est pas comble (voir TODO.md).
-    #[serde(default = "default_true")]
-    pub use_legacy_glitch_detection: bool,
-
     /// Puissance pour Multibrot (z^d + c), défaut 2.5. Utilisé aussi pour le calcul BLA.
     #[serde(default = "default_multibrot_power")]
     pub multibrot_power: f64,

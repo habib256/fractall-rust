@@ -113,14 +113,6 @@ struct Cli {
     #[arg(long)]
     glitch_tolerance: Option<f64>,
 
-    /// [DEPRECATED depuis P3.1 Session E] Désactive la detection de glitch
-    /// legacy (Pauldelbrot + clustering + secondary refs). Conservé pour
-    /// debug du path legacy GMP/deep-zoom uniquement — pour le path f64
-    /// standard utiliser plutôt `--no-bytecode` qui désactive le bytecode
-    /// unifié (BLA mat2 + rebasing F3) et retombe sur le legacy.
-    #[arg(long, hide = true)]
-    no_legacy_glitch_detection: bool,
-
     /// Puissance pour Multibrot (z^d + c), défaut 2.5
     #[arg(long)]
     multibrot_power: Option<f64>,
@@ -300,9 +292,6 @@ fn main() {
         if glitch_tolerance > 0.0 {
             params.glitch_tolerance = glitch_tolerance;
         }
-    }
-    if cli.no_legacy_glitch_detection {
-        params.use_legacy_glitch_detection = false;
     }
     if let Some(multibrot_power) = cli.multibrot_power {
         if multibrot_power > 0.0 {
