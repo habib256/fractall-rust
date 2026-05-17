@@ -175,7 +175,7 @@ bool image_raw::save_exr(const std::string &filename, channel_mask_t save_channe
   (void) maxiters;
   (void) threads;
   (void) metadata;
-  (void) kf2plus_metadata;
+  (void) dpi;
 #else
   try
   {

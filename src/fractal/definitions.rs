@@ -29,7 +29,8 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         use_gmp: false,
         precision_bits: 256,
         algorithm_mode: AlgorithmMode::Auto,
-        bla_threshold: 1e-8,
+        // Aligné Fraktaler-3 (`engine.cc:283`) : 1.0 / (1 << 24) ≈ 5.96e-8.
+        bla_threshold: 1.0 / (1u64 << 24) as f64,
         bla_validity_scale: 1.0,
         glitch_tolerance: 1e-4,
         series_order: 2,

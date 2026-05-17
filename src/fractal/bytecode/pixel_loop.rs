@@ -254,7 +254,9 @@ fn iterate_pixel_unified_multi_phase(
 
         let end_of_ref = (m as usize) + 1 >= ref_len;
         if end_of_ref {
-            let z_m_new = ref_orbit.z_ref_f64[m as usize];
+            // m peut être == ref_len après increment quand l'orbite est tronquée
+            // (period detected). Clamp pour fetch z_m avant le rebase.
+            let z_m_new = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
             delta = z_m_new + delta;
             m = 0;
             rebase_count += 1;
@@ -291,6 +293,25 @@ fn iterate_pixel_unified_single_phase(
     bailout: f64,
     options: UnifiedOptions,
 ) -> UnifiedPixelResult {
+    // Hot path Mandelbrot : phase exactement [Sqr, Add] + aucune feature
+    // dual-numbers (distance/interior/orbit_traps) + Mandelbrot-like (not
+    // Julia, delta_initial ≈ 0). Dispatch vers `iterate_pixel_unified_mandelbrot`
+    // qui inline `δ' = 2·Z·δ + δ² + dc` sans DeltaState et sans dispatch opcode.
+    let is_mandelbrot_phase = phase.ops.len() == 2
+        && matches!(phase.ops[0], super::Op::Sqr)
+        && matches!(phase.ops[1], super::Op::Add);
+    let no_dual_features = options.orbit_trap.is_none()
+        && !options.enable_distance
+        && !options.enable_interior;
+    if is_mandelbrot_phase && no_dual_features && !options.is_julia
+        && delta_initial.norm_sqr() == 0.0
+    {
+        let _ = c_ref;
+        return iterate_pixel_unified_mandelbrot(
+            ref_orbit, bla, dc, iteration_max, bailout,
+        );
+    }
+
     let bailout_sqr = bailout * bailout;
     let ref_len = ref_orbit.z_ref_f64.len();
     if ref_len < 2 {
@@ -437,9 +458,12 @@ fn iterate_pixel_unified_single_phase(
         }
 
         // Rebase F3 (ddelta inchangé par rebase : δ_new = Z+δ, d(Z+δ)/d(dc) = d(δ)/d(dc)).
+        // Quand l'orbite référence est tronquée par période détectée (interior
+        // center), `m` peut atteindre `ref_len` après increment ; clamp à la
+        // dernière entrée valide pour fetch z_m avant de rebaser.
         let end_of_ref = (m as usize) + 1 >= ref_len;
         if end_of_ref {
-            let z_m_new = ref_orbit.z_ref_f64[m as usize];
+            let z_m_new = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
             delta = z_m_new + delta;
             m = 0;
             rebase_count += 1;
@@ -611,7 +635,7 @@ pub fn iterate_pixel_unified_mandelbrot(
         // Étape 3 : rebase F3 strict
         let end_of_ref = (m as usize) + 1 >= ref_len;
         if end_of_ref {
-            let z_m_new = ref_orbit.z_ref_f64[m as usize];
+            let z_m_new = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
             delta = z_m_new + delta;
             m = 0;
             rebase_count += 1;

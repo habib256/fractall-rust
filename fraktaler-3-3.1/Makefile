@@ -38,10 +38,11 @@ VERSIONS += \
 -DCLEW_GIT_VERSION_STRING="\"$(CLEW_GIT_VERSION_STRING)\"" \
 -DTOML11_API="$(TOML11)"
 
-LIBS += libdeflate libjpeg libpng mpfr OpenEXR zlib
+LIBS += libpng libjpeg mpfr zlib
+# Removed for macOS build: libdeflate OpenEXR (EXR=0). All other GUI/IO libs needed.
 LIBS_GUI += sdl2
 
-CFLAGS_IMGUI += -Isrc -I../imgui -I../imgui/backends -I../imgui/misc/cpp -I../imgui-filebrowser -I../implot -DIMGUI_USER_CONFIG="\"f3imconfig.h\"" $(FS)
+CFLAGS_IMGUI += -Isrc -Iimgui -Iimgui/backends -Iimgui/misc/cpp -Iimgui-filebrowser -Iimplot -DIMGUI_USER_CONFIG="\"f3imconfig.h\"" $(FS)
 LIBS_IMGUI +=
 
 CFLAGS += $(FLOAT128) $(DEBUG)
@@ -55,6 +56,7 @@ LINK_FLAGS := $(LDFLAGS) $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config $
 
 SOURCES_CC += \
 src/batch.cc \
+src/batch_stubs.cc \
 src/bla.cc \
 src/colour.cc \
 src/display_gles.cc \
@@ -76,16 +78,9 @@ src/source.cc \
 src/version.cc \
 src/wisdom.cc \
 
-SOURCES_IMGUI_CC += \
-../imgui/imgui.cpp \
-../imgui/imgui_draw.cpp \
-../imgui/imgui_tables.cpp \
-../imgui/imgui_widgets.cpp \
-../imgui/backends/imgui_impl_sdl2.cpp \
-../imgui/backends/imgui_impl_opengl3.cpp \
-../imgui/misc/cpp/imgui_stdlib.cpp \
-../implot/implot.cpp \
-../implot/implot_items.cpp \
+# macos-batch: imgui/implot sources skipped (no GUI build).
+# SOURCES_IMGUI_CC += \
+# imgui/imgui.cpp ...
 
 OBJECTS = \
 $(patsubst %.cc,%$(OEXT),$(SOURCES_CC)) \
@@ -143,8 +138,9 @@ fraktaler-3-$(VERSION).pdf: README.md
 LICENSE.pdf: LICENSE.md
 	pandoc LICENSE.md --toc --toc-depth=4 -V geometry="margin=1in" --metadata="author=Free Software Foundation, Inc." --metadata="title=GNU Affero General Public License" --metadata="date=19 November 2007" -o LICENSE.pdf
 
-src/fraktaler-3-source.7z.h: fraktaler-3-source.7z
-	xxd -i $< | sed "s/unsigned/const unsigned/g" > $@
+# macos-batch: stub src/fraktaler-3-source.7z.h is committed manually, no 7za needed.
+# src/fraktaler-3-source.7z.h: fraktaler-3-source.7z
+# 	xxd -i $< | sed "s/unsigned/const unsigned/g" > $@
 
 fraktaler-3.png: fraktaler-3.ico
 	icotool -x fraktaler-3.ico -o fraktaler-3.png
@@ -228,11 +224,10 @@ release:
 
 src/colour$(OEXT): src/colour.vert.h src/colour.frag.h src/colour_default.frag.h
 
-src/gui$(OEXT): src/icon.h
-
-src/opencl$(OEXT): src/cl-pre.h src/cl-post.h
-
-src/source$(OEXT): src/fraktaler-3-source.7z.h
+# macos-batch: skip icon/source/cl deps (no GUI, no OpenCL, no embedded source).
+# src/gui$(OEXT): src/icon.h
+# src/opencl$(OEXT): src/cl-pre.h src/cl-post.h
+# src/source$(OEXT): src/fraktaler-3-source.7z.h
 
 -include \
 $(DEPENDS) \

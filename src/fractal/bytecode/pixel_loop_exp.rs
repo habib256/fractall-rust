@@ -21,9 +21,19 @@ use num_complex::Complex64;
 
 use super::bla_dual::BlaTableUnified;
 use super::delta_form::DeltaStateExp;
-use super::{Formula, Phase};
+use super::{Formula, Op, Phase};
 use crate::fractal::perturbation::orbit::ReferenceOrbit;
 use crate::fractal::perturbation::types::{ComplexExp, FloatExp};
+
+/// Phase Mandelbrot = exactement [Sqr, Add]. Détection au runtime pour
+/// activer le path spécialisé qui évite le dispatch opcode et l'update
+/// wasted de `z_ref` dans DeltaStateExp.
+#[inline]
+fn phase_is_mandelbrot(phase: &Phase) -> bool {
+    phase.ops.len() == 2
+        && matches!(phase.ops[0], Op::Sqr)
+        && matches!(phase.ops[1], Op::Add)
+}
 
 /// Résultat du pixel loop extended-precision.
 pub struct UnifiedPixelResultExp {
@@ -67,6 +77,153 @@ pub fn iterate_pixel_unified_exp(
 }
 
 fn iterate_pixel_unified_exp_single_phase(
+    ref_orbit: &ReferenceOrbit,
+    bla: &BlaTableUnified,
+    phase: &Phase,
+    c_ref: Complex64,
+    dc: ComplexExp,
+    delta_initial: ComplexExp,
+    iteration_max: u32,
+    bailout: f64,
+) -> UnifiedPixelResultExp {
+    // Hot path Mandelbrot : évite DeltaStateExp::step (dispatch opcode + update
+    // wasted de z_ref) en inlinant `δ' = 2·Z·δ + δ² + dc`.
+    if phase_is_mandelbrot(phase) {
+        return iterate_pixel_unified_exp_mandelbrot(
+            ref_orbit, bla, dc, delta_initial, iteration_max, bailout,
+        );
+    }
+    let _ = c_ref;
+    iterate_pixel_unified_exp_generic(
+        ref_orbit, bla, phase, c_ref, dc, delta_initial, iteration_max, bailout,
+    )
+}
+
+/// Mirror exact de la boucle générique mais avec le pas perturbation
+/// hardcoded Mandelbrot. Reste à l'identique : BLA lookup, bailout check,
+/// rebase F3 strict, period clamp.
+fn iterate_pixel_unified_exp_mandelbrot(
+    ref_orbit: &ReferenceOrbit,
+    bla: &BlaTableUnified,
+    dc: ComplexExp,
+    delta_initial: ComplexExp,
+    iteration_max: u32,
+    bailout: f64,
+) -> UnifiedPixelResultExp {
+    let bailout_sqr = bailout * bailout;
+    let ref_len = ref_orbit.z_ref_f64.len();
+    if ref_len < 2 {
+        return UnifiedPixelResultExp {
+            iteration: 0,
+            z_final: Complex64::new(0.0, 0.0),
+            rebase_count: 0,
+            bla_steps: 0,
+        };
+    }
+
+    let mut delta = delta_initial;
+    let mut n = 0u32;
+    let mut m = 0u32;
+    let mut rebase_count = 0u32;
+    let mut bla_steps = 0u32;
+    const REDUCE_INTERVAL: u32 = 250;
+
+    while n < iteration_max {
+        let z_m = ref_orbit.z_ref_f64[m as usize];
+        let delta_approx = delta.to_complex64_approx();
+        let z_abs = z_m + delta_approx;
+        if z_abs.norm_sqr() >= bailout_sqr {
+            return UnifiedPixelResultExp {
+                iteration: n,
+                z_final: z_abs,
+                rebase_count,
+                bla_steps,
+            };
+        }
+
+        let delta_norm_sqr = delta.norm_sqr_approx();
+        if let Some(node) = bla.lookup(m as usize, delta_norm_sqr) {
+            let new_n = n.saturating_add(node.l);
+            let new_m = m.saturating_add(node.l);
+            if new_n <= iteration_max && (new_m as usize) < ref_len {
+                let a = node.a;
+                let b = node.b;
+                let new_re = (a.m00 * delta.re) + (a.m01 * delta.im)
+                    + (b.m00 * dc.re) + (b.m01 * dc.im);
+                let new_im = (a.m10 * delta.re) + (a.m11 * delta.im)
+                    + (b.m10 * dc.re) + (b.m11 * dc.im);
+                delta = ComplexExp { re: new_re, im: new_im };
+                n = new_n;
+                m = new_m;
+                bla_steps += 1;
+                if n % REDUCE_INTERVAL == 0 {
+                    delta.reduce();
+                }
+                continue;
+            }
+        }
+
+        // Pas perturbation Mandelbrot : δ' = 2·Z·δ + δ² + dc
+        // Inline complet, pas de DeltaStateExp à allouer/lire/écrire.
+        let two_z = z_m + z_m;
+        let two_z_delta = delta.mul_complex64(two_z);
+        let delta_sq = delta.mul(delta);
+        delta = two_z_delta.add(delta_sq).add(dc);
+        n += 1;
+        m += 1;
+
+        let delta_approx = delta.to_complex64_approx();
+        if !delta_approx.re.is_finite() || !delta_approx.im.is_finite() {
+            return UnifiedPixelResultExp {
+                iteration: n,
+                z_final: ref_orbit.z_ref_f64[m.min((ref_len - 1) as u32) as usize] + delta_approx,
+                rebase_count,
+                bla_steps,
+            };
+        }
+
+        if n % REDUCE_INTERVAL == 0 {
+            delta.reduce();
+        }
+
+        // Rebase F3 : |Z[m+1] + δ|² < |δ|² OR fin d'orbite.
+        let end_of_ref = (m as usize) + 1 >= ref_len;
+        if end_of_ref {
+            let z_m_new = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
+            let new_re = FloatExp::from_f64(z_m_new.re) + delta.re;
+            let new_im = FloatExp::from_f64(z_m_new.im) + delta.im;
+            delta = ComplexExp { re: new_re, im: new_im };
+            m = 0;
+            rebase_count += 1;
+        } else {
+            let z_m_new = ref_orbit.z_ref_f64[m as usize];
+            let z_curr_re = FloatExp::from_f64(z_m_new.re) + delta.re;
+            let z_curr_im = FloatExp::from_f64(z_m_new.im) + delta.im;
+            let z_curr_norm_sqr = {
+                let re = z_curr_re.to_f64();
+                let im = z_curr_im.to_f64();
+                re * re + im * im
+            };
+            let delta_norm_sqr_f64 = delta_approx.norm_sqr();
+            if z_curr_norm_sqr < delta_norm_sqr_f64 && delta_norm_sqr_f64 > 0.0 {
+                delta = ComplexExp { re: z_curr_re, im: z_curr_im };
+                m = 0;
+                rebase_count += 1;
+            }
+        }
+    }
+
+    let final_m = m.min((ref_len - 1) as u32);
+    let delta_approx = delta.to_complex64_approx();
+    UnifiedPixelResultExp {
+        iteration: n,
+        z_final: ref_orbit.z_ref_f64[final_m as usize] + delta_approx,
+        rebase_count,
+        bla_steps,
+    }
+}
+
+fn iterate_pixel_unified_exp_generic(
     ref_orbit: &ReferenceOrbit,
     bla: &BlaTableUnified,
     phase: &Phase,
@@ -171,7 +328,8 @@ fn iterate_pixel_unified_exp_single_phase(
         // Rebase F3 : |Z[m+1] + δ|² < |δ|² OR fin d'orbite.
         let end_of_ref = (m as usize) + 1 >= ref_len;
         if end_of_ref {
-            let z_m_new = ref_orbit.z_ref_f64[m as usize];
+            // Clamp m si l'orbite est tronquée par period detection.
+            let z_m_new = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
             // δ_new = Z[m] + δ (promotion delta → absolu)
             let new_re = FloatExp::from_f64(z_m_new.re) + delta.re;
             let new_im = FloatExp::from_f64(z_m_new.im) + delta.im;

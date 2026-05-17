@@ -946,7 +946,10 @@ fn default_one_f64() -> f64 { 1.0 }
 fn default_color_mode() -> u8 { 6 } // Plasma
 fn default_color_repeat() -> u32 { 40 }
 fn default_precision_bits() -> u32 { 256 }
-fn default_bla_threshold() -> f64 { 1e-8 }
+// Aligné Fraktaler-3 (`engine.cc:283`) : e = 1.0 / (1 << 24) ≈ 5.96e-8.
+// L'ancien défaut 1e-8 était inutilement conservateur, divisant par ~6 le
+// volume de BLA skip exploitable.
+fn default_bla_threshold() -> f64 { 1.0 / (1u64 << 24) as f64 }
 fn default_glitch_tolerance() -> f64 { 1e-4 }
 fn default_series_order() -> u8 { 2 }
 fn default_series_threshold() -> f64 { 1e-6 }

@@ -17,6 +17,9 @@ Thumbs.db
 .env
 .env.*
 
+##fraktaler-3-3.1
+fraktaler-3-3.1
+
 ## Generated test artifacts (CLI renders dropped at repo root)
 /out.png
 /fractal_*.png

@@ -2,6 +2,8 @@
 // Copyright (C) 2021-2025 Claude Heiland-Allen
 // SPDX-License-Identifier: AGPL-3.0-only
 
+#ifdef HAVE_GUI
+
 #include <fstream>
 #include <map>
 #include <set>
@@ -1555,3 +1557,5 @@ bool colour_set_uniforms(colour *u, std::vector<std::map<std::string, patom>> &r
     return false;
   }
 }
+
+#endif // HAVE_GUI

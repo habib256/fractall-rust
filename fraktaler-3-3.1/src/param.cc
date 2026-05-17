@@ -566,6 +566,7 @@ void param::load_kfr(const std::string &filename)
 
 void param::load_exr(const std::string &filename)
 {
+#ifdef HAVE_EXR
   MultiPartInputFile in(filename.c_str());
   for (int p = 0; p < in.parts(); ++p)
   {
@@ -593,6 +594,10 @@ void param::load_exr(const std::string &filename)
       }
     }
   }
+#else
+  (void) filename;
+  throw std::runtime_error("load_exr: built without EXR support");
+#endif
 }
 
 void param::load_png(const std::string &filename)
