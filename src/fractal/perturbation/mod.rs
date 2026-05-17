@@ -104,6 +104,8 @@ pub mod glitch;
 pub mod nonconformal;
 pub mod distance;
 pub mod interior;
+#[cfg(test)]
+pub mod debug_pure_f3;
 pub use orbit::{ReferenceOrbitCache, HybridBlaReferences};
 pub use glitch::{detect_glitch_clusters, select_secondary_reference_points, segregate_glitches_by_iteration};
 

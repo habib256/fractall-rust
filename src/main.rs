@@ -151,6 +151,14 @@ struct Cli {
     #[arg(long)]
     gpu: bool,
 
+    /// Active le moteur d'itération bytecode hybride (Fraktaler-3 style).
+    /// N'a d'effet que sur le path f64 CPU pour les types supportés
+    /// (Mandelbrot/Julia, BS, Tricorn, Celtic, Buffalo, PerpBS, Multibrot
+    /// puissance entière) et seulement sans orbit_traps / distance / interior.
+    /// Sert à valider iso-image avant migration complète.
+    #[arg(long)]
+    bytecode: bool,
+
     /// Fichier de sortie PNG
     #[arg(long, value_name = "FICHIER")]
     output: PathBuf,
@@ -300,6 +308,9 @@ fn main() {
     if cli.interior_threshold > 0.0 {
         params.interior_threshold = cli.interior_threshold;
     }
+
+    // Moteur d'itération bytecode (Fraktaler-3 style)
+    params.use_bytecode_engine = cli.bytecode;
 
     match params.algorithm_mode {
         AlgorithmMode::ReferenceGmp => params.use_gmp = true,

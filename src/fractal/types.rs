@@ -896,6 +896,15 @@ pub struct FractalParams {
     /// 0.0 = disabled (default), 1.0 = full pixel jitter, 0.5 = half pixel.
     #[serde(default)]
     pub jitter_scale: f64,
+
+    /// Active le moteur d'itération bytecode hybride (Fraktaler-3 style).
+    /// Quand `true` et que le type est supporté par `bytecode::compile_formula`,
+    /// le path f64 standard utilise l'interpréteur bytecode au lieu de la
+    /// fonction dédiée de `iterations.rs`. Pour validation iso-image avant
+    /// migration complète. Pas d'effet sur les paths GMP/perturbation/GPU
+    /// (à venir dans les étapes suivantes de P3.1).
+    #[serde(default)]
+    pub use_bytecode_engine: bool,
 }
 
 impl FractalParams {

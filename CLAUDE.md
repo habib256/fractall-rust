@@ -10,7 +10,14 @@ cargo run --release --bin fractall-gui
 
 Prerequis: GMP/MPFR/MPC (pour `rug`).
 
-**Tests / CI**: Tests unitaires dans les modules perturbation (bla, delta, series, nonconformal, distance, glitch, interior, types, mod), lyapunov et progressive. Commande: `cargo test --release --lib`. Pas de pipeline CI/CD.
+**Tests**:
+- **Unit tests** : modules perturbation (bla, delta, series, nonconformal, distance, glitch, interior, types, mod), lyapunov, progressive, **bytecode** (compile, interp f64/GMP, bla_dual). Commande : `cargo test --release --bin fractall-cli`.
+- **Golden image tests** (`tests/golden_images.rs`) : 10 cas couvrant les paths f64 standard, perturbation, et types non-bytecode (Newton). Pour chaque cas, le binaire `fractall-cli` est invoqué, le PNG produit est décodé, et les pixels sont comparés à `tests/golden/<name>.png`. Une régression visuelle d'un seul pixel fait échouer le test.
+  - Lancer : `cargo test --release --test golden_images`
+  - Régénérer les goldens (après une modif intentionnelle) : `FRACTALL_UPDATE_GOLDENS=1 cargo test --release --test golden_images`. Vérifier visuellement les nouvelles images avant de les commit.
+  - À utiliser comme garde-fou pour tout refactor du moteur de rendu (perturbation, BLA, color pipeline, P3.1 bytecode, etc.).
+
+Pas de pipeline CI/CD.
 
 ## Architecture
 

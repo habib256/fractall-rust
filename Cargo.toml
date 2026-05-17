@@ -38,6 +38,10 @@ png = "0.17"
 # Parsing de fichiers de localisation TOML (rust-fractal-core)
 toml = "0.8"
 
+[dev-dependencies]
+# Validation des shaders WGSL en tests unitaires (sans GPU).
+naga = { version = "22.1", features = ["wgsl-in"] }
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

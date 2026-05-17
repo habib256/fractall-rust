@@ -1055,6 +1055,7 @@ dependencies = [
  "eframe",
  "egui",
  "image",
+ "naga",
  "num-complex",
  "png 0.17.16",
  "pollster",

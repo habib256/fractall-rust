@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod bytecode_kernel_test;
+
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::sync::mpsc::RecvTimeoutError;
