@@ -100,6 +100,29 @@ const CASES: &[Case] = &[
         name: "newton_default",
         args: &["--type", "6", "--width", "160", "--height", "100", "--iterations", "200"],
     },
+    // Deep zoom Mandelbrot près d'un minibrot — exerce intensivement la
+    // perturbation + BLA + glitch detection. Le path actuel (legacy glitch
+    // detection) produit cette image. Tout refactor du pixel loop doit la
+    // préserver au pixel près.
+    Case {
+        name: "mandelbrot_minibrot_1e8",
+        args: &[
+            "--type", "3", "--algorithm", "perturbation",
+            "--center-x=-1.7693831791955", "--center-y=0.004236847918736",
+            "--zoom", "1e8",
+            "--width", "160", "--height", "100", "--iterations", "3000",
+        ],
+    },
+    // Zoom moyennement profond Burning Ship — path nonconformal BLA.
+    Case {
+        name: "burning_ship_zoom_1e5",
+        args: &[
+            "--type", "13", "--algorithm", "perturbation",
+            "--center-x=-1.7625", "--center-y=-0.0289",
+            "--zoom", "1e5",
+            "--width", "160", "--height", "100", "--iterations", "2000",
+        ],
+    },
 ];
 
 fn cli_binary_path() -> PathBuf {
