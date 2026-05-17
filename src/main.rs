@@ -154,13 +154,18 @@ struct Cli {
     #[arg(long)]
     gpu: bool,
 
-    /// Active le moteur d'itération bytecode hybride (Fraktaler-3 style).
-    /// Activé par défaut depuis Session E (path unifié BLA mat2 + delta-form
-    /// + rebasing F3, remplace le path legacy avec glitch detection legacy).
-    /// Passer --no-bytecode pour désactiver et tomber sur le path legacy
-    /// historique.
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    /// [DEPRECATED] Le moteur bytecode est activé par défaut depuis P3.1
+    /// Session E. Ce flag ne sert qu'à rétro-compatibilité et passer
+    /// --bytecode est désormais un no-op (== default). Utiliser --no-bytecode
+    /// pour désactiver explicitement.
+    #[arg(long, hide = true)]
     bytecode: bool,
+
+    /// Désactive le moteur bytecode unifié et tombe sur le path legacy
+    /// (glitch detection Pauldelbrot + clustering + secondary refs).
+    /// À n'utiliser que pour debug ou comparaison.
+    #[arg(long)]
+    no_bytecode: bool,
 
     /// Fichier de sortie PNG
     #[arg(long, value_name = "FICHIER")]
@@ -313,7 +318,11 @@ fn main() {
     }
 
     // Moteur d'itération bytecode (Fraktaler-3 style)
-    params.use_bytecode_engine = cli.bytecode;
+    // Activé par défaut depuis Session E. --no-bytecode pour désactiver.
+    if cli.no_bytecode {
+        params.use_bytecode_engine = false;
+    }
+    let _ = cli.bytecode; // legacy flag, no-op (default already true)
 
     match params.algorithm_mode {
         AlgorithmMode::ReferenceGmp => params.use_gmp = true,

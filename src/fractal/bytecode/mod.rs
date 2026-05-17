@@ -87,6 +87,19 @@ impl Formula {
         Self { phases: vec![phase] }
     }
 
+    /// Construit une formule hybride à partir d'une liste de phases.
+    ///
+    /// Les phases sont itérées cycliquement : itération `n` applique
+    /// `phases[n % phases.len()]`. Permet "5× Mandelbrot puis 3× Burning Ship"
+    /// en passant `vec![mb_phase; 5].extend(vec![bs_phase; 3])`.
+    ///
+    /// Cf. `docs/fraktaler-3-analysis.md` §2 (chaînage de phases = hybrides).
+    #[allow(dead_code)]
+    pub fn hybrid(phases: Vec<Phase>) -> Self {
+        assert!(!phases.is_empty(), "Formula::hybrid : phases ne peut pas être vide");
+        Self { phases }
+    }
+
     /// Indique comment placer pixel et seed dans (z₀, c).
     ///
     /// - `Mandelbrot` : z₀ = seed (souvent 0), c = pixel

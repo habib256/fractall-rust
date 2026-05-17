@@ -64,23 +64,124 @@ pub fn iterate_pixel_unified(
     iteration_max: u32,
     bailout: f64,
 ) -> UnifiedPixelResult {
-    // Mono-phase pour l'instant (la formule a une seule phase).
-    assert_eq!(
-        formula.phases.len(),
-        1,
-        "Multi-phase pas encore supporté dans pixel_loop unifié"
-    );
-    let phase = &formula.phases[0];
-    iterate_pixel_unified_single_phase(
+    // Mono-phase : path optimisé direct.
+    if formula.phases.len() == 1 {
+        return iterate_pixel_unified_single_phase(
+            ref_orbit,
+            bla,
+            &formula.phases[0],
+            c_ref,
+            dc,
+            delta_initial,
+            iteration_max,
+            bailout,
+        );
+    }
+    // Multi-phase : cycle de phases. Pour l'instant on partage la même BLA
+    // table (mono-orbit) et c_ref pour toutes les phases ; ça suppose que
+    // l'orbite référence a été itérée avec une formule cyclant les phases.
+    // Une vraie implémentation hybride F3 a un Vec<ReferenceOrbit> et un
+    // Vec<BlaTableUnified> (une par phase). À implémenter quand on aura
+    // une vraie formule multi-phase dans compile_formula (actuellement
+    // mono-phase seulement).
+    iterate_pixel_unified_multi_phase(
         ref_orbit,
         bla,
-        phase,
+        formula,
         c_ref,
         dc,
         delta_initial,
         iteration_max,
         bailout,
     )
+}
+
+/// Multi-phase mono-orbit. Conservé pour Vec<Phase> ; cycle l'index de
+/// phase à chaque itération via le compteur n (pas via la position dans
+/// la formule, pour rester cohérent quand un BLA step saute `l` itérations).
+fn iterate_pixel_unified_multi_phase(
+    ref_orbit: &ReferenceOrbit,
+    bla: &BlaTableUnified,
+    formula: &Formula,
+    c_ref: Complex64,
+    dc: Complex64,
+    delta_initial: Complex64,
+    iteration_max: u32,
+    bailout: f64,
+) -> UnifiedPixelResult {
+    let bailout_sqr = bailout * bailout;
+    let ref_len = ref_orbit.z_ref_f64.len();
+    if ref_len < 2 {
+        return UnifiedPixelResult {
+            iteration: 0,
+            z_final: Complex64::new(0.0, 0.0),
+            rebase_count: 0,
+            bla_steps: 0,
+        };
+    }
+    let n_phases = formula.phases.len();
+    let mut delta = delta_initial;
+    let mut n = 0u32;
+    let mut m = 0u32;
+    let mut rebase_count = 0u32;
+    let bla_steps = 0u32;
+
+    while n < iteration_max {
+        let z_m = ref_orbit.z_ref_f64[m as usize];
+        let z_abs = z_m + delta;
+        if z_abs.norm_sqr() >= bailout_sqr {
+            return UnifiedPixelResult {
+                iteration: n,
+                z_final: z_abs,
+                rebase_count,
+                bla_steps,
+            };
+        }
+        // En multi-phase, on n'utilise pas la BLA pour simplifier
+        // (la BLA construite l'a été pour une phase précise, pas applicable
+        // au mélange). Une vraie BLA multi-phase est un travail séparé.
+        let _ = bla;
+
+        // Pas perturbation : phase courante = phases[n % n_phases].
+        let phase = &formula.phases[(n as usize) % n_phases];
+        let mut state = super::delta_form::DeltaState::new(z_m, delta);
+        state.step(phase, c_ref, dc);
+        delta = state.delta;
+        n += 1;
+        m += 1;
+
+        if !delta.re.is_finite() || !delta.im.is_finite() {
+            return UnifiedPixelResult {
+                iteration: n,
+                z_final: ref_orbit.z_ref_f64[m.min((ref_len - 1) as u32) as usize] + delta,
+                rebase_count,
+                bla_steps,
+            };
+        }
+
+        let end_of_ref = (m as usize) + 1 >= ref_len;
+        if end_of_ref {
+            let z_m_new = ref_orbit.z_ref_f64[m as usize];
+            delta = z_m_new + delta;
+            m = 0;
+            rebase_count += 1;
+        } else {
+            let z_m_new = ref_orbit.z_ref_f64[m as usize];
+            let z_curr = z_m_new + delta;
+            if z_curr.norm_sqr() < delta.norm_sqr() {
+                delta = z_curr;
+                m = 0;
+                rebase_count += 1;
+            }
+        }
+    }
+    let final_m = m.min((ref_len - 1) as u32);
+    UnifiedPixelResult {
+        iteration: n,
+        z_final: ref_orbit.z_ref_f64[final_m as usize] + delta,
+        rebase_count,
+        bla_steps,
+    }
 }
 
 fn iterate_pixel_unified_single_phase(
@@ -665,6 +766,71 @@ mod tests {
             total
         );
         assert_eq!(mismatches, 0);
+    }
+
+    /// Sanity-check multi-phase : Formula::hybrid(vec![mandel_phase,
+    /// mandel_phase]) = formula avec 2 phases identiques Mandelbrot. Le
+    /// pixel loop doit produire le même résultat que la formule mono-phase
+    /// Mandelbrot (modulo le path multi-phase qui n'utilise pas la BLA).
+    #[test]
+    fn unified_multi_phase_identical_phases_eq_mono() {
+        let iter_max = 300u32;
+        let cx = -0.5f64;
+        let cy = 0.0f64;
+        let zoom = 1.0f64;
+        let span_x = 4.0 / zoom;
+        let span_y = span_x * 100.0 / 160.0;
+
+        let orbit = make_ref_orbit(cx, cy, zoom, iter_max);
+        let mono = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
+        let hybrid = Formula::hybrid(vec![mono.phases[0].clone(), mono.phases[0].clone()]);
+
+        let c_norm = (orbit.cref.re * orbit.cref.re + orbit.cref.im * orbit.cref.im).sqrt();
+        let tables = build_bla_table_for_formula(&mono, &orbit.z_ref_f64, c_norm, 6e-8).unwrap();
+        let bla = &tables[0];
+
+        // Mono-phase et hybrid devraient donner la même classification.
+        // Iter counts peuvent différer parce que multi-phase ne fait pas BLA.
+        let mut classif_match = 0usize;
+        let mut total = 0usize;
+        for i in (0..160).step_by(20) {
+            for j in (0..100).step_by(20) {
+                let dx = ((i as f64 + 0.5) / 160.0 - 0.5) * span_x;
+                let dy = ((j as f64 + 0.5) / 100.0 - 0.5) * span_y;
+                let dc = Complex64::new(dx, dy);
+
+                let r_mono = iterate_pixel_unified(
+                    &orbit,
+                    bla,
+                    &mono,
+                    orbit.cref,
+                    dc,
+                    Complex64::new(0.0, 0.0),
+                    iter_max,
+                    4.0,
+                );
+                let r_hybrid = iterate_pixel_unified(
+                    &orbit,
+                    bla,
+                    &hybrid,
+                    orbit.cref,
+                    dc,
+                    Complex64::new(0.0, 0.0),
+                    iter_max,
+                    4.0,
+                );
+                let esc_mono = r_mono.iteration < iter_max;
+                let esc_hybrid = r_hybrid.iteration < iter_max;
+                if esc_mono == esc_hybrid {
+                    classif_match += 1;
+                }
+                total += 1;
+            }
+        }
+        assert_eq!(
+            classif_match, total,
+            "Hybrid avec 2 phases identiques doit classifier comme mono"
+        );
     }
 
     /// À zoom 1e6, la classification doit matcher l'itération directe.

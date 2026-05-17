@@ -78,10 +78,17 @@ pub struct GpuRenderer {
     pipeline_julia_f32: wgpu::ComputePipeline,
     pipeline_burning_ship_f32: wgpu::ComputePipeline,
     pipeline_perturbation: wgpu::ComputePipeline,
+    /// Pipeline bytecode unifié (P3.1 #7). Remplace les 3 shaders dupliqués
+    /// mandelbrot_f32/julia_f32/burning_ship_f32 pour les types supportés
+    /// par `bytecode::compile_formula`. Activé via `use_bytecode_engine`.
+    pipeline_bytecode: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     #[allow(dead_code)]
     bind_group_layout_f64: Option<wgpu::BindGroupLayout>,
     bind_group_layout_perturb: wgpu::BindGroupLayout,
+    /// Bind group layout pour le pipeline bytecode (3 bindings : Params,
+    /// output, bytecode storage buffer).
+    bind_group_layout_bytecode: wgpu::BindGroupLayout,
     #[allow(dead_code)]
     supports_f64: bool,
     /// Cache des buffers GPU pour la perturbation (zref, bla, meta)
@@ -308,6 +315,70 @@ impl GpuRenderer {
                     cache: None,
                 });
 
+            // Pipeline bytecode unifié (P3.1 #7).
+            // Layout : 3 bindings — uniform Params, storage out_pixels,
+            // storage bytecode (u32 array).
+            let bind_group_layout_bytecode = device.create_bind_group_layout(
+                &wgpu::BindGroupLayoutDescriptor {
+                    label: Some("bytecode-bind-group-layout"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: NonZeroU64::new(
+                                    std::mem::size_of::<ParamsBytecode>() as u64,
+                                ),
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                },
+            );
+            let pipeline_layout_bytecode = device.create_pipeline_layout(
+                &wgpu::PipelineLayoutDescriptor {
+                    label: Some("bytecode-pipeline-layout"),
+                    bind_group_layouts: &[&bind_group_layout_bytecode],
+                    push_constant_ranges: &[],
+                },
+            );
+            let shader_bytecode = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("bytecode-kernel"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("bytecode_kernel.wgsl").into()),
+            });
+            let pipeline_bytecode = device.create_compute_pipeline(
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("bytecode-pipeline"),
+                    layout: Some(&pipeline_layout_bytecode),
+                    module: &shader_bytecode,
+                    entry_point: "main",
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    cache: None,
+                },
+            );
+
             Some(Self {
                 device,
                 queue,
@@ -316,9 +387,11 @@ impl GpuRenderer {
                 pipeline_julia_f32,
                 pipeline_burning_ship_f32,
                 pipeline_perturbation,
+                pipeline_bytecode,
                 bind_group_layout,
                 bind_group_layout_f64,
                 bind_group_layout_perturb,
+                bind_group_layout_bytecode,
                 supports_f64,
                 perturbation_cache: Mutex::new(None),
             })
@@ -974,6 +1047,11 @@ impl GpuRenderer {
         params: &FractalParams,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> Option<(Vec<u32>, Vec<Complex64>)> {
+        // P3.1 #7 : si bytecode activé et type supporté, dispatch vers le
+        // pipeline bytecode unifié au lieu du shader Mandelbrot dédié.
+        if let Some(result) = self.try_render_bytecode(params, cancel, false) {
+            return Some(result);
+        }
         self.render_escape_f32(
             params,
             cancel,
@@ -981,6 +1059,160 @@ impl GpuRenderer {
             ParamsF32::from_params(params, None),
             "mandelbrot",
         )
+    }
+
+    /// Tente de rendre via le pipeline bytecode unifié. Renvoie `None` si
+    /// les conditions ne sont pas remplies (type non supporté, bytecode
+    /// désactivé, plane transform non triviale) — le caller fallback sur
+    /// le shader dédié.
+    fn try_render_bytecode(
+        &self,
+        params: &FractalParams,
+        cancel: &std::sync::atomic::AtomicBool,
+        is_julia: bool,
+    ) -> Option<(Vec<u32>, Vec<Complex64>)> {
+        use crate::fractal::bytecode::compile_formula;
+        use crate::fractal::PlaneTransform;
+        if !params.use_bytecode_engine {
+            return None;
+        }
+        // Plane transform non triviale n'est pas (encore) gérée par le shader
+        // bytecode → fallback sur les shaders dédiés qui l'implémentent.
+        if !matches!(params.plane_transform, PlaneTransform::Mu) {
+            return None;
+        }
+        let formula = compile_formula(params.fractal_type, params.multibrot_power)?;
+        // Multi-phase pas (encore) supporté dans le shader bytecode.
+        if formula.phases.len() != 1 {
+            return None;
+        }
+        // Encoder les opcodes en u32 (mêmes valeurs que `bytecode::Op` côté Rust).
+        let bytecode: Vec<u32> = formula.phases[0]
+            .ops
+            .iter()
+            .map(|op| *op as u32)
+            .collect();
+        self.render_bytecode_f32(params, cancel, is_julia, &bytecode)
+    }
+
+    fn render_bytecode_f32(
+        &self,
+        params: &FractalParams,
+        cancel: &std::sync::atomic::AtomicBool,
+        is_julia: bool,
+        bytecode: &[u32],
+    ) -> Option<(Vec<u32>, Vec<Complex64>)> {
+        let width = params.width as usize;
+        let height = params.height as usize;
+        if width == 0 || height == 0 || bytecode.is_empty() {
+            return Some((Vec::new(), Vec::new()));
+        }
+        let output_count = width * height;
+        let output_size = (output_count * std::mem::size_of::<PixelOut>()) as u64;
+
+        let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bytecode-output"),
+            size: output_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let readback_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bytecode-readback"),
+            size: output_size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let params_value = ParamsBytecode::from_params(params, is_julia, bytecode.len() as u32);
+        let params_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("bytecode-params"),
+                contents: bytemuck::bytes_of(&params_value),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let bytecode_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("bytecode-ops"),
+                contents: bytemuck::cast_slice(bytecode),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bytecode-bind-group"),
+            layout: &self.bind_group_layout_bytecode,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: output_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: bytecode_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("bytecode-encoder"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("bytecode-pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline_bytecode);
+            pass.set_bind_group(0, &bind_group, &[]);
+            let dispatch_x = (params.width + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+            let dispatch_y = (params.height + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+            pass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
+        }
+        encoder.copy_buffer_to_buffer(&output_buffer, 0, &readback_buffer, 0, output_size);
+        self.queue.submit(Some(encoder.finish()));
+
+        let buffer_slice = readback_buffer.slice(..);
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        buffer_slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = sender.send(r);
+        });
+        self.device.poll(wgpu::Maintain::Poll);
+        loop {
+            match receiver.recv_timeout(Duration::from_millis(10)) {
+                Ok(result) => {
+                    result.ok()?;
+                    break;
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        readback_buffer.unmap();
+                        return None;
+                    }
+                    self.device.poll(wgpu::Maintain::Poll);
+                }
+                Err(RecvTimeoutError::Disconnected) => return None,
+            }
+        }
+        let data = buffer_slice.get_mapped_range();
+        let pixels: &[PixelOut] = bytemuck::cast_slice(&data);
+        let mut iterations = Vec::with_capacity(output_count);
+        let mut zs = Vec::with_capacity(output_count);
+        for p in pixels {
+            iterations.push(p.iter);
+            zs.push(Complex64::new(p.z_re as f64, p.z_im as f64));
+        }
+        drop(data);
+        readback_buffer.unmap();
+        Some((iterations, zs))
     }
 
     #[allow(dead_code)]
@@ -1004,6 +1236,9 @@ impl GpuRenderer {
         params: &FractalParams,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> Option<(Vec<u32>, Vec<Complex64>)> {
+        if let Some(result) = self.try_render_bytecode(params, cancel, true) {
+            return Some(result);
+        }
         self.render_escape_f32(
             params,
             cancel,
@@ -1018,6 +1253,9 @@ impl GpuRenderer {
         params: &FractalParams,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> Option<(Vec<u32>, Vec<Complex64>)> {
+        if let Some(result) = self.try_render_bytecode(params, cancel, false) {
+            return Some(result);
+        }
         self.render_escape_f32(
             params,
             cancel,
@@ -1334,6 +1572,45 @@ struct ParamsF64 {
     _pad: u32,
     bailout: f64,
     _pad2: f64,
+}
+
+/// Params uniform pour le bytecode kernel. Doit matcher la struct `Params`
+/// déclarée dans `bytecode_kernel.wgsl`. 12 fields × 4 bytes = 48 bytes
+/// (16-byte aligned, OK pour uniform).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ParamsBytecode {
+    center_x: f32,
+    center_y: f32,
+    span_x: f32,
+    span_y: f32,
+    seed_re: f32,
+    seed_im: f32,
+    width: u32,
+    height: u32,
+    iter_max: u32,
+    bailout: f32,
+    is_julia: u32,
+    bytecode_len: u32,
+}
+
+impl ParamsBytecode {
+    fn from_params(params: &FractalParams, is_julia: bool, bytecode_len: u32) -> Self {
+        Self {
+            center_x: params.center_x as f32,
+            center_y: params.center_y as f32,
+            span_x: params.span_x as f32,
+            span_y: params.span_y as f32,
+            seed_re: params.seed.re as f32,
+            seed_im: params.seed.im as f32,
+            width: params.width,
+            height: params.height,
+            iter_max: params.iteration_max,
+            bailout: params.bailout as f32,
+            is_julia: if is_julia { 1 } else { 0 },
+            bytecode_len,
+        }
+    }
 }
 
 impl ParamsF32 {
