@@ -152,11 +152,11 @@ struct Cli {
     gpu: bool,
 
     /// Active le moteur d'itération bytecode hybride (Fraktaler-3 style).
-    /// N'a d'effet que sur le path f64 CPU pour les types supportés
-    /// (Mandelbrot/Julia, BS, Tricorn, Celtic, Buffalo, PerpBS, Multibrot
-    /// puissance entière) et seulement sans orbit_traps / distance / interior.
-    /// Sert à valider iso-image avant migration complète.
-    #[arg(long)]
+    /// Activé par défaut depuis Session E (path unifié BLA mat2 + delta-form
+    /// + rebasing F3, remplace le path legacy avec glitch detection legacy).
+    /// Passer --no-bytecode pour désactiver et tomber sur le path legacy
+    /// historique.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     bytecode: bool,
 
     /// Fichier de sortie PNG

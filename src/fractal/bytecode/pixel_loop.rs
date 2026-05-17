@@ -58,6 +58,7 @@ pub fn iterate_pixel_unified(
     formula: &Formula,
     c_ref: Complex64,
     dc: Complex64,
+    delta_initial: Complex64,
     iteration_max: u32,
     bailout: f64,
 ) -> UnifiedPixelResult {
@@ -68,7 +69,16 @@ pub fn iterate_pixel_unified(
         "Multi-phase pas encore supporté dans pixel_loop unifié"
     );
     let phase = &formula.phases[0];
-    iterate_pixel_unified_single_phase(ref_orbit, bla, phase, c_ref, dc, iteration_max, bailout)
+    iterate_pixel_unified_single_phase(
+        ref_orbit,
+        bla,
+        phase,
+        c_ref,
+        dc,
+        delta_initial,
+        iteration_max,
+        bailout,
+    )
 }
 
 fn iterate_pixel_unified_single_phase(
@@ -77,6 +87,7 @@ fn iterate_pixel_unified_single_phase(
     phase: &Phase,
     c_ref: Complex64,
     dc: Complex64,
+    delta_initial: Complex64,
     iteration_max: u32,
     bailout: f64,
 ) -> UnifiedPixelResult {
@@ -91,7 +102,7 @@ fn iterate_pixel_unified_single_phase(
         };
     }
 
-    let mut delta = Complex64::new(0.0, 0.0);
+    let mut delta = delta_initial;
     let mut n = 0u32;
     let mut m = 0u32;
     let mut rebase_count = 0u32;
@@ -198,6 +209,7 @@ fn iterate_pixel_unified_single_phase(
 ///   `bla_dual::build_bla_table_for_formula`).
 /// - `dc` : offset du pixel par rapport au centre de la référence (Complex64).
 /// - `iteration_max`, `bailout` : caps standards.
+#[allow(dead_code)]
 pub fn iterate_pixel_unified_mandelbrot(
     ref_orbit: &ReferenceOrbit,
     bla: &BlaTableUnified,
@@ -536,6 +548,7 @@ mod tests {
                     &formula,
                     orbit.cref,
                     dc,
+                    Complex64::new(0.0, 0.0),
                     iter_max,
                     4.0,
                 );
@@ -617,6 +630,7 @@ mod tests {
                     &formula,
                     orbit.cref,
                     dc,
+                    Complex64::new(0.0, 0.0),
                     iter_max,
                     4.0,
                 );

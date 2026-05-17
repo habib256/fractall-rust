@@ -56,7 +56,18 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         enable_orbit_traps: false,
         orbit_trap_type: OrbitTrapType::Point,
         jitter_scale: 0.0,
-        use_bytecode_engine: false,
+        // Activé par défaut depuis P3.1 Session E : path bytecode unifié
+        // (BLA mat2 + delta-form + rebasing F3) remplace le path legacy
+        // (glitch detection Pauldelbrot + secondary refs) quand applicable.
+        // Le path legacy reste actif comme fallback :
+        //   - types non supportés par compile_formula (Newton, Phoenix,
+        //     Magnet, Barnsley, Lyapunov, Mandelbulb, etc.)
+        //   - pixel_size < 1e-13 (deep zoom GMP)
+        //   - features avancées (distance estimation, interior detection,
+        //     orbit traps)
+        // Tu peux désactiver explicitement via --no-bytecode (à venir) ou
+        // en passant use_bytecode_engine = false depuis un loader TOML.
+        use_bytecode_engine: true,
     };
 
     match fractal_type {

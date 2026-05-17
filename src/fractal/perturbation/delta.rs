@@ -166,46 +166,31 @@ fn try_bytecode_unified_path(
         let delta_init = delta0.to_complex64_approx();
         let dc_approx = dc.to_complex64_approx();
 
-        // Pour Julia : z0 = pixel, c = seed. Le caller fournit delta0 = pixel
-        // et dc = pixel - cref. La constante ajoutée par Add est :
-        // - Julia-like (delta0 != 0): seed (utiliser params.seed)
-        // - Mandelbrot-like (delta0 ≈ 0): cref
+        // Pour Julia : z0 = pixel, c = seed. Le caller fournit
+        // delta_init = pixel - cref (non-zéro). La constante ajoutée par
+        // Add côté delta-form est `seed` (c_pixel = c_ref = seed pour Julia,
+        // donc dc_for_add = 0).
+        // Pour Mandelbrot : delta_init = 0, c_for_add = cref, dc_for_add = dc.
         let is_julia = Formula::is_julia_for(params.fractal_type);
-        let c_for_add = if is_julia {
-            // Pour Julia, c_ref dans le delta-form = seed (la "constante" de la formule Julia).
-            // Mais notre orbite référence pour Julia est itérée AVEC seed (cf. orbit.rs).
-            // Donc Z[m+1] = Z[m]² + seed. Pour le delta-form Julia, c_ref = seed et dc = 0
-            // (puisque c_pixel = seed aussi pour tous les pixels Julia).
-            // Le pixel offset est dans le z0 initial, pas dans c.
-            Complex64::new(params.seed.re, params.seed.im)
+        let (c_for_add, dc_for_add) = if is_julia {
+            (
+                Complex64::new(params.seed.re, params.seed.im),
+                Complex64::new(0.0, 0.0),
+            )
         } else {
-            c_ref
-        };
-        let dc_for_add = if is_julia {
-            // Pour Julia, dc côté delta-form = 0 (c est constant pour tous les pixels).
-            Complex64::new(0.0, 0.0)
-        } else {
-            dc_approx
+            (c_ref, dc_approx)
         };
 
-        // Le delta initial pour Julia n'est PAS zéro : c'est `pixel - cref`
-        // (i.e. delta0 fourni par le caller). Pour Mandelbrot c'est zéro.
         let pixel_result = iterate_pixel_unified(
             ref_orbit,
             bla,
             &entry.formula,
             c_for_add,
             dc_for_add,
+            delta_init,
             params.iteration_max,
             params.bailout,
         );
-
-        // Si Mandelbrot, delta_init est zéro et notre fonction part de zéro.
-        // Si Julia, delta_init n'est pas zéro mais notre fonction part toujours
-        // de zéro. Pour gérer Julia correctement il faudrait passer delta_init
-        // à iterate_pixel_unified. Pour ce premier MVP, on n'active que pour
-        // Mandelbrot-like (où delta_init = 0).
-        let _ = delta_init;
 
         Some(pixel_result)
     })?;
