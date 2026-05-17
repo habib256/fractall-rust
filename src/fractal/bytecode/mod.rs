@@ -38,6 +38,9 @@ pub enum Op {
     Store,
     AbsX,
     AbsY,
+    /// Pas utilisé par les types actuels — réservé pour les hybrides
+    /// (Mandelbar variants où on négocie la partie réelle).
+    #[allow(dead_code)]
     NegX,
     NegY,
     Add,

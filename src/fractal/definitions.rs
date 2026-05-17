@@ -56,6 +56,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         enable_orbit_traps: false,
         orbit_trap_type: OrbitTrapType::Point,
         jitter_scale: 0.0,
+        use_bytecode_engine: false,
     };
 
     match fractal_type {

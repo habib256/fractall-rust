@@ -1,11 +1,51 @@
 use num_complex::Complex64;
 
+use crate::fractal::bytecode::{compile_formula, iterate_bytecode_f64, Formula};
 use crate::fractal::{FractalParams, FractalResult, FractalType};
 use crate::fractal::orbit_traps::OrbitData;
+
+/// Vrai si l'interpréteur bytecode peut servir ce pixel.
+///
+/// Conditions :
+/// - `use_bytecode_engine` activé ;
+/// - le type compile en bytecode ;
+/// - aucune feature qui sort du cœur escape-time (orbit traps, distance
+///   estimation, interior detection) — ces features dépendent encore du
+///   path dédié pour le moment.
+#[inline]
+fn can_use_bytecode(params: &FractalParams) -> bool {
+    params.use_bytecode_engine
+        && !params.enable_orbit_traps
+        && !params.enable_distance_estimation
+        && !params.enable_interior_detection
+        && compile_formula(params.fractal_type, params.multibrot_power).is_some()
+}
+
+/// Dispatch interpréteur : (z₀, c) selon convention Mandelbrot/Julia.
+#[inline]
+fn iterate_via_bytecode(params: &FractalParams, z_pixel: Complex64) -> FractalResult {
+    let formula = compile_formula(params.fractal_type, params.multibrot_power)
+        .expect("can_use_bytecode garantit que compile_formula renvoie Some");
+    let (z0, c) = if Formula::is_julia_for(params.fractal_type) {
+        (z_pixel, params.seed)
+    } else {
+        (params.seed, z_pixel)
+    };
+    let r = iterate_bytecode_f64(&formula, z0, c, params.iteration_max, params.bailout);
+    FractalResult {
+        iteration: r.iteration,
+        z: r.z,
+        orbit: None,
+        distance: None,
+    }
+}
 
 /// Calcule l'itération pour un point donné, en suivant `FormulaSelector` côté C.
 #[inline]
 pub fn iterate_point(params: &FractalParams, z_pixel: Complex64) -> FractalResult {
+    if can_use_bytecode(params) {
+        return iterate_via_bytecode(params, z_pixel);
+    }
     match params.fractal_type {
         FractalType::VonKoch | FractalType::Dragon => {
             panic!("Les fractales vectorielles doivent être rendues via render_von_koch/render_dragon")
