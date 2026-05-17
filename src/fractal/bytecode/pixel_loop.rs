@@ -519,17 +519,20 @@ fn compute_distance_from_dz(z_abs: Complex64, dz: Complex64, is_julia: bool) -> 
     }
 }
 
-/// Pixel loop Mandelbrot unifié : BLA mat2 + perturbation delta + rebasing F3.
+/// Pixel loop Mandelbrot spécialisé : BLA mat2 + perturbation delta + rebasing F3.
+/// Inline `δ' = 2·Z·δ + δ² + dc` sans DeltaState ni dispatch opcode, ~2× plus
+/// rapide que `iterate_pixel_unified_full` pour le cas Mandelbrot pur.
 ///
-/// Conservé pour rétrocompatibilité des tests Session C. Nouveaux callers
-/// devraient utiliser `iterate_pixel_unified` (généralisé à tous les types).
+/// Dispatché automatiquement depuis `iterate_pixel_unified_single_phase` quand :
+/// - Phase = [Sqr, Add] (Mandelbrot)
+/// - No orbit_trap / distance / interior
+/// - !is_julia
+/// - delta_initial = 0
 ///
 /// - `ref_orbit` : orbite référence (f64 path).
-/// - `bla` : table BLA unifiée pour la phase (mat2-based, built via
-///   `bla_dual::build_bla_table_for_formula`).
+/// - `bla` : table BLA unifiée pour la phase.
 /// - `dc` : offset du pixel par rapport au centre de la référence (Complex64).
 /// - `iteration_max`, `bailout` : caps standards.
-#[allow(dead_code)]
 pub fn iterate_pixel_unified_mandelbrot(
     ref_orbit: &ReferenceOrbit,
     bla: &BlaTableUnified,
