@@ -1,0 +1,13 @@
+# Dépendances GUI du vendoring Fraktaler-3 (sous-modules officiels aux SHAs figés dans l'index).
+[submodule "fraktaler-3-3.1/imgui"]
+	path = fraktaler-3-3.1/imgui
+	url = https://github.com/ocornut/imgui.git
+	ignore = untracked
+[submodule "fraktaler-3-3.1/imgui-filebrowser"]
+	path = fraktaler-3-3.1/imgui-filebrowser
+	url = https://github.com/AirGuanZ/imgui-filebrowser.git
+	ignore = untracked
+[submodule "fraktaler-3-3.1/implot"]
+	path = fraktaler-3-3.1/implot
+	url = https://github.com/epezent/implot.git
+	ignore = untracked
