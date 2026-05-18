@@ -1305,7 +1305,15 @@ pub fn iterate_pixel(
     // Use z_ref_f64 for fast path iteration (z_ref is high-precision Vec<ComplexExp>)
     // Hybrid BLA: account for phase offset in effective length
     let effective_len = ref_orbit.effective_len() as u32;
-    let max_iter = params.iteration_max.min(effective_len.saturating_sub(1));
+    // Pour les orbites périodiques (centre intérieur), on laisse n cycler via modulo
+    // — pas de cap à effective_len-1, sinon le pixel ne peut pas dépasser la fin
+    // de l'orbite stockée (cf. glitch_test_1 sortait à n=15518 avant le fix cyclage).
+    // Pour les autres cas (échappée ou non-périodique), on garde le cap original.
+    let max_iter = if ref_orbit.cycle_period > 0 {
+        params.iteration_max
+    } else {
+        params.iteration_max.min(effective_len.saturating_sub(1))
+    };
     let bailout_sqr = params.bailout * params.bailout;
     let mut phase_changed = false;
 
@@ -1454,28 +1462,35 @@ pub fn iterate_pixel(
             // Optimisation 4: Vérifier rebasing seulement si nécessaire (fin d'orbite effective)
             // Les autres vérifications de rebasing sont faites après application BLA pour améliorer les performances
             if n >= effective_len {
-                // Reached end of effective orbit: rebase
-                let last_idx = effective_len.saturating_sub(1) as usize;
-                let z_ref = ref_orbit.get_z_ref_f64(last_idx as u32).unwrap_or_else(|| {
-                    ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
-                });
-                // Utiliser le cache de delta_approx (optimisation 1)
-                let z_curr = z_ref + delta_approx_cached;
-                delta = ComplexExp::from_complex64(z_curr);
-                // Mettre à jour les caches après rebasing
-                delta_approx_cached = delta.to_complex64_approx();
-                delta_norm_sqr_cached = delta.norm_sqr_approx();
-                
-                // Hybrid BLA: change phase on rebasing: phase = (phase + n) % cycle_period
-                if let Some(ref mut phase) = current_phase {
-                    if let Some(refs) = hybrid_refs {
-                        if refs.cycle_period > 0 {
-                            **phase = (**phase + n) % refs.cycle_period;
-                            phase_changed = true;
+                // Cas orbite périodique : cycler n via modulo (orbite cyclique,
+                // pas besoin de rebaser delta). Évite l'uniformisation pixel sur
+                // centres intérieurs (cf. glitch_test_1 fix bytecode + legacy).
+                if let Some(n_wrapped) = ref_orbit.wrap_periodic(n) {
+                    n = n_wrapped;
+                } else {
+                    // Reached end of effective orbit: rebase F3 (orbite échappée)
+                    let last_idx = effective_len.saturating_sub(1) as usize;
+                    let z_ref = ref_orbit.get_z_ref_f64(last_idx as u32).unwrap_or_else(|| {
+                        ref_orbit.z_ref_f64[ref_orbit.z_ref_f64.len().saturating_sub(1)]
+                    });
+                    // Utiliser le cache de delta_approx (optimisation 1)
+                    let z_curr = z_ref + delta_approx_cached;
+                    delta = ComplexExp::from_complex64(z_curr);
+                    // Mettre à jour les caches après rebasing
+                    delta_approx_cached = delta.to_complex64_approx();
+                    delta_norm_sqr_cached = delta.norm_sqr_approx();
+
+                    // Hybrid BLA: change phase on rebasing: phase = (phase + n) % cycle_period
+                    if let Some(ref mut phase) = current_phase {
+                        if let Some(refs) = hybrid_refs {
+                            if refs.cycle_period > 0 {
+                                **phase = (**phase + n) % refs.cycle_period;
+                                phase_changed = true;
+                            }
                         }
                     }
+                    n = 0;
                 }
-                n = 0;
                 // Reset BLA level hints after rebase (delta is small again)
                 last_nc_bla_level = if bla_table.nc_num_levels() > 0 { bla_table.nc_num_levels() - 1 } else { 0 };
                 last_conf_bla_level = if bla_table.num_levels() > 0 { bla_table.num_levels() - 1 } else { 0 };
