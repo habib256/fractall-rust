@@ -141,8 +141,8 @@ fn iterate_pixel_unified_exp_mandelbrot(
             };
         }
 
-        let delta_norm_sqr = delta.norm_sqr_approx();
-        if let Some(node) = bla.lookup(m as usize, delta_norm_sqr) {
+        let delta_norm_sqr_fexp = delta.norm_sqr_fexp();
+        if let Some(node) = bla.lookup_fexp(m as usize, delta_norm_sqr_fexp) {
             let new_n = n.saturating_add(node.l);
             let new_m = m.saturating_add(node.l);
             if new_n <= iteration_max && (new_m as usize) < ref_len {
@@ -281,8 +281,8 @@ fn iterate_pixel_unified_exp_generic(
         // norm_sqr_approx vaudra 0.0 → toujours < r² → BLA toujours valide.
         // C'est cohérent : un delta très petit DOIT pouvoir être absorbé
         // par n'importe quel BLA.
-        let delta_norm_sqr = delta.norm_sqr_approx();
-        if let Some(node) = bla.lookup(m as usize, delta_norm_sqr) {
+        let delta_norm_sqr_fexp = delta.norm_sqr_fexp();
+        if let Some(node) = bla.lookup_fexp(m as usize, delta_norm_sqr_fexp) {
             let new_n = n.saturating_add(node.l);
             let new_m = m.saturating_add(node.l);
             if new_n <= iteration_max && (new_m as usize) < ref_len {

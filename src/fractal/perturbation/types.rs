@@ -227,6 +227,16 @@ impl ComplexExp {
         re * re + im * im
     }
 
+    /// Norme² en FloatExp — ne underflow pas pour exp < -1022 (contrairement
+    /// à `norm_sqr_approx` qui collapse à 0.0 pour les zooms > 1e308).
+    ///
+    /// Utilisé par les checks de validité BLA via `BlaTableUnified::lookup_fexp`
+    /// pour éviter d'appliquer le skip max à tous les pixels en deep zoom.
+    #[inline(always)]
+    pub fn norm_sqr_fexp(self) -> FloatExp {
+        self.re.sqr() + self.im.sqr()
+    }
+
     #[inline(always)]
     pub fn to_complex64_approx(self) -> Complex64 {
         Complex64::new(self.re.to_f64(), self.im.to_f64())

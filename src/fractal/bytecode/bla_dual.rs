@@ -426,6 +426,59 @@ impl BlaTableUnified {
         }
         None
     }
+
+    /// Variante FloatExp-aware utilisée par `pixel_loop_exp` pour éviter
+    /// l'underflow f64 quand |delta| < 2^-1022.
+    ///
+    /// À zoom > 1e308, `delta.norm_sqr_approx()` retourne 0.0 (FloatExp::to_f64
+    /// → 0 quand exp < -1022) et la validité BLA `0 < r²` est universellement
+    /// vraie pour tous les pixels → ils prennent le même skip max → image
+    /// uniforme (cf. e1121).
+    ///
+    /// Cette variante reçoit (mantissa, exp) de la norme² en FloatExp et
+    /// compare correctement à r² f64 :
+    /// - Si `delta_exp < -1074` (true zéro absolu en f64) : `r² > 0` toujours vrai
+    /// - Sinon : `mantissa * 2^exp < r²` → compare directement
+    pub fn lookup_fexp(
+        &self,
+        m: usize,
+        delta_norm_sqr_fexp: crate::fractal::perturbation::types::FloatExp,
+    ) -> Option<&BlaMultiStep> {
+        for (level, nodes) in self.levels.iter().enumerate().rev() {
+            let idx = m >> level;
+            if idx >= nodes.len() {
+                continue;
+            }
+            let start = idx << level;
+            if m != start {
+                continue;
+            }
+            let node = &nodes[idx];
+            // Compare delta_norm_sqr (FloatExp) < node.r2 (f64) sans passer par
+            // to_f64 qui underflow. r² > 0 (par construction BLA), donc si delta
+            // mantissa est zéro ou si exp est très négatif (sous f64::MIN_EXP),
+            // delta < r² trivialement.
+            let m_d = delta_norm_sqr_fexp.mantissa;
+            let e_d = delta_norm_sqr_fexp.exponent;
+            let r2 = node.r2;
+            let valid = if m_d == 0.0 {
+                true
+            } else if e_d < -1074 {
+                true // delta inférieur à toute valeur f64 positive normalisable
+            } else if e_d > 1023 {
+                false // delta dépasse f64::MAX > r²
+            } else {
+                // delta = m_d * 2^e_d (peut être denormal si e_d ∈ [-1074, -1022])
+                // r2 est f64 normal. Comparaison directe via reconstruction f64.
+                let d_f64 = m_d * 2.0f64.powi(e_d);
+                d_f64 < r2
+            };
+            if valid {
+                return Some(node);
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
