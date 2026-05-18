@@ -254,12 +254,21 @@ fn iterate_pixel_unified_multi_phase(
 
         let end_of_ref = (m as usize) + 1 >= ref_len;
         if end_of_ref {
-            // m peut être == ref_len après increment quand l'orbite est tronquée
-            // (period detected). Clamp pour fetch z_m avant le rebase.
-            let z_m_new = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
-            delta = z_m_new + delta;
-            m = 0;
-            rebase_count += 1;
+            // Orbite périodique (centre intérieur) : cycler m via modulo plutôt
+            // que rebaser. Le rebase à m=0 sur orbite tronquée par périodicité
+            // colle tous les pixels au même état (`δ := z_ref[end] + δ`, identique
+            // à epsilon près) → image uniforme (cf. glitch_test_1 magenta).
+            // Le cyclage maintient les dynamiques pixel-à-pixel.
+            if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
+                m = m_wrapped;
+            } else {
+                // m peut être == ref_len après increment quand l'orbite est tronquée
+                // (period detected). Clamp pour fetch z_m avant le rebase.
+                let z_m_new = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
+                delta = z_m_new + delta;
+                m = 0;
+                rebase_count += 1;
+            }
         } else {
             let z_m_new = ref_orbit.z_ref_f64[m as usize];
             let z_curr = z_m_new + delta;
@@ -459,14 +468,19 @@ fn iterate_pixel_unified_single_phase(
 
         // Rebase F3 (ddelta inchangé par rebase : δ_new = Z+δ, d(Z+δ)/d(dc) = d(δ)/d(dc)).
         // Quand l'orbite référence est tronquée par période détectée (interior
-        // center), `m` peut atteindre `ref_len` après increment ; clamp à la
-        // dernière entrée valide pour fetch z_m avant de rebaser.
+        // center), on cycle m via modulo (orbite cyclique, valeurs identiques
+        // à epsilon près) — évite l'uniformisation observée sur glitch_test_1.
+        // Sinon (orbite échappée ou non-périodique), rebase F3 standard.
         let end_of_ref = (m as usize) + 1 >= ref_len;
         if end_of_ref {
-            let z_m_new = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
-            delta = z_m_new + delta;
-            m = 0;
-            rebase_count += 1;
+            if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
+                m = m_wrapped;
+            } else {
+                let z_m_new = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
+                delta = z_m_new + delta;
+                m = 0;
+                rebase_count += 1;
+            }
         } else {
             let z_m_new = ref_orbit.z_ref_f64[m as usize];
             let z_curr = z_m_new + delta;
@@ -635,13 +649,17 @@ pub fn iterate_pixel_unified_mandelbrot(
             };
         }
 
-        // Étape 3 : rebase F3 strict
+        // Étape 3 : cyclage si périodique (intérieur), sinon rebase F3 strict
         let end_of_ref = (m as usize) + 1 >= ref_len;
         if end_of_ref {
-            let z_m_new = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
-            delta = z_m_new + delta;
-            m = 0;
-            rebase_count += 1;
+            if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
+                m = m_wrapped;
+            } else {
+                let z_m_new = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
+                delta = z_m_new + delta;
+                m = 0;
+                rebase_count += 1;
+            }
         } else {
             let z_m_new = ref_orbit.z_ref_f64[m as usize];
             let z_curr = z_m_new + delta;

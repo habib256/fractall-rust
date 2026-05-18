@@ -186,15 +186,21 @@ fn iterate_pixel_unified_exp_mandelbrot(
             delta.reduce();
         }
 
-        // Rebase F3 : |Z[m+1] + δ|² < |δ|² OR fin d'orbite.
+        // Rebase F3 : |Z[m+1] + δ|² < |δ|² OR fin d'orbite. Pour les orbites
+        // périodiques (centre intérieur), on cycle m via modulo au lieu de
+        // rebaser — évite l'uniformisation pixel sur ces cas.
         let end_of_ref = (m as usize) + 1 >= ref_len;
         if end_of_ref {
-            let z_m_new = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
-            let new_re = FloatExp::from_f64(z_m_new.re) + delta.re;
-            let new_im = FloatExp::from_f64(z_m_new.im) + delta.im;
-            delta = ComplexExp { re: new_re, im: new_im };
-            m = 0;
-            rebase_count += 1;
+            if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
+                m = m_wrapped;
+            } else {
+                let z_m_new = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
+                let new_re = FloatExp::from_f64(z_m_new.re) + delta.re;
+                let new_im = FloatExp::from_f64(z_m_new.im) + delta.im;
+                delta = ComplexExp { re: new_re, im: new_im };
+                m = 0;
+                rebase_count += 1;
+            }
         } else {
             let z_m_new = ref_orbit.z_ref_f64[m as usize];
             let z_curr_re = FloatExp::from_f64(z_m_new.re) + delta.re;
@@ -325,17 +331,22 @@ fn iterate_pixel_unified_exp_generic(
             delta.reduce();
         }
 
-        // Rebase F3 : |Z[m+1] + δ|² < |δ|² OR fin d'orbite.
+        // Rebase F3 : |Z[m+1] + δ|² < |δ|² OR fin d'orbite. Pour orbites
+        // périodiques, on cycle m via modulo (évite l'uniformisation pixel).
         let end_of_ref = (m as usize) + 1 >= ref_len;
         if end_of_ref {
-            // Clamp m si l'orbite est tronquée par period detection.
-            let z_m_new = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
-            // δ_new = Z[m] + δ (promotion delta → absolu)
-            let new_re = FloatExp::from_f64(z_m_new.re) + delta.re;
-            let new_im = FloatExp::from_f64(z_m_new.im) + delta.im;
-            delta = ComplexExp { re: new_re, im: new_im };
-            m = 0;
-            rebase_count += 1;
+            if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
+                m = m_wrapped;
+            } else {
+                // Clamp m si l'orbite est tronquée (escape, pas périodicité).
+                let z_m_new = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
+                // δ_new = Z[m] + δ (promotion delta → absolu)
+                let new_re = FloatExp::from_f64(z_m_new.re) + delta.re;
+                let new_im = FloatExp::from_f64(z_m_new.im) + delta.im;
+                delta = ComplexExp { re: new_re, im: new_im };
+                m = 0;
+                rebase_count += 1;
+            }
         } else {
             let z_m_new = ref_orbit.z_ref_f64[m as usize];
             // z_curr = Z[m] + δ

@@ -168,6 +168,16 @@ pub struct ReferenceOrbit {
     /// Inspired by rust-fractal-core's `data_storage_interval`.
     /// Default: 10 (stores every 10th iteration). 1 = store every iteration (original behavior).
     pub data_storage_interval: usize,
+    /// Période détectée du cycle (0 si pas de périodicité).
+    /// Quand non-zéro, `z_ref[cycle_start + k] == z_ref[cycle_start + (k % cycle_period)]`.
+    /// Utilisé par `pixel_loop` pour cycler l'orbite via modulo au lieu de rebaser à m=0
+    /// quand on atteint la fin de l'orbite — fix le rendu uniforme sur centres
+    /// périodiques intérieurs (ex. glitch_test_1 zoom 3e46 = magenta uniforme sans cyclage).
+    pub cycle_period: u32,
+    /// Index du début du cycle dans l'orbite (= `period_check_iter` lors de la détection
+    /// Brent's). z_ref[cycle_start] et z_ref[cycle_start + cycle_period] sont équivalents
+    /// modulo tolérance numérique.
+    pub cycle_start: u32,
 }
 
 impl ReferenceOrbit {
@@ -192,6 +202,19 @@ impl ReferenceOrbit {
     /// Get the effective length of the reference orbit for this phase
     pub fn effective_len(&self) -> usize {
         self.z_ref_f64.len().saturating_sub(self.phase_offset as usize)
+    }
+
+    /// Renvoie l'index `m` cyclé dans `[cycle_start, cycle_start + cycle_period)` quand
+    /// l'orbite est périodique et `m` dépasse `cycle_start`. Sinon `None` (le caller doit
+    /// rebaser ou stopper). Permet à `pixel_loop` d'étendre l'orbite indéfiniment via
+    /// modulo sur les centres périodiques intérieurs, évitant le rebase qui produit
+    /// une image uniforme.
+    #[inline]
+    pub fn wrap_periodic(&self, m: u32) -> Option<u32> {
+        if self.cycle_period == 0 || m < self.cycle_start {
+            return None;
+        }
+        Some(self.cycle_start + (m - self.cycle_start) % self.cycle_period)
     }
 
     /// Create a glitch-resolving reference starting at a given iteration.
@@ -331,6 +354,8 @@ impl ReferenceOrbit {
             // since they are short-lived and need full precision access.
             high_precision_data: z_ref_gmp,
             data_storage_interval: 1,
+            cycle_period: 0,
+            cycle_start: 0,
         })
     }
 
@@ -490,6 +515,8 @@ fn build_hybrid_bla_references(
                 extended_iterations: primary_orbit.extended_iterations.clone(),
                 high_precision_data: primary_orbit.high_precision_data.clone(),
                 data_storage_interval: primary_orbit.data_storage_interval,
+                cycle_period: primary_orbit.cycle_period,
+                cycle_start: primary_orbit.cycle_start,
             };
             
             // Build BLA table for this phase reference (one BLA table per reference)
@@ -897,6 +924,7 @@ pub fn compute_reference_orbit(
     let mut period_check_iter = 0u32;
     let mut period_step = 1u32; // Floyd's cycle detection: double step size periodically
     let mut detected_period = 0u32;
+    let mut detected_cycle_start = 0u32;
 
     // Reusable GMP scratch buffers to eliminate per-iteration allocations.
     // The hot orbit loop previously created 4-6 fresh Float/Complex values per
@@ -934,6 +962,7 @@ pub fn compute_reference_orbit(
             let diff_norm = complex_norm_sqr(&period_diff, prec);
             if diff_norm < period_tol_gmp && i > period_check_iter {
                 detected_period = i - period_check_iter;
+                detected_cycle_start = period_check_iter;
                 // Stop the orbit: we've detected periodicity, meaning the center
                 // is an interior point. The orbit will just repeat from here.
                 break;
@@ -1039,6 +1068,8 @@ pub fn compute_reference_orbit(
             extended_iterations,
             high_precision_data,
             data_storage_interval,
+            cycle_period: detected_period,
+            cycle_start: detected_cycle_start,
         },
         cx_str,
         cy_str,
