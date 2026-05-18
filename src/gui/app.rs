@@ -1708,6 +1708,12 @@ impl FractallApp {
 }
 
 impl eframe::App for FractallApp {
+    // eframe 0.34+ requires `ui` on the App trait. The legacy `update` callback is
+    // still invoked alongside `ui`, so keep all our panel-based logic in `update`
+    // and provide an empty `ui` stub.
+    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
+
+    #[allow(deprecated)]
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         // Init différée du GPU : une fois la fenêtre eframe prête, éviter "Parent device is lost" sur NVIDIA
         if !self.gpu_init_attempted {
@@ -2557,12 +2563,14 @@ impl eframe::App for FractallApp {
                                 rect,
                                 0.0,
                                 egui::Stroke::new(3.0, egui::Color32::from_rgb(255, 255, 0)),
+                                egui::StrokeKind::Middle,
                             );
                             // Rectangle intérieur pour meilleure visibilité
                             ui.painter().rect_stroke(
                                 rect.expand(-1.0),
                                 0.0,
                                 egui::Stroke::new(1.0, egui::Color32::from_rgb(0, 0, 0)), // Bordure noire intérieure
+                                egui::StrokeKind::Middle,
                             );
                             
                             // Demander un re-rendu pour mettre à jour le rectangle en temps réel
@@ -2636,6 +2644,7 @@ impl eframe::App for FractallApp {
                             overlay_rect,
                             4.0,
                             egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 100, 100)),
+                            egui::StrokeKind::Middle,
                         );
 
                         // Afficher la preview Julia ou un spinner

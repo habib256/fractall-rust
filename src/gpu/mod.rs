@@ -106,7 +106,10 @@ impl GpuRenderer {
             let backends = select_backends_for_platform();
             let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
                 backends,
-                ..Default::default()
+                flags: wgpu::InstanceFlags::default(),
+                memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+                backend_options: wgpu::BackendOptions::default(),
+                display: None,
             });
             let adapter = instance
                 .request_adapter(&wgpu::RequestAdapterOptions {
@@ -114,7 +117,8 @@ impl GpuRenderer {
                     compatible_surface: None,
                     force_fallback_adapter: false,
                 })
-                .await?;
+                .await
+                .ok()?;
 
             // Afficher les infos de l'adaptateur GPU
             let info = adapter.get_info();
@@ -127,15 +131,14 @@ impl GpuRenderer {
             let required_features = wgpu::Features::empty();
 
             let (device, queue) = adapter
-                .request_device(
-                    &wgpu::DeviceDescriptor {
-                        label: Some("gpu-device"),
-                        required_features,
-                        required_limits: wgpu::Limits::default(),
-                        memory_hints: wgpu::MemoryHints::default(),
-                    },
-                    None,
-                )
+                .request_device(&wgpu::DeviceDescriptor {
+                    label: Some("gpu-device"),
+                    required_features,
+                    required_limits: wgpu::Limits::default(),
+                    experimental_features: wgpu::ExperimentalFeatures::default(),
+                    memory_hints: wgpu::MemoryHints::default(),
+                    trace: wgpu::Trace::Off,
+                })
                 .await
                 .ok()?;
 
@@ -167,8 +170,8 @@ impl GpuRenderer {
 
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("mandelbrot-pipeline-layout"),
-                bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&bind_group_layout)],
+                immediate_size: 0,
             });
 
             // Ne plus créer les layouts f64 car on utilise uniquement f32
@@ -184,7 +187,7 @@ impl GpuRenderer {
                 label: Some("mandelbrot-pipeline-f32"),
                 layout: Some(&pipeline_layout),
                 module: &shader_f32,
-                entry_point: "main",
+                entry_point: Some("main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 cache: None,
             });
@@ -198,7 +201,7 @@ impl GpuRenderer {
                 label: Some("julia-pipeline-f32"),
                 layout: Some(&pipeline_layout),
                 module: &shader_julia_f32,
-                entry_point: "main",
+                entry_point: Some("main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 cache: None,
             });
@@ -216,7 +219,7 @@ impl GpuRenderer {
                     label: Some("burning-ship-pipeline-f32"),
                     layout: Some(&pipeline_layout),
                     module: &shader_burning_ship_f32,
-                    entry_point: "main",
+                    entry_point: Some("main"),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                     cache: None,
                 });
@@ -296,8 +299,8 @@ impl GpuRenderer {
             let pipeline_layout_perturb =
                 device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("perturbation-pipeline-layout"),
-                    bind_group_layouts: &[&bind_group_layout_perturb],
-                    push_constant_ranges: &[],
+                    bind_group_layouts: &[Some(&bind_group_layout_perturb)],
+                    immediate_size: 0,
                 });
 
             let shader_perturb = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -310,7 +313,7 @@ impl GpuRenderer {
                     label: Some("perturbation-pipeline"),
                     layout: Some(&pipeline_layout_perturb),
                     module: &shader_perturb,
-                    entry_point: "main",
+                    entry_point: Some("main"),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                     cache: None,
                 });
@@ -360,8 +363,8 @@ impl GpuRenderer {
             let pipeline_layout_bytecode = device.create_pipeline_layout(
                 &wgpu::PipelineLayoutDescriptor {
                     label: Some("bytecode-pipeline-layout"),
-                    bind_group_layouts: &[&bind_group_layout_bytecode],
-                    push_constant_ranges: &[],
+                    bind_group_layouts: &[Some(&bind_group_layout_bytecode)],
+                    immediate_size: 0,
                 },
             );
             let shader_bytecode = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -373,7 +376,7 @@ impl GpuRenderer {
                     label: Some("bytecode-pipeline"),
                     layout: Some(&pipeline_layout_bytecode),
                     module: &shader_bytecode,
-                    entry_point: "main",
+                    entry_point: Some("main"),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                     cache: None,
                 },
@@ -766,7 +769,7 @@ impl GpuRenderer {
         buffer_slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = sender.send(r);
         });
-        self.device.poll(wgpu::Maintain::Poll);
+        let _ = self.device.poll(wgpu::PollType::Poll);
 
         loop {
             match receiver.recv_timeout(Duration::from_millis(10)) {
@@ -779,7 +782,7 @@ impl GpuRenderer {
                         readback_buffer.unmap();
                         return None;
                     }
-                    self.device.poll(wgpu::Maintain::Poll);
+                    let _ = self.device.poll(wgpu::PollType::Poll);
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     return None;
@@ -1183,7 +1186,7 @@ impl GpuRenderer {
         buffer_slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = sender.send(r);
         });
-        self.device.poll(wgpu::Maintain::Poll);
+        let _ = self.device.poll(wgpu::PollType::Poll);
         loop {
             match receiver.recv_timeout(Duration::from_millis(10)) {
                 Ok(result) => {
@@ -1195,7 +1198,7 @@ impl GpuRenderer {
                         readback_buffer.unmap();
                         return None;
                     }
-                    self.device.poll(wgpu::Maintain::Poll);
+                    let _ = self.device.poll(wgpu::PollType::Poll);
                 }
                 Err(RecvTimeoutError::Disconnected) => return None,
             }
@@ -1376,7 +1379,7 @@ impl GpuRenderer {
         buffer_slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = sender.send(r);
         });
-        self.device.poll(wgpu::Maintain::Poll);
+        let _ = self.device.poll(wgpu::PollType::Poll);
 
         loop {
             match receiver.recv_timeout(Duration::from_millis(10)) {
@@ -1389,7 +1392,7 @@ impl GpuRenderer {
                         readback_buffer.unmap();
                         return None;
                     }
-                    self.device.poll(wgpu::Maintain::Poll);
+                    let _ = self.device.poll(wgpu::PollType::Poll);
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     return None;
@@ -1494,7 +1497,7 @@ impl GpuRenderer {
         buffer_slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = sender.send(r);
         });
-        self.device.poll(wgpu::Maintain::Poll);
+        let _ = self.device.poll(wgpu::PollType::Poll);
 
         loop {
             match receiver.recv_timeout(Duration::from_millis(10)) {
@@ -1507,7 +1510,7 @@ impl GpuRenderer {
                         readback_buffer.unmap();
                         return None;
                     }
-                    self.device.poll(wgpu::Maintain::Poll);
+                    let _ = self.device.poll(wgpu::PollType::Poll);
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     return None;

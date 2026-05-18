@@ -1,4 +1,0 @@
-name,status,render_sec,exit_code,stderr_lines
-seahorse,ok,1.068,0,"TOML /Users/factory/src/fractall-rust/toml/seahorse.toml: iterations=10000000000 > u32::MAX, clamp à 4294967295. TODO: passer iteration_max en u64."
-spiral,ok,0.020,0,
-test,ok,0.511,0,
