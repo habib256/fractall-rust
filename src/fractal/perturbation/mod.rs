@@ -1809,6 +1809,34 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
+    #[test]
+    fn dbg_effective_spans_extreme_zoom() {
+        use super::effective_spans_fexp;
+        for (label, span_str, expected_log2) in [
+            ("e50", "4e-50", -161.0),
+            ("e1000", "4e-1000", -3320.0),
+            ("e1121", "9.68e-1122", -3725.0),
+        ] {
+            let mut p = default_params_for_type(FractalType::Mandelbrot, 200, 200);
+            p.span_x = 0.0;
+            p.span_y = 0.0;
+            p.span_x_hp = Some(span_str.to_string());
+            p.span_y_hp = Some(span_str.to_string());
+            let (sx, _sy) = effective_spans_fexp(&p);
+            let actual_log2 = (sx.mantissa.abs().ln() / 2.0f64.ln()) + sx.exponent as f64;
+            eprintln!(
+                "{}: span_str={} sx=(mant={:.4}, exp={}) log2={:.2} expected_log2={}",
+                label, span_str, sx.mantissa, sx.exponent, actual_log2, expected_log2
+            );
+            assert!(sx.mantissa != 0.0, "{} mantissa zero!", label);
+            assert!(
+                (actual_log2 - expected_log2).abs() < 5.0,
+                "{} log2 mismatch: got {} expected {}",
+                label, actual_log2, expected_log2
+            );
+        }
+    }
+
     fn base_params(fractal_type: FractalType) -> FractalParams {
         // center=(0,0), span=(4,3) -> xmin=-2, xmax=2, ymin=-1.5, ymax=1.5
         let mut p = default_params_for_type(fractal_type, 5, 5);
