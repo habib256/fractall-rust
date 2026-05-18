@@ -259,6 +259,14 @@ fn try_bytecode_unified_path(
         Some(pixel_result)
     })?;
 
+    // Note: le bytecode pixel_loop gère l'exhaustion d'orbite de référence
+    // via rebasing automatique (cf. `pixel_loop.rs::end_of_ref` ligne ~639,
+    // aligné F3.1 `hybrid.cc:301`). Contrairement au path legacy `iterate_pixel`
+    // qui s'arrête à `n >= effective_len` (bug #13), le bytecode rebase :
+    // `delta = z_ref[end] + delta; m = 0` et `n` continue de croître. Aucune
+    // détection d'exhaustion n'est nécessaire ici — les pixels iter jusqu'à
+    // escape ou iteration_max via réutilisation cyclique de l'orbite.
+
     // Convertir UnifiedPixelResult → DeltaResult attendu par le pipeline.
     let smooth_iteration = if result.iteration < params.iteration_max {
         // Smooth coloring standard : n + 1 - log2(log|z|)
