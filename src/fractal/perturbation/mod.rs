@@ -414,6 +414,136 @@ fn build_reuse<'a>(
     })
 }
 
+/// Spans (re, im) extraits depuis les coordonnées HP en FloatExp pour préserver
+/// les magnitudes < f64::MIN_POSITIVE.
+///
+/// À zoom > 1e308, `params.span_x / span_y` (f64) underflow à 0, ce qui force
+/// le dc per-pixel à zéro et produit une image uniforme. Ce helper construit
+/// FloatExp directement depuis les chaînes HP (parsing GMP → mantisse + exp
+/// arbitraire) puis convertit en FloatExp (mantisse f64 + exposant i64) qui
+/// est ensuite utilisable dans tous les arithmétiques par-pixel sans précision
+/// loss tant que les operations restent en FloatExp.
+pub(crate) fn effective_spans_fexp(params: &FractalParams) -> (crate::fractal::perturbation::types::FloatExp, crate::fractal::perturbation::types::FloatExp) {
+    use crate::fractal::perturbation::types::FloatExp;
+    let from_hp_or_f64 = |hp: Option<&str>, fallback: f64| -> FloatExp {
+        if fallback.is_finite() && fallback != 0.0 {
+            return FloatExp::from_f64(fallback);
+        }
+        let Some(hp_str) = hp else {
+            return FloatExp::from_f64(fallback);
+        };
+        let Ok(raw) = Float::parse(hp_str) else {
+            return FloatExp::from_f64(fallback);
+        };
+        // Précision suffisante pour capturer un exposant arbitraire.
+        let v = Float::with_val(1024, raw);
+        if v.is_zero() || !v.is_finite() {
+            return FloatExp::from_f64(fallback);
+        }
+        // Décomposer en (mantisse f64, exposant binaire). On utilise log2 ensuite
+        // pow2 pour reconstruire — ldexp ferait pareil mais sans risque d'overflow
+        // car FloatExp::new normalise.
+        let log2 = v.clone().abs().ln() / Float::with_val(1024, 2.0f64.ln());
+        let exp_int = log2.to_f64().floor();
+        // mantisse = v / 2^exp_int ∈ [1, 2)
+        let two_pow = Float::with_val(1024, 2.0f64.powf(exp_int.min(1023.0).max(-1023.0)));
+        // Si exp_int hors range f64 (très probable à zoom 1e1000), on construit
+        // 2^exp_int via une boucle. Pour simplicité ici on accepte un mantisse
+        // possiblement déformé et on laisse FloatExp::new() normaliser.
+        let mantissa_float = if exp_int.abs() < 1023.0 {
+            v.clone() / &two_pow
+        } else {
+            // Décomposition explicite : v * 2^(-exp_int) via successive halvings
+            // sur Float (1024 bits) — sûr pour any exp_int.
+            let mut m = v.clone();
+            let mut remaining = -exp_int;
+            // Apply by 1000-step chunks
+            while remaining.abs() >= 1000.0 {
+                let step = if remaining > 0.0 { 1000.0 } else { -1000.0 };
+                let chunk = Float::with_val(1024, 2.0f64.powf(step));
+                m *= &chunk;
+                remaining -= step;
+            }
+            if remaining != 0.0 {
+                let chunk = Float::with_val(1024, 2.0f64.powf(remaining));
+                m *= &chunk;
+            }
+            m
+        };
+        let mantissa = mantissa_float.to_f64();
+        if !mantissa.is_finite() || mantissa == 0.0 {
+            return FloatExp::from_f64(fallback);
+        }
+        // FloatExp exposant = i32 ; les span en zoom corpus restent dans
+        // ±(quelques milliers) — bien dans le range i32 (±2^31).
+        let exp_clamped = exp_int.clamp(i32::MIN as f64, i32::MAX as f64) as i32;
+        FloatExp::new(mantissa, exp_clamped)
+    };
+    let sx = from_hp_or_f64(params.span_x_hp.as_deref(), params.span_x);
+    let sy = from_hp_or_f64(params.span_y_hp.as_deref(), params.span_y);
+    (sx, sy)
+}
+
+/// Calcule un pixel_size effectif tenant compte des coordonnées HP quand le calcul
+/// f64 underflow.
+///
+/// À zoom > ~1e308, `span_x/width` calculé en f64 produit 0 (denormal underflow),
+/// ce qui fait croire au dispatcher (`should_use_full_gmp_perturbation`,
+/// `bytecode_path_label`, `try_bytecode_unified_path`) que pixel_size est nul
+/// → retombe sur le path legacy `iterate_pixel` qui cape la boucle à
+/// `effective_len-1` et produit une image uniforme sur orbite référence escapée.
+///
+/// Retourne `0.0` si pixel_size est vraiment 0 (width=0 ou tout span nul même
+/// en HP), sinon une valeur positive représentant le pixel_size effectif. La
+/// valeur peut être en dessous du normal range f64 (denormal), c'est OK pour
+/// les comparaisons `< seuil`.
+pub(crate) fn effective_pixel_size(params: &FractalParams) -> f64 {
+    if params.width == 0 || params.height == 0 {
+        return 0.0;
+    }
+    let pixel_size_f64 = (params.span_x.abs() / params.width as f64)
+        .max(params.span_y.abs() / params.height as f64);
+    if pixel_size_f64.is_finite() && pixel_size_f64 > 0.0 {
+        return pixel_size_f64;
+    }
+    // f64 underflow / non-finite : reconstruire via HP si dispo.
+    let parse = |s: &str| -> Option<Float> {
+        let raw = Float::parse(s).ok()?;
+        Some(Float::with_val(1024, raw))
+    };
+    let sx_str = params.span_x_hp.as_deref();
+    let sy_str = params.span_y_hp.as_deref().or(sx_str);
+    let sx = sx_str.and_then(parse);
+    let sy = sy_str.and_then(parse);
+    let (Some(sx), Some(sy)) = (sx, sy) else {
+        return 0.0;
+    };
+    let w = Float::with_val(1024, params.width as f64);
+    let h = Float::with_val(1024, params.height as f64);
+    let mut a = sx.abs();
+    a /= &w;
+    let mut b = sy.abs();
+    b /= &h;
+    let pixel = if a > b { a } else { b };
+    if pixel.is_zero() || !pixel.is_finite() {
+        return 0.0;
+    }
+    // log2 first then to_f64 — sinon to_f64 sature les très petits à 0.
+    let log2 = pixel.ln() / Float::with_val(1024, 2.0f64.ln());
+    let log2_f64 = log2.to_f64();
+    if !log2_f64.is_finite() {
+        return 0.0;
+    }
+    // Reconstruit pixel_size = 2^log2 ; pour log2 < f64::MIN_EXP (≈-1074), retourne
+    // f64::MIN_POSITIVE comme sentinelle « extrêmement petit mais > 0 ».
+    let result = 2.0_f64.powf(log2_f64);
+    if result > 0.0 && result.is_finite() {
+        result
+    } else {
+        f64::MIN_POSITIVE
+    }
+}
+
 /// Calcule la précision GMP en bits pour l'orbite de référence et le cache perturbation.
 ///
 /// Deux politiques (référence C++ Fraktaler-3 vs conservative Rust):
@@ -539,10 +669,18 @@ pub fn should_use_full_gmp_perturbation(params: &FractalParams) -> bool {
     if matches!(std::env::var("FRACTALL_FORCE_GMP_PERTURB").as_deref(), Ok("1" | "true")) {
         return true;
     }
-    // Use max of both axes to correctly handle non-square images
-    let pixel_size = (params.span_x.abs() / params.width as f64)
-        .max(params.span_y.abs() / params.height as f64);
-    if !pixel_size.is_finite() || pixel_size <= 0.0 {
+    // Si le path bytecode (f64 ou exp) peut s'en charger, il est strictement
+    // plus rapide que GMP-per-pixel et tout aussi précis (réf. orbite en GMP,
+    // delta en ComplexExp couvrant des magnitudes 2^±2^31). On laisse donc
+    // le pipeline routes via try_bytecode_unified_path → bytecode_exp pour
+    // les zooms > 1e100 sur Mandelbrot/Julia/BS/Tricorn/Multibrot. GMP-per-pixel
+    // ne reste utile que comme garde-fou si bytecode_path_label retourne None
+    // (multi-phase, type non-bytecode, ou pixel_size truly < bytecode_gmp_threshold).
+    if crate::fractal::perturbation::delta::bytecode_path_label(params).is_some() {
+        return false;
+    }
+    let pixel_size = effective_pixel_size(params);
+    if pixel_size <= 0.0 {
         return false;
     }
 
@@ -817,6 +955,10 @@ pub fn render_perturbation_with_cache(
     // Le point complexe du pixel est alors: C + dc où C = (center_x, center_y)
     let x_range = params.span_x;
     let y_range = params.span_y;
+    // x_range/y_range HP-aware en FloatExp pour les zooms > 1e308 où le f64
+    // span underflow à 0 (cf. e1000 zoom 1e1000 → dc = 0 partout → image
+    // uniforme avant ce fix).
+    let (x_range_fexp, y_range_fexp) = effective_spans_fexp(params);
     let inv_width = 1.0 / params.width as f64;
     let inv_height = 1.0 / params.height as f64;
 
@@ -839,10 +981,10 @@ pub fn render_perturbation_with_cache(
     // car la rotation mélange dx et dy ; on calcule dc à la volée dans la boucle.
     let rot = params.rotation_matrix();
     let dc_re_fexp: Vec<FloatExp> = (0..width)
-        .map(|i| FloatExp::from_f64(((i as f64 + 0.5) * inv_width - 0.5) * x_range))
+        .map(|i| x_range_fexp * ((i as f64 + 0.5) * inv_width - 0.5))
         .collect();
     let dc_im_fexp: Vec<FloatExp> = (0..height)
-        .map(|j| FloatExp::from_f64(((j as f64 + 0.5) * inv_height - 0.5) * y_range))
+        .map(|j| y_range_fexp * ((j as f64 + 0.5) * inv_height - 0.5))
         .collect();
 
     let t_pixels_start = Instant::now();
@@ -909,8 +1051,8 @@ pub fn render_perturbation_with_cache(
                     let jx = ((hash & 0xFFFF) as f64 / 65536.0 - 0.5) * jitter_scale;
                     let jy = (((hash >> 16) & 0xFFFF) as f64 / 65536.0 - 0.5) * jitter_scale;
                     ComplexExp {
-                        re: FloatExp::from_f64(((i as f64 + 0.5 + jx) * inv_width - 0.5) * x_range),
-                        im: FloatExp::from_f64(((j as f64 + 0.5 + jy) * inv_height - 0.5) * y_range),
+                        re: x_range_fexp * ((i as f64 + 0.5 + jx) * inv_width - 0.5),
+                        im: y_range_fexp * ((j as f64 + 0.5 + jy) * inv_height - 0.5),
                     }
                 } else {
                     ComplexExp {

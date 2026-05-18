@@ -100,9 +100,15 @@ pub fn bytecode_path_label(params: &FractalParams) -> Option<&'static str> {
     if formula.phases.len() != 1 {
         return None;
     }
-    let pixel_size = (params.span_x.abs() / params.width.max(1) as f64)
-        .max(params.span_y.abs() / params.height.max(1) as f64);
-    if pixel_size < PIXEL_SIZE_GMP_THRESHOLD {
+    // pixel_size HP-aware. À zoom > 1e308, le calcul f64 underflow à 0, mais
+    // effective_pixel_size reconstruit depuis les coords HP. Le path bytecode_exp
+    // (ComplexExp, exposant i32) gère arbitrairement profond et est strictement
+    // préférable à `legacy_fexp` qui capte la boucle à `effective_len-1` et
+    // produit une image uniforme sur orbite référence escapée (cf. e1000).
+    // L'ancien seuil PIXEL_SIZE_GMP_THRESHOLD était surconservateur ; on
+    // route TOUS les zooms bytecode-supportés vers bytecode (f64 ou exp).
+    let pixel_size = crate::fractal::perturbation::effective_pixel_size(params);
+    if pixel_size <= 0.0 {
         return None;
     }
     if pixel_size < PIXEL_SIZE_EXP_THRESHOLD {
@@ -135,9 +141,9 @@ fn try_bytecode_unified_path(
     // ComplexExp dès le zoom > 1e13, alors que f64 reste précis bien au-delà.
     // Bench e14 : f64 path ~2.7s vs exp path ~6.1s (2.3× plus rapide pour
     // résultat identique au pixel près).
-    let pixel_size = (params.span_x.abs() / params.width.max(1) as f64)
-        .max(params.span_y.abs() / params.height.max(1) as f64);
-    if pixel_size < PIXEL_SIZE_GMP_THRESHOLD {
+    // pixel_size HP-aware (cf. bytecode_path_label).
+    let pixel_size = crate::fractal::perturbation::effective_pixel_size(params);
+    if pixel_size <= 0.0 {
         return None;
     }
     let use_exp_path = pixel_size < PIXEL_SIZE_EXP_THRESHOLD;

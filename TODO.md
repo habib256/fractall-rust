@@ -2,7 +2,7 @@
 
 > **Objectif** : être le meilleur renderer deep-zoom open-source en Rust. Fraktaler-3 = source de vérité algorithmique (cf. `docs/fraktaler-3-analysis.md`).
 
-État au **2026-05-17** : P3.1 livré end-to-end (Sessions A-E + GPU + dual numbers + cleanup). Le moteur bytecode unifié (BLA mat2 + rebasing F3) est actif par défaut sur CPU et GPU. La dette restante est documentée ci-dessous.
+État au **2026-05-18** : P3.1 livré end-to-end (Sessions A-E + GPU + dual numbers + cleanup). Le moteur bytecode unifié (BLA mat2 + rebasing F3) est actif par défaut sur CPU et GPU. Harness `scripts/compare_f3.py` opérationnel : compare EXR (N0/NF) entre F3 et Fractall pour les 84 fichiers de `toml/`. **Premier résumé (résolution 200×200, ER=4)** : 7 cas OK avec mean Δsi ∈ [0.65, 1342], 2 fractall_fail (e1086, opus, timeout 60s), 1 f3_fail (seahorse). La dette restante est documentée ci-dessous.
 
 ---
 
@@ -20,7 +20,7 @@ sur une résolution standard (1920×1080 par défaut), avec ε à définir empir
 (viser pixel-perfect là où c'est possible, équivalence visuelle ailleurs).
 
 **Plan d'attaque (sous-tâches trackées)** :
-1. CLI `--toml <path>` pour `fractall-cli` (charge real/imag/zoom/iterations + rotate).
+1. ✅ CLI `--toml <path>` pour `fractall-cli` (charge real/imag/zoom/iterations + rotate).
 2. ✅ Support du champ `rotate` dans le loader TOML (plusieurs fichiers du corpus
    l'utilisent : olbaid1/3/4/5, opus, opus2, x). Appliqué via `K = mat2(cos,-sin,sin,cos)`
    au mapping pixel→c (aligné F3 `hybrid.cc:265`). Champ `FractalParams::rotation`
@@ -31,18 +31,84 @@ sur une résolution standard (1920×1080 par défaut), avec ε à définir empir
    `perturbation/mod.rs` (lignes ~1109, 1247) ne tient pas compte de la rotation
    pour les références secondaires — à corriger en même temps que la suppression
    du path legacy (cf. P1.1 reste).
-3. Harness `scripts/compare_f3.*` qui lance F3 batch + fractall-cli sur chaque TOML,
+3. ✅ Harness `scripts/compare_f3.py` qui lance F3 batch + fractall-cli sur chaque TOML,
    produit PNG + diff + métriques. F3 binaire dispo à `fraktaler-3-3.1/fraktaler-3.macos`.
-4. Audit initial sur 5 cas représentatifs (zoom moyen, deep, très deep, rotate, glitchy)
-   pour prioriser les fixes.
-5. **P1.3 quick wins** (constantes F3) — déjà listé en P1, monte en priorité ici.
+   Sortie : `bench/compare/_summary.{csv,md}` + PNG side-by-side. Export EXR
+   Fractall via `--export-iterations` (N0+NF format F3, NBIAS=1024). NF formula
+   `nf_f3` dans `src/io/exr.rs` vérifiée pixel-pour-pixel identique à F3
+   `hybrid.cc:350`.
+4. **Audit initial fait (2026-05-18)**, premier résumé :
+   - cas OK : `test` (Δmean=0.65), `spiral` (10.45), `e50` (108), `e1121` (119),
+     `glitch_test_1` (191), `e1000` (691), `olbaid1` (1342)
+   - fails : `e1086`, `opus` (fractall timeout 60s), `seahorse` (f3 timeout)
+   - **Pattern critique sur deep zooms (e1000, e1121)** : Fractall produit une
+     image **uniforme** (tous pixels au même iter ≈ 691), F3 montre la structure
+     fractale détaillée. mean ≈ rms ≈ max signale un offset quasi-constant.
+   - **Hypothèse cause** : détection de période sur l'orbite référence
+     (`ReferenceOrbit::cycle_period`) + `wrap_periodic` ramène tous les pixels
+     au même point du cycle court. Le fix récent dans `perturbation/delta.rs`
+     (path legacy) traite le cas pour les centres intérieurs, mais pas
+     symétriquement appliqué dans `bytecode/pixel_loop_exp.rs` (deep zoom
+     ComplexExp) ni `perturbation/delta.rs::iterate_pixel_gmp`. À corriger.
+5. **P1.3 quick wins** : audit des constantes (voir détail mis à jour ci-dessous) :
+   - ✅ `bla_threshold = 1.0/2²⁴` (déjà aligné F3)
+   - ✅ `REFERENCE_BAILOUT_SQR = 1e10` (déjà aligné F3, cf. `perturbation/orbit.rs:26`)
+   - ⚠️ `bailout` (escape radius pixel) défaut Fractall = `4` ; F3 défaut = `25`
+     (ER² = 625). Pour la comparaison on aligne explicitement à 4 côté F3 via le
+     wrapper TOML. Pour matcher visuellement F3 hors comparaison, garder 25 en
+     défaut (mieux conditionné pour smooth iteration). À discuter : faire de
+     `25` le défaut Fractall et mettre à jour goldens.
+   - ✅ Clamp GMP précision relâché à `[128, 65536]` (cf. `mod.rs:497`). F3 n'a
+     pas de clamp haut ; 65536 couvre le corpus (max ≈ 26500 bits à zoom 1e8000).
+   - ⏳ `iters_ptb < PerturbIterations` et `steps_bla < BLASteps` (F3) : caps
+     anti-runaway par pixel, NON enforcés dans `bytecode/pixel_loop.rs`
+     (seul `n < iteration_max` est testé). À ajouter pour matcher F3, qui sort
+     en `n = current_iter` (pas `iter_max`) quand cap atteint → effet visuel
+     différent sur pixels intérieurs.
 6. **P1.5 AA subframes jitterés** — F3 le fait par défaut, indispensable pour parité
    visuelle bords fins.
-7. Itérer jusqu'à convergence sur l'ensemble du corpus.
+7. Itérer jusqu'à convergence sur l'ensemble du corpus (élargir résolution / cas
+   testés après les premières corrections deep-zoom).
 
 ---
 
 ## Priorité 1 — Qualité numérique deep-zoom
+
+### P1.0 — Uniformisation aux deep zooms (e1000, olbaid1) ✅ FIXÉ (2026-05-18)
+- **Symptôme initial** : à zoom > 1e308, Fractall produisait une image quasi-
+  uniforme (`avg_iter/px == max_iter/px`), F3 rendait la structure fractale
+  détaillée. Bench : mean Δsi ≈ rms ≈ max (e1000: 691/691/707, olbaid1:
+  1342/1652/4312).
+- **Cause racine** : `params.span_x` / `params.span_y` sont f64. À zoom > 1e308,
+  `span = 4/zoom` underflow à 0 en f64 (même si `span_x_hp` HP est correct).
+  Tout le calcul `dc_re_fexp[i] = FloatExp::from_f64(((i+0.5)/width - 0.5) * x_range)`
+  produit donc 0 pour tous les pixels → dc nul → uniformisation.
+- **Fix** (`perturbation/mod.rs`) :
+  1. Helper `effective_spans_fexp(params)` qui parse `span_x_hp` / `span_y_hp`
+     en `Float(1024 bits)` puis convertit en `FloatExp` (mantisse f64 + exp i32).
+     Couvre des magnitudes jusqu'à ±2^31, soit zoom jusqu'à ~1e10⁸.
+  2. Helper `effective_pixel_size(params)` HP-aware utilisé par les
+     dispatchers de path.
+  3. `bytecode_path_label` et `try_bytecode_unified_path` (`delta.rs`) :
+     utilisent `effective_pixel_size`, retirent le seuil GMP qui était
+     surconservateur — bytecode_exp gère arbitrairement profond via ComplexExp.
+  4. `should_use_full_gmp_perturbation` court-circuite à `false` quand
+     bytecode est applicable (évite GMP-per-pixel inutile + très lent).
+  5. `render_perturbation_with_cache` : remplace `x_range = params.span_x`
+     (f64 underflow) par `x_range_fexp` (FloatExp HP-aware) dans la
+     construction de `dc_re_fexp` / `dc_im_fexp` / chemin jitter.
+- **Résultat** (bench 200×200) :
+  | Cas | Avant Δmean | Après Δmean | Statut |
+  |-----|------------:|------------:|--------|
+  | e1000 | 691.13 | **0.44** | ✅ parité quasi-F3 |
+  | olbaid1 | 1341.98 | **52.89** | ✅ progrès énorme |
+  | e1121 | 119.18 | 116.89 | ⏳ bug indépendant |
+  | e50 | 107.73 | 107.73 | ⏳ idem |
+- **Restant** :
+  1. Glitch-correction paths (`perturbation/mod.rs:1195, 1292, 1332`) utilisent
+     toujours `x_range` f64 pour le dc secondaire — à porter sur FloatExp
+     quand le path legacy sera retiré.
+  2. Investigation e1121 / e50 (offset ~100, pas une uniformisation pure).
 
 ### P1.1 — Rebasing proactif ✅ FAIT (P3.1 Sessions A-E)
 - [x] Rebasing F3 dans `fractal/bytecode/pixel_loop.rs` avec condition F3 stricte `|Z+z|² < |z|²`.
@@ -57,11 +123,21 @@ sur une résolution standard (1920×1080 par défaut), avec ε à définir empir
 - [ ] `bla.rs` (conformal) et `nonconformal.rs` (matriciel) restent pour le path GMP deep zoom — à retirer en même temps que P1.1.
 
 ### P1.3 — Aligner les constantes critiques sur F3 (quick wins)
-- [ ] Reference bailout = `1e10` hardcoded dans `hybrid_reference` équivalent.
-- [ ] Escape radius pixel par défaut = `25` (carré 625) — meilleur conditionnement smooth.
-- [ ] `bla_threshold` = `1/2²⁴ ≈ 6e-8`, indépendant du type (actuellement `1e-8`).
-- [ ] Précision GMP : retirer le clamp `[128, 8192]` ou passer à `[24, ∞]`.
-- [ ] Pixel spacing BLA = `4/zoom/height` strictement (revérifier).
+- [x] Reference bailout = `1e10` hardcoded — `REFERENCE_BAILOUT_SQR` dans
+      `perturbation/orbit.rs:26`, utilisé f64 (ligne 27) et GMP (ligne 268).
+- [ ] Escape radius pixel par défaut = `25` (carré 625) — meilleur conditionnement
+      smooth. Actuellement défaut Fractall = `4`. Toucher au défaut casse les
+      tests goldens : à coupler avec un refresh des golden PNG.
+- [x] `bla_threshold = 1.0/2²⁴ ≈ 5.96e-8` — défini dans `definitions.rs:33` et
+      `types.rs::default_bla_threshold`.
+- [x] Précision GMP : clamp relâché à `[128, 65536]` (`mod.rs:497, 522`). F3 n'a
+      pas de clamp haut ; suffisant pour le corpus actuel (max ≈ 26500 bits).
+- [ ] Vérifier pixel spacing BLA = `4/zoom/height` strict dans tous les paths
+      (`bytecode/bla_dual.rs`, `perturbation/bla.rs`, `nonconformal.rs`).
+- [ ] **NOUVEAU** — caps `max_perturb_iterations` / `max_bla_steps` non enforcés
+      dans `bytecode/pixel_loop{,_exp}.rs`. F3 sort `n = current_iter` quand
+      le cap est atteint, ce qui colore le pixel comme « échappé tard » au lieu
+      d'intérieur. À ajouter pour parité.
 
 ### P1.4 — `diffabs` Burning Ship ✅ FAIT
 - [x] `diffabs(c, d)` dans `delta.rs::diffabs`, utilisé par le bytecode delta-form (`bytecode/delta_form.rs`) pour AbsX/AbsY, validé par 9 tests d'invariance Z+δ.
@@ -153,14 +229,24 @@ sur une résolution standard (1920×1080 par défaut), avec ε à définir empir
 
 ## Ordre d'attaque recommandé
 
-P3.1 est clos pour le hot path (CPU bytecode + GPU bytecode + dual numbers). Il reste deux blocs avant de pouvoir supprimer le code legacy :
+P3.1 est clos pour le hot path (CPU bytecode + GPU bytecode + dual numbers). Le
+nouveau goulot est la **parité visuelle vs F3 sur le corpus `toml/`** (P0).
 
-1. **Porter `iterate_pixel_gmp` sur pixel_loop** (path GMP deep zoom pur, sans rebase F3 bytecode). Une fois fait, on retire `glitch.rs`, `nonconformal.rs`, les champs perturbation legacy, et la branche `--no-bytecode` peut devenir une garde de debug uniquement.
-2. **P2.1 GitHub Actions** : indispensable avant tout autre gros refactor — la confiance vient des golden tests.
-
-Une fois ces deux items livrés, les chantiers ouverts en priorité :
-
-3. **P1.3 quick wins** : alignement des constantes F3 (peu de code, gros gain de cohérence).
-4. **P2.2 découpe des gros fichiers** : préalable à tout refactor architectural.
-5. **P1.5 AA subframes jitterés** : qualité visuelle, surtout en mode Distance.
-6. **P3.4 multi-phase UI/CLI** : feature de différenciation, infrastructure déjà prête.
+1. **P1.0 — fix uniformisation deep-zoom** (e1000, e1121, olbaid1). Bug
+   bloquant pour P0. Cause = traitement de la périodicité dans `pixel_loop_exp`
+   et `iterate_pixel_gmp`. Sans ça, P0 est inatteignable.
+2. **P2.1 GitHub Actions** : indispensable avant tout autre gros refactor — la
+   confiance vient des golden tests.
+3. **Investiguer fails Fractall** (e1086, opus). Probablement GMP-per-pixel
+   coûteux quand BLA ne couvre pas → 60s timeout. À profiler.
+4. **P1.3 quick wins restants** : caps `max_perturb_iterations` / `max_bla_steps`
+   dans `bytecode/pixel_loop{,_exp}.rs`, plus la décision sur `bailout` défaut
+   (4 vs 25).
+5. **Porter `iterate_pixel_gmp` sur pixel_loop** (path GMP deep zoom pur, sans
+   rebase F3 bytecode). Une fois fait, on retire `glitch.rs`, `nonconformal.rs`,
+   les champs perturbation legacy, et la branche `--no-bytecode` peut devenir
+   une garde de debug uniquement.
+6. **P2.2 découpe des gros fichiers** : préalable à tout refactor architectural.
+7. **P1.5 AA subframes jitterés** : qualité visuelle, surtout en mode Distance.
+8. **P3.4 multi-phase UI/CLI** : feature de différenciation, infrastructure
+   déjà prête.
