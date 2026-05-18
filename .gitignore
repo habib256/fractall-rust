@@ -20,6 +20,11 @@ Thumbs.db
 ## fractall-quality output
 /quality-reports/
 
+# Dépendances GUI Fraktaler-3 (optionnelles, non versionnées — clone local si besoin de compiler F3 avec GUI)
+/fraktaler-3-3.1/imgui/
+/fraktaler-3-3.1/imgui-filebrowser/
+/fraktaler-3-3.1/implot/
+
 ## Generated test artifacts (CLI renders dropped at repo root)
 /out.png
 /fractal_*.png
