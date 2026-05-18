@@ -1060,11 +1060,11 @@ pub fn render_perturbation_with_cache(
         // same reference. A full Hybrid BLA implementation would switch to a different reference
         // corresponding to the current phase when rebasing.
         // Skip secondary references entirely when bytecode/F3 path is used :
-        // le bytecode pixel_loop ne renvoie jamais `glitched: true` (rebasing
-        // automatique sur exhaustion, cf. `try_bytecode_unified_path`). Toute
-        // entrée du `glitch_mask` provient donc d'un fallback path legacy (rare)
-        // ou d'un faux positif neighbor pass déjà neutralisé. Inutile de
-        // recalculer 76 k pixels en GMP pour rien (cf. comparaison F3).
+        // le bytecode pixel_loop ne renvoie jamais `glitched: true` (rebase F3
+        // sur exhaustion aligné F3.1, cf. `try_bytecode_unified_path`). Toute
+        // entrée du `glitch_mask` viendrait d'un fallback path legacy ou d'un
+        // faux positif neighbor pass — ni l'un ni l'autre ne devraient déclencher
+        // le mécanisme legacy de références secondaires (overhead inutile).
         if !small_image && params.max_secondary_refs > 0 && !bytecode_path {
             let clusters = detect_glitch_clusters(
                 &glitch_mask,
@@ -1318,12 +1318,12 @@ pub fn render_perturbation_with_cache(
         let glitch_ratio = glitched_indices.len() as f64 / total_pixels as f64;
         const GLITCH_FALLBACK_THRESHOLD: f64 = 0.30; // 30% (augmenté de 10%)
 
-        // Quand le path bytecode est actif, le bytecode pixel_loop ne renvoie
-        // jamais `glitched: true` (rebasing automatique sur exhaustion, cf.
-        // `try_bytecode_unified_path`). Tout pixel encore flaggé glitched
-        // provient d'un fallback path legacy ou d'un faux positif neighbor pass.
-        // Un full recalcul `iterate_point_mpc` (~10³× plus lent par pixel) serait
-        // catastrophique sur les deep zooms et inutile dans ce contexte.
+        // Quand le path bytecode est actif, le bytecode ne flag jamais
+        // (`glitched: false` toujours, cf. `try_bytecode_unified_path`). Le
+        // gate `!bytecode_path` empêche un full recalcul `iterate_point_mpc`
+        // (~10³× plus lent par pixel) si un flag spurieux survenait d'un faux
+        // positif neighbor pass — catastrophique sur deep zooms (cf.
+        // glitch_test_1 : 160k px × 275k iter en GMP pur = plusieurs heures).
         let allow_full_gmp_fallback = !bytecode_path;
 
         if allow_full_gmp_fallback && glitch_ratio > GLITCH_FALLBACK_THRESHOLD {

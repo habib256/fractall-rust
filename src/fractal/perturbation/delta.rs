@@ -259,13 +259,15 @@ fn try_bytecode_unified_path(
         Some(pixel_result)
     })?;
 
-    // Note: le bytecode pixel_loop gère l'exhaustion d'orbite de référence
-    // via rebasing automatique (cf. `pixel_loop.rs::end_of_ref` ligne ~639,
-    // aligné F3.1 `hybrid.cc:301`). Contrairement au path legacy `iterate_pixel`
-    // qui s'arrête à `n >= effective_len` (bug #13), le bytecode rebase :
-    // `delta = z_ref[end] + delta; m = 0` et `n` continue de croître. Aucune
-    // détection d'exhaustion n'est nécessaire ici — les pixels iter jusqu'à
-    // escape ou iteration_max via réutilisation cyclique de l'orbite.
+    // Note : F3.1 et notre bytecode pixel_loop traitent l'exhaustion d'orbite
+    // identiquement (rebase F3 sur `m+1==size`, cf. hybrid.cc:301 = pixel_loop.rs:639).
+    // Pour matcher F3 (objectif P0 parité corpus toml/), on N'INTERCEPTE PAS ici
+    // pour rerouter vers `iterate_pixel_gmp` — ce serait diverger de F3 même si
+    // mathematically plus précis. Le path GMP pur reste disponible via le mode
+    // `AlgorithmMode::ReferenceGmp` quand l'utilisateur veut la vérité-terrain.
+    //
+    // Le path legacy `iterate_pixel` flag toujours `ref_exhausted` (cf.
+    // delta.rs ligne ~2039) — mais c'est un héritage, pas de F3.
 
     // Convertir UnifiedPixelResult → DeltaResult attendu par le pipeline.
     let smooth_iteration = if result.iteration < params.iteration_max {
