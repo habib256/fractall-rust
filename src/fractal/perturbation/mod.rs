@@ -1201,12 +1201,13 @@ pub fn render_perturbation_with_cache(
         // Note: The current rebasing implementation (in iterate_pixel) resets n to 0 with the
         // same reference. A full Hybrid BLA implementation would switch to a different reference
         // corresponding to the current phase when rebasing.
-        // Skip secondary references entirely when bytecode/F3 path is used :
-        // le bytecode pixel_loop ne renvoie jamais `glitched: true` (rebase F3
-        // sur exhaustion aligné F3.1, cf. `try_bytecode_unified_path`). Toute
-        // entrée du `glitch_mask` viendrait d'un fallback path legacy ou d'un
-        // faux positif neighbor pass — ni l'un ni l'autre ne devraient déclencher
-        // le mécanisme legacy de références secondaires (overhead inutile).
+        // Skip secondary references entirely when bytecode/F3 path is used.
+        // Le bytecode pixel_loop flag `glitched: true` UNIQUEMENT pour les
+        // pixels en orbite référence exhaustée (centres escape-time), qui
+        // sont resolus par `iterate_pixel_gmp` (per-pixel GMP) en aval.
+        // Les "vrais" glitches Pauldelbrot ne sont pas produits par le
+        // bytecode (rebasing F3 strict les prévient structurellement), donc
+        // les références secondaires (overhead lourd) restent inutiles ici.
         if !small_image && params.max_secondary_refs > 0 && !bytecode_path {
             let clusters = detect_glitch_clusters(
                 &glitch_mask,
@@ -1460,12 +1461,11 @@ pub fn render_perturbation_with_cache(
         let glitch_ratio = glitched_indices.len() as f64 / total_pixels as f64;
         const GLITCH_FALLBACK_THRESHOLD: f64 = 0.30; // 30% (augmenté de 10%)
 
-        // Quand le path bytecode est actif, le bytecode ne flag jamais
-        // (`glitched: false` toujours, cf. `try_bytecode_unified_path`). Le
-        // gate `!bytecode_path` empêche un full recalcul `iterate_point_mpc`
-        // (~10³× plus lent par pixel) si un flag spurieux survenait d'un faux
-        // positif neighbor pass — catastrophique sur deep zooms (cf.
-        // glitch_test_1 : 160k px × 275k iter en GMP pur = plusieurs heures).
+        // Le bytecode flag `glitched: true` UNIQUEMENT en exhaustion d'orbite
+        // référence (centres escape-time). La résolution per-pixel passe par
+        // `iterate_pixel_gmp` (perturbation GMP), bien plus rapide que le
+        // full GMP recalc `iterate_point_mpc` (~10³× /pixel). Le gate
+        // `!bytecode_path` évite ce full recalc catastrophique sur deep zooms.
         let allow_full_gmp_fallback = !bytecode_path;
 
         if allow_full_gmp_fallback && glitch_ratio > GLITCH_FALLBACK_THRESHOLD {

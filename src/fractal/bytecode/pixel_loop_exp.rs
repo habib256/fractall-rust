@@ -43,6 +43,12 @@ pub struct UnifiedPixelResultExp {
     pub rebase_count: u32,
     #[allow(dead_code)]
     pub bla_steps: u32,
+    /// `true` si la boucle a quitté parce que l'orbite référence s'est
+    /// épuisée avant `iteration_max` (centre escape-time, non-périodique).
+    /// L'iteration count retourné est non fiable : le caller doit
+    /// re-rendre via `iterate_pixel_gmp` pour obtenir le vrai iter
+    /// d'évasion par pixel (cf. fix e113.toml uniforme).
+    pub ref_exhausted: bool,
 }
 
 /// Pixel loop unifié extended-precision. Signature mirror de
@@ -118,6 +124,22 @@ fn iterate_pixel_unified_exp_mandelbrot(
             z_final: Complex64::new(0.0, 0.0),
             rebase_count: 0,
             bla_steps: 0,
+            ref_exhausted: false,
+        };
+    }
+    // Référence tronquée par escape (centre escape-time, non-périodique).
+    // Tous les pixels suivraient la référence à δ près en f64 et exiteraient
+    // au même iter (cf. e113.toml uniforme avant ce gate). Flag exhaustion
+    // pour router vers iterate_pixel_gmp (per-pixel GMP).
+    let ref_truncated = ref_orbit.cycle_period == 0
+        && (ref_len as u32).saturating_sub(1) < iteration_max;
+    if ref_truncated {
+        return UnifiedPixelResultExp {
+            iteration: 0,
+            z_final: Complex64::new(0.0, 0.0),
+            rebase_count: 0,
+            bla_steps: 0,
+            ref_exhausted: true,
         };
     }
 
@@ -126,6 +148,7 @@ fn iterate_pixel_unified_exp_mandelbrot(
     let mut m = 0u32;
     let mut rebase_count = 0u32;
     let mut bla_steps = 0u32;
+    let mut ref_exhausted_flag = false;
     const REDUCE_INTERVAL: u32 = 250;
 
     while n < iteration_max {
@@ -138,6 +161,7 @@ fn iterate_pixel_unified_exp_mandelbrot(
                 z_final: z_abs,
                 rebase_count,
                 bla_steps,
+                ref_exhausted: false,
             };
         }
 
@@ -179,6 +203,7 @@ fn iterate_pixel_unified_exp_mandelbrot(
                 z_final: ref_orbit.z_ref_f64[m.min((ref_len - 1) as u32) as usize] + delta_approx,
                 rebase_count,
                 bla_steps,
+                ref_exhausted: false,
             };
         }
 
@@ -187,19 +212,16 @@ fn iterate_pixel_unified_exp_mandelbrot(
         }
 
         // Rebase F3 : |Z[m+1] + δ|² < |δ|² OR fin d'orbite. Pour les orbites
-        // périodiques (centre intérieur), on cycle m via modulo au lieu de
-        // rebaser — évite l'uniformisation pixel sur ces cas.
+        // périodiques (centre intérieur), on cycle m via modulo. Sinon
+        // (orbite tronquée par escape), on flag exhaustion : rebaser blind
+        // collerait tous les pixels au même état (cf. e113.toml uniforme).
         let end_of_ref = (m as usize) + 1 >= ref_len;
         if end_of_ref {
             if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
                 m = m_wrapped;
             } else {
-                let z_m_new = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
-                let new_re = FloatExp::from_f64(z_m_new.re) + delta.re;
-                let new_im = FloatExp::from_f64(z_m_new.im) + delta.im;
-                delta = ComplexExp { re: new_re, im: new_im };
-                m = 0;
-                rebase_count += 1;
+                ref_exhausted_flag = true;
+                break;
             }
         } else {
             let z_m_new = ref_orbit.z_ref_f64[m as usize];
@@ -226,6 +248,7 @@ fn iterate_pixel_unified_exp_mandelbrot(
         z_final: ref_orbit.z_ref_f64[final_m as usize] + delta_approx,
         rebase_count,
         bla_steps,
+        ref_exhausted: ref_exhausted_flag,
     }
 }
 
@@ -247,6 +270,18 @@ fn iterate_pixel_unified_exp_generic(
             z_final: Complex64::new(0.0, 0.0),
             rebase_count: 0,
             bla_steps: 0,
+            ref_exhausted: false,
+        };
+    }
+    let ref_truncated = ref_orbit.cycle_period == 0
+        && (ref_len as u32).saturating_sub(1) < iteration_max;
+    if ref_truncated {
+        return UnifiedPixelResultExp {
+            iteration: 0,
+            z_final: Complex64::new(0.0, 0.0),
+            rebase_count: 0,
+            bla_steps: 0,
+            ref_exhausted: true,
         };
     }
 
@@ -255,6 +290,7 @@ fn iterate_pixel_unified_exp_generic(
     let mut m = 0u32;
     let mut rebase_count = 0u32;
     let mut bla_steps = 0u32;
+    let mut ref_exhausted_flag = false;
 
     // Reduce périodique (cf. rust-fractal-core) pour éviter la perte de
     // précision graduelle sur les mantissas après beaucoup d'itérations.
@@ -272,6 +308,7 @@ fn iterate_pixel_unified_exp_generic(
                 z_final: z_abs,
                 rebase_count,
                 bla_steps,
+                ref_exhausted: false,
             };
         }
 
@@ -324,6 +361,7 @@ fn iterate_pixel_unified_exp_generic(
                 z_final: ref_orbit.z_ref_f64[m.min((ref_len - 1) as u32) as usize] + delta_approx,
                 rebase_count,
                 bla_steps,
+                ref_exhausted: false,
             };
         }
 
@@ -332,20 +370,16 @@ fn iterate_pixel_unified_exp_generic(
         }
 
         // Rebase F3 : |Z[m+1] + δ|² < |δ|² OR fin d'orbite. Pour orbites
-        // périodiques, on cycle m via modulo (évite l'uniformisation pixel).
+        // périodiques, on cycle m via modulo. Sinon (orbite tronquée par
+        // escape), flag exhaustion : rebaser blind = uniformiser tous les
+        // pixels post-escape (cf. e113.toml).
         let end_of_ref = (m as usize) + 1 >= ref_len;
         if end_of_ref {
             if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
                 m = m_wrapped;
             } else {
-                // Clamp m si l'orbite est tronquée (escape, pas périodicité).
-                let z_m_new = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
-                // δ_new = Z[m] + δ (promotion delta → absolu)
-                let new_re = FloatExp::from_f64(z_m_new.re) + delta.re;
-                let new_im = FloatExp::from_f64(z_m_new.im) + delta.im;
-                delta = ComplexExp { re: new_re, im: new_im };
-                m = 0;
-                rebase_count += 1;
+                ref_exhausted_flag = true;
+                break;
             }
         } else {
             let z_m_new = ref_orbit.z_ref_f64[m as usize];
@@ -382,6 +416,7 @@ fn iterate_pixel_unified_exp_generic(
         z_final: ref_orbit.z_ref_f64[final_m as usize] + delta_approx,
         rebase_count,
         bla_steps,
+        ref_exhausted: ref_exhausted_flag,
     }
 }
 

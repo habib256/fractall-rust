@@ -224,6 +224,7 @@ fn try_bytecode_unified_path(
                 orbit: None,
                 distance: None,
                 is_interior: false,
+                ref_exhausted: res_exp.ref_exhausted,
             });
         }
 
@@ -265,15 +266,15 @@ fn try_bytecode_unified_path(
         Some(pixel_result)
     })?;
 
-    // Note : F3.1 et notre bytecode pixel_loop traitent l'exhaustion d'orbite
-    // identiquement (rebase F3 sur `m+1==size`, cf. hybrid.cc:301 = pixel_loop.rs:639).
-    // Pour matcher F3 (objectif P0 parité corpus toml/), on N'INTERCEPTE PAS ici
-    // pour rerouter vers `iterate_pixel_gmp` — ce serait diverger de F3 même si
-    // mathematically plus précis. Le path GMP pur reste disponible via le mode
-    // `AlgorithmMode::ReferenceGmp` quand l'utilisateur veut la vérité-terrain.
-    //
-    // Le path legacy `iterate_pixel` flag toujours `ref_exhausted` (cf.
-    // delta.rs ligne ~2039) — mais c'est un héritage, pas de F3.
+    // Note : quand l'orbite référence s'épuise avant `iteration_max` (centre
+    // escape-time non-périodique), le bytecode pixel_loop flag désormais
+    // `ref_exhausted=true` et break (au lieu de rebaser blind sur
+    // `z_ref[end]` → uniformiserait tous les pixels post-escape, cf.
+    // e113.toml). On propage en `glitched=true` ; le pipeline (mod.rs)
+    // ré-itère ces pixels via `iterate_pixel_gmp` (GMP per-pixel) pour
+    // obtenir le vrai escape iter par pixel. Pour la parité F3 stricte
+    // (escape uniforme sur ces centres), l'utilisateur peut désactiver
+    // le bytecode (`--no-bytecode`) ou utiliser `AlgorithmMode::ReferenceGmp`.
 
     // Convertir UnifiedPixelResult → DeltaResult attendu par le pipeline.
     let smooth_iteration = if result.iteration < params.iteration_max {
@@ -289,7 +290,7 @@ fn try_bytecode_unified_path(
     Some(DeltaResult {
         iteration: result.iteration,
         z_final: result.z_final,
-        glitched: false,
+        glitched: result.ref_exhausted,
         suspect: false,
         distance: result.distance.unwrap_or(f64::INFINITY),
         is_interior: result.is_interior,
