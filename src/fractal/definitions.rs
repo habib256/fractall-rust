@@ -70,6 +70,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         use_bytecode_engine: true,
         find_nucleus: false,
         rotation: 0.0,
+        transform_k: None,
     };
 
     match fractal_type {

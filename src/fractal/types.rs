@@ -957,6 +957,22 @@ pub struct FractalParams {
     /// peut être lent à très deep zoom. Activé via `--find-nucleus` CLI.
     #[serde(default)]
     pub find_nucleus: bool,
+
+    /// Matrice K 2×2 (row-major `[k00, k01, k10, k11]`) appliquée au mapping
+    /// pixel→c. Aligné Fraktaler-3 `param.transform` (`engine.cc:235`).
+    ///
+    /// Quand `Some`, remplace entièrement la rotation calculée à partir de
+    /// `rotation` (P1.6.a/b extrayait juste l'angle ; les hybrides
+    /// non-conformes — Burning Ship roté, Tricorn roté, flake — exigent la
+    /// matrice complète pour porter le skew/scale non-uniforme).
+    ///
+    /// Pour Mandelbrot conformal, `K = (1/β²) · R(θ)` où β = `hybrid_size_mat2`
+    /// scaling : on peut stocker `R` ici et laisser `zoom` absorber le
+    /// 1/β². Pour les hybrides, K diffère d'une rotation pure.
+    ///
+    /// Défaut `None` : utiliser `rotation` (degrés) seul.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform_k: Option<[f64; 4]>,
 }
 
 // Helpers pour `#[serde(default = "...")]`. Permettent de charger des PNG
@@ -1051,6 +1067,28 @@ impl FractalParams {
         let theta = self.rotation * std::f64::consts::PI / 180.0;
         let (s, c) = theta.sin_cos();
         Some((c, -s, s, c))
+    }
+
+    /// Matrice 2×2 effective appliquée au mapping pixel→c.
+    ///
+    /// Priorité :
+    /// 1. Si `transform_k` est `Some`, on l'utilise tel quel (porte skew/scale
+    ///    en plus de la rotation — F3 `param.transform`).
+    /// 2. Sinon, on retombe sur `rotation_matrix()` (rotation pure dérivée
+    ///    de `rotation` en degrés).
+    /// 3. Sinon `None` (no-op pour les chemins qui skippent quand pas de
+    ///    transform).
+    ///
+    /// Format de retour : `(m00, m01, m10, m11)` — identique à
+    /// `rotation_matrix()` pour drop-in replacement aux callsites existants.
+    #[inline]
+    pub fn transform_matrix(&self) -> Option<(f64, f64, f64, f64)> {
+        if let Some(k) = self.transform_k {
+            if k.iter().all(|x| x.is_finite()) {
+                return Some((k[0], k[1], k[2], k[3]));
+            }
+        }
+        self.rotation_matrix()
     }
 }
 

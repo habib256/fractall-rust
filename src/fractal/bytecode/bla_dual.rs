@@ -148,6 +148,29 @@ impl DualComplex2 {
         self.jac.m11 = -self.jac.m11;
     }
 
+    /// `z := z · (cos + sin·i)`. Rotation linéaire :
+    /// - value : produit complexe usuel.
+    /// - jac : multiplication à gauche par la matrice de rotation
+    ///         `R = [[c, -s], [s, c]]`.
+    ///
+    /// `|det R| = 1` → la rotation n'ajoute pas de contrainte sur le rayon
+    /// de validité (norme préservée), donc on ne touche pas `r` côté builder.
+    fn rot(&mut self, cos_theta: f64, sin_theta: f64) {
+        let c = cos_theta;
+        let s = sin_theta;
+        let new_x = c * self.value_x - s * self.value_y;
+        let new_y = s * self.value_x + c * self.value_y;
+        self.value_x = new_x;
+        self.value_y = new_y;
+        let jac = self.jac;
+        self.jac = Mat2 {
+            m00: c * jac.m00 - s * jac.m10,
+            m01: c * jac.m01 - s * jac.m11,
+            m10: s * jac.m00 + c * jac.m10,
+            m11: s * jac.m01 + c * jac.m11,
+        };
+    }
+
     fn abs_value(&self) -> f64 {
         (self.value_x * self.value_x + self.value_y * self.value_y).sqrt()
     }
@@ -238,6 +261,10 @@ pub fn build_bla_single_step(
                     a: w.jac,
                     r2: r_clamped * r_clamped,
                 };
+            }
+            Op::Rot { cos_theta, sin_theta } => {
+                // Pas de contrainte ajoutée sur le rayon (rotation isométrique).
+                w.rot(*cos_theta, *sin_theta);
             }
         }
     }
@@ -699,6 +726,48 @@ mod tests {
     #[test]
     fn mat2_sup_norm_identity_is_1() {
         assert!((Mat2::IDENTITY.sup_norm() - 1.0).abs() < 1e-10);
+    }
+
+    /// Phase [Sqr, Rot, Add] : la Jacobienne doit valoir R · J_sqr où R est
+    /// la matrice de rotation et J_sqr = 2·[Zx, -Zy; Zy, Zx]. Vérifie qu'on
+    /// compose correctement la rotation par-dessus le Jacobien sqr.
+    #[test]
+    fn rot_after_sqr_matches_composed_jacobian() {
+        use crate::fractal::bytecode::{Op, Phase};
+
+        let theta = 0.5_f64;
+        let (s, c) = theta.sin_cos();
+        let phase = Phase::new(vec![
+            Op::Sqr,
+            Op::Rot { cos_theta: c, sin_theta: s },
+            Op::Add,
+        ]);
+        let (zx, zy) = (0.3, -0.4);
+        let bla = build_bla_single_step(zx, zy, &phase, 1e-6);
+
+        // J_sqr = 2·[Zx, -Zy; Zy, Zx]
+        let j_sqr = Mat2 {
+            m00: 2.0 * zx,
+            m01: -2.0 * zy,
+            m10: 2.0 * zy,
+            m11: 2.0 * zx,
+        };
+        // R = [[c, -s], [s, c]]
+        let r = Mat2 { m00: c, m01: -s, m10: s, m11: c };
+        // Composition : R · J_sqr.
+        let expected = Mat2 {
+            m00: r.m00 * j_sqr.m00 + r.m01 * j_sqr.m10,
+            m01: r.m00 * j_sqr.m01 + r.m01 * j_sqr.m11,
+            m10: r.m10 * j_sqr.m00 + r.m11 * j_sqr.m10,
+            m11: r.m10 * j_sqr.m01 + r.m11 * j_sqr.m11,
+        };
+        assert!(
+            mat2_close(bla.a, expected, 1e-10),
+            "got {:?}, expected R·J_sqr={:?}",
+            bla.a,
+            expected
+        );
+        assert!(bla.r2 > 0.0, "rotation ne doit pas annuler le rayon de validité");
     }
 
     #[test]

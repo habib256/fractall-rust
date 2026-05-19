@@ -38,7 +38,8 @@ pub use interp_gmp::GmpInterpState;
 /// - `NegX`  : z.re := -z.re
 /// - `NegY`  : z.im := -z.im (= conjugaison)
 /// - `Add`   : z := z + c (fin de phase, increment itération)
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// - `Rot{cos,sin}` : z := z * (cos + sin·i) (rotation complexe, F3 op_rot)
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Op {
     Sqr,
     Mul,
@@ -51,6 +52,42 @@ pub enum Op {
     NegX,
     NegY,
     Add,
+    /// Rotation complexe : z := z * (cos + sin·i).
+    /// Aligné F3 `op_rot` (`hybrid.h:85,116`, `types.h:115`). Permet
+    /// d'encoder l'orientation d'un minibrot dans le bytecode plutôt qu'au
+    /// niveau du mapping pixel→c, et débloque la parité avec les TOML F3
+    /// qui contiennent `[[formula]]` rotation. La transformation est
+    /// linéaire en δ : `δ' = δ · (cos + sin·i)`, donc BLA-compatible
+    /// (matrice constante de rotation, det = 1).
+    ///
+    /// Pas `Eq`/`Hash` à cause des f64 — on accepte cette restriction
+    /// puisque les comparaisons d'opcodes restent structurelles via
+    /// `PartialEq`.
+    #[allow(dead_code)]
+    Rot { cos_theta: f64, sin_theta: f64 },
+}
+
+impl Op {
+    /// Tag entier de l'opcode (mêmes valeurs que l'ordre de déclaration,
+    /// utilisées par le shader WGSL `bytecode_kernel.wgsl`).
+    ///
+    /// `Op::Rot` ne peut pas être encodé dans le buffer u32 GPU actuel
+    /// (payload (f64, f64)) — le caller GPU doit refuser ces formules
+    /// avant l'upload. CPU et GMP gèrent `Rot` directement via le match.
+    #[allow(dead_code)]
+    pub fn opcode_tag(self) -> u32 {
+        match self {
+            Op::Sqr => 0,
+            Op::Mul => 1,
+            Op::Store => 2,
+            Op::AbsX => 3,
+            Op::AbsY => 4,
+            Op::NegX => 5,
+            Op::NegY => 6,
+            Op::Add => 7,
+            Op::Rot { .. } => 8,
+        }
+    }
 }
 
 /// Une phase = séquence d'opcodes appliquée par itération.
@@ -58,7 +95,7 @@ pub enum Op {
 /// Doit se terminer par `Op::Add`. Les puissances Multibrot (`z^N + c`) sont
 /// décomposées en chaîne `Sqr` + `Mul` (avec `Store` initial) via décomposition
 /// binaire de l'exposant.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Phase {
     pub ops: Vec<Op>,
 }
@@ -78,7 +115,7 @@ impl Phase {
 /// `phase = (phase + 1) % phases.len()` après chaque itération complète (cf.
 /// F3 `hybrid_render`). Pour une formule mono-phase (Mandelbrot pur), une seule
 /// entrée.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Formula {
     pub phases: Vec<Phase>,
 }

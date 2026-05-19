@@ -678,6 +678,53 @@ pub fn compute_reference_orbit_cached(
             adjusted_params.center_y_hp = Some(result.center_y.to_string());
             adjusted_params.center_x = result.center_x.to_f64();
             adjusted_params.center_y = result.center_y.to_f64();
+
+            // P1.6.b — hybrid_size : extrait l'orientation du minibrot via la
+            // matrice K (port de `fraktaler-3-3.1/src/hybrid.cc:544`). Pour les
+            // minibrots non-axis-aligned (flake, olbaid*), la rotation extraite
+            // de K aligne le frame de rendu sur celui du minibrot, sinon les
+            // pixels échantillonnent à travers les branches voisines.
+            let t_size = Instant::now();
+            match crate::fractal::perturbation::nucleus::hybrid_size_mat2(
+                &result.center_x,
+                &result.center_y,
+                result.period,
+                prec,
+            ) {
+                Some(hs) => {
+                    // F3 remplace `transform.rotate` par la matrice K (cf.
+                    // engine.cc:208-212). On suit cette sémantique : la
+                    // rotation user pré-existante est écrasée par celle dérivée
+                    // du minibrot trouvé.
+                    let new_rotation_deg = hs.rotation_degrees();
+                    if new_rotation_deg.is_finite() {
+                        let old = adjusted_params.rotation;
+                        adjusted_params.rotation = new_rotation_deg;
+                        if perf {
+                            eprintln!(
+                                "[NUCLEUS] hybrid_size: rotation {:.3}° (was {:.3}°), canonical size mantissa={:.4} exp={} ({:.3}s)",
+                                new_rotation_deg,
+                                old,
+                                hs.size.mantissa,
+                                hs.size.exponent,
+                                t_size.elapsed().as_secs_f64(),
+                            );
+                        }
+                    } else if perf {
+                        eprintln!(
+                            "[NUCLEUS] hybrid_size returned non-finite rotation — keep current",
+                        );
+                    }
+                }
+                None => {
+                    if perf {
+                        eprintln!(
+                            "[NUCLEUS] hybrid_size dégénéré (atome bord ou orbite escape) — rotation inchangée ({:.3}s)",
+                            t_size.elapsed().as_secs_f64(),
+                        );
+                    }
+                }
+            }
         } else if perf {
             eprintln!(
                 "[NUCLEUS] period not found or Newton did not converge (after {:.3}s) — keep original center",

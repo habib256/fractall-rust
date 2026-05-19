@@ -119,6 +119,11 @@ fn iterate_via_bytecode(params: &FractalParams, z_pixel: Complex64) -> FractalRe
                         }
                         iter += 1;
                     }
+                    Op::Rot { cos_theta, sin_theta } => {
+                        let r = Complex64::new(*cos_theta, *sin_theta);
+                        z = z * r;
+                        dz = dz * r;
+                    }
                 }
             }
             if !z.re.is_finite() || !z.im.is_finite() {

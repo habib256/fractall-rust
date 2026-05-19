@@ -1087,11 +1087,21 @@ impl GpuRenderer {
         if formula.phases.len() != 1 {
             return None;
         }
-        // Encoder les opcodes en u32 (mêmes valeurs que `bytecode::Op` côté Rust).
+        // Op::Rot porte un payload (cos, sin) en f64 qu'on ne sait pas
+        // encoder dans le buffer u32 actuel. Si la formule en contient,
+        // on retombe sur le path CPU (qui gère Op::Rot).
+        if formula.phases[0]
+            .ops
+            .iter()
+            .any(|op| matches!(op, crate::fractal::bytecode::Op::Rot { .. }))
+        {
+            return None;
+        }
+        // Encoder les opcodes en u32 (mêmes tags que `bytecode_kernel.wgsl`).
         let bytecode: Vec<u32> = formula.phases[0]
             .ops
             .iter()
-            .map(|op| *op as u32)
+            .map(|op| op.opcode_tag())
             .collect();
         self.render_bytecode_f32(params, cancel, is_julia, &bytecode)
     }

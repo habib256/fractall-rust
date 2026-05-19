@@ -146,7 +146,7 @@ fn render_escape_time_f64(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
     // R = rotation_matrix() (cf. FractalParams::apply_rotation, aligné F3 hybrid.cc:265).
 
     // Pré-calcul de la matrice de rotation (None si rotation == 0 → no-op).
-    let rot = params.rotation_matrix();
+    let rot = params.transform_matrix();
 
     // Parallélisation par lignes avec rayon (beaucoup plus élégant que std::thread)
     iterations
@@ -243,7 +243,7 @@ fn render_escape_time_gmp(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
     let half = Float::with_val(prec, 0.5);
     // Rotation : appliquée au delta pixel→centre avant d'ajouter center_x/y.
     // Aligné F3 hybrid.cc:265 (`c = K * c + offset`).
-    let rot = params.rotation_matrix();
+    let rot = params.transform_matrix();
 
     iterations
         .par_chunks_mut(width)
@@ -587,7 +587,7 @@ fn render_escape_time_f64_cancellable_with_reuse(
     let need_orbits = params.enable_orbit_traps;
     let need_distances = params.enable_distance_estimation;
     // Pré-calcul de la matrice de rotation (None si rotation == 0 → no-op).
-    let rot = params.rotation_matrix();
+    let rot = params.transform_matrix();
 
     iterations
         .par_chunks_mut(width)
@@ -739,7 +739,7 @@ fn render_escape_time_gmp_cancellable_with_reuse(
     let height_f = Float::with_val(prec, params.height);
     let half = Float::with_val(prec, 0.5);
     // Rotation : appliquée au delta pixel→centre avant d'ajouter center_x/y.
-    let rot = params.rotation_matrix();
+    let rot = params.transform_matrix();
 
     let cancelled = AtomicBool::new(false);
 

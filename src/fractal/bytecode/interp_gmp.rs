@@ -79,6 +79,17 @@ impl GmpInterpState {
                 Op::Add => {
                     self.z += c;
                 }
+                Op::Rot { cos_theta, sin_theta } => {
+                    // z := z * (cos + sin·i). On utilise les scratch flottants
+                    // pour construire le multiplicateur à la précision du
+                    // contexte sans allouer un Complex éphémère par étape.
+                    let prec = self.z.prec().0;
+                    let mut rot = Complex::with_val(prec, (0.0, 0.0));
+                    rot.mut_real().assign(*cos_theta);
+                    rot.mut_imag().assign(*sin_theta);
+                    self.cplx_scratch.assign(&self.z);
+                    self.z.assign(&self.cplx_scratch * &rot);
+                }
             }
         }
         // Cycle de phase

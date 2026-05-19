@@ -177,6 +177,16 @@ impl DeltaState {
                     }
                     self.z_ref += c_ref;
                 }
+                Op::Rot { cos_theta, sin_theta } => {
+                    // z := z * (cos + sin·i) — linéaire, donc :
+                    //   Z'      = Z      · r
+                    //   δ'      = δ      · r
+                    //   ddelta' = ddelta · r  (dérivée d'une combinaison linéaire)
+                    let r = Complex64::new(*cos_theta, *sin_theta);
+                    self.z_ref = self.z_ref * r;
+                    self.delta = self.delta * r;
+                    self.ddelta = self.ddelta * r;
+                }
             }
         }
     }
@@ -272,6 +282,18 @@ impl DeltaStateExp {
                     self.delta = self.delta.add(dc);
                     self.z_ref += c_ref;
                 }
+                Op::Rot { cos_theta, sin_theta } => {
+                    // z := z * (cos + sin·i). Mirror du path f64 mais avec
+                    // ComplexExp pour δ. Multiplication complexe explicite :
+                    //   (δ.re + δ.im·i) · (c + s·i)
+                    //     = (c·δ.re - s·δ.im) + (s·δ.re + c·δ.im)·i
+                    let c = *cos_theta;
+                    let s = *sin_theta;
+                    let new_re = self.delta.re * c + self.delta.im * (-s);
+                    let new_im = self.delta.re * s + self.delta.im * c;
+                    self.delta = ComplexExp { re: new_re, im: new_im };
+                    self.z_ref = self.z_ref * Complex64::new(c, s);
+                }
             }
         }
     }
@@ -346,6 +368,9 @@ mod tests {
                 Op::NegX => z_abs = Complex64::new(-z_abs.re, z_abs.im),
                 Op::NegY => z_abs = Complex64::new(z_abs.re, -z_abs.im),
                 Op::Add => z_abs += c_pixel,
+                Op::Rot { cos_theta, sin_theta } => {
+                    z_abs = z_abs * Complex64::new(*cos_theta, *sin_theta);
+                }
             }
         }
 
@@ -395,6 +420,9 @@ mod tests {
                 Op::NegX => z_abs = Complex64::new(-z_abs.re, z_abs.im),
                 Op::NegY => z_abs = Complex64::new(z_abs.re, -z_abs.im),
                 Op::Add => z_abs += c_pixel,
+                Op::Rot { cos_theta, sin_theta } => {
+                    z_abs = z_abs * Complex64::new(*cos_theta, *sin_theta);
+                }
             }
         }
         let diff = (z_plus_delta - z_abs).norm();
@@ -597,6 +625,76 @@ mod tests {
             Complex64::new(-0.5, 0.0),
             Complex64::new(0.0001, 0.0001),
             1e-12,
+        );
+    }
+
+    /// Invariant Op::Rot : phase [Sqr, Rot, Add] sur δ-form donne le même
+    /// résultat que la même phase exécutée sur z_abs = Z + δ avec c = c_ref + dc.
+    /// Vérifie la cohérence du dual-numbers tracking pour la rotation.
+    #[test]
+    fn invariant_rot_mandelbrot_phase() {
+        use crate::fractal::bytecode::{Op, Phase};
+
+        let theta = 0.7_f64; // ~40°
+        let (s, c) = theta.sin_cos();
+        let phase = Phase::new(vec![Op::Sqr, Op::Rot { cos_theta: c, sin_theta: s }, Op::Add]);
+
+        let z_ref = Complex64::new(0.3, 0.4);
+        let delta_init = Complex64::new(1e-4, -1e-4);
+        let c_ref = Complex64::new(-0.5, 0.1);
+        let dc = Complex64::new(1e-4, 1e-4);
+
+        // Path delta-form.
+        let mut state = DeltaState::new(z_ref, delta_init);
+        state.step(&phase, c_ref, dc);
+        let z_plus_delta_after = state.z_ref + state.delta;
+
+        // Path absolu : z = (Sqr -> Rot -> Add)(Z + δ).
+        let c_pixel = c_ref + dc;
+        let mut z_abs = z_ref + delta_init;
+        z_abs = z_abs * z_abs;                  // Sqr
+        z_abs = z_abs * Complex64::new(c, s);   // Rot
+        z_abs += c_pixel;                        // Add
+
+        let diff = (z_plus_delta_after - z_abs).norm();
+        assert!(
+            diff < 1e-12,
+            "delta-form vs absolute diverge for Rot: diff={}",
+            diff
+        );
+    }
+
+    /// Mirror du test précédent en ComplexExp pour confirmer que la rotation
+    /// se propage correctement sur le path deep zoom (DeltaStateExp).
+    #[test]
+    fn invariant_rot_mandelbrot_phase_exp() {
+        use crate::fractal::bytecode::{Op, Phase};
+
+        let theta = -1.2_f64; // ~ -69°
+        let (s, c) = theta.sin_cos();
+        let phase = Phase::new(vec![Op::Sqr, Op::Rot { cos_theta: c, sin_theta: s }, Op::Add]);
+
+        let z_ref = Complex64::new(0.3, 0.4);
+        let delta_init_f64 = Complex64::new(1e-15, -1e-15);
+        let c_ref = Complex64::new(-0.5, 0.1);
+        let dc_f64 = Complex64::new(1e-15, 1e-15);
+
+        let mut state = DeltaStateExp::new(z_ref, ComplexExp::from_complex64(delta_init_f64));
+        state.step(&phase, c_ref, ComplexExp::from_complex64(dc_f64));
+        let z_plus_delta = state.z_ref + state.delta.to_complex64_approx();
+
+        // Path absolu.
+        let c_pixel = c_ref + dc_f64;
+        let mut z_abs = z_ref + delta_init_f64;
+        z_abs = z_abs * z_abs;
+        z_abs = z_abs * Complex64::new(c, s);
+        z_abs += c_pixel;
+
+        let diff = (z_plus_delta - z_abs).norm();
+        assert!(
+            diff < 1e-12,
+            "DeltaStateExp Rot drift vs abs: diff={}",
+            diff
         );
     }
 }

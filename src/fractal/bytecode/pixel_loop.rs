@@ -70,6 +70,15 @@ pub struct UnifiedOptions {
     /// `true` si Julia-like : ddelta init=1, dc=0, distance factor=1.
     /// `false` si Mandelbrot-like : ddelta init=0, dc≠0, distance factor=2.
     pub is_julia: bool,
+    /// Cap "raw perturbation steps" par pixel (0 = illimité). Aligné F3
+    /// `bailout.maximum_perturb_iterations` (`param.h:39`). Les pas BLA ne
+    /// comptent pas. Quand atteint, la boucle sort avec `iteration = n`
+    /// (smooth coloring color le pixel comme "échappé tard" plutôt
+    /// qu'intérieur, cf. `cl-post.cl:21`).
+    pub max_perturb_iterations: u32,
+    /// Cap "BLA jumps" par pixel (0 = illimité). Aligné F3
+    /// `bailout.maximum_bla_steps`.
+    pub max_bla_steps: u32,
 }
 
 /// Pixel loop unifié pour TOUS les types escape-time supportés par le bytecode :
@@ -184,6 +193,7 @@ pub fn iterate_pixel_unified_full(
         delta_initial,
         iteration_max,
         bailout,
+        options.max_perturb_iterations,
     )
 }
 
@@ -199,6 +209,7 @@ fn iterate_pixel_unified_multi_phase(
     delta_initial: Complex64,
     iteration_max: u32,
     bailout: f64,
+    max_perturb_iterations: u32,
 ) -> UnifiedPixelResult {
     let bailout_sqr = bailout * bailout;
     let ref_len = ref_orbit.z_ref_f64.len();
@@ -220,9 +231,12 @@ fn iterate_pixel_unified_multi_phase(
     let mut m = 0u32;
     let mut rebase_count = 0u32;
     let bla_steps = 0u32;
+    let mut iters_ptb = 0u32;
     let mut ref_exhausted_flag = false;
 
-    while n < iteration_max {
+    while n < iteration_max
+        && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
+    {
         let z_m = ref_orbit.z_ref_f64[m as usize];
         let z_abs = z_m + delta;
         if z_abs.norm_sqr() >= bailout_sqr {
@@ -249,6 +263,7 @@ fn iterate_pixel_unified_multi_phase(
         delta = state.delta;
         n += 1;
         m += 1;
+        iters_ptb += 1;
 
         if !delta.re.is_finite() || !delta.im.is_finite() {
             return UnifiedPixelResult {
@@ -327,7 +342,13 @@ fn iterate_pixel_unified_single_phase(
     {
         let _ = c_ref;
         return iterate_pixel_unified_mandelbrot(
-            ref_orbit, bla, dc, iteration_max, bailout,
+            ref_orbit,
+            bla,
+            dc,
+            iteration_max,
+            bailout,
+            options.max_perturb_iterations,
+            options.max_bla_steps,
         );
     }
 
@@ -363,6 +384,9 @@ fn iterate_pixel_unified_single_phase(
     let mut m = 0u32;
     let mut rebase_count = 0u32;
     let mut bla_steps = 0u32;
+    let mut iters_ptb = 0u32;
+    let max_ptb = options.max_perturb_iterations;
+    let max_bla = options.max_bla_steps;
     let mut ref_exhausted_flag = false;
 
     // Point initial pour orbit traps.
@@ -370,7 +394,10 @@ fn iterate_pixel_unified_single_phase(
         od.add_point(ref_orbit.z_ref_f64[0] + delta, 0);
     }
 
-    while n < iteration_max {
+    while n < iteration_max
+        && (max_ptb == 0 || iters_ptb < max_ptb)
+        && (max_bla == 0 || bla_steps < max_bla)
+    {
         let z_m = ref_orbit.z_ref_f64[m as usize];
         let z_abs = z_m + delta;
         if z_abs.norm_sqr() >= bailout_sqr {
@@ -457,6 +484,7 @@ fn iterate_pixel_unified_single_phase(
         }
         n += 1;
         m += 1;
+        iters_ptb += 1;
 
         if !delta.re.is_finite() || !delta.im.is_finite() {
             return UnifiedPixelResult {
@@ -569,6 +597,8 @@ pub fn iterate_pixel_unified_mandelbrot(
     dc: Complex64,
     iteration_max: u32,
     bailout: f64,
+    max_perturb_iterations: u32,
+    max_bla_steps: u32,
 ) -> UnifiedPixelResult {
     let bailout_sqr = bailout * bailout;
     let ref_len = ref_orbit.z_ref_f64.len();
@@ -590,9 +620,13 @@ pub fn iterate_pixel_unified_mandelbrot(
     let mut m = 0u32;
     let mut rebase_count = 0u32;
     let mut bla_steps = 0u32;
+    let mut iters_ptb = 0u32;
     let mut ref_exhausted_flag = false;
 
-    while n < iteration_max {
+    while n < iteration_max
+        && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
+        && (max_bla_steps == 0 || bla_steps < max_bla_steps)
+    {
         // Bailout absolu : |Z[m] + δ|² ≥ bailout²
         let z_m = ref_orbit.z_ref_f64[m as usize];
         let z_abs = z_m + delta;
@@ -656,6 +690,7 @@ pub fn iterate_pixel_unified_mandelbrot(
         delta = two_zm * delta + delta * delta + dc;
         n += 1;
         m += 1;
+        iters_ptb += 1;
 
         if !delta.re.is_finite() || !delta.im.is_finite() {
             return UnifiedPixelResult {
@@ -776,7 +811,7 @@ mod tests {
                 let dy = ((j as f64 + 0.5) / height as f64 - 0.5) * span_y;
                 let dc = Complex64::new(dx, dy);
 
-                let res = iterate_pixel_unified_mandelbrot(&orbit, bla, dc, iter_max, 4.0);
+                let res = iterate_pixel_unified_mandelbrot(&orbit, bla, dc, iter_max, 4.0, 0, 0);
 
                 // Coloriage via la fonction de production (mêmes constantes
                 // que default_params_for_type pour Mandelbrot : palette 6 (Plasma),
@@ -834,6 +869,8 @@ mod tests {
                     Complex64::new(dx, dy),
                     iter_max,
                     4.0,
+                    0,
+                    0,
                 );
                 total_bla_steps += res.bla_steps as u64;
                 total_rebase += res.rebase_count as u64;
@@ -879,6 +916,43 @@ mod tests {
             total_rebase,
             total_iter,
             unified_path.display()
+        );
+    }
+
+    /// P1.3 — caps `max_perturb_iterations` / `max_bla_steps`. Quand un cap
+    /// est atteint, la boucle sort avec `iteration < iteration_max` (le
+    /// smooth coloring du caller le rend "échappé tard" plutôt qu'intérieur).
+    /// Pour un pixel intérieur (centre de la cardioïde), avec caps=0 la boucle
+    /// va jusqu'à iter_max ; avec un cap petit, elle s'arrête au cap.
+    #[test]
+    fn caps_max_perturb_iterations_truncates_interior_pixel() {
+        let iter_max = 2000u32;
+        let cx = 0.0;
+        let cy = 0.0;
+        let zoom = 1.0;
+        let orbit = make_ref_orbit(cx, cy, zoom, iter_max);
+        let formula = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
+        let c_norm = (orbit.cref.re * orbit.cref.re + orbit.cref.im * orbit.cref.im).sqrt();
+        let tables = build_bla_table_for_formula(&formula, &orbit.z_ref_f64, c_norm, 6e-8)
+            .expect("BLA table build");
+        let bla = &tables[0];
+        // Pixel intérieur (cardioïde principale) — sans cap, devrait atteindre iter_max.
+        let dc = Complex64::new(0.0, 0.0);
+        let res_uncapped = iterate_pixel_unified_mandelbrot(&orbit, bla, dc, iter_max, 4.0, 0, 0);
+        assert_eq!(
+            res_uncapped.iteration, iter_max,
+            "expected interior pixel to reach iter_max without cap"
+        );
+        // Avec cap=200 raw perturbations, la boucle sort dès qu'on en a fait
+        // 200 (les pas BLA ne comptent pas, mais à zoom 1.0 et centre 0 la BLA
+        // ne sera pas particulièrement active non plus).
+        let cap = 200u32;
+        let res_capped = iterate_pixel_unified_mandelbrot(&orbit, bla, dc, iter_max, 4.0, cap, 0);
+        assert!(
+            res_capped.iteration < iter_max,
+            "expected cap to truncate before iter_max, got {} >= {}",
+            res_capped.iteration,
+            iter_max
         );
     }
 
@@ -1134,7 +1208,7 @@ mod tests {
                 let dc = Complex64::new(dx, dy);
                 let c_abs = Complex64::new(cx + dx, cy + dy);
 
-                let res = iterate_pixel_unified_mandelbrot(&orbit, bla, dc, iter_max, 4.0);
+                let res = iterate_pixel_unified_mandelbrot(&orbit, bla, dc, iter_max, 4.0, 0, 0);
                 let escaped_unif = res.iteration < iter_max;
 
                 let mut z = Complex64::new(0.0, 0.0);

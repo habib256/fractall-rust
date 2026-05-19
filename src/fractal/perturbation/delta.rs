@@ -221,6 +221,8 @@ fn try_bytecode_unified_path(
                 *delta0,
                 params.iteration_max,
                 params.bailout,
+                params.max_perturb_iterations,
+                params.max_bla_steps,
             );
             // Conversion vers UnifiedPixelResult (même shape, juste typage).
             return Some(crate::fractal::bytecode::pixel_loop::UnifiedPixelResult {
@@ -257,6 +259,8 @@ fn try_bytecode_unified_path(
             enable_interior: params.enable_interior_detection,
             interior_threshold: params.interior_threshold,
             is_julia,
+            max_perturb_iterations: params.max_perturb_iterations,
+            max_bla_steps: params.max_bla_steps,
         };
         let pixel_result = crate::fractal::bytecode::pixel_loop::iterate_pixel_unified_full(
             ref_orbit,

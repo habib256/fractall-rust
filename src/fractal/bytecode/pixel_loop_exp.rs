@@ -63,6 +63,8 @@ pub fn iterate_pixel_unified_exp(
     delta_initial: ComplexExp,
     iteration_max: u32,
     bailout: f64,
+    max_perturb_iterations: u32,
+    max_bla_steps: u32,
 ) -> UnifiedPixelResultExp {
     assert_eq!(
         formula.phases.len(),
@@ -79,6 +81,8 @@ pub fn iterate_pixel_unified_exp(
         delta_initial,
         iteration_max,
         bailout,
+        max_perturb_iterations,
+        max_bla_steps,
     )
 }
 
@@ -91,17 +95,35 @@ fn iterate_pixel_unified_exp_single_phase(
     delta_initial: ComplexExp,
     iteration_max: u32,
     bailout: f64,
+    max_perturb_iterations: u32,
+    max_bla_steps: u32,
 ) -> UnifiedPixelResultExp {
     // Hot path Mandelbrot : évite DeltaStateExp::step (dispatch opcode + update
     // wasted de z_ref) en inlinant `δ' = 2·Z·δ + δ² + dc`.
     if phase_is_mandelbrot(phase) {
         return iterate_pixel_unified_exp_mandelbrot(
-            ref_orbit, bla, dc, delta_initial, iteration_max, bailout,
+            ref_orbit,
+            bla,
+            dc,
+            delta_initial,
+            iteration_max,
+            bailout,
+            max_perturb_iterations,
+            max_bla_steps,
         );
     }
     let _ = c_ref;
     iterate_pixel_unified_exp_generic(
-        ref_orbit, bla, phase, c_ref, dc, delta_initial, iteration_max, bailout,
+        ref_orbit,
+        bla,
+        phase,
+        c_ref,
+        dc,
+        delta_initial,
+        iteration_max,
+        bailout,
+        max_perturb_iterations,
+        max_bla_steps,
     )
 }
 
@@ -115,6 +137,8 @@ fn iterate_pixel_unified_exp_mandelbrot(
     delta_initial: ComplexExp,
     iteration_max: u32,
     bailout: f64,
+    max_perturb_iterations: u32,
+    max_bla_steps: u32,
 ) -> UnifiedPixelResultExp {
     let bailout_sqr = bailout * bailout;
     let ref_len = ref_orbit.z_ref_f64.len();
@@ -148,11 +172,15 @@ fn iterate_pixel_unified_exp_mandelbrot(
     let mut m = 0u32;
     let mut rebase_count = 0u32;
     let mut bla_steps = 0u32;
+    let mut iters_ptb = 0u32;
     let mut ref_exhausted_flag = false;
     const REDUCE_INTERVAL: u32 = 250;
 
     let bailout_sqr_fexp = FloatExp::from_f64(bailout_sqr);
-    while n < iteration_max {
+    while n < iteration_max
+        && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
+        && (max_bla_steps == 0 || bla_steps < max_bla_steps)
+    {
         let z_m = ref_orbit.z_ref_f64[m as usize];
         // Bailout en FloatExp pour préserver la différentiation pixel-à-pixel
         // au-delà de 2^1023 (où to_complex64_approx sature à inf et tous les
@@ -201,6 +229,7 @@ fn iterate_pixel_unified_exp_mandelbrot(
         delta = two_z_delta.add(delta_sq).add(dc);
         n += 1;
         m += 1;
+        iters_ptb += 1;
 
         let delta_approx = delta.to_complex64_approx();
         if !delta_approx.re.is_finite() || !delta_approx.im.is_finite() {
@@ -267,6 +296,8 @@ fn iterate_pixel_unified_exp_generic(
     delta_initial: ComplexExp,
     iteration_max: u32,
     bailout: f64,
+    max_perturb_iterations: u32,
+    max_bla_steps: u32,
 ) -> UnifiedPixelResultExp {
     let bailout_sqr = bailout * bailout;
     let ref_len = ref_orbit.z_ref_f64.len();
@@ -296,13 +327,17 @@ fn iterate_pixel_unified_exp_generic(
     let mut m = 0u32;
     let mut rebase_count = 0u32;
     let mut bla_steps = 0u32;
+    let mut iters_ptb = 0u32;
     let mut ref_exhausted_flag = false;
 
     // Reduce périodique (cf. rust-fractal-core) pour éviter la perte de
     // précision graduelle sur les mantissas après beaucoup d'itérations.
     const REDUCE_INTERVAL: u32 = 250;
 
-    while n < iteration_max {
+    while n < iteration_max
+        && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
+        && (max_bla_steps == 0 || bla_steps < max_bla_steps)
+    {
         let z_m = ref_orbit.z_ref_f64[m as usize];
         // Bailout : |Z + δ|² ≥ bailout² (les magnitudes après évasion sont
         // dans la range f64 normale donc to_complex64_approx est OK).
@@ -358,6 +393,7 @@ fn iterate_pixel_unified_exp_generic(
         delta = state.delta;
         n += 1;
         m += 1;
+        iters_ptb += 1;
 
         // NaN / Inf check sur l'approx f64 (suffit pour détecter explosion).
         let delta_approx = delta.to_complex64_approx();
@@ -477,6 +513,8 @@ mod tests {
                     ComplexExp::zero(),
                     iter_max,
                     4.0,
+                    0,
+                    0,
                 );
                 let escaped_exp = res.iteration < iter_max;
 
@@ -540,6 +578,8 @@ mod tests {
             ComplexExp::zero(),
             iter_max,
             4.0,
+            0,
+            0,
         );
         // Pas de NaN, pas d'Inf.
         assert!(res.z_final.re.is_finite() && res.z_final.im.is_finite());

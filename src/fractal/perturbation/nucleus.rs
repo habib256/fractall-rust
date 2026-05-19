@@ -23,6 +23,8 @@
 
 use rug::{Assign, Complex, Float};
 
+use crate::fractal::perturbation::types::FloatExp;
+
 /// Résultat de la recherche de nucleus.
 #[derive(Clone, Debug)]
 pub struct NucleusResult {
@@ -368,6 +370,251 @@ pub fn find_nucleus(
     Some(result)
 }
 
+/// Résultat de `hybrid_size_mat2` : taille canonique du minibrot et matrice
+/// 2×2 de transformation (orientation + scaling).
+///
+/// `size` est la taille naturelle du minibrot (1/zoom canonique pour qu'il
+/// remplisse l'écran). `k` est la matrice row-major `[[K00, K01], [K10, K11]]`
+/// qui encode la rotation/déformation du minibrot dans le plan c.
+///
+/// Pour Mandelbrot (quadratique conformal), `K` se réduit à `(1/β²) · R` où
+/// `R` est une rotation pure. L'angle se récupère via `atan2(K[2], K[0])`.
+#[derive(Clone, Copy, Debug)]
+pub struct HybridSize {
+    pub size: FloatExp,
+    pub k: [f64; 4],
+}
+
+impl HybridSize {
+    /// Angle de rotation extrait de `K` (radians, CCW dans le plan c).
+    /// Pour Mandelbrot, `K = scale * R(θ)` avec `R[0][0] = cos θ`,
+    /// `R[1][0] = sin θ`, d'où `θ = atan2(K[2], K[0])`.
+    #[inline]
+    pub fn rotation_radians(&self) -> f64 {
+        self.k[2].atan2(self.k[0])
+    }
+
+    /// Angle de rotation en degrés.
+    #[inline]
+    pub fn rotation_degrees(&self) -> f64 {
+        self.rotation_radians().to_degrees()
+    }
+}
+
+/// Port fidèle de `hybrid_size` (`fraktaler-3-3.1/src/hybrid.cc:544`)
+/// spécialisé pour Mandelbrot z² + c (degré 2).
+///
+/// Itère `period - 1` fois `Z := Z² + C` à partir de `Z = C`, en propageant
+/// la matrice Jacobienne `L = ∂Z/∂c` via dual-numbers 2D, et accumule
+/// `b += L⁻¹` à chaque étape. À la sortie :
+///
+/// - `λ = sqrt|det L_period|` — taux de divergence local.
+/// - `β = sqrt|det b|` — magnitude de l'accumulateur.
+/// - `size = 1 / (λ² · β)` (degré d=2 → d/(d-1) = 2).
+/// - `K = inv(transp(b)) / β` — matrice de transformation.
+///
+/// Retourne `None` si l'orbite escape, si `det L_j` ou `det b` est nul
+/// (singularité — typiquement period 2 sur c=-1, atome dégénéré), ou si
+/// `K` contient des composantes non-finies.
+///
+/// **Coût** : O(period × prec²) en GMP. Pour un zoom 1e1000 avec
+/// period ~10⁵ et prec ~3300 bits, l'appel prend plusieurs secondes.
+/// Acceptable comme étape unique avant un rendu deep zoom.
+pub fn hybrid_size_mat2(
+    cx: &Float,
+    cy: &Float,
+    period: u32,
+    prec: u32,
+) -> Option<HybridSize> {
+    if period == 0 {
+        return None;
+    }
+
+    // Z initial = C avec Jacobian identité (∂Re(Z)/∂cx = 1, ∂Im(Z)/∂cy = 1).
+    let mut z_re = cx.clone();
+    let mut z_im = cy.clone();
+    let mut zx_dx = Float::with_val(prec, 1); // ∂Re(Z)/∂cx
+    let mut zx_dy = Float::with_val(prec, 0); // ∂Re(Z)/∂cy
+    let mut zy_dx = Float::with_val(prec, 0); // ∂Im(Z)/∂cx
+    let mut zy_dy = Float::with_val(prec, 1); // ∂Im(Z)/∂cy
+
+    // Accumulateur b initialisé à l'identité 2×2.
+    let mut b00 = Float::with_val(prec, 1);
+    let mut b01 = Float::with_val(prec, 0);
+    let mut b10 = Float::with_val(prec, 0);
+    let mut b11 = Float::with_val(prec, 1);
+
+    // Bailout large : si Z s'évade pendant l'itération du nucleus, le centre
+    // n'est pas un nucleus valide. F3 utilise 1e10000 — 1e60 est suffisant
+    // pour distinguer une orbite bornée d'une orbite divergente.
+    let bailout_sqr = Float::with_val(prec, 1e120);
+
+    for _ in 1..period {
+        // Recurrence dérivée (cf. doc HybridSize) :
+        //   ∂Z_new/∂cx = 2 Z (∂Z/∂cx) + 1
+        //   ∂Z_new/∂cy = 2 Z (∂Z/∂cy) + i
+        let zx_dx_new = {
+            let a = Float::with_val(prec, &z_re * &zx_dx);
+            let b = Float::with_val(prec, &z_im * &zy_dx);
+            let mut t = a - b;
+            t *= 2;
+            t += 1;
+            t
+        };
+        let zy_dx_new = {
+            let a = Float::with_val(prec, &z_re * &zy_dx);
+            let b = Float::with_val(prec, &z_im * &zx_dx);
+            let mut t = a + b;
+            t *= 2;
+            t
+        };
+        let zx_dy_new = {
+            let a = Float::with_val(prec, &z_re * &zx_dy);
+            let b = Float::with_val(prec, &z_im * &zy_dy);
+            let mut t = a - b;
+            t *= 2;
+            t
+        };
+        let zy_dy_new = {
+            let a = Float::with_val(prec, &z_re * &zy_dy);
+            let b = Float::with_val(prec, &z_im * &zx_dy);
+            let mut t = a + b;
+            t *= 2;
+            t += 1;
+            t
+        };
+
+        // Z_new = Z² + C
+        let z_re_new = {
+            let a = Float::with_val(prec, &z_re * &z_re);
+            let b = Float::with_val(prec, &z_im * &z_im);
+            let mut t = a - b;
+            t += cx;
+            t
+        };
+        let z_im_new = {
+            let a = Float::with_val(prec, &z_re * &z_im);
+            let mut t = a * 2;
+            t += cy;
+            t
+        };
+
+        z_re = z_re_new;
+        z_im = z_im_new;
+        zx_dx = zx_dx_new;
+        zx_dy = zx_dy_new;
+        zy_dx = zy_dx_new;
+        zy_dy = zy_dy_new;
+
+        // Bailout — orbite divergente, pas de nucleus stable.
+        let z_norm_sqr = {
+            let mut t = Float::with_val(prec, &z_re * &z_re);
+            t += Float::with_val(prec, &z_im * &z_im);
+            t
+        };
+        if z_norm_sqr > bailout_sqr {
+            return None;
+        }
+
+        // L = current Jacobian = [[zx_dx, zx_dy], [zy_dx, zy_dy]].
+        // det(L) = zx_dx * zy_dy - zx_dy * zy_dx.
+        // inv(L) = (1/det) * [[zy_dy, -zx_dy], [-zy_dx, zx_dx]].
+        let det_l = {
+            let a = Float::with_val(prec, &zx_dx * &zy_dy);
+            let b = Float::with_val(prec, &zx_dy * &zy_dx);
+            a - b
+        };
+        if det_l.is_zero() {
+            return None;
+        }
+        let inv_l_00 = Float::with_val(prec, &zy_dy / &det_l);
+        let inv_l_01 = -Float::with_val(prec, &zx_dy / &det_l);
+        let inv_l_10 = -Float::with_val(prec, &zy_dx / &det_l);
+        let inv_l_11 = Float::with_val(prec, &zx_dx / &det_l);
+        b00 += inv_l_00;
+        b01 += inv_l_01;
+        b10 += inv_l_10;
+        b11 += inv_l_11;
+    }
+
+    // Final L (Jacobian Z'_period) et accumulateur b.
+    let det_l_final = {
+        let a = Float::with_val(prec, &zx_dx * &zy_dy);
+        let b = Float::with_val(prec, &zx_dy * &zy_dx);
+        a - b
+    };
+    let det_b = {
+        let a = Float::with_val(prec, &b00 * &b11);
+        let b = Float::with_val(prec, &b01 * &b10);
+        a - b
+    };
+    if det_b.is_zero() {
+        // Atome dégénéré (e.g., period 2 c=-1) — pas de transformation
+        // canonique exploitable. L'appelant retombera sur le centre brut.
+        return None;
+    }
+
+    // λ = sqrt|det L|, β = sqrt|det b|, size = 1/(λ²·β).
+    // Calcul en FloatExp pour absorber les très grands |det L| (zoom profond
+    // → |Z'_period| ~ 2^prec).
+    let det_l_fexp = FloatExp::from_gmp(&det_l_final).abs();
+    let det_b_fexp = FloatExp::from_gmp(&det_b).abs();
+    let lambda_fexp = floatexp_sqrt(det_l_fexp);
+    let beta_fexp = floatexp_sqrt(det_b_fexp);
+    if beta_fexp.mantissa == 0.0 {
+        return None;
+    }
+    // λ² · β. Pour Mandelbrot quadratique d = 2/(2-1) = 2.
+    let lambda_sqr_fexp = lambda_fexp.sqr();
+    let llb_fexp = lambda_sqr_fexp * beta_fexp;
+    if llb_fexp.mantissa == 0.0 {
+        return None;
+    }
+    let size = FloatExp::new(1.0 / llb_fexp.mantissa, -llb_fexp.exponent);
+
+    // K = inv(transp(b)) / β. transp(b) = [[b00, b10], [b01, b11]],
+    // det(transp(b)) = det(b), inv(transp(b)) = (1/det) * [[b11, -b10], [-b01, b00]].
+    // Pour éviter underflow/overflow lors de la conversion vers f64 (cas deep
+    // zoom où det_b · β a un exposant énorme), on combine les divisions en
+    // FloatExp puis on convertit.
+    let det_b_signed = FloatExp::from_gmp(&det_b);
+    if det_b_signed.mantissa == 0.0 {
+        return None;
+    }
+    let denom_fexp = det_b_signed * beta_fexp; // = det_b · |det_b|^(1/2), avec signe
+    if denom_fexp.mantissa == 0.0 {
+        return None;
+    }
+    let inv_denom = FloatExp::new(1.0 / denom_fexp.mantissa, -denom_fexp.exponent);
+    let k00 = (FloatExp::from_gmp(&b11) * inv_denom).to_f64();
+    let k01 = (FloatExp::from_gmp(&b10) * inv_denom).to_f64() * -1.0;
+    let k10 = (FloatExp::from_gmp(&b01) * inv_denom).to_f64() * -1.0;
+    let k11 = (FloatExp::from_gmp(&b00) * inv_denom).to_f64();
+    let k = [k00, k01, k10, k11];
+    if !k.iter().all(|x| x.is_finite()) {
+        return None;
+    }
+
+    Some(HybridSize { size, k })
+}
+
+/// Racine carrée d'un `FloatExp` (assume `value` ≥ 0). Normalise pour gérer
+/// les exposants impairs (sqrt nécessite exposant pair côté mantissa).
+#[inline]
+fn floatexp_sqrt(value: FloatExp) -> FloatExp {
+    if value.mantissa <= 0.0 {
+        return FloatExp::zero();
+    }
+    // mantissa ∈ [0.5, 1). On veut sqrt(mantissa * 2^exp).
+    // Si exp pair : sqrt(mantissa) * 2^(exp/2). Si exp impair :
+    // sqrt(2*mantissa) * 2^((exp-1)/2).
+    if value.exponent % 2 == 0 {
+        FloatExp::new(value.mantissa.sqrt(), value.exponent / 2)
+    } else {
+        FloatExp::new((value.mantissa * 2.0).sqrt(), (value.exponent - 1) / 2)
+    }
+}
+
 /// Helper : centre complexe → (Float, Float).
 #[allow(dead_code)]
 pub fn complex_to_xy(c: &Complex, prec: u32) -> (Float, Float) {
@@ -439,6 +686,76 @@ mod tests {
         let s = Float::with_val(prec, 1e-3);
         let period = find_period_atom_domain(&cx, &cy, 100, &s, prec);
         assert_eq!(period, None);
+    }
+
+    #[test]
+    fn hybrid_size_period_1_returns_identity() {
+        // Period 1 sur c=0 : loop ne s'exécute pas. L = I, b = I.
+        // size = 1/(λ²·β) = 1, K = I (à arrondi près).
+        let prec = 128u32;
+        let cx = Float::with_val(prec, 0);
+        let cy = Float::with_val(prec, 0);
+        let hs = hybrid_size_mat2(&cx, &cy, 1, prec).expect("period 1 should succeed");
+        assert!((hs.size.to_f64() - 1.0).abs() < 1e-12);
+        assert!((hs.k[0] - 1.0).abs() < 1e-12);
+        assert!(hs.k[1].abs() < 1e-12);
+        assert!(hs.k[2].abs() < 1e-12);
+        assert!((hs.k[3] - 1.0).abs() < 1e-12);
+        assert!(hs.rotation_radians().abs() < 1e-12);
+    }
+
+    #[test]
+    fn hybrid_size_period_2_at_minus_one_is_degenerate() {
+        // c=-1 period 2 : après iter 1, L = -I et inv(L) = -I, donc b = 0.
+        // Atome dégénéré — la fonction renvoie None (F3 a la même limite mais
+        // gère via safety check 10*size0 > size).
+        let prec = 128u32;
+        let cx = Float::with_val(prec, -1);
+        let cy = Float::with_val(prec, 0);
+        let hs = hybrid_size_mat2(&cx, &cy, 2, prec);
+        assert!(hs.is_none(), "expected None for degenerate period 2 c=-1");
+    }
+
+    #[test]
+    fn hybrid_size_period_3_axis_aligned_minibrot() {
+        // Minibrot période 3 à c ≈ -1.7548776662... : axis-aligned (cy=0 →
+        // dérivées symétriques en cy). La rotation doit être ≈ 0 ou π.
+        let prec = 192u32;
+        let cx = Float::with_val(prec, -1.7548776662466927_f64);
+        let cy = Float::with_val(prec, 0);
+        let hs = hybrid_size_mat2(&cx, &cy, 3, prec).expect("period 3 should succeed");
+        // Le minibrot est axis-aligned → composantes off-diagonales ≈ 0.
+        assert!(
+            hs.k[1].abs() < 1e-6,
+            "off-diagonal K[0][1] should be ~0, got {}",
+            hs.k[1]
+        );
+        assert!(
+            hs.k[2].abs() < 1e-6,
+            "off-diagonal K[1][0] should be ~0, got {}",
+            hs.k[2]
+        );
+        // Rotation extraite ≈ 0 (modulo π).
+        let theta = hs.rotation_radians().abs();
+        let theta_mod_pi = theta % std::f64::consts::PI;
+        assert!(
+            theta_mod_pi.min(std::f64::consts::PI - theta_mod_pi) < 1e-6,
+            "rotation should be ≈ 0 or π, got {} rad",
+            hs.rotation_radians()
+        );
+        // size > 0 et fini.
+        let s = hs.size.to_f64();
+        assert!(s.is_finite() && s > 0.0, "size should be positive finite, got {}", s);
+    }
+
+    #[test]
+    fn hybrid_size_returns_none_for_escaping_orbit() {
+        // c=1 escape immédiatement — hybrid_size doit retourner None.
+        let prec = 64u32;
+        let cx = Float::with_val(prec, 1);
+        let cy = Float::with_val(prec, 0);
+        let hs = hybrid_size_mat2(&cx, &cy, 10, prec);
+        assert!(hs.is_none(), "escaping orbit should yield None");
     }
 
     #[test]

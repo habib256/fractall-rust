@@ -162,11 +162,11 @@ Si `params.use_bytecode_engine` ET `compile_formula(type, power)` réussit :
 Fallback legacy si : type non compilable, `--no-bytecode`, ou GMP deep zoom
 + features non encore portées sur pixel_loop.
 
-### Nucleus finder (P1.6.a, 2026-05-19)
+### Nucleus finder (P1.6.a + P1.6.b, 2026-05-19)
 
 `perturbation/nucleus.rs` : port de Fraktaler-3.1 `hybrid_period` +
-`hybrid_center` (`hybrid.cc:417,493`). Mandelbrot uniquement, opt-in via
-CLI `--find-nucleus` ou `params.find_nucleus = true`.
+`hybrid_center` + `hybrid_size` (`hybrid.cc:417,493,544`). Mandelbrot
+uniquement, opt-in via CLI `--find-nucleus` ou `params.find_nucleus = true`.
 
 Pipeline :
 1. `find_period_atom_domain(cx, cy, max_iter, s, prec)` — critère atom-domain
@@ -174,13 +174,24 @@ Pipeline :
 2. `newton_refine_center(…)` — Newton complexe via dual-numbers GMP,
    tracking best-seen pour retourner amélioration locale même si convergence
    stricte échoue.
+3. `hybrid_size_mat2(…)` — itère `period-1` fois via dual-numbers 2D et
+   accumule `b += L⁻¹`. Renvoie `size = 1/(λ²·β)` (taille canonique) et la
+   matrice `K = inv(transp(b))/β` (orientation + scale). La rotation extraite
+   via `atan2(K[2], K[0])` aligne le frame de rendu sur celui du minibrot —
+   indispensable pour les minibrots non-axis-aligned (seahorse valley,
+   flake, olbaid*). F3 `out.transform = K; out.p.transform.rotate = 0`
+   (`engine.cc:208`) : on écrase de même `params.rotation` par la valeur
+   dérivée de K.
 
 **Why** : à deep zoom, l'orbite référence escape avant `iteration_max` →
 perturbation tronque. Le nucleus refine vers un centre périodique exact
-dont l'orbite ne s'évade pas.
+dont l'orbite ne s'évade pas. Sans K, un minibrot rotated apparaît noir
+ou en bandes diagonales car les pixels échantillonnent à travers les
+branches voisines.
 
-À porter pour parité F3 complète (cf. TODO P1.6.b/c/d) : matrice K via
-`hybrid_size`, opcode `Op::Rot`, wisdom file auto-precision.
+À porter pour parité F3 complète (cf. TODO P1.6.c/d) : opcode `Op::Rot`
+(applique K dans le bytecode plutôt qu'au niveau du mapping pixel), wisdom
+file auto-precision.
 
 ### Précision GMP perturbation
 

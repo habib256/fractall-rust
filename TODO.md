@@ -5,9 +5,10 @@
 > `docs/fraktaler-3-analysis.md`).
 
 **État (2026-05-19)** : Moteur bytecode unifié P3.1 livré sur CPU + GPU.
-Nucleus finder atom-domain (port `hybrid_period`) ajouté. Uniformisation deep
-zoom > 1e308 corrigée. Goulot actuel : **parité visuelle F3 sur le corpus
-`toml/`** + porter `hybrid_size` (matrice K) pour les minibrots inclinés.
+Nucleus finder atom-domain (port `hybrid_period`) + `hybrid_size` (rotation
+extraite de K) ajoutés. Uniformisation deep zoom > 1e308 corrigée. Goulot
+actuel : **parité visuelle F3 sur le corpus `toml/`** + propager la matrice
+K complète (scale/skew non-conformal) au pixel→c mapping.
 
 ---
 
@@ -28,22 +29,21 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
 
 ## Up next (ordre d'attaque)
 
-1. **P1.6.b** — `hybrid_size` + matrice K [TRÈS HAUTE PRIORITÉ]
-   Complément direct du nucleus finder (P1.6.a livré). Débloque les
-   minibrots non-axis-aligned (flake, olbaid*).
-2. **P2.1** — GitHub Actions sur unit + golden_images
-   Pré-requis avant tout refactor — confiance vient des goldens.
-3. **Investigation fails Fractall** (e1086, opus)
+1. **Investigation fails Fractall** (e1086, opus)
    Probable GMP-per-pixel quand BLA ne couvre pas → timeout 60s. À profiler.
-4. **P1.3 quick wins restants** — caps `max_perturb_iterations` /
-   `max_bla_steps` dans `bytecode/pixel_loop{,_exp}.rs` + décision `bailout`
-   défaut (4 vs 25).
-5. **P1.6.c** — Opcode `Op::Rot` natif (~80 lignes) — débloque parité TOML F3
-   `[[formula]]` rotation et P3.4 hybrides généraux.
-6. **P1.6.d + P1.6.e** — Wisdom file + float128 (bundle perf deep zoom).
+2. **P1.3 résidus** — décision `bailout` défaut (4 vs 25, change goldens)
+   + vérifier pixel spacing BLA = `4/zoom/height` strict.
+3. **P1.6.c** GPU+compile — élargir le buffer bytecode GPU pour porter le
+   payload `Op::Rot` (cos/sin) et brancher `compile_formula` ou un loader
+   TOML F3 pour émettre des `Op::Rot` réels. CPU déjà OK.
+4. **P1.6.b-bis** — Stocker K complet (mat2) dans `FractalParams` et l'appli-
+   quer dans le pixel→c mapping. Aujourd'hui on n'extrait que l'angle ;
+   pour les minibrots hybrides non-conformes (BS, Tricorn), K a une partie
+   skew/scale non-uniforme qu'il faut propager.
+5. **P1.6.d + P1.6.e** — Wisdom file + float128 (bundle perf deep zoom).
    10-100× speedup pour zooms 1e30-1e100. Couple obligé : float128 sans
    dispatcher wisdom-driven n'a pas de sens.
-7. **Porter `iterate_pixel_gmp` sur pixel_loop** → permet de retirer
+6. **Porter `iterate_pixel_gmp` sur pixel_loop** → permet de retirer
    `glitch.rs`, `nonconformal.rs` et les champs perturbation legacy.
 
 ---
@@ -58,9 +58,13 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
   trancher (changement avec refresh goldens).
 - [ ] Vérifier pixel spacing BLA = `4/zoom/height` strict dans
   `bytecode/bla_dual.rs`, `perturbation/bla.rs`, `nonconformal.rs`.
-- [ ] Caps `max_perturb_iterations` / `max_bla_steps` non enforcés dans
-  `bytecode/pixel_loop{,_exp}.rs`. F3 sort `n = current_iter` quand le cap
-  est atteint (pixel coloré « échappé tard » au lieu d'intérieur).
+- [x] Caps `max_perturb_iterations` / `max_bla_steps` enforcés dans
+  `bytecode/pixel_loop.rs` (`iterate_pixel_unified_{full,single_phase,
+  multi_phase,mandelbrot}`) et `pixel_loop_exp.rs` (`{_exp,
+  _single_phase,_mandelbrot,_generic}`). Cap perturbation track `iters_ptb`
+  séparé de `n` (BLA jumps ne comptent pas, cf. F3 `cl-post.cl:21`).
+  Test `caps_max_perturb_iterations_truncates_interior_pixel` vérifie
+  qu'un pixel intérieur sort avec `iter < iter_max` lorsque cap actif.
 
 #### P1.5 — Anti-aliasing par subframes jitterés
 - [ ] Wrapper N samples avec offsets jitterés (low-discrepancy : `burtle_hash`
@@ -73,23 +77,34 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
 
 Items issus de l'analyse `fraktaler-3-3.1/src/`. Classés par impact × effort.
 
-##### P1.6.b — `hybrid_size()` : matrice K skew/orientation [TRÈS HAUTE]
-- [ ] Porter `hybrid.cc:544-592` : dual-number loop + Jacobienne cumulée +
-  determinants → `s = 1/(λ^d·β)` (atom size), `K = inverse(transpose(b))/β`
-  (orientation 2×2).
+##### P1.6.b-bis — Stocker K complet et l'appliquer au pixel→c [HAUTE]
+- [ ] Stocker `K` (mat2 row-major) dans `FractalParams` à côté de `rotation`.
 - [ ] Injecter K dans le pipeline (`engine.cc:235-236`) : mapping pixel→c
-  via K, rayon BLA scalé, period detection prend K en entrée.
-- [ ] Stocker `K` dans `FractalParams` (à côté de `rotation`).
-- **Effort** : ~200 lignes Rust (scaffolding dual-numbers déjà présent dans
-  `nucleus.rs`). **Pourquoi** : sans K, minibrots non-axis-aligned (BS roté,
-  flake) corrompus visuellement. Complément du nucleus finder.
+  via `K * (4/zoom)`, rayon BLA scalé via |det K|, period detection prend
+  K en entrée.
+- [ ] Pour les minibrots Mandelbrot conformes, K = (1/β²)·R(θ) ; on extrait
+  déjà θ et on l'écrase dans `rotation`. Pour les hybrides non-conformes
+  (BS, Tricorn), K a une partie skew/scale non-uniforme à propager fidèle-
+  ment (sinon corruption sur flake / olbaid*).
+- **Effort** : ~120 lignes (storage + pixel→c + BLA scaling).
 
 ##### P1.6.c — Opcode `Op::Rot` natif [HAUTE]
-- [ ] Ajouter `Op::Rot { cos_theta, sin_theta }` (`bytecode/mod.rs`) +
-  cas dans `compile.rs`, `interp{,_gmp}.rs`, `delta_form.rs`, `bla_dual.rs`,
-  `bytecode_kernel.wgsl`. Tests d'invariance Tricorn/BS rotés.
-- **Effort** : ~80 lignes. F3 a `op_rot` (`types.h:115-116`) ; fractall
-  simule via phases — complique hybrides généraux et empêche parité TOML F3.
+- [x] `Op::Rot { cos_theta, sin_theta }` ajouté à `bytecode/mod.rs` avec
+  `opcode_tag()` pour le mapping GPU. Cas implémentés dans `interp.rs`,
+  `interp_gmp.rs`, `delta_form.rs` (DeltaState + DeltaStateExp avec
+  propagation ddelta), `bla_dual.rs` (Jacobien `R · J`, rayon préservé car
+  isométrique), `iterations.rs` (path f64 standard).
+- [x] Tests d'invariance : `invariant_rot_mandelbrot_phase` (δ-form vs
+  absolu f64), `invariant_rot_mandelbrot_phase_exp` (DeltaStateExp deep
+  zoom), `rot_after_sqr_matches_composed_jacobian` (BLA = R · J_sqr).
+- [ ] GPU : `Op::Rot` rejeté par `try_render_bytecode` (payload f64 pas
+  encodable dans le buffer `array<u32>` actuel). À débloquer en élargissant
+  le format bytecode GPU (op_id + 2×f32 cos/sin packés, ou storage buffer
+  séparé pour les payloads) ; pour l'instant fallback CPU.
+- [ ] `compile_formula` n'émet pas encore `Op::Rot` — les formules natives
+  (Mandelbrot, Julia, …) restent sans rotation. À brancher à P1.6.b-bis
+  (injecter K-extracted angle dans la formule) ou à un futur parseur
+  `[[formula]]` rotate des TOML F3.
 
 ##### P1.6.d — Wisdom file + auto-precision [HAUTE]
 - [ ] Implémenter `wisdom_lookup` (`wisdom.cc:240-295`) : choisit le type
@@ -148,6 +163,15 @@ Items issus de l'analyse `fraktaler-3-3.1/src/`. Classés par impact × effort.
 - **P1.6.a** ✅ (2026-05-19) — Nucleus finder atom-domain
   (`perturbation/nucleus.rs`). Critère F3 `|z|² < s²·|dz|²` (port
   `hybrid.cc:417` `hybrid_period`). 5/5 tests passent.
+- **P1.6.b** ✅ (2026-05-19) — `hybrid_size_mat2` porté
+  (`perturbation/nucleus.rs`, port `hybrid.cc:544-592`). Itère `period-1`
+  fois en dual-numbers GMP, accumule `b += L⁻¹`, renvoie `size = 1/(λ²·β)`
+  et matrice `K = inv(transp(b))/β`. Wiring `orbit.rs:618-720` : après
+  Newton, on remplace `params.rotation` par `atan2(K[2], K[0])` (équivalent
+  Mandelbrot conformal de `out.transform = K; rotate = 0` côté F3). 4/4
+  tests passent (period 1 identité, period 2 dégénéré c=-1, period 3
+  axis-aligned, escape→None). Suite goldens verte. Reliquat : stocker K
+  complet (skew/scale) pour hybrides non-conformes — voir P1.6.b-bis.
 
 ---
 
@@ -156,8 +180,9 @@ Items issus de l'analyse `fraktaler-3-3.1/src/`. Classés par impact × effort.
 ### Open
 
 #### P2.1 — CI GitHub Actions
-- [ ] `cargo test --release --bin fractall-cli` + `cargo test --release
-  --test golden_images` sur push / PR.
+- [x] `cargo test --release --bin fractall-cli` + `cargo test --release
+  --test golden_images` sur push / PR (`.github/workflows/ci.yml`,
+  ubuntu-latest, libgmp/mpfr/mpc + Swatinem/rust-cache).
 - [ ] Étendre corpus golden à zooms intermédiaires (10¹⁰, 10¹⁵, 10²⁰),
   cap ~70 s par cas (5e227 abandonné, trop long).
 
@@ -168,7 +193,7 @@ Items issus de l'analyse `fraktaler-3-3.1/src/`. Classés par impact × effort.
   `render_perturbation_cancellable_with_reuse()` et dispatch CPU/GMP.
 - [ ] `gpu/mod.rs` (1747 lignes) → pipelines standard / perturbation /
   bytecode en sous-modules.
-- **Pourquoi** : préalable à tout refactor P1 majeur (P1.6.b notamment).
+- **Pourquoi** : préalable à tout refactor P1 majeur (P1.6.b-bis notamment).
 
 #### P2.3 — Documenter tradeoff GPU f32
 - [ ] README : limite zoom GPU (~10⁷ en f32) et seuil fallback CPU.

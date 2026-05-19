@@ -751,7 +751,7 @@ impl DcGmpContext {
 
         let half = Float::with_val(prec, 0.5);
 
-        DcGmpContext { inv_width, inv_height, half, x_range, y_range, prec, rot: params.rotation_matrix() }
+        DcGmpContext { inv_width, inv_height, half, x_range, y_range, prec, rot: params.transform_matrix() }
     }
 
     /// Compute dc for a pixel using pre-computed constants.
@@ -980,7 +980,7 @@ pub fn render_perturbation_with_cache(
     // When jitter is disabled, pre-compute; when enabled, compute per-pixel with jitter.
     // Note: si rotation != 0, on ne peut PAS pré-calculer dc_re/dc_im séparément
     // car la rotation mélange dx et dy ; on calcule dc à la volée dans la boucle.
-    let rot = params.rotation_matrix();
+    let rot = params.transform_matrix();
     let dc_re_fexp: Vec<FloatExp> = (0..width)
         .map(|i| x_range_fexp * ((i as f64 + 0.5) * inv_width - 0.5))
         .collect();
