@@ -230,16 +230,16 @@ fn iterate_pixel_unified_exp_mandelbrot(
                 break;
             }
         } else {
+            // Rebase F3 en FloatExp pour ne pas saturer en f64 sur les
+            // orbites périodiques deep zoom où |delta| dépasse 2^1023
+            // (cf. floral_fantasy). La condition F3 est `|Z+δ|² < |δ|²`,
+            // exprimée en FloatExp pour préserver la comparaison.
             let z_m_new = ref_orbit.z_ref_f64[m as usize];
             let z_curr_re = FloatExp::from_f64(z_m_new.re) + delta.re;
             let z_curr_im = FloatExp::from_f64(z_m_new.im) + delta.im;
-            let z_curr_norm_sqr = {
-                let re = z_curr_re.to_f64();
-                let im = z_curr_im.to_f64();
-                re * re + im * im
-            };
-            let delta_norm_sqr_f64 = delta_approx.norm_sqr();
-            if z_curr_norm_sqr < delta_norm_sqr_f64 && delta_norm_sqr_f64 > 0.0 {
+            let z_curr_norm_sqr_fexp = z_curr_re.sqr() + z_curr_im.sqr();
+            let delta_norm_sqr_fexp = delta.norm_sqr_fexp();
+            if z_curr_norm_sqr_fexp < delta_norm_sqr_fexp {
                 delta = ComplexExp { re: z_curr_re, im: z_curr_im };
                 m = 0;
                 rebase_count += 1;
@@ -392,19 +392,11 @@ fn iterate_pixel_unified_exp_generic(
             // z_curr = Z[m] + δ
             let z_curr_re = FloatExp::from_f64(z_m_new.re) + delta.re;
             let z_curr_im = FloatExp::from_f64(z_m_new.im) + delta.im;
-            // Comparaison via to_f64 (les magnitudes en zone "interesting"
-            // sont dans la range f64 normale pour le rebase).
-            let z_curr_norm_sqr = {
-                let re = z_curr_re.to_f64();
-                let im = z_curr_im.to_f64();
-                re * re + im * im
-            };
-            // Le delta peut être minuscule (exp < -300), to_f64 → 0.
-            // Dans ce cas la condition `0 < 0` est false et on ne rebase pas
-            // — ce qui est correct quand delta est trop petit pour avoir
-            // dépassé z_curr.
-            let delta_norm_sqr_f64 = delta_approx.norm_sqr();
-            if z_curr_norm_sqr < delta_norm_sqr_f64 && delta_norm_sqr_f64 > 0.0 {
+            // Rebase F3 en FloatExp pour ne pas saturer en deep zoom (cf.
+            // pixel_loop_exp_mandelbrot). Condition F3 : `|Z+δ|² < |δ|²`.
+            let z_curr_norm_sqr_fexp = z_curr_re.sqr() + z_curr_im.sqr();
+            let delta_norm_sqr_fexp = delta.norm_sqr_fexp();
+            if z_curr_norm_sqr_fexp < delta_norm_sqr_fexp {
                 delta = ComplexExp {
                     re: z_curr_re,
                     im: z_curr_im,

@@ -480,19 +480,20 @@ fn build_hybrid_bla_references(
     params: &FractalParams,
     cancel: Option<&AtomicBool>,
 ) -> Option<HybridBlaReferences> {
-    // Préférer le cycle déjà détecté par Brent dans `compute_reference_orbit`
-    // (en GMP, tolerance ~ 2^(-prec*0.4)) : il est plus précis qu'une re-détection
-    // f64 sur z_ref_f64 avec une tolerance heuristique. À zoom > 1e85, le
-    // pixel_size f64 underflow à 0 → tolerance=1e-10 → faux positifs (e.g.
-    // détecte period=2 alors que la vraie période est 284, cf. floral_fantasy
-    // qui partait alors en hybrid_bla avec une mauvaise période et produisait
-    // une image uniforme).
+    // Brent's period detection en GMP (compute_reference_orbit) est canonique :
+    // il utilise une tolerance ~2^(-prec*0.4) sur les valeurs GMP, ce qui est
+    // strict et fiable. La re-détection f64 sur z_ref_f64 ici utilise une
+    // tolerance heuristique (1e-10 typiquement) qui produit des faux positifs
+    // à zoom >1e85 (span_x f64 underflows → tolerance fallback) et clone
+    // l'orbite GMP (prec 3k+ bits × orbit_len 30k+ × phases jusqu'à 512) →
+    // explosion mémoire 10-15 GB sur escape-time deep zoom (cf. e1000).
+    //
+    // Si Brent n'a pas trouvé de cycle (cycle_period=0), on respecte cette
+    // décision : le centre est escape-time, hybrid_bla n'aiderait pas.
     let detected = if primary_orbit.cycle_period > 0 {
         Some((primary_orbit.cycle_start, primary_orbit.cycle_period))
     } else {
-        let pixel_size = params.span_x / params.width as f64;
-        let tolerance = (pixel_size * 1e-3).max(1e-10).min(1e-6);
-        detect_cycle(&primary_orbit.z_ref_f64, tolerance)
+        None
     };
     if let Some((cycle_start, cycle_period)) = detected {
         // Cap mémoire : chaque phase clone z_ref_f64 + z_ref_gmp + z_ref. À
@@ -608,6 +609,53 @@ pub fn compute_reference_orbit_cached(
     const MAX_ITERATION_CAP: u32 = 10_000_000;
 
     let mut adjusted_params = params.clone();
+
+    // Nucleus finder (Mandelbrot only, opt-in via `find_nucleus`). À deep
+    // zoom escape-time, l'utilisateur cible un point près d'un minibrot dont
+    // l'orbite escape avant `iteration_max`. Le finder localise la période
+    // candidate et raffine le centre via Newton vers le centre exact du
+    // minibrot. Inspiré de `hybrid_center` de Fraktaler-3.1.
+    if params.find_nucleus && matches!(params.fractal_type, FractalType::Mandelbrot) {
+        let prec = adjusted_params.precision_bits;
+        let cx = if let Some(ref s) = adjusted_params.center_x_hp {
+            match rug::Float::parse(s) {
+                Ok(p) => rug::Float::with_val(prec, p),
+                Err(_) => rug::Float::with_val(prec, adjusted_params.center_x),
+            }
+        } else {
+            rug::Float::with_val(prec, adjusted_params.center_x)
+        };
+        let cy = if let Some(ref s) = adjusted_params.center_y_hp {
+            match rug::Float::parse(s) {
+                Ok(p) => rug::Float::with_val(prec, p),
+                Err(_) => rug::Float::with_val(prec, adjusted_params.center_y),
+            }
+        } else {
+            rug::Float::with_val(prec, adjusted_params.center_y)
+        };
+        let t_nucleus = Instant::now();
+        if let Some(result) = crate::fractal::perturbation::nucleus::find_nucleus(
+            &cx, &cy, adjusted_params.iteration_max, prec,
+        ) {
+            if perf {
+                eprintln!(
+                    "[NUCLEUS] found period={} after {} Newton steps in {:.3}s — re-centering",
+                    result.period, result.newton_steps, t_nucleus.elapsed().as_secs_f64(),
+                );
+            }
+            // Réécrit center_x_hp / center_y_hp et f64. La résolution exacte
+            // du nucleus rend l'orbite référence non-évadée pour ces périodes.
+            adjusted_params.center_x_hp = Some(result.center_x.to_string());
+            adjusted_params.center_y_hp = Some(result.center_y.to_string());
+            adjusted_params.center_x = result.center_x.to_f64();
+            adjusted_params.center_y = result.center_y.to_f64();
+        } else if perf {
+            eprintln!(
+                "[NUCLEUS] period not found or Newton did not converge (after {:.3}s) — keep original center",
+                t_nucleus.elapsed().as_secs_f64(),
+            );
+        }
+    }
 
     let pixel_count = (params.width as u64).saturating_mul(params.height as u64);
     let small_image = params.width.max(params.height) <= 512;

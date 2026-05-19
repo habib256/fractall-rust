@@ -942,6 +942,21 @@ pub struct FractalParams {
     /// veut explicitement le path legacy il peut passer `--no-bytecode`.
     #[serde(default = "default_true")]
     pub use_bytecode_engine: bool,
+
+    /// Active la recherche de nucleus (Mandelbrot uniquement) avant le build
+    /// de l'orbite référence. À zoom profond, l'utilisateur cible souvent un
+    /// point près d'un minibrot dont l'orbite escape avant `iteration_max`,
+    /// rendant la perturbation inopérante. Le nucleus finder détecte la
+    /// période et raffine le centre via Newton vers le centre exact du
+    /// minibrot, donnant une orbite référence non-évadée parfaitement
+    /// adaptée à la perturbation.
+    ///
+    /// Inspiré de Fraktaler-3.1 `hybrid_center` (`fraktaler-3-3.1/src/hybrid.cc:493`).
+    ///
+    /// Désactivé par défaut : coût orbit_iter × prec_bits avant le render,
+    /// peut être lent à très deep zoom. Activé via `--find-nucleus` CLI.
+    #[serde(default)]
+    pub find_nucleus: bool,
 }
 
 // Helpers pour `#[serde(default = "...")]`. Permettent de charger des PNG

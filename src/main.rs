@@ -162,6 +162,16 @@ struct Cli {
     #[arg(long)]
     no_bytecode: bool,
 
+    /// Active le nucleus finder (Mandelbrot only) : raffine le centre vers
+    /// un minibrot exact via Newton avant de build l'orbite référence. Utile
+    /// pour les deep zoom escape-time où la ref orbit s'évade prématurément
+    /// (cf. e1000, e1121, e8000...). Coût additionnel : un scan de période
+    /// + 1-64 itérations Newton à `precision_bits`, soit quelques secondes
+    /// à zoom modéré, plus à très deep zoom. Inspiré de Fraktaler-3.1
+    /// `hybrid_center`.
+    #[arg(long)]
+    find_nucleus: bool,
+
     /// Rotation du plan en degrés (CCW). Appliquée au mapping pixel→c
     /// (équivalent F3 `transform.rotate`). Override la valeur du TOML si fournie.
     #[arg(long)]
@@ -462,6 +472,10 @@ fn main() {
         params.use_bytecode_engine = false;
     }
     let _ = cli.bytecode; // legacy flag, no-op (default already true)
+
+    if cli.find_nucleus {
+        params.find_nucleus = true;
+    }
 
     // Rotation CLI : prioritaire sur la valeur TOML (cf. doc --rotation).
     if let Some(rot) = cli.rotation {

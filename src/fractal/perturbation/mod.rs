@@ -112,6 +112,7 @@ pub mod delta;
 pub mod series;
 pub mod glitch;
 pub mod nonconformal;
+pub mod nucleus;
 #[cfg(test)]
 pub mod debug_pure_f3;
 pub use orbit::{ReferenceOrbitCache, HybridBlaReferences};
@@ -1529,13 +1530,43 @@ pub fn render_perturbation_with_cache(
             let width_u32 = params.width;
             let dc_ctx = DcGmpContext::new(params, prec);
 
-            // En bytecode_path, `glitched` = ref_exhausted (orbite référence
-            // tronquée). `iterate_pixel_gmp` se cap à `effective_len-1` donc
-            // donne le même mauvais résultat — il faut `iterate_point_mpc`
-            // (full GMP per pixel, sans dépendance à l'orbite). Hors bytecode
-            // (legacy Pauldelbrot), l'orbite référence est complète et
-            // `iterate_pixel_gmp` (perturbation GMP) suffit.
-            if bytecode_path {
+            // Stratégie deux-passes : (a) perturbation GMP per-pixel
+            // (`iterate_pixel_gmp`) — rapide (réutilise l'orbite référence,
+            // ~10³× plus rapide que le full GMP). (b) si la majorité des
+            // pixels saturent à `effective_len-1` (signe que l'orbite
+            // référence est trop courte), on bascule sur `iterate_point_mpc`
+            // (full GMP per-pixel, lent mais sans dépendance à l'orbite) pour
+            // récupérer le vrai escape iter. Le seuil 30 % est aligné sur
+            // GLITCH_FALLBACK_THRESHOLD plus haut.
+            use crate::fractal::perturbation::delta::iterate_pixel_gmp;
+            let effective_len = cache.orbit.effective_len() as u32;
+            let cap_iter = params.iteration_max.min(effective_len.saturating_sub(1));
+            let corrections: Vec<_> = glitched_indices
+                .par_iter()
+                .map(|&idx| {
+                    let i = (idx as u32 % width_u32) as usize;
+                    let j = (idx as u32 / width_u32) as usize;
+                    let dc_gmp = dc_ctx.compute_dc(i, j);
+                    let result = iterate_pixel_gmp(
+                        params,
+                        &cache.orbit,
+                        &dc_gmp,
+                        prec,
+                    );
+                    (idx, result.iteration, result.z_final)
+                })
+                .collect();
+
+            // Détection de saturation : si la grande majorité des pixels glitchés
+            // sont coincés à `cap_iter` (saturation à la fin de l'orbite référence),
+            // l'orbite référence est inutilisable — on refait ces pixels en pure GMP.
+            let saturated_count = corrections.iter().filter(|&&(_, it, _)| it >= cap_iter).count();
+            let need_pure_gmp = bytecode_path
+                && cap_iter < params.iteration_max
+                && corrections.len() > 0
+                && saturated_count as f64 / corrections.len() as f64 > 0.30;
+
+            if need_pure_gmp {
                 let gmp_params = MpcParams::from_params(&orbit_params);
                 let center_x_gmp = if let Some(ref cx_hp) = params.center_x_hp {
                     match Float::parse(cx_hp) {
@@ -1553,7 +1584,7 @@ pub fn render_perturbation_with_cache(
                 } else {
                     Float::with_val(prec, params.center_y)
                 };
-                let corrections: Vec<_> = glitched_indices
+                let pure_corrections: Vec<_> = glitched_indices
                     .par_iter()
                     .map(|&idx| {
                         let i = (idx as u32 % width_u32) as usize;
@@ -1568,27 +1599,11 @@ pub fn render_perturbation_with_cache(
                         (idx, iter_val, complex_to_complex64(&z_final))
                     })
                     .collect();
-                for (idx, iter_val, z_final) in corrections {
+                for (idx, iter_val, z_final) in pure_corrections {
                     iterations[idx] = iter_val;
                     zs[idx] = z_final;
                 }
             } else {
-                use crate::fractal::perturbation::delta::iterate_pixel_gmp;
-                let corrections: Vec<_> = glitched_indices
-                    .par_iter()
-                    .map(|&idx| {
-                        let i = (idx as u32 % width_u32) as usize;
-                        let j = (idx as u32 / width_u32) as usize;
-                        let dc_gmp = dc_ctx.compute_dc(i, j);
-                        let result = iterate_pixel_gmp(
-                            params,
-                            &cache.orbit,
-                            &dc_gmp,
-                            prec,
-                        );
-                        (idx, result.iteration, result.z_final)
-                    })
-                    .collect();
                 for (idx, iter_val, z_final) in corrections {
                     iterations[idx] = iter_val;
                     zs[idx] = z_final;
