@@ -13,6 +13,11 @@
 //! Si on dépasse, on tronquera silencieusement à `u32::MAX` (TODO: support N0+N1).
 //!
 //! Référence F3 : `hybrid.cc:350` pour NF, `image_raw.cc:166` pour le layout EXR.
+//!
+//! Stub P3.3 : ce module n'est pas encore branché sur le pipeline rendu. On
+//! garde l'API pour que `scripts/compare_f3.py` ait son point d'ancrage,
+//! mais les warnings dead_code sont silenced jusqu'à intégration CLI.
+#![allow(dead_code)]
 
 use std::path::Path;
 

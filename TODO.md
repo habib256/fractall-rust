@@ -4,11 +4,13 @@
 > algorithmique : **Fraktaler-3.1** (cf. `fraktaler-3-3.1/src/`,
 > `docs/fraktaler-3-analysis.md`).
 
-**État (2026-05-19)** : Moteur bytecode unifié P3.1 livré sur CPU + GPU.
-Nucleus finder atom-domain (port `hybrid_period`) + `hybrid_size` (rotation
-extraite de K) ajoutés. Uniformisation deep zoom > 1e308 corrigée. Goulot
-actuel : **parité visuelle F3 sur le corpus `toml/`** + propager la matrice
-K complète (scale/skew non-conformal) au pixel→c mapping.
+**État (2026-05-20)** : Moteur bytecode unifié P3.1 livré sur CPU + GPU.
+Nucleus finder atom-domain (port `hybrid_period`) + `hybrid_size` (K
+normalisé stocké dans `FractalParams.transform_k`, pixel→c via
+`transform_matrix()`) ajoutés. `Op::Rot` opcode natif CPU avec dual-numbers
++ BLA. Uniformisation deep zoom > 1e308 corrigée. Goulot actuel : **parité
+visuelle F3 sur le corpus `toml/`** + BLA radius scaling pour hybrides
+skewés.
 
 ---
 
@@ -36,10 +38,8 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
 3. **P1.6.c** GPU+compile — élargir le buffer bytecode GPU pour porter le
    payload `Op::Rot` (cos/sin) et brancher `compile_formula` ou un loader
    TOML F3 pour émettre des `Op::Rot` réels. CPU déjà OK.
-4. **P1.6.b-bis** — Stocker K complet (mat2) dans `FractalParams` et l'appli-
-   quer dans le pixel→c mapping. Aujourd'hui on n'extrait que l'angle ;
-   pour les minibrots hybrides non-conformes (BS, Tricorn), K a une partie
-   skew/scale non-uniforme qu'il faut propager.
+4. **P1.6.b-bis (suite)** — BLA radius scaling via |det K| pour les hybrides
+   non-conformes skewés. Storage + pixel→c déjà OK.
 5. **P1.6.d + P1.6.e** — Wisdom file + float128 (bundle perf deep zoom).
    10-100× speedup pour zooms 1e30-1e100. Couple obligé : float128 sans
    dispatcher wisdom-driven n'a pas de sens.
@@ -78,15 +78,22 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
 Items issus de l'analyse `fraktaler-3-3.1/src/`. Classés par impact × effort.
 
 ##### P1.6.b-bis — Stocker K complet et l'appliquer au pixel→c [HAUTE]
-- [ ] Stocker `K` (mat2 row-major) dans `FractalParams` à côté de `rotation`.
-- [ ] Injecter K dans le pipeline (`engine.cc:235-236`) : mapping pixel→c
-  via `K * (4/zoom)`, rayon BLA scalé via |det K|, period detection prend
-  K en entrée.
-- [ ] Pour les minibrots Mandelbrot conformes, K = (1/β²)·R(θ) ; on extrait
-  déjà θ et on l'écrase dans `rotation`. Pour les hybrides non-conformes
-  (BS, Tricorn), K a une partie skew/scale non-uniforme à propager fidèle-
-  ment (sinon corruption sur flake / olbaid*).
-- **Effort** : ~120 lignes (storage + pixel→c + BLA scaling).
+- [x] Champ `transform_k: Option<[f64; 4]>` ajouté à `FractalParams` (serde
+  `skip_serializing_if = "Option::is_none"` pour les PNG legacy propres).
+  Default `None` → fallback rotation seule, drop-in compatible.
+- [x] `FractalParams::transform_matrix()` renvoie K si présent (et fini),
+  sinon `rotation_matrix()`. Callsites de `params.rotation_matrix()` migrés
+  dans `render/escape_time.rs` (4 sites) et `perturbation/mod.rs` (2 sites).
+- [x] Nucleus pipeline (`orbit.rs`) injecte `K_normalized = K / sqrt|det K|`
+  après `hybrid_size_mat2`. Det=1 préserve le zoom utilisateur (pas de
+  zoom-in implicite par 1/β²) tout en encodant rotation + skew non-uniforme
+  pour les hybrides. Pour Mandelbrot conformal, `K_norm = R(θ)` exact.
+- [x] Tests : 5 tests `transform_tests` (identity, fallback, override, skew,
+  NaN reject) + 1 PNG round-trip (`transform_k_round_trip_and_legacy_default`).
+- [ ] Reste : BLA radius scaling via |det K| (pour quand K_norm ≠ rotation,
+  c-à-d hybrides skewés). Aujourd'hui le BLA construit son rayon sans tenir
+  compte de K — OK pour conformal (rayon scalaire correct), à raffiner
+  pour les hybrides via stretching anisotrope du delta.
 
 ##### P1.6.c — Opcode `Op::Rot` natif [HAUTE]
 - [x] `Op::Rot { cos_theta, sin_theta }` ajouté à `bytecode/mod.rs` avec

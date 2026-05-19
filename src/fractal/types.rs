@@ -1104,3 +1104,70 @@ pub struct FractalResult {
     pub distance: Option<f64>,
 }
 
+#[cfg(test)]
+mod transform_tests {
+    use super::*;
+    use crate::fractal::definitions::default_params_for_type;
+
+    fn mat_close(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64), tol: f64) -> bool {
+        (a.0 - b.0).abs() < tol
+            && (a.1 - b.1).abs() < tol
+            && (a.2 - b.2).abs() < tol
+            && (a.3 - b.3).abs() < tol
+    }
+
+    /// Sans rotation ni K : `transform_matrix()` renvoie `None`, le pixel→c
+    /// applique l'identité (pas de produit matrice).
+    #[test]
+    fn transform_matrix_returns_none_when_neither_set() {
+        let p = default_params_for_type(FractalType::Mandelbrot, 100, 100);
+        assert!(p.rotation == 0.0 && p.transform_k.is_none());
+        assert!(p.transform_matrix().is_none());
+    }
+
+    /// Avec `rotation` mais sans K : on retombe sur `rotation_matrix()`.
+    #[test]
+    fn transform_matrix_falls_back_to_rotation_when_k_none() {
+        let mut p = default_params_for_type(FractalType::Mandelbrot, 100, 100);
+        p.rotation = 90.0;
+        let m = p.transform_matrix().expect("rotation 90 should yield a matrix");
+        // R(90°) row-major = (cos, -sin, sin, cos) = (0, -1, 1, 0).
+        assert!(mat_close(m, (0.0, -1.0, 1.0, 0.0), 1e-12), "got {:?}", m);
+    }
+
+    /// K identité forcée : transform_matrix renvoie K (et non la rotation).
+    /// Vérifie que K supplante la rotation même quand elle est non nulle.
+    #[test]
+    fn transform_k_overrides_rotation() {
+        let mut p = default_params_for_type(FractalType::Mandelbrot, 100, 100);
+        p.rotation = 45.0; // serait normalement utilisé
+        p.transform_k = Some([1.0, 0.0, 0.0, 1.0]);
+        let m = p.transform_matrix().expect("K identity should yield identity");
+        assert!(mat_close(m, (1.0, 0.0, 0.0, 1.0), 1e-12), "got {:?}", m);
+    }
+
+    /// K avec skew (non-conformal hybride synthétique) : la matrice est
+    /// renvoyée telle quelle pour permettre au pixel→c d'appliquer le
+    /// stretching directionnel sans le réduire à une rotation pure.
+    #[test]
+    fn transform_k_preserves_non_uniform_skew() {
+        let mut p = default_params_for_type(FractalType::Mandelbrot, 100, 100);
+        let k = [1.2, 0.3, -0.1, 0.8];
+        p.transform_k = Some(k);
+        let m = p.transform_matrix().expect("K should yield a matrix");
+        assert!(mat_close(m, (k[0], k[1], k[2], k[3]), 1e-12));
+    }
+
+    /// K avec composantes NaN : `transform_matrix` retombe sur la rotation
+    /// scalaire au lieu de propager des NaN dans le rendu.
+    #[test]
+    fn transform_matrix_rejects_non_finite_k_and_falls_back() {
+        let mut p = default_params_for_type(FractalType::Mandelbrot, 100, 100);
+        p.rotation = 30.0;
+        p.transform_k = Some([f64::NAN, 0.0, 0.0, 1.0]);
+        let m = p.transform_matrix().expect("should fall back to rotation");
+        let theta = 30f64.to_radians();
+        let (s, c) = theta.sin_cos();
+        assert!(mat_close(m, (c, -s, s, c), 1e-12));
+    }
+}

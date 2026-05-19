@@ -95,6 +95,7 @@ impl HybridBlaReferences {
 /// Detect periodic cycles in the reference orbit.
 /// Returns (cycle_start, cycle_period) if a cycle is detected, None otherwise.
 /// A cycle is detected when z_ref[i] ≈ z_ref[j] for i < j within tolerance.
+#[allow(dead_code)]
 fn detect_cycle(z_ref: &[Complex64], tolerance: f64) -> Option<(u32, u32)> {
     if z_ref.len() < 10 {
         return None;
@@ -696,15 +697,43 @@ pub fn compute_reference_orbit_cached(
                     // engine.cc:208-212). On suit cette sémantique : la
                     // rotation user pré-existante est écrasée par celle dérivée
                     // du minibrot trouvé.
+                    //
+                    // On stocke K normalisée à det=1 dans `transform_k` :
+                    // pour Mandelbrot conformal `K = R(θ)/β²`, donc K/sqrt|det K|
+                    // = R(θ) (pure rotation, on conserve la zoom utilisateur
+                    // au lieu de la multiplier implicitement par 1/β²). Pour
+                    // les hybrides non-conformes, la normalisation préserve
+                    // le skew/scale relatif sans modifier l'échelle absolue.
                     let new_rotation_deg = hs.rotation_degrees();
+                    let det_k = hs.k[0] * hs.k[3] - hs.k[1] * hs.k[2];
+                    let sqrt_abs_det = det_k.abs().sqrt();
+                    let k_normalized = if sqrt_abs_det.is_finite() && sqrt_abs_det > 0.0 {
+                        [
+                            hs.k[0] / sqrt_abs_det,
+                            hs.k[1] / sqrt_abs_det,
+                            hs.k[2] / sqrt_abs_det,
+                            hs.k[3] / sqrt_abs_det,
+                        ]
+                    } else {
+                        // det = 0 : K dégénérée, on ne stocke rien — l'extraction
+                        // de rotation seule sera utilisée comme fallback.
+                        [f64::NAN, 0.0, 0.0, f64::NAN]
+                    };
                     if new_rotation_deg.is_finite() {
                         let old = adjusted_params.rotation;
                         adjusted_params.rotation = new_rotation_deg;
+                        if k_normalized.iter().all(|x| x.is_finite()) {
+                            adjusted_params.transform_k = Some(k_normalized);
+                        }
                         if perf {
                             eprintln!(
-                                "[NUCLEUS] hybrid_size: rotation {:.3}° (was {:.3}°), canonical size mantissa={:.4} exp={} ({:.3}s)",
+                                "[NUCLEUS] hybrid_size: rotation {:.3}° (was {:.3}°), K_norm=[{:.3}, {:.3}; {:.3}, {:.3}], canonical size mantissa={:.4} exp={} ({:.3}s)",
                                 new_rotation_deg,
                                 old,
+                                k_normalized[0],
+                                k_normalized[1],
+                                k_normalized[2],
+                                k_normalized[3],
                                 hs.size.mantissa,
                                 hs.size.exponent,
                                 t_size.elapsed().as_secs_f64(),

@@ -204,6 +204,46 @@ mod tests {
         assert_eq!(params.bailout, 8.0);
     }
 
+    /// `transform_k` (P1.6.b-bis) : round-trip JSON. `None` ne s'écrit pas
+    /// dans le JSON (skip_serializing_if). `Some([...])` est préservé tel quel.
+    /// Charger un PNG legacy sans le champ → défaut `None` (fallback rotation).
+    #[test]
+    fn transform_k_round_trip_and_legacy_default() {
+        use crate::fractal::definitions::default_params_for_type;
+        use crate::fractal::FractalType;
+
+        // Defaut : None, ne doit pas apparaître dans le JSON sérialisé.
+        let p = default_params_for_type(FractalType::Mandelbrot, 100, 100);
+        let json_none = serde_json::to_string(&p).expect("serialize None");
+        assert!(
+            !json_none.contains("transform_k"),
+            "transform_k=None doit être skipped, JSON=\n{}",
+            json_none
+        );
+
+        // Avec K : round-trip exact.
+        let mut p2 = p.clone();
+        p2.transform_k = Some([0.3, -0.4, 0.5, 0.6]);
+        let json_some = serde_json::to_string(&p2).expect("serialize Some");
+        let p2_back: FractalParams =
+            serde_json::from_str(&json_some).expect("deserialize Some");
+        assert_eq!(p2_back.transform_k, Some([0.3, -0.4, 0.5, 0.6]));
+
+        // PNG legacy (champ absent) : défaut None.
+        let legacy = r#"{
+            "width": 100, "height": 100,
+            "center_x": 0.0, "center_y": 0.0,
+            "span_x": 4.0, "span_y": 3.0,
+            "seed": [0.0, 0.0],
+            "fractal_type": "Mandelbrot",
+            "iteration_max": 1000,
+            "bailout": 4.0
+        }"#;
+        let legacy_params: FractalParams =
+            serde_json::from_str(legacy).expect("deserialize legacy");
+        assert!(legacy_params.transform_k.is_none());
+    }
+
     /// Régression : un PNG legacy avec `use_legacy_glitch_detection` (champ
     /// supprimé) doit charger sans erreur (le champ inconnu est ignoré par
     /// serde_json par défaut).

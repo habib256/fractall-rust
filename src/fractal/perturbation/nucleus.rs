@@ -35,7 +35,10 @@ pub struct NucleusResult {
     pub period: u32,
     /// Nombre d'itérations Newton avant convergence.
     pub newton_steps: u32,
-    /// `true` si Newton a convergé.
+    /// `true` si Newton a convergé. Lu via debug log uniquement aujourd'hui ;
+    /// gardé pour exposer la qualité de convergence au caller (GUI futur,
+    /// QA harness).
+    #[allow(dead_code)]
     pub converged: bool,
 }
 
@@ -154,6 +157,7 @@ pub fn find_period_atom_domain(
 /// approxime une "zone d'intérêt" sans dépendre du zoom courant. Préférer
 /// `find_period_atom_domain` avec un `s` explicite quand le zoom est connu.
 #[deprecated(note = "use find_period_atom_domain with an explicit view scale `s`")]
+#[allow(dead_code)]
 pub fn find_period(
     cx: &Float,
     cy: &Float,

@@ -94,6 +94,7 @@ struct BlaUnifiedCacheEntry {
 // que f64 restait précis bien au-delà — faux dès qu'une orbite escape-time
 // courte rendait delta inopérant.
 pub const PIXEL_SIZE_EXP_THRESHOLD: f64 = 1e-13;
+#[allow(dead_code)]
 pub const PIXEL_SIZE_GMP_THRESHOLD: f64 = 1e-150;
 
 /// Renvoie le label du path bytecode qui sera emprunté par `try_bytecode_unified_path`.

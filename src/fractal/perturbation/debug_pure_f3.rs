@@ -29,6 +29,7 @@ pub struct PureF3Result {
     /// Nombre total d'itérations (n).
     pub iteration: u32,
     /// Valeur finale du delta.
+    #[allow(dead_code)]
     pub delta_final: Complex64,
     /// Nombre de rebases effectuées.
     pub rebase_count: u32,
