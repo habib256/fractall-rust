@@ -1,29 +1,27 @@
-//! Nucleus finder pour Mandelbrot (inspiré de Fraktaler-3.1 `hybrid_center`).
+//! Nucleus finder pour Mandelbrot (port fidèle de Fraktaler-3.1
+//! `hybrid_period` + `hybrid_center`, cf. `fraktaler-3-3.1/src/hybrid.cc:417`).
 //!
 //! À deep zoom, l'utilisateur cible un point near-minibrot dont l'orbite
 //! escape avant `iteration_max`. La perturbation tronque alors l'orbite
 //! référence → image uniforme ou GMP-fallback prohibitif.
 //!
-//! Solution F3 : trouver le nucleus exact du minibrot voisin via Newton sur
-//! `z_period(c) = 0` (le centre périodique passe par 0). Une fois `c` raffiné,
-//! l'orbite référence est non-escape et la perturbation fonctionne pour tous
-//! les pixels voisins.
+//! Solution F3 :
+//! 1. Détecter la période du minibrot voisin via le critère ball-arithmetic /
+//!    atom-domain : `|z|² < s² · |dz|²` où `s` est l'échelle de vue (`~ 1/zoom`)
+//!    et `dz` la dérivée de l'itération par rapport à `c`. Plus précis que
+//!    le min-|z| heuristique : la criterion encode directement la définition
+//!    de l'atome (boule centrée sur le nucleus de taille s/|dz|).
+//! 2. Newton-raffiner le centre vers `z_period(c) = 0` (le centre périodique
+//!    passe par 0). Une fois `c` raffiné, l'orbite référence est non-escape
+//!    et la perturbation fonctionne pour tous les pixels voisins.
 //!
-//! Pipeline :
-//! 1. `find_period` : itère depuis `c0`, retient l'iter `n` qui minimise `|z_n|`
-//!    avant escape. Cette n est la période candidate du minibrot le plus proche.
-//! 2. `newton_refine_center` : itère Newton `c := c - z_period(c) / z'_period(c)`
-//!    jusqu'à convergence (`|delta| < 2^(-prec/2)`). Les dérivées sont propagées
-//!    via dual numbers complexes.
-//!
-//! Limitations actuelles :
+//! Limitations :
 //! - Mandelbrot z² + c uniquement (pas BS/Tricorn/Multibrot).
-//! - Period detection par scan min-|z| : peut rater des minibrots à `n` >
-//!   iter_escape. F3 utilise une condition plus sophistiquée (`|w| > 1/s` où
-//!   `s` est la taille du domaine de l'atom).
+//! - Itération de période en GMP (précis mais lent pour très deep zoom). F3
+//!   utilise floatexp pour la passe de détection ; à porter si la perf
+//!   devient bloquante (cf. e22522 prec ~80k bits).
 
 use rug::{Assign, Complex, Float};
-use rug::ops::Pow;
 
 /// Résultat de la recherche de nucleus.
 #[derive(Clone, Debug)]
@@ -39,66 +37,129 @@ pub struct NucleusResult {
     pub converged: bool,
 }
 
-/// Scan l'orbite depuis `(cx, cy)` jusqu'à `max_iter` ou escape, retient
-/// l'iter qui minimise `|z_n|`. Retourne `None` si aucun minimum significatif
-/// (orbite escape immédiatement ou min reste près du seed).
+/// Détecte la période du minibrot le plus proche via le critère atom-domain F3
+/// (`fraktaler-3-3.1/src/hybrid.cc::hybrid_period`).
+///
+/// Itère `z_{n+1} = z_n² + c` et `dz_{n+1} = 2 z_n dz_n + 1` (dérivée par
+/// rapport à `c`). Retourne la première itération `n ≥ 4` où :
+///
+///   |z_n|² < s² · |dz_n|²
+///
+/// `s` est l'échelle de vue (~ `1 / zoom` ou `view_radius`). Le critère encode
+/// la définition même d'un atome de période n : z_n est dans une boule de
+/// rayon `s / |dz_n|` autour du nucleus, dont la taille `s/|dz|` est l'estimée
+/// linéaire de la taille de l'atome via le théorème d'Alexander.
+///
+/// Retourne `None` si l'orbite escape avant qu'une période ne soit détectée,
+/// ou si `max_iter` est atteint. C'est un signal que l'utilisateur est hors
+/// d'atteinte d'un atome dans le champ visuel — la perturbation classique
+/// reste alors la meilleure stratégie.
+pub fn find_period_atom_domain(
+    cx: &Float,
+    cy: &Float,
+    max_iter: u32,
+    s: &Float,
+    prec: u32,
+) -> Option<u32> {
+    // Bailout très large (F3 utilise 10^10000, on prend 1e60 — plus que
+    // suffisant pour détecter une orbite non-bornée sans gêner la détection
+    // de boucle interne).
+    let bailout_sqr = Float::with_val(prec, 1e120);
+    let s_sqr = Float::with_val(prec, s * s);
+
+    let mut z_re = Float::with_val(prec, 0);
+    let mut z_im = Float::with_val(prec, 0);
+    // dz initialisé à 0 (z_0 = 0, donc dz_0 = d0/dc = 0). Première iter :
+    //   dz_1 = 2 * 0 * 0 + 1 = 1
+    let mut dz_re = Float::with_val(prec, 0);
+    let mut dz_im = Float::with_val(prec, 0);
+
+    let mut z_norm_sqr = Float::with_val(prec, 0);
+    let mut dz_norm_sqr = Float::with_val(prec, 0);
+    let mut threshold = Float::with_val(prec, 0);
+
+    for n in 1..=max_iter {
+        // dz := 2 * z * dz + 1
+        //   re = 2*(z_re*dz_re - z_im*dz_im) + 1
+        //   im = 2*(z_re*dz_im + z_im*dz_re)
+        let dz_re_new = {
+            let a = Float::with_val(prec, &z_re * &dz_re);
+            let b = Float::with_val(prec, &z_im * &dz_im);
+            let mut t = a - b;
+            t *= 2;
+            t += 1;
+            t
+        };
+        let dz_im_new = {
+            let a = Float::with_val(prec, &z_re * &dz_im);
+            let b = Float::with_val(prec, &z_im * &dz_re);
+            let mut t = a + b;
+            t *= 2;
+            t
+        };
+
+        // z := z² + c
+        //   re = z_re² - z_im² + cx
+        //   im = 2*z_re*z_im + cy
+        let z_re_new = {
+            let a = Float::with_val(prec, &z_re * &z_re);
+            let b = Float::with_val(prec, &z_im * &z_im);
+            let mut t = a - b;
+            t += cx;
+            t
+        };
+        let z_im_new = {
+            let a = Float::with_val(prec, &z_re * &z_im);
+            let mut t = a * 2;
+            t += cy;
+            t
+        };
+
+        z_re = z_re_new;
+        z_im = z_im_new;
+        dz_re = dz_re_new;
+        dz_im = dz_im_new;
+
+        // Bailout — orbite hors Mandelbrot, pas de période détectable.
+        z_norm_sqr.assign(&z_re);
+        z_norm_sqr.square_mut();
+        let tmp = Float::with_val(prec, &z_im * &z_im);
+        z_norm_sqr += &tmp;
+        if z_norm_sqr > bailout_sqr {
+            return None;
+        }
+
+        // Atom-domain criterion : |z|² < s² * |dz|²
+        // F3 ne pose aucune borne inférieure sur n : pour un centre près du
+        // cardioïde (période 1) ou de la bulbe principale (période 2),
+        // retourner ces périodes courtes est correct. Le critère est lui-même
+        // strict (un orbite chaotique ne satisfait pas |z|² < s²|dz|²).
+        dz_norm_sqr.assign(&dz_re);
+        dz_norm_sqr.square_mut();
+        let tmp = Float::with_val(prec, &dz_im * &dz_im);
+        dz_norm_sqr += &tmp;
+        threshold.assign(&s_sqr);
+        threshold *= &dz_norm_sqr;
+        if z_norm_sqr < threshold {
+            return Some(n);
+        }
+    }
+
+    None
+}
+
+/// Alias rétro-compatible : utilise une échelle `s = 1e-6` par défaut, qui
+/// approxime une "zone d'intérêt" sans dépendre du zoom courant. Préférer
+/// `find_period_atom_domain` avec un `s` explicite quand le zoom est connu.
+#[deprecated(note = "use find_period_atom_domain with an explicit view scale `s`")]
 pub fn find_period(
     cx: &Float,
     cy: &Float,
     max_iter: u32,
     prec: u32,
 ) -> Option<u32> {
-    let bailout_sqr = Float::with_val(prec, 4096.0);
-    let mut z_re = Float::with_val(prec, 0);
-    let mut z_im = Float::with_val(prec, 0);
-    let mut min_norm_sqr = Float::with_val(prec, f64::INFINITY);
-    let mut min_iter = 0u32;
-
-    // Scratch buffers pour minimiser les allocations GMP.
-    let mut z_re_sq = Float::with_val(prec, 0);
-    let mut z_im_sq = Float::with_val(prec, 0);
-    let mut z_re_im = Float::with_val(prec, 0);
-    let mut norm_sqr = Float::with_val(prec, 0);
-
-    for n in 1..=max_iter {
-        // z := z² + c
-        z_re_sq.assign(&z_re);
-        z_re_sq.square_mut();
-        z_im_sq.assign(&z_im);
-        z_im_sq.square_mut();
-        z_re_im.assign(&z_re);
-        z_re_im *= &z_im;
-        z_re_im *= 2;
-
-        // new_re = z_re² - z_im² + cx
-        let new_re = Float::with_val(prec, &z_re_sq - &z_im_sq) + cx;
-        // new_im = 2*z_re*z_im + cy
-        let new_im = Float::with_val(prec, &z_re_im) + cy;
-        z_re = new_re;
-        z_im = new_im;
-
-        // bailout check
-        norm_sqr.assign(&z_re);
-        norm_sqr.square_mut();
-        let tmp = Float::with_val(prec, &z_im) * &z_im;
-        norm_sqr += &tmp;
-        if norm_sqr > bailout_sqr {
-            break;
-        }
-
-        // Tracker minimum
-        if norm_sqr < min_norm_sqr {
-            min_norm_sqr = norm_sqr.clone();
-            min_iter = n;
-        }
-    }
-
-    // Filtrer : si le min iter est très petit (1-3) ou trop tard, c'est
-    // suspect. On accepte n >= 4 comme une vraie période candidate.
-    if min_iter < 4 {
-        return None;
-    }
-    Some(min_iter)
+    let s = Float::with_val(prec, 1e-6);
+    find_period_atom_domain(cx, cy, max_iter, &s, prec)
 }
 
 /// Newton-raffine le centre vers le nucleus exact de période `period`.
@@ -283,15 +344,22 @@ pub fn newton_refine_center(
     }
 }
 
-/// Pipeline complet : trouve la période candidate puis Newton-raffine.
-/// Retourne `None` si aucune période trouvée ou Newton ne converge pas.
+/// Pipeline complet : détecte la période via le critère atom-domain puis
+/// Newton-raffine le centre. Retourne `None` si aucune période n'est trouvée
+/// ou si la dérivée Newton est trop petite pour converger.
+///
+/// `s` est l'échelle de vue (~ `max(span_x, span_y) / 2`). À zoom courant,
+/// l'utilisateur regarde une fenêtre de cette taille, donc on cherche le
+/// nucleus dont l'atome remplit cette fenêtre — pas un nucleus plus petit
+/// (qui serait subpixel) ni plus gros (qui ne serait pas centré).
 pub fn find_nucleus(
     cx: &Float,
     cy: &Float,
     max_iter: u32,
+    s: &Float,
     prec: u32,
 ) -> Option<NucleusResult> {
-    let period = find_period(cx, cy, max_iter, prec)?;
+    let period = find_period_atom_domain(cx, cy, max_iter, s, prec)?;
     let result = newton_refine_center(cx, cy, period, prec, 64);
     // Accepte le résultat même non strictement convergé : Newton améliore
     // souvent le centre suffisamment pour que la perturbation fonctionne,
@@ -338,5 +406,57 @@ mod tests {
         assert!(res.converged);
         let actual = res.center_x.to_f64();
         assert!((actual - (-1.0)).abs() < 1e-10, "Expected -1, got {}", actual);
+    }
+
+    #[test]
+    fn atom_domain_detects_period_3_satellite() {
+        // L'atom de période 3 vit autour de c = -1.754877666... (un minibrot
+        // sur la branche négative). Près de ce point, l'atom-domain criterion
+        // doit fire à n = 3.
+        let prec = 128u32;
+        let cx = Float::with_val(prec, -1.7548776);
+        let cy = Float::with_val(prec, 0.0);
+        // Échelle de vue ~ 0.01 — taille typique d'une vue centrée sur ce
+        // minibrot. s grand permet à la condition de fire dès la période
+        // minimale.
+        let s = Float::with_val(prec, 0.01);
+        let period = find_period_atom_domain(&cx, &cy, 100, &s, prec);
+        assert_eq!(
+            period,
+            Some(3),
+            "Expected period 3 for c ≈ -1.7548776, got {:?}",
+            period
+        );
+    }
+
+    #[test]
+    fn atom_domain_returns_none_for_escaping_orbit() {
+        // c = 1.0 escape immédiatement (z_2 = 2, z_3 = 5...). Aucune période
+        // ne doit être détectée.
+        let prec = 64u32;
+        let cx = Float::with_val(prec, 1.0);
+        let cy = Float::with_val(prec, 0.0);
+        let s = Float::with_val(prec, 1e-3);
+        let period = find_period_atom_domain(&cx, &cy, 100, &s, prec);
+        assert_eq!(period, None);
+    }
+
+    #[test]
+    fn atom_domain_full_pipeline_period_3() {
+        // Pipeline complet : find_nucleus depuis un point proche du minibrot
+        // période 3 doit retourner cx ≈ -1.7548776662..., converged.
+        let prec = 192u32;
+        let cx = Float::with_val(prec, -1.7548);
+        let cy = Float::with_val(prec, 0.0);
+        let s = Float::with_val(prec, 0.01);
+        let res = find_nucleus(&cx, &cy, 100, &s, prec).expect("should find nucleus");
+        assert_eq!(res.period, 3);
+        let expected = -1.7548776662466927_f64;
+        assert!(
+            (res.center_x.to_f64() - expected).abs() < 1e-12,
+            "Expected x ≈ {}, got {}",
+            expected,
+            res.center_x.to_f64()
+        );
     }
 }

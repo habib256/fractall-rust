@@ -613,10 +613,16 @@ pub fn compute_reference_orbit_cached(
     // Nucleus finder (Mandelbrot only, opt-in via `find_nucleus`). À deep
     // zoom escape-time, l'utilisateur cible un point près d'un minibrot dont
     // l'orbite escape avant `iteration_max`. Le finder localise la période
-    // candidate et raffine le centre via Newton vers le centre exact du
-    // minibrot. Inspiré de `hybrid_center` de Fraktaler-3.1.
+    // via le critère atom-domain F3 (`|z|² < s²·|dz|²`) puis raffine le centre
+    // via Newton vers le centre exact du minibrot. Inspiré de `hybrid_period`
+    // + `hybrid_center` de Fraktaler-3.1.
     if params.find_nucleus && matches!(params.fractal_type, FractalType::Mandelbrot) {
-        let prec = adjusted_params.precision_bits;
+        // Précision dérivée de la formule perturbation (auto si span HP fournie).
+        // À zoom 1e227, params.precision_bits=256 ne suffit pas pour itérer le
+        // candidat près du minibrot exact ; il faut ~780 bits.
+        let prec = crate::fractal::perturbation::compute_perturbation_precision_bits(
+            &adjusted_params,
+        );
         let cx = if let Some(ref s) = adjusted_params.center_x_hp {
             match rug::Float::parse(s) {
                 Ok(p) => rug::Float::with_val(prec, p),
@@ -633,9 +639,32 @@ pub fn compute_reference_orbit_cached(
         } else {
             rug::Float::with_val(prec, adjusted_params.center_y)
         };
+
+        // Échelle de vue `s = max(span_x, span_y) / 2`. F3 utilise `r = 1/zoom`
+        // (i.e. ~ span/2 puisque `zoom = 2/span`). On reconstruit via FloatExp
+        // pour survivre aux underflows f64 (span < 1e-300 ⇒ params.span_x = 0).
+        let view_scale_fexp = {
+            let (sx, sy) = crate::fractal::perturbation::effective_spans_fexp(&adjusted_params);
+            // max(sx, sy) via PartialOrd FloatExp
+            if sx > sy { sx } else { sy }
+        };
+        // view_scale_fexp → Float : reconstruire via shifts pour préserver
+        // l'exposant arbitraire (Float::with_val ne supporte que f64).
+        let s_gmp = {
+            let mut f = Float::with_val(prec, view_scale_fexp.mantissa);
+            // Mantissa est dans [0.5, 1) ; on applique 2^(exponent-1) pour
+            // recomposer la magnitude exacte.
+            let e = view_scale_fexp.exponent.saturating_sub(1);
+            if e >= 0 {
+                f <<= e as u32;
+            } else {
+                f >>= (-e) as u32;
+            }
+            f
+        };
         let t_nucleus = Instant::now();
         if let Some(result) = crate::fractal::perturbation::nucleus::find_nucleus(
-            &cx, &cy, adjusted_params.iteration_max, prec,
+            &cx, &cy, adjusted_params.iteration_max, &s_gmp, prec,
         ) {
             if perf {
                 eprintln!(
