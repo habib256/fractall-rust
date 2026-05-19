@@ -1462,11 +1462,15 @@ pub fn render_perturbation_with_cache(
         const GLITCH_FALLBACK_THRESHOLD: f64 = 0.30; // 30% (augmenté de 10%)
 
         // Le bytecode flag `glitched: true` UNIQUEMENT en exhaustion d'orbite
-        // référence (centres escape-time). La résolution per-pixel passe par
-        // `iterate_pixel_gmp` (perturbation GMP), bien plus rapide que le
-        // full GMP recalc `iterate_point_mpc` (~10³× /pixel). Le gate
-        // `!bytecode_path` évite ce full recalc catastrophique sur deep zooms.
-        let allow_full_gmp_fallback = !bytecode_path;
+        // référence (centres escape-time non-périodiques). Dans ce cas, l'orbite
+        // GMP est elle aussi tronquée — `iterate_pixel_gmp` (perturbation GMP)
+        // cape au même iter que pixel_loop_exp et donne le même mauvais résultat
+        // uniforme (cf. e113.toml). Seul `iterate_point_mpc` (full GMP per pixel,
+        // sans dépendance à l'orbite référence) produit le bon iter d'escape.
+        // On autorise donc le full recalc même en bytecode_path. Les "vrais"
+        // glitches Pauldelbrot ne sont jamais flaggés par le bytecode (rebasing
+        // F3 strict les prévient), donc tout pixel glitched ici est ref_exhausted.
+        let allow_full_gmp_fallback = true;
 
         if allow_full_gmp_fallback && glitch_ratio > GLITCH_FALLBACK_THRESHOLD {
             // Trop de glitches: recalculer tous les pixels en GMP
@@ -1523,40 +1527,74 @@ pub fn render_perturbation_with_cache(
         }
 
         if !glitched_indices.is_empty() {
-            // Utiliser perturbation GMP au lieu de recalcul complet pour corriger les glitches.
-            // C'est beaucoup plus rapide car on réutilise l'orbite de référence déjà calculée.
             let prec = compute_perturbation_precision_bits(params);
             let width_u32 = params.width;
-            
-            // Pre-compute shared GMP constants for dc computation
             let dc_ctx = DcGmpContext::new(params, prec);
 
-            // Utiliser l'orbite de référence GMP déjà calculée (plus rapide que recalcul complet)
-            use crate::fractal::perturbation::delta::iterate_pixel_gmp;
-            let corrections: Vec<_> = glitched_indices
-                .par_iter()
-                .map(|&idx| {
-                    let i = (idx as u32 % width_u32) as usize;
-                    let j = (idx as u32 / width_u32) as usize;
-
-                    // Calculer dc en GMP directement
-                    let dc_gmp = dc_ctx.compute_dc(i, j);
-                    
-                    // Utiliser perturbation GMP avec l'orbite de référence (beaucoup plus rapide)
-                    let result = iterate_pixel_gmp(
-                        params,
-                        &cache.orbit,
-                        &dc_gmp,
-                        prec,
-                    );
-                    
-                    (idx, result.iteration, result.z_final)
-                })
-                .collect();
-
-            for (idx, iter_val, z_final) in corrections {
-                iterations[idx] = iter_val;
-                zs[idx] = z_final;
+            // En bytecode_path, `glitched` = ref_exhausted (orbite référence
+            // tronquée). `iterate_pixel_gmp` se cap à `effective_len-1` donc
+            // donne le même mauvais résultat — il faut `iterate_point_mpc`
+            // (full GMP per pixel, sans dépendance à l'orbite). Hors bytecode
+            // (legacy Pauldelbrot), l'orbite référence est complète et
+            // `iterate_pixel_gmp` (perturbation GMP) suffit.
+            if bytecode_path {
+                let gmp_params = MpcParams::from_params(&orbit_params);
+                let center_x_gmp = if let Some(ref cx_hp) = params.center_x_hp {
+                    match Float::parse(cx_hp) {
+                        Ok(parse_result) => Float::with_val(prec, parse_result),
+                        Err(_) => Float::with_val(prec, params.center_x),
+                    }
+                } else {
+                    Float::with_val(prec, params.center_x)
+                };
+                let center_y_gmp = if let Some(ref cy_hp) = params.center_y_hp {
+                    match Float::parse(cy_hp) {
+                        Ok(parse_result) => Float::with_val(prec, parse_result),
+                        Err(_) => Float::with_val(prec, params.center_y),
+                    }
+                } else {
+                    Float::with_val(prec, params.center_y)
+                };
+                let corrections: Vec<_> = glitched_indices
+                    .par_iter()
+                    .map(|&idx| {
+                        let i = (idx as u32 % width_u32) as usize;
+                        let j = (idx as u32 / width_u32) as usize;
+                        let dc_gmp = dc_ctx.compute_dc(i, j);
+                        let mut z_pixel_re = center_x_gmp.clone();
+                        z_pixel_re += dc_gmp.real();
+                        let mut z_pixel_im = center_y_gmp.clone();
+                        z_pixel_im += dc_gmp.imag();
+                        let z_pixel = complex_from_xy(prec, z_pixel_re, z_pixel_im);
+                        let (iter_val, z_final) = iterate_point_mpc(&gmp_params, &z_pixel);
+                        (idx, iter_val, complex_to_complex64(&z_final))
+                    })
+                    .collect();
+                for (idx, iter_val, z_final) in corrections {
+                    iterations[idx] = iter_val;
+                    zs[idx] = z_final;
+                }
+            } else {
+                use crate::fractal::perturbation::delta::iterate_pixel_gmp;
+                let corrections: Vec<_> = glitched_indices
+                    .par_iter()
+                    .map(|&idx| {
+                        let i = (idx as u32 % width_u32) as usize;
+                        let j = (idx as u32 / width_u32) as usize;
+                        let dc_gmp = dc_ctx.compute_dc(i, j);
+                        let result = iterate_pixel_gmp(
+                            params,
+                            &cache.orbit,
+                            &dc_gmp,
+                            prec,
+                        );
+                        (idx, result.iteration, result.z_final)
+                    })
+                    .collect();
+                for (idx, iter_val, z_final) in corrections {
+                    iterations[idx] = iter_val;
+                    zs[idx] = z_final;
+                }
             }
         }
         let t_post = t_post_start.elapsed();
