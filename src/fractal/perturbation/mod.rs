@@ -1088,7 +1088,6 @@ pub fn render_perturbation_with_cache(
                 // each phase in the loop. Rebasing switches to the reference for the current phase.
                 // You need one BLA table per reference.
                 let result = if let Some(ref hybrid) = cache_ref.hybrid_refs {
-                    // Hybrid BLA: iterate with phase-aware reference switching
                     iterate_pixel_hybrid_bla(
                         params,
                         hybrid,
@@ -1097,7 +1096,6 @@ pub fn render_perturbation_with_cache(
                         dc_term,
                     )
                 } else {
-                    // Single reference (no cycle detected)
                     iterate_pixel(
                         params,
                         &cache_ref.orbit,
@@ -1105,8 +1103,8 @@ pub fn render_perturbation_with_cache(
                         cache_ref.series_table.as_ref(),
                         delta0,
                         dc_term,
-                        None, // No phase change for single reference
-                        None, // No hybrid refs for single reference
+                        None,
+                        None,
                     )
                 };
                 

@@ -480,17 +480,49 @@ fn build_hybrid_bla_references(
     params: &FractalParams,
     cancel: Option<&AtomicBool>,
 ) -> Option<HybridBlaReferences> {
-    // Detect cycle in the reference orbit
-    // Use a tolerance based on the precision and zoom level
-    let pixel_size = params.span_x / params.width as f64;
-    let tolerance = (pixel_size * 1e-3).max(1e-10).min(1e-6);
-    
-    if let Some((cycle_start, cycle_period)) = detect_cycle(&primary_orbit.z_ref_f64, tolerance) {
+    // Préférer le cycle déjà détecté par Brent dans `compute_reference_orbit`
+    // (en GMP, tolerance ~ 2^(-prec*0.4)) : il est plus précis qu'une re-détection
+    // f64 sur z_ref_f64 avec une tolerance heuristique. À zoom > 1e85, le
+    // pixel_size f64 underflow à 0 → tolerance=1e-10 → faux positifs (e.g.
+    // détecte period=2 alors que la vraie période est 284, cf. floral_fantasy
+    // qui partait alors en hybrid_bla avec une mauvaise période et produisait
+    // une image uniforme).
+    let detected = if primary_orbit.cycle_period > 0 {
+        Some((primary_orbit.cycle_start, primary_orbit.cycle_period))
+    } else {
+        let pixel_size = params.span_x / params.width as f64;
+        let tolerance = (pixel_size * 1e-3).max(1e-10).min(1e-6);
+        detect_cycle(&primary_orbit.z_ref_f64, tolerance)
+    };
+    if let Some((cycle_start, cycle_period)) = detected {
+        // Cap mémoire : chaque phase clone z_ref_f64 + z_ref_gmp + z_ref. À
+        // prec >500 bits × orbit_len >16k × period >5k, on monte à >30 GB
+        // (cf. flake.toml period 7884). Au-dessus du seuil, on dégrade
+        // gracieusement vers la référence primaire seule — l'image perd
+        // l'optimisation hybrid_bla mais reste correcte via le wrap_periodic
+        // intégré au pixel_loop{,_exp}.
+        const HYBRID_BLA_PERIOD_CAP: u32 = 512;
+        if cycle_period > HYBRID_BLA_PERIOD_CAP {
+            if crate::fractal::perturbation::perf_enabled() {
+                eprintln!(
+                    "[HYBRID_BLA] cycle_period={} > {} (mémoire prohibitive) → fallback primary only",
+                    cycle_period, HYBRID_BLA_PERIOD_CAP,
+                );
+            }
+            return Some(HybridBlaReferences {
+                primary: primary_orbit.clone(),
+                primary_bla: primary_bla.clone(),
+                phases: Vec::new(),
+                phase_bla_tables: Vec::new(),
+                cycle_period: 0, // Force fallback to single primary in iterate_pixel_hybrid_bla
+                cycle_start: 0,
+            });
+        }
         // Cycle detected: create references for each phase
         // For Hybrid BLA: you need multiple references, one starting at each phase in the loop
         let mut phases = Vec::new();
         let mut phase_bla_tables = Vec::new();
-        
+
         for phase in 1..cycle_period {
             if let Some(cancel) = cancel {
                 if cancel.load(Ordering::Relaxed) {

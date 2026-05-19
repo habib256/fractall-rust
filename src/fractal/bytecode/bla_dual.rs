@@ -454,26 +454,14 @@ impl BlaTableUnified {
                 continue;
             }
             let node = &nodes[idx];
-            // Compare delta_norm_sqr (FloatExp) < node.r2 (f64) sans passer par
-            // to_f64 qui underflow. r² > 0 (par construction BLA), donc si delta
-            // mantissa est zéro ou si exp est très négatif (sous f64::MIN_EXP),
-            // delta < r² trivialement.
-            let m_d = delta_norm_sqr_fexp.mantissa;
-            let e_d = delta_norm_sqr_fexp.exponent;
-            let r2 = node.r2;
-            let valid = if m_d == 0.0 {
-                true
-            } else if e_d < -1074 {
-                true // delta inférieur à toute valeur f64 positive normalisable
-            } else if e_d > 1023 {
-                false // delta dépasse f64::MAX > r²
-            } else {
-                // delta = m_d * 2^e_d (peut être denormal si e_d ∈ [-1074, -1022])
-                // r2 est f64 normal. Comparaison directe via reconstruction f64.
-                let d_f64 = m_d * 2.0f64.powi(e_d);
-                d_f64 < r2
-            };
-            if valid {
+            // Compare `delta_norm_sqr (FloatExp) < node.r2 (f64)` via FloatExp::PartialOrd
+            // pour éviter à la fois l'underflow (delta exp < -1074) ET le faux-positif
+            // « delta tiny → always valid » qui faisait passer la BLA à un niveau supérieur
+            // au-dessus d'un nœud avec r² minuscule (cf. floral_fantasy uniforme).
+            // r² peut lui-même être denormal/zéro pour des nœuds proches de l'escape ;
+            // FloatExp::from_f64 préserve son exponent.
+            let r2_fexp = crate::fractal::perturbation::types::FloatExp::from_f64(node.r2);
+            if delta_norm_sqr_fexp < r2_fexp {
                 return Some(node);
             }
         }

@@ -151,14 +151,20 @@ fn iterate_pixel_unified_exp_mandelbrot(
     let mut ref_exhausted_flag = false;
     const REDUCE_INTERVAL: u32 = 250;
 
+    let bailout_sqr_fexp = FloatExp::from_f64(bailout_sqr);
     while n < iteration_max {
         let z_m = ref_orbit.z_ref_f64[m as usize];
-        let delta_approx = delta.to_complex64_approx();
-        let z_abs = z_m + delta_approx;
-        if z_abs.norm_sqr() >= bailout_sqr {
+        // Bailout en FloatExp pour préserver la différentiation pixel-à-pixel
+        // au-delà de 2^1023 (où to_complex64_approx sature à inf et tous les
+        // pixels bailent au même iter, cf. floral_fantasy).
+        let z_abs_re = FloatExp::from_f64(z_m.re) + delta.re;
+        let z_abs_im = FloatExp::from_f64(z_m.im) + delta.im;
+        let z_abs_norm_sqr = z_abs_re.sqr() + z_abs_im.sqr();
+        if !(z_abs_norm_sqr < bailout_sqr_fexp) {
+            let delta_approx = delta.to_complex64_approx();
             return UnifiedPixelResultExp {
                 iteration: n,
-                z_final: z_abs,
+                z_final: z_m + delta_approx,
                 rebase_count,
                 bla_steps,
                 ref_exhausted: false,

@@ -101,6 +101,42 @@ impl FloatExp {
     }
 }
 
+impl PartialOrd for FloatExp {
+    /// Sign-aware ordering over normalized FloatExp values (mantissa ∈ [0.5, 1)
+    /// for positives, (-1, -0.5] for negatives ; zero a un mantissa = 0). Évite
+    /// `to_f64` qui sature dès que `|exponent| > 1023` et perd toute distinction
+    /// entre valeurs très grandes (cf. bailout check pixel_loop_exp).
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        use std::cmp::Ordering::*;
+        let s = self.mantissa.signum();
+        let o = other.mantissa.signum();
+        if self.mantissa == 0.0 && other.mantissa == 0.0 {
+            return Some(Equal);
+        }
+        if self.mantissa == 0.0 {
+            return Some(if other.mantissa > 0.0 { Less } else { Greater });
+        }
+        if other.mantissa == 0.0 {
+            return Some(if self.mantissa > 0.0 { Greater } else { Less });
+        }
+        if s != o {
+            return self.mantissa.partial_cmp(&other.mantissa);
+        }
+        // Same sign, both non-zero. Compare magnitudes via exponent puis mantissa.
+        let mag_cmp = match self.exponent.cmp(&other.exponent) {
+            Less => Less,
+            Greater => Greater,
+            Equal => match self.mantissa.abs().partial_cmp(&other.mantissa.abs()) {
+                Some(c) => c,
+                None => return None,
+            },
+        };
+        // Si négatifs, magnitude plus grande = valeur plus petite.
+        Some(if s > 0.0 { mag_cmp } else { mag_cmp.reverse() })
+    }
+}
+
 impl Add for FloatExp {
     type Output = Self;
 

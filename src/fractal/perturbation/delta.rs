@@ -86,7 +86,14 @@ struct BlaUnifiedCacheEntry {
 /// (le caller fallback sur le path historique).
 /// Seuils de basculement entre paths perturbation (utilisés par
 /// `try_bytecode_unified_path` ET `bytecode_path_label` pour rester cohérents).
-pub const PIXEL_SIZE_EXP_THRESHOLD: f64 = 1e-100;
+// `delta` devient indistinguable de 0 dans (z_ref + delta) quand
+// |delta| < epsilon_f64 * |z_ref| ≈ 2.2e-16 * bailout. Avec bailout=256, ça
+// donne pixel_size ≈ 6e-14 ; en pratique on bascule sur le path exp dès
+// pixel_size < 1e-13, sinon tous les pixels bailent à l'iter du z_ref (image
+// uniforme, cf. floral_fantasy zoom 1.55e85). L'ancien seuil 1e-100 supposait
+// que f64 restait précis bien au-delà — faux dès qu'une orbite escape-time
+// courte rendait delta inopérant.
+pub const PIXEL_SIZE_EXP_THRESHOLD: f64 = 1e-13;
 pub const PIXEL_SIZE_GMP_THRESHOLD: f64 = 1e-150;
 
 /// Renvoie le label du path bytecode qui sera emprunté par `try_bytecode_unified_path`.
