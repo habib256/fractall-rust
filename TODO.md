@@ -63,6 +63,11 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
 - Env var `FRACTALL_NO_PERIOD=1` désactive la troncature par period-detection
   (commit 7356931). **Gain majeur** : floral_fantasy 1310→0.39, glitch_test_4
   1325→0.24, liiiines 3969→23.8, mitosis2 37.5→3.56. Le harness le positionne.
+- Escape radius pixel aligné F3 (4 → **25** = `escape_radius 625`) pour la
+  famille escape-time bytecode+perturbation (`const ESCAPE_TIME_BAILOUT`,
+  `definitions.rs`). fractall escapait à |z|²≥16, F3 à ≥625 → N0/NF divergeaient
+  systématiquement à la frontière d'évasion (là où se concentre le Δmean
+  résiduel). Goldens régénérés. **Gain parité à quantifier au prochain sweep.**
 
 **Sweep étendu 2026-05-20** (26 cas uniques, NO_PERIOD + NO_AUTO_ADJUST) :
 - Pixel-perfect : test5, test6.
@@ -169,8 +174,8 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
    ci-dessus). Garder opt-in aux nucleus exacts. Valider goldens + GUI.
 5. **P1.6.d — wisdom file** — dispatch f64 → FloatExp/DoubleExp → float128 →
    GMP selon zoom. Sans lui, float128 n'est pas sélectionné automatiquement.
-6. **P1.3 résidus** — décision `bailout` défaut (4 vs 25, change goldens)
-   + vérifier pixel spacing BLA = `4/zoom/height` strict.
+6. **P1.3 résidus** — bailout défaut tranché (ER=25, cf. P1.3 *Done*). Reste :
+   vérifier pixel spacing BLA = `4/zoom/height` strict.
 7. **P1.6.c** GPU+compile — élargir le buffer bytecode GPU pour porter le
    payload `Op::Rot` (cos/sin) et brancher `compile_formula` ou un loader
    TOML F3 pour émettre des `Op::Rot` réels. CPU déjà OK.
@@ -189,9 +194,16 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
 ### Open
 
 #### P1.3 — Constantes critiques (résidus)
-- [ ] Escape radius pixel défaut = `25` (F3) vs `4` (fractall). Garder 4 pour
-  golden tests stables ; faire de 25 le défaut casserait les goldens. À
-  trancher (changement avec refresh goldens).
+- [x] Escape radius pixel défaut = **25** (2026-05-20). F3 `escape_radius=625`
+  (= 25², `param.h:41`) adopté via `const ESCAPE_TIME_BAILOUT` (`definitions.rs`)
+  pour la famille escape-time bytecode+perturbation (Mandelbrot, Julia, Burning
+  Ship, Buffalo, Tricorn, Celtic, Perp BS, Multibrot + 6 variantes Julia).
+  Requis pour la parité N0/NF à la frontière d'évasion (fractall escapait à
+  |z|²≥16, F3 à ≥625) + smooth coloring (log-log) plus propre. Types à
+  sémantique d'évasion particulière (Newton, Magnet, Sin, Nova, Pickover,
+  densité, vectoriel, AlphaMandelbrot) gardent leur bailout. 10/11 goldens
+  régénérés + revus visuellement (newton inchangé) ; 174 unit tests verts ;
+  champ `bailout` reste configurable pour retrouver ER=4.
 - [ ] Vérifier pixel spacing BLA = `4/zoom/height` strict dans
   `bytecode/bla_dual.rs`, `perturbation/bla.rs`, `nonconformal.rs`.
 - [x] Caps `max_perturb_iterations` / `max_bla_steps` enforcés dans

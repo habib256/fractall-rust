@@ -6,6 +6,16 @@ use crate::fractal::orbit_traps::OrbitTrapType;
 
 /// Construit des paramètres avec les valeurs par défaut du type,
 /// en reprenant la logique de `fractal_definitions.c`.
+/// Escape radius par défaut des fractales escape-time standard (famille
+/// bytecode + perturbation : Mandelbrot, Julia, Burning Ship, Tricorn,
+/// Celtic, Buffalo, Perp. Burning Ship, Multibrot + variantes Julia).
+/// Aligné sur Fraktaler-3 `escape_radius = 625` (= 25², `param.h:41`) :
+/// requis pour la parité N0/NF à la frontière d'évasion et rend le smooth
+/// coloring (formule log-log, `palettes.rs`) nettement plus propre qu'à
+/// ER=4. Les types à sémantique d'évasion particulière (Newton, Magnet,
+/// Sin, Nova, Pickover, densité, vectoriel) gardent leur bailout propre.
+const ESCAPE_TIME_BAILOUT: f64 = 25.0;
+
 pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u32) -> FractalParams {
     // Valeurs communes
     let mut params = FractalParams {
@@ -101,7 +111,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.span_x = 4.0;
             params.span_y = 3.0;
             params.seed = Complex64::new(0.0, 0.0);
-            params.bailout = 4.0;
+            params.bailout = ESCAPE_TIME_BAILOUT;
             params.iteration_max = 2500;
         }
         FractalType::Julia => {
@@ -111,7 +121,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.span_x = 4.0;
             params.span_y = 3.0;
             params.seed = Complex64::new(0.36228, -0.0777);
-            params.bailout = 4.0;
+            params.bailout = ESCAPE_TIME_BAILOUT;
             params.iteration_max = 2500;
         }
         FractalType::JuliaSin => {
@@ -198,7 +208,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.span_x = 4.0;
             params.span_y = 4.0;
             params.seed = Complex64::new(0.0, 0.0);
-            params.bailout = 4.0;
+            params.bailout = ESCAPE_TIME_BAILOUT;
             params.iteration_max = 2500;
         }
         FractalType::Buffalo => {
@@ -208,7 +218,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.span_x = 4.0;
             params.span_y = 4.0;
             params.seed = Complex64::new(0.0, 0.0);
-            params.bailout = 4.0;
+            params.bailout = ESCAPE_TIME_BAILOUT;
             params.iteration_max = 2500;
         }
         FractalType::Tricorn => {
@@ -218,7 +228,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.span_x = 4.0;
             params.span_y = 3.0;
             params.seed = Complex64::new(0.0, 0.0);
-            params.bailout = 4.0;
+            params.bailout = ESCAPE_TIME_BAILOUT;
             params.iteration_max = 2500;
         }
         FractalType::Mandelbulb => {
@@ -256,7 +266,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.span_x = 4.0;
             params.span_y = 3.0;
             params.seed = Complex64::new(0.0, 0.0);
-            params.bailout = 4.0;
+            params.bailout = ESCAPE_TIME_BAILOUT;
             params.iteration_max = 2500;
         }
         FractalType::Celtic => {
@@ -266,7 +276,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.span_x = 3.0;
             params.span_y = 3.0;
             params.seed = Complex64::new(0.0, 0.0);
-            params.bailout = 4.0;
+            params.bailout = ESCAPE_TIME_BAILOUT;
             params.iteration_max = 2500;
         }
         FractalType::AlphaMandelbrot => {
@@ -307,7 +317,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.span_x = 4.0;
             params.span_y = 3.0;
             params.seed = Complex64::new(0.0, 0.0);
-            params.bailout = 4.0;
+            params.bailout = ESCAPE_TIME_BAILOUT;
             params.iteration_max = 2500;
         }
         FractalType::BurningShipJulia => {
@@ -316,7 +326,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.span_x = 4.0;
             params.span_y = 4.0;
             params.seed = Complex64::new(0.36228, -0.0777);
-            params.bailout = 4.0;
+            params.bailout = ESCAPE_TIME_BAILOUT;
             params.iteration_max = 2500;
         }
         FractalType::TricornJulia => {
@@ -325,7 +335,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.span_x = 4.0;
             params.span_y = 3.0;
             params.seed = Complex64::new(0.36228, -0.0777);
-            params.bailout = 4.0;
+            params.bailout = ESCAPE_TIME_BAILOUT;
             params.iteration_max = 2500;
         }
         FractalType::CelticJulia => {
@@ -334,7 +344,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.span_x = 3.0;
             params.span_y = 3.0;
             params.seed = Complex64::new(0.36228, -0.0777);
-            params.bailout = 4.0;
+            params.bailout = ESCAPE_TIME_BAILOUT;
             params.iteration_max = 2500;
         }
         FractalType::BuffaloJulia => {
@@ -343,7 +353,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.span_x = 4.0;
             params.span_y = 4.0;
             params.seed = Complex64::new(0.36228, -0.0777);
-            params.bailout = 4.0;
+            params.bailout = ESCAPE_TIME_BAILOUT;
             params.iteration_max = 2500;
         }
         FractalType::MultibrotJulia => {
@@ -352,7 +362,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.span_x = 4.0;
             params.span_y = 3.0;
             params.seed = Complex64::new(0.36228, -0.0777);
-            params.bailout = 4.0;
+            params.bailout = ESCAPE_TIME_BAILOUT;
             params.iteration_max = 2500;
         }
         FractalType::PerpendicularBurningShipJulia => {
@@ -361,7 +371,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.span_x = 4.0;
             params.span_y = 3.0;
             params.seed = Complex64::new(0.36228, -0.0777);
-            params.bailout = 4.0;
+            params.bailout = ESCAPE_TIME_BAILOUT;
             params.iteration_max = 2500;
         }
         FractalType::AlphaMandelbrotJulia => {
