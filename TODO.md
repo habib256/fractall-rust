@@ -74,13 +74,17 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
   nr_fail (92), uranium (149).
 - Toujours cassés : **glitch_test_1** (anneaux) et **glitch_test_5** —
   MÊME CLASSE : référence quasi-périodique intérieure + divergence de la
-  perturbation/BLA. glitch_test_5 confirmé (2026-05-20) : F3 4096/4096
+  perturbation. glitch_test_5 confirmé (2026-05-20) : F3 4096/4096
   intérieur, fractall 704/4096 (83% des pixels escapent à tort). Référence
-  bornée (704 px restent intérieurs) mais la perturbation diverge.
-  Écarté : precision (768 bits = identique à 314), parse (trailing space
-  OK), period (NO_PERIOD ne corrige pas). → nécessite **P1.6.f** (BLA
-  multi-phase, une table par phase du cycle) ou une validité BLA correcte
-  pour les références cycliques.
+  GMP bornée (704 px restent intérieurs) mais la perturbation diverge.
+  Écarté méthodiquement : precision GMP référence (768 bits = identique à
+  314), parse (trailing space OK), period (NO_PERIOD ne corrige pas), **BLA**
+  (bla_threshold 1e-12 et bla_validity_scale 0.01 → avg_iter inchangé à
+  4571). → Le goulot est la **précision du delta** : `ComplexExp` a une
+  mantisse f64 (~52 bits) ; sur une orbite quasi-périodique l'erreur
+  s'accumule et δ escape à tort. F3 sélectionne un type plus précis
+  (float128) via wisdom. **Fix = P1.6.e (delta float128)** ou centre nucleus
+  exact (orbite vraiment périodique). Pas P1.6.f (BLA) comme cru d'abord.
 - Timeout (perf gap, P1.6.d/e) : **e50** (1e50), **dragon** (1e191),
   **e1000** (1e1000).
 
@@ -100,16 +104,28 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
 
 ## Up next (ordre d'attaque)
 
-1. **Investigation fails Fractall** (e1086, opus)
-   Probable GMP-per-pixel quand BLA ne couvre pas → timeout 60s. À profiler.
-2. **P1.3 résidus** — décision `bailout` défaut (4 vs 25, change goldens)
+> **Constat boucle parité 2026-05-20** : les quick wins parité sont épuisés
+> (degree, auto-adjust gate, period gate — tous livrés). Les cas restants
+> convergent TOUS vers **P1.6.e (float128)** : (a) glitch_test_1/5 divergent
+> par manque de précision du delta `ComplexExp` (mantisse f64) ; (b) e50/
+> dragon/e1000 timeout car GMP forcé là où F3 utilise doubleexp/float128.
+> P1.6.e devient donc le levier #1.
+
+1. **P1.6.e — delta float128** [levier parité #1]
+   Débloque glitch_test_1/5 (précision delta) ET accélère e50/dragon/e1000
+   (type rapide vs GMP). Couplé à P1.6.d (wisdom) pour le dispatch.
+2. **P1.6.d — wisdom file** — dispatch f64 → FloatExp/DoubleExp → float128 →
+   GMP selon zoom. Sans lui, float128 n'est pas sélectionné automatiquement.
+3. **Period-detection OFF par défaut** — la troncature est lossy (cf. analyse
+   ci-dessus). Garder opt-in aux nucleus exacts. Valider goldens + GUI.
+4. **P1.3 résidus** — décision `bailout` défaut (4 vs 25, change goldens)
    + vérifier pixel spacing BLA = `4/zoom/height` strict.
-3. **P1.6.c** GPU+compile — élargir le buffer bytecode GPU pour porter le
+5. **P1.6.c** GPU+compile — élargir le buffer bytecode GPU pour porter le
    payload `Op::Rot` (cos/sin) et brancher `compile_formula` ou un loader
    TOML F3 pour émettre des `Op::Rot` réels. CPU déjà OK.
-4. **P1.6.b-bis (suite)** — BLA radius scaling via |det K| pour les hybrides
+6. **P1.6.b-bis (suite)** — BLA radius scaling via |det K| pour les hybrides
    non-conformes skewés. Storage + pixel→c déjà OK.
-5. **P1.6.d + P1.6.e** — Wisdom file + float128 (bundle perf deep zoom).
+7. **(ancien) P1.6.d + P1.6.e** — Wisdom file + float128 (bundle perf deep zoom).
    10-100× speedup pour zooms 1e30-1e100. Couple obligé : float128 sans
    dispatcher wisdom-driven n'a pas de sens.
 6. **Porter `iterate_pixel_gmp` sur pixel_loop** → permet de retirer
