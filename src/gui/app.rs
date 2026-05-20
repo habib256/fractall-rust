@@ -86,6 +86,45 @@ fn colorize_buffer(
         .collect()
 }
 
+/// Mode de rendu CPU effectif (pour le label de statut uniquement). Réplique la
+/// décision du dispatcher unifié `render_escape_time_cancellable_with_reuse` :
+/// en Auto, perturbation pour les types escape-time supportés (plan Mu), sinon
+/// GMP reference au-delà de ~1e16, sinon f64 standard.
+fn effective_cpu_mode(params: &FractalParams) -> AlgorithmMode {
+    match params.algorithm_mode {
+        AlgorithmMode::Auto => {
+            let pert = crate::render::escape_time::should_use_perturbation(params, false)
+                && params.plane_transform == PlaneTransform::Mu
+                && matches!(
+                    params.fractal_type,
+                    FractalType::Mandelbrot
+                        | FractalType::Julia
+                        | FractalType::BurningShip
+                        | FractalType::Tricorn
+                );
+            if pert {
+                AlgorithmMode::Perturbation
+            } else if crate::render::escape_time::should_use_gmp_reference(params) {
+                AlgorithmMode::ReferenceGmp
+            } else {
+                AlgorithmMode::StandardF64
+            }
+        }
+        m => m,
+    }
+}
+
+/// Étiquette de précision/algorithme CPU pour la barre de statut.
+fn cpu_precision_label(params: &FractalParams, mode: AlgorithmMode) -> String {
+    match mode {
+        AlgorithmMode::ReferenceGmp => format!(
+            "CPU GMP {}b",
+            crate::fractal::perturbation::compute_perturbation_precision_bits(params)
+        ),
+        _ => "CPU f64".to_string(),
+    }
+}
+
 /// Application principale egui pour fractall.
 pub struct FractallApp {
     // État fractale
@@ -728,6 +767,7 @@ impl FractallApp {
                     &pass_params,
                     &cancel,
                     reuse,
+                    &mut None,
                 );
 
                 match result {
@@ -956,104 +996,40 @@ impl FractallApp {
                             format!("GPU {}", precision),
                         ))
                     } else {
-                        // GPU fallback to CPU: check if we should use perturbation with cache
-                        let fallback_use_perturbation = match pass_params.algorithm_mode {
-                            AlgorithmMode::Auto => crate::render::escape_time::should_use_perturbation(&pass_params, false),
-                            AlgorithmMode::Perturbation => true,
-                            _ => false,
-                        };
-                        let fallback_use_perturbation =
-                            fallback_use_perturbation && pass_params.plane_transform == PlaneTransform::Mu;
-
-                        if fallback_use_perturbation && matches!(pass_params.fractal_type,
-                            FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip)
-                        {
-                            // Use cache-aware CPU perturbation rendering for GPU fallback
-                            use crate::fractal::perturbation::render_perturbation_with_cache;
-                            render_perturbation_with_cache(&pass_params, &cancel, reuse, current_orbit_cache.as_ref())
-                                .map(|((iterations, zs, distances), cache)| {
-                                    current_orbit_cache = Some(cache);
-                                    let n = iterations.len();
-                                    ((iterations, zs, distances, vec![None; n]), AlgorithmMode::Perturbation, "CPU f64".to_string())
-                                })
-                        } else {
-                            let cpu_result =
-                                render_escape_time_cancellable_with_reuse(&pass_params, &cancel, reuse);
-                            cpu_result.map(|(iterations, zs, orbits, distances)| {
-                                let effective_mode = match pass_params.algorithm_mode {
-                                    AlgorithmMode::ReferenceGmp => AlgorithmMode::ReferenceGmp,
-                                    AlgorithmMode::Perturbation => AlgorithmMode::Perturbation,
-                                    AlgorithmMode::StandardF64 => AlgorithmMode::StandardF64,
-                                    AlgorithmMode::Auto => {
-                                        if crate::render::escape_time::should_use_perturbation(
-                                            &pass_params,
-                                            false,
-                                        ) {
-                                            AlgorithmMode::Perturbation
-                                        } else {
-                                            AlgorithmMode::StandardF64
-                                        }
-                                    }
-                                };
-                                let precision_label = match effective_mode {
-                                    AlgorithmMode::ReferenceGmp => {
-                                        let effective_prec = crate::fractal::perturbation::compute_perturbation_precision_bits(&pass_params);
-                                        format!("CPU GMP {}b", effective_prec)
-                                    }
-                                    AlgorithmMode::Perturbation => "CPU f64".to_string(),
-                                    _ => "CPU f64".to_string(),
-                                };
-                                ((iterations, zs, distances, orbits), effective_mode, precision_label)
-                            })
-                        }
-                    }
-                } else {
-                    // CPU rendering - utilise perturbation dès zoom > ~1e12 en mode Auto
-                    let use_perturbation = match pass_params.algorithm_mode {
-                        AlgorithmMode::Auto => crate::render::escape_time::should_use_perturbation(&pass_params, false),
-                        AlgorithmMode::Perturbation => true,
-                        _ => false,
-                    };
-                    let use_perturbation =
-                        use_perturbation && pass_params.plane_transform == PlaneTransform::Mu;
-
-                    if use_perturbation && matches!(pass_params.fractal_type, FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn | FractalType::Multibrot) {
-                        // Use cache-aware CPU perturbation rendering
-                        use crate::fractal::perturbation::render_perturbation_with_cache;
-                        render_perturbation_with_cache(&pass_params, &cancel, reuse, current_orbit_cache.as_ref())
-                            .map(|((iterations, zs, distances), cache)| {
-                                current_orbit_cache = Some(cache);
-                                let n = iterations.len();
-                                ((iterations, zs, distances, vec![None; n]), AlgorithmMode::Perturbation, "CPU f64".to_string())
-                            })
-                    } else {
-                        render_escape_time_cancellable_with_reuse(&pass_params, &cancel, reuse).map(|(iterations, zs, orbits, distances)| {
-                            let effective_mode = match pass_params.algorithm_mode {
-                                AlgorithmMode::ReferenceGmp => AlgorithmMode::ReferenceGmp,
-                                AlgorithmMode::Perturbation => AlgorithmMode::Perturbation,
-                                AlgorithmMode::StandardF64 => AlgorithmMode::StandardF64,
-                                AlgorithmMode::Auto => {
-                                    // En mode Auto: CPU f64 standard jusqu'à zoom ~10^16, puis GMP reference
-                                    if crate::render::escape_time::should_use_gmp_reference(
-                                        &pass_params,
-                                    ) {
-                                        AlgorithmMode::ReferenceGmp
-                                    } else {
-                                        AlgorithmMode::StandardF64
-                                    }
-                                }
-                            };
-                            let precision_label = match effective_mode {
-                                AlgorithmMode::ReferenceGmp => {
-                                    let effective_prec = crate::fractal::perturbation::compute_perturbation_precision_bits(&pass_params);
-                                    format!("CPU GMP {}b", effective_prec)
-                                }
-                                AlgorithmMode::Perturbation => "CPU f64".to_string(),
-                                _ => "CPU f64".to_string(),
-                            };
+                        // GPU indisponible → fallback CPU via le MÊME dispatcher unifié
+                        // que le CLI (perturbation / GMP / f64 + cache d'orbite).
+                        let mut cache = current_orbit_cache.take();
+                        let r = render_escape_time_cancellable_with_reuse(
+                            &pass_params,
+                            &cancel,
+                            reuse,
+                            &mut cache,
+                        );
+                        current_orbit_cache = cache;
+                        r.map(|(iterations, zs, orbits, distances)| {
+                            let effective_mode = effective_cpu_mode(&pass_params);
+                            let precision_label = cpu_precision_label(&pass_params, effective_mode);
                             ((iterations, zs, distances, orbits), effective_mode, precision_label)
                         })
                     }
+                } else {
+                    // CPU rendering — CHEMIN DE RENDU UNIQUE : le même dispatcher
+                    // que le CLI (`render_escape_time_cancellable_with_reuse`), qui
+                    // sélectionne perturbation / GMP / f64 et thread l'orbite
+                    // référence via le cache. Plus de dispatch dupliqué côté GUI.
+                    let mut cache = current_orbit_cache.take();
+                    let r = render_escape_time_cancellable_with_reuse(
+                        &pass_params,
+                        &cancel,
+                        reuse,
+                        &mut cache,
+                    );
+                    current_orbit_cache = cache;
+                    r.map(|(iterations, zs, orbits, distances)| {
+                        let effective_mode = effective_cpu_mode(&pass_params);
+                        let precision_label = cpu_precision_label(&pass_params, effective_mode);
+                        ((iterations, zs, distances, orbits), effective_mode, precision_label)
+                    })
                 };
 
                 match result {
@@ -1125,27 +1101,12 @@ impl FractallApp {
                     let (ox, oy) = crate::fractal::jitter::sample_offset(k);
                     p.aa_subpixel_offset = [ox * aa_jitter_scale, oy * aa_jitter_scale];
 
-                    let use_perturbation = match p.algorithm_mode {
-                        AlgorithmMode::Auto => crate::render::escape_time::should_use_perturbation(&p, false),
-                        AlgorithmMode::Perturbation => true,
-                        _ => false,
-                    } && p.plane_transform == PlaneTransform::Mu;
-                    let rendered = if use_perturbation
-                        && matches!(
-                            p.fractal_type,
-                            FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn | FractalType::Multibrot
-                        ) {
-                        use crate::fractal::perturbation::render_perturbation_with_cache;
-                        render_perturbation_with_cache(&p, &cancel, None, current_orbit_cache.as_ref())
-                            .map(|((it, zz, dist), cache)| {
-                                current_orbit_cache = Some(cache);
-                                let n = it.len();
-                                (it, zz, dist, vec![None; n])
-                            })
-                    } else {
-                        render_escape_time_cancellable_with_reuse(&p, &cancel, None)
-                            .map(|(it, zz, orb, dist)| (it, zz, dist, orb))
-                    };
+                    // Même dispatcher unifié que le CLI (cache d'orbite réutilisé
+                    // entre samples, même centre).
+                    let mut cache = current_orbit_cache.take();
+                    let rendered = render_escape_time_cancellable_with_reuse(&p, &cancel, None, &mut cache)
+                        .map(|(it, zz, orb, dist)| (it, zz, dist, orb));
+                    current_orbit_cache = cache;
                     let Some((it, zz, dist, orb)) = rendered else { break };
                     let rgb = colorize_buffer(&it, &zz, &dist, &orb, &p, w, h);
                     for (a, &c) in accum.iter_mut().zip(rgb.iter()) {
@@ -1574,7 +1535,7 @@ impl FractallApp {
                 return;
             }
 
-            let result = render_escape_time_cancellable_with_reuse(&params, &cancel, None);
+            let result = render_escape_time_cancellable_with_reuse(&params, &cancel, None, &mut None);
 
             if cancel.load(Ordering::Relaxed) {
                 return;

@@ -141,6 +141,27 @@ Chunk `tEXt` clé `fractall-params` = JSON sérialisé de `FractalParams`
 
 ## Dispatch rendu (`render/escape_time.rs`)
 
+### ⚠️ Chemin de rendu UNIQUE CLI ↔ GUI (invariant)
+
+**Le CLI et la GUI DOIVENT suivre exactement le même chemin de rendu CPU.**
+Il existe **un seul dispatcher** : `render_escape_time_cancellable_with_reuse(
+params, cancel, reuse, orbit_cache)`. Toute la sélection type→algorithme
+(perturbation / GMP / f64 / spéciaux) et l'appel des renderers vivent là.
+
+- **CLI** (`main.rs`) → `render_escape_time(params)` = thin wrapper sur le
+  dispatcher (no cancel, no reuse, `&mut None` cache).
+- **GUI** (`gui/app.rs`, chaque passe progressive + HQ + AA) → appelle le MÊME
+  dispatcher. `orbit_cache: &mut Option<Arc<ReferenceOrbitCache>>` est threadé
+  in/out pour réutiliser l'orbite référence entre passes (perturbation only).
+- **`fractall-quality`** → idem (`&mut None`).
+
+Le path perturbation passe par `render_perturbation_with_cache` (cœur commun) ;
+le cache est géré DANS le dispatcher, pas par un appel parallèle côté GUI.
+
+**Ne JAMAIS** réintroduire une logique de dispatch dans `gui/app.rs` ou
+dupliquer `render_escape_time*` : une divergence GUI/CLI = bug. (Le GPU reste
+dispatché inline dans `main.rs` et le thread GUI — unification GPU = TODO G5.)
+
 ```
 AlgorithmMode::Auto :
   - Spéciaux : VonKoch/Dragon → vectoriel ; Buddha* → densité ;

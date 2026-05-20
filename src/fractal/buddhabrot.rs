@@ -184,6 +184,9 @@ pub fn render_buddhabrot(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
 }
 
 /// Rendu Buddhabrot en précision MPC.
+// Superseded par la variante `_cancellable` (le dispatcher unifié l'utilise).
+// Conservée pour usage direct éventuel ; candidate au retrait (TODO G5).
+#[allow(dead_code)]
 pub fn render_buddhabrot_mpc(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
     let cancel = Arc::new(AtomicBool::new(false));
     render_buddhabrot_mpc_cancellable(params, &cancel)
@@ -488,6 +491,9 @@ pub fn render_nebulabrot(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
 }
 
 /// Rendu Nebulabrot en précision MPC.
+// Superseded par la variante `_cancellable` (le dispatcher unifié l'utilise).
+// Conservée pour usage direct éventuel ; candidate au retrait (TODO G5).
+#[allow(dead_code)]
 pub fn render_nebulabrot_mpc(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
     let cancel = Arc::new(AtomicBool::new(false));
     render_nebulabrot_mpc_cancellable(params, &cancel)
@@ -1055,6 +1061,9 @@ pub fn render_antibuddhabrot(params: &FractalParams) -> (Vec<u32>, Vec<Complex64
 }
 
 /// Rendu Anti-Buddhabrot en précision MPC.
+// Superseded par la variante `_cancellable` (le dispatcher unifié l'utilise).
+// Conservée pour usage direct éventuel ; candidate au retrait (TODO G5).
+#[allow(dead_code)]
 pub fn render_antibuddhabrot_mpc(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
     let cancel = Arc::new(AtomicBool::new(false));
     render_antibuddhabrot_mpc_cancellable(params, &cancel)

@@ -9,20 +9,19 @@ use crate::fractal::{AlgorithmMode, FractalParams, FractalResult, FractalType, O
 use crate::fractal::iterations::iterate_point;
 use crate::fractal::orbit_traps::OrbitData;
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
-use crate::fractal::{render_lyapunov, render_von_koch, render_dragon, render_buddhabrot, render_nebulabrot, render_antibuddhabrot};
-use crate::fractal::lyapunov::{render_lyapunov_cancellable, render_lyapunov_mpc_cancellable, render_lyapunov_mpc};
+use crate::fractal::{render_von_koch, render_dragon};
+use crate::fractal::lyapunov::{render_lyapunov_cancellable, render_lyapunov_mpc_cancellable};
 use crate::fractal::buddhabrot::{
     render_buddhabrot_cancellable,
     render_nebulabrot_cancellable,
-    render_buddhabrot_mpc,
-    render_nebulabrot_mpc,
     render_buddhabrot_mpc_cancellable,
     render_nebulabrot_mpc_cancellable,
     render_antibuddhabrot_cancellable,
-    render_antibuddhabrot_mpc,
     render_antibuddhabrot_mpc_cancellable,
 };
-use crate::fractal::perturbation::render_perturbation_cancellable_with_reuse;
+use crate::fractal::perturbation::{
+    render_perturbation_with_cache, ReferenceOrbitCache,
+};
 
 /// Calcule la matrice d'itérations et la matrice des valeurs finales de z
 /// pour une fractale escape-time (ou algorithme spécial).
@@ -32,277 +31,24 @@ use crate::fractal::perturbation::render_perturbation_cancellable_with_reuse;
 /// - `zs.len() == width * height`
 ///
 /// Le calcul est parallélisé sur plusieurs cœurs CPU avec rayon.
-#[allow(dead_code)]
+///
+/// **Chemin de rendu UNIQUE** : cette fonction (utilisée par le CLI) délègue au
+/// même dispatcher que la GUI, `render_escape_time_cancellable_with_reuse`. Il
+/// n'y a donc plus qu'UNE seule implémentation de la sélection
+/// type→algorithme (perturbation / GMP / f64 / spéciaux). Le CLI = rendu unique
+/// plein cadre (pas de cancel, pas de reuse, pas de cache). Cf. CLAUDE.md
+/// §« Chemin de rendu unique CLI ↔ GUI ».
+#[allow(dead_code)] // utilisé par le bin fractall-cli (main.rs), pas par gui/quality
 pub fn render_escape_time(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
-    // Dispatch vers les algorithmes spéciaux
-    match params.fractal_type {
-        FractalType::VonKoch => return render_von_koch(params),
-        FractalType::Dragon => return render_dragon(params),
-        FractalType::Buddhabrot => {
-            return if params.use_gmp {
-                render_buddhabrot_mpc(params)
-            } else {
-                render_buddhabrot(params)
-            };
-        }
-        FractalType::Lyapunov => {
-            return if params.use_gmp {
-                render_lyapunov_mpc(params)
-            } else {
-                render_lyapunov(params)
-            };
-        }
-        FractalType::Nebulabrot => {
-            return if params.use_gmp {
-                render_nebulabrot_mpc(params)
-            } else {
-                render_nebulabrot(params)
-            };
-        }
-        FractalType::AntiBuddhabrot => {
-            return if params.use_gmp {
-                render_antibuddhabrot_mpc(params)
-            } else {
-                render_antibuddhabrot(params)
-            };
-        }
-        _ => {}
-    }
-
-    if matches!(
-        params.fractal_type,
-        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn
-    ) {
-        // Perturbation ne supporte pas les transformations de plan (delta-based).
-        // Si l'utilisateur force Perturbation avec un plan != Mu, on retombe sur standard.
-        if params.plane_transform != PlaneTransform::Mu
-            && params.algorithm_mode == AlgorithmMode::Perturbation
-        {
-            if params.use_gmp {
-                return render_escape_time_gmp(params);
-            }
-            return render_escape_time_f64(params);
-        }
-        match params.algorithm_mode {
-            AlgorithmMode::ReferenceGmp => return render_escape_time_gmp(params),
-            AlgorithmMode::StandardF64 => {
-                return render_escape_time_f64(params);
-            }
-            AlgorithmMode::Perturbation => {
-                return render_perturbation_cancellable_with_reuse(
-                    params,
-                    &Arc::new(AtomicBool::new(false)),
-                    None,
-                )
-                .map(|(i, z, _d)| (i, z))
-                .unwrap_or_else(|| (Vec::new(), Vec::new()));
-            }
-            AlgorithmMode::Auto => {
-                // Auto mode dispatch:
-                // 1. For very deep zooms (>10^15), use perturbation with GMP reference orbit
-                // 2. For moderate zooms (10^13 to 10^15), use perturbation for performance
-                // 3. For shallow zooms (<10^13), use standard f64 (faster, sufficient precision)
-                // 4. For extremely deep zooms (>10^16), use GMP reference if perturbation is not suitable
-                if should_use_perturbation(params, false) {
-                    return render_perturbation_cancellable_with_reuse(
-                        params,
-                        &Arc::new(AtomicBool::new(false)),
-                        None,
-                    )
-                    .map(|(i, z, _d)| (i, z))
-                    .unwrap_or_else(|| (Vec::new(), Vec::new()));
-                }
-                if should_use_gmp_reference(params) {
-                    return render_escape_time_gmp(params);
-                }
-                return render_escape_time_f64(params);
-            }
-        }
-    }
-
-    if params.use_gmp {
-        return render_escape_time_gmp(params);
-    }
-    render_escape_time_f64(params)
-}
-
-#[allow(dead_code)]
-fn render_escape_time_f64(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
-    let width = params.width as usize;
-    let height = params.height as usize;
-    let mut iterations = vec![0u32; width * height];
-    let mut zs = vec![Complex64::new(0.0, 0.0); width * height];
-
-    // Même mapping que Fractal_CalculateMatrix en C :
-    // xg = ((xmax - xmin) / xpixel) * i + xmin
-    // yg = ((ymax - ymin) / ypixel) * j + ymin
-    if width == 0 || height == 0 {
-        return (iterations, zs);
-    }
-
-    // Utiliser center+span directement pour éviter les problèmes de précision
-    // xg = center_x + R * (i/width - 0.5) * span_x
-    // yg = center_y + R * (j/height - 0.5) * span_y
-    // R = rotation_matrix() (cf. FractalParams::apply_rotation, aligné F3 hybrid.cc:265).
-
-    // Pré-calcul de la matrice de rotation (None si rotation == 0 → no-op).
-    let rot = params.transform_matrix();
-    // Offset sous-pixel AA per-frame (unités de pixel, [0,0] hors AA).
-    let [aa_dx, aa_dy] = params.aa_subpixel_offset;
-
-    // Parallélisation par lignes avec rayon (beaucoup plus élégant que std::thread)
-    iterations
-        .par_chunks_mut(width)
-        .zip(zs.par_chunks_mut(width))
-        .enumerate()
-        .for_each(|(j, (iter_row, z_row))| {
-            let y_ratio = (j as f64 + 0.5 + aa_dy) / params.height as f64;
-            let dy = (y_ratio - 0.5) * params.span_y;
-            for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
-                let x_ratio = (i as f64 + 0.5 + aa_dx) / params.width as f64;
-                let dx = (x_ratio - 0.5) * params.span_x;
-                let (dx_r, dy_r) = match rot {
-                    Some((a, b, c, d)) => (a * dx + b * dy, c * dx + d * dy),
-                    None => (dx, dy),
-                };
-                let z_pixel = Complex64::new(params.center_x + dx_r, params.center_y + dy_r);
-                let z_pixel = params.plane_transform.transform(z_pixel);
-                let FractalResult { iteration, z: z_final, orbit: _, distance: _ } = iterate_point(params, z_pixel);
-                *iter = iteration;
-                *z = z_final;
-            }
-        });
-
-    (iterations, zs)
-}
-
-#[allow(dead_code)]
-fn render_escape_time_gmp(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
-    let width = params.width as usize;
-    let height = params.height as usize;
-    let mut iterations = vec![0u32; width * height];
-    let mut zs = vec![Complex64::new(0.0, 0.0); width * height];
-
-    if width == 0 || height == 0 {
-        return (iterations, zs);
-    }
-
-    let gmp = MpcParams::from_params(params);
-    let prec = gmp.prec;
-
-    // IMPORTANT: Utiliser les String haute précision si disponibles pour préserver la précision GMP
-    // aux zooms profonds (>e16). Sinon fallback sur f64 pour compatibilité.
-    let center_x = if let Some(ref cx_hp) = params.center_x_hp {
-        match Float::parse(cx_hp) {
-            Ok(parse_result) => Float::with_val(prec, parse_result),
-            Err(_) => {
-                eprintln!("[PRECISION WARNING] Failed to parse center_x_hp, using f64 fallback");
-                Float::with_val(prec, params.center_x)
-            }
-        }
-    } else {
-        Float::with_val(prec, params.center_x)
-    };
-    
-    let center_y = if let Some(ref cy_hp) = params.center_y_hp {
-        match Float::parse(cy_hp) {
-            Ok(parse_result) => Float::with_val(prec, parse_result),
-            Err(_) => {
-                eprintln!("[PRECISION WARNING] Failed to parse center_y_hp, using f64 fallback");
-                Float::with_val(prec, params.center_y)
-            }
-        }
-    } else {
-        Float::with_val(prec, params.center_y)
-    };
-    
-    let span_x = if let Some(ref sx_hp) = params.span_x_hp {
-        match Float::parse(sx_hp) {
-            Ok(parse_result) => Float::with_val(prec, parse_result),
-            Err(_) => {
-                eprintln!("[PRECISION WARNING] Failed to parse span_x_hp, using f64 fallback");
-                Float::with_val(prec, params.span_x)
-            }
-        }
-    } else {
-        Float::with_val(prec, params.span_x)
-    };
-    
-    let span_y = if let Some(ref sy_hp) = params.span_y_hp {
-        match Float::parse(sy_hp) {
-            Ok(parse_result) => Float::with_val(prec, parse_result),
-            Err(_) => {
-                eprintln!("[PRECISION WARNING] Failed to parse span_y_hp, using f64 fallback");
-                Float::with_val(prec, params.span_y)
-            }
-        }
-    } else {
-        Float::with_val(prec, params.span_y)
-    };
-
-    let width_f = Float::with_val(prec, params.width);
-    let height_f = Float::with_val(prec, params.height);
-    let half = Float::with_val(prec, 0.5);
-    // Rotation : appliquée au delta pixel→centre avant d'ajouter center_x/y.
-    // Aligné F3 hybrid.cc:265 (`c = K * c + offset`).
-    let rot = params.transform_matrix();
-    // Offset sous-pixel AA per-frame (unités de pixel, [0,0] hors AA).
-    let [aa_dx, aa_dy] = params.aa_subpixel_offset;
-
-    iterations
-        .par_chunks_mut(width)
-        .zip(zs.par_chunks_mut(width))
-        .enumerate()
-        .for_each(|(j, (iter_row, z_row))| {
-            let mut j_f = Float::with_val(prec, j as u32);
-            j_f += &half;
-            if aa_dy != 0.0 {
-                j_f += aa_dy;
-            }
-            let mut y_ratio = j_f;
-            y_ratio /= &height_f;
-            y_ratio -= &half;
-            let mut dy = span_y.clone();
-            dy *= &y_ratio;
-            for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
-                let mut i_f = Float::with_val(prec, i as u32);
-                i_f += &half;
-                if aa_dx != 0.0 {
-                    i_f += aa_dx;
-                }
-                let mut x_ratio = i_f;
-                x_ratio /= &width_f;
-                x_ratio -= &half;
-                let mut dx = span_x.clone();
-                dx *= &x_ratio;
-                let (xg, yg) = match rot {
-                    Some((a, b, c, d)) => {
-                        // dx' = a*dx + b*dy ; dy' = c*dx + d*dy. Coefficients f64 suffisants
-                        // (la précision GMP est dans dx/dy ; la rotation est ~unitaire).
-                        let dx_r = Float::with_val(prec, &dx * a) + Float::with_val(prec, &dy * b);
-                        let dy_r = Float::with_val(prec, &dx * c) + Float::with_val(prec, &dy * d);
-                        (
-                            Float::with_val(prec, &dx_r + &center_x),
-                            Float::with_val(prec, &dy_r + &center_y),
-                        )
-                    }
-                    None => (
-                        Float::with_val(prec, &dx + &center_x),
-                        Float::with_val(prec, &dy + &center_y),
-                    ),
-                };
-                // IMPORTANT: Utiliser la version GMP de plane_transform pour éviter la perte de précision
-                // aux zooms profonds (>e16). La conversion GMP → f64 → GMP perdait toute la précision.
-                let z_gmp = complex_from_xy(prec, xg, yg);
-                let z_transformed = params.plane_transform.transform_gmp(&z_gmp, prec);
-                let z_pixel = z_transformed;
-                let (iter_val, z_final) = iterate_point_mpc(&gmp, &z_pixel);
-                *iter = iter_val;
-                *z = complex_to_complex64(&z_final);
-            }
-        });
-
-    (iterations, zs)
+    let mut orbit_cache: Option<Arc<ReferenceOrbitCache>> = None;
+    render_escape_time_cancellable_with_reuse(
+        params,
+        &Arc::new(AtomicBool::new(false)),
+        None,
+        &mut orbit_cache,
+    )
+    .map(|(i, z, _orbits, _distances)| (i, z))
+    .unwrap_or_else(|| (Vec::new(), Vec::new()))
 }
 
 struct ReuseData<'a> {
@@ -357,7 +103,8 @@ pub fn render_escape_time_cancellable(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
 ) -> Option<(Vec<u32>, Vec<Complex64>)> {
-    render_escape_time_cancellable_with_reuse(params, cancel, None)
+    let mut orbit_cache: Option<Arc<ReferenceOrbitCache>> = None;
+    render_escape_time_cancellable_with_reuse(params, cancel, None, &mut orbit_cache)
         .map(|(i, z, _o, _d)| (i, z))
 }
 
@@ -373,11 +120,28 @@ pub type EscapeTimeResult = (
 /// Les points déjà calculés sont réutilisés quand les résolutions s'alignent.
 /// Retourne (iterations, zs, orbits, distances) : orbits remplies pour f64 si enable_orbit_traps,
 /// distances remplies pour perturbation si enable_distance_estimation.
+///
+/// **Dispatcher de rendu UNIQUE** partagé par le CLI (`render_escape_time`) et la
+/// GUI (chaque passe progressive). Toute sélection type→algorithme passe par ici
+/// — il n'existe plus de logique de dispatch dupliquée ailleurs.
+///
+/// `orbit_cache` est un in/out : en entrée l'orbite référence réutilisable (passe
+/// précédente / re-pan), en sortie l'orbite mise à jour (renseignée uniquement
+/// par le path perturbation). Le CLI passe `&mut None` (rendu unique).
 pub fn render_escape_time_cancellable_with_reuse(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
     reuse: Option<(&[u32], &[Complex64], u32, u32)>,
+    orbit_cache: &mut Option<Arc<ReferenceOrbitCache>>,
 ) -> Option<EscapeTimeResult> {
+    // Path perturbation unifié : passe par `render_perturbation_with_cache` (le
+    // même coeur que le CLI et la GUI), en threadant le cache d'orbite.
+    let mut run_perturbation = |reuse: Option<(&[u32], &[Complex64], u32, u32)>| {
+        let (res, cache) =
+            render_perturbation_with_cache(params, cancel, reuse, orbit_cache.as_ref())?;
+        *orbit_cache = Some(cache);
+        Some((res.0, res.1, Vec::new(), res.2))
+    };
     // Vérifier l'annulation avant de commencer
     if cancel.load(Ordering::Relaxed) {
         return None;
@@ -478,15 +242,13 @@ pub fn render_escape_time_cancellable_with_reuse(
                 return render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse);
             }
             AlgorithmMode::Perturbation => {
-                return render_perturbation_cancellable_with_reuse(params, cancel, reuse)
-                    .map(|(i, z, d)| (i, z, vec![], d));
+                return run_perturbation(reuse);
             }
             AlgorithmMode::Auto => {
                 // Auto mode dispatch for cancellable version:
                 // Use perturbation for moderate to deep zooms (10^13 to 10^15)
                 if should_use_perturbation(params, false) {
-                    return render_perturbation_cancellable_with_reuse(params, cancel, reuse)
-                        .map(|(i, z, d)| (i, z, vec![], d));
+                    return run_perturbation(reuse);
                 }
                 let reuse = build_reuse(params, reuse);
                 if should_use_gmp_reference(params) {

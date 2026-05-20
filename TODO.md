@@ -106,9 +106,18 @@ quand `|δ| < 2.2e-16·|z_ref|`, cf. seuil `PIXEL_SIZE_EXP_THRESHOLD=1e-13`,
 
 ### G3 — Élucider les divergences ouvertes · `[P0 · correction]`
 
-Trois divergences restent non closes. Toutes pointent probablement vers
-« fractall correct / F3 ou harness en cause », mais doivent être tranchées.
-
+- [ ] **🔴 CPU perturbation : anneaux concentriques près du cusp -0.75**
+  (découvert 2026-05-20, image utilisateur `fractal_1779301318.png`). Mandelbrot
+  centre ≈ (-0.749996, -0.004086), zoom ≈ 2e13, 2500 iter. **CPU perturbation
+  rend des anneaux concentriques (FAUX)** alors que **GPU perturbation ET CPU
+  GMP pur rendent le champ de cardioïdes correct**. → vrai **bug du cœur
+  perturbation CPU** (`render_perturbation_with_cache` / pixel_loop), partagé
+  CLI+GUI (le CLI le reproduit). **PAS** la period-detection (anneaux persistent
+  avec `FRACTALL_NO_PERIOD=1`). Distinct de glitch_test_1 (ici GMP est CORRECT →
+  référence sûre pour débugger). **Done when** : CPU perturbation == GMP/GPU sur
+  cette vue, puis **l'ajouter aux golden images** (la zone est demandée comme
+  golden — bloqué tant que le rendu est faux). Repro : voir paramètres extraits
+  du PNG (HP center + `--zoom` = 4/span_x + `--algorithm perturbation`).
 - [ ] **glitch_test_1 — anneaux concentriques** (zoom 3.3e46, period 7327).
   fractall (perturbation **ET** `--algorithm gmp` pur) rend des anneaux ;
   F3 rend du bruit chaotique. Précision écartée (double-double δ+réf), BLA
@@ -162,10 +171,17 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
 ### G5 — Architecture & nettoyage · `[P1 · maintenabilité]`
 
 **Done when** :
+- [x] **Chemin de rendu CPU unifié CLI ↔ GUI** (2026-05-20) — un seul dispatcher
+  `render_escape_time_cancellable_with_reuse`. Cf. *Shipped* + invariant
+  §« Ne pas régresser ».
+- [ ] **Unifier aussi le dispatch GPU** : aujourd'hui le choix GPU/CPU + l'appel
+  des kernels GPU est dupliqué dans `main.rs` (CLI) et le thread de rendu GUI.
+  Extraire un dispatcher GPU partagé (ou intégrer le GPU au dispatcher unique).
 - [ ] **Retirer les modules perturbation legacy** : porter `iterate_pixel_gmp`
   sur `pixel_loop`, puis supprimer `glitch.rs`, `nonconformal.rs` et les champs
   perturbation legacy (`max_secondary_refs`, `min_glitch_cluster_size`,
-  `glitch_tolerance`, …). Un seul moteur.
+  `glitch_tolerance`, …). Un seul moteur. Retirer aussi les renderers densité
+  MPC non-cancellables marqués `#[allow(dead_code)]` (superseded).
 - [ ] **Découper les gros fichiers** (< ~800 lignes chacun) :
   `gui/app.rs` (~2.9k) → menu Type / drag-drop / HQ render / raccourcis ;
   `perturbation/mod.rs` (~1.5k) → dispatch CPU/GMP ; `gpu/mod.rs` (~1.8k) →
@@ -199,6 +215,14 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
 ## ✅ Shipped (condensé, le plus récent en haut)
 
 **2026-05-20** :
+- **Chemin de rendu UNIFIÉ CLI ↔ GUI** : un seul dispatcher CPU
+  `render_escape_time_cancellable_with_reuse` (le CLI `render_escape_time` y
+  délègue ; la GUI — passes progressives, HQ, AA — l'appelle aussi, cache
+  d'orbite threadé in/out). Supprimé les 3 implémentations de dispatch dupliquées
+  (l'ancien `render_escape_time`, l'inline match GUI, les renderers
+  `render_escape_time_{f64,gmp}` non-cancellables morts). Densité MPC
+  non-cancellables marquées superseded. Golden + 178 unit tests verts (rendu
+  inchangé). Cf. CLAUDE.md §« Chemin de rendu unique ».
 - **Rotation GPU** corrigée au pixel→c (`bytecode_kernel.wgsl` applique K depuis
   `transform_matrix()`) — bug : le GPU rendait la vue **non tournée** en silence.
   Garde-fous CPU-fallback sur les autres paths GPU (perturbation, f32 dédiés).
@@ -241,6 +265,12 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
 ---
 
 ## 🛡️ Ne pas régresser (superset assumé vs F3)
+
+- **INVARIANT : chemin de rendu unique CLI ↔ GUI.** Un seul dispatcher CPU
+  (`render_escape_time_cancellable_with_reuse`). Ne jamais redupliquer la
+  logique de dispatch dans `gui/app.rs` ni recréer un `render_escape_time*`
+  parallèle. Une divergence GUI/CLI = bug. (GPU encore inline des deux côtés —
+  unification GPU = G5.)
 
 - 27 palettes built-in + espaces RGB/HSB/LCH.
 - 15 modes de coloring + 4 orbit traps.

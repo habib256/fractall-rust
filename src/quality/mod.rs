@@ -71,7 +71,7 @@ pub fn compare(params: &FractalParams, opt: &ComparisonOptions) -> Result<Compar
         pert_params.iteration_max, pert_params.precision_bits,
     );
     let t0 = Instant::now();
-    let (pert_iters, pert_zs, _, _) = render_escape_time_cancellable_with_reuse(&pert_params, &cancel, None)
+    let (pert_iters, pert_zs, _, _) = render_escape_time_cancellable_with_reuse(&pert_params, &cancel, None, &mut None)
         .ok_or_else(|| "Perturbation render cancelled or failed".to_string())?;
     let perturb_time_ms = t0.elapsed().as_secs_f64() * 1000.0;
     println!("[quality] perturbation done in {:.0} ms", perturb_time_ms);
@@ -81,7 +81,7 @@ pub fn compare(params: &FractalParams, opt: &ComparisonOptions) -> Result<Compar
         gmp_params.width, gmp_params.height, gmp_params.precision_bits,
     );
     let t1 = Instant::now();
-    let (gmp_iters, gmp_zs, _, _) = render_escape_time_cancellable_with_reuse(&gmp_params, &cancel, None)
+    let (gmp_iters, gmp_zs, _, _) = render_escape_time_cancellable_with_reuse(&gmp_params, &cancel, None, &mut None)
         .ok_or_else(|| "GMP reference render cancelled or failed".to_string())?;
     let gmp_time_ms = t1.elapsed().as_secs_f64() * 1000.0;
     println!("[quality] GMP done in {:.0} ms", gmp_time_ms);

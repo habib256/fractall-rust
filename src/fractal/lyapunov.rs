@@ -400,6 +400,9 @@ pub fn render_lyapunov(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
 }
 
 /// Rendu MPC de la fractale de Lyapunov.
+// Superseded par la variante `_cancellable` (le dispatcher unifié l'utilise).
+// Conservée pour usage direct éventuel ; candidate au retrait (TODO G5).
+#[allow(dead_code)]
 pub fn render_lyapunov_mpc(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
     let width = params.width as usize;
     let height = params.height as usize;
