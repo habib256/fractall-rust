@@ -1165,6 +1165,15 @@ pub fn compute_reference_orbit(
         // Period detection using Brent's algorithm variant (inspired by rust-fractal-core).
         // Compares z_n to a checkpoint value, doubling the step size when needed.
         // When |z_n - z_checkpoint| < tolerance, the orbit is periodic.
+        //
+        // NOTE (parité F3) : même pour une période GENUINE (l'orbite revient
+        // bien à `z_candidat` après une période, confirmée), la troncature +
+        // `wrap_periodic` reste LOSSY car l'orbite n'est que ~périodique à la
+        // tolérance près (~2^(-0.4·prec)). Sur ~iter_max/période cycles,
+        // l'erreur s'accumule → perturbation divergente (image uniforme, cf.
+        // floral_fantasy). F3 calcule la référence complète. Désactiver via
+        // `FRACTALL_NO_PERIOD=1` (le harness compare_f3 le fait). À terme :
+        // ne tronquer qu'aux nucleus exacts (--find-nucleus), cf. TODO.
         if enable_period_detection && i > 0 {
             period_diff.assign(&z - &period_check_z);
             let diff_norm = complex_norm_sqr(&period_diff, prec);

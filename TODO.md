@@ -60,6 +60,34 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
 - Env var `FRACTALL_NO_AUTO_ADJUST=1` gate l'auto-adjust d'iter_max dans
   `orbit.rs`. F3 ne fait pas cet adjust → divergence systématique sans le
   gate. Le harness positionne le flag avant chaque appel CLI.
+- Env var `FRACTALL_NO_PERIOD=1` désactive la troncature par period-detection
+  (commit 7356931). **Gain majeur** : floral_fantasy 1310→0.39, glitch_test_4
+  1325→0.24, liiiines 3969→23.8, mitosis2 37.5→3.56. Le harness le positionne.
+
+**Sweep étendu 2026-05-20** (26 cas uniques, NO_PERIOD + NO_AUTO_ADJUST) :
+- Pixel-perfect : test5, test6.
+- Visuellement équivalents (pas d'inside_mismatch, Δmean concentré aux bords
+  chaotiques) : test, test2, test4, line, spiral, all_seeing_eye, e113,
+  floral_fantasy, glitch_test_4, liiiines, mitosis2, flake (31), glitch_test_3
+  (6.0), heaven (6.5), tick_tock (24), x (22), peanuts (15).
+- Δmean élevé mais sans inside_mismatch (probable bord chaotique intrinsèque) :
+  nr_fail (92), uranium (149).
+- Toujours cassés : **glitch_test_1** (anneaux, cf. ci-dessous),
+  **glitch_test_5** (54150 px inside_mismatch — F3 intérieur, fractall escape).
+- Timeout (perf gap, P1.6.d/e) : **e50** (1e50), **dragon** (1e191),
+  **e1000** (1e1000).
+
+**Period-detection truncation est LOSSY (analyse 2026-05-20)** :
+- Même pour une période GENUINE (confirmée par un cycle de plus :
+  `z[detect+p] ≈ z[detect]`), tronquer + `wrap_periodic` accumule l'erreur
+  de la quasi-périodicité (tolérance ~2^(-0.4·prec)) sur ~iter_max/période
+  cycles → perturbation divergente (image uniforme, glitch_test_5).
+- Le gain perf de la troncature est NÉGLIGEABLE (la référence est calculée
+  une fois ; tronquer économise surtout de la mémoire). Le coût per-pixel
+  est identique. → **Recommandation** : passer la troncature OFF par défaut
+  (la garder opt-in seulement aux nucleus exacts via `--find-nucleus`, où
+  l'orbite est exactement périodique et le wrap exact). Validation goldens +
+  GUI requise avant de flipper le défaut (pas fait dans cette boucle).
 
 ---
 
