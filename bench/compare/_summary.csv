@@ -1,2 +1,2 @@
 both_out,f3_sec,fr_sec,inside_f3,inside_fr,inside_mismatch,iterations,max_abs_dsi,mean_abs_dsi,name,px_total,rms_dsi,status
-14399,0.23s,4.10s,1,0,1,100000,50273.4395,1706.1293,rug,14400,4583.4958,ok
+39991,0.29s,14.66s,5,4,9,100000,45279.3643,300.9675,rug,40000,1508.0758,ok
