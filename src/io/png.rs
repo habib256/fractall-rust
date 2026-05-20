@@ -16,20 +16,14 @@ const METADATA_KEY: &str = "fractall-params";
 ///
 /// Les métadonnées permettent de restaurer exactement l'état de la fractale
 /// (coordonnées HP, type, paramètres) lors du chargement ultérieur de l'image.
-pub fn save_png_with_metadata(
-    params: &FractalParams,
-    iterations: &[u32],
-    zs: &[Complex64],
-    output: &Path,
-    center_x_hp: &str,
-    center_y_hp: &str,
-    span_x_hp: &str,
-    span_y_hp: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+/// Colorise les buffers bruts (itérations + z final) en RGB entrelacé
+/// (3 octets/pixel, row-major). Factorisé pour être réutilisé par la
+/// sauvegarde PNG ET par l'accumulation anti-aliasing multi-sample, qui
+/// colorise chaque sample puis moyenne en espace RGB.
+pub fn colorize_to_rgb(params: &FractalParams, iterations: &[u32], zs: &[Complex64]) -> Vec<u8> {
     let width = params.width;
-    let height = params.height;
     let w = width as usize;
-    let h = height as usize;
+    let h = params.height as usize;
 
     assert_eq!(iterations.len(), w * h, "Taille de la matrice d'itérations invalide");
     assert_eq!(zs.len(), w * h, "Taille de la matrice des valeurs z invalide");
@@ -43,7 +37,7 @@ pub fn save_png_with_metadata(
     };
 
     // Parallélisation de la colorisation par lignes
-    let buffer: Vec<u8> = (0..height as usize)
+    (0..h)
         .into_par_iter()
         .flat_map(|y| {
             (0..width)
@@ -76,7 +70,44 @@ pub fn save_png_with_metadata(
                 })
                 .collect::<Vec<u8>>()
         })
-        .collect();
+        .collect()
+}
+
+pub fn save_png_with_metadata(
+    params: &FractalParams,
+    iterations: &[u32],
+    zs: &[Complex64],
+    output: &Path,
+    center_x_hp: &str,
+    center_y_hp: &str,
+    span_x_hp: &str,
+    span_y_hp: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let buffer = colorize_to_rgb(params, iterations, zs);
+    save_png_rgb_with_metadata(
+        params, &buffer, output, center_x_hp, center_y_hp, span_x_hp, span_y_hp,
+    )
+}
+
+/// Sauvegarde un buffer RGB **déjà colorisé** (3 octets/pixel, row-major) avec
+/// les métadonnées JSON. Utilisé par l'accumulation AA (moyenne RGB des samples)
+/// où la colorisation a déjà eu lieu et où il n'y a plus de buffers bruts.
+pub fn save_png_rgb_with_metadata(
+    params: &FractalParams,
+    buffer: &[u8],
+    output: &Path,
+    center_x_hp: &str,
+    center_y_hp: &str,
+    span_x_hp: &str,
+    span_y_hp: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let width = params.width;
+    let height = params.height;
+    assert_eq!(
+        buffer.len(),
+        width as usize * height as usize * 3,
+        "Taille du buffer RGB invalide"
+    );
 
     // Créer les params avec coordonnées HP complètes pour sérialisation
     let mut params_to_save = params.clone();
@@ -100,7 +131,7 @@ pub fn save_png_with_metadata(
     encoder.add_text_chunk(METADATA_KEY.to_string(), metadata_json)?;
 
     let mut png_writer = encoder.write_header()?;
-    png_writer.write_image_data(&buffer)?;
+    png_writer.write_image_data(buffer)?;
 
     Ok(())
 }

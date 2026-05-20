@@ -928,6 +928,16 @@ pub struct FractalParams {
     #[serde(default)]
     pub jitter_scale: f64,
 
+    /// Offset sous-pixel **transitoire** (en unités de pixel) ajouté au mapping
+    /// pixel→c par TOUS les paths de rendu (f64/GMP/perturbation). Sert à
+    /// l'anti-aliasing multi-sample « per-frame » : chaque sample décale la
+    /// grille entière d'un offset low-discrepancy (cf. `fractal::jitter`), puis
+    /// les rendus colorés sont moyennés. Ce n'est PAS un paramètre utilisateur
+    /// (état de rendu transitoire) → `#[serde(skip)]` : jamais sérialisé dans
+    /// les PNG, toujours `[0.0, 0.0]` au chargement.
+    #[serde(skip)]
+    pub aa_subpixel_offset: [f64; 2],
+
     /// Active le moteur d'itération bytecode hybride (Fraktaler-3 style).
     /// Activé par défaut depuis P3.1 Session E. Path unifié BLA mat2 +
     /// delta-form + rebasing F3 pour les types escape-time supportés

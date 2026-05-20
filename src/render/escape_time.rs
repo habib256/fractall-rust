@@ -147,6 +147,8 @@ fn render_escape_time_f64(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
 
     // Pré-calcul de la matrice de rotation (None si rotation == 0 → no-op).
     let rot = params.transform_matrix();
+    // Offset sous-pixel AA per-frame (unités de pixel, [0,0] hors AA).
+    let [aa_dx, aa_dy] = params.aa_subpixel_offset;
 
     // Parallélisation par lignes avec rayon (beaucoup plus élégant que std::thread)
     iterations
@@ -154,10 +156,10 @@ fn render_escape_time_f64(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
         .zip(zs.par_chunks_mut(width))
         .enumerate()
         .for_each(|(j, (iter_row, z_row))| {
-            let y_ratio = (j as f64 + 0.5) / params.height as f64;
+            let y_ratio = (j as f64 + 0.5 + aa_dy) / params.height as f64;
             let dy = (y_ratio - 0.5) * params.span_y;
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
-                let x_ratio = (i as f64 + 0.5) / params.width as f64;
+                let x_ratio = (i as f64 + 0.5 + aa_dx) / params.width as f64;
                 let dx = (x_ratio - 0.5) * params.span_x;
                 let (dx_r, dy_r) = match rot {
                     Some((a, b, c, d)) => (a * dx + b * dy, c * dx + d * dy),
@@ -244,6 +246,8 @@ fn render_escape_time_gmp(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
     // Rotation : appliquée au delta pixel→centre avant d'ajouter center_x/y.
     // Aligné F3 hybrid.cc:265 (`c = K * c + offset`).
     let rot = params.transform_matrix();
+    // Offset sous-pixel AA per-frame (unités de pixel, [0,0] hors AA).
+    let [aa_dx, aa_dy] = params.aa_subpixel_offset;
 
     iterations
         .par_chunks_mut(width)
@@ -252,6 +256,9 @@ fn render_escape_time_gmp(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
         .for_each(|(j, (iter_row, z_row))| {
             let mut j_f = Float::with_val(prec, j as u32);
             j_f += &half;
+            if aa_dy != 0.0 {
+                j_f += aa_dy;
+            }
             let mut y_ratio = j_f;
             y_ratio /= &height_f;
             y_ratio -= &half;
@@ -260,6 +267,9 @@ fn render_escape_time_gmp(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
                 let mut i_f = Float::with_val(prec, i as u32);
                 i_f += &half;
+                if aa_dx != 0.0 {
+                    i_f += aa_dx;
+                }
                 let mut x_ratio = i_f;
                 x_ratio /= &width_f;
                 x_ratio -= &half;
@@ -588,6 +598,8 @@ fn render_escape_time_f64_cancellable_with_reuse(
     let need_distances = params.enable_distance_estimation;
     // Pré-calcul de la matrice de rotation (None si rotation == 0 → no-op).
     let rot = params.transform_matrix();
+    // Offset sous-pixel AA per-frame (unités de pixel, [0,0] hors AA).
+    let [aa_dx, aa_dy] = params.aa_subpixel_offset;
 
     iterations
         .par_chunks_mut(width)
@@ -605,7 +617,7 @@ fn render_escape_time_f64_cancellable_with_reuse(
                 return;
             }
 
-            let y_ratio = (j as f64 + 0.5) / params.height as f64;
+            let y_ratio = (j as f64 + 0.5 + aa_dy) / params.height as f64;
             let dy = (y_ratio - 0.5) * params.span_y;
             for (i, (((iter, z), orbit_cell), dist_cell)) in iter_row
                 .iter_mut()
@@ -627,7 +639,7 @@ fn render_escape_time_f64_cancellable_with_reuse(
                         }
                     }
                 }
-                let x_ratio = (i as f64 + 0.5) / params.width as f64;
+                let x_ratio = (i as f64 + 0.5 + aa_dx) / params.width as f64;
                 let dx = (x_ratio - 0.5) * params.span_x;
                 let (dx_r, dy_r) = match rot {
                     Some((a, b, c, d)) => (a * dx + b * dy, c * dx + d * dy),
@@ -740,6 +752,8 @@ fn render_escape_time_gmp_cancellable_with_reuse(
     let half = Float::with_val(prec, 0.5);
     // Rotation : appliquée au delta pixel→centre avant d'ajouter center_x/y.
     let rot = params.transform_matrix();
+    // Offset sous-pixel AA per-frame (unités de pixel, [0,0] hors AA).
+    let [aa_dx, aa_dy] = params.aa_subpixel_offset;
 
     let cancelled = AtomicBool::new(false);
 
@@ -761,6 +775,9 @@ fn render_escape_time_gmp_cancellable_with_reuse(
 
             let mut j_f = Float::with_val(prec, j as u32);
             j_f += &half;
+            if aa_dy != 0.0 {
+                j_f += aa_dy;
+            }
             let mut y_ratio = j_f;
             y_ratio /= &height_f;
             y_ratio -= &half;
@@ -782,6 +799,9 @@ fn render_escape_time_gmp_cancellable_with_reuse(
                 }
                 let mut i_f = Float::with_val(prec, i as u32);
                 i_f += &half;
+                if aa_dx != 0.0 {
+                    i_f += aa_dx;
+                }
                 let mut x_ratio = i_f;
                 x_ratio /= &width_f;
                 x_ratio -= &half;

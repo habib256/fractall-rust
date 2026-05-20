@@ -971,22 +971,22 @@ pub fn render_perturbation_with_cache(
     // Clone cache for use in parallel iteration
     let cache_ref = Arc::clone(&cache);
 
-    // Jitter scale for sub-pixel anti-aliasing (inspired by rust-fractal-core).
-    // When enabled, each pixel gets a small random offset to reduce Moiré patterns.
-    let jitter_scale = params.jitter_scale;
-    let use_jitter = jitter_scale > 0.0 && jitter_scale.is_finite();
+    // Offset sous-pixel AA « per-frame » (en unités de pixel), constant sur
+    // tout le frame : décale la grille pour le sample courant. Replié dans le
+    // précalcul dc ci-dessous (la moyenne des frames colorés est faite par
+    // l'appelant, CLI/GUI). Remplace l'ancien jitter per-pixel non-moyenné.
+    let [aa_dx, aa_dy] = params.aa_subpixel_offset;
 
     // Pré-calcul dc pour amortir le coût par pixel (surtout utile sur petites images).
     // Stocker directement en FloatExp pour éviter les conversions via Complex64.
-    // When jitter is disabled, pre-compute; when enabled, compute per-pixel with jitter.
-    // Note: si rotation != 0, on ne peut PAS pré-calculer dc_re/dc_im séparément
-    // car la rotation mélange dx et dy ; on calcule dc à la volée dans la boucle.
+    // dx/dy sont précalculés sans rotation ; K (rot) est appliqué par pixel dans
+    // la boucle (mélange re/im) — cf. plus bas.
     let rot = params.transform_matrix();
     let dc_re_fexp: Vec<FloatExp> = (0..width)
-        .map(|i| x_range_fexp * ((i as f64 + 0.5) * inv_width - 0.5))
+        .map(|i| x_range_fexp * ((i as f64 + 0.5 + aa_dx) * inv_width - 0.5))
         .collect();
     let dc_im_fexp: Vec<FloatExp> = (0..height)
-        .map(|j| y_range_fexp * ((j as f64 + 0.5) * inv_height - 0.5))
+        .map(|j| y_range_fexp * ((j as f64 + 0.5 + aa_dy) * inv_height - 0.5))
         .collect();
 
     let t_pixels_start = Instant::now();
@@ -1041,26 +1041,11 @@ pub fn render_perturbation_with_cache(
                     }
                 }
 
-                // Apply jitter if enabled (inspired by rust-fractal-core).
-                // Uses a simple hash-based pseudo-random offset per pixel to
-                // reduce aliasing artifacts at deep zooms.
-                let dc = if use_jitter {
-                    // Simple hash-based jitter: mix pixel coordinates to get
-                    // pseudo-random offsets in [-0.5, 0.5) per pixel
-                    let hash = ((i as u64).wrapping_mul(0x517cc1b727220a95))
-                        .wrapping_add((j as u64).wrapping_mul(0x6c62272e07bb0142))
-                        .wrapping_add(0x9e3779b97f4a7c15);
-                    let jx = ((hash & 0xFFFF) as f64 / 65536.0 - 0.5) * jitter_scale;
-                    let jy = (((hash >> 16) & 0xFFFF) as f64 / 65536.0 - 0.5) * jitter_scale;
-                    ComplexExp {
-                        re: x_range_fexp * ((i as f64 + 0.5 + jx) * inv_width - 0.5),
-                        im: y_range_fexp * ((j as f64 + 0.5 + jy) * inv_height - 0.5),
-                    }
-                } else {
-                    ComplexExp {
-                        re: dc_re_fexp[i],
-                        im: dc_im,
-                    }
+                // dc précalculé (inclut l'offset sous-pixel AA per-frame
+                // `params.aa_subpixel_offset`, replié dans le précalcul plus haut).
+                let dc = ComplexExp {
+                    re: dc_re_fexp[i],
+                    im: dc_im,
                 };
 
                 // Rotation : dc' = K * dc (aligné F3 hybrid.cc:265).

@@ -14,7 +14,8 @@ mod gpu;
 use fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalType, LyapunovPreset, OutColoringMode, PlaneTransform};
 use render::render_escape_time;
 use render::escape_time::should_use_perturbation;
-use io::png::save_png_with_metadata;
+use io::png::{colorize_to_rgb, save_png_rgb_with_metadata, save_png_with_metadata};
+use fractal::jitter::sample_offset;
 use io::exr::save_iterations_exr;
 use gpu::GpuRenderer;
 
@@ -176,6 +177,20 @@ struct Cli {
     /// (équivalent F3 `transform.rotate`). Override la valeur du TOML si fournie.
     #[arg(long)]
     rotation: Option<f64>,
+
+    /// Anti-aliasing : nombre d'échantillons sous-pixel jitterés moyennés
+    /// (1 = désactivé, défaut). Chaque sample décale la grille d'un offset
+    /// low-discrepancy (Halton, port F3 `radical_inverse` + tente `triangle`)
+    /// puis les rendus colorés sont moyennés. Améliore les bords fins
+    /// (surtout modes Distance/DE). CPU uniquement (ignoré avec --gpu).
+    #[arg(long, default_value_t = 1)]
+    aa_samples: u32,
+
+    /// Amplitude du jitter sous-pixel pour l'AA, en pixels. 1.0 = tente pleine
+    /// largeur (défaut quand --aa-samples > 1), 0.5 = demi-pixel. Sans effet si
+    /// --aa-samples = 1. Pilote `FractalParams::jitter_scale`.
+    #[arg(long)]
+    jitter_scale: Option<f64>,
 
     /// Fichier de sortie PNG
     #[arg(long, value_name = "FICHIER")]
@@ -482,6 +497,20 @@ fn main() {
         params.rotation = rot;
     }
 
+    // Anti-aliasing multi-sample (per-frame jitter). jitter_scale est
+    // enregistré dans les métadonnées ; l'offset sous-pixel de chaque sample
+    // est appliqué dans la boucle d'accumulation plus bas. AA CPU uniquement.
+    let aa_samples = cli.aa_samples.max(1);
+    let aa_jitter_scale = cli.jitter_scale.unwrap_or(1.0);
+    if aa_samples > 1 {
+        params.jitter_scale = aa_jitter_scale;
+        if cli.gpu {
+            eprintln!(
+                "[AA] --aa-samples {aa_samples} ignoré en mode --gpu (anti-aliasing CPU uniquement)"
+            );
+        }
+    }
+
     match params.algorithm_mode {
         AlgorithmMode::ReferenceGmp => params.use_gmp = true,
         AlgorithmMode::StandardF64 => params.use_gmp = false,
@@ -645,16 +674,53 @@ fn main() {
     let center_y_hp = params.center_y_hp.clone().unwrap_or_else(|| params.center_y.to_string());
     let span_x_hp = params.span_x_hp.clone().unwrap_or_else(|| params.span_x.to_string());
     let span_y_hp = params.span_y_hp.clone().unwrap_or_else(|| params.span_y.to_string());
-    if let Err(e) = save_png_with_metadata(
-        &params,
-        &iterations,
-        &zs,
-        &cli.output,
-        &center_x_hp,
-        &center_y_hp,
-        &span_x_hp,
-        &span_y_hp,
-    ) {
+    let png_result = if aa_samples > 1 && !cli.gpu {
+        // Anti-aliasing multi-sample (per-frame jitter) : sample 0 = le rendu de
+        // base déjà calculé (offset (0,0)), samples 1..N re-rendus avec un offset
+        // sous-pixel low-discrepancy, puis moyenne en espace RGB.
+        let n_bytes = params.width as usize * params.height as usize * 3;
+        let mut accum = vec![0f64; n_bytes];
+        let accumulate = |accum: &mut [f64], rgb: &[u8]| {
+            for (a, &c) in accum.iter_mut().zip(rgb.iter()) {
+                *a += c as f64;
+            }
+        };
+        accumulate(&mut accum, &colorize_to_rgb(&params, &iterations, &zs));
+        for k in 1..aa_samples as u64 {
+            let (ox, oy) = sample_offset(k);
+            let mut p = params.clone();
+            p.aa_subpixel_offset = [ox * aa_jitter_scale, oy * aa_jitter_scale];
+            let (it, zz) = render_escape_time(&p);
+            accumulate(&mut accum, &colorize_to_rgb(&p, &it, &zz));
+            println!("[AA] sample {}/{}", k + 1, aa_samples);
+        }
+        let inv_n = 1.0 / aa_samples as f64;
+        let avg: Vec<u8> = accum
+            .iter()
+            .map(|&s| (s * inv_n).round().clamp(0.0, 255.0) as u8)
+            .collect();
+        save_png_rgb_with_metadata(
+            &params,
+            &avg,
+            &cli.output,
+            &center_x_hp,
+            &center_y_hp,
+            &span_x_hp,
+            &span_y_hp,
+        )
+    } else {
+        save_png_with_metadata(
+            &params,
+            &iterations,
+            &zs,
+            &cli.output,
+            &center_x_hp,
+            &center_y_hp,
+            &span_x_hp,
+            &span_y_hp,
+        )
+    };
+    if let Err(e) = png_result {
         eprintln!("Erreur lors de l'écriture du PNG: {e}");
         std::process::exit(1);
     }
