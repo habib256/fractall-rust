@@ -326,6 +326,86 @@ impl PartialOrd for DoubleDoubleExp {
     }
 }
 
+/// Nombre complexe à composantes `DoubleDoubleExp` : équivalent haute
+/// précision de `ComplexExp` (qui a des composantes `FloatExp`/53 bits).
+/// Mêmes opérations que `ComplexExp` pour servir de remplacement direct du
+/// delta de perturbation dans `pixel_loop_exp` (P1.6.e étape 4, à venir).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ComplexDDExp {
+    pub re: DoubleDoubleExp,
+    pub im: DoubleDoubleExp,
+}
+
+impl ComplexDDExp {
+    pub const ZERO: Self = Self {
+        re: DoubleDoubleExp::ZERO,
+        im: DoubleDoubleExp::ZERO,
+    };
+
+    #[inline(always)]
+    pub fn from_complex64(value: num_complex::Complex64) -> Self {
+        Self {
+            re: DoubleDoubleExp::from_f64(value.re),
+            im: DoubleDoubleExp::from_f64(value.im),
+        }
+    }
+
+    #[inline(always)]
+    pub fn to_complex64_approx(self) -> num_complex::Complex64 {
+        num_complex::Complex64::new(self.re.to_f64(), self.im.to_f64())
+    }
+
+    #[inline(always)]
+    pub fn is_finite(self) -> bool {
+        self.re.is_finite() && self.im.is_finite()
+    }
+
+    #[inline(always)]
+    pub fn add(self, rhs: Self) -> Self {
+        Self {
+            re: self.re.add(rhs.re),
+            im: self.im.add(rhs.im),
+        }
+    }
+
+    /// Produit complexe : (a+bi)(c+di) = (ac-bd) + (ad+bc)i.
+    #[inline(always)]
+    pub fn mul(self, rhs: Self) -> Self {
+        let re = self.re.mul(rhs.re).sub(self.im.mul(rhs.im));
+        let im = self.re.mul(rhs.im).add(self.im.mul(rhs.re));
+        Self { re, im }
+    }
+
+    /// Produit par un `Complex64` (cas chaud : 2·Z·δ où Z est la référence f64).
+    #[inline(always)]
+    pub fn mul_complex64(self, rhs: num_complex::Complex64) -> Self {
+        let re = self.re.mul_f64(rhs.re).sub(self.im.mul_f64(rhs.im));
+        let im = self.re.mul_f64(rhs.im).add(self.im.mul_f64(rhs.re));
+        Self { re, im }
+    }
+
+    /// Carré complexe : (a+bi)² = (a²-b²) + 2abi.
+    #[inline(always)]
+    pub fn sqr(self) -> Self {
+        let re = self.re.sqr().sub(self.im.sqr());
+        let im = self.re.mul(self.im).mul_f64(2.0);
+        Self { re, im }
+    }
+
+    /// Norme² en `DoubleDoubleExp` (pas d'underflow deep zoom, comme
+    /// `ComplexExp::norm_sqr_fexp`).
+    #[inline(always)]
+    pub fn norm_sqr(self) -> DoubleDoubleExp {
+        self.re.sqr().add(self.im.sqr())
+    }
+
+    #[inline(always)]
+    pub fn reduce(&mut self) {
+        self.re.reduce();
+        self.im.reduce();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,5 +607,69 @@ mod tests {
             delta.to_f64(),
             expected
         );
+    }
+
+    // --- ComplexDDExp ---
+
+    use num_complex::Complex64;
+
+    #[test]
+    fn cddexp_mul_matches_complex64() {
+        // (1+2i)·(3+4i) = (3-8) + (4+6)i = -5 + 10i.
+        let a = ComplexDDExp::from_complex64(Complex64::new(1.0, 2.0));
+        let b = ComplexDDExp::from_complex64(Complex64::new(3.0, 4.0));
+        let p = a.mul(b).to_complex64_approx();
+        assert!((p.re - (-5.0)).abs() < 1e-13 && (p.im - 10.0).abs() < 1e-13, "{:?}", p);
+        // mul_complex64 doit donner le même résultat.
+        let p2 = a.mul_complex64(Complex64::new(3.0, 4.0)).to_complex64_approx();
+        assert!((p2.re - (-5.0)).abs() < 1e-13 && (p2.im - 10.0).abs() < 1e-13);
+    }
+
+    #[test]
+    fn cddexp_sqr_matches_mul_self() {
+        let z = ComplexDDExp::from_complex64(Complex64::new(0.6, -0.4));
+        let s = z.sqr().to_complex64_approx();
+        let m = z.mul(z).to_complex64_approx();
+        assert!((s.re - m.re).abs() < 1e-14 && (s.im - m.im).abs() < 1e-14);
+        // (0.6-0.4i)² = 0.36-0.16 + 2·0.6·(-0.4)i = 0.20 - 0.48i.
+        assert!((s.re - 0.20).abs() < 1e-13 && (s.im - (-0.48)).abs() < 1e-13, "{:?}", s);
+    }
+
+    #[test]
+    fn cddexp_perturbation_step_keeps_precision() {
+        // Mimique un pas Mandelbrot δ' = 2·Z·δ + δ² + dc avec dc minuscule
+        // (deep zoom). Z = O(1), δ ~ 2^-90 : f64 perdrait δ² et l'addition,
+        // dd la conserve. On vérifie juste que δ ne s'annule pas.
+        let z = Complex64::new(0.3, 0.4);
+        let mut delta = ComplexDDExp {
+            re: DoubleDoubleExp::normalized(DoubleDouble::from_f64(1.0), -90),
+            im: DoubleDoubleExp::normalized(DoubleDouble::from_f64(1.0), -90),
+        };
+        let dc = ComplexDDExp {
+            re: DoubleDoubleExp::normalized(DoubleDouble::from_f64(1.0), -90),
+            im: DoubleDoubleExp::ZERO,
+        };
+        for _ in 0..50 {
+            let two_z_delta = delta.mul_complex64(z * 2.0);
+            let delta_sq = delta.sqr();
+            delta = two_z_delta.add(delta_sq).add(dc);
+            delta.reduce();
+        }
+        // δ doit rester fini et non nul (l'information à 2^-90 a survécu).
+        assert!(delta.is_finite());
+        assert!(delta.re.mantissa.hi != 0.0 || delta.im.mantissa.hi != 0.0);
+    }
+
+    #[test]
+    fn cddexp_norm_sqr_deep_zoom_no_underflow() {
+        // δ ~ 2^-2000 : norm_sqr en f64 collapse à 0 ; en DoubleDoubleExp non.
+        let delta = ComplexDDExp {
+            re: DoubleDoubleExp::normalized(DoubleDouble::from_f64(1.0), -2000),
+            im: DoubleDoubleExp::ZERO,
+        };
+        let n = delta.norm_sqr();
+        assert!(n.mantissa.hi != 0.0, "norm_sqr ne doit pas underflow");
+        // (2^-2000)² = 2^-4000.
+        assert_eq!(n.exponent, -3999); // 1.0·2^-4000 normalisé = 0.5·2^-3999
     }
 }
