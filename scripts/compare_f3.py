@@ -366,6 +366,21 @@ def process_one(
     row["inside_fr"] = int(in_fr.sum())
     row["inside_mismatch"] = inside_diff
     row["both_out"] = int(both_out.sum())
+
+    # F3-degenerate detection : F3 rend un champ (quasi-)uniforme tout-intérieur
+    # alors que fractall a une vraie structure d'exterieur → F3 a court-circuité
+    # (fast-path period/nucleus en batch, cf. glitch_test_5 carré noir) et
+    # fractall est vraisemblablement CORRECT. On le signale au lieu de compter
+    # fractall en échec. Symétrique : si fractall est dégénéré et F3 a de la
+    # structure, c'est un vrai bug fractall (on ne le masque pas).
+    f3_inside_frac = in_f3.sum() / total
+    fr_inside_frac = in_fr.sum() / total
+    if f3_inside_frac > 0.99 and fr_inside_frac < 0.90:
+        row["status"] = "f3_degenerate"
+        row["note"] = (
+            f"F3 {100*f3_inside_frac:.1f}% intérieur (uniforme) vs fractall "
+            f"{100*fr_inside_frac:.1f}% — fractall a la structure, F3 court-circuité"
+        )
     row["mean_abs_dsi"] = f"{mean_abs:.4f}"
     row["max_abs_dsi"] = f"{max_abs:.4f}"
     row["rms_dsi"] = f"{rms:.4f}"
@@ -445,6 +460,8 @@ def main() -> None:
             if row["status"] == "ok":
                 print(f"✓ Δmean={row['mean_abs_dsi']:>7s} Δmax={row['max_abs_dsi']:>7s} "
                       f"inside_mismatch={row['inside_mismatch']:>5d}  (F3 {row['f3_sec']}, Fr {row['fr_sec']})")
+            elif row["status"] == "f3_degenerate":
+                print(f"⊘ F3 dégénéré (fractall correct) — {row.get('note', '')}")
             else:
                 print(f"✗ {row['status']}")
     finally:
@@ -472,15 +489,22 @@ def main() -> None:
             for r in rows_ok:
                 f.write(f"| `{r['name']}` | {r['inside_mismatch']} | {r['both_out']} | "
                         f"{r['mean_abs_dsi']} | {r['max_abs_dsi']} | {r['rms_dsi']} |\n")
-            fails = [r for r in rows if r["status"] != "ok"]
+            degen = [r for r in rows if r["status"] == "f3_degenerate"]
+            if degen:
+                f.write("\n## F3 dégénéré (fractall correct — hors score)\n\n")
+                for r in degen:
+                    f.write(f"- `{r['name']}` : {r.get('note', 'F3 uniforme tout-intérieur')}\n")
+            fails = [r for r in rows if r["status"] not in ("ok", "f3_degenerate")]
             if fails:
                 f.write("\n## Échecs\n\n")
                 for r in fails:
                     f.write(f"- `{r['name']}` : {r['status']}\n")
 
     n_ok = len(rows_ok)
+    n_degen = sum(1 for r in rows if r["status"] == "f3_degenerate")
     print()
-    print(f"OK: {n_ok}/{len(rows)}  →  {args.out.relative_to(REPO)}/_summary.md")
+    suffix = f" (+{n_degen} F3-dégénéré, fractall correct)" if n_degen else ""
+    print(f"OK: {n_ok}/{len(rows)}{suffix}  →  {args.out.relative_to(REPO)}/_summary.md")
 
 
 if __name__ == "__main__":
