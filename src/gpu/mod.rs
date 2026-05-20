@@ -466,6 +466,13 @@ impl GpuRenderer {
         if !supports {
             return None;
         }
+        // Le shader perturbation GPU n'applique pas la transformation K (rotation
+        // /skew) au mapping pixel→c. Plutôt que de rendre une vue non-tournée en
+        // silence, on retombe sur le CPU (qui gère K). Le path bytecode GPU, lui,
+        // applique K (cf. ParamsBytecode / bytecode_kernel.wgsl).
+        if params.transform_matrix().is_some() {
+            return None;
+        }
 
         let mut orbit_params = params.clone();
         orbit_params.precision_bits = compute_perturbation_precision_bits(params);
@@ -1316,6 +1323,13 @@ impl GpuRenderer {
         params_value: ParamsF32,
         label: &str,
     ) -> Option<(Vec<u32>, Vec<Complex64>)> {
+        // Les shaders f32 dédiés (`*_f32.wgsl`) n'appliquent pas K (rotation/skew)
+        // au mapping pixel→c — seul le path bytecode le fait. Ce path n'est
+        // atteint que quand le bytecode échoue (ex. plane ≠ Mu). Si une transform
+        // est active, retomber sur le CPU plutôt que rendre une vue non-tournée.
+        if params.transform_matrix().is_some() {
+            return None;
+        }
         let width = params.width as usize;
         let height = params.height as usize;
         if width == 0 || height == 0 {
@@ -1603,10 +1617,21 @@ struct ParamsBytecode {
     bailout: f32,
     is_julia: u32,
     bytecode_len: u32,
+    // Matrice de transformation K (row-major) appliquée au delta pixel→centre
+    // avant l'ajout du centre : `c = center + K·((f-0.5)·span)`. Identité si pas
+    // de rotation/transform. Aligné CPU `transform_matrix()` et F3 `c = K·c+off`.
+    k00: f32,
+    k01: f32,
+    k10: f32,
+    k11: f32,
 }
 
 impl ParamsBytecode {
     fn from_params(params: &FractalParams, is_julia: bool, bytecode_len: u32) -> Self {
+        let (k00, k01, k10, k11) = params
+            .transform_matrix()
+            .map(|(a, b, c, d)| (a as f32, b as f32, c as f32, d as f32))
+            .unwrap_or((1.0, 0.0, 0.0, 1.0));
         Self {
             center_x: params.center_x as f32,
             center_y: params.center_y as f32,
@@ -1620,6 +1645,10 @@ impl ParamsBytecode {
             bailout: params.bailout as f32,
             is_julia: if is_julia { 1 } else { 0 },
             bytecode_len,
+            k00,
+            k01,
+            k10,
+            k11,
         }
     }
 }

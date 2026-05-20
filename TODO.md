@@ -305,14 +305,27 @@ Items issus de l'analyse `fraktaler-3-3.1/src/`. Classés par impact × effort.
 - [x] Tests d'invariance : `invariant_rot_mandelbrot_phase` (δ-form vs
   absolu f64), `invariant_rot_mandelbrot_phase_exp` (DeltaStateExp deep
   zoom), `rot_after_sqr_matches_composed_jacobian` (BLA = R · J_sqr).
-- [ ] GPU : `Op::Rot` rejeté par `try_render_bytecode` (payload f64 pas
-  encodable dans le buffer `array<u32>` actuel). À débloquer en élargissant
-  le format bytecode GPU (op_id + 2×f32 cos/sin packés, ou storage buffer
-  séparé pour les payloads) ; pour l'instant fallback CPU.
-- [ ] `compile_formula` n'émet pas encore `Op::Rot` — les formules natives
-  (Mandelbrot, Julia, …) restent sans rotation. À brancher à P1.6.b-bis
-  (injecter K-extracted angle dans la formule) ou à un futur parseur
-  `[[formula]]` rotate des TOML F3.
+- [x] **Rotation GPU corrigée au pixel→c** (2026-05-20). **Recadrage** : la
+  rotation de la VUE est une transformation K appliquée au mapping pixel→c
+  (`c = K·c + offset`, F3 `hybrid.cc:265` + CPU `transform_matrix()`), PAS un
+  opcode per-itération. `Op::Rot` (per-iteration) n'est donc pas le bon levier
+  et n'est de toute façon jamais émis par `compile_formula`. **Bug trouvé** :
+  le path bytecode GPU (`bytecode_kernel.wgsl`) ET les shaders f32 dédiés
+  ignoraient K → vue NON tournée rendue en silence (reproduit : Mandelbrot
+  rotation 0.6 rad, CPU tilté / GPU droit). **Fix** : K (4×f32 row-major) ajouté
+  à `ParamsBytecode` (depuis `transform_matrix()`) + appliqué au pixel→c dans
+  `bytecode_kernel.wgsl`. GPU rotated == CPU rotated vérifié sur M4/Metal ;
+  rendu non-tourné inchangé (byte-identique) ; WGSL re-validé (naga).
+- [x] Garde-fous sur les autres paths GPU qui n'appliquent PAS K (perturbation
+  `perturbation.wgsl` + shaders f32 dédiés via `render_escape_f32`) : fallback
+  CPU si `transform_matrix().is_some()` au lieu d'une sortie non-tournée
+  silencieuse. (Cas atteints seulement hors bytecode : plane ≠ Mu, ou
+  perturbation GPU mid-zoom.)
+- [ ] (Reste, basse prio) Appliquer K nativement dans `perturbation.wgsl` et les
+  shaders f32 dédiés pour éviter le fallback CPU sur ces cas niches.
+- `Op::Rot` reste un opcode dormant (CPU only, jamais émis) : utile seulement
+  si un futur parseur `[[formula]] rotate` des TOML F3 a besoin d'une rotation
+  PAR PHASE (différent de la rotation de vue). Pas requis pour la parité vue.
 
 ##### P1.6.d — Wisdom file + auto-precision [HAUTE]
 - [ ] Implémenter `wisdom_lookup` (`wisdom.cc:240-295`) : choisit le type

@@ -2181,28 +2181,6 @@ impl eframe::App for FractallApp {
 
                     ui.separator();
 
-                    // Anti-aliasing : nombre d'échantillons sous-pixel jitterés
-                    // moyennés après les passes progressives (CPU uniquement).
-                    ui.label("AA:");
-                    let prev_aa = self.aa_samples;
-                    egui::ComboBox::from_id_salt("aa_samples")
-                        .selected_text(if self.aa_samples <= 1 {
-                            "Off".to_string()
-                        } else {
-                            format!("{}×", self.aa_samples)
-                        })
-                        .show_ui(ui, |ui| {
-                            for &n in &[1u32, 2, 4, 8, 16, 32] {
-                                let label = if n == 1 { "Off".to_string() } else { format!("{n}×") };
-                                ui.selectable_value(&mut self.aa_samples, n, label);
-                            }
-                        });
-                    if self.aa_samples != prev_aa {
-                        self.start_render();
-                    }
-
-                    ui.separator();
-
                     // Section Tech (entre Iter et Render)
                     let supports_advanced_modes = matches!(
                         self.selected_type,
@@ -2439,6 +2417,33 @@ impl eframe::App for FractallApp {
                         if !self.iterations.is_empty() {
                             self.update_texture(ctx);
                         }
+                    }
+
+                    ui.separator();
+
+                    // Anti-aliasing : nombre d'échantillons sous-pixel jitterés
+                    // moyennés après les passes progressives (CPU uniquement).
+                    ui.label("AA:");
+                    let prev_aa = self.aa_samples;
+                    egui::ComboBox::from_id_salt("aa_samples")
+                        .width(46.0)
+                        .selected_text(if self.aa_samples <= 1 {
+                            "Off".to_string()
+                        } else {
+                            format!("{}×", self.aa_samples)
+                        })
+                        .show_ui(ui, |ui| {
+                            for &n in &[1u32, 2, 4, 8, 16, 32] {
+                                let label = if n == 1 { "Off".to_string() } else { format!("{n}×") };
+                                ui.selectable_value(&mut self.aa_samples, n, label);
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "Anti-aliasing : échantillons sous-pixel jitterés moyennés (CPU). Off = désactivé.",
+                        );
+                    if self.aa_samples != prev_aa {
+                        self.start_render();
                     }
 
                     ui.separator();

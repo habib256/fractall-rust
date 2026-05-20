@@ -40,6 +40,13 @@ struct Params {
     is_julia: u32,
     // Longueur du bytecode (nombre d'opcodes dans la phase).
     bytecode_len: u32,
+    // Matrice de transformation K (row-major) : c = center + K·((f-0.5)·span).
+    // Identité (1,0,0,1) si pas de rotation/transform. Aligné CPU
+    // `transform_matrix()` et F3 `c = K·c + offset` (hybrid.cc:265).
+    k00: f32,
+    k01: f32,
+    k10: f32,
+    k11: f32,
 };
 
 struct PixelOut {
@@ -69,8 +76,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.y * params.width + gid.x;
     let fx = (f32(gid.x) + 0.5) / f32(params.width);
     let fy = (f32(gid.y) + 0.5) / f32(params.height);
-    let pixel_re = params.center_x + (fx - 0.5) * params.span_x;
-    let pixel_im = params.center_y + (fy - 0.5) * params.span_y;
+    // Delta pixel→centre, puis transformation K (rotation/skew) avant l'ajout du
+    // centre — parité avec le path CPU et F3 (`c = K·c + offset`).
+    let dx = (fx - 0.5) * params.span_x;
+    let dy = (fy - 0.5) * params.span_y;
+    let pixel_re = params.center_x + params.k00 * dx + params.k01 * dy;
+    let pixel_im = params.center_y + params.k10 * dx + params.k11 * dy;
 
     var z: vec2<f32>;
     var c: vec2<f32>;
