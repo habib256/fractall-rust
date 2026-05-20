@@ -192,6 +192,12 @@ struct Cli {
     #[arg(long)]
     jitter_scale: Option<f64>,
 
+    /// Escape radius (bailout) du test d'évasion |z| ≥ bailout. Par défaut, la
+    /// valeur par type (25 pour la famille escape-time, cf. ESCAPE_TIME_BAILOUT).
+    /// Sert notamment à aligner l'ER avec Fraktaler-3 dans le harness de parité.
+    #[arg(long)]
+    bailout: Option<f64>,
+
     /// Fichier de sortie PNG
     #[arg(long, value_name = "FICHIER")]
     output: PathBuf,
@@ -495,6 +501,11 @@ fn main() {
     // Rotation CLI : prioritaire sur la valeur TOML (cf. doc --rotation).
     if let Some(rot) = cli.rotation {
         params.rotation = rot;
+    }
+
+    // Escape radius CLI : override le défaut par type (alignement ER avec F3).
+    if let Some(b) = cli.bailout {
+        params.bailout = b;
     }
 
     // Anti-aliasing multi-sample (per-frame jitter). jitter_scale est

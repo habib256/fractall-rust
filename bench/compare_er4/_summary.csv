@@ -1,0 +1,7 @@
+both_out,f3_fast,f3_sec,fr_sec,inside_f3,inside_fr,inside_mismatch,iterations,max_abs_dsi,mean_abs_dsi,name,px_total,rms_dsi,status
+65536,True,0.06s,45.32s,0,0,0,20000,541.5763,5.8194,all_seeing_eye,65536,11.7170,ok
+65533,True,0.05s,1.88s,3,0,3,2500,258.2363,1.7095,line,65536,5.5367,ok
+65514,True,0.09s,0.03s,13,9,22,1000,698.2698,9.8072,spiral,65536,43.2899,ok
+65536,True,0.05s,0.70s,0,0,0,1000,40.6047,0.5400,test,65536,1.7787,ok
+65535,True,0.04s,0.02s,1,0,1,1000,81.0207,0.5000,test2,65536,1.7575,ok
+39155,True,0.02s,0.02s,25999,26033,730,31,15.5726,0.1533,test4,65536,0.7046,ok

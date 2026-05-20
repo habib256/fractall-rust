@@ -54,20 +54,30 @@ Fractall sera « excellent » quand les 5 piliers sont atteints :
 **Objectif** : produire les mêmes images que F3 pour les 84 `toml/*.toml`.
 **Harness** : `scripts/compare_f3.py` (F3 batch + `fractall-cli` → PNG + diff +
 métriques EXR N0/NF). Flags de parité : `FRACTALL_NO_AUTO_ADJUST=1`,
-`FRACTALL_NO_PERIOD=1` (F3 ne fait ni l'auto-adjust d'iter_max ni la troncature
-par période).
-**État** : dernier sweep (26 cas uniques, 256²) → majorité visuellement
-équivalents (Δmean concentré aux bords). Pixel-perfect : test5, test6.
+`FRACTALL_NO_PERIOD=1`. **ER aligné des deux côtés** : `--escape-radius` écrit
+`bailout.escape_radius` côté F3 ET passe `--bailout` côté fractall (défaut 25).
+**État** : sweep complet 84 cas en cours (256×144, ER=25). Pixel-perfect :
+test5, test6.
 
 **Done when** :
-- [ ] **Re-sweep complet** des 84 cas à 1920×1080 : rapport `mean_abs` +
-  classification par cas (pixel-equiv / bord-chaotique / F3-dégénéré / perf).
-- [ ] **Quantifier le gain ER=25** : l'escape radius a changé (4→25) sans
-  re-sweep ; mesurer la baisse de Δmean à la frontière d'évasion.
-- [ ] **Détecteur F3-dégénéré** dans le harness : image quasi-uniforme rendue
-  en < 0.1 s ⇒ exclure du score (cf. glitch_test_5, §G3).
+- [ ] **Re-sweep complet** des 84 cas : rapport `mean_abs` + classification par
+  cas (pixel-equiv / bord-chaotique / F3-dégénéré / perf). *En cours.* (1920×1080
+  irréaliste pour les cas perf-bound — cf. G2 ; sweep à résolution 16:9
+  tractable + cas profonds classés « perf/timeout ».)
+- [x] **Gain ER=25 quantifié** (2026-05-20) : à **ER aligné** (F3 et fractall
+  au même ER), passer de 4 à 25 laisse Δmean **quasi inchangé** (test/test2/
+  line/spiral/all_seeing_eye identiques à 4-5 décimales ; seul test4 améliore :
+  Δmean 0.153→0.141, inside_mm 730→703). Logique : le harness aligne l'ER des
+  deux côtés, donc la *différence* est invariante à l'ER. **Conséquence** : la
+  valeur d'ER=25 est la parité de *défaut* avec F3 (rendu utilisateur sans
+  `--bailout`) + smooth coloring plus propre, PAS la métrique harness alignée.
+  (Corrige la sur-affirmation « requis pour la parité N0/NF ».)
+- [x] **Détecteur F3-dégénéré** (2026-05-20) : `compare_f3.py` flagge
+  `f3_degenerate` quand F3 est quasi-uniforme (tout-intérieur/-extérieur ou std
+  exterieur < 1e-3) **ET** rendu en < 0.1 s (fast-path) **ET** fractall structuré.
+  Exclu du score. Vérifié sur glitch_test_5 (100% intérieur, 0.018 s).
 - [ ] Chaque cas restant : pixel-équivalent **ou** divergence expliquée et
-  classée (pas de FAIL non élucidé).
+  classée (pas de FAIL non élucidé). *Issu du sweep en cours.*
 
 ### G2 — Performance deep-zoom : dispatch wisdom + types intermédiaires · `[P0 · perf]`
 

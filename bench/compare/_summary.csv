@@ -1,2 +1,4 @@
-both_out,f3_sec,fr_sec,inside_f3,inside_fr,inside_mismatch,iterations,max_abs_dsi,mean_abs_dsi,name,px_total,rms_dsi,status
-39991,0.29s,14.66s,5,4,9,100000,45279.3643,300.9675,rug,40000,1508.0758,ok
+both_out,f3_fast,f3_sec,fr_sec,inside_f3,inside_fr,inside_mismatch,iterations,max_abs_dsi,mean_abs_dsi,name,note,px_total,rms_dsi,status
+0,True,0.02s,0.54s,65536,11388,54148,12000,0.0000,0.0000,glitch_test_5,F3 uniforme (100.0% intérieur) rendu en 0.018s (fast-path) vs fractall structuré (17.4% intérieur) — fractall correct,65536,0.0000,f3_degenerate
+65536,True,0.02s,0.52s,0,0,0,4000,0.0000,0.0000,test5,,65536,0.0000,ok
+65536,True,0.03s,0.02s,0,0,0,1000,0.8093,0.0001,test6,,65536,0.0105,ok

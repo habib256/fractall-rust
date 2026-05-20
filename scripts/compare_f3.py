@@ -180,7 +180,8 @@ def smooth_iter(n: np.ndarray, nf: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 # Render orchestration
 # ---------------------------------------------------------------------------
 
-def run_f3(toml_path: Path, timeout: float) -> tuple[int, str]:
+def run_f3(toml_path: Path, timeout: float) -> tuple[int, float]:
+    """Renvoie (returncode, secondes). secondes = inf si timeout."""
     t0 = time.monotonic()
     try:
         proc = subprocess.run(
@@ -190,9 +191,9 @@ def run_f3(toml_path: Path, timeout: float) -> tuple[int, str]:
             timeout=timeout,
             text=True,
         )
-        return proc.returncode, f"{time.monotonic()-t0:.2f}s"
+        return proc.returncode, time.monotonic() - t0
     except subprocess.TimeoutExpired:
-        return -1, f"timeout {timeout}s"
+        return -1, float("inf")
 
 
 def run_fractall(
@@ -211,15 +212,10 @@ def run_fractall(
         "--width", str(width),
         "--height", str(height),
         "--iterations", str(iterations),
+        "--bailout", str(escape_radius),  # aligne l'ER fractall sur F3
         "--output", str(out_png),
         "--export-iterations", str(out_exr),
     ]
-    # bailout ER matching: --bailout n'existe pas en CLI (default 4) — il faudra
-    # l'ajouter si on veut le piloter, pour l'instant on doit s'aligner sur la
-    # valeur par défaut Fractall (4.0).
-    if abs(escape_radius - 4.0) > 1e-9:
-        # Pas encore exposé en CLI ; on signale et continue avec ER=4.
-        pass
     t0 = time.monotonic()
     # Désactive l'auto-adjust de fractall : F3 ne le fait pas, donc on doit
     # rester sur l'iter_max fourni pour comparer apples-to-apples.
@@ -328,14 +324,20 @@ def process_one(
     fr_exr = out_dir / f"{name}__fractall.exr"
     fr_png = out_dir / f"{name}__fractall.png"
 
-    rc_f3, t_f3 = run_f3(f3_toml, timeout)
-    row["f3_sec"] = t_f3
+    rc_f3, f3_secs = run_f3(f3_toml, timeout)
+    row["f3_sec"] = "timeout" if f3_secs == float("inf") else f"{f3_secs:.2f}s"
+    if rc_f3 == -1:  # timeout = perf-bound, distinct d'un vrai échec
+        row["status"] = "f3_timeout"
+        return row
     if rc_f3 != 0 or not f3_exr.exists():
         row["status"] = "f3_fail"
         return row
 
     rc_fr, t_fr = run_fractall(toml_path, fr_png, fr_exr, width, height, iters_used, escape_radius, timeout)
     row["fr_sec"] = t_fr
+    if rc_fr == -1:  # timeout = perf-bound (cf. G2), pas un bug de rendu
+        row["status"] = "fractall_timeout"
+        return row
     if rc_fr != 0 or not fr_exr.exists():
         row["status"] = "fractall_fail"
         return row
@@ -367,19 +369,31 @@ def process_one(
     row["inside_mismatch"] = inside_diff
     row["both_out"] = int(both_out.sum())
 
-    # F3-degenerate detection : F3 rend un champ (quasi-)uniforme tout-intérieur
-    # alors que fractall a une vraie structure d'exterieur → F3 a court-circuité
-    # (fast-path period/nucleus en batch, cf. glitch_test_5 carré noir) et
-    # fractall est vraisemblablement CORRECT. On le signale au lieu de compter
-    # fractall en échec. Symétrique : si fractall est dégénéré et F3 a de la
-    # structure, c'est un vrai bug fractall (on ne le masque pas).
+    # F3-degenerate detection (cf. glitch_test_5) : F3 court-circuite via un
+    # fast-path period/nucleus en batch → image QUASI-UNIFORME rendue en < 0.1 s,
+    # alors que fractall a une vraie structure. On exclut ces cas du score
+    # (fractall vraisemblablement correct) au lieu de compter fractall en échec.
+    # Deux signaux combinés (goal G1) : (a) F3 quasi-uniforme, (b) F3 rapide,
+    # (c) fractall structuré. Symétrique respecté : si fractall est dégénéré et
+    # F3 structuré, c'est un VRAI bug fractall (non masqué).
+    def _uniform(si: np.ndarray, inside: np.ndarray) -> bool:
+        frac_in = inside.sum() / total
+        if frac_in > 0.99 or frac_in < 0.01:
+            return True
+        ext_n = int((~inside).sum())
+        return ext_n > 16 and float(si[~inside].std()) < 1e-3
+
     f3_inside_frac = in_f3.sum() / total
     fr_inside_frac = in_fr.sum() / total
-    if f3_inside_frac > 0.99 and fr_inside_frac < 0.90:
+    row["f3_fast"] = bool(f3_secs < 0.1)
+    f3_uniform = _uniform(si_f3, in_f3)
+    fr_structured = not _uniform(si_fr, in_fr)
+    if f3_uniform and f3_secs < 0.1 and fr_structured:
         row["status"] = "f3_degenerate"
         row["note"] = (
-            f"F3 {100*f3_inside_frac:.1f}% intérieur (uniforme) vs fractall "
-            f"{100*fr_inside_frac:.1f}% — fractall a la structure, F3 court-circuité"
+            f"F3 uniforme ({100*f3_inside_frac:.1f}% intérieur) rendu en "
+            f"{f3_secs:.3f}s (fast-path) vs fractall structuré "
+            f"({100*fr_inside_frac:.1f}% intérieur) — fractall correct"
         )
     row["mean_abs_dsi"] = f"{mean_abs:.4f}"
     row["max_abs_dsi"] = f"{max_abs:.4f}"
@@ -411,8 +425,9 @@ def main() -> None:
     ap.add_argument("--height", type=int, default=400)
     ap.add_argument("--iterations", type=int, default=0,
                     help="Cap commun aux deux côtés (0 = utilise celui du TOML)")
-    ap.add_argument("--escape-radius", type=float, default=4.0,
-                    help="ER aligné entre F3 et Fractall (défaut 4.0 = bailout Fractall actuel)")
+    ap.add_argument("--escape-radius", type=float, default=25.0,
+                    help="ER aligné entre F3 et Fractall (défaut 25.0 = ESCAPE_TIME_BAILOUT). "
+                         "Passe --bailout côté fractall ET bailout.escape_radius côté F3.")
     ap.add_argument("--timeout", type=float, default=120.0)
     ap.add_argument("--only", type=str, help="liste CSV de stems")
     ap.add_argument("--out", type=Path, default=OUT_DIR)
@@ -421,6 +436,9 @@ def main() -> None:
     ap.add_argument("--color-repeat", type=float, default=0.05)
     ap.add_argument("--amplify", type=float, default=20.0)
     args = ap.parse_args()
+
+    # Résout --out en absolu (tolère les chemins relatifs passés en ligne de commande).
+    args.out = args.out.resolve()
 
     if not F3.exists():
         sys.exit(f"F3 binaire introuvable: {F3}\n→ rebuild: cd fraktaler-3-3.1 && make SYSTEM=macos-batch")
@@ -494,17 +512,32 @@ def main() -> None:
                 f.write("\n## F3 dégénéré (fractall correct — hors score)\n\n")
                 for r in degen:
                     f.write(f"- `{r['name']}` : {r.get('note', 'F3 uniforme tout-intérieur')}\n")
-            fails = [r for r in rows if r["status"] not in ("ok", "f3_degenerate")]
+            perf = [r for r in rows if r["status"] in ("fractall_timeout", "f3_timeout")]
+            if perf:
+                f.write("\n## Perf-bound (timeout — cf. G2, pas un bug de rendu)\n\n")
+                for r in perf:
+                    f.write(f"- `{r['name']}` : {r['status']} (iter={r.get('iterations', '?')})\n")
+            fails = [r for r in rows
+                     if r["status"] not in ("ok", "f3_degenerate", "fractall_timeout", "f3_timeout")]
             if fails:
-                f.write("\n## Échecs\n\n")
+                f.write("\n## Échecs à élucider\n\n")
                 for r in fails:
                     f.write(f"- `{r['name']}` : {r['status']}\n")
 
     n_ok = len(rows_ok)
     n_degen = sum(1 for r in rows if r["status"] == "f3_degenerate")
+    n_perf = sum(1 for r in rows if r["status"] in ("fractall_timeout", "f3_timeout"))
+    n_fail = sum(1 for r in rows
+                 if r["status"] not in ("ok", "f3_degenerate", "fractall_timeout", "f3_timeout"))
     print()
-    suffix = f" (+{n_degen} F3-dégénéré, fractall correct)" if n_degen else ""
-    print(f"OK: {n_ok}/{len(rows)}{suffix}  →  {args.out.relative_to(REPO)}/_summary.md")
+    parts = [f"{n_ok} ok"]
+    if n_degen:
+        parts.append(f"{n_degen} F3-dégénéré (fractall correct)")
+    if n_perf:
+        parts.append(f"{n_perf} perf/timeout")
+    if n_fail:
+        parts.append(f"{n_fail} à élucider")
+    print(f"{len(rows)} cas : " + ", ".join(parts) + f"  →  {args.out.relative_to(REPO)}/_summary.md")
 
 
 if __name__ == "__main__":
