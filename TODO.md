@@ -87,6 +87,23 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
 - Toujours cassé : **glitch_test_1** (anneaux concentriques) — F3 rend bien
   un minibrot+bruit, fractall ajoute des anneaux. Reste à investiguer
   séparément (PAS précision/BLA — écartés ; PAS le même cas que glitch_test_5).
+- **rug — BLA over-skip au deep zoom (2026-05-20)**. zoom 3.3e56, iter 100k.
+  F3 = bruit chaotique uniforme ; fractall = bruit + **gros blobs rouges**
+  (régions où le smooth-iter est faussement aplati). Mesures (120×120) :
+  - F3 max si = 94554 ; fractall défaut max si = 45399 (BLA coupe les pixels
+    trop tôt) ; Δmean(F3, défaut) = 1709.
+  - `--bla-threshold 1e-30` (rayon single-step minuscule → ~pas de skip) :
+    max si = 94723 (≈ F3), Δmean = **395**. → confirme BLA over-skip.
+  - Écarté : series (on/off identique), glitch/fallback (0).
+  - Le rayon single-step matche F3 (`e·|Z|`, même `e=1/2^24`) ; corriger
+    `c_norm` du merge (extent pixel au lieu de `|c_ref|`) EMPIRE (Δmean 3919,
+    merge over-skip dans l'autre sens). → mécanisme subtil : au deep zoom,
+    δ (~1e-56) ≪ rayon de validité (~e·|Z| ~1e-8), donc la BLA s'applique
+    TOUJOURS au niveau max ; les coefficients A/B composés en **f64** se
+    déconditionnent et injectent de l'erreur par skip. Fix principiel non
+    trouvé (ni epsilon global — casserait test5/6 pixel-perfect, ni c_norm).
+    Pistes : rayon de validité tenant compte du conditionnement f64 des
+    coefficients composés, ou BLA en précision étendue. Caractérisé, ouvert.
 - Timeout (perf gap, P1.6.d/e) : **e50** (1e50), **dragon** (1e191),
   **e1000** (1e1000).
 
