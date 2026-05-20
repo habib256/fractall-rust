@@ -75,16 +75,26 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
 - Toujours cassés : **glitch_test_1** (anneaux) et **glitch_test_5** —
   MÊME CLASSE : référence quasi-périodique intérieure + divergence de la
   perturbation. glitch_test_5 confirmé (2026-05-20) : F3 4096/4096
-  intérieur, fractall 704/4096 (83% des pixels escapent à tort). Référence
-  GMP bornée (704 px restent intérieurs) mais la perturbation diverge.
-  Écarté méthodiquement : precision GMP référence (768 bits = identique à
-  314), parse (trailing space OK), period (NO_PERIOD ne corrige pas), **BLA**
-  (bla_threshold 1e-12 et bla_validity_scale 0.01 → avg_iter inchangé à
-  4571). → Le goulot est la **précision du delta** : `ComplexExp` a une
-  mantisse f64 (~52 bits) ; sur une orbite quasi-périodique l'erreur
-  s'accumule et δ escape à tort. F3 sélectionne un type plus précis
-  (float128) via wisdom. **Fix = P1.6.e (delta float128)** ou centre nucleus
-  exact (orbite vraiment périodique). Pas P1.6.f (BLA) comme cru d'abord.
+  intérieur, fractall 704/4096 (83% des pixels escapent à tort).
+  - **Root cause confirmé (2026-05-20, NÉGATIF sur la précision)** : ce
+    n'est PAS un problème de précision. Écarté méthodiquement :
+    - precision GMP référence (768 bits ≡ 314) ;
+    - **delta double-double** (~106 bits, prototype `dd.rs` câblé dans
+      `pixel_loop_exp` derrière `FRACTALL_DD=1`) → avg_iter INCHANGÉ (4583) ;
+    - **référence double-double** (Z extrait du GMP en ~106 bits) → INCHANGÉ ;
+    - **path GMP pur per-pixel** (`--algorithm gmp`, full precision, sans
+      perturbation) → escape AUSSI 82% (180/1024) ;
+    - parse (trailing space OK), BLA (threshold/validity sans effet).
+  - F3 wrapper utilise des params IDENTIQUES (même centre, zoom 9.71e83,
+    12000 iters, escape_radius 4). → Le centre TOML est un nucleus period-284
+    APPROXIMATIF : l'orbite dérive et escape à ~iter 2253 quelle que soit la
+    précision. **F3 garde l'intérieur via sa gestion period/nucleus** ;
+    fractall avec period ON donne escape uniforme (troncature+wrap lossy),
+    avec NO_PERIOD donne drift-escape per-pixel.
+  - **Fix = détection d'intérieur / nucleus** (Newton vers le centre
+    périodique exact → orbite vraiment bornée → intérieur), càd étendre/
+    auto-engager `--find-nucleus` ou porter le coloriage intérieur F3.
+    **PAS P1.6.e (float128)** ni P1.6.f (BLA) — les deux écartés par test.
 - Timeout (perf gap, P1.6.d/e) : **e50** (1e50), **dragon** (1e191),
   **e1000** (1e1000).
 
@@ -104,30 +114,41 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
 
 ## Up next (ordre d'attaque)
 
-> **Constat boucle parité 2026-05-20** : les quick wins parité sont épuisés
-> (degree, auto-adjust gate, period gate — tous livrés). Les cas restants
-> convergent TOUS vers **P1.6.e (float128)** : (a) glitch_test_1/5 divergent
-> par manque de précision du delta `ComplexExp` (mantisse f64) ; (b) e50/
-> dragon/e1000 timeout car GMP forcé là où F3 utilise doubleexp/float128.
-> P1.6.e devient donc le levier #1.
+> **Constat boucle parité 2026-05-20** : quick wins parité livrés (degree,
+> auto-adjust gate, period gate). Les cas restants se scindent en DEUX
+> leviers distincts (correction du constat précédent — la précision a été
+> testée et ÉCARTÉE pour glitch_test_1/5) :
+> - **glitch_test_1/5** : gestion d'INTÉRIEUR/nucleus (pas la précision —
+>   prototype double-double `dd.rs` testé sans effet ; path GMP pur escape
+>   aussi). Le centre est un nucleus approximatif ; F3 colorie l'intérieur
+>   via period/nucleus, fractall escape (drift ou wrap lossy).
+> - **e50/dragon/e1000** : perf (GMP forcé). float128/wisdom PEUT aider mais
+>   non vérifié — à profiler avant de s'engager.
+> Infra `dd.rs` (double-double ~106 bits) livrée et testée (commits 873d24c,
+> a73cb76, d378873) mais NON câblée : conservée pour un besoin futur réel
+> (wisdom/float128 perf), pas pour glitch_test_1/5.
 
-1. **P1.6.e — delta float128** [levier parité #1]
-   Débloque glitch_test_1/5 (précision delta) ET accélère e50/dragon/e1000
-   (type rapide vs GMP). Couplé à P1.6.d (wisdom) pour le dispatch.
-2. **P1.6.d — wisdom file** — dispatch f64 → FloatExp/DoubleExp → float128 →
-   GMP selon zoom. Sans lui, float128 n'est pas sélectionné automatiquement.
-3. **Period-detection OFF par défaut** — la troncature est lossy (cf. analyse
+1. **Détection d'intérieur / nucleus** [levier glitch_test_1/5]
+   Newton vers le centre périodique exact → orbite bornée → intérieur
+   correct. Étendre/auto-engager `--find-nucleus` (P1.6.a/g déjà partiels)
+   ou porter le coloriage intérieur F3. Valider sur glitch_test_5 (F3
+   intérieur 4096/4096).
+2. **Profiler e50/dragon/e1000** avant P1.6.e/d — confirmer que float128/
+   wisdom (et non un autre goulot) débloque le perf, sinon réorienter.
+4. **Period-detection OFF par défaut** — la troncature est lossy (cf. analyse
    ci-dessus). Garder opt-in aux nucleus exacts. Valider goldens + GUI.
-4. **P1.3 résidus** — décision `bailout` défaut (4 vs 25, change goldens)
+5. **P1.6.d — wisdom file** — dispatch f64 → FloatExp/DoubleExp → float128 →
+   GMP selon zoom. Sans lui, float128 n'est pas sélectionné automatiquement.
+6. **P1.3 résidus** — décision `bailout` défaut (4 vs 25, change goldens)
    + vérifier pixel spacing BLA = `4/zoom/height` strict.
-5. **P1.6.c** GPU+compile — élargir le buffer bytecode GPU pour porter le
+7. **P1.6.c** GPU+compile — élargir le buffer bytecode GPU pour porter le
    payload `Op::Rot` (cos/sin) et brancher `compile_formula` ou un loader
    TOML F3 pour émettre des `Op::Rot` réels. CPU déjà OK.
-6. **P1.6.b-bis (suite)** — BLA radius scaling via |det K| pour les hybrides
+8. **P1.6.b-bis (suite)** — BLA radius scaling via |det K| pour les hybrides
    non-conformes skewés. Storage + pixel→c déjà OK.
-7. **(ancien) P1.6.d + P1.6.e** — Wisdom file + float128 (bundle perf deep zoom).
-   10-100× speedup pour zooms 1e30-1e100. Couple obligé : float128 sans
-   dispatcher wisdom-driven n'a pas de sens.
+9. **P1.6.e — float128/double-double câblé** — infra `dd.rs` prête ; à brancher
+   SI le profilage (item 2) confirme que c'est le goulot perf. Pas pour
+   glitch_test_1/5 (écarté).
 6. **Porter `iterate_pixel_gmp` sur pixel_loop** → permet de retirer
    `glitch.rs`, `nonconformal.rs` et les champs perturbation legacy.
 
