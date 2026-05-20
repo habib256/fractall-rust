@@ -72,8 +72,15 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
   (6.0), heaven (6.5), tick_tock (24), x (22), peanuts (15).
 - Δmean élevé mais sans inside_mismatch (probable bord chaotique intrinsèque) :
   nr_fail (92), uranium (149).
-- Toujours cassés : **glitch_test_1** (anneaux, cf. ci-dessous),
-  **glitch_test_5** (54150 px inside_mismatch — F3 intérieur, fractall escape).
+- Toujours cassés : **glitch_test_1** (anneaux) et **glitch_test_5** —
+  MÊME CLASSE : référence quasi-périodique intérieure + divergence de la
+  perturbation/BLA. glitch_test_5 confirmé (2026-05-20) : F3 4096/4096
+  intérieur, fractall 704/4096 (83% des pixels escapent à tort). Référence
+  bornée (704 px restent intérieurs) mais la perturbation diverge.
+  Écarté : precision (768 bits = identique à 314), parse (trailing space
+  OK), period (NO_PERIOD ne corrige pas). → nécessite **P1.6.f** (BLA
+  multi-phase, une table par phase du cycle) ou une validité BLA correcte
+  pour les références cycliques.
 - Timeout (perf gap, P1.6.d/e) : **e50** (1e50), **dragon** (1e191),
   **e1000** (1e1000).
 
