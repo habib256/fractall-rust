@@ -14,6 +14,7 @@
 
 /// Inverse radical (van der Corput) de `a` en base `base`, dans `[0, 1)`.
 /// Port de `radical_inverse` (F3 `hybrid.h:27`).
+#[allow(dead_code)]
 pub fn radical_inverse(mut a: u64, base: u64) -> f64 {
     const ONE_MINUS_EPSILON: f64 = 0.999_999_999_999_999_89;
     let base1 = 1.0 / base as f64;
@@ -37,6 +38,7 @@ pub fn radical_inverse(mut a: u64, base: u64) -> f64 {
 /// (hors plage). F3 ne tombe jamais sur ce point car son hash per-pixel décale
 /// l'entrée ; en per-frame `radical_inverse(1, 2) = 0.5` EXACTEMENT, donc on
 /// renvoie explicitement `0.0` (le centre correct de la tente).
+#[allow(dead_code)]
 pub fn triangle(v: f64) -> f64 {
     let orig = v * 2.0 - 1.0;
     if orig == 0.0 {
@@ -49,6 +51,7 @@ pub fn triangle(v: f64) -> f64 {
 /// Offset sous-pixel du sample `k` (en unités de pixel), composantes dans
 /// `[-1, 1]` avec distribution triangulaire. `k = 0` renvoie `(0, 0)` (centre
 /// du pixel), les samples suivants se répartissent via Halton bases 2 et 3.
+#[allow(dead_code)]
 pub fn sample_offset(k: u64) -> (f64, f64) {
     (
         triangle(radical_inverse(k, 2)),

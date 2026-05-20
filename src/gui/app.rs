@@ -135,6 +135,12 @@ pub struct FractallApp {
     current_pass: u8,
     total_passes: u8,
     is_preview: bool,
+    /// Nombre d'échantillons anti-aliasing (per-frame jitter). 1 = désactivé.
+    /// Après les passes progressives, N-1 samples plein cadre supplémentaires
+    /// sont rendus avec offset sous-pixel et moyennés en RGB (CPU uniquement).
+    aa_samples: u32,
+    /// Progression AA courante affichée dans le panneau (sample, total).
+    aa_progress: Option<(u32, u32)>,
 
     // Métriques
     last_render_time: Option<f64>, // en secondes
@@ -297,6 +303,8 @@ impl FractallApp {
             current_pass: 0,
             total_passes: 0,
             is_preview: false,
+            aa_samples: 1,
+            aa_progress: None,
             last_render_time: None,
             render_start_time: None,
             last_render_device_label: None,
@@ -875,6 +883,10 @@ impl FractallApp {
         let gpu_renderer = self.gpu_renderer.clone();
         let use_gpu = use_gpu;
         let orbit_cache = self.orbit_cache.clone();
+        // Anti-aliasing multi-sample (per-frame jitter), CPU uniquement.
+        let aa_samples = if use_gpu { 1 } else { self.aa_samples.max(1) };
+        let aa_jitter_scale = 1.0f64;
+        self.aa_progress = if aa_samples > 1 { Some((0, aa_samples)) } else { None };
 
         // Spawner le thread de rendu progressif
         let handle = thread::spawn(move || {
@@ -1092,6 +1104,69 @@ impl FractallApp {
                 }
             }
 
+            // ─── Anti-aliasing multi-sample (per-frame jitter) ───
+            // Après les passes progressives (la dernière passe pleine résolution
+            // = sample 0, offset (0,0)), on rend N samples plein cadre avec un
+            // offset sous-pixel low-discrepancy et on moyenne en espace RGB.
+            // CPU uniquement ; le cache d'orbite est réutilisé entre samples
+            // (même centre) → coût perturbation amorti. Affichage incrémental.
+            if aa_samples > 1 && !use_gpu && !cancel.load(Ordering::Relaxed) {
+                let w = full_width;
+                let h = full_height;
+                let mut accum = vec![0f64; (w as usize) * (h as usize) * 3];
+                let mut done: u32 = 0;
+                for k in 0..aa_samples as u64 {
+                    if cancel.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let mut p = params.clone();
+                    p.width = w;
+                    p.height = h;
+                    let (ox, oy) = crate::fractal::jitter::sample_offset(k);
+                    p.aa_subpixel_offset = [ox * aa_jitter_scale, oy * aa_jitter_scale];
+
+                    let use_perturbation = match p.algorithm_mode {
+                        AlgorithmMode::Auto => crate::render::escape_time::should_use_perturbation(&p, false),
+                        AlgorithmMode::Perturbation => true,
+                        _ => false,
+                    } && p.plane_transform == PlaneTransform::Mu;
+                    let rendered = if use_perturbation
+                        && matches!(
+                            p.fractal_type,
+                            FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn | FractalType::Multibrot
+                        ) {
+                        use crate::fractal::perturbation::render_perturbation_with_cache;
+                        render_perturbation_with_cache(&p, &cancel, None, current_orbit_cache.as_ref())
+                            .map(|((it, zz, dist), cache)| {
+                                current_orbit_cache = Some(cache);
+                                let n = it.len();
+                                (it, zz, dist, vec![None; n])
+                            })
+                    } else {
+                        render_escape_time_cancellable_with_reuse(&p, &cancel, None)
+                            .map(|(it, zz, orb, dist)| (it, zz, dist, orb))
+                    };
+                    let Some((it, zz, dist, orb)) = rendered else { break };
+                    let rgb = colorize_buffer(&it, &zz, &dist, &orb, &p, w, h);
+                    for (a, &c) in accum.iter_mut().zip(rgb.iter()) {
+                        *a += c as f64;
+                    }
+                    done += 1;
+                    let inv = 1.0 / done as f64;
+                    let avg: Vec<u8> = accum
+                        .iter()
+                        .map(|&s| (s * inv).round().clamp(0.0, 255.0) as u8)
+                        .collect();
+                    let _ = sender.send(RenderMessage::AaProgress {
+                        display_buffer: avg,
+                        width: w,
+                        height: h,
+                        sample: done,
+                        total: aa_samples,
+                    });
+                }
+            }
+
             let _ = sender.send(RenderMessage::AllComplete { orbit_cache: current_orbit_cache });
         });
 
@@ -1229,6 +1304,22 @@ impl FractallApp {
                         precision_label,
                     });
                 });
+                ctx.request_repaint();
+            }
+
+            RenderMessage::AaProgress {
+                display_buffer,
+                width,
+                height,
+                sample,
+                total,
+            } => {
+                // Moyenne RGB déjà colorisée : on l'affiche directement (pas de
+                // re-colorisation depuis le brut, cf. doc du message). La passe
+                // courante est la dernière → image nette, plus en preview.
+                self.is_preview = false;
+                self.aa_progress = Some((sample, total));
+                self.load_texture_from_buffer(ctx, &display_buffer, width, height);
                 ctx.request_repaint();
             }
 
@@ -2090,6 +2181,28 @@ impl eframe::App for FractallApp {
 
                     ui.separator();
 
+                    // Anti-aliasing : nombre d'échantillons sous-pixel jitterés
+                    // moyennés après les passes progressives (CPU uniquement).
+                    ui.label("AA:");
+                    let prev_aa = self.aa_samples;
+                    egui::ComboBox::from_id_salt("aa_samples")
+                        .selected_text(if self.aa_samples <= 1 {
+                            "Off".to_string()
+                        } else {
+                            format!("{}×", self.aa_samples)
+                        })
+                        .show_ui(ui, |ui| {
+                            for &n in &[1u32, 2, 4, 8, 16, 32] {
+                                let label = if n == 1 { "Off".to_string() } else { format!("{n}×") };
+                                ui.selectable_value(&mut self.aa_samples, n, label);
+                            }
+                        });
+                    if self.aa_samples != prev_aa {
+                        self.start_render();
+                    }
+
+                    ui.separator();
+
                     // Section Tech (entre Iter et Render)
                     let supports_advanced_modes = matches!(
                         self.selected_type,
@@ -2805,6 +2918,10 @@ impl eframe::App for FractallApp {
                             .show_percentage()
                             .animate(true);
                         ui.add(progress_bar);
+                        let aa_suffix = match self.aa_progress {
+                            Some((s, t)) if t > 1 && s > 0 => format!(" - AA {s}/{t}"),
+                            _ => String::new(),
+                        };
                         if let Some(start) = self.render_start_time {
                             let elapsed = start.elapsed().as_secs_f64();
                             let time_str = if elapsed < 60.0 {
@@ -2814,9 +2931,9 @@ impl eframe::App for FractallApp {
                                 let secs = elapsed % 60.0;
                                 format!("{}m {:.0}s", mins, secs)
                             };
-                            ui.label(format!("Calcul en cours... ({}) - Passe {}/{}", time_str, self.current_pass, self.total_passes));
+                            ui.label(format!("Calcul en cours... ({}) - Passe {}/{}{}", time_str, self.current_pass, self.total_passes, aa_suffix));
                         } else {
-                            ui.label(format!("Calcul en cours... - Passe {}/{}", self.current_pass, self.total_passes));
+                            ui.label(format!("Calcul en cours... - Passe {}/{}{}", self.current_pass, self.total_passes, aa_suffix));
                         }
                     } else if self.is_preview {
                         ui.separator();

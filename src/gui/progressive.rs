@@ -29,6 +29,17 @@ pub enum RenderMessage {
         #[allow(dead_code)]
         colored_buffer: Vec<u8>,
     },
+    /// Mise à jour incrémentale de l'anti-aliasing multi-sample : moyenne RGB
+    /// courante après `sample`/`total` échantillons jitterés. Le buffer est
+    /// déjà colorisé (la moyenne se fait en espace RGB) et affiché tel quel —
+    /// un changement de palette après coup déclenche un nouveau rendu.
+    AaProgress {
+        display_buffer: Vec<u8>,
+        width: u32,
+        height: u32,
+        sample: u32,
+        total: u32,
+    },
     /// Toutes les passes sont terminées.
     AllComplete {
         /// Updated orbit cache for reuse in subsequent renders.

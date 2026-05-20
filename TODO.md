@@ -237,11 +237,30 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
   qu'un pixel intérieur sort avec `iter < iter_max` lorsque cap actif.
 
 #### P1.5 — Anti-aliasing par subframes jitterés
-- [ ] Wrapper N samples avec offsets jitterés (low-discrepancy : `burtle_hash`
-  / `radical_inverse`) → moyenne. Champ `jitter_scale` existe déjà sur
-  `FractalParams` mais pas exposé en CLI/GUI ni accumulé multi-passes.
+- [x] AA multi-sample « per-frame » (2026-05-20). Module `fractal/jitter.rs`
+  porte `radical_inverse` (Halton) + `triangle` (tente) de F3 `hybrid.h`. Chaque
+  sample décale TOUTE la grille d'un offset sous-pixel low-discrepancy (champ
+  transitoire `FractalParams::aa_subpixel_offset`, `#[serde(skip)]`, appliqué au
+  mapping pixel→c dans les 4 paths f64/GMP/perturbation + cancellables), puis les
+  rendus colorisés sont moyennés en RGB.
+  - **CLI** : `--aa-samples N` (+ `--jitter-scale`, défaut 1.0). Boucle dans
+    `main.rs`, colorise via `io::png::colorize_to_rgb`, sauve via
+    `save_png_rgb_with_metadata`. Vérifié visuellement (f64 : speckle → lisse ;
+    perturbation 5e6 propre).
+  - **GUI** : dropdown « AA: Off/2×/4×/8×/16×/32× ». Accumulation CPU après les
+    passes progressives (`RenderMessage::AaProgress`, affichage incrémental +
+    label « AA k/N »), cache d'orbite réutilisé entre samples. **Compile OK,
+    À VÉRIFIER VISUELLEMENT** (env headless ici → pas testé à l'écran).
+  - **Choix** : per-frame (offset uniforme/frame) au lieu du per-pixel F3
+    (`burtle_hash` Cranley-Patterson) — zéro recompute d'orbite, qualité ≈ dès
+    N≥4. Écart F3 documenté dans `jitter.rs`. L'ancien jitter per-pixel
+    non-moyenné de `perturbation/mod.rs` est supprimé (remplacé). Tradeoff GUI :
+    après AA, un changement de palette re-rend (la moyenne RGB n'est pas
+    re-colorisable depuis le brut).
 - **Pourquoi** : qualité bords fins, surtout mode Distance/DE. F3 le fait
   par défaut.
+- Reste (optionnel) : per-pixel decorrelation (`burtle_hash`) si besoin à
+  bas N ; exposer `--jitter-scale` dans la GUI ; AA sur le path GPU.
 
 #### P1.6 — Parité F3.1 (analyse 2026-05-19)
 
