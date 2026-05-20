@@ -303,7 +303,7 @@ impl ComplexExp {
 }
 
 #[inline(always)]
-fn frexp(value: f64) -> (f64, i32) {
+pub(crate) fn frexp(value: f64) -> (f64, i32) {
     if value == 0.0 {
         return (0.0, 0);
     }

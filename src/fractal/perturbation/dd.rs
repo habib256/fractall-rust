@@ -142,6 +142,190 @@ impl DoubleDouble {
     }
 }
 
+/// Nombre double-double + exposant `i32` : valeur = `mantissa · 2^exponent`,
+/// avec `mantissa.hi` normalisé dans `[0.5, 1)` (comme `FloatExp`, mais avec
+/// ~106 bits de mantisse au lieu de ~53). Couvre à la fois la précision
+/// (double-double) ET la dynamique deep-zoom (exposant débordant `f64`),
+/// équivalent pur-Rust du `float128`-avec-exposant de F3.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DoubleDoubleExp {
+    pub mantissa: DoubleDouble,
+    pub exponent: i32,
+}
+
+impl DoubleDoubleExp {
+    pub const ZERO: Self = Self {
+        mantissa: DoubleDouble::ZERO,
+        exponent: 0,
+    };
+
+    /// Normalise pour que `mantissa.hi ∈ [0.5, 1)`, exposant ajusté.
+    #[inline(always)]
+    pub fn normalized(mantissa: DoubleDouble, exponent: i32) -> Self {
+        if mantissa.hi == 0.0 {
+            return Self::ZERO;
+        }
+        let (_, e) = super::types::frexp(mantissa.hi);
+        let scale = super::types::pow2i(-e);
+        Self {
+            mantissa: DoubleDouble {
+                hi: mantissa.hi * scale,
+                lo: mantissa.lo * scale,
+            },
+            exponent: exponent + e,
+        }
+    }
+
+    #[inline(always)]
+    pub fn from_f64(value: f64) -> Self {
+        if value == 0.0 {
+            return Self::ZERO;
+        }
+        Self::normalized(DoubleDouble::from_f64(value), 0)
+    }
+
+    #[inline(always)]
+    pub fn from_dd(value: DoubleDouble) -> Self {
+        Self::normalized(value, 0)
+    }
+
+    #[inline(always)]
+    pub fn to_f64(self) -> f64 {
+        if self.mantissa.hi == 0.0 {
+            return 0.0;
+        }
+        if self.exponent > 1023 {
+            return f64::INFINITY.copysign(self.mantissa.hi);
+        }
+        if self.exponent < -1074 {
+            return 0.0;
+        }
+        self.mantissa.to_f64() * super::types::pow2i(self.exponent)
+    }
+
+    #[inline(always)]
+    pub fn is_finite(self) -> bool {
+        self.mantissa.is_finite()
+    }
+
+    #[inline(always)]
+    pub fn neg(self) -> Self {
+        Self {
+            mantissa: self.mantissa.neg(),
+            exponent: self.exponent,
+        }
+    }
+
+    #[inline(always)]
+    pub fn abs(self) -> Self {
+        Self {
+            mantissa: self.mantissa.abs(),
+            exponent: self.exponent,
+        }
+    }
+
+    /// Addition : aligne les exposants puis additionne les mantisses dd.
+    #[inline(always)]
+    pub fn add(self, rhs: Self) -> Self {
+        if self.mantissa.hi == 0.0 {
+            return rhs;
+        }
+        if rhs.mantissa.hi == 0.0 {
+            return self;
+        }
+        let diff = self.exponent - rhs.exponent;
+        // Au-delà de ~106 bits d'écart, le plus petit terme disparaît.
+        if diff >= 108 {
+            return self;
+        }
+        if diff <= -108 {
+            return rhs;
+        }
+        if diff >= 0 {
+            let scale = super::types::pow2i(-diff);
+            let scaled = DoubleDouble {
+                hi: rhs.mantissa.hi * scale,
+                lo: rhs.mantissa.lo * scale,
+            };
+            Self::normalized(self.mantissa.add(scaled), self.exponent)
+        } else {
+            let scale = super::types::pow2i(diff);
+            let scaled = DoubleDouble {
+                hi: self.mantissa.hi * scale,
+                lo: self.mantissa.lo * scale,
+            };
+            Self::normalized(scaled.add(rhs.mantissa), rhs.exponent)
+        }
+    }
+
+    #[inline(always)]
+    pub fn sub(self, rhs: Self) -> Self {
+        self.add(rhs.neg())
+    }
+
+    /// Multiplication : produit des mantisses dd, somme des exposants.
+    #[inline(always)]
+    pub fn mul(self, rhs: Self) -> Self {
+        Self::normalized(self.mantissa.mul(rhs.mantissa), self.exponent + rhs.exponent)
+    }
+
+    #[inline(always)]
+    pub fn mul_f64(self, rhs: f64) -> Self {
+        if rhs == 0.0 {
+            return Self::ZERO;
+        }
+        Self::normalized(self.mantissa.mul_f64(rhs), self.exponent)
+    }
+
+    #[inline(always)]
+    pub fn sqr(self) -> Self {
+        Self::normalized(self.mantissa.sqr(), self.exponent * 2)
+    }
+
+    /// Re-normalise (par sécurité après de longues séquences).
+    #[inline(always)]
+    pub fn reduce(&mut self) {
+        *self = Self::normalized(self.mantissa, self.exponent);
+    }
+}
+
+impl PartialOrd for DoubleDoubleExp {
+    /// Ordre sign-aware sur valeurs normalisées (mantissa.hi ∈ [0.5,1) ou
+    /// (-1,-0.5], zéro = hi 0). Évite `to_f64` qui sature au-delà de 2^1023.
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        use std::cmp::Ordering::*;
+        let s = self.mantissa.hi.signum();
+        let o = other.mantissa.hi.signum();
+        if self.mantissa.hi == 0.0 && other.mantissa.hi == 0.0 {
+            return Some(Equal);
+        }
+        if self.mantissa.hi == 0.0 {
+            return Some(if other.mantissa.hi > 0.0 { Less } else { Greater });
+        }
+        if other.mantissa.hi == 0.0 {
+            return Some(if self.mantissa.hi > 0.0 { Greater } else { Less });
+        }
+        if s != o {
+            return self.mantissa.hi.partial_cmp(&other.mantissa.hi);
+        }
+        let mag_cmp = match self.exponent.cmp(&other.exponent) {
+            Less => Less,
+            Greater => Greater,
+            Equal => {
+                // Même exposant : comparer les mantisses dd (hi puis lo).
+                let a = self.mantissa.abs();
+                let b = other.mantissa.abs();
+                match a.hi.partial_cmp(&b.hi)? {
+                    Equal => a.lo.partial_cmp(&b.lo)?,
+                    c => c,
+                }
+            }
+        };
+        Some(if s > 0.0 { mag_cmp } else { mag_cmp.reverse() })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,5 +431,101 @@ mod tests {
         let n = x.neg();
         assert_eq!(n.hi, 2.0);
         assert_eq!(n.lo, 1e-20);
+    }
+
+    // --- DoubleDoubleExp ---
+
+    #[test]
+    fn ddexp_roundtrip_in_range() {
+        for &x in &[1.5, -3.25, 1e100, 1e-100, 42.0, -0.001] {
+            let v = DoubleDoubleExp::from_f64(x);
+            assert!((v.to_f64() - x).abs() <= x.abs() * 1e-15 + 1e-300, "x={}", x);
+        }
+    }
+
+    #[test]
+    fn ddexp_survives_f64_overflow_range() {
+        // 2^2000 déborde f64 (max ~2^1024) mais tient en DoubleDoubleExp.
+        // Normalisation : 1.0·2^2000 = 0.5·2^2001 (mantissa.hi ∈ [0.5,1)).
+        let big = DoubleDoubleExp::normalized(DoubleDouble::from_f64(1.0), 2000);
+        assert!(big.is_finite());
+        assert_eq!(big.exponent, 2001);
+        assert_eq!(big.mantissa.hi, 0.5);
+        // 2^-2000 sous-déborde f64 mais reste représentable.
+        let tiny = DoubleDoubleExp::normalized(DoubleDouble::from_f64(1.0), -2000);
+        assert!(tiny.is_finite());
+        assert_eq!(tiny.exponent, -1999);
+        // Produit = 1.0 (0.5·2^2001 × 0.5·2^-1999 = 0.25·2^2 = 1.0).
+        let prod = big.mul(tiny);
+        assert!((prod.to_f64() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn ddexp_add_keeps_106bit_precision() {
+        // (1 + 2^-80) où 2^-80 est SOUS la précision f64 (53 bits) mais DANS
+        // la précision double-double (~106 bits). FloatExp perdrait le terme.
+        let one = DoubleDoubleExp::from_f64(1.0);
+        let tiny = DoubleDoubleExp::normalized(DoubleDouble::from_f64(1.0), -80);
+        let sum = one.add(tiny);
+        // Le terme 2^-80 doit survivre dans mantissa.lo.
+        let recovered = sum.sub(one);
+        let expected = 2f64.powi(-80);
+        assert!(
+            (recovered.to_f64() - expected).abs() < expected * 1e-10,
+            "recovered={:e} expected={:e}",
+            recovered.to_f64(),
+            expected
+        );
+    }
+
+    #[test]
+    fn ddexp_mul_adds_exponents() {
+        let a = DoubleDoubleExp::normalized(DoubleDouble::from_f64(1.5), 100);
+        let b = DoubleDoubleExp::normalized(DoubleDouble::from_f64(2.0), 200);
+        let p = a.mul(b);
+        // 1.5·2^100 × 2·2^200 = 3·2^300 = 1.5·2^301.
+        assert!((p.mantissa.hi - 0.75).abs() < 1e-15); // normalisé dans [0.5,1)
+        assert_eq!(p.exponent, 302); // 3·2^300 = 0.75·2^302
+    }
+
+    #[test]
+    fn ddexp_sqr_matches_mul_self() {
+        let x = DoubleDoubleExp::normalized(DoubleDouble::new(0.6, 1e-20), 37);
+        let s = x.sqr();
+        let m = x.mul(x);
+        assert_eq!(s.exponent, m.exponent);
+        assert!((s.mantissa.hi - m.mantissa.hi).abs() < 1e-15);
+    }
+
+    #[test]
+    fn ddexp_ordering_across_exponents() {
+        let small = DoubleDoubleExp::normalized(DoubleDouble::from_f64(1.0), -2000);
+        let big = DoubleDoubleExp::normalized(DoubleDouble::from_f64(1.0), 2000);
+        assert!(small < big);
+        assert!(big > small);
+        let neg_big = big.neg();
+        assert!(neg_big < small);
+        // Égalité réflexive.
+        assert_eq!(small.partial_cmp(&small), Some(std::cmp::Ordering::Equal));
+    }
+
+    #[test]
+    fn ddexp_accumulation_beats_floatexp() {
+        // Accumuler 2^-70 un million de fois dans 1.0. Avec une mantisse f64
+        // (FloatExp) chaque ajout serait perdu (1 + 2^-70 == 1). En dd la
+        // somme s'accumule : 1 + 1e6·2^-70.
+        let mut acc = DoubleDoubleExp::from_f64(1.0);
+        let inc = DoubleDoubleExp::normalized(DoubleDouble::from_f64(1.0), -70);
+        for _ in 0..1_000_000 {
+            acc = acc.add(inc);
+        }
+        let delta = acc.sub(DoubleDoubleExp::from_f64(1.0));
+        let expected = 1.0e6 * 2f64.powi(-70);
+        assert!(
+            (delta.to_f64() - expected).abs() < expected * 1e-6,
+            "delta={:e} expected={:e}",
+            delta.to_f64(),
+            expected
+        );
     }
 }
