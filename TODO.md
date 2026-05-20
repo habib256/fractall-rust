@@ -99,23 +99,17 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
   lieux glitch-prone, conçus pour stresser le glitch-handling). Non tranché
   définitivement (faudrait un 3e renderer ou F3 haute-res). Lean : victoire
   fractall probable, pas un bug fractall.
-- **rug — BLA over-skip au deep zoom (2026-05-20)**. zoom 3.3e56, iter 100k.
-  F3 = bruit chaotique uniforme ; fractall = bruit + **gros blobs rouges**
-  (régions où le smooth-iter est faussement aplati). Mesures (120×120) :
-  - F3 max si = 94554 ; fractall défaut max si = 45399 (BLA coupe les pixels
-    trop tôt) ; Δmean(F3, défaut) = 1709.
-  - `--bla-threshold 1e-30` (rayon single-step minuscule → ~pas de skip) :
-    max si = 94723 (≈ F3), Δmean = **395**. → confirme BLA over-skip.
-  - Écarté : series (on/off identique), glitch/fallback (0).
-  - Le rayon single-step matche F3 (`e·|Z|`, même `e=1/2^24`) ; corriger
-    `c_norm` du merge (extent pixel au lieu de `|c_ref|`) EMPIRE (Δmean 3919,
-    merge over-skip dans l'autre sens). → mécanisme subtil : au deep zoom,
-    δ (~1e-56) ≪ rayon de validité (~e·|Z| ~1e-8), donc la BLA s'applique
-    TOUJOURS au niveau max ; les coefficients A/B composés en **f64** se
-    déconditionnent et injectent de l'erreur par skip. Fix principiel non
-    trouvé (ni epsilon global — casserait test5/6 pixel-perfect, ni c_norm).
-    Pistes : rayon de validité tenant compte du conditionnement f64 des
-    coefficients composés, ou BLA en précision étendue. Caractérisé, ouvert.
+- **rug — BLA over-skip au deep zoom — RÉSOLU (2026-05-20, commit e66076f)**.
+  zoom 3.3e56, iter 100k. Symptôme : blobs rouges (smooth-iter aplati) là où
+  F3 a du bruit chaotique. **Cause** : fractall utilisait TOUS les niveaux BLA
+  y compris les bas (single/2/4-step) ; au deep zoom δ (~1e-56) ≪ rayon de
+  validité (~e·|Z| ~1e-8) donc la BLA s'applique toujours, et le BLA linéaire
+  f64 (drop δ² + coefficients déconditionnés) est MOINS précis que le pas
+  perturbation direct. **Fix** : `BLA_SKIP_LEVELS=3` dans `lookup`/`lookup_fexp`
+  (`bla_dual.rs`), miroir de F3 `bla_skip_levels=3` — les petits pas passent en
+  direct (exact), les niveaux ≥8-step gardent le gain perf. Résultat : Δmean
+  1709→389, max si 45399→94723 (≈F3 94554). Sans régression (test5/6 pixel-
+  perfect, e113 ~92s inchangé ; 1 golden minibrot_1e8 +46px raffinés, revu).
 - Timeout (perf gap, P1.6.d/e) : **e50** (1e50), **dragon** (1e191),
   **e1000** (1e1000).
 
