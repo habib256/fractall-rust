@@ -185,8 +185,10 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
 7. **P1.6.c** GPU+compile — élargir le buffer bytecode GPU pour porter le
    payload `Op::Rot` (cos/sin) et brancher `compile_formula` ou un loader
    TOML F3 pour émettre des `Op::Rot` réels. CPU déjà OK.
-8. **P1.6.b-bis (suite)** — BLA radius scaling via |det K| pour les hybrides
-   non-conformes skewés. Storage + pixel→c déjà OK.
+8. **P1.6.b-bis (suite)** — BLA radius scaling pour K skewé : **différé à
+   P1.6.g** (no-op aujourd'hui — K toujours conforme σ₁=1, F3 ne le fait pas
+   non plus ; vrai facteur = σ₁(K) pas |det K|=1. Cf. P1.6.b-bis *Open*).
+   Storage + pixel→c déjà OK.
 9. **P1.6.e — float128/double-double câblé** — infra `dd.rs` prête ; à brancher
    SI le profilage (item 3) confirme que c'est le goulot perf. Pas pour
    glitch_test_1/5 (écarté).
@@ -279,10 +281,20 @@ Items issus de l'analyse `fraktaler-3-3.1/src/`. Classés par impact × effort.
   pour les hybrides. Pour Mandelbrot conformal, `K_norm = R(θ)` exact.
 - [x] Tests : 5 tests `transform_tests` (identity, fallback, override, skew,
   NaN reject) + 1 PNG round-trip (`transform_k_round_trip_and_legacy_default`).
-- [ ] Reste : BLA radius scaling via |det K| (pour quand K_norm ≠ rotation,
-  c-à-d hybrides skewés). Aujourd'hui le BLA construit son rayon sans tenir
-  compte de K — OK pour conformal (rayon scalaire correct), à raffiner
-  pour les hybrides via stretching anisotrope du delta.
+- [ ] Reste : BLA radius scaling pour K skewé (anisotrope) — **différé à P1.6.g**
+  (analyse 2026-05-20). **Correction de cadrage** : K est normalisé à `det = 1`
+  (`orbit.rs:708`), donc un scaling « via `|det K|` » est un no-op (×1). Le bon
+  facteur est **σ₁(K)** (plus grande valeur singulière ; det=1 ⇒ σ₁ = 1/σ₂ ≥ 1) :
+  le merge `c = max|δc|` (= rayon image, cf. P1.3) devrait être `σ₁(K)·rayon`
+  car `dc = K·pixoffset` est étiré jusqu'à σ₁. Le single-step (`ε·|Z|/|A|`) est
+  intrinsèque à l'orbite, K-indépendant.
+  **Pourquoi différé** : (1) le seul K produit aujourd'hui est une rotation
+  conforme `R(θ)` (nucleus Mandelbrot-only) → σ₁ = 1 exactement → **no-op** ;
+  (2) un K skewé n'apparaît qu'avec le nucleus hybride **P1.6.g** (pas encore
+  écrit) ; (3) F3 lui-même ne scale PAS son BLA par K (`engine.cc:282` c sans K,
+  `bla.h` merge/lookup K-unaware) → impossible de valider contre la référence
+  sans cas skewé. À implémenter (scaling de `c` par σ₁ dans `delta.rs`/`bla.rs`,
+  ou validité anisotrope `|K⁻¹δ|<r`) en même temps que P1.6.g, testable alors.
 
 ##### P1.6.c — Opcode `Op::Rot` natif [HAUTE]
 - [x] `Op::Rot { cos_theta, sin_theta }` ajouté à `bytecode/mod.rs` avec
@@ -336,6 +348,10 @@ Items issus de l'analyse `fraktaler-3-3.1/src/`. Classés par impact × effort.
   place via `bla_dual`).
 - [ ] Détecter période/centre/size par phase dans un hybride
   (`engine.cc:118-218`).
+- [ ] **BLA radius scaling σ₁(K)** (rapatrié de P1.6.b-bis) : une fois qu'un K
+  skewé (non-conforme) est produit ici, scaler le merge `c` par σ₁(K) dans
+  `delta.rs`/`bla.rs` (ou validité anisotrope `|K⁻¹δ|<r`), et valider contre
+  F3 sur le minibrot hybride correspondant. No-op tant que K reste conforme.
 - **Effort** : ~250 lignes.
 
 ##### P1.6.h — longdouble x86-64 80-bit [MOYENNE]
