@@ -374,6 +374,12 @@ pub fn build_bla_table_for_formula(
 ///
 /// Pas (encore) intégrée à `delta.rs::iterate_pixel` — c'est l'objet de
 /// Session C.
+/// Nombre de niveaux BLA bas (single/2/4-step) ignorés au lookup. Aligné
+/// Fraktaler-3 `bla_skip_levels = 3` (`param.h:50`). Aux petits pas, le pas
+/// perturbation direct est plus précis que le BLA linéaire f64 ; les niveaux
+/// hauts (≥ 8-step) gardent le gain de perf.
+const BLA_SKIP_LEVELS: usize = 3;
+
 #[derive(Clone, Debug)]
 pub struct BlaTableUnified {
     pub levels: Vec<Vec<BlaMultiStep>>,
@@ -430,9 +436,18 @@ impl BlaTableUnified {
     /// `m` quand `|δ|² < r2`. Retourne `None` si aucun BLA n'est valide.
     ///
     /// Stratégie F3 : parcourir les niveaux du plus grand au plus petit,
-    /// retourner le premier valide.
+    /// retourner le premier valide. Les `BLA_SKIP_LEVELS` plus bas niveaux
+    /// (single/2/4-step) sont ignorés — cf. F3 `bla_skip_levels=3`
+    /// (`bla.cc:151`, `param.h:50`) : aux petits pas, le pas perturbation
+    /// direct (ComplexExp exact) est PLUS précis que le BLA linéaire en f64
+    /// (qui drop δ² et déconditionne ses coefficients au deep zoom). Sans ce
+    /// skip, fractall applique le single-step BLA en permanence et accumule
+    /// l'erreur → artefacts (anneaux/blobs lissés, cf. rug zoom 1e56).
     pub fn lookup(&self, m: usize, delta_norm_sqr: f64) -> Option<&BlaMultiStep> {
         for (level, nodes) in self.levels.iter().enumerate().rev() {
+            if level < BLA_SKIP_LEVELS {
+                break; // niveaux bas ignorés → pas direct (plus précis)
+            }
             // Index dans ce niveau : `m / 2^level`.
             let idx = m >> level;
             if idx >= nodes.len() {
@@ -472,6 +487,9 @@ impl BlaTableUnified {
         delta_norm_sqr_fexp: crate::fractal::perturbation::types::FloatExp,
     ) -> Option<&BlaMultiStep> {
         for (level, nodes) in self.levels.iter().enumerate().rev() {
+            if level < BLA_SKIP_LEVELS {
+                break; // cf. lookup() : niveaux bas ignorés (F3 bla_skip_levels)
+            }
             let idx = m >> level;
             if idx >= nodes.len() {
                 continue;

@@ -1,2 +1,2 @@
-f3_sec,fr_sec,iterations,name,status
-0.91s,1.39s,275250,glitch_test_1,fractall_fail
+both_out,f3_sec,fr_sec,inside_f3,inside_fr,inside_mismatch,iterations,max_abs_dsi,mean_abs_dsi,name,px_total,rms_dsi,status
+14399,0.23s,4.10s,1,0,1,100000,50273.4395,1706.1293,rug,14400,4583.4958,ok
