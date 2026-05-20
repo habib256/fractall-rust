@@ -37,6 +37,16 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
 - Catastrophique : **glitch_test_1** (Δmean=156, Δmax=147467 — anneaux
   concentriques artefacts ; ref_orbit périodique avec cycle_period=7327
   donne un rendu structurellement différent de F3).
+  - **Investigation 2026-05-20** : les anneaux viennent du couple
+    `wrap_periodic` (cyclage modulo de m vers `[cycle_start, +period)`) +
+    BLA primaire unique dans `pixel_loop_exp`. Tentative de remplacer le
+    wrap par un rebase F3 strict (`delta := Z[m]+δ; m := 0`) → image
+    UNIFORME (re-traverse la queue pré-cycle `[0, cycle_start)` qui ne
+    correspond pas à la trajectoire réelle du pixel dans le cycle).
+    `wrap_periodic` est donc nécessaire pour les centres périodiques.
+    Le vrai fix demande probablement une BLA multi-phase (une par phase
+    du cycle, cf. P1.6.f) ou un rebase qui cible `cycle_start` au lieu de
+    `0`. Reporté — nécessite P1.6.f.
 - Timeout résiduel (perf gap) : **dragon** (zoom 1e191, iter 5M),
   **e50** (zoom 1e50, iter 263k). e113 démontre que 90s suffit pour
   ~35k iter à 256×256 ; e50/dragon (10×-100× plus d'itérations)
