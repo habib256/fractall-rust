@@ -1104,7 +1104,20 @@ pub fn compute_reference_orbit(
     //
     // Only for Mandelbrot (for Julia, every pixel has a different c, so the reference
     // orbit periodicity doesn't help).
-    let enable_period_detection = matches!(params.fractal_type, FractalType::Mandelbrot);
+    // Period-detection truncation est une optimisation : à la première
+    // approche de l'orbite vers un checkpoint (Brent) sous tolérance, on
+    // tronque la référence et on cycle via `wrap_periodic`. F3 ne tronque
+    // jamais (calcule la référence complète). Sur les faux positifs
+    // (orbite qui frôle un checkpoint sans être vraiment périodique), le
+    // wrap diverge → image uniforme/escape erroné (cf. glitch_test_5 :
+    // F3 intérieur, fractall escape uniforme à iter 844). Désactivable via
+    // `FRACTALL_NO_PERIOD=1` pour la parité F3.
+    let period_disabled_env = std::env::var("FRACTALL_NO_PERIOD")
+        .ok()
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
+    let enable_period_detection =
+        matches!(params.fractal_type, FractalType::Mandelbrot) && !period_disabled_env;
     let period_tolerance = if enable_period_detection {
         // Tolerance scales with GMP precision: smaller precision = larger tolerance
         // Using 2^(-prec * 0.4) as a balance between sensitivity and false positives

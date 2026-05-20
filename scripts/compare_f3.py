@@ -223,8 +223,12 @@ def run_fractall(
     t0 = time.monotonic()
     # Désactive l'auto-adjust de fractall : F3 ne le fait pas, donc on doit
     # rester sur l'iter_max fourni pour comparer apples-to-apples.
+    # Désactive aussi la period-detection truncation : F3 calcule toujours la
+    # référence complète ; les faux positifs de période font diverger fractall
+    # (cf. glitch_test_5 : escape uniforme vs intérieur F3).
     env = os.environ.copy()
     env["FRACTALL_NO_AUTO_ADJUST"] = "1"
+    env["FRACTALL_NO_PERIOD"] = "1"
     try:
         proc = subprocess.run(
             cmd,
