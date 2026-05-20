@@ -174,8 +174,14 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
    ci-dessus). Garder opt-in aux nucleus exacts. Valider goldens + GUI.
 5. **P1.6.d — wisdom file** — dispatch f64 → FloatExp/DoubleExp → float128 →
    GMP selon zoom. Sans lui, float128 n'est pas sélectionné automatiquement.
-6. **P1.3 résidus** — bailout défaut tranché (ER=25, cf. P1.3 *Done*). Reste :
-   vérifier pixel spacing BLA = `4/zoom/height` strict.
+6. **seahorse-valley FAIL pré-existant** (découvert 2026-05-20) — `fractall-quality
+   preset seahorse-valley` (Mandelbrot 1e8) : div_ratio **0.627** (63 % des pixels),
+   max_diff=3072, p99=3072, à 128² ET 256². **Indépendant** de bailout (4≡25) et du
+   fix BLA pixel-spacing (testé avant/après = identique) → bug pré-existant ailleurs
+   (orbite réf / harness GMP / activation perturbation à 1e8 ?). À investiguer : c'est
+   le preset « shallow deep-zoom » phare, une divergence massive y est anormale.
+   NB : P1.3 résidus (bailout ER=25 + pixel spacing BLA) **tous deux clos**, cf.
+   P1.3 *Open* (items [x]).
 7. **P1.6.c** GPU+compile — élargir le buffer bytecode GPU pour porter le
    payload `Op::Rot` (cos/sin) et brancher `compile_formula` ou un loader
    TOML F3 pour émettre des `Op::Rot` réels. CPU déjà OK.
@@ -204,8 +210,24 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
   densité, vectoriel, AlphaMandelbrot) gardent leur bailout. 10/11 goldens
   régénérés + revus visuellement (newton inchangé) ; 174 unit tests verts ;
   champ `bailout` reste configurable pour retrouver ER=4.
-- [ ] Vérifier pixel spacing BLA = `4/zoom/height` strict dans
-  `bytecode/bla_dual.rs`, `perturbation/bla.rs`, `nonconformal.rs`.
+- [x] Pixel spacing BLA (2026-05-20). **2 bugs trouvés** vs F3 (référence) :
+  1. Les 3 fichiers passaient `c = |cref|` (norme du centre référence) à la
+     formule de merge BLA. F3 (`engine.cc:282`) utilise `c = pixel_spacing ·
+     pixel_precision` = rayon image en espace-c (`max |δc|` ≈ `(4/zoom/height)
+     · hypot(w,h)`). `|cref|` n'a aucun rapport avec l'extent du pixel.
+  2. Formule de merge : fractall faisait `R_y − |B_x|·c/|A_x|` au lieu de F3
+     `(R_y − |B_x|·c)/|A_x|` (`bla.h:37`) — le `/|A_x|` doit porter sur TOUT
+     le numérateur (R_y inclus), sinon R_z surestimé au depth (sup|A_x|≫1) →
+     over-skip (vraisemblable cause racine des artefacts rug 1e56).
+  **Fix** : `c` = rayon image HP-aware (`effective_pixel_size · hypot(w,h)`,
+  hoisté hors boucle) + formule F3 exacte, dans `bla_dual.rs` (live bytecode),
+  `bla.rs` + `nonconformal.rs` (legacy GMP). NB : F3 ignore même `c` au
+  single-step (`hybrid.h:144` `(void)c`) ; `bla_dual` single-step déjà
+  conforme (seul le merge était faux). Le single-step `nonconformal` garde un
+  terme c (legacy) mais reçoit maintenant le bon `c` (négligeable au depth).
+  **Validation** (pert vs GMP) : e13 max_diff 1005→821 (div 0.305%→0.122%),
+  e17 div 0.96%→0.037% (×26), misiurewicz-m32/BS-antenna/tricorn = 0 diff
+  exact ; goldens inchangés ; 174 unit tests verts. Aucune régression.
 - [x] Caps `max_perturb_iterations` / `max_bla_steps` enforcés dans
   `bytecode/pixel_loop.rs` (`iterate_pixel_unified_{full,single_phase,
   multi_phase,mandelbrot}`) et `pixel_loop_exp.rs` (`{_exp,

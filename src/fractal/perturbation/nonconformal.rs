@@ -261,14 +261,15 @@ pub fn compute_nonconformal_validity_radius(
 /// and T_y skips l_y iterations from iteration m_x + l_x when |z| < R_y,
 /// then T_z = T_y ∘ T_x skips l_x + l_y iterations from iteration m_x when |z| < R_z.
 ///
-/// Merging BLA steps radius becomes:
-/// R_z = max{0, min{R_x, R_y - sup|B_x|·|c| / sup|A_x|}}
+/// Merging BLA steps radius (F3 `bla.h:37`) :
+/// R_z = max{0, min{R_x, (R_y - sup|B_x|·c) / sup|A_x|}}
 ///
 /// where:
 /// - R_x, R_y are the validity radii of T_x and T_y
 /// - sup|A_x| is the largest singular value of A_x
 /// - sup|B_x| is the largest singular value of B_x
-/// - |c| is the norm of the reference point C
+/// - `c` is the image radius `max |δc|` (F3 `engine.cc:282`
+///   `c = pixel_spacing · pixel_precision`), NOT `|cref|`.
 pub fn merge_nonconformal_bla(
     ax: Matrix2x2,
     bx: Matrix2x2,
@@ -290,9 +291,10 @@ pub fn merge_nonconformal_bla(
         // Avoid division by zero: use simpler formula
         rx.min(ry).max(0.0)
     } else {
-        // R_z = max{0, min{R_x, R_y - sup|B_x|·|c| / sup|A_x|}}
-        let adjustment = sup_bx * c_norm / sup_ax;  // sup|B_x|·|c| / sup|A_x|
-        rx.min(ry - adjustment).max(0.0)
+        // F3 `bla.h:37` : R_z = min(R_x, max(0, (R_y - sup|B_x|·c) / sup|A_x|)).
+        // Le /sup|A_x| porte sur TOUT le numérateur (R_y inclus).
+        let inner = (ry - sup_bx * c_norm).max(0.0) / sup_ax;
+        rx.min(inner).max(0.0)
     };
     
     (az, bz, rz)

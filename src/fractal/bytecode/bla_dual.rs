@@ -301,11 +301,14 @@ impl BlaMultiStep {
 
     /// Compose deux BLAs adjacents : `T_z = T_y ∘ T_x`.
     ///
-    /// Formules F3 (cf. `merge_nonconformal_bla` existant) :
+    /// Formules F3 (`bla.h:33-37`) :
     /// - `A_z = A_y · A_x`
     /// - `B_z = A_y · B_x + B_y`
-    /// - `R_z² = max(0, min(R_x², (sqrt(R_y²) - sup|B_x|·|c| / sup|A_x|)²))`
-    pub fn merge(x: BlaMultiStep, y: BlaMultiStep, c_norm: f64) -> Self {
+    /// - `R_z = min(R_x, max(0, (R_y − sup|B_x|·c) / sup|A_x|))`
+    ///
+    /// `c` est le rayon de l'image en espace-c (`max |δc|`, cf. F3
+    /// `engine.cc:282` `c = pixel_spacing · pixel_precision`), pas `|cref|`.
+    pub fn merge(x: BlaMultiStep, y: BlaMultiStep, c: f64) -> Self {
         let az_x = y.a.mul(x.a);
         let bz = {
             let ay_bx = y.a.mul(x.b);
@@ -323,8 +326,11 @@ impl BlaMultiStep {
         let rz = if sup_ax < 1e-20 {
             rx.min(ry).max(0.0)
         } else {
-            let adjustment = sup_bx * c_norm / sup_ax;
-            rx.min(ry - adjustment).max(0.0)
+            // F3 `bla.h:37` : le /sup|A_x| s'applique à TOUT le numérateur
+            // (R_y inclus), pas au seul terme c. Sans ça, R_z est surestimé au
+            // depth (sup|A_x| ≫ 1) → over-skip BLA (cf. artefacts rug 1e56).
+            let inner = (ry - sup_bx * c).max(0.0) / sup_ax;
+            rx.min(inner).max(0.0)
         };
         Self {
             a: az_x,
@@ -389,8 +395,9 @@ impl BlaTableUnified {
     /// Construit la table BLA unifiée pour une phase, à partir de l'orbite
     /// référence et de la phase bytecode.
     ///
-    /// `c_norm` = `|cref|` (norme du centre de la référence, utilisée dans la
-    /// formule de merge pour ajuster le rayon de validité).
+    /// `c_norm` = rayon de l'image en espace-c (`max |δc|`, F3 `engine.cc:282`
+    /// `c = pixel_spacing · pixel_precision`), utilisé dans la formule de merge
+    /// pour ajuster le rayon de validité. PAS `|cref|` (erreur historique).
     ///
     /// `epsilon` = facteur de précision (typiquement `2^(-prec_bits)`).
     pub fn build(

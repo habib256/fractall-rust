@@ -368,6 +368,16 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
     // This allows larger radii when z_ref is small, while preventing unbounded growth
     let max_validity = base_threshold * validity_scale * 10.0;
 
+    // `c` de la formule de merge F3 = rayon image en espace-c (max |δc|,
+    // F3 `engine.cc:282` : c = pixel_spacing · pixel_precision), et NON |cref|.
+    // Calculé une fois (effective_pixel_size peut parser des coords HP au zoom
+    // extrême, donc hors de la boucle de merge).
+    let c_image = {
+        let pixel_spacing = crate::fractal::perturbation::effective_pixel_size(params);
+        let diag_px = ((params.width as f64).powi(2) + (params.height as f64).powi(2)).sqrt();
+        pixel_spacing * diag_px
+    };
+
     let level0: Vec<BlaNode> = (0..base_len)
         .into_par_iter()
         .map(|i| {
@@ -530,23 +540,23 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
                 zero
             };
             
-            // Merging BLA validity formula:
-            // R_{m_x, l_x + l_y} = R_z = max{0, min{R_x, R_y - |B_x|·|c| / |A_x|}}
+            // Merging BLA validity formula (F3 `bla.h:37`) :
+            // R_z = max{0, min{R_x, (R_y - |B_x|·c) / |A_x|}}
             //
             // where:
             // - R_x = node1.validity_radius (validity radius of T_x)
             // - R_y = node2.validity_radius (validity radius of T_y)
             // - |A_x| = |node1.a| (norm of A_x coefficient)
             // - |B_x| = |node1.b| (norm of B_x coefficient)
-            // - |c| = cref_norm = |cref| (norm of reference C; équivalent du scalaire c en C++ merge(..., c))
+            // - `c` = c_image = rayon image en espace-c (max |δc|, F3
+            //   `engine.cc:282`), PAS |cref|. Le /|A_x| porte sur tout le
+            //   numérateur (R_y inclus), cf. F3.
             let a1_norm = node1.a.norm();  // |A_x|
             let is_julia = params.fractal_type == FractalType::Julia;
             let validity = if a1_norm > 1e-20 && !is_julia {
-                // For Mandelbrot: R_z = max{0, min{R_x, R_y - |B_x|·|c| / |A_x|}} (référence C++ Fraktaler-3)
                 let b1_norm = node1.b.norm();  // |B_x|
-                let cref_norm = cref.norm();  // |c| = paramètre merge(..., c) de la référence C++
-                let adjustment = b1_norm * cref_norm / a1_norm;  // |B_x|·|c| / |A_x|
-                node1.validity_radius.min((node2.validity_radius - adjustment).max(0.0)).max(0.0)
+                let inner = (node2.validity_radius - b1_norm * c_image).max(0.0) / a1_norm;
+                node1.validity_radius.min(inner).max(0.0)
             } else {
                 // For Julia (B_x = 0) or when |A_x| is too small, use simpler formula:
                 // R_z = max{0, min{R_x, R_y}}
@@ -640,7 +650,7 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
 /// coefficients leads to incorrect merging at higher levels when the reference orbit crosses
 /// quadrant boundaries. The 2×2 matrix approach correctly handles all quadrants via matrix
 /// multiplication.
-pub fn build_bla_table_nonconformal(ref_orbit: &[Complex64], params: &FractalParams, cref: Complex64) -> Option<Vec<Vec<BlaNodeNonConformal>>> {
+pub fn build_bla_table_nonconformal(ref_orbit: &[Complex64], params: &FractalParams, _cref: Complex64) -> Option<Vec<Vec<BlaNodeNonConformal>>> {
     let is_tricorn = params.fractal_type == FractalType::Tricorn;
     let is_burning_ship = params.fractal_type == FractalType::BurningShip;
     if !is_tricorn && !is_burning_ship {
@@ -655,7 +665,13 @@ pub fn build_bla_table_nonconformal(ref_orbit: &[Complex64], params: &FractalPar
     let base_threshold = params.bla_threshold.max(1e-16);
     let validity_scale = params.bla_validity_scale.clamp(0.1, 100.0);
     let max_validity = base_threshold * validity_scale * 10.0;
-    let cref_norm = cref.norm();  // |c| où c est le paramètre C réel
+    // `c` du merge BLA = rayon image en espace-c (max |δc|, F3 `engine.cc:282`),
+    // et NON |cref|. (F3 ignore même c au single-step, `hybrid.h:144` `(void)c`.)
+    let cref_norm = {
+        let pixel_spacing = crate::fractal::perturbation::effective_pixel_size(params);
+        let diag_px = ((params.width as f64).powi(2) + (params.height as f64).powi(2)).sqrt();
+        pixel_spacing * diag_px
+    };
 
     let mut levels: Vec<Vec<BlaNodeNonConformal>> = Vec::new();
 

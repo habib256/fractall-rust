@@ -159,7 +159,16 @@ fn try_bytecode_unified_path(
     let orbit_ptr = ref_orbit.z_ref_f64.as_ptr() as usize;
     let orbit_len = ref_orbit.z_ref_f64.len();
     let c_ref = ref_orbit.cref;
-    let c_norm = (c_ref.re * c_ref.re + c_ref.im * c_ref.im).sqrt();
+    // Rayon de validité BLA = max |δc| sur l'image (F3 `engine.cc:282` :
+    // `c = pixel_spacing · pixel_precision` ≈ diagonale image en espace-c),
+    // et NON `|cref|` (qui n'a rien à voir avec l'extent du pixel).
+    // pixel_spacing = 4/zoom/height (HP-aware via effective_pixel_size).
+    let c_norm = {
+        let pixel_spacing = crate::fractal::perturbation::effective_pixel_size(params);
+        let diag_px =
+            ((params.width as f64).powi(2) + (params.height as f64).powi(2)).sqrt();
+        pixel_spacing * diag_px
+    };
 
     let result = BLA_UNIFIED_CACHE.with(|cache_cell| {
         let mut cache = cache_cell.borrow_mut();
