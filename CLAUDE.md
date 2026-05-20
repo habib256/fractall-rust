@@ -17,22 +17,23 @@ Prérequis natifs : GMP / MPFR / MPC (pour `rug`).
 
 ## Tests
 
-- **Unit tests** : `cargo test --release --bin fractall-cli` (~140 tests).
+- **Unit tests** : `cargo test --release --bin fractall-cli` (~178 tests).
   Couvre `perturbation/{bla,delta,series,nonconformal,distance,interior,
-  glitch,orbit,types,nucleus,mod}`, `lyapunov`, `progressive`, et tout le
-  `bytecode/` (`compile`, `interp{,_gmp}`, `bla_dual`, `delta_form`,
+  glitch,orbit,types,nucleus,mod}`, `jitter` (AA), `lyapunov`, `progressive`,
+  et tout le `bytecode/` (`compile`, `interp{,_gmp}`, `bla_dual`, `delta_form`,
   `pixel_loop{,_exp}`).
 - **Golden image tests** (`tests/golden_images.rs`) : 10 cas pixel-exact —
   paths f64 standard, perturbation, deep zoom GMP, types non-bytecode.
   - Lancer : `cargo test --release --test golden_images`
   - Régénérer : `FRACTALL_UPDATE_GOLDENS=1 cargo test --release --test
     golden_images`. **Toujours** vérifier visuellement les nouveaux PNG.
-  - Régression connue : `mandelbrot_deep_e113.png` à régénérer après revue
-    visuelle (voir mémoire `golden-e113-pending`).
+  - Note : les 10 goldens ont été régénérés + revus pour l'escape radius
+    ER=25 (2026-05-20), `mandelbrot_deep_e113.png` inclus.
 - **QA perturbation vs GMP** (`fractall-quality`) : compare le chemin
   perturbation au rendu GMP pur pixel-par-pixel. Voir §Quality plus bas.
 
-Pas de pipeline CI/CD (cf. TODO P2.1).
+CI : `.github/workflows/ci.yml` (unit + golden sur push/PR, ubuntu,
+gmp/mpfr/mpc). Extension du corpus golden à venir (cf. TODO G6).
 
 ## Architecture
 
@@ -46,6 +47,7 @@ src/
 │   ├── types.rs         # FractalType, FractalParams, AlgorithmMode, …
 │   ├── definitions.rs   # constantes par type + LyapunovPreset
 │   ├── iterations.rs    # escape-time f64 + dispatch bytecode unifié
+│   ├── jitter.rs        # AA per-frame : radical_inverse + triangle (port F3)
 │   ├── gmp.rs           # précision arbitraire (rug / mpc)
 │   ├── lyapunov.rs      # Lyapunov exponent
 │   ├── buddhabrot.rs    # Buddhabrot / Nebulabrot / Anti-Buddhabrot
@@ -195,9 +197,10 @@ dont l'orbite ne s'évade pas. Sans K, un minibrot rotated apparaît noir
 ou en bandes diagonales car les pixels échantillonnent à travers les
 branches voisines.
 
-À porter pour parité F3 complète (cf. TODO P1.6.c/d) : opcode `Op::Rot`
-(applique K dans le bytecode plutôt qu'au niveau du mapping pixel), wisdom
-file auto-precision.
+Reste pour la parité/perf F3 (cf. TODO G2/G4) : **wisdom file** (auto-precision
+f64→doubleexp→float128→GMP) et **nucleus phase-aware** pour les hybrides. La
+rotation de vue est gérée au pixel→c (CPU + GPU bytecode) ; `Op::Rot` reste un
+opcode CPU dormant, utile seulement pour une rotation *par phase* (TODO G4).
 
 ### Précision GMP perturbation
 
@@ -223,8 +226,25 @@ centre / type / précision.
 | `use_reference_precision_formula` | formule C++ F3 | true |
 | `use_bytecode_engine` | path unifié BLA mat2 + rebasing F3 | true |
 | `find_nucleus` | nucleus Mandelbrot avant orbit | false |
-| `jitter_scale` | sub-pixel AA (0 = off) | 0.0 |
+| `jitter_scale` | amplitude AA sous-pixel (px) | 0.0 |
+| `aa_subpixel_offset` | offset AA transitoire (`#[serde(skip)]`, posé par la boucle multi-sample) | `[0,0]` |
 | `rotation` | rad CCW, mat2(cos,-sin,sin,cos) | 0.0 |
+
+**Escape radius** : champ `bailout`. Défaut **25** (`bailout_sqr=625`,
+`const ESCAPE_TIME_BAILOUT`, `definitions.rs`) pour la famille escape-time
+bytecode+perturbation — aligné F3 (`escape_radius=625`). Les types à sémantique
+d'évasion particulière (Newton, Magnet, Sin, Nova, Pickover, densité, vectoriel,
+AlphaMandelbrot) gardent leur propre bailout (souvent 4). Configurable par
+pixel via `--bailout`/PNG.
+
+**Anti-aliasing multi-sample** (`fractal/jitter.rs`) : chaque sample décale la
+grille d'un offset sous-pixel low-discrepancy (Halton `radical_inverse` + tente
+`triangle`, port F3 `hybrid.h`) posé dans `aa_subpixel_offset`, appliqué au
+mapping pixel→c des 4 paths (f64/GMP/perturbation + cancellables) ; les rendus
+colorisés sont moyennés en RGB. CLI `--aa-samples N`/`--jitter-scale` (boucle
+dans `main.rs` via `io::png::colorize_to_rgb` + `save_png_rgb_with_metadata`) ;
+GUI : dropdown **AA** (accumulation après les passes, `RenderMessage::AaProgress`).
+CPU uniquement.
 
 ## Couleur
 
@@ -303,8 +323,10 @@ fractall-cli --type N --output FILE [OPTIONS]
   --algorithm auto|f64|perturbation|gmp
   --precision-bits N
   --palette 0-26 / --color-repeat N / --outcoloring MODE
+  --aa-samples N          # AA multi-sample jitteré (1 = off), CPU only
+  --jitter-scale F        # amplitude jitter sous-pixel (px, défaut 1.0)
   --plane N (0-6)
-  --rotation RAD          # F3-style mat2 rotation
+  --rotation RAD          # F3-style mat2 rotation (CPU + GPU bytecode)
   --find-nucleus          # Mandelbrot nucleus refine (atom-domain)
   --no-bytecode           # désactive bytecode (debug)
   --gpu                   # GPU wgpu Metal/Vulkan/DX12
@@ -320,7 +342,12 @@ fractall-cli --type N --output FILE [OPTIONS]
 - `mandelbrot_f32.wgsl`, `julia_f32.wgsl`, `burning_ship_f32.wgsl` — paths
   legacy par type
 - `perturbation.wgsl` — BLA cache workgroup, série, glitch adaptatif
-- `bytecode_kernel.wgsl` — runtime bytecode unifié (P3.1 Task 7)
+- `bytecode_kernel.wgsl` — runtime bytecode unifié (P3.1 Task 7). Applique la
+  matrice K (rotation/transform) au mapping pixel→c, parité CPU/F3.
+
+**Rotation/transform** : seul le path bytecode applique K sur GPU. Les autres
+paths GPU (perturbation, shaders f32 dédiés) retombent sur le CPU quand
+`transform_matrix().is_some()` (garde-fou anti-sortie-non-tournée).
 
 Au-delà de ~10⁷ de zoom, le CPU prend le relais (perturbation + GMP).
 **Backend** : macOS Metal ; Linux Vulkan (prioritaire), puis OpenGL ;
@@ -422,7 +449,8 @@ défaut 256×256. La suite peut prendre plusieurs minutes au-delà de 1e15.
 ## Référence Fraktaler-3.1
 
 Source de vérité algorithmique. Submodule présent dans
-`fraktaler-3-3.1/src/`. Analyse complète et roadmap parité dans TODO P1.6.
+`fraktaler-3-3.1/src/`. Analyse complète dans `docs/fraktaler-3-analysis.md` ;
+roadmap parité + perf dans `TODO.md` (goals G1/G2).
 
 Fichiers F3 clés à consulter :
 - `hybrid.h` / `hybrid.cc` — hybrid_period (atom-domain), hybrid_center

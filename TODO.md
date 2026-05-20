@@ -1,479 +1,270 @@
-# TODO
+# TODO — Roadmap fractall vers l'excellence
 
-> **Objectif** : meilleur renderer deep-zoom open-source en Rust. Référence
-> algorithmique : **Fraktaler-3.1** (cf. `fraktaler-3-3.1/src/`,
-> `docs/fraktaler-3-analysis.md`).
+> **Mission** : le meilleur renderer de fractales **deep-zoom open-source en Rust**.
+> **Référence algorithmique** : **Fraktaler-3.1** (`fraktaler-3-3.1/src/`,
+> `docs/fraktaler-3-analysis.md`). Quand fractall diverge de F3, c'est fractall
+> qu'on corrige — sauf preuve que F3 est dégénéré sur le cas.
+> **Différenciation assumée** : superset de F3 côté *features* (27 palettes,
+> 15 modes de coloring, 7 plane transforms, fractales non-escape-time, GUI
+> interactive, drag-drop PNG). Voir [§Ne pas régresser](#-ne-pas-régresser).
 
-**État (2026-05-20)** : Moteur bytecode unifié P3.1 livré sur CPU + GPU.
-Nucleus finder atom-domain (port `hybrid_period`) + `hybrid_size` (K
-normalisé stocké dans `FractalParams.transform_k`, pixel→c via
-`transform_matrix()`) ajoutés. `Op::Rot` opcode natif CPU avec dual-numbers
-+ BLA. Uniformisation deep zoom > 1e308 corrigée. Goulot actuel : **parité
-visuelle F3 sur le corpus `toml/`** + BLA radius scaling pour hybrides
-skewés.
+**État (2026-05-20)** — Socle solide :
+- Moteur **bytecode unifié** (8 opcodes) sur CPU + GPU : un seul pixel-loop
+  couvre Mandelbrot/Julia/BurningShip/Tricorn/Celtic/Buffalo/PerpBS/Multibrot
+  + variantes Julia.
+- **Perturbation** + BLA `mat2` (dual-numbers) + **rebasing F3** + FloatExp
+  (`ComplexExp`) pour zoom > 1e13, GMP pour l'orbite référence.
+- **Nucleus finder** atom-domain (`hybrid_period` + `hybrid_center` +
+  `hybrid_size` → K dans `transform_k`).
+- Coordonnées **HP > 1e308**, escape radius **aligné F3 (25)**, **BLA
+  pixel-spacing corrigé**, **anti-aliasing multi-sample**, **rotation GPU
+  corrigée**.
 
----
-
-## P0 — Parité F3 sur le corpus `toml/`
-
-**Objectif** : produire les mêmes images que Fraktaler-3 pour les 84 fichiers
-`toml/*.toml`. C'est la mesure de vérité — on ne peut prétendre « meilleur
-deep-zoom open-source en Rust » sans égaler F3 sur ce corpus.
-
-**Critère** : `mean_abs(F3, fractall) ≤ ε` à 1920×1080. Pixel-perfect là où
-c'est possible, équivalence visuelle ailleurs.
-
-**Harness** : `scripts/compare_f3.py` (F3 batch + fractall-cli sur chaque
-TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
-7 cas OK, 2 fractall_timeout (e1086, opus), 1 f3_timeout (seahorse).
-
-**Sweep 2026-05-20** (12 cas, 256×256, timeout 180s, env
-`FRACTALL_NO_AUTO_ADJUST=1`) — **10/12 OK** :
-- Pixel-perfect : test5 (Δmean=0), test6 (Δmean=0.0005).
-- Visuellement équivalents (image macro identique, Δmean concentré aux
-  pixels chaotiques à la frontière d'évasion) : test, test2 (0.50),
-  test4 (0.15), line (1.71), spiral (9.81), all_seeing_eye (5.82),
-  e113 (27.86).
-- Catastrophique : **glitch_test_1** (Δmean=156, Δmax=147467 — anneaux
-  concentriques artefacts ; ref_orbit périodique avec cycle_period=7327
-  donne un rendu structurellement différent de F3).
-  - **Investigation 2026-05-20** : les anneaux viennent du couple
-    `wrap_periodic` (cyclage modulo de m vers `[cycle_start, +period)`) +
-    BLA primaire unique dans `pixel_loop_exp`. Tentative de remplacer le
-    wrap par un rebase F3 strict (`delta := Z[m]+δ; m := 0`) → image
-    UNIFORME (re-traverse la queue pré-cycle `[0, cycle_start)` qui ne
-    correspond pas à la trajectoire réelle du pixel dans le cycle).
-    `wrap_periodic` est donc nécessaire pour les centres périodiques.
-    Le vrai fix demande probablement une BLA multi-phase (une par phase
-    du cycle, cf. P1.6.f) ou un rebase qui cible `cycle_start` au lieu de
-    `0`. Reporté — nécessite P1.6.f.
-- Timeout résiduel (perf gap) : **dragon** (zoom 1e191, iter 5M),
-  **e50** (zoom 1e50, iter 263k). e113 démontre que 90s suffit pour
-  ~35k iter à 256×256 ; e50/dragon (10×-100× plus d'itérations)
-  dépassent 180s.
-
-**Fixes appliqués cette session vers la parité** :
-- `nf_f3` formule : degree dérivé du bytecode (`opcodes_degree`,
-  `bytecode/mod.rs`) au lieu de `multibrot_power=2.5` constant. F3 utilise
-  le degré exact de la dernière phase (`hybrid.cc:334`). Test4 : Δmean 0.24
-  → 0.15 (-35%).
-- Env var `FRACTALL_NO_AUTO_ADJUST=1` gate l'auto-adjust d'iter_max dans
-  `orbit.rs`. F3 ne fait pas cet adjust → divergence systématique sans le
-  gate. Le harness positionne le flag avant chaque appel CLI.
-- Env var `FRACTALL_NO_PERIOD=1` désactive la troncature par period-detection
-  (commit 7356931). **Gain majeur** : floral_fantasy 1310→0.39, glitch_test_4
-  1325→0.24, liiiines 3969→23.8, mitosis2 37.5→3.56. Le harness le positionne.
-- Escape radius pixel aligné F3 (4 → **25** = `escape_radius 625`) pour la
-  famille escape-time bytecode+perturbation (`const ESCAPE_TIME_BAILOUT`,
-  `definitions.rs`). fractall escapait à |z|²≥16, F3 à ≥625 → N0/NF divergeaient
-  systématiquement à la frontière d'évasion (là où se concentre le Δmean
-  résiduel). Goldens régénérés. **Gain parité à quantifier au prochain sweep.**
-
-**Sweep étendu 2026-05-20** (26 cas uniques, NO_PERIOD + NO_AUTO_ADJUST) :
-- Pixel-perfect : test5, test6.
-- Visuellement équivalents (pas d'inside_mismatch, Δmean concentré aux bords
-  chaotiques) : test, test2, test4, line, spiral, all_seeing_eye, e113,
-  floral_fantasy, glitch_test_4, liiiines, mitosis2, flake (31), glitch_test_3
-  (6.0), heaven (6.5), tick_tock (24), x (22), peanuts (15).
-- Δmean élevé mais sans inside_mismatch (probable bord chaotique intrinsèque) :
-  nr_fail (92), uranium (149).
-- **glitch_test_5 — FAUX ÉCHEC : fractall CORRECT, F3 DÉGÉNÉRÉ (2026-05-20)**.
-  Le harness reportait inside_mismatch=54150 (F3 4096/4096 intérieur vs
-  fractall 704/4096). Inspection visuelle : **fractall rend un minibrot
-  Mandelbrot correct et détaillé** (cardioïde + bulbes + filaments, intérieur
-  noir au centre, bandes d'évasion autour) ; **F3 rend un carré ENTIÈREMENT
-  NOIR** (`glitch_test_5__f3.png` = noir uni), produit en 0.02s (court-circuit
-  suspect — F3 a vraisemblablement déclaré tout l'intérieur via un fast-path
-  period/nucleus en batch et sauté le rendu per-pixel). fractall DÉPASSE F3
-  ici. Diagnostic exhaustif au passage (tout écarté) : precision GMP (768≡314),
-  delta double-double, référence double-double, GMP pur per-pixel — tous
-  donnent le MÊME rendu correct. → Rien à corriger côté fractall ; c'est un
-  artefact F3. À exclure du score parité (ou compter comme victoire fractall).
-- **glitch_test_1 — anneaux REPRODUITS par le GMP pur (2026-05-20)**.
-  zoom 3.3e46, period 7327. fractall (perturbation) rend un minibrot entouré
-  d'**anneaux concentriques** ; F3 rend minibrot + **bruit chaotique** sans
-  anneaux. Test décisif : `--algorithm gmp` (per-pixel full precision, SANS
-  perturbation/BLA/series) rend les MÊMES anneaux → ce n'est PAS un artefact
-  de perturbation. Écartés : précision (dd delta+réf), BLA (threshold 1e-30
-  → Δ négligeable, avg 40936≡40949), series (on/off identique), period/wrap
-  (NO_PERIOD = anneaux quand même). → MÊME SIGNATURE que glitch_test_5 :
-  GMP fractall ≡ perturbation fractall ≠ F3. Comme glitch_test_5 s'est avéré
-  être un F3 dégénéré (fractall correct), glitch_test_1 est probablement
-  AUSSI un cas où fractall est correct (anneaux = structure atom-domain réelle
-  du minibrot) et F3 montre du bruit de glitch (les `glitch_test_*` sont des
-  lieux glitch-prone, conçus pour stresser le glitch-handling). Non tranché
-  définitivement (faudrait un 3e renderer ou F3 haute-res). Lean : victoire
-  fractall probable, pas un bug fractall.
-- **rug — BLA over-skip au deep zoom — RÉSOLU (2026-05-20, commit e66076f)**.
-  zoom 3.3e56, iter 100k. Symptôme : blobs rouges (smooth-iter aplati) là où
-  F3 a du bruit chaotique. **Cause** : fractall utilisait TOUS les niveaux BLA
-  y compris les bas (single/2/4-step) ; au deep zoom δ (~1e-56) ≪ rayon de
-  validité (~e·|Z| ~1e-8) donc la BLA s'applique toujours, et le BLA linéaire
-  f64 (drop δ² + coefficients déconditionnés) est MOINS précis que le pas
-  perturbation direct. **Fix** : `BLA_SKIP_LEVELS=3` dans `lookup`/`lookup_fexp`
-  (`bla_dual.rs`), miroir de F3 `bla_skip_levels=3` — les petits pas passent en
-  direct (exact), les niveaux ≥8-step gardent le gain perf. Résultat : Δmean
-  1709→389, max si 45399→94723 (≈F3 94554). Sans régression (test5/6 pixel-
-  perfect, e113 ~92s inchangé ; 1 golden minibrot_1e8 +46px raffinés, revu).
-- **Timeout — profilé (2026-05-20)** : **e50** (1e50, iter 263k), **dragon**
-  (1e191), **e1000** (1e1000), e1121/e1200/golden_spider/leaded_glass/test3/
-  virus/windmill, etc. e50 à 64×64 = 35.7s (setup orbit+BLA = 0.09s) →
-  ~8.7 ms/px, ~35 ns/iter. Le coût est la **boucle exp** (`ComplexExp` =
-  `FloatExp` re/im qui normalise via `frexp` à chaque op) : ~6× plus lent que
-  le path f64 (~6 ns/iter). On NE PEUT PAS utiliser le path f64 à ces zooms :
-  `z_ref_f64 + delta` collapse à `z_ref` en f64 quand `|delta| < 2.2e-16·|z_ref|`
-  (image uniforme — c'est la raison du seuil `PIXEL_SIZE_EXP_THRESHOLD=1e-13`,
-  cf. commentaire `delta.rs:89`). Le path exp est donc nécessaire ET lent.
-  **Fix perf = boucle interne en f64 scaled** (delta f64 + exposant partagé
-  rescalé périodiquement, comme rust-fractal-core ; ops internes f64 pures,
-  bailout/rebase en FloatExp seulement) OU float128. Gros chantier (~exp loop
-  rewrite). C'est le vrai P1.6.d/e. NB : l'ancien commentaire dispatch
-  contradictoire (« 1e-13 trop conservateur, f64 jusqu'à 1e-100 ») a été
-  réconcilié avec l'explication autoritative `delta.rs:89` (commit 6c541b8).
-
-**Period-detection truncation est LOSSY (analyse 2026-05-20)** :
-- Même pour une période GENUINE (confirmée par un cycle de plus :
-  `z[detect+p] ≈ z[detect]`), tronquer + `wrap_periodic` accumule l'erreur
-  de la quasi-périodicité (tolérance ~2^(-0.4·prec)) sur ~iter_max/période
-  cycles → perturbation divergente (image uniforme, glitch_test_5).
-- Le gain perf de la troncature est NÉGLIGEABLE (la référence est calculée
-  une fois ; tronquer économise surtout de la mémoire). Le coût per-pixel
-  est identique. → **Recommandation** : passer la troncature OFF par défaut
-  (la garder opt-in seulement aux nucleus exacts via `--find-nucleus`, où
-  l'orbite est exactement périodique et le wrap exact). Validation goldens +
-  GUI requise avant de flipper le défaut (pas fait dans cette boucle).
+**Goulots restants** (les 2 vrais chantiers) :
+1. **Parité visuelle F3** sur le corpus `toml/` (mesurer, élucider les
+   divergences restantes) → **G1**, **G3**.
+2. **Performance deep-zoom 1e15–1e1000** : on force GMP là où float128 /
+   doubleexp seraient 10–100× plus rapides → **G2**.
 
 ---
 
-## Up next (ordre d'attaque)
+## ⭐ Définition de l'excellence (critères mesurables)
 
-> **Constat boucle parité 2026-05-20** : quick wins parité livrés (degree,
-> auto-adjust gate, period gate). État des cas "cassés" après investigation :
-> - **glitch_test_5** : RÉSOLU — faux échec, fractall correct / F3 dégénéré
->   (carré noir). Rien à faire côté fractall.
-> - **glitch_test_1** : anneaux concentriques réels. Précision ÉCARTÉE
->   (double-double delta+réf testés sans effet ; GMP pur identique). Cause
->   probable : interaction wrap_periodic + BLA sur la référence cyclique.
->   À investiguer séparément (pas float128/BLA-threshold).
-> - **e50/dragon/e1000** : perf (GMP forcé). float128/wisdom PEUT aider mais
->   non vérifié — à profiler avant de s'engager.
-> Infra `dd.rs` (double-double ~106 bits) livrée et testée (commits 873d24c,
-> a73cb76, d378873) mais NON câblée : conservée pour un besoin futur réel
-> (wisdom/float128 perf), écartée pour glitch_test_1/5.
+Fractall sera « excellent » quand les 5 piliers sont atteints :
 
-1. **Vérifier le corpus pour d'autres F3-dégénérés** — glitch_test_5 montre
-   que F3 batch peut rendre un carré noir (court-circuit period/nucleus).
-   Re-scanner les "inside_mismatch" élevés : ce sont peut-être des victoires
-   fractall, pas des échecs. Ajouter au harness un flag F3-degenerate
-   (image quasi-uniforme → exclure du score).
-2. **glitch_test_1 anneaux** — investiguer l'interaction wrap_periodic + BLA
-   sur référence cyclique (cause des anneaux ; ni précision ni BLA-threshold).
-3. **Profiler e50/dragon/e1000** avant P1.6.e/d — confirmer que float128/
-   wisdom (et non un autre goulot) débloque le perf, sinon réorienter.
-4. **Period-detection OFF par défaut** — la troncature est lossy (cf. analyse
-   ci-dessus). Garder opt-in aux nucleus exacts. Valider goldens + GUI.
-5. **P1.6.d — wisdom file** — dispatch f64 → FloatExp/DoubleExp → float128 →
-   GMP selon zoom. Sans lui, float128 n'est pas sélectionné automatiquement.
-6. **seahorse-valley FAIL pré-existant** (découvert 2026-05-20) — `fractall-quality
-   preset seahorse-valley` (Mandelbrot 1e8) : div_ratio **0.627** (63 % des pixels),
-   max_diff=3072, p99=3072, à 128² ET 256². **Indépendant** de bailout (4≡25) et du
-   fix BLA pixel-spacing (testé avant/après = identique) → bug pré-existant ailleurs
-   (orbite réf / harness GMP / activation perturbation à 1e8 ?). À investiguer : c'est
-   le preset « shallow deep-zoom » phare, une divergence massive y est anormale.
-   NB : P1.3 résidus (bailout ER=25 + pixel spacing BLA) **tous deux clos**, cf.
-   P1.3 *Open* (items [x]).
-7. **P1.6.c** GPU+compile — élargir le buffer bytecode GPU pour porter le
-   payload `Op::Rot` (cos/sin) et brancher `compile_formula` ou un loader
-   TOML F3 pour émettre des `Op::Rot` réels. CPU déjà OK.
-8. **P1.6.b-bis (suite)** — BLA radius scaling pour K skewé : **différé à
-   P1.6.g** (no-op aujourd'hui — K toujours conforme σ₁=1, F3 ne le fait pas
-   non plus ; vrai facteur = σ₁(K) pas |det K|=1. Cf. P1.6.b-bis *Open*).
-   Storage + pixel→c déjà OK.
-9. **P1.6.e — float128/double-double câblé** — infra `dd.rs` prête ; à brancher
-   SI le profilage (item 3) confirme que c'est le goulot perf. Pas pour
-   glitch_test_1/5 (écarté).
-10. **Porter `iterate_pixel_gmp` sur pixel_loop** → permet de retirer
-   `glitch.rs`, `nonconformal.rs` et les champs perturbation legacy.
+1. **Correction** — pixel-équivalent à Fraktaler-3 sur les **84** configs
+   `toml/*.toml` à 1920×1080 (`mean_abs ≤ ε`, divergence résiduelle concentrée
+   *uniquement* aux bords chaotiques intrinsèques). **Zéro sortie fausse
+   silencieuse** sur toute combinaison path × feature.
+2. **Performance** — deep zoom 1e15–1e1000 à **≤ ~2× le wall-clock de F3**.
+   Aucun path ne force GMP là où float128/doubleexp/longdouble suffit.
+3. **Robustesse** — aucun artefact (anneaux, blobs, glitches) ; rendu correct
+   au-delà de 1e308 ; golden tests déterministes **verts en CI**.
+4. **UX & différenciation** — features hors-F3 sans régression ; GUI fluide
+   (progressif + recolorisation async + AA).
+5. **Maintenabilité** — aucun fichier > **~800 lignes** ; paths perturbation
+   *legacy* retirés ; un seul moteur (bytecode).
 
 ---
 
-## P1 — Parité numérique deep-zoom
+## 🎯 Goals
 
-### Open
+### G1 — Parité visuelle F3 sur le corpus `toml/` · `[P0 · métrique de vérité]`
 
-#### P1.3 — Constantes critiques (résidus)
-- [x] Escape radius pixel défaut = **25** (2026-05-20). F3 `escape_radius=625`
-  (= 25², `param.h:41`) adopté via `const ESCAPE_TIME_BAILOUT` (`definitions.rs`)
-  pour la famille escape-time bytecode+perturbation (Mandelbrot, Julia, Burning
-  Ship, Buffalo, Tricorn, Celtic, Perp BS, Multibrot + 6 variantes Julia).
-  Requis pour la parité N0/NF à la frontière d'évasion (fractall escapait à
-  |z|²≥16, F3 à ≥625) + smooth coloring (log-log) plus propre. Types à
-  sémantique d'évasion particulière (Newton, Magnet, Sin, Nova, Pickover,
-  densité, vectoriel, AlphaMandelbrot) gardent leur bailout. 10/11 goldens
-  régénérés + revus visuellement (newton inchangé) ; 174 unit tests verts ;
-  champ `bailout` reste configurable pour retrouver ER=4.
-- [x] Pixel spacing BLA (2026-05-20). **2 bugs trouvés** vs F3 (référence) :
-  1. Les 3 fichiers passaient `c = |cref|` (norme du centre référence) à la
-     formule de merge BLA. F3 (`engine.cc:282`) utilise `c = pixel_spacing ·
-     pixel_precision` = rayon image en espace-c (`max |δc|` ≈ `(4/zoom/height)
-     · hypot(w,h)`). `|cref|` n'a aucun rapport avec l'extent du pixel.
-  2. Formule de merge : fractall faisait `R_y − |B_x|·c/|A_x|` au lieu de F3
-     `(R_y − |B_x|·c)/|A_x|` (`bla.h:37`) — le `/|A_x|` doit porter sur TOUT
-     le numérateur (R_y inclus), sinon R_z surestimé au depth (sup|A_x|≫1) →
-     over-skip (vraisemblable cause racine des artefacts rug 1e56).
-  **Fix** : `c` = rayon image HP-aware (`effective_pixel_size · hypot(w,h)`,
-  hoisté hors boucle) + formule F3 exacte, dans `bla_dual.rs` (live bytecode),
-  `bla.rs` + `nonconformal.rs` (legacy GMP). NB : F3 ignore même `c` au
-  single-step (`hybrid.h:144` `(void)c`) ; `bla_dual` single-step déjà
-  conforme (seul le merge était faux). Le single-step `nonconformal` garde un
-  terme c (legacy) mais reçoit maintenant le bon `c` (négligeable au depth).
-  **Validation** (pert vs GMP) : e13 max_diff 1005→821 (div 0.305%→0.122%),
-  e17 div 0.96%→0.037% (×26), misiurewicz-m32/BS-antenna/tricorn = 0 diff
-  exact ; goldens inchangés ; 174 unit tests verts. Aucune régression.
-- [x] Caps `max_perturb_iterations` / `max_bla_steps` enforcés dans
-  `bytecode/pixel_loop.rs` (`iterate_pixel_unified_{full,single_phase,
-  multi_phase,mandelbrot}`) et `pixel_loop_exp.rs` (`{_exp,
-  _single_phase,_mandelbrot,_generic}`). Cap perturbation track `iters_ptb`
-  séparé de `n` (BLA jumps ne comptent pas, cf. F3 `cl-post.cl:21`).
-  Test `caps_max_perturb_iterations_truncates_interior_pixel` vérifie
-  qu'un pixel intérieur sort avec `iter < iter_max` lorsque cap actif.
+**Objectif** : produire les mêmes images que F3 pour les 84 `toml/*.toml`.
+**Harness** : `scripts/compare_f3.py` (F3 batch + `fractall-cli` → PNG + diff +
+métriques EXR N0/NF). Flags de parité : `FRACTALL_NO_AUTO_ADJUST=1`,
+`FRACTALL_NO_PERIOD=1` (F3 ne fait ni l'auto-adjust d'iter_max ni la troncature
+par période).
+**État** : dernier sweep (26 cas uniques, 256²) → majorité visuellement
+équivalents (Δmean concentré aux bords). Pixel-perfect : test5, test6.
 
-#### P1.5 — Anti-aliasing par subframes jitterés
-- [x] AA multi-sample « per-frame » (2026-05-20). Module `fractal/jitter.rs`
-  porte `radical_inverse` (Halton) + `triangle` (tente) de F3 `hybrid.h`. Chaque
-  sample décale TOUTE la grille d'un offset sous-pixel low-discrepancy (champ
-  transitoire `FractalParams::aa_subpixel_offset`, `#[serde(skip)]`, appliqué au
-  mapping pixel→c dans les 4 paths f64/GMP/perturbation + cancellables), puis les
-  rendus colorisés sont moyennés en RGB.
-  - **CLI** : `--aa-samples N` (+ `--jitter-scale`, défaut 1.0). Boucle dans
-    `main.rs`, colorise via `io::png::colorize_to_rgb`, sauve via
-    `save_png_rgb_with_metadata`. Vérifié visuellement (f64 : speckle → lisse ;
-    perturbation 5e6 propre).
-  - **GUI** : dropdown « AA: Off/2×/4×/8×/16×/32× ». Accumulation CPU après les
-    passes progressives (`RenderMessage::AaProgress`, affichage incrémental +
-    label « AA k/N »), cache d'orbite réutilisé entre samples. **Compile OK,
-    À VÉRIFIER VISUELLEMENT** (env headless ici → pas testé à l'écran).
-  - **Choix** : per-frame (offset uniforme/frame) au lieu du per-pixel F3
-    (`burtle_hash` Cranley-Patterson) — zéro recompute d'orbite, qualité ≈ dès
-    N≥4. Écart F3 documenté dans `jitter.rs`. L'ancien jitter per-pixel
-    non-moyenné de `perturbation/mod.rs` est supprimé (remplacé). Tradeoff GUI :
-    après AA, un changement de palette re-rend (la moyenne RGB n'est pas
-    re-colorisable depuis le brut).
-- **Pourquoi** : qualité bords fins, surtout mode Distance/DE. F3 le fait
-  par défaut.
-- Reste (optionnel) : per-pixel decorrelation (`burtle_hash`) si besoin à
-  bas N ; exposer `--jitter-scale` dans la GUI ; AA sur le path GPU.
+**Done when** :
+- [ ] **Re-sweep complet** des 84 cas à 1920×1080 : rapport `mean_abs` +
+  classification par cas (pixel-equiv / bord-chaotique / F3-dégénéré / perf).
+- [ ] **Quantifier le gain ER=25** : l'escape radius a changé (4→25) sans
+  re-sweep ; mesurer la baisse de Δmean à la frontière d'évasion.
+- [ ] **Détecteur F3-dégénéré** dans le harness : image quasi-uniforme rendue
+  en < 0.1 s ⇒ exclure du score (cf. glitch_test_5, §G3).
+- [ ] Chaque cas restant : pixel-équivalent **ou** divergence expliquée et
+  classée (pas de FAIL non élucidé).
 
-#### P1.6 — Parité F3.1 (analyse 2026-05-19)
+### G2 — Performance deep-zoom : dispatch wisdom + types intermédiaires · `[P0 · perf]`
 
-Items issus de l'analyse `fraktaler-3-3.1/src/`. Classés par impact × effort.
+**Problème** : entre ~1e15 et ~1e1000, fractall reste sur le path `ComplexExp`
+(FloatExp normalisé via `frexp` à chaque op, ~35 ns/iter, ~6× le f64) ou force
+GMP, là où F3 utilise doubleexp/float128/longdouble (10–100× plus rapide).
+Cas symptomatiques (timeout > 180 s à 256²) : **e50** (1e50, 263k iter),
+**dragon** (1e191, 5M iter), **e1000**, e1121/e1200/golden_spider/leaded_glass/
+test3/virus/windmill. On NE PEUT PAS retomber sur f64 pur (`z_ref + δ` collapse
+quand `|δ| < 2.2e-16·|z_ref|`, cf. seuil `PIXEL_SIZE_EXP_THRESHOLD=1e-13`,
+`delta.rs:89`).
 
-##### P1.6.b-bis — Stocker K complet et l'appliquer au pixel→c [HAUTE]
-- [x] Champ `transform_k: Option<[f64; 4]>` ajouté à `FractalParams` (serde
-  `skip_serializing_if = "Option::is_none"` pour les PNG legacy propres).
-  Default `None` → fallback rotation seule, drop-in compatible.
-- [x] `FractalParams::transform_matrix()` renvoie K si présent (et fini),
-  sinon `rotation_matrix()`. Callsites de `params.rotation_matrix()` migrés
-  dans `render/escape_time.rs` (4 sites) et `perturbation/mod.rs` (2 sites).
-- [x] Nucleus pipeline (`orbit.rs`) injecte `K_normalized = K / sqrt|det K|`
-  après `hybrid_size_mat2`. Det=1 préserve le zoom utilisateur (pas de
-  zoom-in implicite par 1/β²) tout en encodant rotation + skew non-uniforme
-  pour les hybrides. Pour Mandelbrot conformal, `K_norm = R(θ)` exact.
-- [x] Tests : 5 tests `transform_tests` (identity, fallback, override, skew,
-  NaN reject) + 1 PNG round-trip (`transform_k_round_trip_and_legacy_default`).
-- [ ] Reste : BLA radius scaling pour K skewé (anisotrope) — **différé à P1.6.g**
-  (analyse 2026-05-20). **Correction de cadrage** : K est normalisé à `det = 1`
-  (`orbit.rs:708`), donc un scaling « via `|det K|` » est un no-op (×1). Le bon
-  facteur est **σ₁(K)** (plus grande valeur singulière ; det=1 ⇒ σ₁ = 1/σ₂ ≥ 1) :
-  le merge `c = max|δc|` (= rayon image, cf. P1.3) devrait être `σ₁(K)·rayon`
-  car `dc = K·pixoffset` est étiré jusqu'à σ₁. Le single-step (`ε·|Z|/|A|`) est
-  intrinsèque à l'orbite, K-indépendant.
-  **Pourquoi différé** : (1) le seul K produit aujourd'hui est une rotation
-  conforme `R(θ)` (nucleus Mandelbrot-only) → σ₁ = 1 exactement → **no-op** ;
-  (2) un K skewé n'apparaît qu'avec le nucleus hybride **P1.6.g** (pas encore
-  écrit) ; (3) F3 lui-même ne scale PAS son BLA par K (`engine.cc:282` c sans K,
-  `bla.h` merge/lookup K-unaware) → impossible de valider contre la référence
-  sans cas skewé. À implémenter (scaling de `c` par σ₁ dans `delta.rs`/`bla.rs`,
-  ou validité anisotrope `|K⁻¹δ|<r`) en même temps que P1.6.g, testable alors.
+**Done when** (3 leviers, du plus rentable au moins) :
+- [ ] **Wisdom file + auto-precision** (port `wisdom.cc:240-295`). Choisit le
+  type le plus rapide satisfaisant `pixel_spacing_exp + 16 < range/2` et
+  `pixel_spacing_precision < mantissa_bits`. Benchmark `(type, device)` au 1er
+  run, JSON persisté (`~/.fractall/wisdom.json`). Plug-in dans
+  `render/escape_time.rs` : f64 → FloatExp/DoubleExp → float128 → GMP. *Sans
+  lui, aucun type intermédiaire n'est sélectionné automatiquement — c'est le
+  débloqueur des 2 autres leviers.*
+- [ ] **float128** (113 bits mantisse, exp 15 bits → ~1e4900 sans GMP). Wrapper
+  FFI `__float128` ou port de `float128.h`. ~400 lignes + tests vs GMP.
+  Optionnel : `longdouble` x86-64 80-bit (gap 1e20–1e40) ; `softfloat` 32-bit
+  CPU-pure (GPU/WASM sans FPU).
+- [ ] **Boucle interne f64-scaled** (alternative/complément) : delta f64 +
+  exposant partagé rescalé périodiquement (façon rust-fractal-core) ; ops
+  internes f64 pures, bailout/rebase en FloatExp seulement. Réécrit le hot-loop
+  exp.
+- **Acceptation** : e50/dragon/e1000 rendus en < 180 s à 256² ; profil confirme
+  que le path choisi domine (pas un autre goulot).
 
-##### P1.6.c — Opcode `Op::Rot` natif [HAUTE]
-- [x] `Op::Rot { cos_theta, sin_theta }` ajouté à `bytecode/mod.rs` avec
-  `opcode_tag()` pour le mapping GPU. Cas implémentés dans `interp.rs`,
-  `interp_gmp.rs`, `delta_form.rs` (DeltaState + DeltaStateExp avec
-  propagation ddelta), `bla_dual.rs` (Jacobien `R · J`, rayon préservé car
-  isométrique), `iterations.rs` (path f64 standard).
-- [x] Tests d'invariance : `invariant_rot_mandelbrot_phase` (δ-form vs
-  absolu f64), `invariant_rot_mandelbrot_phase_exp` (DeltaStateExp deep
-  zoom), `rot_after_sqr_matches_composed_jacobian` (BLA = R · J_sqr).
-- [x] **Rotation GPU corrigée au pixel→c** (2026-05-20). **Recadrage** : la
-  rotation de la VUE est une transformation K appliquée au mapping pixel→c
-  (`c = K·c + offset`, F3 `hybrid.cc:265` + CPU `transform_matrix()`), PAS un
-  opcode per-itération. `Op::Rot` (per-iteration) n'est donc pas le bon levier
-  et n'est de toute façon jamais émis par `compile_formula`. **Bug trouvé** :
-  le path bytecode GPU (`bytecode_kernel.wgsl`) ET les shaders f32 dédiés
-  ignoraient K → vue NON tournée rendue en silence (reproduit : Mandelbrot
-  rotation 0.6 rad, CPU tilté / GPU droit). **Fix** : K (4×f32 row-major) ajouté
-  à `ParamsBytecode` (depuis `transform_matrix()`) + appliqué au pixel→c dans
-  `bytecode_kernel.wgsl`. GPU rotated == CPU rotated vérifié sur M4/Metal ;
-  rendu non-tourné inchangé (byte-identique) ; WGSL re-validé (naga).
-- [x] Garde-fous sur les autres paths GPU qui n'appliquent PAS K (perturbation
-  `perturbation.wgsl` + shaders f32 dédiés via `render_escape_f32`) : fallback
-  CPU si `transform_matrix().is_some()` au lieu d'une sortie non-tournée
-  silencieuse. (Cas atteints seulement hors bytecode : plane ≠ Mu, ou
-  perturbation GPU mid-zoom.)
-- [ ] (Reste, basse prio) Appliquer K nativement dans `perturbation.wgsl` et les
-  shaders f32 dédiés pour éviter le fallback CPU sur ces cas niches.
-- `Op::Rot` reste un opcode dormant (CPU only, jamais émis) : utile seulement
-  si un futur parseur `[[formula]] rotate` des TOML F3 a besoin d'une rotation
-  PAR PHASE (différent de la rotation de vue). Pas requis pour la parité vue.
+> ⚠️ **Profiler avant de coder** : confirmer sur e50/dragon que c'est bien
+> l'arithmétique exp (et non orbit/BLA) qui domine, sinon réorienter.
+> Infra `dd.rs` (double-double ~106 bits) déjà livrée et testée (`ComplexDDExp`,
+> commits 873d24c/a73cb76/d378873), **non câblée** — candidate pour le wisdom.
 
-##### P1.6.d — Wisdom file + auto-precision [HAUTE]
-- [ ] Implémenter `wisdom_lookup` (`wisdom.cc:240-295`) : choisit le type
-  numérique le plus rapide satisfaisant `pixel_spacing_exp + 16 < range/2`
-  et `pixel_spacing_precision < mantissa_bits`.
-- [ ] Benchmark `(type, device)` au premier run, JSON persisté
-  (`~/.fractall/wisdom.json`).
-- [ ] Plug-in dans `render/escape_time.rs` : f64 → FloatExp/DoubleExp → GMP.
-- **Pourquoi** : entre 1e15 et 1e100, fractall force GMP alors que F3
-  utilise doubleexp/float128 (10-100× plus rapide). Goulot perf majeur.
-  **Note** : remplace P3.2 (qui restait au stade idée).
+### G3 — Élucider les divergences ouvertes · `[P0 · correction]`
 
-##### P1.6.e — float128 + softfloat [HAUTE]
-- [ ] `float128` : 113 bits mantisse, 15 bits exp, atteint ~1e4900 sans GMP.
-  Wrapper FFI vers `__float128` ou port de `float128.h`.
-- [ ] `softfloat` : 32 bits CPU-pure (`softfloat.h`). Utile pour GPU/WASM
-  sans FPU. Moins prioritaire.
-- [ ] Brancher au wisdom file (P1.6.d).
-- **Effort** : ~400 lignes Rust pour f128 complex + tests vs GMP.
+Trois divergences restent non closes. Toutes pointent probablement vers
+« fractall correct / F3 ou harness en cause », mais doivent être tranchées.
 
-##### P1.6.f — BLA multi-phase native [HAUTE]
-- [ ] `Vec<BlaTableUnified>` par phase au lieu d'une seule. F3 build une BLA
-  par phase (`engine.cc:287-295`, `bla.cc::hybrid_blas`).
-- [ ] Refactor `iterate_pixel_unified_*` pour switcher de BLA quand la phase
-  change (déjà partiel dans `iterate_pixel_hybrid_bla` legacy — porter sur
-  bytecode).
-- [ ] Tests d'invariance hybride Mandelbrot⊕BurningShip.
-- **Prérequis** : P1.6.c (rot) + P3.4 (multi-phase UI/CLI).
+- [ ] **glitch_test_1 — anneaux concentriques** (zoom 3.3e46, period 7327).
+  fractall (perturbation **ET** `--algorithm gmp` pur) rend des anneaux ;
+  F3 rend du bruit chaotique. Précision écartée (double-double δ+réf), BLA
+  écarté (threshold 1e-30 ≡), series écarté, period/wrap écarté (NO_PERIOD =
+  anneaux quand même). **Signature identique à glitch_test_5** (GMP fractall ≡
+  perturbation fractall ≠ F3). Lean : victoire fractall probable (anneaux =
+  structure atom-domain réelle), mais non tranché — faudrait un 3e renderer ou
+  F3 haute-résolution.
+- [ ] **seahorse-valley FAIL pré-existant** (Mandelbrot 1e8). `fractall-quality`
+  pert-vs-GMP : **div_ratio 0.627** (63 % des pixels !), max_diff/p99 = 3072, à
+  128² ET 256². **Indépendant** du bailout (4 ≡ 25) et du fix BLA pixel-spacing
+  (testé avant/après = identique) → bug pré-existant ailleurs (orbite réf ?
+  harness GMP ? seuil d'activation perturbation à 1e8 ?). Anormal sur le preset
+  « shallow deep-zoom » phare — à investiguer.
+- [ ] **Period-detection truncation = LOSSY** → passer **OFF par défaut**.
+  Même pour une période *genuine*, `truncate + wrap_periodic` accumule l'erreur
+  de quasi-périodicité (~2^(-0.4·prec)) sur ~iter_max/période cycles →
+  perturbation divergente (image uniforme, glitch_test_5). Gain perf de la
+  troncature **négligeable** (orbite calculée une fois). **Done when** :
+  troncature off par défaut, opt-in seulement aux nucleus exacts
+  (`--find-nucleus`) où l'orbite est exactement périodique. Valider goldens +
+  GUI avant de flipper.
 
-##### P1.6.g — Nucleus finder phase-aware + extension hybrides [MOYENNE]
-- [ ] Étendre `nucleus.rs` au-delà de Mandelbrot : Burning Ship, Tricorn,
-  Multibrot entier (dérivées via dual-numbers par opcode, déjà ~70 % en
-  place via `bla_dual`).
-- [ ] Détecter période/centre/size par phase dans un hybride
+### G4 — Hybrides multi-phase : la feature unique · `[P1 · différenciation]`
+
+Chaîner des formules par phase (Mandelbrot ⊕ Burning Ship ⊕ …) — feature
+absente de Kalles Fraktaler, partielle dans F3. L'infra `Formula::hybrid(vec)`
+existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
+
+**Done when** :
+- [ ] **BLA multi-phase native** : `Vec<BlaTableUnified>` (une par phase) au lieu
+  d'une seule ; `iterate_pixel_unified_*` switche de BLA au changement de phase
+  (F3 `engine.cc:287-295`, `bla.cc::hybrid_blas`). Tests d'invariance hybride
+  Mandelbrot⊕BurningShip.
+- [ ] **Nucleus finder phase-aware** : étendre `nucleus.rs` au-delà de
+  Mandelbrot (Burning Ship, Tricorn, Multibrot entier — dérivées dual-numbers
+  par opcode, ~70 % en place via `bla_dual`) ; période/centre/size par phase
   (`engine.cc:118-218`).
-- [ ] **BLA radius scaling σ₁(K)** (rapatrié de P1.6.b-bis) : une fois qu'un K
-  skewé (non-conforme) est produit ici, scaler le merge `c` par σ₁(K) dans
-  `delta.rs`/`bla.rs` (ou validité anisotrope `|K⁻¹δ|<r`), et valider contre
-  F3 sur le minibrot hybride correspondant. No-op tant que K reste conforme.
-- **Effort** : ~250 lignes.
+  - [ ] **BLA radius scaling σ₁(K)** (rapatrié de l'ex-P1.6.b-bis) : dès qu'un K
+    *skewé* (non-conforme) est produit ici, scaler le merge `c` par σ₁(K) (plus
+    grande valeur singulière ; det=1 ⇒ σ₁=1/σ₂≥1) dans `delta.rs`/`bla.rs`, ou
+    validité anisotrope `|K⁻¹δ| < r`. **No-op tant que K reste conforme** (le
+    seul K produit aujourd'hui est `R(θ)`, σ₁=1 ; F3 lui-même ne scale pas son
+    BLA par K) → testable seulement avec un K skewé réel, donc lié à ce goal.
+- [ ] **CLI/GUI** : `--phases mandelbrot,burning_ship,…` + éditeur de séquence
+  GUI.
+- [ ] (Optionnel) **`Op::Rot` per-phase** : l'opcode existe (CPU, dual + BLA)
+  mais n'est jamais émis ; le câbler seulement si un parseur `[[formula]] rotate`
+  des TOML F3 en a besoin (≠ rotation de vue, déjà gérée au pixel→c).
 
-##### P1.6.h — longdouble x86-64 80-bit [MOYENNE]
-- [ ] Feature-gate `cfg(target_arch="x86_64")` : `f80` via FFI C ou crate
-  `libm`. Mantisse ~64 bits, comble le gap 1e20-1e40 avant float128.
-- [ ] Brancher au wisdom file.
+### G5 — Architecture & nettoyage · `[P1 · maintenabilité]`
 
-### Done
+**Done when** :
+- [ ] **Retirer les modules perturbation legacy** : porter `iterate_pixel_gmp`
+  sur `pixel_loop`, puis supprimer `glitch.rs`, `nonconformal.rs` et les champs
+  perturbation legacy (`max_secondary_refs`, `min_glitch_cluster_size`,
+  `glitch_tolerance`, …). Un seul moteur.
+- [ ] **Découper les gros fichiers** (< ~800 lignes chacun) :
+  `gui/app.rs` (~2.9k) → menu Type / drag-drop / HQ render / raccourcis ;
+  `perturbation/mod.rs` (~1.5k) → dispatch CPU/GMP ; `gpu/mod.rs` (~1.8k) →
+  pipelines standard / perturbation / bytecode.
+- [ ] **GPU : K natif dans `perturbation.wgsl` + shaders f32 dédiés** (basse
+  prio) — aujourd'hui fallback CPU quand une transform est active (garde-fou
+  contre la sortie non-tournée silencieuse) ; l'appliquer nativement évite le
+  fallback sur ces cas niches (plane ≠ Mu, perturbation GPU mid-zoom).
 
-- **P1.0** ✅ (2026-05-18) — Uniformisation deep zoom > 1e308. Cause :
-  `params.span_x` f64 underflow à 0. Fix : helpers `effective_spans_fexp` +
-  `effective_pixel_size` HP-aware. Résultat e1000 : Δmean 691 → 0.44.
-- **P1.1** ✅ — Rebasing F3 dans `bytecode/pixel_loop.rs`, condition stricte
-  `|Z+z|² < |z|²`. Reste mineur : retirer `glitch.rs` / `nonconformal.rs`
-  une fois `iterate_pixel_gmp` porté sur pixel_loop.
-- **P1.2** ✅ — BLA `mat2` unifié via dual-numbers (`bytecode/bla_dual.rs`).
-- **P1.3** ✅ partial — `bla_threshold = 1/2²⁴`, `REFERENCE_BAILOUT_SQR = 1e10`,
-  GMP precision clamp `[128, 65536]` alignés F3.
-- **P1.4** ✅ — `diffabs` Burning Ship dans `delta.rs`, validé par 9 tests
-  d'invariance Z+δ.
-- **P1.6.a** ✅ (2026-05-19) — Nucleus finder atom-domain
-  (`perturbation/nucleus.rs`). Critère F3 `|z|² < s²·|dz|²` (port
-  `hybrid.cc:417` `hybrid_period`). 5/5 tests passent.
-- **P1.6.b** ✅ (2026-05-19) — `hybrid_size_mat2` porté
-  (`perturbation/nucleus.rs`, port `hybrid.cc:544-592`). Itère `period-1`
-  fois en dual-numbers GMP, accumule `b += L⁻¹`, renvoie `size = 1/(λ²·β)`
-  et matrice `K = inv(transp(b))/β`. Wiring `orbit.rs:618-720` : après
-  Newton, on remplace `params.rotation` par `atan2(K[2], K[0])` (équivalent
-  Mandelbrot conformal de `out.transform = K; rotate = 0` côté F3). 4/4
-  tests passent (period 1 identité, period 2 dégénéré c=-1, period 3
-  axis-aligned, escape→None). Suite goldens verte. Reliquat : stocker K
-  complet (skew/scale) pour hybrides non-conformes — voir P1.6.b-bis.
+### G6 — Robustesse & infra qualité · `[P1]`
 
----
+**Done when** :
+- [ ] **CI : étendre le corpus golden** à zooms intermédiaires (1e10, 1e15,
+  1e20), cap ~70 s/cas. (CI de base déjà en place : unit + golden sur push/PR.)
+- [ ] **Vérifier visuellement la GUI AA** (env de dev headless ici → non testé
+  à l'écran ; la logique compile et le CLI est vérifié).
+- [ ] **AA polish** : per-pixel decorrelation (`burtle_hash`, utile à bas N) ;
+  exposer `--jitter-scale` dans la GUI ; AA sur le path GPU.
 
-## P2 — Infrastructure
+### G7 — I/O & interop · `[P2]`
 
-### Open
-
-#### P2.1 — CI GitHub Actions
-- [x] `cargo test --release --bin fractall-cli` + `cargo test --release
-  --test golden_images` sur push / PR (`.github/workflows/ci.yml`,
-  ubuntu-latest, libgmp/mpfr/mpc + Swatinem/rust-cache).
-- [ ] Étendre corpus golden à zooms intermédiaires (10¹⁰, 10¹⁵, 10²⁰),
-  cap ~70 s par cas (5e227 abandonné, trop long).
-
-#### P2.2 — Découpe gros fichiers
-- [ ] `gui/app.rs` (2854 lignes) → menu Type / drag-drop / HQ render /
-  raccourcis.
-- [ ] `perturbation/mod.rs` (1456 lignes) → split
-  `render_perturbation_cancellable_with_reuse()` et dispatch CPU/GMP.
-- [ ] `gpu/mod.rs` (1747 lignes) → pipelines standard / perturbation /
-  bytecode en sous-modules.
-- **Pourquoi** : préalable à tout refactor P1 majeur (P1.6.b-bis notamment).
-
-#### P2.3 — Documenter tradeoff GPU f32
-- [ ] README : limite zoom GPU (~10⁷ en f32) et seuil fallback CPU.
-- [ ] Évaluer softfloat (P1.6.e) pour devices sans fp64 — peu probable
-  rentable avec wgpu.
-
-### Done
-
-- **P2.1 local** ✅ — `tests/golden_images.rs` + 10 cas. Régénération via
-  `FRACTALL_UPDATE_GOLDENS=1`. Couvre f64 standard, perturbation, deep zoom
-  GMP, non-bytecode.
+**Done when** :
+- [ ] **EXR raw export** compatible KFR / zoomasm (assemblage zoom-vidéo) →
+  recolorisation/animation sans re-rendre. (Base EXR N0/NF déjà présente via
+  `--export-iterations`.)
+- [ ] **Interop TOML Fraktaler-3** bidirectionnelle (lire/écrire le format F3
+  natif, pas seulement le format léger rust-fractal-core).
 
 ---
 
-## P3 — Scope stratégique
+## ✅ Shipped (condensé, le plus récent en haut)
 
-### Open
+**2026-05-20** :
+- **Rotation GPU** corrigée au pixel→c (`bytecode_kernel.wgsl` applique K depuis
+  `transform_matrix()`) — bug : le GPU rendait la vue **non tournée** en silence.
+  Garde-fous CPU-fallback sur les autres paths GPU (perturbation, f32 dédiés).
+- **Anti-aliasing multi-sample** « per-frame » : module `fractal/jitter.rs`
+  (Halton `radical_inverse` + tente `triangle`, port F3 `hybrid.h`), offset
+  sous-pixel appliqué aux 4 paths, moyenne RGB. CLI `--aa-samples`/
+  `--jitter-scale` + dropdown GUI.
+- **BLA pixel-spacing** corrigé vs F3 (2 bugs) : merge `c` = rayon image
+  (`pixel_spacing·pixel_precision`, pas `|cref|`) + formule `(R_y−|B_x|·c)/|A_x|`
+  (`bla.h:37`). Validation pert-vs-GMP : e17 div 0.96 %→0.037 % (×26).
+- **Escape radius** aligné F3 : 4 → **25** (`ESCAPE_TIME_BAILOUT=625`) pour la
+  famille escape-time → parité N0/NF à la frontière + smooth coloring plus
+  propre. 10 goldens régénérés + revus.
 
-#### P3.3 — EXR raw export
-- [ ] Format compatible KFR / zoomasm pour zoom-vidéo assembly. Permet
-  recolorisation/animation sans re-rendre.
-
-#### P3.4 — Multi-phase hybrid UI/CLI
-- [x] `Formula::hybrid(vec![phase, …])` supporte les chaînes en interne.
-- [ ] CLI : `--phases mandelbrot,burning_ship,burning_ship` etc.
-- [ ] GUI : éditeur de séquence de phases.
-- [ ] `Vec<BlaTableUnified>` par phase (cf. P1.6.f).
-- **Pourquoi** : feature unique vs Kalles Fraktaler / Fraktaler-3.
-
-### Done
-
-- **P3.1** ✅ — Architecture bytecode unifiée (Sessions A-E + GPU + dual
-  numbers + cleanup). 8-opcodes, compile_formula, interp CPU f64 + GMP, BLA
-  mat2 via dual, delta-form, pixel_loop f64 + ComplexExp, multi-phase infra,
-  GPU `bytecode_kernel.wgsl`, distance estimation / interior detection /
-  orbit traps via duals. Reste mineur : retirer modules legacy (cf. P1.1).
-- **P3.2** → fusionné dans **P1.6.d** (wisdom file).
+**Antérieur** :
+- **P3.1** — Architecture bytecode unifiée (8 opcodes, `compile_formula`, interp
+  CPU f64 + GMP, BLA mat2 via duals, delta-form, pixel_loop f64 + ComplexExp,
+  GPU `bytecode_kernel.wgsl`, distance/interior/orbit-traps via duals).
+- **P1.0** — Uniformisation deep zoom > 1e308 (helpers HP-aware
+  `effective_spans_fexp`/`effective_pixel_size`). e1000 : Δmean 691 → 0.44.
+- **P1.1** — Rebasing F3 (`|Z+δ|² < |δ|²`) remplace la glitch detection.
+- **P1.2** — BLA `mat2` unifié via dual-numbers.
+- **P1.3** — `bla_threshold = 1/2²⁴`, `REFERENCE_BAILOUT_SQR = 1e10`, clamp GMP
+  `[128, 65536]`, caps `max_perturb_iterations`/`max_bla_steps`.
+- **P1.4** — `diffabs` Burning Ship (9 tests d'invariance Z+δ).
+- **P1.6.a/b** — Nucleus finder atom-domain (`hybrid_period` `|z|² < s²·|dz|²`)
+  + `hybrid_size_mat2` (matrice K).
+- **P1.6.b-bis** — `transform_k` stocké + `transform_matrix()` appliqué au
+  pixel→c (4 sites render + 2 perturbation) ; nucleus injecte `K/√|det K|`.
+- **P1.6.c** — Opcode `Op::Rot` natif CPU (interp/delta-form/BLA dual) + tests
+  d'invariance.
+- **Parité corpus** — `nf_f3` degree dérivé du bytecode ; gates
+  `FRACTALL_NO_AUTO_ADJUST` / `FRACTALL_NO_PERIOD` ; `BLA_SKIP_LEVELS=3` (fix
+  over-skip « rug » 1e56, miroir F3 `bla_skip_levels`).
+- **CI** — `.github/workflows/ci.yml` (unit + golden, ubuntu, gmp/mpfr/mpc).
+- **glitch_test_5** — classé **F3-dégénéré** (F3 rend un carré noir via
+  fast-path period/nucleus ; fractall rend un minibrot correct). Victoire
+  fractall, à exclure du score parité.
 
 ---
 
-## À ne pas régresser (superset assumé vs F3)
+## 🛡️ Ne pas régresser (superset assumé vs F3)
 
-- 27 palettes built-in + RGB/HSB/LCH.
-- 15 modes coloring + 4 orbit traps.
+- 27 palettes built-in + espaces RGB/HSB/LCH.
+- 15 modes de coloring + 4 orbit traps.
 - 7 plane transforms XaoS-style.
-- Drag-and-drop PNG avec metadata JSON.
-- Formules non-escape-time : Newton, Phoenix, Magnet, Lyapunov (6 presets),
-  Buddhabrot/Nebulabrot/Anti, Von Koch, Dragon, Pickover Stalks, Nova, Sin,
-  Alpha Mandelbrot, Barnsley, Mandelbulb. F3 n'y va pas — différenciation.
+- Drag-and-drop PNG avec metadata JSON (restauration exacte de l'état).
+- Fractales non-escape-time (F3 n'y va pas) : Newton, Phoenix, Magnet, Lyapunov
+  (6 presets), Buddhabrot/Nebulabrot/Anti, Von Koch, Dragon, Pickover Stalks,
+  Nova, Sin, Alpha Mandelbrot, Barnsley, Mandelbulb.
 - Preview Julia au survol + raccourci `J`.
-- Recolorisation asynchrone sans bloquer l'UI.
+- Recolorisation asynchrone sans bloquer l'UI ; rendu progressif multi-passes.
+- Anti-aliasing multi-sample (CLI + GUI).
+- `bailout` reste configurable (retrouver ER=4 si besoin).
 
 ---
 
-## Format / I/O
+## 📌 Notes de référence (où regarder dans F3)
 
-- [x] Loader TOML rust-fractal-core (`toml/*.toml`, 84 fichiers).
-- [ ] Vérifier compat format TOML Fraktaler-3 pour interop bidirectionnelle.
+| Sujet | F3 |
+|-------|-----|
+| Escape radius | `param.h:41` (`escape_radius = 625`) |
+| BLA merge / lookup | `bla.h:27-41`, `bla.cc` ; `c = pixel_spacing·pixel_precision` (`engine.cc:282`) |
+| pixel→c + transform K | `hybrid.cc:233-265` (`c = K·c + offset`) |
+| Single-step BLA | `hybrid.h:142` (ignore `c`) |
+| Jitter AA | `hybrid.h:16-68` (`burtle_hash`/`radical_inverse`/`triangle`/`jitter`) |
+| Nucleus | `hybrid.cc` (`hybrid_period`/`hybrid_center`/`hybrid_size`) |
+| Wisdom / auto-precision | `wisdom.cc:240-295`, `render.cc:219` |
+| Hybrides multi-phase | `engine.cc:118-295` |

@@ -29,3 +29,7 @@ Thumbs.db
 /out.png
 /fractal_*.png
 /fractall_*.png
+*.exr
+
+## Transient runtime locks
+.claude/scheduled_tasks.lock

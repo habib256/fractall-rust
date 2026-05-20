@@ -28,7 +28,13 @@ Fractall is a high-performance fractal explorer written in Rust, featuring GPU r
 - Powered by **wgpu** (Vulkan, Metal, DX12)
 - f32 shaders on GPU — automatic CPU fallback past ~10⁷ zoom or for types without a dedicated shader
 - Unified bytecode kernel extends GPU coverage to Tricorn / Celtic / Buffalo / Perp. Burning Ship / Multibrot without writing per-type shaders
+- Plane rotation applied at pixel→c on the GPU bytecode path (parity with the CPU and Fraktaler-3)
 - Progressive rendering: instant previews, full quality follows
+
+### Anti-aliasing
+- Multi-sample jittered supersampling: `--aa-samples N` (CLI) or the **AA** dropdown (GUI)
+- Low-discrepancy Halton offsets with a tent reconstruction filter (ported from Fraktaler-3), averaged in RGB
+- Especially effective on fine filaments and the Distance / Distance-AO / Distance-3D coloring modes
 
 ### 33 Fractal Types
 | Mandelbrot-like | Julia variants | Special |
@@ -137,6 +143,13 @@ Coloring
                             iter+all | binary | biomorphs | potential | color-decomp |
                             orbit-traps | wings | distance | distance-ao | distance-3d
 
+Anti-aliasing
+    --aa-samples <N>        Jittered sub-pixel samples averaged in RGB
+                            (1 = off). Low-discrepancy Halton offsets (F3-style
+                            tent filter). Best for fine edges / Distance modes.
+                            CPU only (ignored with --gpu).
+    --jitter-scale <F>      Sub-pixel jitter amplitude in pixels [default: 1.0]
+
 Algorithm
     --algorithm <MODE>      auto | f64 | perturbation | gmp
     --precision-bits <N>    GMP precision floor [default: 256]
@@ -210,13 +223,22 @@ fractall-cli --type 3 --gpu --zoom 5e6 --iterations 2000 --output gpu_deep.png
 - **Progressive Rendering**: multi-pass rendering shows quick previews before full quality.
 - **Pixel-exact golden tests**: `cargo test --release --test golden_images` guards the render pipeline against regressions.
 
-### Roadmap toward full Fraktaler-3.1 parity
+### Roadmap toward excellence
 
-The deep-zoom corpus (`toml/*.toml`, 84 configs) is the parity yardstick.
-Tracked in `TODO.md` (section P1.6). Next steps: port `hybrid_size()` for
-the skew/orientation matrix K, add an `Op::Rot` bytecode opcode, and a
-wisdom-driven dispatcher (float128 / longdouble / FloatExp / GMP) for
-intermediate zooms.
+The deep-zoom corpus (`toml/*.toml`, 84 configs) is the Fraktaler-3 parity
+yardstick. The full roadmap — with measurable "definition of excellence" and
+per-goal acceptance criteria — lives in `TODO.md`. The two open frontiers:
+
+1. **Visual F3 parity** across the whole corpus (measure, then resolve the few
+   remaining divergences).
+2. **Deep-zoom performance (1e15–1e1000)**: a wisdom-driven precision dispatcher
+   (f64 → doubleexp → float128 / longdouble → GMP) so intermediate zooms stop
+   falling back to GMP where a faster type would do — F3's 10–100× speedup.
+
+Already landed: the unified bytecode engine, perturbation + `mat2` BLA + F3
+rebasing, the atom-domain nucleus finder with the orientation matrix K
+(`hybrid_size`), HP coordinates beyond 1e308, F3-aligned escape radius and BLA
+pixel-spacing, GPU plane rotation, and multi-sample anti-aliasing.
 
 ## Contributing
 
