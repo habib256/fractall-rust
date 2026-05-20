@@ -605,7 +605,21 @@ fn main() {
         // — sinon les pixels qui viennent juste d'échapper (z² ≈ bailout²) tombent
         // sous le seuil F3 et NF s'effondre à 0.
         let bailout_sq = params.bailout * params.bailout;
-        let degree = params.multibrot_power.max(2.0);
+        // Degré de la formule dérivé du bytecode (aligné F3 `opcodes_degree`,
+        // `param.cc:970`). Pour Mandelbrot/BS/Tricorn/Celtic → 2, pour
+        // Multibrot puissance entière → la puissance, etc. Fallback sur
+        // `multibrot_power` quand la formule n'est pas compilable (types
+        // non-escape-time : Newton, Phoenix, Magnet, Lyapunov, …). Cf. P0
+        // parité F3 : sans ça, NF utilise degree=2.5 par défaut pour tous
+        // les types, ce qui décale le smooth iter de ~0.1-0.2 pour les
+        // pixels juste échappés.
+        let degree = match crate::fractal::bytecode::compile_formula(
+            params.fractal_type,
+            params.multibrot_power,
+        ) {
+            Some(formula) => crate::fractal::bytecode::formula_last_degree(&formula) as f64,
+            None => params.multibrot_power.max(2.0),
+        };
         match save_iterations_exr(
             exr_path,
             params.width as usize,

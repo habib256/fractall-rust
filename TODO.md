@@ -27,6 +27,30 @@ c'est possible, équivalence visuelle ailleurs.
 TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
 7 cas OK, 2 fractall_timeout (e1086, opus), 1 f3_timeout (seahorse).
 
+**Sweep 2026-05-20** (12 cas, 256×256, timeout 180s, env
+`FRACTALL_NO_AUTO_ADJUST=1`) — **10/12 OK** :
+- Pixel-perfect : test5 (Δmean=0), test6 (Δmean=0.0005).
+- Visuellement équivalents (image macro identique, Δmean concentré aux
+  pixels chaotiques à la frontière d'évasion) : test, test2 (0.50),
+  test4 (0.15), line (1.71), spiral (9.81), all_seeing_eye (5.82),
+  e113 (27.86).
+- Catastrophique : **glitch_test_1** (Δmean=156, Δmax=147467 — anneaux
+  concentriques artefacts ; ref_orbit périodique avec cycle_period=7327
+  donne un rendu structurellement différent de F3).
+- Timeout résiduel (perf gap) : **dragon** (zoom 1e191, iter 5M),
+  **e50** (zoom 1e50, iter 263k). e113 démontre que 90s suffit pour
+  ~35k iter à 256×256 ; e50/dragon (10×-100× plus d'itérations)
+  dépassent 180s.
+
+**Fixes appliqués cette session vers la parité** :
+- `nf_f3` formule : degree dérivé du bytecode (`opcodes_degree`,
+  `bytecode/mod.rs`) au lieu de `multibrot_power=2.5` constant. F3 utilise
+  le degré exact de la dernière phase (`hybrid.cc:334`). Test4 : Δmean 0.24
+  → 0.15 (-35%).
+- Env var `FRACTALL_NO_AUTO_ADJUST=1` gate l'auto-adjust d'iter_max dans
+  `orbit.rs`. F3 ne fait pas cet adjust → divergence systématique sans le
+  gate. Le harness positionne le flag avant chaque appel CLI.
+
 ---
 
 ## Up next (ordre d'attaque)

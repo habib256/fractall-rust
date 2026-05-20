@@ -221,6 +221,10 @@ def run_fractall(
         # Pas encore exposé en CLI ; on signale et continue avec ER=4.
         pass
     t0 = time.monotonic()
+    # Désactive l'auto-adjust de fractall : F3 ne le fait pas, donc on doit
+    # rester sur l'iter_max fourni pour comparer apples-to-apples.
+    env = os.environ.copy()
+    env["FRACTALL_NO_AUTO_ADJUST"] = "1"
     try:
         proc = subprocess.run(
             cmd,
@@ -228,6 +232,7 @@ def run_fractall(
             stderr=subprocess.PIPE,
             timeout=timeout,
             text=True,
+            env=env,
         )
         return proc.returncode, f"{time.monotonic()-t0:.2f}s"
     except subprocess.TimeoutExpired:

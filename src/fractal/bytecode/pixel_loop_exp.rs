@@ -247,9 +247,11 @@ fn iterate_pixel_unified_exp_mandelbrot(
         }
 
         // Rebase F3 : |Z[m+1] + δ|² < |δ|² OR fin d'orbite. Pour les orbites
-        // périodiques (centre intérieur), on cycle m via modulo. Sinon
-        // (orbite tronquée par escape), on flag exhaustion : rebaser blind
-        // collerait tous les pixels au même état (cf. e113.toml uniforme).
+        // périodiques (centre intérieur), on cycle m via modulo (la cycle
+        // commence à cycle_start > 0, donc rebaser vers m=0 re-traverserait
+        // la queue pré-cycle → uniformisation). Sinon (orbite tronquée par
+        // escape), on flag exhaustion : rebaser blind collerait tous les
+        // pixels au même état (cf. e113.toml uniforme).
         let end_of_ref = (m as usize) + 1 >= ref_len;
         if end_of_ref {
             if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {

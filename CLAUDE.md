@@ -114,11 +114,17 @@ pub struct FractalParams {
     pub center_y_hp: Option<String>,
     pub span_x_hp: Option<String>,
     pub span_y_hp: Option<String>,
-    pub rotation: f64,            // K = mat2(cos,-sin,sin,cos)
+    pub rotation: f64,            // degrés, R = mat2(cos,-sin,sin,cos)
     pub find_nucleus: bool,       // opt-in Mandelbrot only
+    pub transform_k: Option<[f64; 4]>, // mat2 row-major (F3 param.transform)
     // …
 }
 ```
+
+`transform_matrix()` est le point d'entrée pour le mapping pixel→c : K si
+`transform_k` est `Some` (et fini), sinon retombe sur `rotation_matrix()`.
+Drop-in compatible — quasi-tous les callsites consomment un tuple
+`(m00, m01, m10, m11)` ou `None`.
 
 Helpers HP-aware (`perturbation/mod.rs`) :
 - `effective_spans_fexp(params)` → `(FloatExp, FloatExp)` survie f64

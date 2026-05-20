@@ -843,8 +843,18 @@ pub fn compute_reference_orbit_cached(
         dt_series = t_series_start.elapsed();
 
         // Auto-adjust iteration_max based on series skip ratio
-        // (only on rounds before the last, and only if series is active)
-        if round < MAX_AUTO_ADJUST_ROUNDS {
+        // (only on rounds before the last, and only if series is active).
+        //
+        // Désactivable via `FRACTALL_NO_AUTO_ADJUST=1` : utile pour les tests
+        // de parité Fraktaler-3 (F3 ne fait pas cet ajustement, donc l'avoir
+        // actif fait diverger iter_max → mismatch sur les coins évadés
+        // tardivement). À l'usage normal, l'auto-adjust permet de découvrir
+        // les détails masqués derrière un iter_max trop bas.
+        let auto_adjust_enabled = std::env::var("FRACTALL_NO_AUTO_ADJUST")
+            .ok()
+            .map(|v| v != "1" && v.to_lowercase() != "true")
+            .unwrap_or(true);
+        if round < MAX_AUTO_ADJUST_ROUNDS && auto_adjust_enabled {
             if let Some(ref table) = series_table {
                 let skip = table.validated_skip as f64;
                 let max_iter = adjusted_params.iteration_max as f64;

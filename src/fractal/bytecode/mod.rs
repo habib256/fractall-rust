@@ -90,6 +90,42 @@ impl Op {
     }
 }
 
+/// Calcule le degré polynomial d'une phase, aligné F3 `opcodes_degree`
+/// (`param.cc:970`). Mandelbrot (Sqr, Add) → 2. Multibrot pow 3 (Store, Sqr,
+/// Mul, Add) → 3. Burning Ship (AbsX, AbsY, Sqr, Add) → 2.
+///
+/// Utilisé pour la formule smooth fraction `NF = 1 - log(log|z|²)/log(degree)`
+/// (cf. F3 `hybrid.cc:350`). Sans ça, on utilise `multibrot_power` par défaut
+/// (2.5) ce qui donne un NF systématiquement décalé pour Mandelbrot/BS/Tricorn.
+pub fn opcodes_degree(phase: &Phase) -> u32 {
+    let mut deg_stored: u32 = 0;
+    let mut deg: u32 = 1;
+    for op in &phase.ops {
+        match op {
+            Op::Store => deg_stored = deg,
+            Op::Mul => deg = deg.saturating_add(deg_stored),
+            Op::Sqr => deg = deg.saturating_mul(2),
+            // Add, AbsX, AbsY, NegX, NegY, Rot : sans effet sur le degré.
+            _ => {}
+        }
+    }
+    deg
+}
+
+/// Degré polynomial de la dernière phase d'une formule. Pour les formules
+/// mono-phase (cas dominant), c'est le degré tout court ; pour les hybrides
+/// multi-phase, F3 utilise `last_degree` (la dernière phase appliquée avant
+/// l'évasion, cf. `hybrid.cc:334`). En supposant un évadé "régulier" qui
+/// quitte sur la dernière phase de la séquence, on prend `degrees[last]`.
+#[allow(dead_code)]
+pub fn formula_last_degree(formula: &Formula) -> u32 {
+    formula
+        .phases
+        .last()
+        .map(opcodes_degree)
+        .unwrap_or(2)
+}
+
 /// Une phase = séquence d'opcodes appliquée par itération.
 ///
 /// Doit se terminer par `Op::Add`. Les puissances Multibrot (`z^N + c`) sont
