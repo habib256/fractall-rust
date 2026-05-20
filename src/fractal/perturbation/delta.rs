@@ -139,16 +139,15 @@ fn try_bytecode_unified_path(
         // Multi-phase pas encore supporté.
         return None;
     }
-    // Dispatch selon pixel_size :
-    // - pixel_size > 1e-100 : path f64 (rapide, Complex64 gère jusqu'à |δ|≈1e-150
-    //   sans underflow car δ² ≈ pixel_size²)
-    // - 1e-150 < pixel_size < 1e-100 : path ComplexExp (extension exponent)
-    // - pixel_size < 1e-150 : fallback GMP legacy (z_ref_f64 lui-même underflow)
-    //
-    // L'ancien threshold 1e-13 était inutilement conservateur : il forçait
-    // ComplexExp dès le zoom > 1e13, alors que f64 reste précis bien au-delà.
-    // Bench e14 : f64 path ~2.7s vs exp path ~6.1s (2.3× plus rapide pour
-    // résultat identique au pixel près).
+    // Dispatch selon pixel_size (cf. l'explication AUTORITATIVE au-dessus de
+    // `PIXEL_SIZE_EXP_THRESHOLD`, delta.rs:89) :
+    // - pixel_size >= 1e-13 : path f64 (Complex64, rapide ~6 ns/iter).
+    // - pixel_size  < 1e-13 : path ComplexExp. NÉCESSAIRE car en f64
+    //   `z_ref + delta` collapse à `z_ref` dès `|delta| < 2.2e-16·|z_ref|`
+    //   → bailout/rebase identiques pour tous les pixels → image uniforme.
+    //   Coût : ~35 ns/iter (FloatExp normalise via frexp à chaque op).
+    //   Profilé e50 (zoom 1e50) : ce path domine le temps deep zoom — fix
+    //   perf = boucle interne f64-scaled ou float128 (TODO P1.6.d/e).
     // pixel_size HP-aware (cf. bytecode_path_label).
     let pixel_size = crate::fractal::perturbation::effective_pixel_size(params);
     if pixel_size <= 0.0 {

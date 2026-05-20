@@ -110,8 +110,21 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
   direct (exact), les niveaux ≥8-step gardent le gain perf. Résultat : Δmean
   1709→389, max si 45399→94723 (≈F3 94554). Sans régression (test5/6 pixel-
   perfect, e113 ~92s inchangé ; 1 golden minibrot_1e8 +46px raffinés, revu).
-- Timeout (perf gap, P1.6.d/e) : **e50** (1e50), **dragon** (1e191),
-  **e1000** (1e1000).
+- **Timeout — profilé (2026-05-20)** : **e50** (1e50, iter 263k), **dragon**
+  (1e191), **e1000** (1e1000), e1121/e1200/golden_spider/leaded_glass/test3/
+  virus/windmill, etc. e50 à 64×64 = 35.7s (setup orbit+BLA = 0.09s) →
+  ~8.7 ms/px, ~35 ns/iter. Le coût est la **boucle exp** (`ComplexExp` =
+  `FloatExp` re/im qui normalise via `frexp` à chaque op) : ~6× plus lent que
+  le path f64 (~6 ns/iter). On NE PEUT PAS utiliser le path f64 à ces zooms :
+  `z_ref_f64 + delta` collapse à `z_ref` en f64 quand `|delta| < 2.2e-16·|z_ref|`
+  (image uniforme — c'est la raison du seuil `PIXEL_SIZE_EXP_THRESHOLD=1e-13`,
+  cf. commentaire `delta.rs:89`). Le path exp est donc nécessaire ET lent.
+  **Fix perf = boucle interne en f64 scaled** (delta f64 + exposant partagé
+  rescalé périodiquement, comme rust-fractal-core ; ops internes f64 pures,
+  bailout/rebase en FloatExp seulement) OU float128. Gros chantier (~exp loop
+  rewrite). C'est le vrai P1.6.d/e. NB : le commentaire `delta.rs:145-151`
+  (« 1e-13 trop conservateur, f64 jusqu'à 1e-100 ») est OBSOLÈTE et contredit
+  `delta.rs:89` (autoritatif) — à nettoyer.
 
 **Period-detection truncation est LOSSY (analyse 2026-05-20)** :
 - Même pour une période GENUINE (confirmée par un cycle de plus :
