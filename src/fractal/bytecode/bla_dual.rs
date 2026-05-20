@@ -867,34 +867,49 @@ mod tests {
         assert_eq!(table.levels[3][0].l, 8);
     }
 
-    /// Le lookup retourne `None` quand delta est trop grand, et le plus
-    /// large BLA valide sinon. Test à m=1 car m=0 correspond à z_ref=0
-    /// pour Mandelbrot, ce qui donne r=0 (BLA inutilisable au step 0 —
-    /// c'est la raison pour laquelle F3 commence aussi le BLA à m=1).
+    /// Le lookup retourne `None` quand delta est trop grand, et un BLA de
+    /// niveau ≥ `BLA_SKIP_LEVELS` (8-step ou plus) sinon. Avec le skip des
+    /// bas niveaux (F3 `bla_skip_levels`), les petits pas / m non alignés
+    /// retournent `None` (le caller fait un pas direct, plus précis).
     #[test]
     fn lookup_returns_largest_valid() {
         let formula = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
         let phase = &formula.phases[0];
-        // Orbite simulée Mandelbrot avec c = -0.7 + 0.3i, z_0 = 0.
+        // Orbite Mandelbrot longue (c = -0.7 + 0.3i, z_0 = 0) pour avoir des
+        // niveaux BLA hauts (≥ 8-step). 40 itérations → M=40, niveaux jusqu'à 32.
         let c = Complex64::new(-0.7, 0.3);
         let mut z = Complex64::new(0.0, 0.0);
         let mut orbit = vec![z];
-        for _ in 0..9 {
+        for _ in 0..40 {
             z = z * z + c;
             orbit.push(z);
         }
-        let table = BlaTableUnified::build(&orbit, phase, c.norm(), 1e-6);
+        // c_norm petit (extent pixel typique) pour que les BLA fusionnés
+        // gardent un rayon de validité positif (un grand c_norm écrase les
+        // rayons des niveaux hauts via le terme B·c du merge).
+        let table = BlaTableUnified::build(&orbit, phase, 1e-9, 1e-6);
 
-        // delta = +∞ à m=1 → aucun BLA valide.
-        assert!(table.lookup(1, f64::INFINITY).is_none());
+        // m=8 est aligné au niveau 3 (8-step), le plus bas niveau utilisable.
+        // delta = +∞ → aucun BLA valide.
+        assert!(table.lookup(8, f64::INFINITY).is_none());
 
-        // delta très petit à m=1 → trouve un BLA.
-        let res = table.lookup(1, 1e-30);
+        // delta minuscule à m=8 → trouve un BLA de niveau ≥ 3 (l ≥ 8).
+        let res = table.lookup(8, 1e-30);
         assert!(
             res.is_some(),
-            "lookup m=1 à delta minuscule doit trouver un BLA"
+            "lookup m=8 (aligné niveau 3) à delta minuscule doit trouver un BLA"
         );
-        assert!(res.unwrap().l >= 1);
+        assert!(
+            res.unwrap().l >= 8,
+            "avec skip_levels=3, le plus petit BLA retourné saute ≥ 8 itérations, got l={}",
+            res.unwrap().l
+        );
+
+        // m=1 (non aligné aux niveaux hauts) → None : pas direct.
+        assert!(
+            table.lookup(1, 1e-30).is_none(),
+            "m=1 ne doit PAS retourner de BLA bas niveau (skip_levels) — pas direct"
+        );
     }
 
     /// Avec une orbite typique Mandelbrot (zoom 1) et un delta très petit,
