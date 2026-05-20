@@ -122,9 +122,9 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
   **Fix perf = boucle interne en f64 scaled** (delta f64 + exposant partagé
   rescalé périodiquement, comme rust-fractal-core ; ops internes f64 pures,
   bailout/rebase en FloatExp seulement) OU float128. Gros chantier (~exp loop
-  rewrite). C'est le vrai P1.6.d/e. NB : le commentaire `delta.rs:145-151`
-  (« 1e-13 trop conservateur, f64 jusqu'à 1e-100 ») est OBSOLÈTE et contredit
-  `delta.rs:89` (autoritatif) — à nettoyer.
+  rewrite). C'est le vrai P1.6.d/e. NB : l'ancien commentaire dispatch
+  contradictoire (« 1e-13 trop conservateur, f64 jusqu'à 1e-100 ») a été
+  réconcilié avec l'explication autoritative `delta.rs:89` (commit 6c541b8).
 
 **Period-detection truncation est LOSSY (analyse 2026-05-20)** :
 - Même pour une période GENUINE (confirmée par un cycle de plus :
