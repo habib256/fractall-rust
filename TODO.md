@@ -84,9 +84,21 @@ TOML → PNG + diff + métriques EXR N0/NF). Premier résumé 2026-05-18 :
   delta double-double, référence double-double, GMP pur per-pixel — tous
   donnent le MÊME rendu correct. → Rien à corriger côté fractall ; c'est un
   artefact F3. À exclure du score parité (ou compter comme victoire fractall).
-- Toujours cassé : **glitch_test_1** (anneaux concentriques) — F3 rend bien
-  un minibrot+bruit, fractall ajoute des anneaux. Reste à investiguer
-  séparément (PAS précision/BLA — écartés ; PAS le même cas que glitch_test_5).
+- **glitch_test_1 — anneaux REPRODUITS par le GMP pur (2026-05-20)**.
+  zoom 3.3e46, period 7327. fractall (perturbation) rend un minibrot entouré
+  d'**anneaux concentriques** ; F3 rend minibrot + **bruit chaotique** sans
+  anneaux. Test décisif : `--algorithm gmp` (per-pixel full precision, SANS
+  perturbation/BLA/series) rend les MÊMES anneaux → ce n'est PAS un artefact
+  de perturbation. Écartés : précision (dd delta+réf), BLA (threshold 1e-30
+  → Δ négligeable, avg 40936≡40949), series (on/off identique), period/wrap
+  (NO_PERIOD = anneaux quand même). → MÊME SIGNATURE que glitch_test_5 :
+  GMP fractall ≡ perturbation fractall ≠ F3. Comme glitch_test_5 s'est avéré
+  être un F3 dégénéré (fractall correct), glitch_test_1 est probablement
+  AUSSI un cas où fractall est correct (anneaux = structure atom-domain réelle
+  du minibrot) et F3 montre du bruit de glitch (les `glitch_test_*` sont des
+  lieux glitch-prone, conçus pour stresser le glitch-handling). Non tranché
+  définitivement (faudrait un 3e renderer ou F3 haute-res). Lean : victoire
+  fractall probable, pas un bug fractall.
 - **rug — BLA over-skip au deep zoom (2026-05-20)**. zoom 3.3e56, iter 100k.
   F3 = bruit chaotique uniforme ; fractall = bruit + **gros blobs rouges**
   (régions où le smooth-iter est faussement aplati). Mesures (120×120) :
