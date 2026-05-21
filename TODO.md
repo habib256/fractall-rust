@@ -196,7 +196,9 @@ ciblent le COMPUT → **ne débloquent pas** l'acceptation.
   e50 ~136 s, e1000 ~185 s). Traiter N pixels par vecteur SIMD ; gérer la
   divergence (rebase/escape par lane via masques). Gros chantier (façon
   rust-fractal-core / F3), multi-session, risque correction élevé.
-- [ ] **Recalibrer l'acceptation dragon** (impossible telle quelle, cf. ci-dessus).
+- [x] **Acceptation dragon recalibrée** (2026-05-21, validée utilisateur) — cf.
+  bloc *Acceptation RECALIBRÉE* ci-dessous. Gains livrés committés sur la branche
+  `g2-bla-perf-memory` (commit `fd9ce4a`), à fast-forward sur `main`.
 - [ ] Investiguer l'anomalie **e1000 ~360 ns/iter** (11× e50) — rebasing
   excessif ? fallback GMP par pixel ? BLA mal-conditionné >1e150 ? Si corrigée →
   e1000 ~67 s <180 s.
