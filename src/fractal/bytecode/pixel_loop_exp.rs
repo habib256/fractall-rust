@@ -249,8 +249,13 @@ fn iterate_pixel_unified_exp_mandelbrot(
         // f64 deep zoom (cf. floral_fantasy). Pour les orbites PÉRIODIQUES on
         // garde l'optimisation `wrap_periodic` (cycle m sans recomputer la
         // queue) au lieu de rebaser à 0.
+        // ⚠️ Après le pas, `m` peut valoir `ref_len` (un cran après le dernier
+        // index) : NE PAS lire `z_ref[m]` sans garde (panic OOB). On clamp à
+        // `ref_len-1` ; la branche périodique passe par `wrap_periodic` (ignore
+        // z_curr), l'escape-time au bout rebase avec la dernière valeur valide.
         let end_of_ref = (m as usize) + 1 >= ref_len;
-        let z_m_new = ref_orbit.z_ref_f64[m as usize];
+        let m_read = (m as usize).min(ref_len - 1);
+        let z_m_new = ref_orbit.z_ref_f64[m_read];
         let z_curr_re = FloatExp::from_f64(z_m_new.re) + delta.re;
         let z_curr_im = FloatExp::from_f64(z_m_new.im) + delta.im;
         let z_curr_norm_sqr_fexp = z_curr_re.sqr() + z_curr_im.sqr();
@@ -401,8 +406,11 @@ fn iterate_pixel_unified_exp_generic(
         // référence ⇒ z := Z[m]+δ, m := 0. Orbites périodiques : `wrap_periodic`
         // (cycle m). Escape-time au bout : rebase à 0 (F3) au lieu d'abandonner
         // → la perturbation reste utilisable (pas de fallback GMP), cf. G2.
+        // ⚠️ `m` peut valoir `ref_len` après le pas → clamp pour éviter le panic
+        // OOB (la branche périodique passe par wrap_periodic, ignore z_curr).
         let end_of_ref = (m as usize) + 1 >= ref_len;
-        let z_m_new = ref_orbit.z_ref_f64[m as usize];
+        let m_read = (m as usize).min(ref_len - 1);
+        let z_m_new = ref_orbit.z_ref_f64[m_read];
         let z_curr_re = FloatExp::from_f64(z_m_new.re) + delta.re;
         let z_curr_im = FloatExp::from_f64(z_m_new.im) + delta.im;
         let z_curr_norm_sqr_fexp = z_curr_re.sqr() + z_curr_im.sqr();
