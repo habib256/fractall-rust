@@ -1660,10 +1660,17 @@ impl FractallApp {
         self.start_render();
     }
     
-    /// Dézoom au point spécifié avec un facteur donné.
-    fn zoom_out_at_point(&mut self, _point: Complex64, factor: f64) {
-        // Le centre reste le même, on élargit juste le span
-        self.zoom_out_hp(factor);
+    /// Dézoom au point spécifié : symétrique de `zoom_at_point` (re-centre sur le
+    /// point sous le curseur puis élargit le span). Avant, `_point` était ignoré
+    /// → le dézoom se faisait toujours au centre (asymétrie avec le clic gauche).
+    fn zoom_out_at_point(&mut self, point: Complex64, factor: f64) {
+        // ratio du point dans l'image : ratio = (point - center)/span + 0.5
+        let ratio_x = (point.re - self.params.center_x) / self.params.span_x + 0.5;
+        let ratio_y = (point.im - self.params.center_y) / self.params.span_y + 0.5;
+        // zoom_factor < 1 ⇒ new_span = span / zoom_factor = span × factor (dézoom),
+        // tout en re-centrant sur le point (même chemin HP que le zoom in).
+        self.zoom_hp(ratio_x, ratio_y, 1.0 / factor);
+        self.orbit_cache = None;
         self.start_render();
     }
     
