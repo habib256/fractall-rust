@@ -33,9 +33,9 @@ F3** pour orbites escape-time (`pixel_loop_exp.rs`) → plus de fallback GMP.
 (Bonus : BLA aligned-lookup + table ~8× plus petite.)
 
 **Goulots restants** :
-1. **Bug auto-nucleus near-axis** (`optimize_reference_center`, toujours actif)
-   : snappe la référence Mandelbrot trop loin sur les points près de l'axe →
-   anneaux (cusp -0.75) + hang test2 @1920×1080. Fix ciblé → **G3**.
+1. **Bug auto-nucleus / hang test2 @1920×1080** (`optimize_reference_center`
+   snappe la réf trop loin près de l'axe) → **G3**. *(NB : les anneaux cusp -0.75
+   n'étaient PAS dus à ça — vraie cause = `max_perturb_iterations`, RÉSOLU.)*
 2. **Divergences restantes élucidées** (G3) : glitch_test_1 = victoire fractall
    (F3 dégénéré) ; seahorse, period-detection lossy encore ouverts.
 3. **Re-sweep corpus complet** (désormais tractable, perf résolue) pour confirmer
@@ -346,7 +346,17 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
 
 ## ✅ Shipped (condensé, le plus récent en haut)
 
-**2026-05-21** (sur `main`, commits `fd9ce4a`..`1d88d16`) :
+**2026-05-21** (sur `main` `fd9ce4a`..`1d88d16` ; + branche `g3-cusp-rings-fix`
+`239952e`/`aca861c` à fast-forward) :
+- **Fix G3 — anneaux concentriques cusp -0.75** (`239952e`) : `max_perturb_iterations`
+  défaut 1024 < iter requis (~1700) tronquait les pas directs → compte d'itération
+  radial ⇒ anneaux. Clamp `max_perturb_iterations`/`max_bla_steps` à
+  `≥ iteration_max` dans `render_perturbation_with_cache`. cusp == GMP (mean 1.29
+  vs 56.87) ; e113 golden encore + proche GMP (régénéré + revu). cf. [[perturbation-cap-rings]].
+- **Fix GUI — deep zoom uniforme après zoom** (`aca861c`) : `HP_PRECISION` FIXE
+  (256 bits) tronquait le centre au zoom (à 1e235 il faut ~783 bits) → vue fausse
+  → image uniforme. `hp_arith_precision()` scale avec le span (`-log2(span)+96`).
+  cf. [[uniform-image-causes]].
 - **🏆 G2 RÉSOLU — fallback GMP éliminé (rebase-at-end F3)** : les cas deep
   escape-time (e50/e1000/dragon/… 36 ex-perf-bound) rendaient en GMP par-pixel
   car leur réf s'évade (`ref_truncated` → exhausted → GMP). Fix : rebase à `m=0`
@@ -371,8 +381,10 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
 - **Harness `compare_f3.py` durci** : `--bailout` (alignement ER des 2 côtés),
   classification timeout↔fail↔perf, métrique Δ **relative**, détecteur
   F3-dégénéré (timing + uniformité), `--out` absolu. `bench/` gitignoré.
-- **Root cause identifié** : `optimize_reference_center` (snap auto near-axis) =
-  cause commune suspectée des anneaux cusp -0.75 + hang test2 @1920×1080 (→ G3).
+- **Piste `optimize_reference_center`** (snap auto near-axis) pour le hang test2
+  @1920×1080 (→ G3). *(Hypothèse initiale « cause commune avec les anneaux
+  cusp -0.75 » INFIRMÉE : les anneaux venaient de `max_perturb_iterations`, cf.
+  fix `239952e`.)*
 
 **2026-05-20** :
 - **Chemin de rendu UNIFIÉ CLI ↔ GUI** : un seul dispatcher CPU
