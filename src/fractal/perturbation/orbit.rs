@@ -1005,11 +1005,21 @@ pub fn compute_reference_orbit(
         Float::with_val(prec, params.center_y)
     };
     
-    // Nucleus optimization (inspired by rust-fractal-core's root_finding):
-    // Try to snap the reference point to the nearest Mandelbrot nucleus.
-    // This makes the reference orbit exactly periodic, reducing glitches
-    // and improving stability for surrounding pixels.
-    let (ref_center_x, ref_center_y) = if matches!(params.fractal_type, FractalType::Mandelbrot) {
+    // Référence = centre de vue (standard F3). L'ancien **auto-snap nucleus**
+    // (`optimize_reference_center`, inspiré rust-fractal-core) snappait la réf vers
+    // le nucleus voisin pour rendre l'orbite périodique (anti-glitch). DÉSACTIVÉ
+    // (2026-05-22) : il produisait des rendus FAUX — la réf devenue périodique
+    // déclenchait soit la troncation lossy (test2 @1920, mandelbrot_perturb_1e6 :
+    // ~94 % de pixels ≠ GMP), soit un HANG sans troncation. Le rebase-at-end (G2)
+    // gère déjà les références qui s'évadent, donc le bénéfice anti-glitch est
+    // subsumé. `--find-nucleus` reste pour le raffinement EXPLICITE vers minibrot.
+    // Réactivable via `FRACTALL_NUCLEUS_SNAP=1` (debug/expérimentation).
+    let nucleus_snap_enabled = std::env::var("FRACTALL_NUCLEUS_SNAP")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let (ref_center_x, ref_center_y) = if nucleus_snap_enabled
+        && matches!(params.fractal_type, FractalType::Mandelbrot)
+    {
         if let Some(nucleus) = optimize_reference_center(
             &center_x_gmp, &center_y_gmp,
             params.span_x, params.span_y,
