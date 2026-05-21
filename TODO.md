@@ -33,13 +33,18 @@ F3** pour orbites escape-time (`pixel_loop_exp.rs`) → plus de fallback GMP.
 (Bonus : BLA aligned-lookup + table ~8× plus petite.)
 
 **Goulots restants** :
-1. **Bug auto-nucleus / hang test2 @1920×1080** (`optimize_reference_center`
-   snappe la réf trop loin près de l'axe) → **G3**. *(NB : les anneaux cusp -0.75
-   n'étaient PAS dus à ça — vraie cause = `max_perturb_iterations`, RÉSOLU.)*
-2. **Divergences restantes élucidées** (G3) : glitch_test_1 = victoire fractall
-   (F3 dégénéré) ; seahorse, period-detection lossy encore ouverts.
-3. **Re-sweep corpus complet** (désormais tractable, perf résolue) pour confirmer
-   la parité F3 sur les 36 ex-perf-bound → **G1**.
+1. **✅ Bug auto-nucleus test2 @1920×1080 — RÉSOLU (2026-05-22)**. Ce n'était pas
+   qu'un hang : `optimize_reference_center` (auto-snap réf → nucleus voisin) rendait
+   FAUX (test2 82 %, mandelbrot_perturb_1e6 93.8 % ≠ GMP — le golden p6 encodait
+   l'image fausse). **Désactivé par défaut** (le rebase-at-end G2 subsume l'anti-glitch ;
+   réf = centre de vue, standard F3). p6 golden corrigé. Re-sweep snap-off identique
+   au baseline (0 régression).
+2. **Divergences restantes élucidées** (G3) : glitch_test_1/5 = victoire fractall
+   (F3 dégénéré) ; period-detection faux-positif RÉSOLU (tol 0.85). Seahorse =
+   perf (10¹⁰ iter), pas correction.
+3. **✅ Re-sweep corpus complet** (G1) : 84 cas, 0 échec de correction. Seuls
+   e22522 (hors plage précision, désormais **averti** au lieu de faux-silencieux)
+   + 6 perf-timeout restent.
 
 ---
 
