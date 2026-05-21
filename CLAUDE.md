@@ -184,8 +184,13 @@ Si `params.use_bytecode_engine` ET `compile_formula(type, power)` réussit :
   distance estimation, interior detection, orbit traps via tracking de `dz`.
 - **CPU perturbation** : `perturbation/delta.rs::try_bytecode_unified_path`
   → `bytecode/pixel_loop.rs` (f64) ou `pixel_loop_exp.rs` (ComplexExp,
-  deep zoom > 1e13). **Rebasing F3 strict** (`|Z[m+1] + δ|² < |δ|²`)
-  remplace la glitch detection Pauldelbrot legacy.
+  deep zoom > 1e13). **Rebasing F3 strict** (`|Z[m] + δ|² < |δ|²` **OU bout de
+  référence**) remplace la glitch detection Pauldelbrot legacy. Le **rebase-at-end**
+  (F3 `hybrid.cc:301` : `z := Z+δ, m := 0` quand la réf est épuisée) garde les
+  centres escape-time profonds sur le path perturbation au lieu de tomber en GMP
+  par-pixel — c'est ce qui a débloqué la perf deep-zoom (e50 544→1.6 s, e1000
+  742→0.5 s, dragon ~6 h→6.5 s à 256², cf. TODO G2). ⚠️ Lire `z_ref[m]` avec `m`
+  clampé à `ref_len-1` (après un pas, `m` peut valoir `ref_len`).
 - **GPU** : `gpu/mod.rs::try_render_bytecode` → `bytecode_kernel.wgsl`.
 
 Fallback legacy si : type non compilable, `--no-bytecode`, ou GMP deep zoom
@@ -242,7 +247,7 @@ centre / type / précision.
 | `series_order` | ordre série (0 = off) | 2 |
 | `max_secondary_refs` | refs secondaires (legacy) | 3 |
 | `min_glitch_cluster_size` | taille min cluster (legacy) | 100 |
-| `max_perturb_iterations` | cap itérations par pixel | 1024 |
+| `max_perturb_iterations` | cap pas DIRECTS par pixel (⚠️ voir note) | 1024 |
 | `max_bla_steps` | cap pas BLA par pixel | 1024 |
 | `use_reference_precision_formula` | formule C++ F3 | true |
 | `use_bytecode_engine` | path unifié BLA mat2 + rebasing F3 | true |
@@ -250,6 +255,15 @@ centre / type / précision.
 | `jitter_scale` | amplitude AA sous-pixel (px) | 0.0 |
 | `aa_subpixel_offset` | offset AA transitoire (`#[serde(skip)]`, posé par la boucle multi-sample) | `[0,0]` |
 | `rotation` | rad CCW, mat2(cos,-sin,sin,cos) | 0.0 |
+
+⚠️ **`max_perturb_iterations` / `max_bla_steps` : clampés à `≥ iteration_max`**
+dans `render_perturbation_with_cache` (chemin commun). Comme `iters_ptb ≤ n <
+iteration_max`, un cap < iteration_max ne fait que tronquer les pas directs tôt →
+compte d'itération ~radial ⇒ **anneaux concentriques** (cf. cusp -0.75 : défaut
+1024 < ~1700 requis). Le défaut 1024 reste le champ utilisateur, mais le clamp
+garantit l'absence de troncature parasite. F3 met `maximum_perturb_iterations =
+iterations`. Le loader TOML faisait déjà `= iters` ; le clamp couvre GUI + CLI
+non-TOML.
 
 **Escape radius** : champ `bailout`. Défaut **25** (`bailout_sqr=625`,
 `const ESCAPE_TIME_BAILOUT`, `definitions.rs`) pour la famille escape-time
@@ -390,8 +404,14 @@ Windows DX12 / Vulkan.
 - Rendu progressif multi-passes (preview → full).
 - Recolorisation asynchrone (versioning pour ignorer les résultats obsolètes).
 - Cache orbite + BLA entre re-rendus.
-- Coordonnées HP synchronisées vers `FractalParams`.
-- Sélection rectangle pour zoom, switch CPU/GPU, stats centre/iter/zoom.
+- Coordonnées HP synchronisées vers `FractalParams`. ⚠️ L'arithmétique HP des
+  zooms (`zoom_hp`/`zoom_rect_hp`/`zoom_out_hp`) utilise `hp_arith_precision()`
+  (≈ `-log2(span)+96` bits, **dynamique**), PAS le `HP_PRECISION` fixe (256 b) :
+  sinon le centre est arrondi au zoom (à 1e235 il faut ~783 b) → vue fausse →
+  **image uniforme** après zoom. Les sync HP↔f64 gardent 256 b (f64 = 53 b).
+- Sélection rectangle pour zoom (méthode préférée), switch CPU/GPU, stats.
+  Clic gauche = zoom in re-centré sur le point ; clic droit = zoom out re-centré
+  sur le curseur (symétrique).
 - Preview Julia au survol (touche `J` pour basculer).
 - Rendu haute résolution asynchrone (Window / 4K / 8K).
 - Drag-and-drop PNG pour restaurer l'état. Save (S) embed metadata JSON.
