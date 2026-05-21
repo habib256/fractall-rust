@@ -299,6 +299,16 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
 
 ## ✅ Shipped (condensé, le plus récent en haut)
 
+**2026-05-21** :
+- **Parité F3 mesurée sur le corpus (G1)** : 2 sweeps (1920×1080 cap commun =
+  83/84 + 79 pixel-équiv ; pleine profondeur = 46 réels validés jusqu'à 1e1200).
+  **0 régression de correction.** glitch_test_1 tranché (victoire fractall).
+- **Harness `compare_f3.py` durci** : `--bailout` (alignement ER des 2 côtés),
+  classification timeout↔fail↔perf, métrique Δ **relative**, détecteur
+  F3-dégénéré (timing + uniformité), `--out` absolu. `bench/` gitignoré.
+- **Root cause identifié** : `optimize_reference_center` (snap auto near-axis) =
+  cause commune suspectée des anneaux cusp -0.75 + hang test2 @1920×1080 (→ G3).
+
 **2026-05-20** :
 - **Chemin de rendu UNIFIÉ CLI ↔ GUI** : un seul dispatcher CPU
   `render_escape_time_cancellable_with_reuse` (le CLI `render_escape_time` y
