@@ -251,17 +251,14 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
   précision (256/1024/4096 identique), period-detection (NO_PERIOD identique),
   optimize_reference_center (pas de snap ici), exp-vs-f64 (les deux ringaient).
   178 unit + golden verts. *(Zone figée en golden : `mandelbrot_cusp_m075`.)*
-- [ ] **🔴 floral_fantasy : image UNIFORME en chemin par défaut (period-detection)**
-  (découvert 2026-05-21 en verrouillant les goldens). zoom 1.55e85, centre
-  intérieur. **Défaut (period ON) → 1 couleur (FAUX)** ; `FRACTALL_NO_PERIOD=1` →
-  194 couleurs (correct, == F3 dans le re-sweep, rel 0.004 %). Donc le chemin
-  périodique (period détecté 284, orbite tronquée à 796, `wrap_periodic`) produit
-  de l'uniforme là où l'escape-time + rebase-at-end est correct. **C'est un bug
-  de chemin par défaut** (GUI + CLI sans flag) — distinct du cap (cause #2 des
-  uniformes, cf. [[uniform-image-causes]]). **Done when** : défaut == NO_PERIOD
-  sur floral_fantasy, puis l'ajouter au golden `mandelbrot_floral` (bloqué tant
-  que faux). Pistes : period-detection faux-positif / `wrap_periodic` dégénéré /
-  fallback escape-time quand le rendu périodique serait uniforme.
+- [x] **✅ floral_fantasy : image UNIFORME en chemin par défaut — RÉSOLU
+  (2026-05-21)**. zoom 1.55e85. Défaut (period ON) → 1 couleur ; NO_PERIOD → 194
+  (correct). **Cause** : période détectée = **FAUX-POSITIF** (graze) — tolérance
+  Brent `2^(-prec·0.4)` trop lâche → troncation + `wrap_periodic` sur réf fausse
+  → uniforme. **Fix** : tolérance resserrée à `2^(-prec·0.85)` (orbit.rs) — les
+  vraies périodes (~2^(-prec)) restent détectées, les grazes rejetés → escape-time
+  + rebase-at-end (correct). Défaut == NO_PERIOD == F3. Verrouillé : golden
+  `mandelbrot_floral`. Scan corpus : 0 nouveau uniforme, 0 régression perf.
 - [x] **glitch_test_1 — anneaux concentriques : TRANCHÉ (2026-05-21)** vers une
   **victoire fractall**. Le détecteur F3-dégénéré du harness (timing + uniformité)
   flagge glitch_test_1 : **F3 rend un extérieur uniforme (0.3 % intérieur) en
@@ -342,9 +339,9 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
 **Done when** :
 - [x] **Golden : verrouiller les fixes deep-zoom** (2026-05-21) — ajout de
   `mandelbrot_e50` (1e50, rebase-at-end G2), `mandelbrot_e1000` (1e1000),
-  `mandelbrot_cusp_m075` (cusp -0.75, fix max_perturb G3). Rendus == chemin par
-  défaut == GMP, revus visuellement, verts en CI (déjà câblée). *(floral_fantasy
-  en attente du fix period-detection, cf. G3.)*
+  `mandelbrot_cusp_m075` (cusp -0.75, fix max_perturb G3), `mandelbrot_floral`
+  (1.55e85, fix period-detection G3). Rendus == chemin par défaut == GMP, revus
+  visuellement, verts en CI (déjà câblée). 4 nouveaux goldens.
 - [ ] **CI : étendre le corpus golden** à zooms intermédiaires (1e10, 1e15,
   1e20), cap ~70 s/cas. (CI de base déjà en place : unit + golden sur push/PR.)
 - [ ] **Vérifier visuellement la GUI AA** (env de dev headless ici → non testé
