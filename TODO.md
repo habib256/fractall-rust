@@ -30,8 +30,9 @@
    orbite), PAS compute-bound. Livré : BLA lookup aligned-start + libération des
    niveaux BLA inutilisés (table ~8× plus petite). Mesuré 256² : e50 **544 s**,
    e1000 **742 s**, **dragon ~6 h (physiquement impossible <180 s** : 3.3e11
-   iter, plancher f64 ~1966 s). Acceptation <180 s/256² inatteignable telle
-   quelle → nécessite **SIMD across-pixels** (e50/e1000) + recalibrer dragon.
+   iter, plancher f64 ~1966 s). **Acceptation recalibrée** (validée utilisateur)
+   : e50/e1000 <180 s via **SIMD across-pixels** (chantier séparé) ; dragon =
+   wall-time relative à F3. Gains committés (`g2-bla-perf-memory`).
 2. **Bug auto-nucleus near-axis** (`optimize_reference_center`, toujours actif)
    : snappe la référence Mandelbrot trop loin sur les points près de l'axe →
    anneaux (cusp -0.75) + hang test2 @1920×1080. Fix ciblé → **G3**.
