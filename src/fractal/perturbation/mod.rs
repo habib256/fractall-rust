@@ -554,6 +554,12 @@ pub(crate) fn effective_pixel_size(params: &FractalParams) -> f64 {
 ///   `bits = max(24, 24 + floor(log2(zoom * height)))`, puis clamp 128..8192.
 /// - **Politique conservative** (défaut): `bits = log2(zoom) + marge_par_palier`, 128..8192.  
 ///   Choix délibéré plus conservateur pour éviter les glitches aux zooms extrêmes.
+/// Plafond de précision GMP pour la perturbation (≈ zoom 1e19700, largement
+/// au-dessus du corpus documenté 1e8000). Borné pour éviter que la mémoire ne
+/// dérape aux zooms pathologiques (cf. [[memory-caution]]) ; un dépassement
+/// déclenche un avertissement plutôt qu'un rendu faux silencieux.
+pub(crate) const MAX_PERTURB_PRECISION_BITS: u32 = 65536;
+
 pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32 {
     if params.width == 0 || params.height == 0 {
         return params.precision_bits.max(128);
@@ -626,7 +632,18 @@ pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32
         let exp = (log2_zoom + log2_height).floor() as i64;
         // 1 + exp matches max(24, 24 + exp) when exp grows; clamp negative to 0.
         let bits = if exp >= 0 { (24 + exp) as i64 } else { 24 } as u64;
-        bits.clamp(128, 65536) as u32
+        // Garde-fou « zéro sortie fausse silencieuse » : au-delà du clamp (65536 b
+        // ≈ zoom 1e19700, bien au-dessus du corpus documenté 1e8000), la référence
+        // est sous-précise → image potentiellement uniforme/fausse (cf. e22522,
+        // 1e22522, ~74800 b requis). On AVERTIT au lieu de rendre faux en silence.
+        if bits > MAX_PERTURB_PRECISION_BITS as u64 {
+            eprintln!(
+                "[PRECISION] ⚠ zoom requiert ~{} bits > plafond {} : référence sous-précise, \
+                 l'image peut être uniforme/fausse (zoom hors plage supportée ~1e19700).",
+                bits, MAX_PERTURB_PRECISION_BITS
+            );
+        }
+        bits.clamp(128, MAX_PERTURB_PRECISION_BITS as u64) as u32
     } else {
         // Politique conservative Rust: log2(zoom) + marge par palier (choix délibéré)
         let zoom_bits = log2_zoom.ceil() as i64;
@@ -644,14 +661,14 @@ pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32
             64
         };
         let needed_bits = (zoom_bits + safety_margin).max(128) as u64;
-        needed_bits.clamp(128, 65536) as u32
+        needed_bits.clamp(128, MAX_PERTURB_PRECISION_BITS as u64) as u32
     };
 
     // Respect params.precision_bits as a floor: if the user (or a preset) explicitly
     // requests higher precision than the auto-formula, honor it. This keeps GMP pure
     // and perturbation aligned under MpcParams::from_params and avoids precision-
     // mismatch divergences at extreme zooms (seen at e50 with 170k+ iterations).
-    final_bits.max(params.precision_bits.clamp(128, 65536))
+    final_bits.max(params.precision_bits.clamp(128, MAX_PERTURB_PRECISION_BITS))
 }
 
 /// Détermine si le zoom est trop profond pour utiliser la perturbation standard (f64/ComplexExp).
