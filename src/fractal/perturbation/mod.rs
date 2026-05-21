@@ -843,6 +843,19 @@ pub fn render_perturbation_with_cache(
     reuse: Option<(&[u32], &[Complex64], u32, u32)>,
     orbit_cache: Option<&Arc<ReferenceOrbitCache>>,
 ) -> Option<((Vec<u32>, Vec<Complex64>, Vec<f64>), Arc<ReferenceOrbitCache>)> {
+    // Fix G3 (anneaux concentriques) : `max_perturb_iterations` / `max_bla_steps`
+    // ne doivent JAMAIS plafonner sous `iteration_max`. Comme `iters_ptb ≤ n <
+    // iteration_max`, un cap < iteration_max tronque les pixels qui ont besoin de
+    // beaucoup de pas directs → ils sortent tôt avec un compte d'itération
+    // ~radial → anneaux (cf. cusp -0.75, défaut 1024 < iter requis ~1700). F3 met
+    // `maximum_perturb_iterations = iterations` ; on s'aligne. Le loader TOML le
+    // faisait déjà ; ici on couvre GUI + CLI non-TOML (chemin commun).
+    let params = &{
+        let mut p = params.clone();
+        p.max_perturb_iterations = p.max_perturb_iterations.max(p.iteration_max);
+        p.max_bla_steps = p.max_bla_steps.max(p.iteration_max);
+        p
+    };
     let perf = perf_enabled();
     let t_all_start = Instant::now();
     let t_orbit_start = Instant::now();

@@ -236,28 +236,21 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
 
 ### G3 — Élucider les divergences ouvertes · `[P0 · correction]`
 
-- [ ] **🔴 CPU perturbation : anneaux concentriques près du cusp -0.75**
-  (découvert 2026-05-20, image utilisateur `fractal_1779301318.png`). Mandelbrot
-  centre ≈ (-0.749996, -0.004086), zoom ≈ 2e13, 2500 iter. **CPU perturbation
-  rend des anneaux concentriques (FAUX)** alors que **GPU perturbation ET CPU
-  GMP pur rendent le champ de cardioïdes correct**. → vrai **bug du cœur
-  perturbation CPU** (`render_perturbation_with_cache` / pixel_loop), partagé
-  CLI+GUI (le CLI le reproduit). **PAS** la period-detection (anneaux persistent
-  avec `FRACTALL_NO_PERIOD=1`). Distinct de glitch_test_1 (ici GMP est CORRECT →
-  référence sûre pour débugger). **Done when** : CPU perturbation == GMP/GPU sur
-  cette vue, puis **l'ajouter aux golden images** (la zone est demandée comme
-  golden — bloqué tant que le rendu est faux). Repro : voir paramètres extraits
-  du PNG (HP center + `--zoom` = 4/span_x + `--algorithm perturbation`).
-  **🔑 PISTE FORTE (2026-05-21)** : `optimize_reference_center` (`orbit.rs:1012`)
-  snappe AUTOMATIQUEMENT la référence Mandelbrot vers le nucleus le plus proche
-  — toujours actif (pas opt-in). Sur les points près de l'axe réel / cusp -0.75,
-  il déplace la référence LOIN du centre de vue → grand `dc` → perturbation
-  dégradée. **Même cause suspectée pour le hang test2 @1920×1080** (zoom 2.1e9 :
-  à haute résolution le pixel plus fin franchit le seuil perturbation → snap
-  auto vers un nucleus à imag≈7e-189, ~300 px hors vue → boucle pixel qui
-  s'emballe). **À tester** : désactiver/borner `optimize_reference_center`
-  (rejeter le snap si nucleus > k·span du centre) — devrait fixer LES DEUX
-  (rings cusp + hang test2).
+- [x] **✅ CPU perturbation : anneaux concentriques près du cusp -0.75 — RÉSOLU
+  (2026-05-21)**. Centre ≈ (-0.749996, -0.004086), zoom ≈ 2.8e10, 2500 iter.
+  **Vraie cause** : `max_perturb_iterations` (cap des pas DIRECTS) défaut **1024**
+  < iter requis (~1700). Comme `iters_ptb ≤ n < iteration_max`, ce cap ne mord
+  QUE s'il est < iteration_max → les pixels tronquent tôt avec un compte
+  d'itération ~radial ⇒ anneaux. Le loader TOML faisait `= iters` (donc OK en
+  CLI --toml) mais GUI + CLI non-TOML restaient à 1024. **Fix** : clamp
+  `max_perturb_iterations`/`max_bla_steps` à `≥ iteration_max` dans
+  `render_perturbation_with_cache` (chemin commun CLI+GUI+quality), alignement F3
+  (`maximum_perturb_iterations = iterations`). Résultat : cusp == GMP (mean 1.29
+  vs 56.87 avant) ; e113 golden encore plus proche du GMP pur (mean 0.005 vs
+  0.089) → régénéré + revu. **Fausses pistes écartées** : BLA (off = pire),
+  précision (256/1024/4096 identique), period-detection (NO_PERIOD identique),
+  optimize_reference_center (pas de snap ici), exp-vs-f64 (les deux ringaient).
+  178 unit + golden verts. *(La zone peut maintenant être ajoutée aux goldens.)*
 - [x] **glitch_test_1 — anneaux concentriques : TRANCHÉ (2026-05-21)** vers une
   **victoire fractall**. Le détecteur F3-dégénéré du harness (timing + uniformité)
   flagge glitch_test_1 : **F3 rend un extérieur uniforme (0.3 % intérieur) en
