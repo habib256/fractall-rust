@@ -20,6 +20,9 @@ Thumbs.db
 ## fractall-quality output
 /quality-reports/
 
+## F3 parity harness output (scripts/compare_f3.py)
+/bench/
+
 # Dépendances GUI Fraktaler-3 (optionnelles, non versionnées — clone local si besoin de compiler F3 avec GUI)
 /fraktaler-3-3.1/imgui/
 /fraktaler-3-3.1/imgui-filebrowser/

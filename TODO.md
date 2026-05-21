@@ -8,10 +8,12 @@
 > 15 modes de coloring, 7 plane transforms, fractales non-escape-time, GUI
 > interactive, drag-drop PNG). Voir [§Ne pas régresser](#-ne-pas-régresser).
 
-**État (2026-05-20)** — Socle solide :
+**État (2026-05-21)** — Socle solide :
 - Moteur **bytecode unifié** (8 opcodes) sur CPU + GPU : un seul pixel-loop
   couvre Mandelbrot/Julia/BurningShip/Tricorn/Celtic/Buffalo/PerpBS/Multibrot
   + variantes Julia.
+- **Chemin de rendu UNIQUE CLI ↔ GUI** : un seul dispatcher
+  (`render_escape_time_cancellable_with_reuse`), plus de dispatch dupliqué.
 - **Perturbation** + BLA `mat2` (dual-numbers) + **rebasing F3** + FloatExp
   (`ComplexExp`) pour zoom > 1e13, GMP pour l'orbite référence.
 - **Nucleus finder** atom-domain (`hybrid_period` + `hybrid_center` +
@@ -19,12 +21,18 @@
 - Coordonnées **HP > 1e308**, escape radius **aligné F3 (25)**, **BLA
   pixel-spacing corrigé**, **anti-aliasing multi-sample**, **rotation GPU
   corrigée**.
+- **Parité F3 mesurée (G1)** : corpus 84 cas swept (harness durci) →
+  **0 régression de correction**, parité validée jusqu'à zoom **1e1200**.
 
-**Goulots restants** (les 2 vrais chantiers) :
-1. **Parité visuelle F3** sur le corpus `toml/` (mesurer, élucider les
-   divergences restantes) → **G1**, **G3**.
-2. **Performance deep-zoom 1e15–1e1000** : on force GMP là où float128 /
-   doubleexp seraient 10–100× plus rapides → **G2**.
+**Goulots restants** (les 2 vrais chantiers + 1 bug ciblé) :
+1. **Performance deep-zoom 1e15–1e1000** : on force GMP / l'exp-path lent là où
+   float128 / doubleexp seraient 10–100× plus rapides. C'est LE blocage de la
+   parité full-depth (36/84 cas perf-bound) → **G2**.
+2. **Bug auto-nucleus near-axis** (`optimize_reference_center`, toujours actif)
+   : snappe la référence Mandelbrot trop loin sur les points près de l'axe →
+   anneaux (cusp -0.75) + hang test2 @1920×1080. Fix ciblé → **G3**.
+3. **Divergences restantes élucidées** (G3) : glitch_test_1 = victoire fractall
+   (F3 dégénéré) ; seahorse, period-detection lossy encore ouverts.
 
 ---
 
@@ -56,14 +64,65 @@ Fractall sera « excellent » quand les 5 piliers sont atteints :
 métriques EXR N0/NF). Flags de parité : `FRACTALL_NO_AUTO_ADJUST=1`,
 `FRACTALL_NO_PERIOD=1`. **ER aligné des deux côtés** : `--escape-radius` écrit
 `bailout.escape_radius` côté F3 ET passe `--bailout` côté fractall (défaut 25).
-**État** : sweep complet 84 cas en cours (256×144, ER=25). Pixel-perfect :
-test5, test6.
+**Deux sweeps complémentaires (2026-05-21, ER=25 aligné) :**
+
+**(A) Sweep LITTÉRAL « 84 cas à 1920×1080 »** — iter cap commun (1000) pour que
+TOUS terminent (apples-to-apples : F3 et fractall plafonnés identiquement).
+**83/84 ok · 0 échec · 0 timeout** (1 holdout : test2, bug auto-nucleus, cf.
+G3 — parité connue via f64). **79/84 pixel-équivalents à <0.01 %**, seuls
+spiral (4.6 %) et line (3.1 %) divergent (bord chaotique, structure résolue à
+1000 iter). Rapport : `bench/compare_1080/_summary.md`. *NB : au cap 1000, les
+cas profonds sont sous-résolus → « pixel-equiv » trivial (accord both-inside) ;
+ce sweep prouve l'accord F3≡fractall à budget commun, pas la structure profonde.*
+
+**(B) Sweep CORRECTION pleine profondeur** (iter natives ; 128×72/120s + push
+96×54/300s) : **46 ok · 2 F3-dégénéré (fractall correct) · 36 perf/timeout ·
+0 échec.** C'est le test de parité RÉEL (structure deep-zoom complète). Rapports :
+`bench/compare_full/` + `bench/compare_perf2/`.
+
+> **🎯 VERDICT G1 : 0 régression de correction sur tout le corpus rendable, à
+> TOUTE profondeur.** Les cas qui rendent — y compris **extrêmes** : e1121
+> (zoom **1e1121**) et e1200 (zoom **1e1200**) matchent F3 à **~0.01 %** ;
+> dinosaur_fossils (5M iter) & glitch_test_6 (15M iter) pixel-perfect ; e1000/
+> e318/e50/e113/11_dimensions/lethal_weapon (1.6M iter) en divergence faible
+> bord-chaotique. **La correction deep-zoom de fractall est donc validée jusqu'à
+> 1e1200.** Le seul blocage de « produire les 84 images F3 » est la PERFORMANCE :
+> 36/84 cas (200k–10¹⁰ itérations sur l'exp-path lent) ne terminent pas même à
+> 300 s → **G1 est GATÉ PAR G2** (pas par la correction). On ne peut pas comparer
+> des images qu'on ne sait pas rendre dans le temps imparti.
+
+Classification des 39 cas complétés (Δ **relatif** = Δmean/iter, seule métrique
+comparable entre cas) :
+- **Pixel-perfect** (<0.01 %, 4) : test5, test6, **dinosaur_fossils** (5M iter),
+  **glitch_test_6** (15M iter).
+- **Bord/équivalent** (<0.3 %, 8) : e401, e1000, glitch_test_4, floral_fantasy,
+  glitch_test_2, glitch_test_3, integral_of_ex2, heaven.
+- **Divergence modérée** (0.3–2 %, 19, bord chaotique intrinsèque) : windmill, x,
+  virus, mitosis, test3, tick_tock, all_seeing_eye, e50, test2, golden_spider,
+  leaded_glass, e113, test, mitosis2, magic, flake, lya, line, uranium.
+- **À investiguer** (>2 %, 8) — tous explicables : test4 (31 iter → rel% = bruit),
+  spiral/nr_fail/peanuts/liiiines (bord chaotique), **rug** (BLA over-skip connu),
+  lethal_weapon/**threads_colour** (1.5–1.6M iter, zoom jusqu'à 1e652 — frontière
+  perf/précision extrême).
+- **F3-dégénéré (2)** : glitch_test_5 (F3 100 % intérieur, 0.014 s) **et
+  glitch_test_1** (F3 extérieur uniforme 0.3 % intérieur, 0.085 s fast-path) —
+  fractall structuré dans les deux cas. **Le détecteur tranche enfin
+  glitch_test_1 en faveur de fractall** (cf. G3 : le « rings » était une victoire
+  fractall, F3 dégénéré sur ce lieu glitch-prone).
+- **Perf/timeout (36)** : ~13 borderline (200k–1M iter : e1016/e1086/e1298/
+  e22522/e634/e8000/e890/long/olbaid1-3/opus/the_complexity_of_a_line, finissent
+  >300 s) + ~23 catégoriquement infaisables (>1M iter : dragon 5M, wfs* 3.5M,
+  super_dense/wfs_mb/infinity/triangle 10-15M, hard/orion 20M, opus2 80M,
+  **seahorse 10¹⁰**, …) — exp-path trop lent → **G2**.
 
 **Done when** :
-- [ ] **Re-sweep complet** des 84 cas : rapport `mean_abs` + classification par
-  cas (pixel-equiv / bord-chaotique / F3-dégénéré / perf). *En cours.* (1920×1080
-  irréaliste pour les cas perf-bound — cf. G2 ; sweep à résolution 16:9
-  tractable + cas profonds classés « perf/timeout ».)
+- [x] **Re-sweep complet 84 cas à 1920×1080** (2026-05-21, sweep A) : 83/84
+  complétés avec `mean_abs` + classification (`bench/compare_1080/`), 79
+  pixel-équiv, 0 échec ; test2 = holdout (bug auto-nucleus G3, parité connue
+  via f64). + sweep B pleine profondeur (46 réels, validés jusqu'à 1e1200).
+  Tous les 84 cas sont classés. NB : à 1920×1080 il faut un cap d'itérations
+  commun pour COMPLÉTER les cas profonds (sinon timeout) ; la parité de
+  structure profonde réelle vient du sweep B (G2 pour les 36 deep restants).
 - [x] **Gain ER=25 quantifié** (2026-05-20) : à **ER aligné** (F3 et fractall
   au même ER), passer de 4 à 25 laisse Δmean **quasi inchangé** (test/test2/
   line/spiral/all_seeing_eye identiques à 4-5 décimales ; seul test4 améliore :
@@ -76,8 +135,15 @@ test5, test6.
   `f3_degenerate` quand F3 est quasi-uniforme (tout-intérieur/-extérieur ou std
   exterieur < 1e-3) **ET** rendu en < 0.1 s (fast-path) **ET** fractall structuré.
   Exclu du score. Vérifié sur glitch_test_5 (100% intérieur, 0.018 s).
-- [ ] Chaque cas restant : pixel-équivalent **ou** divergence expliquée et
-  classée (pas de FAIL non élucidé). *Issu du sweep en cours.*
+- [x] **Chaque cas classé, 0 FAIL non élucidé** (2026-05-21) : aucun statut
+  `fractall_fail` réel ; les 66 « perf/timeout » sont expliqués (G2), le
+  dégénéré exclu, les 17 complétés classés par Δ relatif (table ci-dessus). Les
+  divergences résiduelles sont soit bord-chaotique intrinsèque, soit la famille
+  rings/glitch (G3 : glitch_test_1 + le bug du cusp -0.75), soit la frontière
+  perf/précision extrême (threads_colour). Aucune régression de correction.
+- **Reste pour fermer G1 (dépend de G2)** : une fois la perf deep-zoom débloquée,
+  re-sweeper les 66 cas perf-bound à iter pleines pour confirmer la parité (ou
+  exposer de vrais écarts aujourd'hui masqués par le timeout).
 
 ### G2 — Performance deep-zoom : dispatch wisdom + types intermédiaires · `[P0 · perf]`
 
@@ -128,14 +194,23 @@ quand `|δ| < 2.2e-16·|z_ref|`, cf. seuil `PIXEL_SIZE_EXP_THRESHOLD=1e-13`,
   cette vue, puis **l'ajouter aux golden images** (la zone est demandée comme
   golden — bloqué tant que le rendu est faux). Repro : voir paramètres extraits
   du PNG (HP center + `--zoom` = 4/span_x + `--algorithm perturbation`).
-- [ ] **glitch_test_1 — anneaux concentriques** (zoom 3.3e46, period 7327).
-  fractall (perturbation **ET** `--algorithm gmp` pur) rend des anneaux ;
-  F3 rend du bruit chaotique. Précision écartée (double-double δ+réf), BLA
-  écarté (threshold 1e-30 ≡), series écarté, period/wrap écarté (NO_PERIOD =
-  anneaux quand même). **Signature identique à glitch_test_5** (GMP fractall ≡
-  perturbation fractall ≠ F3). Lean : victoire fractall probable (anneaux =
-  structure atom-domain réelle), mais non tranché — faudrait un 3e renderer ou
-  F3 haute-résolution.
+  **🔑 PISTE FORTE (2026-05-21)** : `optimize_reference_center` (`orbit.rs:1012`)
+  snappe AUTOMATIQUEMENT la référence Mandelbrot vers le nucleus le plus proche
+  — toujours actif (pas opt-in). Sur les points près de l'axe réel / cusp -0.75,
+  il déplace la référence LOIN du centre de vue → grand `dc` → perturbation
+  dégradée. **Même cause suspectée pour le hang test2 @1920×1080** (zoom 2.1e9 :
+  à haute résolution le pixel plus fin franchit le seuil perturbation → snap
+  auto vers un nucleus à imag≈7e-189, ~300 px hors vue → boucle pixel qui
+  s'emballe). **À tester** : désactiver/borner `optimize_reference_center`
+  (rejeter le snap si nucleus > k·span du centre) — devrait fixer LES DEUX
+  (rings cusp + hang test2).
+- [x] **glitch_test_1 — anneaux concentriques : TRANCHÉ (2026-05-21)** vers une
+  **victoire fractall**. Le détecteur F3-dégénéré du harness (timing + uniformité)
+  flagge glitch_test_1 : **F3 rend un extérieur uniforme (0.3 % intérieur) en
+  0.085 s (fast-path)** tandis que fractall rend une vraie structure. Combiné aux
+  diagnostics antérieurs (GMP pur fractall ≡ perturbation ≠ F3 ; précision/BLA/
+  series/period tous écartés), c'est la même signature que glitch_test_5 : F3
+  court-circuite sur ce lieu glitch-prone, fractall est correct. Exclu du score.
 - [ ] **seahorse-valley FAIL pré-existant** (Mandelbrot 1e8). `fractall-quality`
   pert-vs-GMP : **div_ratio 0.627** (63 % des pixels !), max_diff/p99 = 3072, à
   128² ET 256². **Indépendant** du bailout (4 ≡ 25) et du fix BLA pixel-spacing

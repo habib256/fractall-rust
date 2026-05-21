@@ -398,6 +398,11 @@ def process_one(
     row["mean_abs_dsi"] = f"{mean_abs:.4f}"
     row["max_abs_dsi"] = f"{max_abs:.4f}"
     row["rms_dsi"] = f"{rms:.4f}"
+    # Δmean RELATIF au nombre d'itérations : seule métrique comparable entre cas
+    # (un cas à 1.5M iter a un smooth ~1e6, donc un Δmean absolu élevé même à
+    # erreur relative faible). Classification : <0.1% pixel-equiv/bord, <2%
+    # divergence modérée, >2% à investiguer.
+    row["rel_dsi_pct"] = f"{100.0 * mean_abs / max(1, iters_used):.4f}"
     row["px_total"] = total
 
     # Colorize
@@ -489,7 +494,7 @@ def main() -> None:
             print(f"Tmp conservé: {tmp_root}")
 
     rows_ok = [r for r in rows if r["status"] == "ok"]
-    rows_ok.sort(key=lambda r: float(r["mean_abs_dsi"]))
+    rows_ok.sort(key=lambda r: float(r.get("rel_dsi_pct", "0")))
 
     if rows:
         # CSV (toutes lignes)
@@ -502,11 +507,13 @@ def main() -> None:
         with (args.out / "_summary.md").open("w") as f:
             f.write("# Parité F3 — résumé\n\n")
             f.write(f"Resolution {args.width}x{args.height} | ER aligné {args.escape_radius}\n\n")
-            f.write("| Cas | inside_mm | both_out | mean |Δsi| | max |Δsi| | rms |Δsi| |\n")
-            f.write("|-----|----------:|---------:|-----------:|----------:|----------:|\n")
+            f.write("Trié par Δmean **relatif** (Δmean / iterations) — seule métrique "
+                    "comparable entre cas (un cas à 1.5M iter a un smooth ~1e6).\n\n")
+            f.write("| Cas | iter | rel Δ% | inside_mm | mean |Δsi| | max |Δsi| |\n")
+            f.write("|-----|-----:|-------:|----------:|-----------:|----------:|\n")
             for r in rows_ok:
-                f.write(f"| `{r['name']}` | {r['inside_mismatch']} | {r['both_out']} | "
-                        f"{r['mean_abs_dsi']} | {r['max_abs_dsi']} | {r['rms_dsi']} |\n")
+                f.write(f"| `{r['name']}` | {r.get('iterations','?')} | {r.get('rel_dsi_pct','?')} | "
+                        f"{r['inside_mismatch']} | {r['mean_abs_dsi']} | {r['max_abs_dsi']} |\n")
             degen = [r for r in rows if r["status"] == "f3_degenerate"]
             if degen:
                 f.write("\n## F3 dégénéré (fractall correct — hors score)\n\n")
