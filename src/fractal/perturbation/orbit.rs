@@ -1119,9 +1119,15 @@ pub fn compute_reference_orbit(
     let enable_period_detection =
         matches!(params.fractal_type, FractalType::Mandelbrot) && !period_disabled_env;
     let period_tolerance = if enable_period_detection {
-        // Tolerance scales with GMP precision: smaller precision = larger tolerance
-        // Using 2^(-prec * 0.4) as a balance between sensitivity and false positives
-        let tol_exp = -(prec as f64) * 0.4;
+        // Tolérance ∝ précision GMP. **2^(-prec·0.85)** (et non 0.4 historique) :
+        // une période GENUINE matche à ~2^(-prec) (à l'accumulation près,
+        // ~2^(-prec+log2(cycle_start))), alors qu'un FAUX-POSITIF (l'orbite frôle
+        // un checkpoint sans être périodique) ne matche qu'à ~2^(-prec·0.4). Le
+        // 0.4 attrapait ces grazes → troncation + wrap → **image uniforme**
+        // (cf. floral_fantasy 1.55e85, period 284 graze). 0.85 rejette les grazes
+        // tout en gardant les vraies périodes. Les cas non-détectés retombent sur
+        // le path escape-time + rebase-at-end (correct, cf. fix G2).
+        let tol_exp = -(prec as f64) * 0.85;
         10.0f64.powf(tol_exp * 0.301) // 2^tol_exp ≈ 10^(tol_exp * log10(2))
     } else {
         0.0
@@ -1166,13 +1172,12 @@ pub fn compute_reference_orbit(
         // Compares z_n to a checkpoint value, doubling the step size when needed.
         // When |z_n - z_checkpoint| < tolerance, the orbit is periodic.
         //
-        // NOTE (parité F3) : même pour une période GENUINE (l'orbite revient
-        // bien à `z_candidat` après une période, confirmée), la troncature +
-        // `wrap_periodic` reste LOSSY car l'orbite n'est que ~périodique à la
-        // tolérance près (~2^(-0.4·prec)). Sur ~iter_max/période cycles,
-        // l'erreur s'accumule → perturbation divergente (image uniforme, cf.
-        // floral_fantasy). F3 calcule la référence complète. Désactiver via
-        // `FRACTALL_NO_PERIOD=1` (le harness compare_f3 le fait). À terme :
+        // NOTE (parité F3) : la troncation + `wrap_periodic` n'est exacte que si
+        // l'orbite est VRAIMENT périodique. La tolérance resserrée (2^(-prec·0.85),
+        // cf. plus haut) rejette les faux-positifs (grazes) qui produisaient des
+        // images uniformes (ex. floral_fantasy, CORRIGÉ — golden `mandelbrot_floral`).
+        // Les cas non-détectés retombent sur escape-time + rebase-at-end (correct,
+        // fix G2). `FRACTALL_NO_PERIOD=1` désactive (parité harness). À terme :
         // ne tronquer qu'aux nucleus exacts (--find-nucleus), cf. TODO.
         if enable_period_detection && i > 0 {
             period_diff.assign(&z - &period_check_z);

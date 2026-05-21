@@ -143,6 +143,14 @@ const CASES: &[Case] = &[
             "--width", "160", "--height", "100", "--iterations", "2500",
         ],
     },
+    // Deep périodique 1.55e85 (toml/floral_fantasy.toml) — verrouille le fix G3
+    // tolérance period-detection : avant, un faux-positif (graze) déclenchait la
+    // troncation périodique → image uniforme en chemin par défaut. Doit rester
+    // structuré (== NO_PERIOD == F3).
+    Case {
+        name: "mandelbrot_floral",
+        args: &["--toml", "toml/floral_fantasy.toml", "--width", "160", "--height", "100"],
+    },
 ];
 
 fn cli_binary_path() -> PathBuf {
