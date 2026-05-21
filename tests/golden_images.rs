@@ -118,6 +118,31 @@ const CASES: &[Case] = &[
             "--width", "160", "--height", "100", "--iterations", "35494",
         ],
     },
+    // Deep escape-time 1e50 (toml/e50.toml) — verrouille le fix G2 rebase-at-end :
+    // sans lui, la référence escape-time tronquée → fallback GMP / image uniforme.
+    // (--toml résolu depuis la racine du package, CWD du test cargo.)
+    Case {
+        name: "mandelbrot_e50",
+        args: &["--toml", "toml/e50.toml", "--width", "160", "--height", "100"],
+    },
+    // Deep escape-time 1e1000 (toml/e1000.toml) — idem, régime extrême.
+    Case {
+        name: "mandelbrot_e1000",
+        args: &["--toml", "toml/e1000.toml", "--width", "160", "--height", "100"],
+    },
+    // Cusp -0.75, zoom 2.8e10 (image utilisateur) — verrouille le fix G3
+    // `max_perturb_iterations` : régression = anneaux concentriques. Args
+    // explicites → chemin par défaut (cap 1024 → clamp à iteration_max).
+    Case {
+        name: "mandelbrot_cusp_m075",
+        args: &[
+            "--type", "3", "--algorithm", "perturbation",
+            "--center-x-hp=-0.749996225516317",
+            "--center-y-hp=-0.004086150721841209",
+            "--zoom", "2.8172915379e10",
+            "--width", "160", "--height", "100", "--iterations", "2500",
+        ],
+    },
 ];
 
 fn cli_binary_path() -> PathBuf {
