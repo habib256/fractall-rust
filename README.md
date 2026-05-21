@@ -153,6 +153,8 @@ Anti-aliasing
 Algorithm
     --algorithm <MODE>      auto | f64 | perturbation | gmp
     --precision-bits <N>    GMP precision floor [default: 256]
+    --bailout <F>           Escape radius |z| ≥ bailout [default: 25, F3-aligned;
+                            per-type for special semantics]
     --plane <N>             Plane transform 0-6 (mu, 1/mu, lambda, …)
     --rotation <RAD>        F3-style mat2(cos,-sin,sin,cos) plane rotation
     --find-nucleus          Snap Mandelbrot center to exact minibrot nucleus
@@ -190,13 +192,15 @@ Output
 # Classic Mandelbrot in 4K
 fractall-cli --type 3 --width 3840 --height 2160 --output mandelbrot.png
 
-# Deep zoom on a spiral, GMP arbitrary precision
+# Deep zoom (auto: perturbation + BLA, GMP reference orbit) — renders in seconds
 fractall-cli --type 3 \
-    --center-x=-0.7435669 --center-y=0.1314023 \
-    --zoom 1e6 \
-    --iterations 5000 \
-    --algorithm gmp \
+    --center-x-hp=-0.7436438870371587 --center-y-hp=0.13182590420531197 \
+    --zoom 1e10 \
+    --iterations 10000 \
     --output spiral.png
+
+# Batch deep zoom from a corpus TOML (1e50, perturbation path)
+fractall-cli --toml toml/e50.toml --output e50.png
 
 # Burning Ship fractal
 fractall-cli --type 13 --palette 2 --output burning_ship.png
@@ -215,7 +219,7 @@ fractall-cli --type 3 --gpu --zoom 5e6 --iterations 2000 --output gpu_deep.png
 
 - **Unified bytecode engine**: a small 8-opcode IR (`Sqr / Mul / Store / AbsX / AbsY / NegX / NegY / Add`) encodes Mandelbrot, Burning Ship, Tricorn, Celtic, Buffalo, Perpendicular Burning Ship, Multibrot and their Julia variants. A single CPU pixel loop + WGSL kernel cover all of them.
 - **`mat2` BLA via dual-numbers**: bilinear approximation tables are built by walking the bytecode with dual numbers, so the non-conformal case (Burning Ship, Tricorn) is handled exactly like the conformal one.
-- **Fraktaler-3 style rebasing**: proactive `|Z+δ|² < |δ|²` check replaces Pauldelbrot glitch detection on the default path — fewer artifacts, less heuristic tuning.
+- **Fraktaler-3 style rebasing**: proactive `|Z+δ|² < |δ|²` check (plus rebase-at-end when the reference orbit is exhausted) replaces Pauldelbrot glitch detection on the default path — fewer artifacts, and escape-time deep centers stay on the fast perturbation path instead of falling back to per-pixel GMP.
 - **Atom-domain nucleus refinement**: the new `--find-nucleus` flag ports F3.1's `hybrid_period` (`|z|² < s²·|dz|²` criterion) plus dual-number Newton on the GMP center — keeps the reference orbit bounded for deep-zoom centers that would otherwise escape.
 - **Perturbation theory**: deep zoom delegated to a high-precision GMP reference orbit; pixels carry only the delta (`ComplexExp` = FloatExp pair for zooms > 10¹³).
 - **HP-aware coordinate pipeline**: spans and centers carried in arbitrary-precision strings, automatically reconstructed via `FloatExp` so f64 underflow at zoom > 10³⁰⁸ no longer collapses the image.
@@ -227,18 +231,26 @@ fractall-cli --type 3 --gpu --zoom 5e6 --iterations 2000 --output gpu_deep.png
 
 The deep-zoom corpus (`toml/*.toml`, 84 configs) is the Fraktaler-3 parity
 yardstick. The full roadmap — with measurable "definition of excellence" and
-per-goal acceptance criteria — lives in `TODO.md`. The two open frontiers:
+per-goal acceptance criteria — lives in `TODO.md`.
 
-1. **Visual F3 parity** across the whole corpus (measure, then resolve the few
-   remaining divergences).
-2. **Deep-zoom performance (1e15–1e1000)**: a wisdom-driven precision dispatcher
-   (f64 → doubleexp → float128 / longdouble → GMP) so intermediate zooms stop
-   falling back to GMP where a faster type would do — F3's 10–100× speedup.
+**Deep-zoom performance: solved.** Escape-time deep centers used to fall back to
+per-pixel GMP (≈1 µs/iter) because the reference orbit escapes; porting F3's
+*rebase-at-end* (`z := Z+δ, m := 0` when the reference is exhausted) keeps them
+on the fast perturbation path. Result: **e50 1e50 544 s → 1.6 s, e1000 742 s →
+0.5 s, dragon 1e191 ~6 h → 6.5 s** at 256² — all pixel-faithful to GMP.
+
+Open frontier:
+
+1. **Visual F3 parity** across the whole corpus — a full re-sweep now that every
+   case renders fast (the 36 ex-"perf-bound" cases are tractable), to confirm
+   per-case parity and classify any residual edge-of-chaos divergences.
 
 Already landed: the unified bytecode engine, perturbation + `mat2` BLA + F3
-rebasing, the atom-domain nucleus finder with the orientation matrix K
-(`hybrid_size`), HP coordinates beyond 1e308, F3-aligned escape radius and BLA
-pixel-spacing, GPU plane rotation, and multi-sample anti-aliasing.
+rebasing (incl. rebase-at-end for escape-time references), a single CPU render
+path shared by CLI & GUI, the atom-domain nucleus finder with the orientation
+matrix K (`hybrid_size`), HP coordinates beyond 1e308 (with zoom-scaled GUI
+precision), F3-aligned escape radius and BLA pixel-spacing, GPU plane rotation,
+and multi-sample anti-aliasing.
 
 ## Contributing
 
