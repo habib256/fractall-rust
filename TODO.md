@@ -24,19 +24,22 @@
 - **Parité F3 mesurée (G1)** : corpus 84 cas swept (harness durci) →
   **0 régression de correction**, parité validée jusqu'à zoom **1e1200**.
 
-**Goulots restants** (les 2 vrais chantiers + 1 bug ciblé) :
-1. **Performance deep-zoom → ✅ RÉSOLU (2026-05-21)**. Cause : les cas perf-bound
-   rendaient en **fallback GMP par-pixel** (réf escape-time tronquée →
-   `ref_truncated` → GMP). Fix (~20 lignes) : **rebase-at-end F3** pour orbites
-   escape-time (`pixel_loop_exp.rs`) → plus de fallback GMP. **e50 544→1.57 s,
-   e1000 742→0.53 s (pixel-identique GMP), dragon ~6 h→6.46 s** à 256². Les 36
-   cas « perf-bound » de G1 ne le sont plus. 178 unit + golden verts. (Bonus
-   committé : BLA aligned-lookup + table ~8× plus petite.)
-2. **Bug auto-nucleus near-axis** (`optimize_reference_center`, toujours actif)
+**✅ Performance deep-zoom RÉSOLUE (2026-05-21, sur `main`)** — c'était LE
+goulot. Cause : les cas perf-bound rendaient en **fallback GMP par-pixel** (réf
+escape-time tronquée → `ref_truncated` → GMP). Fix (~20 lignes) : **rebase-at-end
+F3** pour orbites escape-time (`pixel_loop_exp.rs`) → plus de fallback GMP.
+**e50 544→1.57 s, e1000 742→0.53 s (pixel-identique GMP), dragon ~6 h→6.46 s** à
+256². Les 36 cas « perf-bound » de G1 ne le sont plus. 178 unit + golden verts.
+(Bonus : BLA aligned-lookup + table ~8× plus petite.)
+
+**Goulots restants** :
+1. **Bug auto-nucleus near-axis** (`optimize_reference_center`, toujours actif)
    : snappe la référence Mandelbrot trop loin sur les points près de l'axe →
    anneaux (cusp -0.75) + hang test2 @1920×1080. Fix ciblé → **G3**.
-3. **Divergences restantes élucidées** (G3) : glitch_test_1 = victoire fractall
+2. **Divergences restantes élucidées** (G3) : glitch_test_1 = victoire fractall
    (F3 dégénéré) ; seahorse, period-detection lossy encore ouverts.
+3. **Re-sweep corpus complet** (désormais tractable, perf résolue) pour confirmer
+   la parité F3 sur les 36 ex-perf-bound → **G1**.
 
 ---
 
@@ -61,7 +64,13 @@ Fractall sera « excellent » quand les 5 piliers sont atteints :
 
 ## 🎯 Goals
 
-### G1 — Parité visuelle F3 sur le corpus `toml/` · `[✅ MESURÉ — 0 régression ; résidu = G2 (perf) + G3 (near-axis)]`
+### G1 — Parité visuelle F3 sur le corpus `toml/` · `[✅ MESURÉ — 0 régression ; résidu perf DISSOUS par G2]`
+
+> **MISE À JOUR (2026-05-21, après G2 résolu)** : les **36 cas « perf/timeout »**
+> du sweep (B) ne le sont plus — ils tombaient en fallback GMP (réf évadante) ;
+> avec le rebase-at-end F3 ils rendent en perturbation en **<7 s à 256²**
+> (e1000 pixel-identique GMP, e50/e113 == GMP). **TODO : re-sweep complet pleine
+> profondeur** (désormais tractable) pour confirmer la parité F3 sur ces 36 cas.
 
 **Objectif** : produire les mêmes images que F3 pour les 84 `toml/*.toml`.
 **Harness** : `scripts/compare_f3.py` (F3 batch + `fractall-cli` → PNG + diff +
@@ -344,22 +353,25 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
 
 ## ✅ Shipped (condensé, le plus récent en haut)
 
-**2026-05-21** :
+**2026-05-21** (sur `main`, commits `fd9ce4a`..`1d88d16`) :
 - **🏆 G2 RÉSOLU — fallback GMP éliminé (rebase-at-end F3)** : les cas deep
   escape-time (e50/e1000/dragon/… 36 ex-perf-bound) rendaient en GMP par-pixel
   car leur réf s'évade (`ref_truncated` → exhausted → GMP). Fix : rebase à `m=0`
   au bout de la réf pour orbites escape-time (F3 `hybrid.cc:301`), gate retiré.
-  **e50 544→1.57 s, e1000 742→0.53 s (== GMP), dragon ~6 h→6.46 s** à 256².
-  178 unit + golden verts (e113 régénéré + revu, == pure GMP). `pixel_loop_exp.rs`.
-- **Perf deep-zoom (G2)** : (1) **BLA lookup aligned-start** (`lookup` &
-  `lookup_fexp`, `bla_dual.rs`) — démarre au plus haut niveau aligné (`tz(m)`)
-  → moins d'accès table BLA ; (2) **libération des niveaux BLA < skip après
-  build** → table ~8× plus petite (e50 ~40→5 Mo, gros gain mémoire). 0
-  régression (178 unit + golden). **Réorientation G2 : profilé memory-bound,
-  pas compute-bound** ; l'arithmétique f64-scaled (testée, validée 0-diff) = 0 %
-  → retirée. **dragon @256² physiquement impossible <180 s** (3.3e11 iter,
-  plancher f64 ~1966 s) — acceptation à recalibrer. ⚠️ confound thermique sur
-  les micro-A/B (M4 throttle).
+  **e50 544→1.57 s, e1000 742→0.53 s (== GMP), dragon ~6 h→6.46 s** à 256²
+  (acceptation d'origine ATTEINTE pour les 3). dragon n'était PAS impossible — il
+  rendait en GMP. 178 unit + golden verts (e113 régénéré + revu, == pure GMP).
+- **Fix crash OOB** (`6fcee8a`) : le rebase-at-end lisait `z_ref[m]` avec
+  `m == ref_len` sur orbites périodiques profondes (crash GUI au chargement de
+  floral_fantasy 1.55e85 / glitch_test_1 3.35e46). Clamp de l'index → 13 cas
+  profonds rendent sans crash.
+- **GUI : clic droit dézoome vers le curseur** (`1d88d16`) : `zoom_out_at_point`
+  ignorait son `point` (dézoom au centre) ; rendu symétrique du clic gauche.
+- **Perf deep-zoom (G2, bonus)** : BLA lookup aligned-start + libération des
+  niveaux BLA < skip après build → table ~8× plus petite (e50 ~40→5 Mo). Aide
+  TOUS les cas perturbation (désormais incl. les 36 ex-perf-bound). f64-scaled
+  testée puis retirée (0 %). *(Note : le diag intermédiaire « memory-bound /
+  dragon impossible » était faux — la vraie cause était le fallback GMP.)*
 - **Parité F3 mesurée sur le corpus (G1)** : 2 sweeps (1920×1080 cap commun =
   83/84 + 79 pixel-équiv ; pleine profondeur = 46 réels validés jusqu'à 1e1200).
   **0 régression de correction.** glitch_test_1 tranché (victoire fractall).
