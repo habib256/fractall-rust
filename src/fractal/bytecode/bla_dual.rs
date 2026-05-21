@@ -384,7 +384,7 @@ pub fn build_bla_table_for_formula(
 /// Fraktaler-3 `bla_skip_levels = 3` (`param.h:50`). Aux petits pas, le pas
 /// perturbation direct est plus précis que le BLA linéaire f64 ; les niveaux
 /// hauts (≥ 8-step) gardent le gain de perf.
-const BLA_SKIP_LEVELS: usize = 3;
+pub const BLA_SKIP_LEVELS: usize = 3;
 
 #[derive(Clone, Debug)]
 pub struct BlaTableUnified {
@@ -436,6 +436,18 @@ impl BlaTableUnified {
             }
             levels.push(next);
         }
+
+        // Libère les niveaux < BLA_SKIP_LEVELS : ils sont construits (nécessaires
+        // pour merger les niveaux supérieurs) mais JAMAIS consultés par `lookup`/
+        // `lookup_fexp` (cf. F3 bla_skip_levels). Or level 0 = 1 nœud/itération,
+        // donc les 3 plus bas niveaux ≈ 87 % des nœuds. Les vider rend la table
+        // BLA ~8× plus petite → cache-résidente → gros gain hot-loop deep zoom
+        // (le goulot est memory-bound, cf. G2). Les Vec vides préservent
+        // l'indexation `levels[level]` pour level ≥ BLA_SKIP_LEVELS.
+        for l in 0..BLA_SKIP_LEVELS.min(levels.len()) {
+            levels[l] = Vec::new();
+            levels[l].shrink_to_fit();
+        }
         Self { levels }
     }
 
@@ -451,27 +463,33 @@ impl BlaTableUnified {
     /// skip, fractall applique le single-step BLA en permanence et accumule
     /// l'erreur → artefacts (anneaux/blobs lissés, cf. rug zoom 1e56).
     pub fn lookup(&self, m: usize, delta_norm_sqr: f64) -> Option<&BlaMultiStep> {
-        for (level, nodes) in self.levels.iter().enumerate().rev() {
-            if level < BLA_SKIP_LEVELS {
-                break; // niveaux bas ignorés → pas direct (plus précis)
+        // Seuls les niveaux `L ≤ trailing_zeros(m)` sont alignés (cf. lookup_fexp) :
+        // démarrer au plus haut niveau aligné évite de parcourir les niveaux hauts
+        // jamais alignés à chaque itération (réduit les accès à la table BLA, qui
+        // est le coût dominant — memory-bound, cf. G2).
+        let nlevels = self.levels.len();
+        if nlevels <= BLA_SKIP_LEVELS {
+            return None;
+        }
+        let top = if m == 0 {
+            nlevels - 1
+        } else {
+            (m.trailing_zeros() as usize).min(nlevels - 1)
+        };
+        let mut level = top;
+        while level >= BLA_SKIP_LEVELS {
+            let nodes = &self.levels[level];
+            let idx = m >> level; // m aligné à 2^level ⇒ m == idx<<level (pas de check)
+            if idx < nodes.len() {
+                let node = &nodes[idx];
+                if delta_norm_sqr < node.r2 {
+                    return Some(node);
+                }
             }
-            // Index dans ce niveau : `m / 2^level`.
-            let idx = m >> level;
-            if idx >= nodes.len() {
-                continue;
+            if level == 0 {
+                break;
             }
-            // Vérifier qu'on ne dépasse pas la fin de la référence sur ce niveau.
-            // Le BLA[level][idx] couvre les itérations [idx·2^level, (idx+1)·2^level).
-            // m doit être à l'INTÉRIEUR de cet intervalle (sinon on saute trop).
-            let start = idx << level;
-            if m != start {
-                // m n'est pas aligné au début de ce niveau, niveau trop gros.
-                continue;
-            }
-            let node = &nodes[idx];
-            if delta_norm_sqr < node.r2 {
-                return Some(node);
-            }
+            level -= 1;
         }
         None
     }
@@ -493,29 +511,37 @@ impl BlaTableUnified {
         m: usize,
         delta_norm_sqr_fexp: crate::fractal::perturbation::types::FloatExp,
     ) -> Option<&BlaMultiStep> {
-        for (level, nodes) in self.levels.iter().enumerate().rev() {
-            if level < BLA_SKIP_LEVELS {
-                break; // cf. lookup() : niveaux bas ignorés (F3 bla_skip_levels)
+        // Seuls les niveaux `L ≤ trailing_zeros(m)` sont alignés (m % 2^L == 0,
+        // donc `m == (m>>L)<<L`). Démarrer au plus haut niveau aligné évite de
+        // parcourir les ~log2(ref_len) niveaux hauts jamais alignés à chaque
+        // itération — gain hot-loop deep zoom (cf. G2 : lookup co-dominant).
+        let nlevels = self.levels.len();
+        if nlevels <= BLA_SKIP_LEVELS {
+            return None;
+        }
+        let top = if m == 0 {
+            nlevels - 1
+        } else {
+            (m.trailing_zeros() as usize).min(nlevels - 1)
+        };
+        let mut level = top;
+        while level >= BLA_SKIP_LEVELS {
+            let nodes = &self.levels[level];
+            let idx = m >> level; // m aligné à 2^level ⇒ m == idx<<level (pas de check)
+            if idx < nodes.len() {
+                let node = &nodes[idx];
+                // Compare `delta_norm_sqr (FloatExp) < node.r2` via PartialOrd (gère
+                // l'underflow exp < -1074 ET le faux-positif « delta tiny → always
+                // valid », cf. floral_fantasy). r² peut être denormal/zéro.
+                let r2_fexp = crate::fractal::perturbation::types::FloatExp::from_f64(node.r2);
+                if delta_norm_sqr_fexp < r2_fexp {
+                    return Some(node);
+                }
             }
-            let idx = m >> level;
-            if idx >= nodes.len() {
-                continue;
+            if level == 0 {
+                break;
             }
-            let start = idx << level;
-            if m != start {
-                continue;
-            }
-            let node = &nodes[idx];
-            // Compare `delta_norm_sqr (FloatExp) < node.r2 (f64)` via FloatExp::PartialOrd
-            // pour éviter à la fois l'underflow (delta exp < -1074) ET le faux-positif
-            // « delta tiny → always valid » qui faisait passer la BLA à un niveau supérieur
-            // au-dessus d'un nœud avec r² minuscule (cf. floral_fantasy uniforme).
-            // r² peut lui-même être denormal/zéro pour des nœuds proches de l'escape ;
-            // FloatExp::from_f64 préserve son exponent.
-            let r2_fexp = crate::fractal::perturbation::types::FloatExp::from_f64(node.r2);
-            if delta_norm_sqr_fexp < r2_fexp {
-                return Some(node);
-            }
+            level -= 1;
         }
         None
     }
@@ -854,7 +880,9 @@ mod tests {
     }
 
     /// La construction de table doit produire log2(M) niveaux et 1 entrée
-    /// au sommet pour M=8.
+    /// au sommet pour M=8. Les niveaux < BLA_SKIP_LEVELS sont vidés après build
+    /// (jamais consultés par lookup — cf. G2 memory hygiene) mais préservés
+    /// comme Vec vides pour garder l'indexation `levels[level]`.
     #[test]
     fn table_build_levels_8_iterations() {
         let formula = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
@@ -863,14 +891,14 @@ mod tests {
         let orbit: Vec<Complex64> = (0..9).map(|i| Complex64::new(i as f64 * 0.1, 0.0)).collect();
         let table = BlaTableUnified::build(&orbit, phase, 0.5, 1e-6);
 
-        // M=8 → 4 niveaux : 8, 4, 2, 1.
+        // M=8 → 4 niveaux : 8, 4, 2, 1 ; les niveaux < BLA_SKIP_LEVELS vidés.
         assert_eq!(table.levels.len(), 4);
-        assert_eq!(table.levels[0].len(), 8);
-        assert_eq!(table.levels[1].len(), 4);
-        assert_eq!(table.levels[2].len(), 2);
+        for l in 0..BLA_SKIP_LEVELS.min(4) {
+            assert_eq!(table.levels[l].len(), 0, "niveau {l} doit être vidé (skip)");
+        }
         assert_eq!(table.levels[3].len(), 1);
 
-        // Le BLA top-level doit avoir l = 8.
+        // Le BLA top-level (consulté) doit avoir l = 8.
         assert_eq!(table.levels[3][0].l, 8);
     }
 
