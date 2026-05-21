@@ -425,11 +425,25 @@ impl FractallApp {
         self.span_y_hp = sy_gmp.to_string_radix(10, None);
     }
     
+    /// Précision (bits) pour l'arithmétique HP du zoom : doit résoudre le centre
+    /// à une fraction du span (~ -log2(span) + marge). Le fixe `HP_PRECISION`
+    /// (256 bits ≈ 77 chiffres) tronquait les deep zooms (> ~1e60) : à zoom
+    /// 1e235 le centre était arrondi à 77 chiffres alors que ~236 sont requis →
+    /// la vue sautait vers une région fausse → **image uniforme** (cf. x.toml).
+    fn hp_arith_precision(&self) -> u32 {
+        let bits = Float::parse(&self.span_x_hp)
+            .ok()
+            .and_then(|p| Float::with_val(128, p).get_exp())
+            .map(|e| (-(e as i64)).max(0) + 96) // -log2(span) + marge 96 bits
+            .unwrap_or(HP_PRECISION as i64);
+        bits.clamp(HP_PRECISION as i64, 65536) as u32
+    }
+
     /// Effectue un zoom en haute précision.
     /// `ratio_x`, `ratio_y` : position relative dans l'image (0.0-1.0)
     /// `zoom_factor` : facteur de zoom (>1 = zoom in, <1 = zoom out)
     fn zoom_hp(&mut self, ratio_x: f64, ratio_y: f64, zoom_factor: f64) {
-        let prec = HP_PRECISION;
+        let prec = self.hp_arith_precision();
         
         // Parser les coordonnées actuelles
         let center_x = Float::parse(&self.center_x_hp)
@@ -470,7 +484,7 @@ impl FractallApp {
     
     /// Effectue un zoom rectangulaire en haute précision.
     fn zoom_rect_hp(&mut self, xr1: f64, yr1: f64, xr2: f64, yr2: f64) {
-        let prec = HP_PRECISION;
+        let prec = self.hp_arith_precision();
         
         // Parser les coordonnées actuelles
         let center_x = Float::parse(&self.center_x_hp)
@@ -523,7 +537,7 @@ impl FractallApp {
     
     /// Dézoom en haute précision.
     fn zoom_out_hp(&mut self, factor: f64) {
-        let prec = HP_PRECISION;
+        let prec = self.hp_arith_precision();
         
         let span_y = Float::parse(&self.span_y_hp)
             .map(|p| Float::with_val(prec, p))
