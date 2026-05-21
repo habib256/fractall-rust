@@ -159,8 +159,16 @@ Le path perturbation passe par `render_perturbation_with_cache` (cœur commun) ;
 le cache est géré DANS le dispatcher, pas par un appel parallèle côté GUI.
 
 **Ne JAMAIS** réintroduire une logique de dispatch dans `gui/app.rs` ou
-dupliquer `render_escape_time*` : une divergence GUI/CLI = bug. (Le GPU reste
-dispatché inline dans `main.rs` et le thread GUI — unification GPU = TODO G5.)
+dupliquer `render_escape_time*` : une divergence GUI/CLI = bug.
+
+**Dispatch GPU UNIFIÉ** (2026-05-21) : `GpuRenderer::render_dispatch(params,
+cancel, reuse, orbit_cache) -> Option<GpuDispatchResult>` (`gpu/mod.rs`) est le
+point d'entrée unique partagé par le CLI (`main.rs`) et le thread GUI. Il calcule
+`use_perturbation` (algorithm_mode + plane_transform), dispatche par type
+(perturbation Mandelbrot/Julia/BurningShip, sinon shader f32), thread l'orbite
+référence, et renvoie `None` quand le GPU ne peut pas → le caller fait le
+fallback CPU via le dispatcher unique. **Ne plus dupliquer ce choix dans
+`main.rs`/`gui/app.rs`.**
 
 ```
 AlgorithmMode::Auto :

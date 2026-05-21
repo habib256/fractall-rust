@@ -21,6 +21,18 @@ use crate::fractal::perturbation::orbit::{compute_reference_orbit_cached, Refere
 const WORKGROUP_SIZE: u32 = 16;
 const MAX_LEVELS: usize = 17;
 
+/// Résultat du dispatch GPU unifié (cf. [`GpuRenderer::render_dispatch`]).
+pub struct GpuDispatchResult {
+    pub iterations: Vec<u32>,
+    pub zs: Vec<Complex64>,
+    /// Cache d'orbite référence (perturbation uniquement) à re-threader entre
+    /// passes. Lu par la GUI (passes progressives) ; le CLI (rendu unique) l'ignore.
+    #[allow(dead_code)]
+    pub orbit_cache: Option<Arc<ReferenceOrbitCache>>,
+    /// `true` si le path perturbation a été utilisé (sinon shader f32 standard).
+    pub used_perturbation: bool,
+}
+
 fn env_flag(name: &str) -> bool {
     match std::env::var(name) {
         Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
@@ -442,6 +454,55 @@ impl GpuRenderer {
     pub fn precision_label(&self) -> &'static str {
         // Toujours utiliser f32 en mode GPU
         "f32"
+    }
+
+    /// Dispatch GPU unifié — point d'entrée unique partagé par le CLI (`main.rs`)
+    /// et le thread de rendu GUI (avant : logique dupliquée des deux côtés).
+    /// Choisit perturbation vs shader f32 standard selon `algorithm_mode` + type
+    /// + plane transform, et thread l'orbite référence (`reuse`/`orbit_cache`)
+    /// sur le path perturbation. Renvoie `None` quand le GPU ne peut pas rendre
+    /// cette config (type non supporté, etc.) → le caller fait le fallback CPU
+    /// via le dispatcher unique (`render_escape_time*`).
+    pub fn render_dispatch(
+        &self,
+        params: &FractalParams,
+        cancel: &std::sync::atomic::AtomicBool,
+        reuse: Option<(&[u32], &[Complex64], u32, u32)>,
+        orbit_cache: Option<&Arc<ReferenceOrbitCache>>,
+    ) -> Option<GpuDispatchResult> {
+        use crate::fractal::{AlgorithmMode, PlaneTransform};
+        let use_perturbation = match params.algorithm_mode {
+            AlgorithmMode::Auto => crate::render::escape_time::should_use_perturbation(params, true),
+            AlgorithmMode::Perturbation => true,
+            _ => false,
+        } && params.plane_transform == PlaneTransform::Mu;
+
+        let std_result = |r: Option<(Vec<u32>, Vec<Complex64>)>| {
+            r.map(|(iterations, zs)| GpuDispatchResult {
+                iterations,
+                zs,
+                orbit_cache: None,
+                used_perturbation: false,
+            })
+        };
+
+        match params.fractal_type {
+            FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
+                if use_perturbation =>
+            {
+                self.render_perturbation_with_cache(params, cancel, reuse, orbit_cache)
+                    .map(|((iterations, zs), cache)| GpuDispatchResult {
+                        iterations,
+                        zs,
+                        orbit_cache: Some(cache),
+                        used_perturbation: true,
+                    })
+            }
+            FractalType::Mandelbrot => std_result(self.render_mandelbrot(params, cancel)),
+            FractalType::Julia => std_result(self.render_julia(params, cancel)),
+            FractalType::BurningShip => std_result(self.render_burning_ship(params, cancel)),
+            _ => None,
+        }
     }
 
     /// Render perturbation with optional orbit cache support.

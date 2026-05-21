@@ -306,9 +306,12 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
 - [x] **Chemin de rendu CPU unifié CLI ↔ GUI** (2026-05-20) — un seul dispatcher
   `render_escape_time_cancellable_with_reuse`. Cf. *Shipped* + invariant
   §« Ne pas régresser ».
-- [ ] **Unifier aussi le dispatch GPU** : aujourd'hui le choix GPU/CPU + l'appel
-  des kernels GPU est dupliqué dans `main.rs` (CLI) et le thread de rendu GUI.
-  Extraire un dispatcher GPU partagé (ou intégrer le GPU au dispatcher unique).
+- [x] **Dispatch GPU unifié** (2026-05-21) : `GpuRenderer::render_dispatch()`
+  (`gpu/mod.rs`, renvoie `GpuDispatchResult`) est le point d'entrée unique
+  partagé par le CLI (`main.rs`) et le thread GUI — calcul de `use_perturbation`
+  + match par type + threading du cache d'orbite + fallback CPU via `None`. Fin
+  de la duplication (~60 lignes). Vérifié : GPU standard/perturbation/fallback
+  Tricorn OK, 178 unit + golden verts.
 - [ ] **Retirer les modules perturbation legacy** : porter `iterate_pixel_gmp`
   sur `pixel_loop`, puis supprimer `glitch.rs`, `nonconformal.rs` et les champs
   perturbation legacy (`max_secondary_refs`, `min_glitch_cluster_size`,
@@ -357,6 +360,10 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
   (256 bits) tronquait le centre au zoom (à 1e235 il faut ~783 bits) → vue fausse
   → image uniforme. `hp_arith_precision()` scale avec le span (`-log2(span)+96`).
   cf. [[uniform-image-causes]].
+- **Dispatch GPU unifié (G5)** : `GpuRenderer::render_dispatch()` → un seul point
+  d'entrée GPU partagé CLI (`main.rs`) + GUI (`gui/app.rs`) ; fin de la
+  duplication du choix perturbation/type/kernel (~60 lignes). Fallback CPU via
+  `None`. Vérifié GPU standard/perturbation/fallback + 178 unit + golden.
 - **🏆 G2 RÉSOLU — fallback GMP éliminé (rebase-at-end F3)** : les cas deep
   escape-time (e50/e1000/dragon/… 36 ex-perf-bound) rendaient en GMP par-pixel
   car leur réf s'évade (`ref_truncated` → exhausted → GMP). Fix : rebase à `m=0`
@@ -438,11 +445,11 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
 
 ## 🛡️ Ne pas régresser (superset assumé vs F3)
 
-- **INVARIANT : chemin de rendu unique CLI ↔ GUI.** Un seul dispatcher CPU
-  (`render_escape_time_cancellable_with_reuse`). Ne jamais redupliquer la
-  logique de dispatch dans `gui/app.rs` ni recréer un `render_escape_time*`
-  parallèle. Une divergence GUI/CLI = bug. (GPU encore inline des deux côtés —
-  unification GPU = G5.)
+- **INVARIANT : chemin de rendu unique CLI ↔ GUI**, CPU **et GPU**. CPU : un seul
+  dispatcher `render_escape_time_cancellable_with_reuse`. GPU : un seul
+  `GpuRenderer::render_dispatch`. Ne jamais redupliquer la logique de dispatch
+  (choix perturbation/type, sélection kernel) dans `gui/app.rs` ni dans
+  `main.rs`. Une divergence GUI/CLI = bug.
 
 - 27 palettes built-in + espaces RGB/HSB/LCH.
 - 15 modes de coloring + 4 orbit traps.

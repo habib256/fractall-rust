@@ -13,7 +13,6 @@ mod gpu;
 
 use fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalType, LyapunovPreset, OutColoringMode, PlaneTransform};
 use render::render_escape_time;
-use render::escape_time::should_use_perturbation;
 use io::png::{colorize_to_rgb, save_png_rgb_with_metadata, save_png_with_metadata};
 use fractal::jitter::sample_offset;
 use io::exr::save_iterations_exr;
@@ -582,48 +581,17 @@ fn main() {
         match GpuRenderer::new() {
             Some(gpu) => {
                 println!("GPU initialisé ({})", gpu.precision_label());
-
-                let use_perturbation = match params.algorithm_mode {
-                    AlgorithmMode::Auto => should_use_perturbation(&params, true),
-                    AlgorithmMode::Perturbation => true,
-                    _ => false,
-                };
-                let use_perturbation =
-                    use_perturbation && params.plane_transform == PlaneTransform::Mu;
-
-                let gpu_result = match params.fractal_type {
-                    FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
-                        if use_perturbation =>
-                    {
-                        println!("Mode: GPU perturbation");
-                        gpu.render_perturbation_with_cache(&params, &cancel, None, None)
-                            .map(|((iterations, zs), _cache)| (iterations, zs))
-                    }
-                    FractalType::Mandelbrot => {
-                        println!("Mode: GPU standard");
-                        gpu.render_mandelbrot(&params, &cancel)
-                    }
-                    FractalType::Julia => {
-                        println!("Mode: GPU standard");
-                        gpu.render_julia(&params, &cancel)
-                    }
-                    FractalType::BurningShip => {
-                        println!("Mode: GPU standard");
-                        gpu.render_burning_ship(&params, &cancel)
-                    }
-                    _ => {
-                        eprintln!(
-                            "Type {:?} non supporté par le GPU, fallback CPU",
-                            params.fractal_type
+                // Dispatch GPU partagé avec la GUI (cf. `GpuRenderer::render_dispatch`).
+                match gpu.render_dispatch(&params, &cancel, None, None) {
+                    Some(r) => {
+                        println!(
+                            "Mode: GPU {}",
+                            if r.used_perturbation { "perturbation" } else { "standard" }
                         );
-                        None
+                        (r.iterations, r.zs)
                     }
-                };
-
-                match gpu_result {
-                    Some(result) => result,
                     None => {
-                        println!("Fallback vers CPU...");
+                        println!("Type {:?} non rendu par le GPU → fallback CPU...", params.fractal_type);
                         render_escape_time(&params)
                     }
                 }

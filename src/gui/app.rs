@@ -969,49 +969,33 @@ impl FractallApp {
                 });
                 let result = if use_gpu {
                     let gpu = gpu_renderer.as_ref().unwrap();
-                    let use_perturbation = match pass_params.algorithm_mode {
-                        AlgorithmMode::Auto => crate::render::escape_time::should_use_perturbation(&pass_params, true),
-                        AlgorithmMode::Perturbation => true,
-                        _ => false,
-                    };
-                    let use_perturbation =
-                        use_perturbation && pass_params.plane_transform == PlaneTransform::Mu;
-                    
-                    let gpu_result = match pass_params.fractal_type {
-                        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
-                            if use_perturbation =>
-                        {
-                            gpu.render_perturbation_with_cache(&pass_params, &cancel, reuse, current_orbit_cache.as_ref())
-                                .map(|((iterations, zs), cache)| {
-                                    current_orbit_cache = Some(cache);
-                                    let n = iterations.len();
-                                    (iterations, zs, Vec::new(), vec![None; n])
-                                })
+                    // Dispatch GPU PARTAGÉ avec le CLI (`GpuRenderer::render_dispatch`) :
+                    // plus de logique perturbation/type dupliquée côté GUI.
+                    let gpu_out = gpu.render_dispatch(
+                        &pass_params,
+                        &cancel,
+                        reuse,
+                        current_orbit_cache.as_ref(),
+                    );
+                    if let Some(r) = gpu_out {
+                        if let Some(cache) = r.orbit_cache {
+                            current_orbit_cache = Some(cache);
                         }
-                        FractalType::Mandelbrot => gpu.render_mandelbrot(&pass_params, &cancel)
-                            .map(|(i, z)| { let n = i.len(); (i, z, Vec::new(), vec![None; n]) }),
-                        FractalType::Julia => gpu.render_julia(&pass_params, &cancel)
-                            .map(|(i, z)| { let n = i.len(); (i, z, Vec::new(), vec![None; n]) }),
-                        FractalType::BurningShip => gpu.render_burning_ship(&pass_params, &cancel)
-                            .map(|(i, z)| { let n = i.len(); (i, z, Vec::new(), vec![None; n]) }),
-                        _ => None,
-                    };
-                    if let Some((iterations, zs, distances, orbits)) = gpu_result {
-                        let base_precision = gpu.precision_label();
-                        let precision = base_precision.to_string();
-                        let effective_mode = if use_perturbation {
+                        let n = r.iterations.len();
+                        let effective_mode = if r.used_perturbation {
                             AlgorithmMode::Perturbation
                         } else {
                             AlgorithmMode::StandardF64
                         };
                         Some((
-                            (iterations, zs, distances, orbits),
+                            (r.iterations, r.zs, Vec::new(), vec![None; n]),
                             effective_mode,
-                            format!("GPU {}", precision),
+                            format!("GPU {}", gpu.precision_label()),
                         ))
                     } else {
-                        // GPU indisponible → fallback CPU via le MÊME dispatcher unifié
-                        // que le CLI (perturbation / GMP / f64 + cache d'orbite).
+                        // GPU ne peut pas rendre cette config → fallback CPU via le
+                        // MÊME dispatcher unifié que le CLI (perturbation / GMP / f64
+                        // + cache d'orbite).
                         let mut cache = current_orbit_cache.take();
                         let r = render_escape_time_cancellable_with_reuse(
                             &pass_params,
