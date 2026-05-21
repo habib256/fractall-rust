@@ -25,14 +25,13 @@
   **0 régression de correction**, parité validée jusqu'à zoom **1e1200**.
 
 **Goulots restants** (les 2 vrais chantiers + 1 bug ciblé) :
-1. **Performance deep-zoom** : LE blocage de la parité full-depth (36/84 cas) →
-   **G2**. **Réorienté 2026-05-21** : profilé **memory-bound** (table BLA +
-   orbite), PAS compute-bound. Livré : BLA lookup aligned-start + libération des
-   niveaux BLA inutilisés (table ~8× plus petite). Mesuré 256² : e50 **544 s**,
-   e1000 **742 s**, **dragon ~6 h (physiquement impossible <180 s** : 3.3e11
-   iter, plancher f64 ~1966 s). **Acceptation recalibrée** (validée utilisateur)
-   : e50/e1000 <180 s via **SIMD across-pixels** (chantier séparé) ; dragon =
-   wall-time relative à F3. Gains committés (`g2-bla-perf-memory`).
+1. **Performance deep-zoom → ✅ RÉSOLU (2026-05-21)**. Cause : les cas perf-bound
+   rendaient en **fallback GMP par-pixel** (réf escape-time tronquée →
+   `ref_truncated` → GMP). Fix (~20 lignes) : **rebase-at-end F3** pour orbites
+   escape-time (`pixel_loop_exp.rs`) → plus de fallback GMP. **e50 544→1.57 s,
+   e1000 742→0.53 s (pixel-identique GMP), dragon ~6 h→6.46 s** à 256². Les 36
+   cas « perf-bound » de G1 ne le sont plus. 178 unit + golden verts. (Bonus
+   committé : BLA aligned-lookup + table ~8× plus petite.)
 2. **Bug auto-nucleus near-axis** (`optimize_reference_center`, toujours actif)
    : snappe la référence Mandelbrot trop loin sur les points près de l'axe →
    anneaux (cusp -0.75) + hang test2 @1920×1080. Fix ciblé → **G3**.
@@ -150,72 +149,81 @@ comparable entre cas) :
   re-sweeper les 66 cas perf-bound à iter pleines pour confirmer la parité (ou
   exposer de vrais écarts aujourd'hui masqués par le timeout).
 
-### G2 — Performance deep-zoom · `[P0 · perf — acceptation RECALIBRÉE ; lever = SIMD across-pixels]`
+### G2 — Performance deep-zoom · `[✅ RÉSOLU 2026-05-21 — rebase-at-end F3, fallback GMP éliminé]`
 
-> **🔬 ANALYSE COMPLÈTE (2026-05-21)** — La prémisse initiale (« l'arithmétique
-> FloatExp/frexp domine ») est **FAUSSE**, et **un des 3 cas d'acceptation
-> (dragon) est physiquement impossible**.
+> **🏆 RÉSOLU (2026-05-21)** — fix de **~20 lignes** : rebase à `m=0` au bout de
+> la référence pour les orbites escape-time (F3 `hybrid.cc:301` : `m+1==size` ⇒
+> `z=Z+δ, m=0`), au lieu d'abandonner (`ref_exhausted` → fallback GMP). La
+> perturbation devient utilisable sur les centres escape-time → **plus de
+> fallback GMP**. Résultats 256² (étaient en GMP) :
+> | cas | avant (GMP) | après (perturbation) | correction |
+> |-----|-------------|----------------------|------------|
+> | **e50** | 544 s | **1.57 s** (~346×) | == GMP (mean 0.074) |
+> | **e1000** | 742 s | **0.53 s** (~1400×) | **pixel-identique GMP** |
+> | **dragon** | ~6 h | **6.46 s** (~3350×) | OK |
+> | e113 | golden | 0.52 s | == GMP (mean 0.089), golden régénéré + revu |
+>
+> **dragon n'était PAS physiquement impossible** : le BLA skippe l'immense
+> majorité de ses 5M itérations une fois la perturbation active. **178 unit +
+> golden verts** (seul e113 régénéré, validé). `pixel_loop_exp.rs` `_mandelbrot`
+> + `_generic`. ⇒ **Les 36 cas perf-bound de G1 ne le sont plus.**
 
-**Vérités mesurées (256², ER=25, cool, sans contention) :**
+> **🎯 BREAKTHROUGH (2026-05-21)** — Les cas perf-bound (e50/e1000/dragon/…)
+> **NE RENDAIENT PAS via perturbation** : leur orbite référence s'évade
+> (`ref_truncated`) → le gate routait TOUS les pixels vers **GMP par-pixel**
+> (~1 µs/iter). **Tout mon profilage antérieur (« memory-bound », « ~32 ns/iter »,
+> « BLA inefficace », SIMD, float128) était FAUX** : il supposait que ces cas
+> utilisaient le path perturbation. Ils ne l'utilisaient pas.
 
-| cas | iters | avg_iter | 256² wall | per-iter | verdict <180 s |
-|-----|-------|----------|-----------|----------|----------------|
-| **e50** | 263 010 | ≈max (intérieur) | **544 s** | ~32 ns | besoin **3×** |
-| **e1000** | 32 000 | ≈max (prec 3361b) | **742 s** | ~360 ns | besoin **4×** |
-| **dragon** | 5 000 000 | ≈max (intérieur) | **~21 670 s (6 h)** | ~66 ns | **IMPOSSIBLE** |
+**Preuves (e50 @48×48) :**
+- baseline = 20.3 s pour 2304 px = **8.7 ms/px ≈ 1 µs/iter** → signature **GMP
+  par-pixel** (pas perturbation).
+- `--precision-bits 1024` = 56.5 s, **image identique** (0 diff) → l'évasion de
+  la référence n'est PAS un problème de précision (genuine escape).
+- `--find-nucleus` (référence non-évadante) = **3.07 s** (dont 2.6 s Newton fixe
+  → rendu ~0.4 s = **~50× plus rapide**) → avec une référence valide, la
+  perturbation + BLA **skippe** les itérations → rapide. Mais le nucleus
+  **change la vue** (re-centre + rotation 16.8°, 1351/2304 px diff) ⇒ pas valide
+  pour la parité F3 telle quelle.
 
-> **🔴 dragon est arithmétiquement impossible** : 65536 px × ~5M iter = **3.3e11
-> itérations**. Plancher théorique (f64 pur ~6 ns/iter, 10 cœurs) = **~1966 s**.
-> Atteindre <180 s exigerait **~0.5 ns/iter** — plus rapide qu'une seule
-> multiplication f64. **Aucune optimisation logicielle ne peut franchir ce mur**
-> (c'est le compte d'itérations × pixels, pas l'efficacité du code). ⇒ Le critère
-> d'acceptation lui-même doit être recalibré pour dragon (ex. mesurer une vue
-> *exterior-heavy*, ou une cible de wall-time relative à F3).
+> Les figures « 256² : e50 544 s / e1000 742 s / dragon 6 h » sont RÉELLES mais
+> reflètent le **fallback GMP**, pas la perturbation. Le compteur d'itérations
+> retourné par le path tronqué est 0 → les « ns/iter » dérivés étaient du bruit.
 
-**Profilage (memory-bound, PAS compute-bound)** — réduire l'arithmétique
-(boucle f64-scaled, testée + validée 0-diff) a donné **~0 %** ; réduire les
-accès table BLA (aligned-lookup) a donné un gain net. ⚠️ **Confound thermique** :
-les runs A/B back-to-back throttlent le M4 (e50 @64×64 « 68 s » throttlé vs
-**~34 s** cool) — les micro-comparaisons exigent un état thermique contrôlé.
-**Conclusion robuste** : le goulot est l'accès mémoire (table BLA + orbite),
-pas l'arithmétique FloatExp. Les 3 leviers prévus (wisdom, float128, f64-scaled)
-ciblent le COMPUT → **ne débloquent pas** l'acceptation.
+**VRAIE CAUSE** : `compute_reference_orbit` tronque (ou le gate `ref_truncated`
+de `pixel_loop_exp` traite) la référence qui s'évade → fallback GMP. F3, lui,
+**continue la référence au-delà de l'évasion** (trajectoire pleine longueur) et
+laisse la perturbation **rebaser** les pixels qui s'évadent → reste sur le path
+rapide. **Le fix = rendre la perturbation utilisable avec une référence évadante
+À LA MÊME VUE** (pas le nucleus qui change la vue), en évitant le bug d'image
+uniforme qui a motivé le gate `ref_truncated` (cf. e113).
 
-**Done when** (plan corrigé) :
-- [x] **BLA lookup aligned-start** (`lookup` + `lookup_fexp`, `bla_dual.rs`) :
-  démarre au plus haut niveau aligné (`tz(m)`) au lieu de scanner tous les
-  niveaux → moins d'accès table BLA. 0 régression (178 unit + golden).
-- [x] **BLA table : libération des niveaux < BLA_SKIP_LEVELS après build**
-  (`build`, 2026-05-21) : level 0 = 1 nœud/iter, donc les 3 plus bas niveaux ≈
-  **87 % des nœuds**, jamais consultés (skip) → **~8× moins de mémoire** table
-  BLA (e50 : ~40 Mo → ~5 Mo). Perf-neutre (le working-set = niveaux ≥3, déjà
-  petit) mais **gros gain d'empreinte mémoire** (cf. caution « rendering dérape
-  sur la mémoire »). 0 régression.
-- [x] r2_fexp retiré (ajouté par erreur : grossissait `BlaMultiStep` = pire
-  cache) ; boucle f64-scaled retirée (0 % de gain net).
-- [ ] **SIMD across-pixels (2/4 lanes)** — LE levier pour e50/e1000 (×~4 →
-  e50 ~136 s, e1000 ~185 s). Traiter N pixels par vecteur SIMD ; gérer la
-  divergence (rebase/escape par lane via masques). Gros chantier (façon
-  rust-fractal-core / F3), multi-session, risque correction élevé.
-- [x] **Acceptation dragon recalibrée** (2026-05-21, validée utilisateur) — cf.
-  bloc *Acceptation RECALIBRÉE* ci-dessous. Gains livrés committés sur la branche
-  `g2-bla-perf-memory` (commit `fd9ce4a`), à fast-forward sur `main`.
-- [ ] Investiguer l'anomalie **e1000 ~360 ns/iter** (11× e50) — rebasing
-  excessif ? fallback GMP par pixel ? BLA mal-conditionné >1e150 ? Si corrigée →
-  e1000 ~67 s <180 s.
-- **Acceptation RECALIBRÉE (2026-05-21, validée utilisateur)** — l'absolu
-  « <180 s pour les 3 » étant physiquement impossible (dragon) :
-  - **e50, e1000** : < 180 s à 256² (cible inchangée — atteignable via SIMD
-    across-pixels, chantier séparé).
-  - **dragon** (et tout cas intérieur-lourd ≥ ~1M iter) : wall-time **≤ k× F3**
-    sur la MÊME vue (parité de perf relative, pas un absolu), k à fixer après
-    un bench fractall-vs-F3 sur dragon. Mesurer aussi une vue *exterior-heavy*
-    pour une cible absolue raisonnable.
+**Done when** :
+- [x] **🟢 Fallback GMP éliminé** (2026-05-21) : rebase-at-end F3 pour orbites
+  escape-time dans `pixel_loop_exp.rs` (`_mandelbrot` + `_generic`) ; gate
+  `ref_truncated` retiré. e50/e1000/dragon en **<7 s** à 256² (étaient 544 s /
+  742 s / ~6 h). e1000 pixel-identique GMP ; e50/e113 == GMP (mean <0.1).
+- [x] **F3 confirmé comme référence** : `hybrid.cc:296-307` rebase à `m=0` sur
+  `|Z+δ|²<|δ|²` OU `m+1==size` (bout de réf). On a porté la 2e branche.
+- [x] **dragon réévalué** : **6.46 s** à 256² (BLA skippe l'essentiel des 5M
+  iter). N'était pas physiquement impossible — il rendait juste en GMP.
+- [x] **BLA lookup aligned-start** + **libération niveaux BLA inutilisés**
+  (`bla_dual.rs`, committé `fd9ce4a`). Aide TOUS les cas perturbation — qui
+  incluent désormais les 36 ex-perf-bound. + gros gain mémoire (table ~8×).
+- [x] r2_fexp retiré ; boucle f64-scaled retirée (0 % — sur le mauvais path).
+- [ ] **Re-sweep corpus complet avec le fix** : confirmer que les 36 ex-perf
+  cas rendent ET matchent F3 (probable vu e1000 pixel-identique + e113 == GMP).
+- **Acceptation : ✅ ATTEINTE** — e50 **1.57 s**, e1000 **0.53 s**, dragon
+  **6.46 s** à 256² (cible <180 s, marge 30–340×). L'objectif RECALIBRÉ
+  (e50/e1000 <180 s ; dragon relatif à F3) est **dépassé** : l'absolu d'origine
+  est atteint pour les trois.
 
-> ⚠️ **Leçon** : « profiler avant de coder » ne suffit pas — il faut profiler
-> au bon GRAIN et **contrôler le throttling thermique**. Le profil grossier
-> (« exp-loop = 99.9 % vs setup ») a masqué que DANS la boucle c'est la mémoire ;
-> les A/B back-to-back ont été biaisés par le throttling.
+> ⚠️ **Leçon (énorme)** : j'ai optimisé pendant des heures le path perturbation
+> (memory/BLA/SIMD) alors que les cas cibles **ne l'utilisaient même pas** — ils
+> tombaient en GMP. **Toujours confirmer QUEL path s'exécute** (compteur par
+> fonction) AVANT d'analyser sa perf. Le compteur `EXP_PIXELS=1` vs
+> `entry_calls=2304` a été le révélateur. (Note annexe : le throttling thermique
+> du M4 a aussi biaisé les A/B back-to-back — contrôler l'état thermique.)
 
 ### G3 — Élucider les divergences ouvertes · `[P0 · correction]`
 
@@ -337,6 +345,12 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
 ## ✅ Shipped (condensé, le plus récent en haut)
 
 **2026-05-21** :
+- **🏆 G2 RÉSOLU — fallback GMP éliminé (rebase-at-end F3)** : les cas deep
+  escape-time (e50/e1000/dragon/… 36 ex-perf-bound) rendaient en GMP par-pixel
+  car leur réf s'évade (`ref_truncated` → exhausted → GMP). Fix : rebase à `m=0`
+  au bout de la réf pour orbites escape-time (F3 `hybrid.cc:301`), gate retiré.
+  **e50 544→1.57 s, e1000 742→0.53 s (== GMP), dragon ~6 h→6.46 s** à 256².
+  178 unit + golden verts (e113 régénéré + revu, == pure GMP). `pixel_loop_exp.rs`.
 - **Perf deep-zoom (G2)** : (1) **BLA lookup aligned-start** (`lookup` &
   `lookup_fexp`, `bla_dual.rs`) — démarre au plus haut niveau aligné (`tz(m)`)
   → moins d'accès table BLA ; (2) **libération des niveaux BLA < skip après

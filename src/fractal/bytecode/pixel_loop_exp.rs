@@ -151,21 +151,13 @@ fn iterate_pixel_unified_exp_mandelbrot(
             ref_exhausted: false,
         };
     }
-    // Référence tronquée par escape (centre escape-time, non-périodique).
-    // Tous les pixels suivraient la référence à δ près en f64 et exiteraient
-    // au même iter (cf. e113.toml uniforme avant ce gate). Flag exhaustion
-    // pour router vers iterate_pixel_gmp (per-pixel GMP).
-    let ref_truncated = ref_orbit.cycle_period == 0
-        && (ref_len as u32).saturating_sub(1) < iteration_max;
-    if ref_truncated {
-        return UnifiedPixelResultExp {
-            iteration: 0,
-            z_final: Complex64::new(0.0, 0.0),
-            rebase_count: 0,
-            bla_steps: 0,
-            ref_exhausted: true,
-        };
-    }
+    // Référence escape-time (non-périodique) tronquée à l'évasion : PAS de
+    // fallback GMP. On rebase au bout de la référence (F3 `hybrid.cc:301` :
+    // `m + 1 == size` ⇒ rebase z=Z+δ, m=0), ce qui permet aux pixels qui
+    // survivent à la référence de continuer sur le path perturbation rapide.
+    // (Ancien gate `ref_truncated` → exhausted → GMP par-pixel = ~50× plus lent,
+    // cf. G2.) L'image uniforme e113 d'avant venait de l'ABSENCE de rebase au
+    // bout, pas de la troncature elle-même.
 
     let mut delta = delta_initial;
     let mut n = 0u32;
@@ -173,7 +165,7 @@ fn iterate_pixel_unified_exp_mandelbrot(
     let mut rebase_count = 0u32;
     let mut bla_steps = 0u32;
     let mut iters_ptb = 0u32;
-    let mut ref_exhausted_flag = false;
+    let ref_exhausted_flag = false;
     const REDUCE_INTERVAL: u32 = 250;
 
     let bailout_sqr_fexp = FloatExp::from_f64(bailout_sqr);
@@ -252,29 +244,30 @@ fn iterate_pixel_unified_exp_mandelbrot(
         // la queue pré-cycle → uniformisation). Sinon (orbite tronquée par
         // escape), on flag exhaustion : rebaser blind collerait tous les
         // pixels au même état (cf. e113.toml uniforme).
+        // Rebase F3 (`hybrid.cc:296-307`) : `|Z[m]+δ|² < |δ|²` OU bout de
+        // référence ⇒ z := Z[m]+δ, m := 0. En FloatExp pour ne pas saturer en
+        // f64 deep zoom (cf. floral_fantasy). Pour les orbites PÉRIODIQUES on
+        // garde l'optimisation `wrap_periodic` (cycle m sans recomputer la
+        // queue) au lieu de rebaser à 0.
         let end_of_ref = (m as usize) + 1 >= ref_len;
+        let z_m_new = ref_orbit.z_ref_f64[m as usize];
+        let z_curr_re = FloatExp::from_f64(z_m_new.re) + delta.re;
+        let z_curr_im = FloatExp::from_f64(z_m_new.im) + delta.im;
+        let z_curr_norm_sqr_fexp = z_curr_re.sqr() + z_curr_im.sqr();
+        let delta_norm_sqr_fexp = delta.norm_sqr_fexp();
         if end_of_ref {
             if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
                 m = m_wrapped;
             } else {
-                ref_exhausted_flag = true;
-                break;
-            }
-        } else {
-            // Rebase F3 en FloatExp pour ne pas saturer en f64 sur les
-            // orbites périodiques deep zoom où |delta| dépasse 2^1023
-            // (cf. floral_fantasy). La condition F3 est `|Z+δ|² < |δ|²`,
-            // exprimée en FloatExp pour préserver la comparaison.
-            let z_m_new = ref_orbit.z_ref_f64[m as usize];
-            let z_curr_re = FloatExp::from_f64(z_m_new.re) + delta.re;
-            let z_curr_im = FloatExp::from_f64(z_m_new.im) + delta.im;
-            let z_curr_norm_sqr_fexp = z_curr_re.sqr() + z_curr_im.sqr();
-            let delta_norm_sqr_fexp = delta.norm_sqr_fexp();
-            if z_curr_norm_sqr_fexp < delta_norm_sqr_fexp {
+                // Escape-time : rebase au bout (F3) au lieu d'abandonner.
                 delta = ComplexExp { re: z_curr_re, im: z_curr_im };
                 m = 0;
                 rebase_count += 1;
             }
+        } else if z_curr_norm_sqr_fexp < delta_norm_sqr_fexp {
+            delta = ComplexExp { re: z_curr_re, im: z_curr_im };
+            m = 0;
+            rebase_count += 1;
         }
     }
 
@@ -312,17 +305,8 @@ fn iterate_pixel_unified_exp_generic(
             ref_exhausted: false,
         };
     }
-    let ref_truncated = ref_orbit.cycle_period == 0
-        && (ref_len as u32).saturating_sub(1) < iteration_max;
-    if ref_truncated {
-        return UnifiedPixelResultExp {
-            iteration: 0,
-            z_final: Complex64::new(0.0, 0.0),
-            rebase_count: 0,
-            bla_steps: 0,
-            ref_exhausted: true,
-        };
-    }
+    // Référence escape-time tronquée : pas de fallback GMP — on rebase au bout
+    // (F3 `hybrid.cc:301`). Cf. variante Mandelbrot pour le détail (G2).
 
     let mut delta = delta_initial;
     let mut n = 0u32;
@@ -330,7 +314,7 @@ fn iterate_pixel_unified_exp_generic(
     let mut rebase_count = 0u32;
     let mut bla_steps = 0u32;
     let mut iters_ptb = 0u32;
-    let mut ref_exhausted_flag = false;
+    let ref_exhausted_flag = false;
 
     // Reduce périodique (cf. rust-fractal-core) pour éviter la perte de
     // précision graduelle sur les mantissas après beaucoup d'itérations.
@@ -413,35 +397,28 @@ fn iterate_pixel_unified_exp_generic(
             delta.reduce();
         }
 
-        // Rebase F3 : |Z[m+1] + δ|² < |δ|² OR fin d'orbite. Pour orbites
-        // périodiques, on cycle m via modulo. Sinon (orbite tronquée par
-        // escape), flag exhaustion : rebaser blind = uniformiser tous les
-        // pixels post-escape (cf. e113.toml).
+        // Rebase F3 (`hybrid.cc:296-307`) : `|Z[m]+δ|² < |δ|²` OU bout de
+        // référence ⇒ z := Z[m]+δ, m := 0. Orbites périodiques : `wrap_periodic`
+        // (cycle m). Escape-time au bout : rebase à 0 (F3) au lieu d'abandonner
+        // → la perturbation reste utilisable (pas de fallback GMP), cf. G2.
         let end_of_ref = (m as usize) + 1 >= ref_len;
+        let z_m_new = ref_orbit.z_ref_f64[m as usize];
+        let z_curr_re = FloatExp::from_f64(z_m_new.re) + delta.re;
+        let z_curr_im = FloatExp::from_f64(z_m_new.im) + delta.im;
+        let z_curr_norm_sqr_fexp = z_curr_re.sqr() + z_curr_im.sqr();
+        let delta_norm_sqr_fexp = delta.norm_sqr_fexp();
         if end_of_ref {
             if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
                 m = m_wrapped;
             } else {
-                ref_exhausted_flag = true;
-                break;
-            }
-        } else {
-            let z_m_new = ref_orbit.z_ref_f64[m as usize];
-            // z_curr = Z[m] + δ
-            let z_curr_re = FloatExp::from_f64(z_m_new.re) + delta.re;
-            let z_curr_im = FloatExp::from_f64(z_m_new.im) + delta.im;
-            // Rebase F3 en FloatExp pour ne pas saturer en deep zoom (cf.
-            // pixel_loop_exp_mandelbrot). Condition F3 : `|Z+δ|² < |δ|²`.
-            let z_curr_norm_sqr_fexp = z_curr_re.sqr() + z_curr_im.sqr();
-            let delta_norm_sqr_fexp = delta.norm_sqr_fexp();
-            if z_curr_norm_sqr_fexp < delta_norm_sqr_fexp {
-                delta = ComplexExp {
-                    re: z_curr_re,
-                    im: z_curr_im,
-                };
+                delta = ComplexExp { re: z_curr_re, im: z_curr_im };
                 m = 0;
                 rebase_count += 1;
             }
+        } else if z_curr_norm_sqr_fexp < delta_norm_sqr_fexp {
+            delta = ComplexExp { re: z_curr_re, im: z_curr_im };
+            m = 0;
+            rebase_count += 1;
         }
     }
 
