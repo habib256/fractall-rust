@@ -57,7 +57,7 @@ Fractall sera « excellent » quand les 5 piliers sont atteints :
 
 ## 🎯 Goals
 
-### G1 — Parité visuelle F3 sur le corpus `toml/` · `[P0 · métrique de vérité]`
+### G1 — Parité visuelle F3 sur le corpus `toml/` · `[✅ MESURÉ — 0 régression ; résidu = G2 (perf) + G3 (near-axis)]`
 
 **Objectif** : produire les mêmes images que F3 pour les 84 `toml/*.toml`.
 **Harness** : `scripts/compare_f3.py` (F3 batch + `fractall-cli` → PNG + diff +
