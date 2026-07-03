@@ -271,12 +271,34 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
   diagnostics antérieurs (GMP pur fractall ≡ perturbation ≠ F3 ; précision/BLA/
   series/period tous écartés), c'est la même signature que glitch_test_5 : F3
   court-circuite sur ce lieu glitch-prone, fractall est correct. Exclu du score.
-- [ ] **seahorse-valley FAIL pré-existant** (Mandelbrot 1e8). `fractall-quality`
-  pert-vs-GMP : **div_ratio 0.627** (63 % des pixels !), max_diff/p99 = 3072, à
-  128² ET 256². **Indépendant** du bailout (4 ≡ 25) et du fix BLA pixel-spacing
-  (testé avant/après = identique) → bug pré-existant ailleurs (orbite réf ?
-  harness GMP ? seuil d'activation perturbation à 1e8 ?). Anormal sur le preset
-  « shallow deep-zoom » phare — à investiguer.
+- [x] **✅ julia-siegel-disk FAIL — RÉSOLU (2026-07-03, BLA over-skip)**.
+  `fractall-quality` pert-vs-GMP : décalage UNIFORME de +2 iters (div_ratio
+  1.0, max_diff=2, p99=2) sur TOUTE l'image — signature d'un bug systématique,
+  pas du bruit de bord. **Cause** : à c=-0.8+0.156i l'orbite de référence
+  (critique, centre 0,0) est BORNÉE (siegel) mais les pixels s'échappent vers
+  iter ~254. Un pas **BLA multi-étapes** est linéarisé autour de la référence
+  bornée → aveugle à la divergence propre du pixel → il **saute par-dessus
+  l'évasion** et rapporte l'iter d'escape jusqu'à `l-1` trop tard (F3 fait le
+  même over-skip en `hybrid.cc:316-320` ; le GMP pur, sans BLA, non → PASS
+  max_diff=0 en désactivant la BLA le confirme). **Fix** (`pixel_loop.rs`,
+  single-phase + hot-path Mandelbrot) : rejeter un saut BLA `l≥2` dont le point
+  d'arrivée `Z[m']+δ'` est déjà échappé (escape irréversible car |z|>ER≫|c| ⇒
+  test du seul endpoint suffit) → single-step pour l'iter exacte. Rend fractall
+  **strictement plus correct que F3** ici. Verrou : test unit
+  `bla_no_overskip_past_escape_julia_siegel` (BLA ≡ f64 direct, 9216/9216
+  pixels, biais 0) + preset quality `julia-siegel-disk` (FAIL→PASS).
+  - **Reste (path exp, deep zoom > 1e13)** : `pixel_loop_exp.rs` a le même bloc
+    BLA sans le guard. Les cas deep actuels (e30/e50/e100) sont des Mandelbrot
+    à référence longue non-échappée → divergence = bord chaotique (p95=0), pas
+    d'over-skip mesuré. À porter quand un preset **Julia deep-zoom** l'exercera.
+- [ ] **seahorse-valley FAIL** (Mandelbrot 1e8) — **re-mesuré 2026-07-03** :
+  div_ratio **0.00146** (p50/p95/p99 = 0, mean 0.205), PAS 0.627 (note périmée,
+  fix G2/floral). Les ~24 pixels divergents sont **dispersés** au bord avec
+  |dz| ~ 200-430 (delta grandi jusqu'à |z| = vraie perte de précision
+  perturbation au bord chaotique), pas d'over-skip BLA (guard sans effet ici).
+  Résiduel de bord ; FAIL uniquement par seuil strict (PASS exige
+  max_diff ≤ 1). Idem e13/e17/e18/e30/e100 (tous p95=0). Cf. calibration seuils
+  quality (G6) vs bruit de bord inhérent.
 - [ ] **Period-detection truncation = LOSSY** → passer **OFF par défaut**.
   Même pour une période *genuine*, `truncate + wrap_periodic` accumule l'erreur
   de quasi-périodicité (~2^(-0.4·prec)) sur ~iter_max/période cycles →

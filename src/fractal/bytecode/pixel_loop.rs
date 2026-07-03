@@ -369,7 +369,7 @@ fn iterate_pixel_unified_single_phase(
 
     // Quand orbit traps demandé, on tracke chaque z_abs → désactive la BLA.
     let mut orbit_data = options.orbit_trap.map(OrbitData::new);
-    let bla_enabled = orbit_data.is_none() && std::env::var("FRACTALL_NO_BLA").is_err();
+    let bla_enabled = orbit_data.is_none();
     let track_ddelta = options.enable_distance || options.enable_interior;
 
     let mut delta = delta_initial;
@@ -387,6 +387,7 @@ fn iterate_pixel_unified_single_phase(
     let mut iters_ptb = 0u32;
     let max_ptb = options.max_perturb_iterations;
     let max_bla = options.max_bla_steps;
+    let mut ref_exhausted_flag = false;
 
     // Point initial pour orbit traps.
     if let Some(ref mut od) = orbit_data {
@@ -435,32 +436,48 @@ fn iterate_pixel_unified_single_phase(
                         b.m00 * dc.re + b.m01 * dc.im,
                         b.m10 * dc.re + b.m11 * dc.im,
                     );
-                    // ddelta : applique aussi le BLA. ddelta' = A·ddelta + B (col0 pour dc).
-                    if track_ddelta {
-                        let (dd_re, dd_im) = (
-                            a.m00 * ddelta.re + a.m01 * ddelta.im + b.m00,
-                            a.m10 * ddelta.re + a.m11 * ddelta.im + b.m10,
-                        );
-                        ddelta = Complex64::new(dd_re, dd_im);
-                    }
-                    delta = Complex64::new(a_re + b_re, a_im + b_im);
-                    n = new_n;
-                    m = new_m;
-                    bla_steps += 1;
+                    let cand = Complex64::new(a_re + b_re, a_im + b_im);
+                    // Garde anti-over-skip BLA : un saut multi-pas (l ≥ 2) est
+                    // linéarisé autour de la RÉFÉRENCE, aveugle à la divergence
+                    // propre du pixel. Si le point d'arrivée `Z[m']+δ'` est déjà
+                    // échappé, l'escape a eu lieu PENDANT le saut → le pas BLA le
+                    // rapporterait jusqu'à l-1 itérations trop tard (F3 fait cet
+                    // over-skip ; le GMP pur non — cf. julia-siegel FAIL max_diff=2).
+                    // L'escape étant irréversible (|z| > ER ≫ |c|), tester le seul
+                    // point d'arrivée suffit. On rejette alors le saut et on
+                    // single-steppe pour trouver l'itér d'évasion exacte.
+                    let overshoots_escape = node.l >= 2 && {
+                        let z_end = ref_orbit.z_ref_f64[new_m as usize] + cand;
+                        z_end.norm_sqr() >= bailout_sqr
+                    };
+                    if !overshoots_escape {
+                        // ddelta : applique aussi le BLA. ddelta' = A·ddelta + B (col0 pour dc).
+                        if track_ddelta {
+                            let (dd_re, dd_im) = (
+                                a.m00 * ddelta.re + a.m01 * ddelta.im + b.m00,
+                                a.m10 * ddelta.re + a.m11 * ddelta.im + b.m10,
+                            );
+                            ddelta = Complex64::new(dd_re, dd_im);
+                        }
+                        delta = cand;
+                        n = new_n;
+                        m = new_m;
+                        bla_steps += 1;
 
-                    if !delta.re.is_finite() || !delta.im.is_finite() {
-                        return UnifiedPixelResult {
-                            iteration: n,
-                            z_final: ref_orbit.z_ref_f64[m as usize] + delta,
-                            rebase_count,
-                            bla_steps,
-                            orbit: orbit_data,
-                            distance: None,
-                            is_interior: false,
-                            ref_exhausted: false,
-                        };
+                        if !delta.re.is_finite() || !delta.im.is_finite() {
+                            return UnifiedPixelResult {
+                                iteration: n,
+                                z_final: ref_orbit.z_ref_f64[m as usize] + delta,
+                                rebase_count,
+                                bla_steps,
+                                orbit: orbit_data,
+                                distance: None,
+                                is_interior: false,
+                                ref_exhausted: false,
+                            };
+                        }
+                        continue;
                     }
-                    continue;
                 }
             }
         }
@@ -512,22 +529,16 @@ fn iterate_pixel_unified_single_phase(
         // Quand l'orbite référence est tronquée par période détectée (interior
         // center), on cycle m via modulo (orbite cyclique, valeurs identiques
         // à epsilon près) — évite l'uniformisation observée sur glitch_test_1.
-        // Sinon (orbite échappée/non-périodique), rebase-at-end F3
-        // (`hybrid.cc:301`) : `z := Z[m]+δ, m := 0`, on CONTINUE. δ_new =
-        // z_full − Z[0] (Z[0]=0 pour Mandelbrot ; = z0_ref pour Julia dont le
-        // centre ≠ 0). Sans ça, une réf courte (centre escape-time — ex. Julia
-        // siegel dont la réf s'échappe à ~256) cape tous les pixels au même
-        // iter au lieu de suivre leur vrai escape. Parité `pixel_loop_exp.rs`.
+        // Sinon (orbite échappée ou non-périodique), on flag exhaustion : le
+        // rebase blind sur z_ref[end] uniformiserait tous les pixels post-escape
+        // (cf. e113.toml). Le caller route ces pixels vers `iterate_pixel_gmp`.
         let end_of_ref = (m as usize) + 1 >= ref_len;
         if end_of_ref {
             if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
                 m = m_wrapped;
             } else {
-                let m_read = (m as usize).min(ref_len - 1);
-                let z_curr = ref_orbit.z_ref_f64[m_read] + delta;
-                delta = z_curr - ref_orbit.z_ref_f64[0];
-                m = 0;
-                rebase_count += 1;
+                ref_exhausted_flag = true;
+                break;
             }
         } else {
             let z_m_new = ref_orbit.z_ref_f64[m as usize];
@@ -565,7 +576,7 @@ fn iterate_pixel_unified_single_phase(
         orbit: orbit_data,
         distance: None,
         is_interior,
-        ref_exhausted: false,
+        ref_exhausted: ref_exhausted_flag,
     }
 }
 
@@ -626,6 +637,7 @@ pub fn iterate_pixel_unified_mandelbrot(
     let mut rebase_count = 0u32;
     let mut bla_steps = 0u32;
     let mut iters_ptb = 0u32;
+    let mut ref_exhausted_flag = false;
 
     while n < iteration_max
         && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
@@ -665,25 +677,38 @@ pub fn iterate_pixel_unified_mandelbrot(
                     b.m00 * dc.re + b.m01 * dc.im,
                     b.m10 * dc.re + b.m11 * dc.im,
                 );
-                delta = Complex64::new(a_re + b_re, a_im + b_im);
-                n = new_n;
-                m = new_m;
-                bla_steps += 1;
+                let cand = Complex64::new(a_re + b_re, a_im + b_im);
+                // Garde anti-over-skip BLA : un saut multi-pas (l ≥ 2) linéarisé
+                // autour de la référence peut sauter par-dessus l'évasion propre
+                // du pixel et rapporter l'iter d'escape jusqu'à l-1 trop tard
+                // (cf. julia-siegel). Escape irréversible (|z| > ER ≫ |c|) → le
+                // seul point d'arrivée suffit ; si échappé, on rejette le saut et
+                // on single-steppe pour l'iter exacte.
+                let overshoots_escape = node.l >= 2 && {
+                    let z_end = ref_orbit.z_ref_f64[new_m as usize] + cand;
+                    z_end.norm_sqr() >= bailout_sqr
+                };
+                if !overshoots_escape {
+                    delta = cand;
+                    n = new_n;
+                    m = new_m;
+                    bla_steps += 1;
 
-                // NaN / Inf protection
-                if !delta.re.is_finite() || !delta.im.is_finite() {
-                    return UnifiedPixelResult {
-                        iteration: n,
-                        z_final: ref_orbit.z_ref_f64[m as usize] + delta,
-                        rebase_count,
-                        bla_steps,
-                orbit: None,
-            distance: None,
-            is_interior: false,
-            ref_exhausted: false,
-                    };
+                    // NaN / Inf protection
+                    if !delta.re.is_finite() || !delta.im.is_finite() {
+                        return UnifiedPixelResult {
+                            iteration: n,
+                            z_final: ref_orbit.z_ref_f64[m as usize] + delta,
+                            rebase_count,
+                            bla_steps,
+                            orbit: None,
+                            distance: None,
+                            is_interior: false,
+                            ref_exhausted: false,
+                        };
+                    }
+                    continue;
                 }
-                continue;
             }
             // BLA voulait sauter trop loin → on tombe sur le pas perturbation.
         }
@@ -709,24 +734,15 @@ pub fn iterate_pixel_unified_mandelbrot(
             };
         }
 
-        // Étape 3 : cyclage si périodique (intérieur), sinon rebase-at-end F3.
+        // Étape 3 : cyclage si périodique (intérieur), sinon flag exhaustion
+        // (cf. e113.toml : rebase blind = uniformise tous les pixels post-escape).
         let end_of_ref = (m as usize) + 1 >= ref_len;
         if end_of_ref {
             if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
                 m = m_wrapped;
             } else {
-                // Rebase-at-end F3 (`hybrid.cc:301`) : réf escape-time épuisée →
-                // `z := Z[m]+δ, m := 0`, on CONTINUE (au lieu de caper le pixel à
-                // la longueur de réf). δ_new = z_full − Z[0] ; Z[0]=0 pour
-                // Mandelbrot donc identique à `pixel_loop_exp`. Corrige les réfs
-                // courtes (centre escape-time) où tous les pixels étaient capés
-                // au même iter (cf. Julia siegel : réf s'échappe à ~256, vrai
-                // escape 258). Parité avec `pixel_loop_exp.rs`.
-                let m_read = (m as usize).min(ref_len - 1);
-                let z_curr = ref_orbit.z_ref_f64[m_read] + delta;
-                delta = z_curr - ref_orbit.z_ref_f64[0];
-                m = 0;
-                rebase_count += 1;
+                ref_exhausted_flag = true;
+                break;
             }
         } else {
             let z_m_new = ref_orbit.z_ref_f64[m as usize];
@@ -750,7 +766,7 @@ pub fn iterate_pixel_unified_mandelbrot(
                 orbit: None,
             distance: None,
             is_interior: false,
-            ref_exhausted: false,
+            ref_exhausted: ref_exhausted_flag,
     }
 }
 
@@ -1252,6 +1268,127 @@ mod tests {
         assert_eq!(
             mismatches, 0,
             "Unified pixel loop doit classifier comme l'itération directe"
+        );
+    }
+
+    /// Verrou anti-régression du guard BLA over-skip (Julia siegel disk).
+    ///
+    /// Scène : Julia c=-0.8+0.156i, centre (0,0), zoom 1e10 — l'orbite de
+    /// référence (critique) est bornée, mais les pixels s'échappent vers
+    /// l'iter ~254. Un pas BLA multi-étapes linéarisé autour de la référence
+    /// bornée peut sauter PAR-DESSUS l'évasion propre du pixel et rapporter
+    /// l'iter d'escape jusqu'à `l-1` trop tard (bug : tous les pixels
+    /// escapaient uniformément +2 vs le GMP/f64 pur — `fractall-quality`
+    /// preset `julia-siegel-disk` FAIL max_diff=2).
+    ///
+    /// Le guard rejette ces sauts et single-steppe → l'escape perturbation+BLA
+    /// doit matcher l'itération f64 directe (même précision, path indépendant
+    /// de la BLA). On vérifie que le biais moyen d'iter est ~0, pas +2.
+    #[test]
+    fn bla_no_overskip_past_escape_julia_siegel() {
+        use crate::fractal::perturbation::{effective_pixel_size, orbit::compute_reference_orbit};
+
+        let width = 96u32;
+        let height = 96u32;
+        let iter_max = 3000u32;
+        let (sx, sy) = (-0.8f64, 0.156f64);
+        let zoom = 1e10f64;
+        let bailout = 25.0f64;
+        let bailout_sqr = bailout * bailout;
+
+        let mut params = default_params_for_type(FractalType::Julia, width, height);
+        params.center_x = 0.0;
+        params.center_y = 0.0;
+        params.seed = Complex64::new(sx, sy);
+        let span_x = 4.0 / zoom;
+        let span_y = span_x * height as f64 / width as f64;
+        params.span_x = span_x;
+        params.span_y = span_y;
+        params.iteration_max = iter_max;
+        params.bailout = bailout;
+        params.algorithm_mode = AlgorithmMode::Perturbation;
+
+        let (orbit, _, _) =
+            compute_reference_orbit(&params, None).expect("compute_reference_orbit (Julia)");
+        let formula = compile_formula(FractalType::Julia, 2.0).unwrap();
+        let c_norm = effective_pixel_size(&params)
+            * ((width as f64).powi(2) + (height as f64).powi(2)).sqrt();
+        let tables =
+            build_bla_table_for_formula(&formula, &orbit.z_ref_f64, c_norm, params.bla_threshold)
+                .expect("BLA table (Julia)");
+        let bla = &tables[0];
+
+        let options = UnifiedOptions {
+            is_julia: true,
+            ..Default::default()
+        };
+        let seed = Complex64::new(sx, sy);
+
+        // Escape f64 direct (référence : z_{n+1} = z_n² + seed, z_0 = pixel).
+        let plain_escape = |z0x: f64, z0y: f64| -> Option<u32> {
+            let (mut zx, mut zy) = (z0x, z0y);
+            let mut i = 0u32;
+            while i < iter_max {
+                if zx * zx + zy * zy >= bailout_sqr {
+                    return Some(i);
+                }
+                let nzx = zx * zx - zy * zy + sx;
+                let nzy = 2.0 * zx * zy + sy;
+                zx = nzx;
+                zy = nzy;
+                i += 1;
+            }
+            None
+        };
+
+        let mut sum_signed = 0i64;
+        let mut sum_abs = 0i64;
+        let mut escaped = 0i64;
+        let mut worst = 0u32;
+        for j in 0..height {
+            for i in 0..width {
+                let dx = ((i as f64 + 0.5) / width as f64 - 0.5) * span_x;
+                let dy = ((j as f64 + 0.5) / height as f64 - 0.5) * span_y;
+                // Julia : delta_init = pixel − centre (= pixel, centre=0), c_ref = seed, dc = 0.
+                let delta_init = Complex64::new(dx, dy);
+                let res = iterate_pixel_unified_full(
+                    &orbit,
+                    bla,
+                    &formula,
+                    seed,
+                    Complex64::new(0.0, 0.0),
+                    delta_init,
+                    iter_max,
+                    bailout,
+                    options,
+                );
+                if let Some(plain) = plain_escape(dx, dy) {
+                    if res.iteration < iter_max {
+                        let d = res.iteration as i64 - plain as i64;
+                        sum_signed += d;
+                        sum_abs += d.abs();
+                        worst = worst.max(d.unsigned_abs() as u32);
+                        escaped += 1;
+                    }
+                }
+            }
+        }
+
+        assert!(escaped > 500, "trop peu de pixels échappés ({escaped})");
+        let mean_signed = sum_signed as f64 / escaped as f64;
+        let mean_abs = sum_abs as f64 / escaped as f64;
+        eprintln!(
+            "[julia-siegel guard] escaped={escaped} mean_signed={mean_signed:.4} mean_abs={mean_abs:.4} worst={worst}"
+        );
+        // Avant le guard : tous les pixels escapaient uniformément +2 → mean≈2.
+        // Après : le path BLA suit le f64 direct au pixel près (biais ~0).
+        assert!(
+            mean_signed.abs() < 0.5,
+            "biais d'iter d'escape BLA vs f64 direct = {mean_signed:.4} (le guard anti-over-skip a régressé ?)"
+        );
+        assert!(
+            mean_abs < 0.5,
+            "erreur moyenne d'iter BLA vs f64 direct = {mean_abs:.4} (over-skip BLA)"
         );
     }
 }
