@@ -82,7 +82,7 @@
 //! - **Détection de glitches**: Recalcule en GMP les pixels suspects
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use num_complex::Complex64;
@@ -141,9 +141,24 @@ pub(crate) struct ProgressState {
     pub bla: AtomicU32,
     pub tile: AtomicU32,
     pub done: AtomicBool,
+    // Réveil immédiat du reporter à la fin du rendu : il attend sur la Condvar
+    // (timeout = intervalle de redraw) et `finish()` le notifie aussitôt → pas
+    // de latence de poll sur `join()` après un rendu rapide (cf. test5 : rendu
+    // 3 ms mais process 20 ms à cause du sleep). Guard bool sous Mutex = pattern
+    // condvar anti-lost-wakeup.
+    done_wake: Mutex<bool>,
+    done_cv: Condvar,
 }
 
 impl ProgressState {
+    /// Marque le rendu terminé et réveille le reporter immédiatement.
+    pub(crate) fn finish(&self) {
+        self.done.store(true, Ordering::Relaxed);
+        let mut g = self.done_wake.lock().unwrap();
+        *g = true;
+        self.done_cv.notify_all();
+    }
+
     fn snapshot_line(&self) -> String {
         format!(
             "Frame[100%] Ref[{:>3}%] BLA[{:>3}%] Tile[{:>3}%]",
@@ -181,11 +196,15 @@ pub(crate) fn spawn_progress_reporter(state: Arc<ProgressState>) -> std::thread:
                 eprintln!("\r{} ", state.snapshot_line());
                 break;
             }
-            // Poll court : le `join()` après un rendu rapide ne doit pas attendre
-            // un long sleep (un rendu de 2 ms payait ~500 ms de latence fixe →
-            // ratios vitesse gonflés sur les cas rapides, cf. test5). 20 ms borne
-            // la latence de `join` sans redraw spam (throttle ci-dessus).
-            std::thread::sleep(Duration::from_millis(20));
+            // Attend le prochain redraw (250 ms) OU le réveil immédiat de
+            // `finish()`. Zéro latence sur `join()` après un rendu rapide (le
+            // sleep fixe faisait payer jusqu'à 20 ms à un rendu de 3 ms → test5
+            // à 20 ms au lieu de 3), sans busy-spin. Le guard `*g` sous le Mutex
+            // évite le lost-wakeup si `finish()` s'intercale avant l'attente.
+            let g = state.done_wake.lock().unwrap();
+            if !*g {
+                let _ = state.done_cv.wait_timeout(g, Duration::from_millis(250));
+            }
         }
     })
 }
@@ -891,7 +910,7 @@ pub fn render_perturbation_with_cache(
     let progress = Arc::new(ProgressState::default());
     let reporter = spawn_progress_reporter(Arc::clone(&progress));
     if cancel.load(Ordering::Relaxed) {
-        progress.done.store(true, Ordering::Relaxed);
+        progress.finish();
         let _ = reporter.join();
         return None;
     }
@@ -900,7 +919,7 @@ pub fn render_perturbation_with_cache(
         FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn | FractalType::Multibrot
     );
     if !supports {
-        progress.done.store(true, Ordering::Relaxed);
+        progress.finish();
         let _ = reporter.join();
         return None;
     }
@@ -953,7 +972,7 @@ pub fn render_perturbation_with_cache(
 
     if width == 0 || height == 0 {
         progress.tile.store(100, Ordering::Relaxed);
-        progress.done.store(true, Ordering::Relaxed);
+        progress.finish();
         let _ = reporter.join();
         return Some(((iterations, zs, distances), cache));
     }
@@ -967,7 +986,7 @@ pub fn render_perturbation_with_cache(
             Arc::clone(&progress), t_all_start,
         );
         let t_gmp_pixels = t_gmp_pixels_start.elapsed();
-        progress.done.store(true, Ordering::Relaxed);
+        progress.finish();
         let _ = reporter.join();
         if let Some(((ref iters_ref, _, _), _)) = result.as_ref() {
             print_fractall_summary(
@@ -1175,7 +1194,7 @@ pub fn render_perturbation_with_cache(
     let t_pixels = t_pixels_start.elapsed();
 
     if cancelled.load(Ordering::Relaxed) {
-        progress.done.store(true, Ordering::Relaxed);
+        progress.finish();
         let _ = reporter.join();
         None
     } else {
@@ -1688,7 +1707,7 @@ pub fn render_perturbation_with_cache(
         // Reporter live + ligne finale [FRACTALL] (format aligné F3 pour
         // comparaison directe avec sa sortie batch).
         progress.tile.store(100, Ordering::Relaxed);
-        progress.done.store(true, Ordering::Relaxed);
+        progress.finish();
         let _ = reporter.join();
         let path_label = bytecode_path_label(params).unwrap_or("legacy_fexp");
         print_fractall_summary(

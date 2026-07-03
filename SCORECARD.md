@@ -2,8 +2,8 @@
 
 # SCORECARD — fractall vs Fraktaler-3
 
-- **Date** : 2026-07-03T18:42:54+00:00
-- **Commit** : `97bb40d`  ⚠️ arbre modifié (dirty)
+- **Date** : 2026-07-03T19:06:10+00:00
+- **Commit** : `e8dea24`  ⚠️ arbre modifié (dirty)
 - **Machine** : Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz · 16 threads · Linux 6.14.0-37-generic
 - **Tier** : quick · 256×256 · quality 96×96 · runs=1 · axes=speed,parity,quality,goldens
 - **F3** : /home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux
@@ -12,8 +12,8 @@
 
 | Métrique | Valeur | vs baseline |
 |---|---:|---|
-| geomean ratio | 0.966 |  (↓0.746 ✅) |
-| pire ratio | 4.362 (glitch_test_2) | |
+| geomean ratio | 0.890 |  (↓0.0764 ✅) |
+| pire ratio | 4.375 (glitch_test_2) | |
 | wins (ratio<1) | 4 | |
 | timeouts | 0 | |
 | cas comparés | 10/10 | |
@@ -32,9 +32,9 @@
 
 | Verdict | Nombre | vs baseline |
 |---|---:|---|
-| PASS | 5 |  (↑3 ✅) |
-| WARN | 1 |  (↑1 ⚠️) |
-| FAIL | 5 |  (↓4 ✅) |
+| PASS | 5 |  (=) |
+| WARN | 1 |  (=) |
+| FAIL | 5 |  (=) |
 
 FAIL : seahorse-valley, misiurewicz-m32, mandelbrot-e30, mandelbrot-e50, mandelbrot-e100
 
@@ -55,8 +55,8 @@ FAIL : seahorse-valley, misiurewicz-m32, mandelbrot-e30, mandelbrot-e50, mandelb
 | 3 | 1 correction | quality | `mandelbrot-e30` | verdict | FAIL | quality suite FAIL |
 | 4 | 1 correction | quality | `mandelbrot-e50` | verdict | FAIL | quality suite FAIL |
 | 5 | 1 correction | quality | `mandelbrot-e100` | verdict | FAIL | quality suite FAIL |
-| 6 | 3 vitesse | speed | `glitch_test_2` | ratio | 4.362 | 4.36× plus lent que F3 |
-| 7 | 3 vitesse | speed | `dragon` | ratio | 3.6206 | 3.62× plus lent que F3 |
+| 6 | 3 vitesse | speed | `glitch_test_2` | ratio | 4.3752 | 4.38× plus lent que F3 |
+| 7 | 3 vitesse | speed | `dragon` | ratio | 3.6126 | 3.61× plus lent que F3 |
 | 8 | 4 qualité | quality | `mandelbrot-e18-minibrot` | verdict | WARN | quality suite WARN |
 
 ---
