@@ -86,6 +86,14 @@ pub fn compare(params: &FractalParams, opt: &ComparisonOptions) -> Result<Compar
     let gmp_time_ms = t1.elapsed().as_secs_f64() * 1000.0;
     println!("[quality] GMP done in {:.0} ms", gmp_time_ms);
 
+    if std::env::var("FRACTALL_QDEBUG").is_ok() {
+        let idx = ((params.height / 2) * params.width + params.width / 2) as usize;
+        eprintln!(
+            "[QDEBUG] pert.bailout={} gmp.bailout={} center-pixel pert_iter={} gmp_iter={} pert_z={:?} gmp_z={:?}",
+            pert_params.bailout, gmp_params.bailout,
+            pert_iters[idx], gmp_iters[idx], pert_zs[idx], gmp_zs[idx]
+        );
+    }
     let m = metrics::compute(
         params.width,
         params.height,

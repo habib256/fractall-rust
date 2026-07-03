@@ -1,0 +1,490 @@
+{
+  "schema": 1,
+  "meta": {
+    "date_utc": "2026-07-03T16:04:40+00:00",
+    "stamp": "20260703T160440Z",
+    "git_sha": "fb8de02",
+    "git_dirty": true,
+    "machine": {
+      "cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz",
+      "nproc": 16,
+      "os": "Linux 6.14.0-37-generic"
+    },
+    "tier": "quick",
+    "axes": [
+      "speed",
+      "parity",
+      "quality",
+      "goldens"
+    ],
+    "width": 256,
+    "height": 256,
+    "runs": 1,
+    "f3_bin": "/home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux"
+  },
+  "speed": {
+    "status": "ok",
+    "cases": {
+      "test5": {
+        "fractall_s": 0.5146,
+        "f3_s": 0.0318,
+        "ratio": 16.1824,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "spiral": {
+        "fractall_s": 0.0349,
+        "f3_s": 0.1639,
+        "ratio": 0.2129,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "flake": {
+        "fractall_s": 0.5653,
+        "f3_s": 0.214,
+        "ratio": 2.6416,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_2": {
+        "fractall_s": 1.1169,
+        "f3_s": 0.1639,
+        "ratio": 6.8145,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e50": {
+        "fractall_s": 2.5713,
+        "f3_s": 1.1657,
+        "ratio": 2.2058,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e113": {
+        "fractall_s": 0.5683,
+        "f3_s": 0.264,
+        "ratio": 2.1527,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e401": {
+        "fractall_s": 1.066,
+        "f3_s": 6.3244,
+        "ratio": 0.1686,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1000": {
+        "fractall_s": 1.0666,
+        "f3_s": 2.9695,
+        "ratio": 0.3592,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "floral_fantasy": {
+        "fractall_s": 0.5149,
+        "f3_s": 0.1639,
+        "ratio": 3.1415,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "dragon": {
+        "fractall_s": 13.751,
+        "f3_s": 3.5704,
+        "ratio": 3.8514,
+        "status": "ok",
+        "f3_exr_ok": true
+      }
+    },
+    "geomean_ratio": 1.7116,
+    "worst_ratio": {
+      "case": "test5",
+      "ratio": 16.1824
+    },
+    "wins": [
+      "spiral",
+      "e401",
+      "e1000"
+    ],
+    "timeouts": [],
+    "n_cases": 10,
+    "n_compared": 10
+  },
+  "parity": {
+    "status": "ok",
+    "cases": {
+      "dragon": {
+        "status": "ok",
+        "rel_dsi_pct": 0.1714,
+        "mean_abs_dsi": 8569.9996,
+        "inside_mismatch": 28,
+        "f3_degenerate": false,
+        "f3_secs_num": 3.636,
+        "fr_secs_num": 15.5989
+      },
+      "e1000": {
+        "status": "ok",
+        "rel_dsi_pct": 0.001,
+        "mean_abs_dsi": 0.3236,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 3.1251,
+        "fr_secs_num": 1.0333
+      },
+      "e113": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0785,
+        "mean_abs_dsi": 27.8788,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.2683,
+        "fr_secs_num": 1.0271
+      },
+      "e401": {
+        "status": "ok",
+        "rel_dsi_pct": 0.004,
+        "mean_abs_dsi": 8.516,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 6.7414,
+        "fr_secs_num": 1.0319
+      },
+      "e50": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0347,
+        "mean_abs_dsi": 91.1954,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 1.184,
+        "fr_secs_num": 2.5573
+      },
+      "flake": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0434,
+        "mean_abs_dsi": 26.0319,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.181,
+        "fr_secs_num": 0.5321
+      },
+      "floral_fantasy": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0032,
+        "mean_abs_dsi": 0.3894,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1478,
+        "fr_secs_num": 0.517
+      },
+      "glitch_test_2": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0079,
+        "mean_abs_dsi": 19.7274,
+        "inside_mismatch": 12,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1183,
+        "fr_secs_num": 1.0761
+      },
+      "spiral": {
+        "status": "ok",
+        "rel_dsi_pct": 0.979,
+        "mean_abs_dsi": 9.7899,
+        "inside_mismatch": 16,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1657,
+        "fr_secs_num": 0.0247
+      },
+      "test5": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0,
+        "mean_abs_dsi": 0.0,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.0152,
+        "fr_secs_num": 0.5067
+      }
+    },
+    "n_ok": 10,
+    "n_pixel_equiv": 5,
+    "n_fail": 0,
+    "n_timeout": 0,
+    "n_f3_degenerate": 0
+  },
+  "quality": {
+    "status": "ok",
+    "n_pass": 2,
+    "n_warn": 0,
+    "n_fail": 9,
+    "fail_presets": [
+      "seahorse-valley",
+      "mandelbrot-e13",
+      "mandelbrot-e17",
+      "misiurewicz-m32",
+      "julia-siegel-disk",
+      "mandelbrot-e18-minibrot",
+      "mandelbrot-e30",
+      "mandelbrot-e50",
+      "mandelbrot-e100"
+    ],
+    "warn_presets": [],
+    "presets": [
+      {
+        "name": "seahorse-valley",
+        "verdict": "FAIL",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.001708984375,
+        "time_pert_ms": 501.67312,
+        "time_gmp_ms": 7772.439426
+      },
+      {
+        "name": "mandelbrot-e13",
+        "verdict": "FAIL",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0001220703125,
+        "time_pert_ms": 506.381309,
+        "time_gmp_ms": 2477.5115950000004
+      },
+      {
+        "name": "mandelbrot-e17",
+        "verdict": "FAIL",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.000152587890625,
+        "time_pert_ms": 505.969251,
+        "time_gmp_ms": 2871.5348089999998
+      },
+      {
+        "name": "misiurewicz-m32",
+        "verdict": "FAIL",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0020751953125,
+        "time_pert_ms": 500.31290799999994,
+        "time_gmp_ms": 2588.1594999999998
+      },
+      {
+        "name": "julia-siegel-disk",
+        "verdict": "FAIL",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 1.0,
+        "time_pert_ms": 500.34416000000004,
+        "time_gmp_ms": 1368.442845
+      },
+      {
+        "name": "burning-ship-antenna",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 500.219484,
+        "time_gmp_ms": 165.517
+      },
+      {
+        "name": "tricorn-spiral",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 500.259832,
+        "time_gmp_ms": 58.450917
+      },
+      {
+        "name": "mandelbrot-e18-minibrot",
+        "verdict": "FAIL",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 6.103515625e-05,
+        "time_pert_ms": 512.549802,
+        "time_gmp_ms": 2481.462706
+      },
+      {
+        "name": "mandelbrot-e30",
+        "verdict": "FAIL",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0341796875,
+        "time_pert_ms": 2516.029449,
+        "time_gmp_ms": 149996.857999
+      },
+      {
+        "name": "mandelbrot-e50",
+        "verdict": "FAIL",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.05316162109375,
+        "time_pert_ms": 3534.1000510000003,
+        "time_gmp_ms": 1339913.036129
+      },
+      {
+        "name": "mandelbrot-e100",
+        "verdict": "FAIL",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0030364990234375,
+        "time_pert_ms": 1006.566165,
+        "time_gmp_ms": 264329.97969
+      }
+    ]
+  },
+  "goldens": {
+    "passed": true,
+    "detail": ""
+  },
+  "beyond_f3": {
+    "speed_wins": [
+      "spiral",
+      "e401",
+      "e1000"
+    ],
+    "correctness_wins": []
+  },
+  "gaps": [
+    {
+      "axis": "quality",
+      "case": "seahorse-valley",
+      "metric": "verdict",
+      "value": "FAIL",
+      "baseline_value": null,
+      "severity": 1,
+      "note": "quality suite FAIL"
+    },
+    {
+      "axis": "quality",
+      "case": "mandelbrot-e13",
+      "metric": "verdict",
+      "value": "FAIL",
+      "baseline_value": null,
+      "severity": 1,
+      "note": "quality suite FAIL"
+    },
+    {
+      "axis": "quality",
+      "case": "mandelbrot-e17",
+      "metric": "verdict",
+      "value": "FAIL",
+      "baseline_value": null,
+      "severity": 1,
+      "note": "quality suite FAIL"
+    },
+    {
+      "axis": "quality",
+      "case": "misiurewicz-m32",
+      "metric": "verdict",
+      "value": "FAIL",
+      "baseline_value": null,
+      "severity": 1,
+      "note": "quality suite FAIL"
+    },
+    {
+      "axis": "quality",
+      "case": "julia-siegel-disk",
+      "metric": "verdict",
+      "value": "FAIL",
+      "baseline_value": null,
+      "severity": 1,
+      "note": "quality suite FAIL"
+    },
+    {
+      "axis": "quality",
+      "case": "mandelbrot-e18-minibrot",
+      "metric": "verdict",
+      "value": "FAIL",
+      "baseline_value": null,
+      "severity": 1,
+      "note": "quality suite FAIL"
+    },
+    {
+      "axis": "quality",
+      "case": "mandelbrot-e30",
+      "metric": "verdict",
+      "value": "FAIL",
+      "baseline_value": null,
+      "severity": 1,
+      "note": "quality suite FAIL"
+    },
+    {
+      "axis": "quality",
+      "case": "mandelbrot-e50",
+      "metric": "verdict",
+      "value": "FAIL",
+      "baseline_value": null,
+      "severity": 1,
+      "note": "quality suite FAIL"
+    },
+    {
+      "axis": "quality",
+      "case": "mandelbrot-e100",
+      "metric": "verdict",
+      "value": "FAIL",
+      "baseline_value": null,
+      "severity": 1,
+      "note": "quality suite FAIL"
+    },
+    {
+      "axis": "speed",
+      "case": "test5",
+      "metric": "ratio",
+      "value": 16.1824,
+      "baseline_value": null,
+      "severity": 3,
+      "note": "16.18× plus lent que F3"
+    },
+    {
+      "axis": "speed",
+      "case": "glitch_test_2",
+      "metric": "ratio",
+      "value": 6.8145,
+      "baseline_value": null,
+      "severity": 3,
+      "note": "6.81× plus lent que F3"
+    },
+    {
+      "axis": "speed",
+      "case": "dragon",
+      "metric": "ratio",
+      "value": 3.8514,
+      "baseline_value": null,
+      "severity": 3,
+      "note": "3.85× plus lent que F3"
+    },
+    {
+      "axis": "speed",
+      "case": "floral_fantasy",
+      "metric": "ratio",
+      "value": 3.1415,
+      "baseline_value": null,
+      "severity": 3,
+      "note": "3.14× plus lent que F3"
+    },
+    {
+      "axis": "speed",
+      "case": "flake",
+      "metric": "ratio",
+      "value": 2.6416,
+      "baseline_value": null,
+      "severity": 3,
+      "note": "2.64× plus lent que F3"
+    },
+    {
+      "axis": "speed",
+      "case": "e50",
+      "metric": "ratio",
+      "value": 2.2058,
+      "baseline_value": null,
+      "severity": 3,
+      "note": "2.21× plus lent que F3"
+    },
+    {
+      "axis": "speed",
+      "case": "e113",
+      "metric": "ratio",
+      "value": 2.1527,
+      "baseline_value": null,
+      "severity": 3,
+      "note": "2.15× plus lent que F3"
+    }
+  ]
+}

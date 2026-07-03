@@ -369,7 +369,7 @@ fn iterate_pixel_unified_single_phase(
 
     // Quand orbit traps demandé, on tracke chaque z_abs → désactive la BLA.
     let mut orbit_data = options.orbit_trap.map(OrbitData::new);
-    let bla_enabled = orbit_data.is_none();
+    let bla_enabled = orbit_data.is_none() && std::env::var("FRACTALL_NO_BLA").is_err();
     let track_ddelta = options.enable_distance || options.enable_interior;
 
     let mut delta = delta_initial;
@@ -387,7 +387,6 @@ fn iterate_pixel_unified_single_phase(
     let mut iters_ptb = 0u32;
     let max_ptb = options.max_perturb_iterations;
     let max_bla = options.max_bla_steps;
-    let mut ref_exhausted_flag = false;
 
     // Point initial pour orbit traps.
     if let Some(ref mut od) = orbit_data {
@@ -513,16 +512,22 @@ fn iterate_pixel_unified_single_phase(
         // Quand l'orbite référence est tronquée par période détectée (interior
         // center), on cycle m via modulo (orbite cyclique, valeurs identiques
         // à epsilon près) — évite l'uniformisation observée sur glitch_test_1.
-        // Sinon (orbite échappée ou non-périodique), on flag exhaustion : le
-        // rebase blind sur z_ref[end] uniformiserait tous les pixels post-escape
-        // (cf. e113.toml). Le caller route ces pixels vers `iterate_pixel_gmp`.
+        // Sinon (orbite échappée/non-périodique), rebase-at-end F3
+        // (`hybrid.cc:301`) : `z := Z[m]+δ, m := 0`, on CONTINUE. δ_new =
+        // z_full − Z[0] (Z[0]=0 pour Mandelbrot ; = z0_ref pour Julia dont le
+        // centre ≠ 0). Sans ça, une réf courte (centre escape-time — ex. Julia
+        // siegel dont la réf s'échappe à ~256) cape tous les pixels au même
+        // iter au lieu de suivre leur vrai escape. Parité `pixel_loop_exp.rs`.
         let end_of_ref = (m as usize) + 1 >= ref_len;
         if end_of_ref {
             if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
                 m = m_wrapped;
             } else {
-                ref_exhausted_flag = true;
-                break;
+                let m_read = (m as usize).min(ref_len - 1);
+                let z_curr = ref_orbit.z_ref_f64[m_read] + delta;
+                delta = z_curr - ref_orbit.z_ref_f64[0];
+                m = 0;
+                rebase_count += 1;
             }
         } else {
             let z_m_new = ref_orbit.z_ref_f64[m as usize];
@@ -560,7 +565,7 @@ fn iterate_pixel_unified_single_phase(
         orbit: orbit_data,
         distance: None,
         is_interior,
-        ref_exhausted: ref_exhausted_flag,
+        ref_exhausted: false,
     }
 }
 
@@ -621,7 +626,6 @@ pub fn iterate_pixel_unified_mandelbrot(
     let mut rebase_count = 0u32;
     let mut bla_steps = 0u32;
     let mut iters_ptb = 0u32;
-    let mut ref_exhausted_flag = false;
 
     while n < iteration_max
         && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
@@ -705,15 +709,24 @@ pub fn iterate_pixel_unified_mandelbrot(
             };
         }
 
-        // Étape 3 : cyclage si périodique (intérieur), sinon flag exhaustion
-        // (cf. e113.toml : rebase blind = uniformise tous les pixels post-escape).
+        // Étape 3 : cyclage si périodique (intérieur), sinon rebase-at-end F3.
         let end_of_ref = (m as usize) + 1 >= ref_len;
         if end_of_ref {
             if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
                 m = m_wrapped;
             } else {
-                ref_exhausted_flag = true;
-                break;
+                // Rebase-at-end F3 (`hybrid.cc:301`) : réf escape-time épuisée →
+                // `z := Z[m]+δ, m := 0`, on CONTINUE (au lieu de caper le pixel à
+                // la longueur de réf). δ_new = z_full − Z[0] ; Z[0]=0 pour
+                // Mandelbrot donc identique à `pixel_loop_exp`. Corrige les réfs
+                // courtes (centre escape-time) où tous les pixels étaient capés
+                // au même iter (cf. Julia siegel : réf s'échappe à ~256, vrai
+                // escape 258). Parité avec `pixel_loop_exp.rs`.
+                let m_read = (m as usize).min(ref_len - 1);
+                let z_curr = ref_orbit.z_ref_f64[m_read] + delta;
+                delta = z_curr - ref_orbit.z_ref_f64[0];
+                m = 0;
+                rebase_count += 1;
             }
         } else {
             let z_m_new = ref_orbit.z_ref_f64[m as usize];
@@ -737,7 +750,7 @@ pub fn iterate_pixel_unified_mandelbrot(
                 orbit: None,
             distance: None,
             is_interior: false,
-            ref_exhausted: ref_exhausted_flag,
+            ref_exhausted: false,
     }
 }
 
