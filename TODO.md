@@ -404,12 +404,22 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
   (i7-10700F Linux) remplace le M4 ; les baselines macOS ne sont plus
   comparables.
 - [ ] **Baseline v1 committée** sur cette machine (tier standard).
-- [ ] **Boucle exécutée au moins 1×** de bout en bout (`/improve`) avec
-  amélioration mesurée committée + verrou posé.
+- [x] **Boucle exécutée au moins 1×** de bout en bout (`/improve`) avec
+  amélioration mesurée committée + verrou posé (2026-07-03, `53a55cc` :
+  latence progress reporter → geomean vitesse 1.712→0.966 ; rebaseline
+  `a8bf871`).
 
 ---
 
 ## ✅ Shipped (condensé, le plus récent en haut)
+
+**2026-07-03** (`53a55cc`, `a8bf871`) :
+- **Fix perf — latence progress reporter** (`53a55cc`) : la boucle du reporter
+  dormait 500ms fixes ; `reporter.join()` post-rendu bloquait donc jusqu'à ~500ms
+  sur les rendus rapides (latence wall-clock réelle, cas test5 & co.). Poll 20ms
+  + redraw throttlé 250ms. **geomean vitesse 1.712 → 0.966** (fractall < F3 en
+  moyenne, quick tier), goldens verts, 179 tests OK, quality inchangée. Rebaseline
+  explicite `a8bf871`. Première itération `/improve` complète sur i7-10700F.
 
 **2026-05-21** (sur `main` `fd9ce4a`..`1d88d16` ; + branche `g3-cusp-rings-fix`
 `239952e`/`aca861c` à fast-forward) :
