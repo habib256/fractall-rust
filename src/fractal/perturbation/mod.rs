@@ -162,19 +162,30 @@ pub(crate) fn spawn_progress_reporter(state: Arc<ProgressState>) -> std::thread:
     std::thread::spawn(move || {
         // Premier tick immédiat pour montrer 0/0/0 au démarrage.
         let mut last = String::new();
+        let mut last_draw = Instant::now();
         loop {
+            let done = state.done.load(Ordering::Relaxed);
             let line = state.snapshot_line();
-            if line != last {
+            // Redraw sur changement, throttlé à ~250ms pour un affichage calme
+            // (sauf le tout premier tick et le tick final `done`).
+            if line != last
+                && (done || last.is_empty() || last_draw.elapsed() >= Duration::from_millis(250))
+            {
                 eprint!("\r{} ", line);
                 let _ = std::io::Write::flush(&mut std::io::stderr());
                 last = line;
+                last_draw = Instant::now();
             }
-            if state.done.load(Ordering::Relaxed) {
+            if done {
                 // Ligne finale avec retour à la ligne.
                 eprintln!("\r{} ", state.snapshot_line());
                 break;
             }
-            std::thread::sleep(Duration::from_millis(500));
+            // Poll court : le `join()` après un rendu rapide ne doit pas attendre
+            // un long sleep (un rendu de 2 ms payait ~500 ms de latence fixe →
+            // ratios vitesse gonflés sur les cas rapides, cf. test5). 20 ms borne
+            // la latence de `join` sans redraw spam (throttle ci-dessus).
+            std::thread::sleep(Duration::from_millis(20));
         }
     })
 }
