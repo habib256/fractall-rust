@@ -46,18 +46,6 @@ pub struct HybridBlaReferences {
 }
 
 impl HybridBlaReferences {
-    /// Create a single-reference HybridBlaReferences (no cycle detected)
-    pub fn single(orbit: ReferenceOrbit, bla_table: BlaTable) -> Self {
-        Self {
-            primary: orbit,
-            primary_bla: bla_table,
-            phases: Vec::new(),
-            phase_bla_tables: Vec::new(),
-            cycle_period: 0,
-            cycle_start: 0,
-        }
-    }
-
     /// Get the BLA table for a specific phase
     pub fn get_bla_table(&self, phase: u32) -> &BlaTable {
         if phase == 0 {
@@ -569,8 +557,16 @@ fn build_hybrid_bla_references(
             cycle_start,
         })
     } else {
-        // No cycle detected: single reference
-        Some(HybridBlaReferences::single(primary_orbit.clone(), primary_bla.clone()))
+        // No cycle detected : PAS de hybrid_refs. `single(clone)` dupliquait
+        // l'orbite primaire entière (z_ref + z_ref_f64 + z_ref_gmp, ce dernier
+        // ~170 o/iter × iter_max → 850 Mo à 5 M iters/dragon) alors que le
+        // dispatch pixel (mod.rs:1137) prend déjà `cache.orbit`/`cache.bla_table`
+        // — les MÊMES données — via la branche `else`. `iterate_pixel_hybrid_bla`
+        // avec `cycle_period==0` ne faisait que reléguer à `iterate_pixel(primary)`,
+        // donc renvoyer `None` est bit-identique et supprime le clone (0.6 s sur
+        // dragon, + demi-mémoire). Le hybrid_refs n'a de sens qu'avec des phases
+        // réelles (cycle détecté, branche ci-dessus).
+        None
     }
 }
 
