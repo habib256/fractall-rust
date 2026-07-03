@@ -63,15 +63,22 @@ def all_toml_stems() -> list[str]:
     return sorted(p.stem for p in TOML_DIR.glob("*.toml"))
 
 def tier_config(tier: str) -> dict:
+    # `quality_width/height` : résolution de l'axe quality (GMP pixel-par-pixel,
+    # O(1e3-1e4) plus lent que la perturbation). Le tier `quick` la réduit à 96²
+    # (~7× moins de pixels que 256²) pour que le cycle interne reste rapide — les
+    # verdicts PASS/WARN/FAIL sont stables en résolution (bord chaotique inclus).
     if tier == "quick":
         return {"cases": list(QUICK_CASES), "width": 256, "height": 256,
-                "runs": 1, "timeout": 120.0}
+                "runs": 1, "timeout": 120.0,
+                "quality_width": 96, "quality_height": 96}
     if tier == "standard":
         return {"cases": QUICK_CASES + STANDARD_EXTRA, "width": 256,
-                "height": 256, "runs": 3, "timeout": 300.0}
+                "height": 256, "runs": 3, "timeout": 300.0,
+                "quality_width": 256, "quality_height": 256}
     if tier == "full":
         return {"cases": all_toml_stems(), "width": 256, "height": 256,
-                "runs": 1, "timeout": 600.0}
+                "runs": 1, "timeout": 600.0,
+                "quality_width": 256, "quality_height": 256}
     raise SystemExit(f"tier inconnu: {tier}")
 
 def git_sha() -> str:
@@ -397,7 +404,7 @@ def summarize_quality(rows: list[dict]) -> dict:
         "presets": rows,
     }
 
-def axis_quality(no_rebuild: bool) -> dict:
+def axis_quality(no_rebuild: bool, width: int = 256, height: int = 256) -> dict:
     if not QUALITY.exists() and not no_rebuild:
         cargo_build("fractall-quality")
     if not QUALITY.exists():
@@ -407,8 +414,9 @@ def axis_quality(no_rebuild: bool) -> dict:
         return {"status": "no_binary"}
     outdir = BENCH / "quality"
     outdir.mkdir(parents=True, exist_ok=True)
-    print("  $ fractall-quality suite", flush=True)
-    proc = subprocess.run([str(QUALITY), "suite", "--output-dir", str(outdir)],
+    print(f"  $ fractall-quality suite --width {width} --height {height}", flush=True)
+    proc = subprocess.run([str(QUALITY), "suite", "--output-dir", str(outdir),
+                           "--width", str(width), "--height", str(height)],
                           cwd=REPO)
     rows = None
     jf = outdir / "suite-summary.json"
@@ -529,7 +537,9 @@ def build_scorecard_md(card: dict, base: dict | None) -> str:
     mach = m["machine"]
     L.append(f"- **Machine** : {mach['cpu']} · {mach['nproc']} threads · "
              f"{mach['os']}")
-    L.append(f"- **Tier** : {m['tier']} · {m['width']}×{m['height']} · "
+    qw, qh = m.get("quality_width", m["width"]), m.get("quality_height", m["height"])
+    qual_note = "" if (qw, qh) == (m["width"], m["height"]) else f" · quality {qw}×{qh}"
+    L.append(f"- **Tier** : {m['tier']} · {m['width']}×{m['height']}{qual_note} · "
              f"runs={m['runs']} · axes={','.join(m['axes'])}")
     L.append(f"- **F3** : {m['f3_bin'] or '— (indisponible)'}")
     if base and not comparable:
@@ -685,6 +695,8 @@ def cmd_score(args) -> None:
             "axes": axes,
             "width": width,
             "height": height,
+            "quality_width": cfg.get("quality_width", 256),
+            "quality_height": cfg.get("quality_height", 256),
             "runs": runs,
             "f3_bin": str(f3_bin) if f3_bin else None,
         },
@@ -706,7 +718,11 @@ def cmd_score(args) -> None:
         card["parity"] = axis_parity(cases, width, height, timeout, f3_bin)
     if "quality" in axes:
         print("\n== QUALITY ==")
-        card["quality"] = axis_quality(args.no_rebuild)
+        card["quality"] = axis_quality(
+            args.no_rebuild,
+            cfg.get("quality_width", 256),
+            cfg.get("quality_height", 256),
+        )
     if "goldens" in axes:
         print("\n== GOLDENS ==")
         card["goldens"] = axis_goldens()
