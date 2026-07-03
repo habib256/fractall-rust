@@ -233,12 +233,19 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
   vers `cache.orbit` via `iterate_pixel`, bit-identique). **dragon 3.60→3.37×,
   glitch_test_2 4.37→3.75× (pire ratio), ~850 Mo libérés**. Parité/quality/
   goldens inchangés.
-- [ ] **Reste deep-zoom perf (glitch_test_2 3.75×, dragon 3.37×)** : deux coûts
-  résiduels — (a) l'orbite référence GMP (676 b × 5 M iters = 5.1 s sur dragon,
-  levier = wisdom/auto-précision float128, gros chantier) ; (b) le `series_table`
-  (0.77 s sur dragon) est construit mais **inutilisé par le path bytecode**
-  (qui a sa propre BLA) — il ne sert qu'à l'auto-adjust d'`iteration_max`. Le
-  sauter proprement demande de découpler l'auto-adjust du build série.
+- [x] **Série non construite si path bytecode l'ignore** (2026-07-03, `d385674`) :
+  gate `series_will_be_used = auto_adjust_enabled || !uses_bytecode_path`. En
+  parité-F3 (`NO_AUTO_ADJUST`) le build série était mort (bytecode a sa propre
+  BLA). **dragon série 0.77→0 s, total 11.57→10.61 s, ratio 3.33→3.12**. Auto-
+  adjust (défaut) inchangé. Bit-identique (série jamais lue dans ce cas).
+- [ ] **Reste deep-zoom perf (dragon ~3.12×, glitch_test_2 ~5.4×)** :
+  - dragon : dominé par l'orbite référence GMP (676 b × 5 M iters = 5.3 s) +
+    pixels ComplexExp 5.3 s. Leviers = wisdom/float128 pour l'orbite ET la
+    boucle pixel exp (gros chantier, cf. P1.6.d/e).
+  - glitch_test_2 : fractall 0.605 s stable vs **F3 0.113 s stable** → ~5.4×
+    réel (le 3.75× d'itérations antérieures venait d'une sous-mesure F3). Zoom
+    1e112, orbite 0.23 s + pixels ComplexExp 0.33 s — c'est le coût FloatExp
+    (~35 ns/iter, frexp par op) qui domine. Même levier float128/f64-scaled.
 - [ ] **Re-sweep corpus complet avec le fix** : confirmer que les 36 ex-perf
   cas rendent ET matchent F3 (probable vu e1000 pixel-identique + e113 == GMP).
 - **Acceptation : ✅ ATTEINTE** — e50 **1.57 s**, e1000 **0.53 s**, dragon
