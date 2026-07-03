@@ -413,13 +413,18 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
 
 ## ✅ Shipped (condensé, le plus récent en haut)
 
-**2026-07-03** (`53a55cc`, `a8bf871`) :
-- **Fix perf — latence progress reporter** (`53a55cc`) : la boucle du reporter
-  dormait 500ms fixes ; `reporter.join()` post-rendu bloquait donc jusqu'à ~500ms
-  sur les rendus rapides (latence wall-clock réelle, cas test5 & co.). Poll 20ms
-  + redraw throttlé 250ms. **geomean vitesse 1.712 → 0.966** (fractall < F3 en
-  moyenne, quick tier), goldens verts, 179 tests OK, quality inchangée. Rebaseline
-  explicite `a8bf871`. Première itération `/improve` complète sur i7-10700F.
+**2026-07-03** (`53a55cc`, `a8bf871`, `d26274b`, `cdb4f1d`) :
+- **Fix perf — latence progress reporter** (`53a55cc` puis `d26274b`) : la boucle
+  du reporter dormait 500ms fixes ; `reporter.join()` post-rendu bloquait donc
+  jusqu'à ~500ms sur les rendus rapides (latence wall-clock réelle, cas test5 &
+  co.). D'abord réduit à un poll 20ms (`53a55cc`, geomean 1.712→0.966) — mais un
+  rendu de 3ms payait encore 20ms de plancher (test5 flappait win↔loss,
+  geomean 0.966↔1.041 en bruit). Fix robuste `d26274b` : ProgressState porte une
+  Condvar + guard bool ; le reporter fait `wait_timeout(250ms)` et `finish()` le
+  réveille aussitôt → **0 latence join, sans busy-spin**. test5 process 20ms→3ms
+  (win robuste), **geomean 0.966→0.890**. Goldens verts, 179 tests, quality
+  inchangée. Rebaselines explicites `a8bf871` puis `cdb4f1d`. Deux itérations
+  `/improve` complètes sur i7-10700F.
 
 **2026-05-21** (sur `main` `fd9ce4a`..`1d88d16` ; + branche `g3-cusp-rings-fix`
 `239952e`/`aca861c` à fast-forward) :
