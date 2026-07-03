@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -359,8 +360,9 @@ def main():
     payload = json.dumps(cases, ensure_ascii=False)
     html = HTML.replace("__MANIFEST__", payload)
     OUT.write_text(html, encoding="utf-8")
+    opener = "open" if sys.platform == "darwin" else "xdg-open"
     print(f"Écrit: {OUT.relative_to(ROOT)} ({len(cases)} cas)")
-    print(f"Ouvre avec: open {OUT.relative_to(ROOT)}")
+    print(f"Ouvre avec: {opener} {OUT.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":

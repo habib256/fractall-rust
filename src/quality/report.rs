@@ -4,10 +4,11 @@ use std::path::Path;
 
 use num_complex::Complex64;
 use png::Encoder;
+use serde::Serialize;
 
 use crate::fractal::FractalParams;
 use crate::io::png::save_png_with_metadata;
-use crate::quality::metrics::{QualityMetrics, Verdict};
+use crate::quality::metrics::{IterStats, QualityMetrics, Thresholds, TopDivergent, Verdict};
 
 pub struct ReportInputs<'a> {
     pub preset_name: &'a str,
@@ -42,6 +43,7 @@ pub fn write_report(output_dir: &Path, input: &ReportInputs) -> Result<(), Box<d
 
     write_heatmap_png(&scene_dir.join("diff.png"), input.metrics)?;
     write_markdown(&scene_dir.join("report.md"), input)?;
+    write_report_json(&scene_dir.join("report.json"), input.preset_name, input.metrics)?;
 
     Ok(())
 }
@@ -175,6 +177,249 @@ fn write_markdown(path: &Path, input: &ReportInputs) -> Result<(), Box<dyn std::
 
 fn format_z(z: Complex64) -> String {
     format!("{:.3e}+{:.3e}i", z.re, z.im)
+}
+
+// ---------------------------------------------------------------------------
+// Machine-readable JSON output
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct IterDiffJson {
+    max: f64,
+    mean: f64,
+    rms: f64,
+    p50: f64,
+    p95: f64,
+    p99: f64,
+}
+
+impl IterDiffJson {
+    fn from(s: &IterStats) -> Self {
+        IterDiffJson {
+            max: s.max,
+            mean: s.mean,
+            rms: s.rms,
+            p50: s.p50,
+            p95: s.p95,
+            p99: s.p99,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ZStatsJson {
+    max: f64,
+    mean: f64,
+    rms: f64,
+    p95: f64,
+    p99: f64,
+}
+
+impl ZStatsJson {
+    fn from(s: &IterStats) -> Self {
+        ZStatsJson { max: s.max, mean: s.mean, rms: s.rms, p95: s.p95, p99: s.p99 }
+    }
+}
+
+#[derive(Serialize)]
+struct TopDivergentJson {
+    x: u32,
+    y: u32,
+    pert_iter: u32,
+    gmp_iter: u32,
+    iter_diff: u32,
+    z_distance: f64,
+    pert_z: [f64; 2],
+    gmp_z: [f64; 2],
+}
+
+impl TopDivergentJson {
+    fn from(d: &TopDivergent) -> Self {
+        TopDivergentJson {
+            x: d.x,
+            y: d.y,
+            pert_iter: d.pert_iter,
+            gmp_iter: d.gmp_iter,
+            iter_diff: d.iter_diff,
+            z_distance: d.z_distance,
+            pert_z: [d.pert_z.re, d.pert_z.im],
+            gmp_z: [d.gmp_z.re, d.gmp_z.im],
+        }
+    }
+}
+
+/// Compact per-preset object used in the suite summary JSON.
+#[derive(Serialize)]
+struct PresetSummaryJson {
+    name: String,
+    verdict: Verdict,
+    iter_diff: IterDiffJson,
+    divergence_ratio: f64,
+    escape_disagreement: f64,
+    z_distance_max: f64,
+    time_pert_ms: f64,
+    time_gmp_ms: f64,
+    speedup: f64,
+}
+
+impl PresetSummaryJson {
+    fn from(name: &str, m: &QualityMetrics) -> Self {
+        PresetSummaryJson {
+            name: name.to_string(),
+            verdict: m.verdict,
+            iter_diff: IterDiffJson::from(&m.iter_diff),
+            divergence_ratio: m.iter_divergence_ratio,
+            escape_disagreement: m.escape_disagreement,
+            z_distance_max: m.z_distance.max,
+            time_pert_ms: m.perturb_time_ms,
+            time_gmp_ms: m.gmp_time_ms,
+            speedup: m.speedup(),
+        }
+    }
+}
+
+/// Full per-preset object written to `<name>/report.json` (heatmap excluded).
+#[derive(Serialize)]
+struct ReportJson {
+    name: String,
+    verdict: Verdict,
+    width: u32,
+    height: u32,
+    iter_diff: IterDiffJson,
+    divergence_ratio: f64,
+    escape_disagreement: f64,
+    z_distance: ZStatsJson,
+    z_ratio_error: ZStatsJson,
+    time_pert_ms: f64,
+    time_gmp_ms: f64,
+    speedup: f64,
+    top_divergent: Vec<TopDivergentJson>,
+}
+
+impl ReportJson {
+    fn from(name: &str, m: &QualityMetrics) -> Self {
+        ReportJson {
+            name: name.to_string(),
+            verdict: m.verdict,
+            width: m.width,
+            height: m.height,
+            iter_diff: IterDiffJson::from(&m.iter_diff),
+            divergence_ratio: m.iter_divergence_ratio,
+            escape_disagreement: m.escape_disagreement,
+            z_distance: ZStatsJson::from(&m.z_distance),
+            z_ratio_error: ZStatsJson::from(&m.z_ratio_error),
+            time_pert_ms: m.perturb_time_ms,
+            time_gmp_ms: m.gmp_time_ms,
+            speedup: m.speedup(),
+            top_divergent: m.top_divergent.iter().map(TopDivergentJson::from).collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ThresholdsJson {
+    max_iter_diff_pass: f64,
+    divergence_ratio_pass: f64,
+    max_iter_diff_warn: f64,
+    divergence_ratio_warn: f64,
+}
+
+impl ThresholdsJson {
+    fn from(t: &Thresholds) -> Self {
+        ThresholdsJson {
+            max_iter_diff_pass: t.max_iter_diff_pass,
+            divergence_ratio_pass: t.divergence_ratio_pass,
+            max_iter_diff_warn: t.max_iter_diff_warn,
+            divergence_ratio_warn: t.divergence_ratio_warn,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct TotalsJson {
+    pass: usize,
+    warn: usize,
+    fail: usize,
+}
+
+#[derive(Serialize)]
+struct SuiteJson {
+    generated_utc: String,
+    thresholds: ThresholdsJson,
+    presets: Vec<PresetSummaryJson>,
+    totals: TotalsJson,
+}
+
+fn write_report_json(
+    path: &Path,
+    name: &str,
+    m: &QualityMetrics,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let report = ReportJson::from(name, m);
+    let json = serde_json::to_string_pretty(&report)?;
+    let mut f = BufWriter::new(File::create(path)?);
+    f.write_all(json.as_bytes())?;
+    f.write_all(b"\n")?;
+    Ok(())
+}
+
+/// Write `<output-dir>/suite-summary.json`. Always called by the suite command.
+pub fn write_suite_summary_json(
+    output_dir: &Path,
+    rows: &[(String, QualityMetrics)],
+    thresholds: &Thresholds,
+) -> Result<(), Box<dyn std::error::Error>> {
+    fs::create_dir_all(output_dir)?;
+    let mut counts = TotalsJson { pass: 0, warn: 0, fail: 0 };
+    let presets: Vec<PresetSummaryJson> = rows
+        .iter()
+        .map(|(name, m)| {
+            match m.verdict {
+                Verdict::Pass => counts.pass += 1,
+                Verdict::Warn => counts.warn += 1,
+                Verdict::Fail => counts.fail += 1,
+            }
+            PresetSummaryJson::from(name, m)
+        })
+        .collect();
+
+    let suite = SuiteJson {
+        generated_utc: now_utc_rfc3339(),
+        thresholds: ThresholdsJson::from(thresholds),
+        presets,
+        totals: counts,
+    };
+    let json = serde_json::to_string_pretty(&suite)?;
+    let mut f = BufWriter::new(File::create(output_dir.join("suite-summary.json"))?);
+    f.write_all(json.as_bytes())?;
+    f.write_all(b"\n")?;
+    Ok(())
+}
+
+/// Current UTC time as an RFC 3339 string (`YYYY-MM-DDTHH:MM:SSZ`), no deps.
+fn now_utc_rfc3339() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let (hour, minute, second) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    // Civil-from-days (Howard Hinnant's algorithm), epoch 1970-01-01.
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let day = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let year = if month <= 2 { y + 1 } else { y };
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        year, month, day, hour, minute, second
+    )
 }
 
 pub fn write_suite_summary(

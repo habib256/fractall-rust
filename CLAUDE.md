@@ -2,7 +2,10 @@
 
 > Carte rapide du repo pour reprendre une session sans relire tout le code.
 > Référence algorithmique : **Fraktaler-3.1** (`fraktaler-3-3.1/src/`,
-> `docs/fraktaler-3-analysis.md`).
+> `fraktaler-3-3.1/fraktaler-3-analysis.md`).
+> **Boucle d'auto-amélioration** : protocole dans `HARNESS.md`, outil
+> `scripts/harness.py`, itération via le skill `/improve`, dernier état dans
+> `SCORECARD.md` + `harness/history/`.
 
 ## Build & Run
 
@@ -34,6 +37,25 @@ Prérequis natifs : GMP / MPFR / MPC (pour `rug`).
 
 CI : `.github/workflows/ci.yml` (unit + golden sur push/PR, ubuntu,
 gmp/mpfr/mpc). Extension du corpus golden à venir (cf. TODO G6).
+
+## Harness d'auto-amélioration (HARNESS.md)
+
+Trois axes mesurés contre Fraktaler-3 : **vitesse** (wall-clock head-to-head,
+geomean des ratios), **génération/parité** (`compare_f3.py`, EXR N0/NF),
+**qualité** (`fractall-quality` vs ground truth GMP + goldens).
+
+```bash
+python3 scripts/harness.py score --tier quick   # cycle interne (~10 cas, 256²)
+python3 scripts/harness.py score --tier standard # 3 runs médiane, avant commit perf
+python3 scripts/harness.py baseline              # fige la référence (explicite)
+```
+
+Sorties : `harness/history/<date>-<sha>.json` (mémoire longue, versionnée),
+`SCORECARD.md` (dernier score + gaps triés), artefacts lourds dans `bench/`
+(gitignoré). Baseline **par machine**. Binaire F3 : auto-détection
+(`fraktaler-3-3.1/fraktaler-3` Linux, `.macos` sinon, override `F3_BIN`).
+Priorités de gap : correction > robustesse > vitesse > qualité. Détail et
+invariants : `HARNESS.md`.
 
 ## Architecture
 

@@ -60,9 +60,42 @@ except ImportError:
 
 REPO = Path(__file__).resolve().parent.parent
 CLI = REPO / "target" / "release" / "fractall-cli"
-F3 = REPO / "fraktaler-3-3.1" / "fraktaler-3.macos"
 TOML_DIR = REPO / "toml"
 OUT_DIR = REPO / "bench" / "compare"
+
+
+def find_f3(required: bool = False) -> Path | None:
+    """Localise le binaire Fraktaler-3 (réutilisé par scripts/harness.py).
+
+    Ordre : env `F3_BIN`, `fraktaler-3-3.1.linux` (stripped, préféré),
+    `fraktaler-3.linux`, `fraktaler-3.macos`. None si aucun exécutable, sauf
+    `required=True` (sortie + indice de build selon la plateforme).
+    """
+    d = REPO / "fraktaler-3-3.1"
+    candidates: list[Path] = []
+    env = os.environ.get("F3_BIN")
+    if env:
+        candidates.append(Path(env))
+    candidates.append(d / "fraktaler-3-3.1.linux")
+    candidates.append(d / "fraktaler-3.linux")
+    candidates.append(d / "fraktaler-3.macos")
+    for c in candidates:
+        if c.exists() and os.access(c, os.X_OK):
+            return c
+    if required:
+        if sys.platform == "darwin":
+            hint = "cd fraktaler-3-3.1 && make SYSTEM=macos-batch"
+        else:
+            hint = ("cd fraktaler-3-3.1 && make SYSTEM=linux-batch"
+                    "  (ou définir F3_BIN=/chemin/vers/fraktaler-3)")
+        sys.exit(
+            "F3 binaire introuvable (essayé F3_BIN, fraktaler-3-3.1.linux, "
+            f"fraktaler-3.linux, fraktaler-3.macos)\n→ build: {hint}"
+        )
+    return None
+
+
+F3 = find_f3()
 
 NBIAS = 1024
 INSIDE_MARKER = 0xFFFFFFFF
@@ -194,6 +227,9 @@ def run_f3(toml_path: Path, timeout: float) -> tuple[int, float]:
         return proc.returncode, time.monotonic() - t0
     except subprocess.TimeoutExpired:
         return -1, float("inf")
+    except OSError:
+        # binaire non exécutable ici (ex: build .macos lancé sur Linux)
+        return 127, time.monotonic() - t0
 
 
 def run_fractall(
@@ -205,7 +241,7 @@ def run_fractall(
     iterations: int,
     escape_radius: float,
     timeout: float,
-) -> tuple[int, str]:
+) -> tuple[int, str, float]:
     cmd = [
         str(CLI),
         "--toml", str(toml_path),
@@ -234,9 +270,10 @@ def run_fractall(
             text=True,
             env=env,
         )
-        return proc.returncode, f"{time.monotonic()-t0:.2f}s"
+        secs = time.monotonic() - t0
+        return proc.returncode, f"{secs:.2f}s", secs
     except subprocess.TimeoutExpired:
-        return -1, f"timeout {timeout}s"
+        return -1, f"timeout {timeout}s", float("inf")
 
 
 # ---------------------------------------------------------------------------
@@ -326,21 +363,25 @@ def process_one(
 
     rc_f3, f3_secs = run_f3(f3_toml, timeout)
     row["f3_sec"] = "timeout" if f3_secs == float("inf") else f"{f3_secs:.2f}s"
+    row["f3_secs_num"] = ""  # champ numérique (float s), rempli au succès
     if rc_f3 == -1:  # timeout = perf-bound, distinct d'un vrai échec
         row["status"] = "f3_timeout"
         return row
     if rc_f3 != 0 or not f3_exr.exists():
         row["status"] = "f3_fail"
         return row
+    row["f3_secs_num"] = f"{f3_secs:.4f}"
 
-    rc_fr, t_fr = run_fractall(toml_path, fr_png, fr_exr, width, height, iters_used, escape_radius, timeout)
+    rc_fr, t_fr, fr_secs = run_fractall(toml_path, fr_png, fr_exr, width, height, iters_used, escape_radius, timeout)
     row["fr_sec"] = t_fr
+    row["fr_secs_num"] = ""  # champ numérique (float s), rempli au succès
     if rc_fr == -1:  # timeout = perf-bound (cf. G2), pas un bug de rendu
         row["status"] = "fractall_timeout"
         return row
     if rc_fr != 0 or not fr_exr.exists():
         row["status"] = "fractall_fail"
         return row
+    row["fr_secs_num"] = f"{fr_secs:.4f}"
 
     # Décode
     n_f3, nf_f3, W3, H3 = read_exr_iterations(f3_exr)
@@ -445,8 +486,9 @@ def main() -> None:
     # Résout --out en absolu (tolère les chemins relatifs passés en ligne de commande).
     args.out = args.out.resolve()
 
-    if not F3.exists():
-        sys.exit(f"F3 binaire introuvable: {F3}\n→ rebuild: cd fraktaler-3-3.1 && make SYSTEM=macos-batch")
+    if F3 is None:
+        # sort avec un indice adapté à la plateforme si toujours introuvable
+        globals()["F3"] = find_f3(required=True)
 
     if args.rebuild or not CLI.exists():
         r = subprocess.run(["cargo", "build", "--release", "--bin", "fractall-cli"], cwd=REPO)

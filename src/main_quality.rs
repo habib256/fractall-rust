@@ -12,7 +12,7 @@ use fractal::FractalType;
 use quality::{apply_zoom, compare, params_from_preset, ComparisonOptions};
 use quality::metrics::Thresholds;
 use quality::presets;
-use quality::report::{write_report, write_suite_summary, print_summary_line, ReportInputs};
+use quality::report::{write_report, write_suite_summary, write_suite_summary_json, print_summary_line, ReportInputs};
 
 /// Compare the perturbation pipeline against a pure-GMP reference render,
 /// producing per-pixel metrics and PNG diff heatmaps for regression diagnostics.
@@ -177,6 +177,10 @@ fn main() {
             }
             if let Err(e) = write_suite_summary(&cli.output_dir, &rows) {
                 eprintln!("Erreur écriture summary: {e}");
+                std::process::exit(1);
+            }
+            if let Err(e) = write_suite_summary_json(&cli.output_dir, &rows, &opt.thresholds) {
+                eprintln!("Erreur écriture summary JSON: {e}");
                 std::process::exit(1);
             }
             println!("\nSuite summary: {}/suite-summary.md", cli.output_dir.display());

@@ -1,6 +1,7 @@
 use num_complex::Complex64;
+use serde::{Serialize, Serializer};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct IterStats {
     pub max: f64,
     pub mean: f64,
@@ -37,7 +38,7 @@ impl IterStats {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TopDivergent {
     pub x: u32,
     pub y: u32,
@@ -66,6 +67,12 @@ impl Verdict {
     }
 }
 
+impl Serialize for Verdict {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Thresholds {
     pub max_iter_diff_pass: f64,
@@ -85,7 +92,7 @@ impl Default for Thresholds {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct QualityMetrics {
     pub width: u32,
     pub height: u32,
@@ -98,8 +105,11 @@ pub struct QualityMetrics {
     pub escape_disagreement: f64,
     pub perturb_time_ms: f64,
     pub gmp_time_ms: f64,
+    // Heavy per-pixel buffer: never serialized into JSON.
+    #[serde(skip_serializing)]
     pub heatmap: Vec<u8>,
     #[allow(dead_code)]
+    #[serde(skip_serializing)]
     pub heatmap_scale: f64,
     pub top_divergent: Vec<TopDivergent>,
     pub verdict: Verdict,

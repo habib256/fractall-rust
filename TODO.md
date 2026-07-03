@@ -363,6 +363,28 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
 - [ ] **Interop TOML Fraktaler-3** bidirectionnelle (lire/écrire le format F3
   natif, pas seulement le format léger rust-fractal-core).
 
+### G8 — Harness d'auto-amélioration · `[P0 · méta — égaler puis dépasser F3]`
+
+> Protocole : `HARNESS.md`. Outil : `scripts/harness.py`. Itération : skill
+> `/improve`. Mémoire : `SCORECARD.md` + `harness/history/*.json` (versionnés).
+> Trois axes : vitesse (geomean ratio vs F3), parité (compare_f3), qualité
+> (pert vs GMP + goldens). Priorités : correction > robustesse > vitesse >
+> qualité. « Dépasser » = geomean ≤ 1.0 + correctness_wins ≥ 2 + 0 régression
+> superset.
+
+**Done when** :
+- [x] **Protocole écrit** (`HARNESS.md`) + skill `/improve` (2026-07-03).
+- [ ] **`scripts/harness.py`** opérationnel (score/baseline/gaps, tiers
+  quick/standard/full, JSON + SCORECARD.md, gaps triés) — en cours.
+- [ ] **`fractall-quality` émet du JSON** (`suite-summary.json`,
+  `report.json`) — en cours.
+- [ ] **Binaire F3 Linux** buildé (`fraktaler-3-3.1/`) — la machine courante
+  (i7-10700F Linux) remplace le M4 ; les baselines macOS ne sont plus
+  comparables.
+- [ ] **Baseline v1 committée** sur cette machine (tier standard).
+- [ ] **Boucle exécutée au moins 1×** de bout en bout (`/improve`) avec
+  amélioration mesurée committée + verrou posé.
+
 ---
 
 ## ✅ Shipped (condensé, le plus récent en haut)

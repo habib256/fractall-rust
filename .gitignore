@@ -2,6 +2,10 @@
 /target/
 **/*.rs.bk
 
+## Python (harness/compare tooling)
+__pycache__/
+*.pyc
+
 ## IDE/Editor
 .idea/
 .vscode/
@@ -27,6 +31,12 @@ Thumbs.db
 /fraktaler-3-3.1/imgui/
 /fraktaler-3-3.1/imgui-filebrowser/
 /fraktaler-3-3.1/implot/
+
+## Build F3 Linux local (make SYSTEM=linux-batch ; cf. HARNESS.md — binaire par machine, non versionné)
+/fraktaler-3-3.1/src/*.o
+/fraktaler-3-3.1/src/*.d
+/fraktaler-3-3.1/*.linux
+/fraktaler-3-3.1/vendor/
 
 ## Generated test artifacts (CLI renders dropped at repo root)
 /out.png
