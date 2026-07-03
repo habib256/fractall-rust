@@ -225,6 +225,20 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
   (`bla_dual.rs`, committé `fd9ce4a`). Aide TOUS les cas perturbation — qui
   incluent désormais les 36 ex-perf-bound. + gros gain mémoire (table ~8×).
 - [x] r2_fexp retiré ; boucle f64-scaled retirée (0 % — sur le mauvais path).
+- [x] **Clone d'orbite hybride supprimé sans cycle** (2026-07-03, `eb7287e`) :
+  `build_hybrid_bla_references` renvoyait `single(primary.clone())` dès
+  qu'aucun cycle n'était détecté (cas escape-time = majorité des deep zooms),
+  clonant z_ref+z_ref_f64+**z_ref_gmp** (~170 o/iter → 850 Mo à 5 M iters/dragon)
+  alors que le cache stocke déjà l'orbite. Renvoyer `None` (dispatch route déjà
+  vers `cache.orbit` via `iterate_pixel`, bit-identique). **dragon 3.60→3.37×,
+  glitch_test_2 4.37→3.75× (pire ratio), ~850 Mo libérés**. Parité/quality/
+  goldens inchangés.
+- [ ] **Reste deep-zoom perf (glitch_test_2 3.75×, dragon 3.37×)** : deux coûts
+  résiduels — (a) l'orbite référence GMP (676 b × 5 M iters = 5.1 s sur dragon,
+  levier = wisdom/auto-précision float128, gros chantier) ; (b) le `series_table`
+  (0.77 s sur dragon) est construit mais **inutilisé par le path bytecode**
+  (qui a sa propre BLA) — il ne sert qu'à l'auto-adjust d'`iteration_max`. Le
+  sauter proprement demande de découpler l'auto-adjust du build série.
 - [ ] **Re-sweep corpus complet avec le fix** : confirmer que les 36 ex-perf
   cas rendent ET matchent F3 (probable vu e1000 pixel-identique + e113 == GMP).
 - **Acceptation : ✅ ATTEINTE** — e50 **1.57 s**, e1000 **0.53 s**, dragon
