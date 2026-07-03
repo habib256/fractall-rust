@@ -770,6 +770,21 @@ pub fn compute_reference_orbit_cached(
     };
     let is_julia = params.fractal_type == FractalType::Julia;
 
+    // La série (Taylor HO) n'est CONSOMMÉE que par : (a) l'auto-adjust
+    // d'`iteration_max` (via `validated_skip`), et (b) le path perturbation
+    // LEGACY (`compute_series_skip` par pixel). Le path bytecode (BLA mat2 +
+    // rebase F3), qui rend Mandelbrot/Julia/BS/… par défaut, l'ignore
+    // totalement. Donc si le rendu passe par bytecode ET que l'auto-adjust est
+    // désactivé (parité F3 / `FRACTALL_NO_AUTO_ADJUST=1`), construire la série
+    // est du travail MORT — 0.77 s sur dragon (orbite 5 M, interval 10 →
+    // 500 k entrées order-4). On l'évite alors (zéro changement de sortie).
+    let auto_adjust_enabled = std::env::var("FRACTALL_NO_AUTO_ADJUST")
+        .ok()
+        .map(|v| v != "1" && v.to_lowercase() != "true")
+        .unwrap_or(true);
+    let series_will_be_used =
+        auto_adjust_enabled || !super::uses_bytecode_path(params);
+
     // Compute orbit + BLA + series, potentially re-running with doubled iteration_max
     let t_orbit_first = Instant::now();
     let (mut orbit, mut center_x_gmp, mut center_y_gmp) = compute_reference_orbit(&adjusted_params, cancel)?;
@@ -797,10 +812,14 @@ pub fn compute_reference_orbit_cached(
             dt_bla = t_bla_start.elapsed();
         }
 
-        // Build series table for standalone series approximation (if enabled)
+        // Build series table for standalone series approximation (if enabled).
+        // `series_will_be_used` court-circuite le build mort sur le path bytecode
+        // sans auto-adjust (cf. définition plus haut). `force_series` (debug)
+        // reste prioritaire.
         let should_build_series = !disable_series
             && (force_series
-                || (adjusted_params.series_standalone
+                || (series_will_be_used
+                    && adjusted_params.series_standalone
                     && matches!(adjusted_params.fractal_type, FractalType::Mandelbrot | FractalType::Julia)
                     && (!small_image || adjusted_params.iteration_max >= 5000)
                     && (pixel_count >= 16_384 || adjusted_params.iteration_max >= 10_000)));
@@ -841,15 +860,12 @@ pub fn compute_reference_orbit_cached(
         // Auto-adjust iteration_max based on series skip ratio
         // (only on rounds before the last, and only if series is active).
         //
-        // Désactivable via `FRACTALL_NO_AUTO_ADJUST=1` : utile pour les tests
-        // de parité Fraktaler-3 (F3 ne fait pas cet ajustement, donc l'avoir
-        // actif fait diverger iter_max → mismatch sur les coins évadés
-        // tardivement). À l'usage normal, l'auto-adjust permet de découvrir
-        // les détails masqués derrière un iter_max trop bas.
-        let auto_adjust_enabled = std::env::var("FRACTALL_NO_AUTO_ADJUST")
-            .ok()
-            .map(|v| v != "1" && v.to_lowercase() != "true")
-            .unwrap_or(true);
+        // `auto_adjust_enabled` (hoisté plus haut, désactivable via
+        // `FRACTALL_NO_AUTO_ADJUST=1`) : utile pour les tests de parité
+        // Fraktaler-3 (F3 ne fait pas cet ajustement, donc l'avoir actif fait
+        // diverger iter_max → mismatch sur les coins évadés tardivement). À
+        // l'usage normal, l'auto-adjust révèle les détails masqués derrière un
+        // iter_max trop bas.
         if round < MAX_AUTO_ADJUST_ROUNDS && auto_adjust_enabled {
             if let Some(ref table) = series_table {
                 let skip = table.validated_skip as f64;
