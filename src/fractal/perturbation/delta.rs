@@ -119,13 +119,13 @@ pub fn bytecode_path_label(params: &FractalParams) -> Option<&'static str> {
     if pixel_size <= 0.0 {
         return None;
     }
+    // Tier dd (~106 b) opt-in : Mandelbrot escape-time, tout range (cf. dispatch
+    // hoisté avant le split exp/f64).
+    if params.use_dd_tier && matches!(params.fractal_type, FractalType::Mandelbrot) {
+        return Some("bytecode_dd");
+    }
     if pixel_size < PIXEL_SIZE_EXP_THRESHOLD {
-        // Tier dd (~106 b) opt-in : Mandelbrot escape-time only (cf. dispatch).
-        if params.use_dd_tier && matches!(params.fractal_type, FractalType::Mandelbrot) {
-            Some("bytecode_dd")
-        } else {
-            Some("bytecode_exp")
-        }
+        Some("bytecode_exp")
     } else {
         Some("bytecode_f64")
     }
@@ -217,44 +217,46 @@ fn try_bytecode_unified_path(
         // Pour Mandelbrot : delta_init = 0, c_for_add = cref, dc_for_add = dc.
         let is_julia = Formula::is_julia_for(params.fractal_type);
 
-        if use_exp_path {
-            // ── Tier double-double (~106 b, opt-in `use_dd_tier`) ───────────
-            // Mandelbrot escape-time uniquement, orbite dd disponible. Route
-            // vers `pixel_loop_dd` (pas directs dd + rebase, sans BLA) qui
-            // repousse le plancher de précision f64 des spirales ultra-sensibles
-            // (e30/e50, cf. TODO G2). Équivalent du float128 de F3.
-            if params.use_dd_tier
-                && matches!(params.fractal_type, FractalType::Mandelbrot)
-                && ref_orbit.has_dd()
-            {
-                use crate::fractal::perturbation::dd::ComplexDDExp;
-                // `dc` en dd : préfère le dc dd fourni par la boucle de rendu
-                // (spans HP → 106 b) ; sinon convertit le ComplexExp (53 b).
-                let dc_dd = dc_dd
-                    .copied()
-                    .unwrap_or_else(|| ComplexDDExp::from_complex_exp(*dc));
-                let delta0_dd = ComplexDDExp::from_complex_exp(*delta0);
-                let res_dd =
-                    crate::fractal::bytecode::pixel_loop_dd::iterate_pixel_unified_ddexp_mandelbrot(
-                        ref_orbit,
-                        dc_dd,
-                        delta0_dd,
-                        params.iteration_max,
-                        params.bailout,
-                        params.max_perturb_iterations,
-                    );
-                return Some(crate::fractal::bytecode::pixel_loop::UnifiedPixelResult {
-                    iteration: res_dd.iteration,
-                    z_final: res_dd.z_final,
-                    rebase_count: res_dd.rebase_count,
-                    bla_steps: res_dd.bla_steps,
-                    orbit: None,
-                    distance: None,
-                    is_interior: false,
-                    ref_exhausted: res_dd.ref_exhausted,
-                });
-            }
+        // ── Tier double-double (~106 b, opt-in `use_dd_tier`) ───────────────
+        // Mandelbrot escape-time, orbite dd disponible. Route vers `pixel_loop_dd`
+        // (pas directs dd + rebase, sans BLA) qui repousse le plancher de précision
+        // f64 des points ultra-sensibles (spirales e30/e50, Misiurewicz — cf. G2).
+        // Équivalent du float128 de F3. Indépendant de use_exp_path : le dd loop
+        // fonctionne à tout zoom (la référence dd et le dc dd sont construits sans
+        // gating de zoom), donc couvre aussi le range f64 (< 1e13, ex. seahorse).
+        if params.use_dd_tier
+            && matches!(params.fractal_type, FractalType::Mandelbrot)
+            && ref_orbit.has_dd()
+        {
+            use crate::fractal::perturbation::dd::ComplexDDExp;
+            // `dc` en dd : préfère le dc dd fourni par la boucle de rendu
+            // (spans HP → 106 b) ; sinon convertit le ComplexExp (53 b).
+            let dc_dd = dc_dd
+                .copied()
+                .unwrap_or_else(|| ComplexDDExp::from_complex_exp(*dc));
+            let delta0_dd = ComplexDDExp::from_complex_exp(*delta0);
+            let res_dd =
+                crate::fractal::bytecode::pixel_loop_dd::iterate_pixel_unified_ddexp_mandelbrot(
+                    ref_orbit,
+                    dc_dd,
+                    delta0_dd,
+                    params.iteration_max,
+                    params.bailout,
+                    params.max_perturb_iterations,
+                );
+            return Some(crate::fractal::bytecode::pixel_loop::UnifiedPixelResult {
+                iteration: res_dd.iteration,
+                z_final: res_dd.z_final,
+                rebase_count: res_dd.rebase_count,
+                bla_steps: res_dd.bla_steps,
+                orbit: None,
+                distance: None,
+                is_interior: false,
+                ref_exhausted: res_dd.ref_exhausted,
+            });
+        }
 
+        if use_exp_path {
             // Path ComplexExp pour deep zoom > 1e13.
             let (c_for_add, dc_for_add_exp) = if is_julia {
                 (

@@ -394,11 +394,12 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
   indispensable car Z entre non-arrondi dans `2·Z·δ`) et **itère le delta en dd
   sans BLA** (`pixel_loop_dd.rs` ; la BLA f64 réintroduirait 2⁻⁵² tôt quand δ est
   minuscule). Noyau `ComplexDDExp` préexistant (`dd.rs`).
-  **Résultats finaux** (quality 96²) : **e30/e50/e100 FAIL→PASS, max_diff=0,
-  pixel-identiques GMP** (max_|dz| 1e-8/1e-10/1e-16). Suite 5P/1W/5F → **8P/1W/2F**.
-  Parité (voire mieux) avec le float128 de F3. Coût : ~10× plus lent (pas de BLA)
-  → opt-in. Verrous : presets quality e30/e50/e100 exercent le path dd + tests
-  `pixel_loop_dd`/`dd` (incl. `dd_div`).
+  **Résultats finaux** (quality 96²) : **TOUTE la suite pixel-identique GMP** —
+  5P/1W/5F (début) → **11 PASS / 0 WARN / 0 FAIL**. Tous les cas précision-limités
+  (spirales e30/e50/e100 + seahorse 1e8 + Misiurewicz 1e12 + minibrot 1e18)
+  passent max_diff=0. Parité (voire mieux) avec le float128 de F3. Coût : ~4-10×
+  plus lent (pas de BLA) → opt-in. Verrous : presets quality (dd activé sur les
+  cas sensibles) + tests `pixel_loop_dd`/`dd` (incl. `dd_div`).
   - [x] **✅ `dc` en dd** (le levier des pixels de bord). Le `dc` ComplexExp (53 b :
     span f64 × fraction f64) laissait ~1-3 pixels de bord (grand |dc|) diverger
     (e30 max_diff 106, e50 8) — pixel calculé à un `c` décalé de 2⁻⁵²·|dc| vs GMP.
@@ -406,12 +407,18 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     via **division dd** (`DoubleDouble::div`/`DoubleDoubleExp::div`, algo Bailey),
     threadé via `iterate_pixel_with_dd(dc_dd)`. → e30/e50 **max_diff 0**. (Mon
     hypothèse initiale « plancher d'itération 106 b » était fausse : c'était le dc.)
+  - [x] **✅ dispatch dd hoisté à tout range** (avant le split exp/f64) : le dd loop
+    marche à n'importe quel zoom (réf dd + dc dd construits sans gating de zoom), donc
+    couvre aussi le path f64 (< 1e13). → **seahorse 1e8 / Misiurewicz 1e12 / minibrot
+    1e18 FAIL/WARN→PASS max_diff=0**. La **sensibilité** (pas la profondeur) dicte le
+    besoin dd. NB : le dc-en-dd étant nécessaire (n'a rien à voir avec la BLA), la
+    cause est bien la **précision**, pas un over-skip BLA masqué par le no-BLA.
   - [ ] **dd-BLA** (perf) : coefficients BLA `A/B` en dd → retrouver le skip BLA
-    sans réintroduire 2⁻⁵² → auto-dispatch dd viable (wisdom, G2) sans le coût ~10×.
-  - [ ] **seahorse (1e8) / misiurewicz (1e12)** : path **f64** (`pixel_loop.rs`),
-    pas le path exp → le tier dd ne s'y applique pas encore. Étendre `pixel_loop_dd`
-    au f64-range (ou router ces zooms vers dd) si leur FAIL (div_ratio ~0.0018) le
-    justifie.
+    sans réintroduire 2⁻⁵² → auto-dispatch dd viable (wisdom, G2) sans le coût ~4-10×.
+  - [ ] **auto-dispatch (wisdom)** : sélectionner dd automatiquement selon une
+    estimation de sensibilité/conditionnement par frame (F3-style), au lieu de
+    l'opt-in `use_dd_tier`. Prérequis perf : dd-BLA (sinon coût prohibitif hors
+    des cas sensibles).
 - [ ] **Period-detection truncation = LOSSY** → passer **OFF par défaut**.
   Même pour une période *genuine*, `truncate + wrap_periodic` accumule l'erreur
   de quasi-périodicité (~2^(-0.4·prec)) sur ~iter_max/période cycles →
