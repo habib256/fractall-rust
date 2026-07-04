@@ -79,6 +79,11 @@ struct BlaUnifiedCacheEntry {
     bla_threshold: f64,
     formula: Formula,
     tables: Vec<BlaTableUnified>,
+    /// Table BLA **double-double** (tier dd) — construite quand `use_dd_tier` et
+    /// orbite dd disponible. `None` sinon. Permet au `pixel_loop_dd` de skipper
+    /// des itérations en ~106 b sans réintroduire le plancher f64.
+    use_dd_tier: bool,
+    dd_table: Option<crate::fractal::bytecode::bla_dd::BlaTableDd>,
 }
 
 /// Tente le path bytecode unifié si toutes les conditions sont remplies.
@@ -187,6 +192,7 @@ fn try_bytecode_unified_path(
                     || entry.fractal_type != params.fractal_type
                     || (entry.multibrot_power - params.multibrot_power).abs() > 1e-12
                     || (entry.bla_threshold - params.bla_threshold).abs() > 1e-20
+                    || entry.use_dd_tier != params.use_dd_tier
             }
         };
         if needs_rebuild {
@@ -199,6 +205,27 @@ fn try_bytecode_unified_path(
                 c_norm,
                 params.bla_threshold,
             )?;
+            // Table BLA dd (tier dd Mandelbrot) : coefficients ~106 b depuis
+            // l'orbite dd. **Epsilon = 2⁻¹⁰⁶** (epsilon machine du dd), PAS
+            // `bla_threshold` (2⁻²⁴, tuné f32) : le rayon de validité BLA borne
+            // le terme δ² abandonné à ε·|Z| relatif ; avec ε=2⁻²⁴ la BLA
+            // introduirait une erreur ~24 b qui masquerait la précision dd
+            // (div_ratio revenait au plancher f64). Avec 2⁻¹⁰⁶ la BLA ne skippe
+            // que là où δ est assez petit pour préserver la précision — usable
+            // aux zooms très profonds (δ ≪ rayon), pas directs sinon (correct).
+            let dd_table = if params.use_dd_tier
+                && matches!(params.fractal_type, FractalType::Mandelbrot)
+                && ref_orbit.has_dd()
+            {
+                const DD_BLA_EPSILON: f64 = 1.232_595_164_407_831e-32; // 2^-106
+                Some(crate::fractal::bytecode::bla_dd::BlaTableDd::build_mandelbrot(
+                    &ref_orbit.z_ref_dd,
+                    c_norm,
+                    DD_BLA_EPSILON,
+                ))
+            } else {
+                None
+            };
             *cache = Some(BlaUnifiedCacheEntry {
                 orbit_ptr,
                 orbit_len,
@@ -207,6 +234,8 @@ fn try_bytecode_unified_path(
                 bla_threshold: params.bla_threshold,
                 formula: formula.clone(),
                 tables,
+                use_dd_tier: params.use_dd_tier,
+                dd_table,
             });
         }
         let entry = cache.as_ref()?;
@@ -238,11 +267,13 @@ fn try_bytecode_unified_path(
             let res_dd =
                 crate::fractal::bytecode::pixel_loop_dd::iterate_pixel_unified_ddexp_mandelbrot(
                     ref_orbit,
+                    entry.dd_table.as_ref(),
                     dc_dd,
                     delta0_dd,
                     params.iteration_max,
                     params.bailout,
                     params.max_perturb_iterations,
+                    params.max_bla_steps,
                 );
             return Some(crate::fractal::bytecode::pixel_loop::UnifiedPixelResult {
                 iteration: res_dd.iteration,

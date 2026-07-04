@@ -225,6 +225,28 @@ impl DoubleDoubleExp {
         self.mantissa.to_f64() * super::types::pow2i(self.exponent)
     }
 
+    /// Renvoie la mantisse dd remise à l'échelle `mantissa · 2^exponent`, en
+    /// `DoubleDouble` (range f64). Préserve les ~106 bits. Sature à ±inf /
+    /// 0 hors du range f64 (comme `to_f64` mais en gardant `lo`). Utilisé
+    /// pour dériver les coefficients BLA dd d'une référence `Z` bornée (O(1)).
+    #[inline(always)]
+    pub fn to_dd(self) -> DoubleDouble {
+        if self.mantissa.hi == 0.0 {
+            return DoubleDouble::ZERO;
+        }
+        if self.exponent > 1023 {
+            return DoubleDouble::new(f64::INFINITY.copysign(self.mantissa.hi), 0.0);
+        }
+        if self.exponent < -1074 {
+            return DoubleDouble::ZERO;
+        }
+        let scale = super::types::pow2i(self.exponent);
+        DoubleDouble {
+            hi: self.mantissa.hi * scale,
+            lo: self.mantissa.lo * scale,
+        }
+    }
+
     #[inline(always)]
     pub fn is_finite(self) -> bool {
         self.mantissa.is_finite()
@@ -302,6 +324,14 @@ impl DoubleDoubleExp {
     #[inline(always)]
     pub fn sqr(self) -> Self {
         Self::normalized(self.mantissa.sqr(), self.exponent * 2)
+    }
+
+    /// Produit par une mantisse `DoubleDouble` nue (exposant 0 implicite) :
+    /// préserve l'exposant de `self`. Cas chaud du pas BLA dd `A·δ` où `A` est
+    /// un `Mat2Dd` (dd, O(1)) et `δ` un `DoubleDoubleExp` (deep-zoom).
+    #[inline(always)]
+    pub fn mul_dd(self, rhs: DoubleDouble) -> Self {
+        Self::normalized(self.mantissa.mul(rhs), self.exponent)
     }
 
     /// Division : quotient des mantisses dd, différence des exposants.

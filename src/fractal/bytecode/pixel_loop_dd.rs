@@ -21,23 +21,40 @@
 
 use num_complex::Complex64;
 
+use super::bla_dd::BlaTableDd;
 use super::pixel_loop_exp::UnifiedPixelResultExp;
 use crate::fractal::perturbation::dd::{ComplexDDExp, DoubleDoubleExp};
 use crate::fractal::perturbation::orbit::ReferenceOrbit;
+use crate::fractal::perturbation::types::FloatExp;
+
+/// Norme² d'un delta dd en `FloatExp` (mantisse 53 b + exposant) pour comparer
+/// au rayon de validité BLA `r²` (magnitude, la précision dd y est superflue).
+#[inline]
+fn delta_norm_sqr_fexp(delta: ComplexDDExp) -> FloatExp {
+    let n = delta.norm_sqr();
+    FloatExp::new(n.mantissa.to_f64(), n.exponent)
+}
 
 /// Pixel loop Mandelbrot double-double : pas directs `δ' = 2·Z·δ + δ² + dc` en
-/// ~106 bits + rebasing F3, sans BLA. Utilise `ref_orbit.z_ref_dd`.
+/// ~106 bits + **BLA dd** (skip d'itérations sans perte de précision) + rebasing
+/// F3. Utilise `ref_orbit.z_ref_dd`.
+///
+/// Structure F3 (`hybrid.cc:286-343`) : à chaque tour, rebase AVANT le lookup
+/// BLA, puis bailout, puis pas BLA si valide, sinon pas direct. `bla = None`
+/// retombe sur les pas directs purs (comportement historique sans BLA).
 ///
 /// `dc` et `delta_initial` sont en `ComplexDDExp`. Renvoie la même shape que le
 /// path exp (`UnifiedPixelResultExp`) pour un câblage transparent au dispatch.
 #[allow(clippy::too_many_arguments)]
 pub fn iterate_pixel_unified_ddexp_mandelbrot(
     ref_orbit: &ReferenceOrbit,
+    bla: Option<&BlaTableDd>,
     dc: ComplexDDExp,
     delta_initial: ComplexDDExp,
     iteration_max: u32,
     bailout: f64,
     max_perturb_iterations: u32,
+    max_bla_steps: u32,
 ) -> UnifiedPixelResultExp {
     let ref_len = ref_orbit.z_ref_dd.len();
     // Garde : le tier dd exige une orbite dd non vide et de longueur cohérente.
@@ -57,12 +74,37 @@ pub fn iterate_pixel_unified_ddexp_mandelbrot(
     let mut n = 0u32;
     let mut m = 0u32;
     let mut rebase_count = 0u32;
+    let mut bla_steps = 0u32;
     let mut iters_ptb = 0u32;
     const REDUCE_INTERVAL: u32 = 250;
 
     while n < iteration_max
         && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
+        && (max_bla_steps == 0 || bla_steps < max_bla_steps)
     {
+        // Rebase F3 AVANT bailout & BLA (`hybrid.cc:295-308`) : `|Z[m]+δ|² <
+        // |δ|²` OU bout de référence ⇒ z := Z[m]+δ, m := 0. Indispensable ici :
+        // un pas BLA saute plusieurs itérations et pourrait passer par-dessus le
+        // point de rebase. Périodique : `wrap_periodic`.
+        {
+            let z_m0 = z_ref_dd[m as usize];
+            let zz = z_m0.add(delta);
+            let end_of_ref = (m as usize) + 1 >= ref_len;
+            if end_of_ref {
+                if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
+                    m = m_wrapped;
+                } else {
+                    delta = zz;
+                    m = 0;
+                    rebase_count += 1;
+                }
+            } else if zz.norm_sqr() < delta.norm_sqr() {
+                delta = zz;
+                m = 0;
+                rebase_count += 1;
+            }
+        }
+
         let z_m = z_ref_dd[m as usize];
         // Bailout : |Z[m] + δ|² ≥ bailout² (tout en dd, pas de saturation f64).
         let z_abs = z_m.add(delta);
@@ -71,9 +113,42 @@ pub fn iterate_pixel_unified_ddexp_mandelbrot(
                 iteration: n,
                 z_final: z_abs.to_complex64_approx(),
                 rebase_count,
-                bla_steps: 0,
+                bla_steps,
                 ref_exhausted: false,
             };
+        }
+
+        // Pas BLA dd si disponible et valide : δ := A·δ + B·dc, saute `l` iters.
+        if let Some(table) = bla {
+            if let Some(node) = table.lookup_fexp(m as usize, delta_norm_sqr_fexp(delta)) {
+                let new_n = n.saturating_add(node.l);
+                let new_m = m.saturating_add(node.l);
+                if new_n <= iteration_max && (new_m as usize) < ref_len {
+                    let a = node.a;
+                    let b = node.b;
+                    // A·δ (Mat2Dd × vecteur dd) + B·dc.
+                    let new_re = delta
+                        .re
+                        .mul_dd(a.m00)
+                        .add(delta.im.mul_dd(a.m01))
+                        .add(dc.re.mul_dd(b.m00))
+                        .add(dc.im.mul_dd(b.m01));
+                    let new_im = delta
+                        .re
+                        .mul_dd(a.m10)
+                        .add(delta.im.mul_dd(a.m11))
+                        .add(dc.re.mul_dd(b.m10))
+                        .add(dc.im.mul_dd(b.m11));
+                    delta = ComplexDDExp { re: new_re, im: new_im };
+                    n = new_n;
+                    m = new_m;
+                    bla_steps += 1;
+                    if n % REDUCE_INTERVAL == 0 {
+                        delta.reduce();
+                    }
+                    continue;
+                }
+            }
         }
 
         // Pas perturbation Mandelbrot en dd : δ' = 2·Z·δ + δ² + dc.
@@ -92,34 +167,13 @@ pub fn iterate_pixel_unified_ddexp_mandelbrot(
                 iteration: n,
                 z_final: z_ref_dd[m_read].add(delta).to_complex64_approx(),
                 rebase_count,
-                bla_steps: 0,
+                bla_steps,
                 ref_exhausted: false,
             };
         }
 
         if n % REDUCE_INTERVAL == 0 {
             delta.reduce();
-        }
-
-        // Rebase F3 (`hybrid.cc:296-307`) : `|Z[m]+δ|² < |δ|²` OU bout de
-        // référence ⇒ z := Z[m]+δ, m := 0. Périodique : `wrap_periodic`.
-        // Escape-time au bout : rebase à 0 (garde le pixel sur le path dd).
-        // ⚠️ `m` peut valoir `ref_len` après le pas → clamp pour la lecture.
-        let end_of_ref = (m as usize) + 1 >= ref_len;
-        let m_read = (m as usize).min(ref_len - 1);
-        let z_curr = z_ref_dd[m_read].add(delta);
-        if end_of_ref {
-            if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
-                m = m_wrapped;
-            } else {
-                delta = z_curr;
-                m = 0;
-                rebase_count += 1;
-            }
-        } else if z_curr.norm_sqr() < delta.norm_sqr() {
-            delta = z_curr;
-            m = 0;
-            rebase_count += 1;
         }
     }
 
@@ -128,7 +182,7 @@ pub fn iterate_pixel_unified_ddexp_mandelbrot(
         iteration: n,
         z_final: z_ref_dd[final_m].add(delta).to_complex64_approx(),
         rebase_count,
-        bla_steps: 0,
+        bla_steps,
         ref_exhausted: false,
     }
 }
@@ -169,10 +223,12 @@ mod tests {
         let dc = ComplexDDExp::from_complex64(Complex64::new(1e-30, 1e-30));
         let res = iterate_pixel_unified_ddexp_mandelbrot(
             &orbit,
+            None,
             dc,
             ComplexDDExp::ZERO,
             500,
             25.0,
+            0,
             0,
         );
         assert!(res.z_final.re.is_finite() && res.z_final.im.is_finite());

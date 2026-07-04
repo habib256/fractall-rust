@@ -84,7 +84,8 @@ src/
 │   │   ├── bla_dual.rs     # BLA mat2 unifié via dual-numbers
 │   │   ├── pixel_loop.rs   # BLA + delta-form + rebasing F3 (f64)
 │   │   ├── pixel_loop_exp.rs # idem ComplexExp (deep zoom > 1e13)
-│   │   └── pixel_loop_dd.rs # tier double-double ~106b (float128-like), opt-in
+│   │   ├── pixel_loop_dd.rs # tier double-double ~106b (float128-like), opt-in
+│   │   └── bla_dd.rs       # table BLA à coefficients dd (skip sans perte 106b)
 │   └── perturbation/    # Path GMP + ponts vers bytecode
 │       ├── mod.rs          # render_perturbation_cancellable_with_reuse
 │       ├── types.rs        # ComplexExp, FloatExp (mantisse + exposant)

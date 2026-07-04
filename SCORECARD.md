@@ -2,8 +2,8 @@
 
 # SCORECARD — fractall vs Fraktaler-3
 
-- **Date** : 2026-07-04T12:57:57+00:00
-- **Commit** : `2acf2bd`  ⚠️ arbre modifié (dirty)
+- **Date** : 2026-07-04T13:28:52+00:00
+- **Commit** : `c0b5bf1`  ⚠️ arbre modifié (dirty)
 - **Machine** : Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz · 16 threads · Linux 6.14.0-37-generic
 - **Tier** : quick · 256×256 · quality 96×96 · runs=1 · axes=speed,parity,quality,goldens
 - **F3** : /home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux
@@ -12,8 +12,8 @@
 
 | Métrique | Valeur | vs baseline |
 |---|---:|---|
-| geomean ratio | 0.837 |  (↓0.0525 ✅) |
-| pire ratio | 3.161 (glitch_test_2) | |
+| geomean ratio | 0.861 |  (↓0.029 ✅) |
+| pire ratio | 4.532 (glitch_test_2) | |
 | wins (ratio<1) | 4 | |
 | timeouts | 0 | |
 | cas comparés | 10/10 | |
@@ -48,9 +48,8 @@
 
 | # | Sévérité | Axe | Cas | Métrique | Valeur | Note |
 |---:|---|---|---|---|---:|---|
-| 1 | 3 vitesse | speed | `glitch_test_2` | ratio | 3.1609 | 3.16× plus lent que F3 |
-| 2 | 3 vitesse | speed | `dragon` | ratio | 2.6006 | 2.60× plus lent que F3 |
-| 3 | 3 vitesse | speed | `e113` | ratio | 2.153 | 2.15× plus lent que F3 |
+| 1 | 3 vitesse | speed | `glitch_test_2` | ratio | 4.5325 | 4.53× plus lent que F3 |
+| 2 | 3 vitesse | speed | `dragon` | ratio | 2.5784 | 2.58× plus lent que F3 |
 
 ---
 _Scorecards versionnés : `harness/history/` · baseline : `harness/baseline.json`. Généré par `scripts/harness.py`._

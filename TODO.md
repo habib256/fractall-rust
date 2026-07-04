@@ -413,11 +413,24 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     1e18 FAIL/WARN→PASS max_diff=0**. La **sensibilité** (pas la profondeur) dicte le
     besoin dd. NB : le dc-en-dd étant nécessaire (n'a rien à voir avec la BLA), la
     cause est bien la **précision**, pas un over-skip BLA masqué par le no-BLA.
-  - [ ] **dd-BLA** (perf) : coefficients BLA `A/B` en dd → retrouver le skip BLA
-    sans réintroduire 2⁻⁵² → auto-dispatch dd viable (wisdom, G2) sans le coût ~4-10×.
+  - [x] **✅ dd-BLA** (`bytecode/bla_dd.rs`) : table BLA à coefficients `Mat2Dd`
+    (~106 b) depuis `z_ref_dd`, single-step Mandelbrot `A=2Z` + merge F3, appliquée
+    dans `pixel_loop_dd` (`δ:=A·δ+B·dc` via `DoubleDoubleExp::mul_dd`) avec
+    rebase-avant-BLA (F3 `hybrid.cc:295`). Câblée/cachée dans `delta.rs`
+    (`dd_table` par orbite). **Clé** : epsilon = **2⁻¹⁰⁶** (epsilon machine dd),
+    pas `bla_threshold` 2⁻²⁴ — sinon la BLA borne δ² à ~24 b et masque la précision
+    dd (div_ratio revenait au plancher f64). Correction préservée (suite reste
+    **11/0/0 max_diff=0**). Gain : **e100 2426→845ms (~3×)** ; e50 29→21s. Modeste
+    sur e30/e50 : leur δ (1e-30/1e-50) + forte amplification effondrent les rayons
+    mergés → surtout des pas directs (inhérent, comme F3 float128 à zoom modéré).
+    Verrous : tests `bla_dd` (single/merge vs f64 BLA, table+lookup).
+  - [ ] **Tuning perf dd-BLA** : l'epsilon 2⁻¹⁰⁶ (précision max) restreint la BLA.
+    Un epsilon adaptatif = précision *nécessaire* (fonction de δ/sensibilité, pas
+    du type) élargirait le skip là où < 106 b suffit → plus rapide sans casser le
+    max_diff. Lié au wisdom ci-dessous.
   - [ ] **auto-dispatch (wisdom)** : sélectionner dd automatiquement selon une
     estimation de sensibilité/conditionnement par frame (F3-style), au lieu de
-    l'opt-in `use_dd_tier`. Prérequis perf : dd-BLA (sinon coût prohibitif hors
+    l'opt-in `use_dd_tier`. Prérequis perf : dd-BLA ✅ + epsilon adaptatif (sinon coût hors
     des cas sensibles).
 - [ ] **Period-detection truncation = LOSSY** → passer **OFF par défaut**.
   Même pour une période *genuine*, `truncate + wrap_periodic` accumule l'erreur
