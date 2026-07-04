@@ -264,10 +264,20 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     qui utilise `Mul<f64> for FloatExp` (multiplicateur mat2 non normalisé →
     frexp obligatoire) + `Add` (frexp). Le `δ.mul(δ)` direct (FloatExp×FloatExp,
     la seule op que la spéc accélère) ne tourne que sur les *rares* pas
-    non-skippés par la BLA. **Le vrai levier = normaliser une seule fois le
-    produit mat2-vecteur du pas BLA** (accumulation f64-scaled à exposant
-    commun) — non-bit-identique, à valider goldens+quality. Revert propre, pas
-    de changement committé.
+    non-skippés par la BLA.
+  - **IMPASSE #2 (2026-07-04) : pas BLA f64-scaled = ~0 gain → la boucle pixel
+    exp est MEMORY-BOUND, pas arithmetic-bound.** Spike : produit mat2-vecteur
+    `A·δ + B·dc` extrait à exposant commun + f64 pur + 1 seul frexp final (vs
+    ~14 frexp/pow2i op-par-op). Mesuré : glitch_test_2 pixels 0.33→0.317 s
+    (**~4 %**), **dragon pixels inchangés** (~5.6 s). Cause : `z_ref_f64[m]` est
+    lu à chaque itér. ; dragon a 5 M entrées × 16 o = **80 Mo ≫ L3** → chaque
+    lookup = cache miss qui domine, réduire l'arithmétique ne change rien.
+    glitch_test_2 (250 k × 16 = 4 Mo, tient en cache) montre le petit 4 %. **Le
+    vrai levier pixel = MÉMOIRE** (layout cache-friendly de `z_ref_f64`, ou
+    réduire sa taille / stride BLA), PAS l'arithmétique f64-scaled. Spike
+    reverté (non-bit-identique + gain trop faible pour justifier une régén
+    goldens). Confirme l'IMPASSE #1 (FloatExp::mul = 0 %) : 3e preuve que
+    l'arithmétique ComplexExp n'est pas le goulot.
   - [x] **`z_ref_gmp` dense = build PARESSEUX** (2026-07-04, `deac768`) : le
     stockage GMP dense (clone par itér., ~0.7 s + 850 Mo sur dragon) n'est LU que
     par `iterate_pixel_gmp` (rendu full-GMP + correction glitch). Sauté sur le
