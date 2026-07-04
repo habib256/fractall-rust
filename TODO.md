@@ -270,7 +270,7 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     `dd_orbit_matches_gmp_julia`. Tranche dd couvre Mandelbrot ET Julia.
   - [ ] Reste Phase 2+ : quad-double pour 1e28–1e60 ; câbler le pixel loop dd
     (P1.6.e original : delta quasi-périodique, glitch_test_1/5).
-- [ ] **Reste deep-zoom perf (dragon ~2.50×, glitch_test_2 ~3.1×)** :
+- [ ] **Reste deep-zoom perf (dragon ~2.29×, glitch_test_2 ~3.14×)** :
   - dragon : orbite GMP ~3.26 s (mul complexe 676 b × 5 M iters, cœur
     incompressible sans float128) + pixels ComplexExp ~5.5 s. Leviers restants
     = wisdom/float128 (orbite, cf. AskUser : middle-range only) ET boucle pixel
@@ -308,6 +308,21 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     identique**. Verrou : golden `mandelbrot_cusp_m075` (glitche → exerce le
     recompute) + bit-identité dragon. Les deep zooms sans glitch
     (dragon/e50/e100 : corrections=0) ne paient plus le stockage mort.
+  - [x] **`BlaTableUnified` construite UNE fois, partagée via `Arc`** (2026-07-04) :
+    le cache BLA était **thread-local par worker rayon** → chaque worker
+    reconstruisait la table entière (16 builds redondants + 16 copies en RAM).
+    Sur dragon (4 M nœuds) : build ~1.2 s **contendu ×16** (1.19→1.67 s wall) qui
+    dominait le début de la phase pixel ET saturait la bande passante mémoire (le
+    goulot pixel identifié memory-bound ci-dessus). Fix : `GLOBAL_BLA` (Mutex) — le
+    premier worker construit sous le lock, les autres clonent l'`Arc` ; le
+    thread-local ne cache plus que l'`Arc` (accès par-pixel lock-free). **Un seul
+    build, une seule table.** dragon pixels 5.71→4.69 s (−18 %), total 8.92→7.91 s,
+    ratio 2.63→2.29 ; glitch_test_2 pixels 0.342→0.270 s (−21 %), ratio 3.48→3.14 ;
+    e113 sorti des gaps. **Bit-identique** (même table, goldens 🟢 pixel-exact +
+    quality 11 PASS + parité inchangés). Levier restant = **paralléliser le build**
+    (level0 = M single-steps embarrassingly parallel) hors du lock, avant la boucle
+    pixel → dragon perdrait le ~1.2 s de build serial ; nécessite de sortir la table
+    du thread-local vers le pipeline sequentiel de `render_perturbation_with_cache`.
 - [ ] **Re-sweep corpus complet avec le fix** : confirmer que les 36 ex-perf
   cas rendent ET matchent F3 (probable vu e1000 pixel-identique + e113 == GMP).
 - **Acceptation : ✅ ATTEINTE** — e50 **1.57 s**, e1000 **0.53 s**, dragon

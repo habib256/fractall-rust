@@ -1,7 +1,7 @@
 use num_complex::Complex64;
 use rug::{Complex, Float};
 use std::cell::RefCell;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::fractal::bytecode::bla_dual::BlaTableUnified;
 use crate::fractal::bytecode::pixel_loop_exp::iterate_pixel_unified_exp;
@@ -63,13 +63,25 @@ fn adaptive_batch_size(power: f64) -> u32 {
     (400.0 / power).round().clamp(64.0, 512.0) as u32
 }
 
-// Cache thread-local de la BlaTableUnified par worker rayon.
-// Évite la reconstruction par pixel (O(M log M) en taille d'orbite).
-// Stocke l'identité de l'orbite (ptr de `z_ref_f64` + len) + le type/power
-// pour invalider quand on change de render.
+// Cache de la BlaTableUnified partagé entre workers rayon.
+//
+// La table BLA (O(M) nœuds pour une orbite de M itérations) est CONSTRUITE UNE
+// SEULE FOIS par render puis partagée en lecture seule via `Arc`. Avant, chaque
+// worker rayon la reconstruisait dans son thread-local (16 builds redondants +
+// 16 copies en RAM). Sur les deep zooms à longue orbite (dragon : 4 M nœuds,
+// build ~1.2 s contendu × 16) ça dominait la phase pixel et saturait la bande
+// passante mémoire. Désormais :
+//   - `GLOBAL_BLA` (Mutex) : le PREMIER worker construit sous le lock, les
+//     autres attendent puis clonent l'`Arc` (un seul build, une seule table).
+//   - `BLA_UNIFIED_CACHE` (thread-local) : cache l'`Arc` pour que l'accès
+//     par-pixel reste lock-free (pas de lock global dans la hot-loop).
+// Clé d'invalidation : identité de l'orbite (ptr `z_ref_f64` + len) + type /
+// power / seuil BLA / tier dd.
 thread_local! {
-    static BLA_UNIFIED_CACHE: RefCell<Option<BlaUnifiedCacheEntry>> = const { RefCell::new(None) };
+    static BLA_UNIFIED_CACHE: RefCell<Option<Arc<BlaUnifiedCacheEntry>>> = const { RefCell::new(None) };
 }
+
+static GLOBAL_BLA: Mutex<Option<Arc<BlaUnifiedCacheEntry>>> = Mutex::new(None);
 
 struct BlaUnifiedCacheEntry {
     orbit_ptr: usize,
@@ -84,6 +96,111 @@ struct BlaUnifiedCacheEntry {
     /// des itérations en ~106 b sans réintroduire le plancher f64.
     use_dd_tier: bool,
     dd_table: Option<crate::fractal::bytecode::bla_dd::BlaTableDd>,
+}
+
+impl BlaUnifiedCacheEntry {
+    /// Vrai si l'entrée correspond au render courant (même orbite + params BLA).
+    fn matches(&self, orbit_ptr: usize, orbit_len: usize, params: &FractalParams) -> bool {
+        self.orbit_ptr == orbit_ptr
+            && self.orbit_len == orbit_len
+            && self.fractal_type == params.fractal_type
+            && (self.multibrot_power - params.multibrot_power).abs() <= 1e-12
+            && (self.bla_threshold - params.bla_threshold).abs() <= 1e-20
+            && self.use_dd_tier == params.use_dd_tier
+    }
+}
+
+/// Construit l'entrée cache BLA (table unifiée + éventuelle table dd) pour ce
+/// render. Coûteux (O(M) en taille d'orbite) — appelé UNE fois par render, sous
+/// le lock global (cf. `get_or_build_bla_entry`).
+fn build_bla_entry(
+    params: &FractalParams,
+    ref_orbit: &ReferenceOrbit,
+    c_norm: f64,
+    orbit_ptr: usize,
+    orbit_len: usize,
+    formula: &Formula,
+) -> Option<Arc<BlaUnifiedCacheEntry>> {
+    // Utiliser `params.bla_threshold` (défaut aligné F3 : 1/2^24) — permet à
+    // `--bla-threshold` CLI de piloter le path bytecode.
+    let tables = build_bla_table_for_formula(
+        formula,
+        &ref_orbit.z_ref_f64,
+        c_norm,
+        params.bla_threshold,
+    )?;
+    // Table BLA dd (tier dd Mandelbrot) : coefficients ~106 b depuis l'orbite dd.
+    // **Epsilon = 2⁻¹⁰⁶** (epsilon machine du dd), PAS `bla_threshold` (2⁻²⁴,
+    // tuné f32) : avec 2⁻²⁴ la BLA introduirait une erreur ~24 b qui masquerait
+    // la précision dd. Avec 2⁻¹⁰⁶ la BLA ne skippe que là où δ est assez petit
+    // pour préserver la précision.
+    let dd_table = if params.use_dd_tier
+        && matches!(params.fractal_type, FractalType::Mandelbrot)
+        && ref_orbit.has_dd()
+    {
+        const DD_BLA_EPSILON: f64 = 1.232_595_164_407_831e-32; // 2^-106
+        Some(crate::fractal::bytecode::bla_dd::BlaTableDd::build_mandelbrot(
+            &ref_orbit.z_ref_dd,
+            c_norm,
+            DD_BLA_EPSILON,
+        ))
+    } else {
+        None
+    };
+    Some(Arc::new(BlaUnifiedCacheEntry {
+        orbit_ptr,
+        orbit_len,
+        fractal_type: params.fractal_type,
+        multibrot_power: params.multibrot_power,
+        bla_threshold: params.bla_threshold,
+        formula: formula.clone(),
+        tables,
+        use_dd_tier: params.use_dd_tier,
+        dd_table,
+    }))
+}
+
+/// Renvoie l'entrée cache BLA du render courant, en la construisant UNE seule
+/// fois et en la partageant entre tous les workers rayon via `Arc`.
+///
+/// Chemin rapide : thread-local (lock-free, hot-loop par-pixel). Si absent ou
+/// périmé, prend le lock global : le premier worker construit, les autres
+/// attendent puis clonent l'`Arc` (un seul build, une seule table en RAM).
+fn get_or_build_bla_entry(
+    params: &FractalParams,
+    ref_orbit: &ReferenceOrbit,
+    c_norm: f64,
+    formula: &Formula,
+) -> Option<Arc<BlaUnifiedCacheEntry>> {
+    let orbit_ptr = ref_orbit.z_ref_f64.as_ptr() as usize;
+    let orbit_len = ref_orbit.z_ref_f64.len();
+
+    // 1. Chemin rapide thread-local.
+    if let Some(arc) = BLA_UNIFIED_CACHE.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .filter(|e| e.matches(orbit_ptr, orbit_len, params))
+            .cloned()
+    }) {
+        return Some(arc);
+    }
+
+    // 2. Cache global sous lock : le premier arrivé construit, les suivants
+    //    clonent. Le lock reste tenu pendant le build → un seul build.
+    let mut guard = GLOBAL_BLA.lock().unwrap_or_else(|p| p.into_inner());
+    let arc = match guard.as_ref() {
+        Some(e) if e.matches(orbit_ptr, orbit_len, params) => e.clone(),
+        _ => {
+            let built = build_bla_entry(params, ref_orbit, c_norm, orbit_ptr, orbit_len, formula)?;
+            *guard = Some(built.clone());
+            built
+        }
+    };
+    drop(guard);
+
+    // 3. Peupler le thread-local pour les prochains pixels de ce worker.
+    BLA_UNIFIED_CACHE.with(|cell| *cell.borrow_mut() = Some(arc.clone()));
+    Some(arc)
 }
 
 /// Tente le path bytecode unifié si toutes les conditions sont remplies.
@@ -166,14 +283,12 @@ fn try_bytecode_unified_path(
     }
     let use_exp_path = pixel_size < PIXEL_SIZE_EXP_THRESHOLD;
 
-    // Préparer / recycler la table BLA depuis le cache thread-local.
-    let orbit_ptr = ref_orbit.z_ref_f64.as_ptr() as usize;
-    let orbit_len = ref_orbit.z_ref_f64.len();
+    // Table BLA du render : construite UNE fois, partagée entre workers via Arc
+    // (cf. `get_or_build_bla_entry`). Rayon de validité = max |δc| sur l'image
+    // (F3 `engine.cc:282` : `c = pixel_spacing · pixel_precision` ≈ diagonale
+    // image en espace-c), et NON `|cref|`. pixel_spacing = 4/zoom/height
+    // (HP-aware via effective_pixel_size).
     let c_ref = ref_orbit.cref;
-    // Rayon de validité BLA = max |δc| sur l'image (F3 `engine.cc:282` :
-    // `c = pixel_spacing · pixel_precision` ≈ diagonale image en espace-c),
-    // et NON `|cref|` (qui n'a rien à voir avec l'extent du pixel).
-    // pixel_spacing = 4/zoom/height (HP-aware via effective_pixel_size).
     let c_norm = {
         let pixel_spacing = crate::fractal::perturbation::effective_pixel_size(params);
         let diag_px =
@@ -181,70 +296,17 @@ fn try_bytecode_unified_path(
         pixel_spacing * diag_px
     };
 
-    let result = BLA_UNIFIED_CACHE.with(|cache_cell| {
-        let mut cache = cache_cell.borrow_mut();
-        // Vérifier si l'entrée actuelle correspond à ce render.
-        let needs_rebuild = match cache.as_ref() {
-            None => true,
-            Some(entry) => {
-                entry.orbit_ptr != orbit_ptr
-                    || entry.orbit_len != orbit_len
-                    || entry.fractal_type != params.fractal_type
-                    || (entry.multibrot_power - params.multibrot_power).abs() > 1e-12
-                    || (entry.bla_threshold - params.bla_threshold).abs() > 1e-20
-                    || entry.use_dd_tier != params.use_dd_tier
-            }
-        };
-        if needs_rebuild {
-            // Utiliser `params.bla_threshold` (défaut aligné F3 : 1/2^24)
-            // au lieu du hardcoded 6e-8 — permet à `--bla-threshold` CLI
-            // de vraiment piloter le path bytecode.
-            let tables = build_bla_table_for_formula(
-                &formula,
-                &ref_orbit.z_ref_f64,
-                c_norm,
-                params.bla_threshold,
-            )?;
-            // Table BLA dd (tier dd Mandelbrot) : coefficients ~106 b depuis
-            // l'orbite dd. **Epsilon = 2⁻¹⁰⁶** (epsilon machine du dd), PAS
-            // `bla_threshold` (2⁻²⁴, tuné f32) : le rayon de validité BLA borne
-            // le terme δ² abandonné à ε·|Z| relatif ; avec ε=2⁻²⁴ la BLA
-            // introduirait une erreur ~24 b qui masquerait la précision dd
-            // (div_ratio revenait au plancher f64). Avec 2⁻¹⁰⁶ la BLA ne skippe
-            // que là où δ est assez petit pour préserver la précision — usable
-            // aux zooms très profonds (δ ≪ rayon), pas directs sinon (correct).
-            let dd_table = if params.use_dd_tier
-                && matches!(params.fractal_type, FractalType::Mandelbrot)
-                && ref_orbit.has_dd()
-            {
-                const DD_BLA_EPSILON: f64 = 1.232_595_164_407_831e-32; // 2^-106
-                Some(crate::fractal::bytecode::bla_dd::BlaTableDd::build_mandelbrot(
-                    &ref_orbit.z_ref_dd,
-                    c_norm,
-                    DD_BLA_EPSILON,
-                ))
-            } else {
-                None
-            };
-            *cache = Some(BlaUnifiedCacheEntry {
-                orbit_ptr,
-                orbit_len,
-                fractal_type: params.fractal_type,
-                multibrot_power: params.multibrot_power,
-                bla_threshold: params.bla_threshold,
-                formula: formula.clone(),
-                tables,
-                use_dd_tier: params.use_dd_tier,
-                dd_table,
-            });
-        }
-        let entry = cache.as_ref()?;
-        let bla = &entry.tables[0];
+    let entry = get_or_build_bla_entry(params, ref_orbit, c_norm, &formula)?;
+    let bla = &entry.tables[0];
 
-        // Pour Julia : delta_init = pixel - cref (caller fournit delta0
-        // non-zéro), c_for_add = seed (constant), dc_for_add = 0.
-        // Pour Mandelbrot : delta_init = 0, c_for_add = cref, dc_for_add = dc.
-        let is_julia = Formula::is_julia_for(params.fractal_type);
+    // Pour Julia : delta_init = pixel - cref (caller fournit delta0
+    // non-zéro), c_for_add = seed (constant), dc_for_add = 0.
+    // Pour Mandelbrot : delta_init = 0, c_for_add = cref, dc_for_add = dc.
+    let is_julia = Formula::is_julia_for(params.fractal_type);
+
+    // Dispatch pixel (dd / exp / f64) → `UnifiedPixelResult`. IIFE pour garder la
+    // sémantique `return Some(...)` par branche ; `?` propage None (fallback).
+    let result = (|| -> Option<crate::fractal::bytecode::pixel_loop::UnifiedPixelResult> {
 
         // ── Tier double-double (~106 b, opt-in `use_dd_tier`) ───────────────
         // Mandelbrot escape-time, orbite dd disponible. Route vers `pixel_loop_dd`
@@ -360,7 +422,7 @@ fn try_bytecode_unified_path(
         );
 
         Some(pixel_result)
-    })?;
+    })()?;
 
     // Note : quand l'orbite référence s'épuise avant `iteration_max` (centre
     // escape-time non-périodique), le bytecode pixel_loop flag désormais
