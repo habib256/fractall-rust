@@ -282,12 +282,24 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
   1.89→**1.05**, wfs→0.50, olbaid5 1.41→**0.88**, **dragon 1.9→0.79**, e227→0.53.
   Aide TOUT orbite deep Mandelbrot/Julia/BS/Tricorn. 187 unit + quality 11 PASS +
   parité inchangés.
-  - [ ] **NOUVEAU gap : wfs_mb 6.8×** (zoom 6.5e2020, **10 M iters**, 6750 b) :
-    orbite 77 s (même avec sqr) vs F3 total 13.8 s → ~5.6×/iter. Pas le squaring
-    (déjà optimisé) : soit F3 détecte la PÉRIODE et raccourcit la réf (fractall a
-    NO_PERIOD=1 pour la parité), soit stratégie bignum F3 plus rapide en ultra-deep.
-    À creuser (period-aware reference OU profiler mpc_sqr vs MPFR direct F3).
-    wfs_mb/e8000/e22522/e52465 = même classe (orbites 10-50 M iters).
+  - [ ] **Gap CARACTÉRISÉ (2026-07-04) : classe « ultra-deep INTÉRIEUR »**
+    (wfs_mb 6.8×, e8000, e22522, e52465 — orbites 10-50 M iters, 6-50 kbits) :
+    **la vue entière est INTÉRIEURE** (wfs_mb 64² : avg_iter/px = max = 10 M = tous
+    les pixels atteignent le cap sans s'évader → orbite référence PÉRIODIQUE, cycle
+    attracteur). fractall force les 10 M itérations GMP (77 s @ 6750 b) pour
+    conclure « intérieur ». F3 fait wfs_mb en **9.33 s @ ~107 % CPU** (orbite-bound
+    single-thread) → il calcule ~1.3 M iters, PAS 10 M : **F3 détecte la période via
+    atom-domain** (`hybrid_period`, `|z|² < s²|dz|²`) et confirme l'intérieur tôt.
+    Diagnostic vérifié : la period-detection Brent de fractall (a) est désactivée par
+    `NO_PERIOD=1` (garde anti-faux-positifs, cf. glitch_test_5/floral_fantasy grazes),
+    (b) coûte 2×/iter quand activée (check GMP sub+norm par tour), (c) NE détecte PAS
+    wfs_mb en 150 s → **net perdant**. Le squaring est déjà optimal (mpc_sqr).
+    **Fix = period-aware reference via atom-domain** (porter `hybrid_period` de
+    nucleus.rs DANS `compute_reference_orbit` : trouver P, calculer 1 période, cycler).
+    GROS + DÉLICAT (faux positifs = intérieur erroné/image uniforme = la raison de
+    NO_PERIOD) → verrous stricts requis (goldens interior + glitch_test_5/1). Reporté :
+    cas extrême (1e2020+), ROI faible vs risque correction. Le reste du corpus est
+    déjà ≤ F3 (geomean 0.29). Cf. CLAUDE.md « nucleus phase-aware » (TODO G2/G4).
 - [x] **Path f64 étendu à 1e280 (seuil 1e-200 → 1e-280)** (2026-07-04) : après
   l'extension initiale à 1e-200, un sweep vitesse du corpus STANDARD/full a révélé
   4 cas encore sur le path exp lent (zoom > 1e200) donc PLUS LENTS que F3 :
