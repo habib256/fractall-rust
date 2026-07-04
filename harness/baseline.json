@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "meta": {
-    "date_utc": "2026-07-03T19:06:10+00:00",
-    "stamp": "20260703T190610Z",
-    "git_sha": "e8dea24",
+    "date_utc": "2026-07-04T17:08:41+00:00",
+    "stamp": "20260704T170841Z",
+    "git_sha": "bae004c",
     "git_dirty": true,
     "machine": {
       "cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz",
@@ -28,86 +28,91 @@
     "status": "ok",
     "cases": {
       "test5": {
-        "fractall_s": 0.0081,
-        "f3_s": 0.0155,
-        "ratio": 0.5226,
+        "fractall_s": 0.0074,
+        "f3_s": 0.0154,
+        "ratio": 0.4805,
         "status": "ok",
         "f3_exr_ok": true
       },
       "spiral": {
-        "fractall_s": 0.0318,
-        "f3_s": 0.1639,
-        "ratio": 0.194,
+        "fractall_s": 0.0316,
+        "f3_s": 0.164,
+        "ratio": 0.1927,
         "status": "ok",
         "f3_exr_ok": true
       },
       "flake": {
-        "fractall_s": 0.4161,
-        "f3_s": 0.2141,
-        "ratio": 1.9435,
+        "fractall_s": 0.1148,
+        "f3_s": 0.214,
+        "ratio": 0.5364,
         "status": "ok",
         "f3_exr_ok": true
       },
       "glitch_test_2": {
-        "fractall_s": 0.7171,
-        "f3_s": 0.1639,
-        "ratio": 4.3752,
+        "fractall_s": 0.2141,
+        "f3_s": 0.1642,
+        "ratio": 1.3039,
         "status": "ok",
         "f3_exr_ok": true
       },
       "e50": {
-        "fractall_s": 2.1741,
-        "f3_s": 1.1658,
-        "ratio": 1.8649,
+        "fractall_s": 0.2654,
+        "f3_s": 1.2158,
+        "ratio": 0.2183,
         "status": "ok",
         "f3_exr_ok": true
       },
       "e113": {
-        "fractall_s": 0.5152,
-        "f3_s": 0.2643,
-        "ratio": 1.9493,
+        "fractall_s": 0.1151,
+        "f3_s": 0.3143,
+        "ratio": 0.3662,
         "status": "ok",
         "f3_exr_ok": true
       },
       "e401": {
-        "fractall_s": 0.6178,
-        "f3_s": 6.2754,
-        "ratio": 0.0984,
+        "fractall_s": 0.5658,
+        "f3_s": 6.9753,
+        "ratio": 0.0811,
         "status": "ok",
         "f3_exr_ok": true
       },
       "e1000": {
-        "fractall_s": 0.6159,
-        "f3_s": 3.019,
-        "ratio": 0.204,
+        "fractall_s": 0.5658,
+        "f3_s": 3.2689,
+        "ratio": 0.1731,
         "status": "ok",
         "f3_exr_ok": true
       },
       "floral_fantasy": {
-        "fractall_s": 0.2238,
-        "f3_s": 0.1639,
-        "ratio": 1.3655,
+        "fractall_s": 0.0352,
+        "f3_s": 0.1638,
+        "ratio": 0.2149,
         "status": "ok",
         "f3_exr_ok": true
       },
       "dragon": {
-        "fractall_s": 12.8975,
-        "f3_s": 3.5701,
-        "ratio": 3.6126,
+        "fractall_s": 3.6719,
+        "f3_s": 3.8707,
+        "ratio": 0.9486,
         "status": "ok",
         "f3_exr_ok": true
       }
     },
-    "geomean_ratio": 0.8896,
+    "geomean_ratio": 0.3289,
     "worst_ratio": {
       "case": "glitch_test_2",
-      "ratio": 4.3752
+      "ratio": 1.3039
     },
     "wins": [
       "test5",
       "spiral",
+      "flake",
+      "e50",
+      "e113",
       "e401",
-      "e1000"
+      "e1000",
+      "floral_fantasy",
+      "dragon"
     ],
     "timeouts": [],
     "n_cases": 10,
@@ -118,12 +123,12 @@
     "cases": {
       "dragon": {
         "status": "ok",
-        "rel_dsi_pct": 0.1714,
-        "mean_abs_dsi": 8569.9996,
+        "rel_dsi_pct": 0.1713,
+        "mean_abs_dsi": 8567.0739,
         "inside_mismatch": 28,
         "f3_degenerate": false,
-        "f3_secs_num": 3.5384,
-        "fr_secs_num": 13.1652
+        "f3_secs_num": 4.4863,
+        "fr_secs_num": 4.7329
       },
       "e1000": {
         "status": "ok",
@@ -131,8 +136,8 @@
         "mean_abs_dsi": 0.3236,
         "inside_mismatch": 0,
         "f3_degenerate": false,
-        "f3_secs_num": 2.9901,
-        "fr_secs_num": 0.608
+        "f3_secs_num": 7.3954,
+        "fr_secs_num": 1.1985
       },
       "e113": {
         "status": "ok",
@@ -140,8 +145,8 @@
         "mean_abs_dsi": 27.8788,
         "inside_mismatch": 0,
         "f3_degenerate": false,
-        "f3_secs_num": 0.2318,
-        "fr_secs_num": 0.512
+        "f3_secs_num": 0.4479,
+        "fr_secs_num": 0.0677
       },
       "e401": {
         "status": "ok",
@@ -149,17 +154,17 @@
         "mean_abs_dsi": 8.516,
         "inside_mismatch": 0,
         "f3_degenerate": false,
-        "f3_secs_num": 6.2854,
-        "fr_secs_num": 0.6354
+        "f3_secs_num": 15.4825,
+        "fr_secs_num": 1.6521
       },
       "e50": {
         "status": "ok",
         "rel_dsi_pct": 0.0347,
-        "mean_abs_dsi": 91.1954,
+        "mean_abs_dsi": 91.2008,
         "inside_mismatch": 0,
         "f3_degenerate": false,
-        "f3_secs_num": 1.1677,
-        "fr_secs_num": 2.2785
+        "f3_secs_num": 3.0666,
+        "fr_secs_num": 0.693
       },
       "flake": {
         "status": "ok",
@@ -167,8 +172,8 @@
         "mean_abs_dsi": 26.0319,
         "inside_mismatch": 0,
         "f3_degenerate": false,
-        "f3_secs_num": 0.171,
-        "fr_secs_num": 0.4092
+        "f3_secs_num": 0.5677,
+        "fr_secs_num": 0.1783
       },
       "floral_fantasy": {
         "status": "ok",
@@ -176,8 +181,8 @@
         "mean_abs_dsi": 0.3894,
         "inside_mismatch": 0,
         "f3_degenerate": false,
-        "f3_secs_num": 0.143,
-        "fr_secs_num": 0.2324
+        "f3_secs_num": 0.4703,
+        "fr_secs_num": 0.1046
       },
       "glitch_test_2": {
         "status": "ok",
@@ -185,8 +190,8 @@
         "mean_abs_dsi": 19.7274,
         "inside_mismatch": 12,
         "f3_degenerate": false,
-        "f3_secs_num": 0.114,
-        "fr_secs_num": 0.6768
+        "f3_secs_num": 0.486,
+        "fr_secs_num": 0.5798
       },
       "spiral": {
         "status": "ok",
@@ -194,8 +199,8 @@
         "mean_abs_dsi": 9.7899,
         "inside_mismatch": 16,
         "f3_degenerate": false,
-        "f3_secs_num": 0.1592,
-        "fr_secs_num": 0.0238
+        "f3_secs_num": 0.6078,
+        "fr_secs_num": 0.0937
       },
       "test5": {
         "status": "ok",
@@ -203,8 +208,8 @@
         "mean_abs_dsi": 0.0,
         "inside_mismatch": 0,
         "f3_degenerate": false,
-        "f3_secs_num": 0.0151,
-        "fr_secs_num": 0.0084
+        "f3_secs_num": 0.0613,
+        "fr_secs_num": 0.0542
       }
     },
     "n_ok": 10,
@@ -215,28 +220,20 @@
   },
   "quality": {
     "status": "ok",
-    "n_pass": 5,
-    "n_warn": 1,
-    "n_fail": 5,
-    "fail_presets": [
-      "seahorse-valley",
-      "misiurewicz-m32",
-      "mandelbrot-e30",
-      "mandelbrot-e50",
-      "mandelbrot-e100"
-    ],
-    "warn_presets": [
-      "mandelbrot-e18-minibrot"
-    ],
+    "n_pass": 11,
+    "n_warn": 0,
+    "n_fail": 0,
+    "fail_presets": [],
+    "warn_presets": [],
     "presets": [
       {
         "name": "seahorse-valley",
-        "verdict": "FAIL",
+        "verdict": "PASS",
         "max_iter_diff": null,
         "p99_iter_diff": null,
-        "divergence_ratio": 0.0018446180555555555,
-        "time_pert_ms": 20.977763,
-        "time_gmp_ms": 983.677459
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 668.8813580000001,
+        "time_gmp_ms": 2675.169973
       },
       {
         "name": "mandelbrot-e13",
@@ -244,8 +241,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 75.63213,
-        "time_gmp_ms": 322.633022
+        "time_pert_ms": 87.202593,
+        "time_gmp_ms": 934.7833439999999
       },
       {
         "name": "mandelbrot-e17",
@@ -253,17 +250,17 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 55.180361,
-        "time_gmp_ms": 373.348503
+        "time_pert_ms": 14.963341999999999,
+        "time_gmp_ms": 1149.48919
       },
       {
         "name": "misiurewicz-m32",
-        "verdict": "FAIL",
+        "verdict": "PASS",
         "max_iter_diff": null,
         "p99_iter_diff": null,
-        "divergence_ratio": 0.0018446180555555555,
-        "time_pert_ms": 57.930741,
-        "time_gmp_ms": 347.514818
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 258.566937,
+        "time_gmp_ms": 938.074065
       },
       {
         "name": "julia-siegel-disk",
@@ -271,8 +268,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 1.100154,
-        "time_gmp_ms": 182.817686
+        "time_pert_ms": 8.721011,
+        "time_gmp_ms": 576.768425
       },
       {
         "name": "burning-ship-antenna",
@@ -280,8 +277,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 0.933536,
-        "time_gmp_ms": 24.103192
+        "time_pert_ms": 12.802069,
+        "time_gmp_ms": 83.538033
       },
       {
         "name": "tricorn-spiral",
@@ -289,44 +286,44 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 0.521801,
-        "time_gmp_ms": 7.669993
+        "time_pert_ms": 5.353816,
+        "time_gmp_ms": 42.421099
       },
       {
         "name": "mandelbrot-e18-minibrot",
-        "verdict": "WARN",
+        "verdict": "PASS",
         "max_iter_diff": null,
         "p99_iter_diff": null,
-        "divergence_ratio": 0.00021701388888888888,
-        "time_pert_ms": 96.580341,
-        "time_gmp_ms": 330.15689
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 314.952629,
+        "time_gmp_ms": 993.027941
       },
       {
         "name": "mandelbrot-e30",
-        "verdict": "FAIL",
+        "verdict": "PASS",
         "max_iter_diff": null,
         "p99_iter_diff": null,
-        "divergence_ratio": 0.03624131944444445,
-        "time_pert_ms": 472.037338,
-        "time_gmp_ms": 18402.386375
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 10677.720941,
+        "time_gmp_ms": 20242.024523
       },
       {
         "name": "mandelbrot-e50",
-        "verdict": "FAIL",
+        "verdict": "PASS",
         "max_iter_diff": null,
         "p99_iter_diff": null,
-        "divergence_ratio": 0.050347222222222224,
-        "time_pert_ms": 1133.0065650000001,
-        "time_gmp_ms": 161812.409214
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 20840.959451,
+        "time_gmp_ms": 169156.08368900002
       },
       {
         "name": "mandelbrot-e100",
-        "verdict": "FAIL",
+        "verdict": "PASS",
         "max_iter_diff": null,
         "p99_iter_diff": null,
-        "divergence_ratio": 0.004231770833333333,
-        "time_pert_ms": 158.52255000000002,
-        "time_gmp_ms": 18862.754744
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 790.121571,
+        "time_gmp_ms": 19574.368481
       }
     ]
   },
@@ -338,83 +335,15 @@
     "speed_wins": [
       "test5",
       "spiral",
+      "flake",
+      "e50",
+      "e113",
       "e401",
-      "e1000"
+      "e1000",
+      "floral_fantasy",
+      "dragon"
     ],
     "correctness_wins": []
   },
-  "gaps": [
-    {
-      "axis": "quality",
-      "case": "seahorse-valley",
-      "metric": "verdict",
-      "value": "FAIL",
-      "baseline_value": null,
-      "severity": 1,
-      "note": "quality suite FAIL"
-    },
-    {
-      "axis": "quality",
-      "case": "misiurewicz-m32",
-      "metric": "verdict",
-      "value": "FAIL",
-      "baseline_value": null,
-      "severity": 1,
-      "note": "quality suite FAIL"
-    },
-    {
-      "axis": "quality",
-      "case": "mandelbrot-e30",
-      "metric": "verdict",
-      "value": "FAIL",
-      "baseline_value": null,
-      "severity": 1,
-      "note": "quality suite FAIL"
-    },
-    {
-      "axis": "quality",
-      "case": "mandelbrot-e50",
-      "metric": "verdict",
-      "value": "FAIL",
-      "baseline_value": null,
-      "severity": 1,
-      "note": "quality suite FAIL"
-    },
-    {
-      "axis": "quality",
-      "case": "mandelbrot-e100",
-      "metric": "verdict",
-      "value": "FAIL",
-      "baseline_value": null,
-      "severity": 1,
-      "note": "quality suite FAIL"
-    },
-    {
-      "axis": "quality",
-      "case": "mandelbrot-e18-minibrot",
-      "metric": "verdict",
-      "value": "WARN",
-      "baseline_value": null,
-      "severity": 4,
-      "note": "quality suite WARN"
-    },
-    {
-      "axis": "speed",
-      "case": "glitch_test_2",
-      "metric": "ratio",
-      "value": 4.3752,
-      "baseline_value": null,
-      "severity": 3,
-      "note": "4.38× plus lent que F3"
-    },
-    {
-      "axis": "speed",
-      "case": "dragon",
-      "metric": "ratio",
-      "value": 3.6126,
-      "baseline_value": null,
-      "severity": 3,
-      "note": "3.61× plus lent que F3"
-    }
-  ]
+  "gaps": []
 }
