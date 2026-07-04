@@ -1,0 +1,163 @@
+{
+  "schema": 1,
+  "meta": {
+    "date_utc": "2026-07-04T17:32:50+00:00",
+    "stamp": "20260704T173250Z",
+    "git_sha": "f5c424a",
+    "git_dirty": true,
+    "machine": {
+      "cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz",
+      "nproc": 16,
+      "os": "Linux 6.14.0-37-generic"
+    },
+    "tier": "quick",
+    "axes": [
+      "speed"
+    ],
+    "width": 256,
+    "height": 256,
+    "quality_width": 96,
+    "quality_height": 96,
+    "runs": 1,
+    "f3_bin": "/home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux"
+  },
+  "speed": {
+    "status": "ok",
+    "cases": {
+      "integral_of_ex2": {
+        "fractall_s": 0.1643,
+        "f3_s": 0.4645,
+        "ratio": 0.3537,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "virus": {
+        "fractall_s": 0.164,
+        "f3_s": 0.2644,
+        "ratio": 0.6203,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "x": {
+        "fractall_s": 0.0638,
+        "f3_s": 0.1639,
+        "ratio": 0.3893,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "mitosis": {
+        "fractall_s": 0.1141,
+        "f3_s": 0.1641,
+        "ratio": 0.6953,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "dinosaur_fossils": {
+        "fractall_s": 0.115,
+        "f3_s": 0.3143,
+        "ratio": 0.3659,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "test3": {
+        "fractall_s": 0.1139,
+        "f3_s": 0.214,
+        "ratio": 0.5322,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "11_dimensions": {
+        "fractall_s": 0.2141,
+        "f3_s": 0.7148,
+        "ratio": 0.2995,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e227": {
+        "fractall_s": 1.2739,
+        "f3_s": 1.6667,
+        "ratio": 0.7643,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "evolution_trees": {
+        "fractall_s": 1.2661,
+        "f3_s": 1.8166,
+        "ratio": 0.697,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "adventurous_forest": {
+        "fractall_s": 0.2142,
+        "f3_s": 0.4645,
+        "ratio": 0.4611,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "safari": {
+        "fractall_s": 0.8662,
+        "f3_s": 15.2397,
+        "ratio": 0.0568,
+        "status": "ok",
+        "f3_exr_ok": true
+      }
+    },
+    "geomean_ratio": 0.4052,
+    "worst_ratio": {
+      "case": "e227",
+      "ratio": 0.7643
+    },
+    "wins": [
+      "integral_of_ex2",
+      "virus",
+      "x",
+      "mitosis",
+      "dinosaur_fossils",
+      "test3",
+      "11_dimensions",
+      "e227",
+      "evolution_trees",
+      "adventurous_forest",
+      "safari"
+    ],
+    "timeouts": [],
+    "n_cases": 11,
+    "n_compared": 11
+  },
+  "parity": {
+    "status": "skipped"
+  },
+  "quality": {
+    "status": "skipped"
+  },
+  "goldens": {
+    "status": "skipped"
+  },
+  "beyond_f3": {
+    "speed_wins": [
+      "integral_of_ex2",
+      "virus",
+      "x",
+      "mitosis",
+      "dinosaur_fossils",
+      "test3",
+      "11_dimensions",
+      "e227",
+      "evolution_trees",
+      "adventurous_forest",
+      "safari"
+    ],
+    "correctness_wins": []
+  },
+  "gaps": [
+    {
+      "axis": "speed",
+      "case": "<geomean>",
+      "metric": "geomean_ratio",
+      "value": 0.4052,
+      "baseline_value": 0.3289,
+      "severity": 3,
+      "note": "RÉGRESSION vs baseline (>10%)"
+    }
+  ]
+}

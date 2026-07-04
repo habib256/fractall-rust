@@ -1,0 +1,181 @@
+{
+  "schema": 1,
+  "meta": {
+    "date_utc": "2026-07-04T17:25:09+00:00",
+    "stamp": "20260704T172509Z",
+    "git_sha": "f5c424a",
+    "git_dirty": true,
+    "machine": {
+      "cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz",
+      "nproc": 16,
+      "os": "Linux 6.14.0-37-generic"
+    },
+    "tier": "quick",
+    "axes": [
+      "speed"
+    ],
+    "width": 256,
+    "height": 256,
+    "quality_width": 96,
+    "quality_height": 96,
+    "runs": 1,
+    "f3_bin": "/home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux"
+  },
+  "speed": {
+    "status": "ok",
+    "cases": {
+      "e318": {
+        "fractall_s": 0.5151,
+        "f3_s": 13.8377,
+        "ratio": 0.0372,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1121": {
+        "fractall_s": 0.4658,
+        "f3_s": 2.3176,
+        "ratio": 0.201,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1200": {
+        "fractall_s": 0.517,
+        "f3_s": 2.7687,
+        "ratio": 0.1867,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_3": {
+        "fractall_s": 0.1138,
+        "f3_s": 0.3143,
+        "ratio": 0.3621,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_4": {
+        "fractall_s": 0.0382,
+        "f3_s": 0.164,
+        "ratio": 0.2329,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "heaven": {
+        "fractall_s": 0.0645,
+        "f3_s": 0.2641,
+        "ratio": 0.2442,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "integral_of_ex2": {
+        "fractall_s": 0.8165,
+        "f3_s": 0.4646,
+        "ratio": 1.7574,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "windmill": {
+        "fractall_s": 0.1141,
+        "f3_s": 0.3643,
+        "ratio": 0.3132,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "mitosis": {
+        "fractall_s": 0.2645,
+        "f3_s": 0.164,
+        "ratio": 1.6128,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "golden_spider": {
+        "fractall_s": 0.2145,
+        "f3_s": 0.8652,
+        "ratio": 0.2479,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "leaded_glass": {
+        "fractall_s": 0.1645,
+        "f3_s": 1.3158,
+        "ratio": 0.125,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "magic": {
+        "fractall_s": 0.2159,
+        "f3_s": 0.8651,
+        "ratio": 0.2496,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "tick_tock": {
+        "fractall_s": 0.114,
+        "f3_s": 0.3644,
+        "ratio": 0.3128,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "virus": {
+        "fractall_s": 0.4155,
+        "f3_s": 0.2641,
+        "ratio": 1.5733,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "x": {
+        "fractall_s": 0.2647,
+        "f3_s": 0.1639,
+        "ratio": 1.615,
+        "status": "ok",
+        "f3_exr_ok": true
+      }
+    },
+    "geomean_ratio": 0.3519,
+    "worst_ratio": {
+      "case": "integral_of_ex2",
+      "ratio": 1.7574
+    },
+    "wins": [
+      "e318",
+      "e1121",
+      "e1200",
+      "glitch_test_3",
+      "glitch_test_4",
+      "heaven",
+      "windmill",
+      "golden_spider",
+      "leaded_glass",
+      "magic",
+      "tick_tock"
+    ],
+    "timeouts": [],
+    "n_cases": 15,
+    "n_compared": 15
+  },
+  "parity": {
+    "status": "skipped"
+  },
+  "quality": {
+    "status": "skipped"
+  },
+  "goldens": {
+    "status": "skipped"
+  },
+  "beyond_f3": {
+    "speed_wins": [
+      "e318",
+      "e1121",
+      "e1200",
+      "glitch_test_3",
+      "glitch_test_4",
+      "heaven",
+      "windmill",
+      "golden_spider",
+      "leaded_glass",
+      "magic",
+      "tick_tock"
+    ],
+    "correctness_wins": []
+  },
+  "gaps": []
+}

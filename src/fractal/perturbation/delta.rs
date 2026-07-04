@@ -258,9 +258,14 @@ pub fn prewarm_bla_entry(params: &FractalParams, ref_orbit: &ReferenceOrbit) {
 // de bord diffère). **Gains 256²** : glitch_test_2 pixels 0.20→0.014 s
 // (total 0.345→0.155), dragon pixels 3.66→0.18 s (total 7.0→3.48, passe DEVANT F3).
 //
-// Plancher 1e-200 (marge sous 1e191 validé ; extensible vers ~1e-300 = limite
-// double F3 avec validation supplémentaire). Override : `FRACTALL_EXP_THRESHOLD`.
-pub const PIXEL_SIZE_EXP_THRESHOLD: f64 = 1e-200;
+// Plancher 1e-280. f64 validé ≡ exp (pixel-identique) jusqu'à mitosis 1e270 ;
+// **casse à safari 1e307** (3 % px : `δ ~ pixel_size` devient SUBNORMAL sous
+// 2.2e-308 → mantisse f64 dégradée). Le path exp reste donc pour pixel_size
+// < 1e-280 (δ sous-normal/underflow, zoom ≳ 1e280). Validation initiale à 1e-200
+// (dragon 1e191) étendue à 1e-280 après avoir trouvé integral_of_ex2 1e202,
+// virus 1e224, x 1e235, mitosis 1e270 bloqués sur le path exp lent (ratios
+// 1.6-1.8× vs F3). Override : `FRACTALL_EXP_THRESHOLD`.
+pub const PIXEL_SIZE_EXP_THRESHOLD: f64 = 1e-280;
 #[allow(dead_code)]
 pub const PIXEL_SIZE_GMP_THRESHOLD: f64 = 1e-150;
 

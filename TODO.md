@@ -270,6 +270,19 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     `dd_orbit_matches_gmp_julia`. Tranche dd couvre Mandelbrot ET Julia.
   - [ ] Reste Phase 2+ : quad-double pour 1e28–1e60 ; câbler le pixel loop dd
     (P1.6.e original : delta quasi-périodique, glitch_test_1/5).
+- [x] **Path f64 étendu à 1e280 (seuil 1e-200 → 1e-280)** (2026-07-04) : après
+  l'extension initiale à 1e-200, un sweep vitesse du corpus STANDARD/full a révélé
+  4 cas encore sur le path exp lent (zoom > 1e200) donc PLUS LENTS que F3 :
+  integral_of_ex2 1e202 (1.76×), x 1e235 (1.62×), mitosis 1e270 (1.61×), virus
+  1e224 (1.57×). Validé f64 ≡ exp **pixel-identique** (0 diff) jusqu'à mitosis
+  1e270 ; **casse à safari 1e307** (3 % px : δ~pixel_size devient SUBNORMAL sous
+  2.2e-308). Seuil abaissé à 1e-280 (exp gardé pour pixel_size < 1e-280). Résultats :
+  integral_of_ex2 1.76→**0.35**, x 1.62→**0.39**, virus 1.57→**0.62**, mitosis
+  1.61→**0.70** (+ dinosaur_fossils, test3, 11_dimensions, e227, evolution_trees,
+  adventurous_forest tous < 1). safari 1e307 correctement sur exp (0.057× — F3 lent).
+  AUCUN golden touché (aucun dans 1e200–1e280). 187 unit + quality 11 PASS + goldens
+  🟢 + parité inchangés. **Leçon : le tier quick (10 cas) ne couvre pas les gaps du
+  corpus profond — sweeper `--axes speed --cases <full>` périodiquement.**
 - [x] **Deep-zoom perf ~RÉSOLU — path pixel f64 étendu à 1e13–1e200** (2026-07-04) :
   **la plus grosse victoire de la session.** Le seuil `PIXEL_SIZE_EXP_THRESHOLD`
   forçait le path ComplexExp (mantisse+exp, ~10-20× plus lent/op via frexp) dès
