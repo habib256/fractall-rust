@@ -39,6 +39,70 @@ fn z_ref_complexexp(z: &Complex, z_f64: Complex64) -> ComplexExp {
     }
 }
 
+/// Convertit un `Float` GMP en `DoubleDoubleExp` (~106 bits) : `hi` = arrondi
+/// f64, `lo` = reste (value − hi) arrondi f64. Capte min(106, prec(value)) bits.
+#[allow(dead_code)] // Phase 1a : validé par test ; câblé au dispatch en Phase 1b.
+fn gmp_float_to_ddexp(value: &Float) -> super::dd::DoubleDoubleExp {
+    use super::dd::{DoubleDouble, DoubleDoubleExp};
+    let hi = value.to_f64();
+    if hi == 0.0 || !hi.is_finite() {
+        return DoubleDoubleExp::from_f64(hi);
+    }
+    let mut rem = value.clone();
+    rem -= hi;
+    let lo = rem.to_f64();
+    DoubleDoubleExp::normalized(DoubleDouble::new(hi, lo), 0)
+}
+
+/// Orbite référence Mandelbrot itérée en **double-double** (~106 bits) au lieu de
+/// GMP — chemin rapide pour la tranche zoom où `precision ≤ ~100 bits`
+/// (~1e13–1e28). L'orbite est ITÉRÉE en dd (précision de la trajectoire) mais
+/// STOCKÉE en 53 bits (`z_ref` ComplexExp + `z_ref_f64`), comme le path GMP : le
+/// delta de perturbation par pixel est déjà 53 bits, seule la précision de
+/// l'itération de la référence compte. NON bit-identique au path GMP (arrondi
+/// dd 106 b ≠ MPFR 676 b sur les derniers ULP) — validé vs GMP par test.
+///
+/// Renvoie `(z_ref, z_ref_f64)`. Mirror de la structure de boucle de
+/// `compute_reference_orbit` (bailout `REFERENCE_BAILOUT_SQR` en tête, break sur
+/// évasion). Mandelbrot uniquement (`z = z² + c`).
+#[allow(dead_code)] // Phase 1a : validé par test ; câblé au dispatch en Phase 1b.
+fn dd_reference_orbit_mandelbrot(
+    cref_gmp: &Complex,
+    iteration_max: u32,
+    cancel: Option<&AtomicBool>,
+) -> Option<(Vec<ComplexExp>, Vec<Complex64>)> {
+    use super::dd::ComplexDDExp;
+    let cref = ComplexDDExp {
+        re: gmp_float_to_ddexp(cref_gmp.real()),
+        im: gmp_float_to_ddexp(cref_gmp.imag()),
+    };
+    let mut z = ComplexDDExp::ZERO;
+    let mut z_ref = Vec::with_capacity(iteration_max as usize + 1);
+    let mut z_ref_f64 = Vec::with_capacity(iteration_max as usize + 1);
+    let mut zf = z.to_complex64_approx();
+    z_ref.push(ComplexExp::from_complex64(zf));
+    z_ref_f64.push(zf);
+    for i in 0..iteration_max {
+        if let Some(cancel) = cancel {
+            if i % 4096 == 0 && cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+        }
+        // Bailout f64 (z borné O(1) < ~1e5 avant évasion, exact en f64).
+        if zf.re * zf.re + zf.im * zf.im > REFERENCE_BAILOUT_SQR {
+            break;
+        }
+        z = z.sqr().add(cref);
+        if (i + 1) % 250 == 0 {
+            z.reduce();
+        }
+        zf = z.to_complex64_approx();
+        z_ref.push(ComplexExp::from_complex64(zf));
+        z_ref_f64.push(zf);
+    }
+    Some((z_ref, z_ref_f64))
+}
+
 /// Squared escape radius used while iterating the reference orbit.
 ///
 /// Matches Fraktaler-3 `hybrid.cc:87` (`norm(Zp[i]) < 1e10`). Using
@@ -1587,5 +1651,45 @@ pub fn optimize_reference_center(
         Some(nucleus)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod dd_orbit_tests {
+    use super::*;
+    use crate::fractal::{default_params_for_type, FractalType};
+
+    /// Verrou Phase 1a : l'orbite référence itérée en double-double (~106 b) doit
+    /// matcher celle itérée en GMP (676 b) à la précision de stockage f64, sur un
+    /// zoom moyen où dd est suffisant. Valide l'arithmétique dd avant le câblage.
+    #[test]
+    fn dd_orbit_matches_gmp_midrange() {
+        let mut params = default_params_for_type(FractalType::Mandelbrot, 64, 64);
+        // Seahorse valley : orbite longue, non triviale.
+        params.center_x = -0.743643887037158;
+        params.center_y = 0.131825904205330;
+        params.span_x = 1e-12;
+        params.span_y = 1e-12;
+        params.iteration_max = 3000;
+
+        let (orbit_gmp, _, _) =
+            compute_reference_orbit(&params, None, true).expect("orbite GMP");
+        let (_, dd_f64) =
+            dd_reference_orbit_mandelbrot(&orbit_gmp.cref_gmp, params.iteration_max, None)
+                .expect("orbite dd");
+
+        // Préfixe commun (period-detection GMP peut tronquer plus tôt que dd).
+        let n = orbit_gmp.z_ref_f64.len().min(dd_f64.len());
+        assert!(n > 100, "préfixe commun trop court: {n}");
+        let mut max_err = 0.0f64;
+        for i in 0..n {
+            let g = orbit_gmp.z_ref_f64[i];
+            let d = dd_f64[i];
+            max_err = max_err.max((g.re - d.re).abs()).max((g.im - d.im).abs());
+        }
+        assert!(
+            max_err < 1e-9,
+            "orbite dd diverge de GMP: max_err={max_err:.3e} sur {n} points"
+        );
     }
 }
