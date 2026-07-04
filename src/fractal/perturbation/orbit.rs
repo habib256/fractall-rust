@@ -1239,15 +1239,29 @@ pub fn compute_reference_orbit(
                 return None;
             }
         }
-        // Inline bailout check using scratch buffers (avoids 4 allocs per iter).
-        norm_re.assign(z.real());
-        norm_re.square_mut();
-        norm_im.assign(z.imag());
-        norm_im.square_mut();
-        norm_sqr.assign(&norm_re);
-        norm_sqr += &norm_im;
-        if norm_sqr > bailout_sqr {
-            break;
+        // Bailout check. Fast pré-check f64 avant la norme GMP (2 carrés 676 b +
+        // add — ~la moitié du temps orbite sur les orbites BORNÉES, ex. dragon
+        // qui tourne 5 M iters sans jamais s'évader → la norme GMP ne déclenche
+        // JAMAIS mais coûte à chaque tour). L'orbite référence est bornée par
+        // `REFERENCE_BAILOUT_SQR`=1e10 avant évasion ⇒ |z| < 1e5, exactement en
+        // range f64. `z_ref_f64.last()` = f64 du z courant (stocké au tour
+        // précédent). L'écart |round(z)|² vs |z|² est ~2^-51 relatif (~4e-6 à
+        // 1e10) ≪ la marge de 1 % ⇒ si `f64_norm < 0.99·bailout`, la vraie norme
+        // GMP est < bailout (aucune évasion ratée). Sinon (près de la frontière),
+        // on calcule la norme GMP exacte → décision bit-identique.
+        let z_curr_f64 = z_ref_f64[z_ref_f64.len() - 1];
+        let f64_norm = z_curr_f64.re * z_curr_f64.re + z_curr_f64.im * z_curr_f64.im;
+        if !(f64_norm < REFERENCE_BAILOUT_SQR * 0.99) {
+            // Inline bailout check using scratch buffers (avoids 4 allocs per iter).
+            norm_re.assign(z.real());
+            norm_re.square_mut();
+            norm_im.assign(z.imag());
+            norm_im.square_mut();
+            norm_sqr.assign(&norm_re);
+            norm_sqr += &norm_im;
+            if norm_sqr > bailout_sqr {
+                break;
+            }
         }
 
         // Period detection using Brent's algorithm variant (inspired by rust-fractal-core).
