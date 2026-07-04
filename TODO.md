@@ -244,8 +244,18 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     boucle pixel exp (gros chantier, cf. P1.6.d/e).
   - glitch_test_2 : fractall 0.605 s stable vs **F3 0.113 s stable** → ~5.4×
     réel (le 3.75× d'itérations antérieures venait d'une sous-mesure F3). Zoom
-    1e112, orbite 0.23 s + pixels ComplexExp 0.33 s — c'est le coût FloatExp
-    (~35 ns/iter, frexp par op) qui domine. Même levier float128/f64-scaled.
+    1e112, orbite 0.23 s + pixels ComplexExp 0.33 s.
+  - **IMPASSE (2026-07-04) : spécialiser `FloatExp::mul`/`sqr` (éviter `frexp`
+    via une branche, bit-identique) = 0 gain mesuré** sur glitch_test_2 ET
+    dragon (pixels inchangés). Cause : le pas hot du `pixel_loop_exp` est le
+    **pas BLA** (`a.m00*δ.re + a.m01*δ.im + b.…`, `pixel_loop_exp.rs:201-204`)
+    qui utilise `Mul<f64> for FloatExp` (multiplicateur mat2 non normalisé →
+    frexp obligatoire) + `Add` (frexp). Le `δ.mul(δ)` direct (FloatExp×FloatExp,
+    la seule op que la spéc accélère) ne tourne que sur les *rares* pas
+    non-skippés par la BLA. **Le vrai levier = normaliser une seule fois le
+    produit mat2-vecteur du pas BLA** (accumulation f64-scaled à exposant
+    commun) — non-bit-identique, à valider goldens+quality. Revert propre, pas
+    de changement committé.
 - [ ] **Re-sweep corpus complet avec le fix** : confirmer que les 36 ex-perf
   cas rendent ET matchent F3 (probable vu e1000 pixel-identique + e113 == GMP).
 - **Acceptation : ✅ ATTEINTE** — e50 **1.57 s**, e1000 **0.53 s**, dragon
