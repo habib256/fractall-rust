@@ -239,16 +239,44 @@ pub fn prewarm_bla_entry(params: &FractalParams, ref_orbit: &ReferenceOrbit) {
 /// (le caller fallback sur le path historique).
 /// Seuils de basculement entre paths perturbation (utilisés par
 /// `try_bytecode_unified_path` ET `bytecode_path_label` pour rester cohérents).
-// `delta` devient indistinguable de 0 dans (z_ref + delta) quand
-// |delta| < epsilon_f64 * |z_ref| ≈ 2.2e-16 * bailout. Avec bailout=256, ça
-// donne pixel_size ≈ 6e-14 ; en pratique on bascule sur le path exp dès
-// pixel_size < 1e-13, sinon tous les pixels bailent à l'iter du z_ref (image
-// uniforme, cf. floral_fantasy zoom 1.55e85). L'ancien seuil 1e-100 supposait
-// que f64 restait précis bien au-delà — faux dès qu'une orbite escape-time
-// courte rendait delta inopérant.
-pub const PIXEL_SIZE_EXP_THRESHOLD: f64 = 1e-13;
+// Seuil de bascule f64 → ComplexExp pour le delta pixel.
+//
+// F3 (`wisdom`) utilise `double` jusqu'à ~1e300 (cf. fraktaler-3-analysis §12) :
+// le delta est SUIVI séparément de z_ref, donc son itération `δ'=2Zδ+δ²+dc` est
+// exacte en f64 tant que δ ne sous-déborde pas (~1e-308). L'addition z_ref+δ ne
+// perd δ que quand |δ| < 2.2e-16·|z_ref|, i.e. quand δ est déjà négligeable pour
+// la décision de bailout → aucune perte visible. Le ComplexExp (mantisse+exp,
+// ~10-14× plus lent/op via frexp) n'est VRAIMENT nécessaire que quand δ lui-même
+// sous-déborde f64 (zoom > ~1e308).
+//
+// L'ancien seuil 1e-13 était SUR-conservateur (hérité d'avant le fix rebase-at-end
+// G2 + la tolérance period-detection resserrée) : il forçait ComplexExp dès 1e13,
+// ~10-20× plus lent sur toute la tranche 1e13–1e300. Validé f64 ≡ GMP (max_diff 0,
+// ou divergence IDENTIQUE au path exp sur les pixels de bord chaotique) sur
+// seahorse 1e8 … e18, floral_fantasy 1e85 (l'ancien épouvantail « image uniforme »
+// — désormais PASS max_diff=0), glitch_test_2 1e112, e113, dragon 1e191 (1 px/16384
+// de bord diffère). **Gains 256²** : glitch_test_2 pixels 0.20→0.014 s
+// (total 0.345→0.155), dragon pixels 3.66→0.18 s (total 7.0→3.48, passe DEVANT F3).
+//
+// Plancher 1e-200 (marge sous 1e191 validé ; extensible vers ~1e-300 = limite
+// double F3 avec validation supplémentaire). Override : `FRACTALL_EXP_THRESHOLD`.
+pub const PIXEL_SIZE_EXP_THRESHOLD: f64 = 1e-200;
 #[allow(dead_code)]
 pub const PIXEL_SIZE_GMP_THRESHOLD: f64 = 1e-150;
+
+/// Seuil effectif (overridable via `FRACTALL_EXP_THRESHOLD` pour expérimentation
+/// A/B du path f64 vs exp). Défaut = `PIXEL_SIZE_EXP_THRESHOLD`.
+#[inline]
+pub fn pixel_size_exp_threshold() -> f64 {
+    static T: OnceLock<f64> = OnceLock::new();
+    *T.get_or_init(|| {
+        std::env::var("FRACTALL_EXP_THRESHOLD")
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|v| *v > 0.0)
+            .unwrap_or(PIXEL_SIZE_EXP_THRESHOLD)
+    })
+}
 
 /// Renvoie le label du path bytecode qui sera emprunté par `try_bytecode_unified_path`.
 /// Utilisé par la couche d'affichage perf pour étiqueter `[FRACTALL] path=...`
@@ -277,7 +305,7 @@ pub fn bytecode_path_label(params: &FractalParams) -> Option<&'static str> {
     if params.use_dd_tier && matches!(params.fractal_type, FractalType::Mandelbrot) {
         return Some("bytecode_dd");
     }
-    if pixel_size < PIXEL_SIZE_EXP_THRESHOLD {
+    if pixel_size < pixel_size_exp_threshold() {
         Some("bytecode_exp")
     } else {
         Some("bytecode_f64")
@@ -312,7 +340,7 @@ fn try_bytecode_unified_path(
     if pixel_size <= 0.0 {
         return None;
     }
-    let use_exp_path = pixel_size < PIXEL_SIZE_EXP_THRESHOLD;
+    let use_exp_path = pixel_size < pixel_size_exp_threshold();
 
     // Table BLA du render : construite UNE fois, partagée entre workers via Arc
     // (cf. `get_or_build_bla_entry`). Rayon de validité = max |δc| sur l'image

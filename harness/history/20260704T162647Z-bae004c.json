@@ -1,0 +1,349 @@
+{
+  "schema": 1,
+  "meta": {
+    "date_utc": "2026-07-04T16:26:47+00:00",
+    "stamp": "20260704T162647Z",
+    "git_sha": "bae004c",
+    "git_dirty": false,
+    "machine": {
+      "cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz",
+      "nproc": 16,
+      "os": "Linux 6.14.0-37-generic"
+    },
+    "tier": "quick",
+    "axes": [
+      "speed",
+      "parity",
+      "quality",
+      "goldens"
+    ],
+    "width": 256,
+    "height": 256,
+    "quality_width": 96,
+    "quality_height": 96,
+    "runs": 1,
+    "f3_bin": "/home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux"
+  },
+  "speed": {
+    "status": "ok",
+    "cases": {
+      "test5": {
+        "fractall_s": 0.0655,
+        "f3_s": 0.1168,
+        "ratio": 0.5608,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "spiral": {
+        "fractall_s": 0.1212,
+        "f3_s": 0.8219,
+        "ratio": 0.1475,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "flake": {
+        "fractall_s": 1.0732,
+        "f3_s": 0.8187,
+        "ratio": 1.3109,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_2": {
+        "fractall_s": 1.628,
+        "f3_s": 0.6172,
+        "ratio": 2.6377,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e50": {
+        "fractall_s": 5.1026,
+        "f3_s": 3.7878,
+        "ratio": 1.3471,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e113": {
+        "fractall_s": 0.8335,
+        "f3_s": 0.5153,
+        "ratio": 1.6175,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e401": {
+        "fractall_s": 1.1682,
+        "f3_s": 12.2082,
+        "ratio": 0.0957,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1000": {
+        "fractall_s": 1.0276,
+        "f3_s": 6.0365,
+        "ratio": 0.1702,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "floral_fantasy": {
+        "fractall_s": 0.4777,
+        "f3_s": 0.2643,
+        "ratio": 1.8074,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "dragon": {
+        "fractall_s": 11.5115,
+        "f3_s": 6.8559,
+        "ratio": 1.6791,
+        "status": "ok",
+        "f3_exr_ok": true
+      }
+    },
+    "geomean_ratio": 0.7061,
+    "worst_ratio": {
+      "case": "glitch_test_2",
+      "ratio": 2.6377
+    },
+    "wins": [
+      "test5",
+      "spiral",
+      "e401",
+      "e1000"
+    ],
+    "timeouts": [],
+    "n_cases": 10,
+    "n_compared": 10
+  },
+  "parity": {
+    "status": "ok",
+    "cases": {
+      "dragon": {
+        "status": "ok",
+        "rel_dsi_pct": 0.1714,
+        "mean_abs_dsi": 8569.9996,
+        "inside_mismatch": 28,
+        "f3_degenerate": false,
+        "f3_secs_num": 7.2416,
+        "fr_secs_num": 11.2064
+      },
+      "e1000": {
+        "status": "ok",
+        "rel_dsi_pct": 0.001,
+        "mean_abs_dsi": 0.3236,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 5.5011,
+        "fr_secs_num": 1.053
+      },
+      "e113": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0785,
+        "mean_abs_dsi": 27.8788,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.4936,
+        "fr_secs_num": 0.8254
+      },
+      "e401": {
+        "status": "ok",
+        "rel_dsi_pct": 0.004,
+        "mean_abs_dsi": 8.516,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 11.5967,
+        "fr_secs_num": 1.0292
+      },
+      "e50": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0347,
+        "mean_abs_dsi": 91.1954,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 2.2135,
+        "fr_secs_num": 2.9785
+      },
+      "flake": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0434,
+        "mean_abs_dsi": 26.0319,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.3669,
+        "fr_secs_num": 0.621
+      },
+      "floral_fantasy": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0032,
+        "mean_abs_dsi": 0.3894,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.2709,
+        "fr_secs_num": 0.5109
+      },
+      "glitch_test_2": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0079,
+        "mean_abs_dsi": 19.7274,
+        "inside_mismatch": 12,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.2392,
+        "fr_secs_num": 0.6933
+      },
+      "spiral": {
+        "status": "ok",
+        "rel_dsi_pct": 0.979,
+        "mean_abs_dsi": 9.7899,
+        "inside_mismatch": 16,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.3249,
+        "fr_secs_num": 0.0632
+      },
+      "test5": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0,
+        "mean_abs_dsi": 0.0,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.0287,
+        "fr_secs_num": 0.0198
+      }
+    },
+    "n_ok": 10,
+    "n_pixel_equiv": 5,
+    "n_fail": 0,
+    "n_timeout": 0,
+    "n_f3_degenerate": 0
+  },
+  "quality": {
+    "status": "ok",
+    "n_pass": 11,
+    "n_warn": 0,
+    "n_fail": 0,
+    "fail_presets": [],
+    "warn_presets": [],
+    "presets": [
+      {
+        "name": "seahorse-valley",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 531.904331,
+        "time_gmp_ms": 1999.455379
+      },
+      {
+        "name": "mandelbrot-e13",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 103.68917800000001,
+        "time_gmp_ms": 606.509632
+      },
+      {
+        "name": "mandelbrot-e17",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 41.829436,
+        "time_gmp_ms": 751.190128
+      },
+      {
+        "name": "misiurewicz-m32",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 188.233502,
+        "time_gmp_ms": 706.7151769999999
+      },
+      {
+        "name": "julia-siegel-disk",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 2.562039,
+        "time_gmp_ms": 395.382082
+      },
+      {
+        "name": "burning-ship-antenna",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 3.2141029999999997,
+        "time_gmp_ms": 64.570927
+      },
+      {
+        "name": "tricorn-spiral",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 1.847442,
+        "time_gmp_ms": 23.675302
+      },
+      {
+        "name": "mandelbrot-e18-minibrot",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 184.42250399999998,
+        "time_gmp_ms": 720.833894
+      },
+      {
+        "name": "mandelbrot-e30",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 8395.974086,
+        "time_gmp_ms": 31178.71736
+      },
+      {
+        "name": "mandelbrot-e50",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 35150.129768,
+        "time_gmp_ms": 175753.83751800001
+      },
+      {
+        "name": "mandelbrot-e100",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 786.9919239999999,
+        "time_gmp_ms": 19716.060704
+      }
+    ]
+  },
+  "goldens": {
+    "passed": true,
+    "detail": ""
+  },
+  "beyond_f3": {
+    "speed_wins": [
+      "test5",
+      "spiral",
+      "e401",
+      "e1000"
+    ],
+    "correctness_wins": []
+  },
+  "gaps": [
+    {
+      "axis": "speed",
+      "case": "glitch_test_2",
+      "metric": "ratio",
+      "value": 2.6377,
+      "baseline_value": null,
+      "severity": 3,
+      "note": "2.64× plus lent que F3"
+    }
+  ]
+}

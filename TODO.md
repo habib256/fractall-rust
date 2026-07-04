@@ -270,7 +270,26 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     `dd_orbit_matches_gmp_julia`. Tranche dd couvre Mandelbrot ET Julia.
   - [ ] Reste Phase 2+ : quad-double pour 1e28–1e60 ; câbler le pixel loop dd
     (P1.6.e original : delta quasi-périodique, glitch_test_1/5).
-- [ ] **Reste deep-zoom perf (dragon ~1.9×, glitch_test_2 ~2.2×)** :
+- [x] **Deep-zoom perf ~RÉSOLU — path pixel f64 étendu à 1e13–1e200** (2026-07-04) :
+  **la plus grosse victoire de la session.** Le seuil `PIXEL_SIZE_EXP_THRESHOLD`
+  forçait le path ComplexExp (mantisse+exp, ~10-20× plus lent/op via frexp) dès
+  1e13. Mais F3 (`wisdom`, analysis §12) utilise **`double` jusqu'à ~1e300** : le
+  delta est SUIVI séparément de z_ref, donc son itération `δ'=2Zδ+δ²+dc` est exacte
+  en f64 tant que δ ne sous-déborde pas (~1e-308) ; z_ref+δ ne perd δ que quand il
+  est déjà négligeable pour le bailout. Le seuil 1e-13 était un fossile d'avant les
+  fix rebase-at-end (G2) + tolérance period-detection. Abaissé à **1e-200**.
+  **Validation f64 ≡ GMP** (max_diff 0, ou divergence IDENTIQUE au path exp sur les
+  pixels de bord) : seahorse 1e8…e18, **floral_fantasy 1e85** (l'ancien épouvantail
+  « image uniforme » → PASS max_diff=0), glitch_test_2 1e112, e113, dragon 1e191
+  (1 px/16384). **Gains 256²** : glitch_test_2 pixels 0.20→0.014 s (total 0.345→
+  **0.155**, ratio 2.24→**1.30**) ; dragon pixels 3.66→0.18 s (total 7.0→**3.67**,
+  ratio 1.9→**0.95 — passe DEVANT F3**) ; e50 0.22×, e113 0.37×, floral 0.21×.
+  **geomean vitesse 0.65→0.33 ; 9 wins/10 ; AUCUN gap.** Golden `mandelbrot_e50`
+  régénéré (5 px/16000, Δcouleur ≤2 — imperceptible, revu visuellement ; e113 et 13
+  autres pixel-identiques f64==exp). 187 unit + quality 11 PASS + parité inchangés.
+  Reste : glitch_test_2 1.30× = son **orbite GMP** (0.13 s/0.21 s), pas les pixels
+  → levier orbite dd/float128 (tranche > 96 b). Path exp gardé pour zoom > 1e200
+  (δ sous-déborde f64). Seuil overridable `FRACTALL_EXP_THRESHOLD`.
   - [x] **Skip du terme δ² quand droppé par l'add (bit-identique)** (2026-07-04) :
     dans le pas direct `δ'=2Zδ+δ²+dc`, l'add FloatExp rend `self` inchangé dès
     `exp(2Zδ) − exp(δ²) ≥ 54`. À deep zoom δ est minuscule ⇒ vrai sur la plupart
