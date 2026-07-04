@@ -1,0 +1,429 @@
+{
+  "schema": 1,
+  "meta": {
+    "date_utc": "2026-07-04T07:39:57+00:00",
+    "stamp": "20260704T073957Z",
+    "git_sha": "d84389b",
+    "git_dirty": false,
+    "machine": {
+      "cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz",
+      "nproc": 16,
+      "os": "Linux 6.14.0-37-generic"
+    },
+    "tier": "quick",
+    "axes": [
+      "speed",
+      "parity",
+      "quality",
+      "goldens"
+    ],
+    "width": 256,
+    "height": 256,
+    "quality_width": 96,
+    "quality_height": 96,
+    "runs": 1,
+    "f3_bin": "/home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux"
+  },
+  "speed": {
+    "status": "ok",
+    "cases": {
+      "test5": {
+        "fractall_s": 0.0075,
+        "f3_s": 0.0155,
+        "ratio": 0.4839,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "spiral": {
+        "fractall_s": 0.0344,
+        "f3_s": 0.1639,
+        "ratio": 0.2099,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "flake": {
+        "fractall_s": 0.3649,
+        "f3_s": 0.1639,
+        "ratio": 2.2264,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_2": {
+        "fractall_s": 0.6158,
+        "f3_s": 0.1644,
+        "ratio": 3.7457,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e50": {
+        "fractall_s": 2.0186,
+        "f3_s": 1.2157,
+        "ratio": 1.6604,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e113": {
+        "fractall_s": 0.5167,
+        "f3_s": 0.2642,
+        "ratio": 1.9557,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e401": {
+        "fractall_s": 0.5665,
+        "f3_s": 6.275,
+        "ratio": 0.0903,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1000": {
+        "fractall_s": 0.5653,
+        "f3_s": 2.9179,
+        "ratio": 0.1937,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "floral_fantasy": {
+        "fractall_s": 0.214,
+        "f3_s": 0.164,
+        "ratio": 1.3049,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "dragon": {
+        "fractall_s": 11.0431,
+        "f3_s": 3.5705,
+        "ratio": 3.0929,
+        "status": "ok",
+        "f3_exr_ok": true
+      }
+    },
+    "geomean_ratio": 0.8488,
+    "worst_ratio": {
+      "case": "glitch_test_2",
+      "ratio": 3.7457
+    },
+    "wins": [
+      "test5",
+      "spiral",
+      "e401",
+      "e1000"
+    ],
+    "timeouts": [],
+    "n_cases": 10,
+    "n_compared": 10
+  },
+  "parity": {
+    "status": "ok",
+    "cases": {
+      "dragon": {
+        "status": "ok",
+        "rel_dsi_pct": 0.1714,
+        "mean_abs_dsi": 8569.9996,
+        "inside_mismatch": 28,
+        "f3_degenerate": false,
+        "f3_secs_num": 3.5167,
+        "fr_secs_num": 10.9451
+      },
+      "e1000": {
+        "status": "ok",
+        "rel_dsi_pct": 0.001,
+        "mean_abs_dsi": 0.3236,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 2.9244,
+        "fr_secs_num": 0.5526
+      },
+      "e113": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0785,
+        "mean_abs_dsi": 27.8788,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.2316,
+        "fr_secs_num": 0.4716
+      },
+      "e401": {
+        "status": "ok",
+        "rel_dsi_pct": 0.004,
+        "mean_abs_dsi": 8.516,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 6.1833,
+        "fr_secs_num": 0.5586
+      },
+      "e50": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0347,
+        "mean_abs_dsi": 91.1954,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 1.1008,
+        "fr_secs_num": 1.9991
+      },
+      "flake": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0434,
+        "mean_abs_dsi": 26.0319,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1618,
+        "fr_secs_num": 0.3679
+      },
+      "floral_fantasy": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0032,
+        "mean_abs_dsi": 0.3894,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1396,
+        "fr_secs_num": 0.2184
+      },
+      "glitch_test_2": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0079,
+        "mean_abs_dsi": 19.7274,
+        "inside_mismatch": 12,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1131,
+        "fr_secs_num": 0.6168
+      },
+      "spiral": {
+        "status": "ok",
+        "rel_dsi_pct": 0.979,
+        "mean_abs_dsi": 9.7899,
+        "inside_mismatch": 16,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1597,
+        "fr_secs_num": 0.0235
+      },
+      "test5": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0,
+        "mean_abs_dsi": 0.0,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.0163,
+        "fr_secs_num": 0.0087
+      }
+    },
+    "n_ok": 10,
+    "n_pixel_equiv": 5,
+    "n_fail": 0,
+    "n_timeout": 0,
+    "n_f3_degenerate": 0
+  },
+  "quality": {
+    "status": "ok",
+    "n_pass": 5,
+    "n_warn": 1,
+    "n_fail": 5,
+    "fail_presets": [
+      "seahorse-valley",
+      "misiurewicz-m32",
+      "mandelbrot-e30",
+      "mandelbrot-e50",
+      "mandelbrot-e100"
+    ],
+    "warn_presets": [
+      "mandelbrot-e18-minibrot"
+    ],
+    "presets": [
+      {
+        "name": "seahorse-valley",
+        "verdict": "FAIL",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0018446180555555555,
+        "time_pert_ms": 17.815178,
+        "time_gmp_ms": 914.421151
+      },
+      {
+        "name": "mandelbrot-e13",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 61.961858,
+        "time_gmp_ms": 286.83103700000004
+      },
+      {
+        "name": "mandelbrot-e17",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 48.786002,
+        "time_gmp_ms": 345.505629
+      },
+      {
+        "name": "misiurewicz-m32",
+        "verdict": "FAIL",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0018446180555555555,
+        "time_pert_ms": 51.196997,
+        "time_gmp_ms": 313.315904
+      },
+      {
+        "name": "julia-siegel-disk",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 1.103153,
+        "time_gmp_ms": 169.097731
+      },
+      {
+        "name": "burning-ship-antenna",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 1.0615729999999999,
+        "time_gmp_ms": 20.097357
+      },
+      {
+        "name": "tricorn-spiral",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 0.530903,
+        "time_gmp_ms": 7.281625
+      },
+      {
+        "name": "mandelbrot-e18-minibrot",
+        "verdict": "WARN",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.00021701388888888888,
+        "time_pert_ms": 74.447573,
+        "time_gmp_ms": 302.415579
+      },
+      {
+        "name": "mandelbrot-e30",
+        "verdict": "FAIL",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.03624131944444445,
+        "time_pert_ms": 416.192767,
+        "time_gmp_ms": 17261.139684
+      },
+      {
+        "name": "mandelbrot-e50",
+        "verdict": "FAIL",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.050347222222222224,
+        "time_pert_ms": 1098.081774,
+        "time_gmp_ms": 160632.215469
+      },
+      {
+        "name": "mandelbrot-e100",
+        "verdict": "FAIL",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.004231770833333333,
+        "time_pert_ms": 167.179246,
+        "time_gmp_ms": 19245.002952
+      }
+    ]
+  },
+  "goldens": {
+    "passed": true,
+    "detail": ""
+  },
+  "beyond_f3": {
+    "speed_wins": [
+      "test5",
+      "spiral",
+      "e401",
+      "e1000"
+    ],
+    "correctness_wins": []
+  },
+  "gaps": [
+    {
+      "axis": "quality",
+      "case": "seahorse-valley",
+      "metric": "verdict",
+      "value": "FAIL",
+      "baseline_value": null,
+      "severity": 1,
+      "note": "quality suite FAIL"
+    },
+    {
+      "axis": "quality",
+      "case": "misiurewicz-m32",
+      "metric": "verdict",
+      "value": "FAIL",
+      "baseline_value": null,
+      "severity": 1,
+      "note": "quality suite FAIL"
+    },
+    {
+      "axis": "quality",
+      "case": "mandelbrot-e30",
+      "metric": "verdict",
+      "value": "FAIL",
+      "baseline_value": null,
+      "severity": 1,
+      "note": "quality suite FAIL"
+    },
+    {
+      "axis": "quality",
+      "case": "mandelbrot-e50",
+      "metric": "verdict",
+      "value": "FAIL",
+      "baseline_value": null,
+      "severity": 1,
+      "note": "quality suite FAIL"
+    },
+    {
+      "axis": "quality",
+      "case": "mandelbrot-e100",
+      "metric": "verdict",
+      "value": "FAIL",
+      "baseline_value": null,
+      "severity": 1,
+      "note": "quality suite FAIL"
+    },
+    {
+      "axis": "quality",
+      "case": "mandelbrot-e18-minibrot",
+      "metric": "verdict",
+      "value": "WARN",
+      "baseline_value": null,
+      "severity": 4,
+      "note": "quality suite WARN"
+    },
+    {
+      "axis": "speed",
+      "case": "glitch_test_2",
+      "metric": "ratio",
+      "value": 3.7457,
+      "baseline_value": null,
+      "severity": 3,
+      "note": "3.75× plus lent que F3"
+    },
+    {
+      "axis": "speed",
+      "case": "dragon",
+      "metric": "ratio",
+      "value": 3.0929,
+      "baseline_value": null,
+      "severity": 3,
+      "note": "3.09× plus lent que F3"
+    },
+    {
+      "axis": "speed",
+      "case": "flake",
+      "metric": "ratio",
+      "value": 2.2264,
+      "baseline_value": null,
+      "severity": 3,
+      "note": "2.23× plus lent que F3"
+    }
+  ]
+}

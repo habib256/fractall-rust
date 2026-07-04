@@ -131,7 +131,7 @@ mod tests {
         params.span_y = span_x * 100.0 / 160.0;
         params.iteration_max = iter_max;
         params.algorithm_mode = crate::fractal::AlgorithmMode::Perturbation;
-        let (orbit, _, _) = compute_reference_orbit(&params, None)
+        let (orbit, _, _) = compute_reference_orbit(&params, None, true)
             .expect("compute_reference_orbit failed");
         orbit
     }
@@ -222,7 +222,7 @@ mod tests {
         // défaut et le champ a été supprimé. Le test reste valide car
         // iterate_pixel est devenu F3-pur via le dispatch bytecode.
 
-        let (orbit, _, _) = compute_reference_orbit(&params, None)
+        let (orbit, _, _) = compute_reference_orbit(&params, None, true)
             .expect("compute_reference_orbit failed");
         let bla_table = build_bla_table(&orbit.z_ref_f64, &params, orbit.cref);
 

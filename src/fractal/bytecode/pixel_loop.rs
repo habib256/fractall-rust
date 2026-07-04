@@ -792,7 +792,7 @@ mod tests {
         params.span_y = span_x * 100.0 / 160.0;
         params.iteration_max = iter_max;
         params.algorithm_mode = AlgorithmMode::Perturbation;
-        let (orbit, _, _) = compute_reference_orbit(&params, None)
+        let (orbit, _, _) = compute_reference_orbit(&params, None, true)
             .expect("compute_reference_orbit failed");
         orbit
     }
@@ -1004,7 +1004,7 @@ mod tests {
         params.span_y = span_y;
         params.iteration_max = iter_max;
         params.algorithm_mode = AlgorithmMode::Perturbation;
-        let (orbit, _, _) = compute_reference_orbit(&params, None).expect("ref orbit");
+        let (orbit, _, _) = compute_reference_orbit(&params, None, true).expect("ref orbit");
 
         let formula = compile_formula(FractalType::BurningShip, 2.0).unwrap();
         let c_norm = (orbit.cref.re * orbit.cref.re + orbit.cref.im * orbit.cref.im).sqrt();
@@ -1087,7 +1087,7 @@ mod tests {
         params.span_y = span_y;
         params.iteration_max = iter_max;
         params.algorithm_mode = AlgorithmMode::Perturbation;
-        let (orbit, _, _) = compute_reference_orbit(&params, None).expect("ref orbit");
+        let (orbit, _, _) = compute_reference_orbit(&params, None, true).expect("ref orbit");
 
         let formula = compile_formula(FractalType::Tricorn, 2.0).unwrap();
         let c_norm = (orbit.cref.re * orbit.cref.re + orbit.cref.im * orbit.cref.im).sqrt();
@@ -1309,7 +1309,7 @@ mod tests {
         params.algorithm_mode = AlgorithmMode::Perturbation;
 
         let (orbit, _, _) =
-            compute_reference_orbit(&params, None).expect("compute_reference_orbit (Julia)");
+            compute_reference_orbit(&params, None, true).expect("compute_reference_orbit (Julia)");
         let formula = compile_formula(FractalType::Julia, 2.0).unwrap();
         let c_norm = effective_pixel_size(&params)
             * ((width as f64).powi(2) + (height as f64).powi(2)).sqrt();

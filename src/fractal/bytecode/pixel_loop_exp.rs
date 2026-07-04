@@ -462,7 +462,7 @@ mod tests {
         params.span_y = span_x * 100.0 / 160.0;
         params.iteration_max = iter_max;
         params.algorithm_mode = AlgorithmMode::Perturbation;
-        let (orbit, _, _) = compute_reference_orbit(&params, None).expect("ref orbit");
+        let (orbit, _, _) = compute_reference_orbit(&params, None, true).expect("ref orbit");
         orbit
     }
 

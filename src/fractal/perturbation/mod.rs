@@ -1282,7 +1282,7 @@ pub fn render_perturbation_with_cache(
                 sec_params.center_y = cluster.center_y;
 
                 // Compute secondary reference orbit (one reference per phase)
-                if let Some((sec_orbit, _, _)) = compute_reference_orbit(&sec_params, Some(cancel.as_ref())) {
+                if let Some((sec_orbit, _, _)) = compute_reference_orbit(&sec_params, Some(cancel.as_ref()), true) {
                     // Build BLA table for this reference (one BLA table per reference)
                     let sec_bla = bla::build_bla_table(&sec_orbit.z_ref_f64, &sec_params, sec_orbit.cref);
                     let sec_series = if params.series_standalone
@@ -1433,7 +1433,7 @@ pub fn render_perturbation_with_cache(
                             let mut sec_params = orbit_params.clone();
                             sec_params.center_x = cluster.center_x;
                             sec_params.center_y = cluster.center_y;
-                            match compute_reference_orbit(&sec_params, Some(cancel.as_ref())) {
+                            match compute_reference_orbit(&sec_params, Some(cancel.as_ref()), true) {
                                 Some((orbit, _, _)) => orbit,
                                 None => continue,
                             }
@@ -1576,6 +1576,20 @@ pub fn render_perturbation_with_cache(
             let width_u32 = params.width;
             let dc_ctx = DcGmpContext::new(params, prec);
 
+            // `iterate_pixel_gmp` lit `z_ref_gmp` (orbite GMP dense), qui peut
+            // être vide sur le path bytecode (stockage sauté à la construction,
+            // cf. `compute_reference_orbit` force_dense_gmp). Le recompute ici,
+            // une seule fois, avec le MÊME chemin bytecode + force_dense_gmp=true
+            // → valeurs GMP bit-identiques à l'ancien stockage eager. Orbite
+            // courte sur les cas qui glitchent (cusp ~2500 iters → ms) ; jamais
+            // atteint sur un deep zoom nominal sans glitch (dragon).
+            let rebuilt_gmp_orbit = if cache.orbit.z_ref_gmp.is_empty() {
+                compute_reference_orbit(params, Some(cancel.as_ref()), true).map(|r| r.0)
+            } else {
+                None
+            };
+            let gmp_orbit = rebuilt_gmp_orbit.as_ref().unwrap_or(&cache.orbit);
+
             // Stratégie deux-passes : (a) perturbation GMP per-pixel
             // (`iterate_pixel_gmp`) — rapide (réutilise l'orbite référence,
             // ~10³× plus rapide que le full GMP). (b) si la majorité des
@@ -1585,7 +1599,7 @@ pub fn render_perturbation_with_cache(
             // récupérer le vrai escape iter. Le seuil 30 % est aligné sur
             // GLITCH_FALLBACK_THRESHOLD plus haut.
             use crate::fractal::perturbation::delta::iterate_pixel_gmp;
-            let effective_len = cache.orbit.effective_len() as u32;
+            let effective_len = gmp_orbit.effective_len() as u32;
             let cap_iter = params.iteration_max.min(effective_len.saturating_sub(1));
             let corrections: Vec<_> = glitched_indices
                 .par_iter()
@@ -1595,7 +1609,7 @@ pub fn render_perturbation_with_cache(
                     let dc_gmp = dc_ctx.compute_dc(i, j);
                     let result = iterate_pixel_gmp(
                         params,
-                        &cache.orbit,
+                        gmp_orbit,
                         &dc_gmp,
                         prec,
                     );

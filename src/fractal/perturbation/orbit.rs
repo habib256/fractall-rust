@@ -415,7 +415,17 @@ impl ReferenceOrbitCache {
         // Vérifier que la précision calculée nécessaire est <= précision du cache
         // self.precision_bits contient maintenant la précision calculée (pas le preset)
         // donc on compare directement avec la précision calculée requise
+        // Garde-fou : une orbite bâtie sur le path bytecode ne stocke pas le GMP
+        // dense (`z_ref_gmp` vide, cf. `compute_reference_orbit` force_dense_gmp).
+        // Un rendu legacy en aurait besoin (glitch/GMP per-pixel) → ne pas
+        // réutiliser dans ce cas. `use_bytecode_engine` étant constant en session,
+        // ce cas ne survient pas en pratique ; garde défensive.
+        let gmp_ok = !self.orbit.z_ref_gmp.is_empty()
+            || (super::uses_bytecode_path(params)
+                && !super::should_use_full_gmp_perturbation(params));
+
         self.fractal_type == params.fractal_type
+            && gmp_ok
             && self.center_x_gmp == cx_str
             && self.center_y_gmp == cy_str
             && self.precision_bits >= required_prec  // Comparer précision calculée du cache avec précision calculée requise
@@ -785,9 +795,19 @@ pub fn compute_reference_orbit_cached(
     let series_will_be_used =
         auto_adjust_enabled || !super::uses_bytecode_path(params);
 
+    // GMP dense (`z_ref_gmp`) requis par : (1) le rendu principal full-GMP
+    // (`render_perturbation_gmp_path` → `iterate_pixel_gmp` sur TOUS les pixels)
+    // et (2) la correction glitch. On le stocke eager pour (1) et pour le path
+    // legacy (non-bytecode) ; sur le path bytecode nominal (pas full-GMP) on le
+    // SAUTE — la pass glitch le recompute à la demande si des pixels glitchent
+    // (cf. `compute_reference_orbit` force_dense_gmp + mod.rs glitch pass).
+    let store_dense_gmp = !super::uses_bytecode_path(params)
+        || super::should_use_full_gmp_perturbation(params);
+
     // Compute orbit + BLA + series, potentially re-running with doubled iteration_max
     let t_orbit_first = Instant::now();
-    let (mut orbit, mut center_x_gmp, mut center_y_gmp) = compute_reference_orbit(&adjusted_params, cancel)?;
+    let (mut orbit, mut center_x_gmp, mut center_y_gmp) =
+        compute_reference_orbit(&adjusted_params, cancel, store_dense_gmp)?;
     let mut dt_orbit = t_orbit_first.elapsed();
 
     let t_bla_first = Instant::now();
@@ -801,7 +821,7 @@ pub fn compute_reference_orbit_cached(
         if round > 0 {
             // Recompute orbit + BLA with adjusted iteration_max
             let t_orbit_start = Instant::now();
-            let result = compute_reference_orbit(&adjusted_params, cancel)?;
+            let result = compute_reference_orbit(&adjusted_params, cancel, store_dense_gmp)?;
             orbit = result.0;
             center_x_gmp = result.1;
             center_y_gmp = result.2;
@@ -987,6 +1007,14 @@ pub fn compute_reference_orbit_cached(
 pub fn compute_reference_orbit(
     params: &FractalParams,
     cancel: Option<&AtomicBool>,
+    // Stocke l'orbite GMP dense (`z_ref_gmp` + `high_precision_data`), lue
+    // UNIQUEMENT par la correction glitch perturbation-GMP (`iterate_pixel_gmp`)
+    // et `new_reference_from`. Sur le path bytecode (BLA + rebase-at-end), aucun
+    // glitch en régime nominal → stockage inutile (~0.7 s + 850 Mo sur dragon,
+    // 5 M iters). Le caller met `false` sur ce path ; la pass glitch recompute
+    // l'orbite dense localement (avec `true`) SEULEMENT si des pixels glitchent
+    // — même chemin bytecode donc `z_ref_gmp` bit-identique à l'ancien eager.
+    force_dense_gmp: bool,
 ) -> Option<(ReferenceOrbit, String, String)> {
     // Utiliser la précision calculée au lieu du preset
     use crate::fractal::perturbation::compute_perturbation_precision_bits;
@@ -1092,7 +1120,9 @@ pub fn compute_reference_orbit(
 
     let mut z_ref = Vec::with_capacity(params.iteration_max as usize + 1);
     let mut z_ref_f64 = Vec::with_capacity(params.iteration_max as usize + 1);
-    let mut z_ref_gmp = Vec::with_capacity(params.iteration_max as usize + 1);
+    let store_dense_gmp = force_dense_gmp;
+    let mut z_ref_gmp =
+        Vec::with_capacity(if store_dense_gmp { params.iteration_max as usize + 1 } else { 0 });
 
     // Inspired by rust-fractal-core's data_storage_interval:
     // Store high-precision orbit data at intervals to reduce memory usage.
@@ -1105,14 +1135,16 @@ pub fn compute_reference_orbit(
         1
     };
     let mut high_precision_data = Vec::with_capacity(
-        (params.iteration_max as usize / data_storage_interval) + 2
+        if store_dense_gmp { (params.iteration_max as usize / data_storage_interval) + 2 } else { 0 }
     );
 
     // Store high-precision, f64, and full GMP versions
     z_ref.push(ComplexExp::from_gmp(&z));
     z_ref_f64.push(complex_to_complex64(&z));
-    z_ref_gmp.push(z.clone());
-    high_precision_data.push(z.clone());
+    if store_dense_gmp {
+        z_ref_gmp.push(z.clone());
+        high_precision_data.push(z.clone());
+    }
 
     // Period detection state for early termination (inspired by rust-fractal-core).
     //
@@ -1264,12 +1296,14 @@ pub fn compute_reference_orbit(
         // Store high-precision, f64, and full GMP versions
         z_ref.push(ComplexExp::from_gmp(&z));
         z_ref_f64.push(complex_to_complex64(&z));
-        z_ref_gmp.push(z.clone());
-
-        // Store sparse high-precision data at intervals (inspired by rust-fractal-core)
-        let iter_num = (i + 1) as usize;
-        if data_storage_interval == 1 || iter_num % data_storage_interval == 0 {
-            high_precision_data.push(z.clone());
+        // GMP dense sauté hors correction glitch (cf. `store_dense_gmp`).
+        if store_dense_gmp {
+            z_ref_gmp.push(z.clone());
+            // Store sparse high-precision data at intervals (inspired by rust-fractal-core)
+            let iter_num = (i + 1) as usize;
+            if data_storage_interval == 1 || iter_num % data_storage_interval == 0 {
+                high_precision_data.push(z.clone());
+            }
         }
     }
 
