@@ -256,6 +256,21 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     produit mat2-vecteur du pas BLA** (accumulation f64-scaled à exposant
     commun) — non-bit-identique, à valider goldens+quality. Revert propre, pas
     de changement committé.
+  - [ ] **PISTE VALIDÉE (à faire proprement) : `z_ref_gmp` dense (clone GMP par
+    itér.) = mort sur deep zoom sans glitch → ~0.7 s + 850 Mo sur dragon.**
+    Diagnostic 2026-07-04 (`FRACTALL_DIAG_NO_GMP_STORE`) : orbite dragon
+    5.48→4.78 s, **image bit-identique**. MAIS `z_ref_gmp` est LU par
+    `iterate_pixel_gmp` (pass correction glitch, mod.rs:1574) : le sauter en
+    bloc sur le path bytecode **casse les cas qui glitchent** (golden
+    `mandelbrot_cusp_m075` : 201/16000 px diff ; + tests perturbation zoom-1
+    forcé). Les deep zooms bien conditionnés (dragon/glitch_test_2/e50/e100 :
+    `corrections=0`) ne glitchent pas → stockage inutile. **Fix sûr = build
+    PARESSEUX** : ne pas remplir `z_ref_gmp` à la construction ; le
+    (re)calculer localement UNIQUEMENT quand `glitched_indices` est non-vide
+    (orbite courte sur les cas glitch comme cusp → rebuild ~ms ; dragon 5 M
+    sans glitch → jamais). Garde-fou cache `is_valid_for` (orbite `z_ref_gmp`
+    vide non réutilisée par rendu legacy). Revert propre cette itération, pas
+    de changement committé — le verrou golden a fait son travail.
 - [ ] **Re-sweep corpus complet avec le fix** : confirmer que les 36 ex-perf
   cas rendent ET matchent F3 (probable vu e1000 pixel-identique + e113 == GMP).
 - **Acceptation : ✅ ATTEINTE** — e50 **1.57 s**, e1000 **0.53 s**, dragon
