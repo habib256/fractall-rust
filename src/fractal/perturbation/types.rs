@@ -304,17 +304,16 @@ impl ComplexExp {
 
 #[inline(always)]
 pub(crate) fn frexp(value: f64) -> (f64, i32) {
-    if value == 0.0 {
-        return (0.0, 0);
-    }
     let bits = value.to_bits();
-    let sign = if bits >> 63 == 0 { 1.0 } else { -1.0 };
     let exp = ((bits >> 52) & 0x7ff) as i32;
-    let mant = bits & 0x000f_ffff_ffff_ffff;
     if exp == 0 {
-        if mant == 0 {
+        // Zéro ou subnormal : chemin lent (rare — les magnitudes de la boucle
+        // perturbation sont normalisées, jamais subnormales).
+        if value == 0.0 {
             return (0.0, 0);
         }
+        let sign = if bits >> 63 == 0 { 1.0 } else { -1.0 };
+        let mant = bits & 0x000f_ffff_ffff_ffff;
         let mut m = mant;
         let mut e = -1022;
         while (m & (1u64 << 52)) == 0 {
@@ -324,7 +323,11 @@ pub(crate) fn frexp(value: f64) -> (f64, i32) {
         let mantissa = sign * (m as f64) / (1u64 << 53) as f64;
         (mantissa, e + 1)
     } else {
-        let mantissa = sign * ((1u64 << 52 | mant) as f64) / (1u64 << 53) as f64;
+        // Normal (cas dominant de la hot-loop) : la mantisse ∈ [0.5, 1) s'obtient
+        // en forçant le champ exposant biaisé à 1022 (= 2⁻¹), sans conversion
+        // int→f64 ni division. **Bit-identique** à `sign·(1<<52|mant)/2^53` :
+        // même significande, exposant réduit de 1 → valeur × 2⁻¹ ∈ [0.5, 1).
+        let mantissa = f64::from_bits((bits & 0x800f_ffff_ffff_ffff) | (1022u64 << 52));
         (mantissa, exp - 1022)
     }
 }

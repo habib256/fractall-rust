@@ -270,7 +270,26 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     `dd_orbit_matches_gmp_julia`. Tranche dd couvre Mandelbrot ET Julia.
   - [ ] Reste Phase 2+ : quad-double pour 1e28–1e60 ; câbler le pixel loop dd
     (P1.6.e original : delta quasi-périodique, glitch_test_1/5).
-- [ ] **Reste deep-zoom perf (dragon ~2.07×, glitch_test_2 ~2.5–2.85×)** :
+- [ ] **Reste deep-zoom perf (dragon ~1.91×, glitch_test_2 ~2.24×)** :
+  - [x] **frexp sans division (bit-identique) + DIAGNOSTIC CORRIGÉ** (2026-07-04) :
+    l'instrumentation `[DIAG BLA]` (compteurs bla_steps/direct_steps) a RÉFUTÉ
+    l'IMPASSE #2 « memory-bound ». Faits mesurés : dragon = **286,6 M pas DIRECTS**
+    vs 9,9 M pas BLA (les BLA couvrent 256,7 G itérations, avg_skip 25968, mais ne
+    sont que ~3 % des tours de boucle) ; 286,6 M × ~13 ns ≈ 3,7 s ≈ toute la phase
+    pixel. glitch_test_2 idem (15,6 M directs ≈ 0,2 s ≈ sa phase pixel). Les pas
+    directs walkent `m` séquentiellement (préfetch → PAS cache-miss) → le goulot
+    est **le pas direct `δ'=2Zδ+δ²+dc` en ComplexExp**, jamais optimisé (les IMPASSE
+    #1/#2 visaient le pas BLA = mauvaise cible). Le pas direct fait ~16 `frexp` (1
+    par `FloatExp::new`/`Mul`/`Add`). Fix : chemin normal de `frexp` sans conversion
+    int→f64 ni division — on force le champ exposant biaisé à 1022 via bits
+    (`from_bits((bits & 0x800f…) | 1022<<52)`), **bit-identique** (même significande,
+    exposant −1 → mantisse ∈ [0.5,1)). dragon total 7,55→**7,06 s** (ratio 2,07→1,91),
+    glitch_test_2 pixels 0,259→0,216 s (−17 %), total 0,404→**0,360 s** (ratio
+    2,85→2,24). geomean vitesse 0,765→**0,699**. Goldens 🟢 pixel-exact + 187 unit +
+    quality 11 PASS + parité inchangés. **Prochain levier (glitch_test_2)** :
+    réduire le NOMBRE de frexp/pas direct — normalisation spécialisée Mul (produit
+    de 2 mantisses ∈ [0.5,1) ⇒ ∈ [0.25,1), 1 seule branche `<0.5 ? ×2` au lieu de
+    frexp), ou pas direct scaled-f64 (non-bit-identique).
   - dragon : orbite GMP ~3.26 s (mul complexe 676 b × 5 M iters, cœur
     incompressible sans float128) + pixels ComplexExp ~5.5 s. Leviers restants
     = wisdom/float128 (orbite, cf. AskUser : middle-range only) ET boucle pixel
@@ -285,8 +304,11 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     frexp obligatoire) + `Add` (frexp). Le `δ.mul(δ)` direct (FloatExp×FloatExp,
     la seule op que la spéc accélère) ne tourne que sur les *rares* pas
     non-skippés par la BLA.
-  - **IMPASSE #2 (2026-07-04) : pas BLA f64-scaled = ~0 gain → la boucle pixel
-    exp est MEMORY-BOUND, pas arithmetic-bound.** Spike : produit mat2-vecteur
+  - **IMPASSE #2 (2026-07-04) — ⚠️ RÉFUTÉE plus bas (frexp DIAG)** : la conclusion
+    « memory-bound » était FAUSSE (le spike f64-scaled visait le pas BLA, ~3 % des
+    tours ; le vrai goulot est le pas DIRECT, arithmetic-bound). Conservée pour la
+    leçon : ne pas conclure « memory-bound » sans compter les pas directs vs BLA.
+    **IMPASSE #2 (texte d'origine) : pas BLA f64-scaled = ~0 gain.** Spike : produit mat2-vecteur
     `A·δ + B·dc` extrait à exposant commun + f64 pur + 1 seul frexp final (vs
     ~14 frexp/pow2i op-par-op). Mesuré : glitch_test_2 pixels 0.33→0.317 s
     (**~4 %**), **dragon pixels inchangés** (~5.6 s). Cause : `z_ref_f64[m]` est
