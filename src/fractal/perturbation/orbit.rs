@@ -63,18 +63,16 @@ fn gmp_float_to_ddexp(value: &Float) -> super::dd::DoubleDoubleExp {
 ///
 /// Renvoie `(z_ref, z_ref_f64)`. Mirror de la structure de boucle de
 /// `compute_reference_orbit` (bailout `REFERENCE_BAILOUT_SQR` en tête, break sur
-/// évasion). Mandelbrot uniquement (`z = z² + c`).
-fn dd_reference_orbit_mandelbrot(
-    cref_gmp: &Complex,
+/// évasion). Itère `z ← z² + c` depuis `z0`. Couvre Mandelbrot (`z0=0, c=cref`)
+/// ET Julia (`z0=cref, c=seed`) — même bytecode `[Sqr, Add]`, seule la
+/// convention d'appel diffère (cf. `compute_reference_orbit`).
+fn dd_reference_orbit(
+    z0: super::dd::ComplexDDExp,
+    c: super::dd::ComplexDDExp,
     iteration_max: u32,
     cancel: Option<&AtomicBool>,
 ) -> Option<(Vec<ComplexExp>, Vec<Complex64>)> {
-    use super::dd::ComplexDDExp;
-    let cref = ComplexDDExp {
-        re: gmp_float_to_ddexp(cref_gmp.real()),
-        im: gmp_float_to_ddexp(cref_gmp.imag()),
-    };
-    let mut z = ComplexDDExp::ZERO;
+    let mut z = z0;
     let mut z_ref = Vec::with_capacity(iteration_max as usize + 1);
     let mut z_ref_f64 = Vec::with_capacity(iteration_max as usize + 1);
     let mut zf = z.to_complex64_approx();
@@ -90,7 +88,7 @@ fn dd_reference_orbit_mandelbrot(
         if zf.re * zf.re + zf.im * zf.im > REFERENCE_BAILOUT_SQR {
             break;
         }
-        z = z.sqr().add(cref);
+        z = z.sqr().add(c);
         if (i + 1) % 250 == 0 {
             z.reduce();
         }
@@ -1184,10 +1182,16 @@ pub fn compute_reference_orbit(
     // Pas de period-detection ici (cycle_period=0) : le pixel loop gère les
     // références non-évadantes par rebase-at-end F3 (cf. G2). NON bit-identique
     // au path GMP (arrondi dd ≠ MPFR) → goldens mid-range régénérés.
+    // Mandelbrot standard (z0=0, c=cref) OU Julia (z0=cref, c=seed). Le seed
+    // Julia est f64 (constante), seul le centre (z0 Julia / c Mandelbrot) est
+    // haute précision.
+    let dd_type_ok = match params.fractal_type {
+        FractalType::Mandelbrot => params.seed.re == 0.0 && params.seed.im == 0.0,
+        FractalType::Julia => true,
+        _ => false,
+    };
     let dd_eligible = !force_dense_gmp
-        && matches!(params.fractal_type, FractalType::Mandelbrot)
-        && params.seed.re == 0.0
-        && params.seed.im == 0.0
+        && dd_type_ok
         && {
             let px = super::effective_pixel_size(params);
             px > 0.0 && px.is_finite() && {
@@ -1198,8 +1202,19 @@ pub fn compute_reference_orbit(
             }
         };
     if dd_eligible {
+        use super::dd::ComplexDDExp;
+        let cref_dd = ComplexDDExp {
+            re: gmp_float_to_ddexp(cref.real()),
+            im: gmp_float_to_ddexp(cref.imag()),
+        };
+        let seed_dd = ComplexDDExp::from_complex64(Complex64::new(params.seed.re, params.seed.im));
+        let (z0, c) = if matches!(params.fractal_type, FractalType::Julia) {
+            (cref_dd, seed_dd) // Julia : z0 = centre, constante = seed
+        } else {
+            (seed_dd, cref_dd) // Mandelbrot : z0 = seed (=0), constante = cref
+        };
         let (z_ref, z_ref_f64) =
-            dd_reference_orbit_mandelbrot(&cref, params.iteration_max, cancel)?;
+            dd_reference_orbit(z0, c, params.iteration_max, cancel)?;
         let extended_iterations: Vec<u32> = z_ref_f64
             .iter()
             .enumerate()
@@ -1707,6 +1722,7 @@ pub fn optimize_reference_center(
 #[cfg(test)]
 mod dd_orbit_tests {
     use super::*;
+    use crate::fractal::perturbation::dd::ComplexDDExp;
     use crate::fractal::{default_params_for_type, FractalType};
 
     /// Verrou Phase 1a : l'orbite référence itérée en double-double (~106 b) doit
@@ -1724,22 +1740,56 @@ mod dd_orbit_tests {
 
         let (orbit_gmp, _, _) =
             compute_reference_orbit(&params, None, true).expect("orbite GMP");
+        // Mandelbrot : z0 = seed (=0), constante = cref.
+        let cref_dd = ComplexDDExp {
+            re: gmp_float_to_ddexp(orbit_gmp.cref_gmp.real()),
+            im: gmp_float_to_ddexp(orbit_gmp.cref_gmp.imag()),
+        };
         let (_, dd_f64) =
-            dd_reference_orbit_mandelbrot(&orbit_gmp.cref_gmp, params.iteration_max, None)
+            dd_reference_orbit(ComplexDDExp::ZERO, cref_dd, params.iteration_max, None)
                 .expect("orbite dd");
 
-        // Préfixe commun (period-detection GMP peut tronquer plus tôt que dd).
-        let n = orbit_gmp.z_ref_f64.len().min(dd_f64.len());
+        assert_orbit_close(&orbit_gmp.z_ref_f64, &dd_f64, 1e-9);
+    }
+
+    /// Verrou Phase 2 : orbite référence Julia en dd vs GMP. Julia itère
+    /// `z ← z² + seed` depuis `z0 = cref` (centre), seed constant.
+    #[test]
+    fn dd_orbit_matches_gmp_julia() {
+        let mut params = default_params_for_type(FractalType::Julia, 64, 64);
+        // Siegel disk c=-0.8+0.156i : orbite bornée quasi-périodique depuis 0.
+        params.seed = num_complex::Complex64::new(-0.8, 0.156);
+        params.center_x = 0.0;
+        params.center_y = 0.0;
+        params.span_x = 1e-10;
+        params.span_y = 1e-10;
+        params.iteration_max = 3000;
+
+        let (orbit_gmp, _, _) =
+            compute_reference_orbit(&params, None, true).expect("orbite GMP Julia");
+        // Julia : z0 = cref (centre), constante = seed.
+        let z0 = ComplexDDExp {
+            re: gmp_float_to_ddexp(orbit_gmp.cref_gmp.real()),
+            im: gmp_float_to_ddexp(orbit_gmp.cref_gmp.imag()),
+        };
+        let seed_dd = ComplexDDExp::from_complex64(params.seed);
+        let (_, dd_f64) =
+            dd_reference_orbit(z0, seed_dd, params.iteration_max, None).expect("orbite dd Julia");
+
+        assert_orbit_close(&orbit_gmp.z_ref_f64, &dd_f64, 1e-9);
+    }
+
+    /// Compare le préfixe commun de deux orbites `z_ref_f64` (period-detection
+    /// GMP peut tronquer plus tôt que dd).
+    fn assert_orbit_close(gmp: &[Complex64], dd: &[Complex64], tol: f64) {
+        let n = gmp.len().min(dd.len());
         assert!(n > 100, "préfixe commun trop court: {n}");
         let mut max_err = 0.0f64;
         for i in 0..n {
-            let g = orbit_gmp.z_ref_f64[i];
-            let d = dd_f64[i];
-            max_err = max_err.max((g.re - d.re).abs()).max((g.im - d.im).abs());
+            max_err = max_err
+                .max((gmp[i].re - dd[i].re).abs())
+                .max((gmp[i].im - dd[i].im).abs());
         }
-        assert!(
-            max_err < 1e-9,
-            "orbite dd diverge de GMP: max_err={max_err:.3e} sur {n} points"
-        );
+        assert!(max_err < tol, "orbite dd diverge de GMP: max_err={max_err:.3e} sur {n} points");
     }
 }
