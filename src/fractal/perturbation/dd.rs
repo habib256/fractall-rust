@@ -189,6 +189,15 @@ impl DoubleDoubleExp {
         Self::normalized(value, 0)
     }
 
+    /// Depuis un `FloatExp` (mantisse f64 53 bits + exposant `i32`). Préserve
+    /// l'exposant (pas d'underflow deep-zoom, contrairement à `to_f64`) ; la
+    /// partie `lo` reste nulle (on n'a que 53 bits en entrée). Sert à convertir
+    /// `dc`/`delta` du path `ComplexExp` vers le tier dd.
+    #[inline(always)]
+    pub fn from_floatexp(fe: super::types::FloatExp) -> Self {
+        Self::normalized(DoubleDouble::from_f64(fe.mantissa), fe.exponent)
+    }
+
     #[inline(always)]
     pub fn to_f64(self) -> f64 {
         if self.mantissa.hi == 0.0 {
@@ -347,6 +356,18 @@ impl ComplexDDExp {
         Self {
             re: DoubleDoubleExp::from_f64(value.re),
             im: DoubleDoubleExp::from_f64(value.im),
+        }
+    }
+
+    /// Depuis un `ComplexExp` (composantes `FloatExp` 53 bits). Préserve les
+    /// exposants (deep-zoom safe) ; les mantisses restent à 53 bits (on ne peut
+    /// pas inventer les bits manquants). Utilisé pour porter `dc`/`delta` du
+    /// path `ComplexExp` vers le tier dd au dispatch.
+    #[inline(always)]
+    pub fn from_complex_exp(ce: super::types::ComplexExp) -> Self {
+        Self {
+            re: DoubleDoubleExp::from_floatexp(ce.re),
+            im: DoubleDoubleExp::from_floatexp(ce.im),
         }
     }
 

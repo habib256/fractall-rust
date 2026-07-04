@@ -120,7 +120,12 @@ pub fn bytecode_path_label(params: &FractalParams) -> Option<&'static str> {
         return None;
     }
     if pixel_size < PIXEL_SIZE_EXP_THRESHOLD {
-        Some("bytecode_exp")
+        // Tier dd (~106 b) opt-in : Mandelbrot escape-time only (cf. dispatch).
+        if params.use_dd_tier && matches!(params.fractal_type, FractalType::Mandelbrot) {
+            Some("bytecode_dd")
+        } else {
+            Some("bytecode_exp")
+        }
     } else {
         Some("bytecode_f64")
     }
@@ -212,6 +217,39 @@ fn try_bytecode_unified_path(
         let is_julia = Formula::is_julia_for(params.fractal_type);
 
         if use_exp_path {
+            // ── Tier double-double (~106 b, opt-in `use_dd_tier`) ───────────
+            // Mandelbrot escape-time uniquement, orbite dd disponible. Route
+            // vers `pixel_loop_dd` (pas directs dd + rebase, sans BLA) qui
+            // repousse le plancher de précision f64 des spirales ultra-sensibles
+            // (e30/e50, cf. TODO G2). Équivalent du float128 de F3.
+            if params.use_dd_tier
+                && matches!(params.fractal_type, FractalType::Mandelbrot)
+                && ref_orbit.has_dd()
+            {
+                use crate::fractal::perturbation::dd::ComplexDDExp;
+                let dc_dd = ComplexDDExp::from_complex_exp(*dc);
+                let delta0_dd = ComplexDDExp::from_complex_exp(*delta0);
+                let res_dd =
+                    crate::fractal::bytecode::pixel_loop_dd::iterate_pixel_unified_ddexp_mandelbrot(
+                        ref_orbit,
+                        dc_dd,
+                        delta0_dd,
+                        params.iteration_max,
+                        params.bailout,
+                        params.max_perturb_iterations,
+                    );
+                return Some(crate::fractal::bytecode::pixel_loop::UnifiedPixelResult {
+                    iteration: res_dd.iteration,
+                    z_final: res_dd.z_final,
+                    rebase_count: res_dd.rebase_count,
+                    bla_steps: res_dd.bla_steps,
+                    orbit: None,
+                    distance: None,
+                    is_interior: false,
+                    ref_exhausted: res_dd.ref_exhausted,
+                });
+            }
+
             // Path ComplexExp pour deep zoom > 1e13.
             let (c_for_add, dc_for_add_exp) = if is_julia {
                 (

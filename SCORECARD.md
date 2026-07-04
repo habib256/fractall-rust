@@ -2,8 +2,8 @@
 
 # SCORECARD — fractall vs Fraktaler-3
 
-- **Date** : 2026-07-04T10:56:23+00:00
-- **Commit** : `3c71e74`
+- **Date** : 2026-07-04T11:51:08+00:00
+- **Commit** : `510af89`  ⚠️ arbre modifié (dirty)
 - **Machine** : Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz · 16 threads · Linux 6.14.0-37-generic
 - **Tier** : quick · 256×256 · quality 96×96 · runs=1 · axes=speed,parity,quality,goldens
 - **F3** : /home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux
@@ -12,8 +12,8 @@
 
 | Métrique | Valeur | vs baseline |
 |---|---:|---|
-| geomean ratio | 0.795 |  (↓0.0944 ✅) |
-| pire ratio | 3.150 (glitch_test_2) | |
+| geomean ratio | 0.780 |  (↓0.109 ✅) |
+| pire ratio | 3.449 (glitch_test_2) | |
 | wins (ratio<1) | 4 | |
 | timeouts | 0 | |
 | cas comparés | 10/10 | |
@@ -32,11 +32,11 @@
 
 | Verdict | Nombre | vs baseline |
 |---|---:|---|
-| PASS | 5 |  (=) |
+| PASS | 6 |  (↑1 ✅) |
 | WARN | 1 |  (=) |
-| FAIL | 5 |  (=) |
+| FAIL | 4 |  (↓1 ✅) |
 
-FAIL : seahorse-valley, misiurewicz-m32, mandelbrot-e30, mandelbrot-e50, mandelbrot-e100
+FAIL : seahorse-valley, misiurewicz-m32, mandelbrot-e30, mandelbrot-e50
 
 ## Goldens (pixel-exact)
 
@@ -54,9 +54,9 @@ FAIL : seahorse-valley, misiurewicz-m32, mandelbrot-e30, mandelbrot-e50, mandelb
 | 2 | 1 correction | quality | `misiurewicz-m32` | verdict | FAIL | quality suite FAIL |
 | 3 | 1 correction | quality | `mandelbrot-e30` | verdict | FAIL | quality suite FAIL |
 | 4 | 1 correction | quality | `mandelbrot-e50` | verdict | FAIL | quality suite FAIL |
-| 5 | 1 correction | quality | `mandelbrot-e100` | verdict | FAIL | quality suite FAIL |
-| 6 | 3 vitesse | speed | `glitch_test_2` | ratio | 3.1501 | 3.15× plus lent que F3 |
-| 7 | 3 vitesse | speed | `dragon` | ratio | 2.4835 | 2.48× plus lent que F3 |
+| 5 | 3 vitesse | speed | `glitch_test_2` | ratio | 3.4494 | 3.45× plus lent que F3 |
+| 6 | 3 vitesse | speed | `dragon` | ratio | 2.6814 | 2.68× plus lent que F3 |
+| 7 | 3 vitesse | speed | `e113` | ratio | 2.1545 | 2.15× plus lent que F3 |
 | 8 | 4 qualité | quality | `mandelbrot-e18-minibrot` | verdict | WARN | quality suite WARN |
 
 ---

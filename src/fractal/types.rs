@@ -953,6 +953,22 @@ pub struct FractalParams {
     #[serde(default = "default_true")]
     pub use_bytecode_engine: bool,
 
+    /// Active le **tier haute précision double-double** (~106 bits de mantisse)
+    /// pour le path perturbation deep-zoom Mandelbrot. Équivalent pur-Rust du
+    /// `float128` de Fraktaler-3 (sélectionné par son wisdom file). À utiliser
+    /// dans les **spirales ultra-sensibles** profondes (ex. e30/e50) où la
+    /// mantisse f64 (53 bits) du path `ComplexExp` sature : l'amplification de
+    /// Lyapunov sur ~25000 itérations transforme le 2⁻⁵² d'arrondi en O(1) →
+    /// écart d'itération vs GMP (cf. TODO G2, commit e30/e50). Le tier dd
+    /// stocke la référence ET itère le delta en double-double (pas de BLA →
+    /// plus lent, mais précision préservée de bout en bout).
+    ///
+    /// Opt-in (défaut `false`) car ~4-8× plus lent que le path ComplexExp : ne
+    /// l'activer que là où c'est nécessaire. À terme un wisdom auto-sélectionne
+    /// le tier (TODO). Mandelbrot escape-time uniquement pour l'instant.
+    #[serde(default)]
+    pub use_dd_tier: bool,
+
     /// Active la recherche de nucleus (Mandelbrot uniquement) avant le build
     /// de l'orbite référence. À zoom profond, l'utilisateur cible souvent un
     /// point près d'un minibrot dont l'orbite escape avant `iteration_max`,

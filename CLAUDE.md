@@ -83,7 +83,8 @@ src/
 │   │   ├── delta_form.rs   # DeltaState f64 + DeltaStateExp ComplexExp
 │   │   ├── bla_dual.rs     # BLA mat2 unifié via dual-numbers
 │   │   ├── pixel_loop.rs   # BLA + delta-form + rebasing F3 (f64)
-│   │   └── pixel_loop_exp.rs # idem ComplexExp (deep zoom > 1e13)
+│   │   ├── pixel_loop_exp.rs # idem ComplexExp (deep zoom > 1e13)
+│   │   └── pixel_loop_dd.rs # tier double-double ~106b (float128-like), opt-in
 │   └── perturbation/    # Path GMP + ponts vers bytecode
 │       ├── mod.rs          # render_perturbation_cancellable_with_reuse
 │       ├── types.rs        # ComplexExp, FloatExp (mantisse + exposant)
@@ -281,6 +282,7 @@ centre / type / précision.
 | `max_bla_steps` | cap pas BLA par pixel | 1024 |
 | `use_reference_precision_formula` | formule C++ F3 | true |
 | `use_bytecode_engine` | path unifié BLA mat2 + rebasing F3 | true |
+| `use_dd_tier` | tier double-double ~106b Mandelbrot deep (float128-like, sans BLA) | false |
 | `find_nucleus` | nucleus Mandelbrot avant orbit | false |
 | `jitter_scale` | amplitude AA sous-pixel (px) | 0.0 |
 | `aa_subpixel_offset` | offset AA transitoire (`#[serde(skip)]`, posé par la boucle multi-sample) | `[0,0]` |
@@ -393,6 +395,7 @@ fractall-cli --type N --output FILE [OPTIONS]
   --plane N (0-6)
   --rotation RAD          # F3-style mat2 rotation (CPU + GPU bytecode)
   --find-nucleus          # Mandelbrot nucleus refine (atom-domain)
+  --dd-tier               # tier double-double ~106b (spirales deep sensibles)
   --no-bytecode           # désactive bytecode (debug)
   --gpu                   # GPU wgpu Metal/Vulkan/DX12
   --enable-distance-estimation / --enable-interior-detection

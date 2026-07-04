@@ -71,13 +71,20 @@ fn dd_reference_orbit(
     c: super::dd::ComplexDDExp,
     iteration_max: u32,
     cancel: Option<&AtomicBool>,
-) -> Option<(Vec<ComplexExp>, Vec<Complex64>)> {
+    build_dd: bool,
+) -> Option<(Vec<ComplexExp>, Vec<Complex64>, Vec<super::dd::ComplexDDExp>)> {
     let mut z = z0;
     let mut z_ref = Vec::with_capacity(iteration_max as usize + 1);
     let mut z_ref_f64 = Vec::with_capacity(iteration_max as usize + 1);
+    // `z_ref_dd` : la trajectoire dd COMPLÈTE (Z à 106 bits) — nécessaire au
+    // tier dd où Z entre non-arrondi dans `2·Z·δ`. Vide si `!build_dd`.
+    let mut z_ref_dd = Vec::with_capacity(if build_dd { iteration_max as usize + 1 } else { 0 });
     let mut zf = z.to_complex64_approx();
     z_ref.push(ComplexExp::from_complex64(zf));
     z_ref_f64.push(zf);
+    if build_dd {
+        z_ref_dd.push(z);
+    }
     for i in 0..iteration_max {
         if let Some(cancel) = cancel {
             if i % 4096 == 0 && cancel.load(Ordering::Relaxed) {
@@ -95,8 +102,11 @@ fn dd_reference_orbit(
         zf = z.to_complex64_approx();
         z_ref.push(ComplexExp::from_complex64(zf));
         z_ref_f64.push(zf);
+        if build_dd {
+            z_ref_dd.push(z);
+        }
     }
-    Some((z_ref, z_ref_f64))
+    Some((z_ref, z_ref_f64, z_ref_dd))
 }
 
 /// Squared escape radius used while iterating the reference orbit.
@@ -254,6 +264,13 @@ pub struct ReferenceOrbit {
     /// Brent's). z_ref[cycle_start] et z_ref[cycle_start + cycle_period] sont équivalents
     /// modulo tolérance numérique.
     pub cycle_start: u32,
+    /// Orbite référence en **double-double** (~106 bits de mantisse), remplie
+    /// UNIQUEMENT quand le tier dd est demandé (`params.use_dd_tier`). Vide
+    /// sinon. Source haute-précision pour `pixel_loop_dd` : la référence doit
+    /// être dd (et pas seulement le delta) car `Z` entre dans `2·Z·δ` et son
+    /// arrondi f64 (2⁻⁵²·|Z|) capperait sinon la précision. Construite depuis
+    /// l'orbite GMP (via `gmp_float_to_ddexp`) ou l'itération dd.
+    pub z_ref_dd: Vec<super::dd::ComplexDDExp>,
 }
 
 impl ReferenceOrbit {
@@ -273,6 +290,11 @@ impl ReferenceOrbit {
     pub fn get_z_ref_gmp(&self, m: u32) -> Option<&Complex> {
         let idx = (m + self.phase_offset) as usize;
         self.z_ref_gmp.get(idx)
+    }
+
+    /// `true` si l'orbite double-double (tier dd) est disponible.
+    pub fn has_dd(&self) -> bool {
+        !self.z_ref_dd.is_empty()
     }
 
     /// Get the effective length of the reference orbit for this phase
@@ -432,6 +454,9 @@ impl ReferenceOrbit {
             data_storage_interval: 1,
             cycle_period: 0,
             cycle_start: 0,
+            // Références de résolution de glitch (path legacy) : tier dd non
+            // concerné (le dd remplace la glitch-correction, pas l'inverse).
+            z_ref_dd: Vec::new(),
         })
     }
 
@@ -636,8 +661,9 @@ fn build_hybrid_bla_references(
                 data_storage_interval: primary_orbit.data_storage_interval,
                 cycle_period: primary_orbit.cycle_period,
                 cycle_start: primary_orbit.cycle_start,
+                z_ref_dd: primary_orbit.z_ref_dd.clone(),
             };
-            
+
             // Build BLA table for this phase reference (one BLA table per reference)
             let phase_bla = build_bla_table(&phase_orbit.z_ref_f64, params, phase_orbit.cref);
             
@@ -1213,8 +1239,8 @@ pub fn compute_reference_orbit(
         } else {
             (seed_dd, cref_dd) // Mandelbrot : z0 = seed (=0), constante = cref
         };
-        let (z_ref, z_ref_f64) =
-            dd_reference_orbit(z0, c, params.iteration_max, cancel)?;
+        let (z_ref, z_ref_f64, z_ref_dd) =
+            dd_reference_orbit(z0, c, params.iteration_max, cancel, params.use_dd_tier)?;
         let extended_iterations: Vec<u32> = z_ref_f64
             .iter()
             .enumerate()
@@ -1234,6 +1260,7 @@ pub fn compute_reference_orbit(
                 data_storage_interval: 1,
                 cycle_period: 0,
                 cycle_start: 0,
+                z_ref_dd,
             },
             cx_str,
             cy_str,
@@ -1276,6 +1303,10 @@ pub fn compute_reference_orbit(
 
     let mut z_ref = Vec::with_capacity(params.iteration_max as usize + 1);
     let mut z_ref_f64 = Vec::with_capacity(params.iteration_max as usize + 1);
+    // Tier dd (opt-in) : stocke la référence en double-double (~106 b) depuis
+    // l'orbite GMP courante — Z à 106 b pour le pas `2·Z·δ` du pixel_loop_dd.
+    let build_dd = params.use_dd_tier;
+    let mut z_ref_dd = Vec::with_capacity(if build_dd { params.iteration_max as usize + 1 } else { 0 });
     let store_dense_gmp = force_dense_gmp;
     let mut z_ref_gmp =
         Vec::with_capacity(if store_dense_gmp { params.iteration_max as usize + 1 } else { 0 });
@@ -1298,6 +1329,12 @@ pub fn compute_reference_orbit(
     let z_f64 = complex_to_complex64(&z);
     z_ref.push(z_ref_complexexp(&z, z_f64));
     z_ref_f64.push(z_f64);
+    if build_dd {
+        z_ref_dd.push(super::dd::ComplexDDExp {
+            re: gmp_float_to_ddexp(z.real()),
+            im: gmp_float_to_ddexp(z.imag()),
+        });
+    }
     if store_dense_gmp {
         z_ref_gmp.push(z.clone());
         high_precision_data.push(z.clone());
@@ -1474,6 +1511,12 @@ pub fn compute_reference_orbit(
         let z_f64 = complex_to_complex64(&z);
         z_ref.push(z_ref_complexexp(&z, z_f64));
         z_ref_f64.push(z_f64);
+        if build_dd {
+            z_ref_dd.push(super::dd::ComplexDDExp {
+                re: gmp_float_to_ddexp(z.real()),
+                im: gmp_float_to_ddexp(z.imag()),
+            });
+        }
         // GMP dense sauté hors correction glitch (cf. `store_dense_gmp`).
         if store_dense_gmp {
             z_ref_gmp.push(z.clone());
@@ -1526,6 +1569,7 @@ pub fn compute_reference_orbit(
             data_storage_interval,
             cycle_period: detected_period,
             cycle_start: detected_cycle_start,
+            z_ref_dd,
         },
         cx_str,
         cy_str,
@@ -1745,8 +1789,8 @@ mod dd_orbit_tests {
             re: gmp_float_to_ddexp(orbit_gmp.cref_gmp.real()),
             im: gmp_float_to_ddexp(orbit_gmp.cref_gmp.imag()),
         };
-        let (_, dd_f64) =
-            dd_reference_orbit(ComplexDDExp::ZERO, cref_dd, params.iteration_max, None)
+        let (_, dd_f64, _) =
+            dd_reference_orbit(ComplexDDExp::ZERO, cref_dd, params.iteration_max, None, false)
                 .expect("orbite dd");
 
         assert_orbit_close(&orbit_gmp.z_ref_f64, &dd_f64, 1e-9);
@@ -1773,8 +1817,9 @@ mod dd_orbit_tests {
             im: gmp_float_to_ddexp(orbit_gmp.cref_gmp.imag()),
         };
         let seed_dd = ComplexDDExp::from_complex64(params.seed);
-        let (_, dd_f64) =
-            dd_reference_orbit(z0, seed_dd, params.iteration_max, None).expect("orbite dd Julia");
+        let (_, dd_f64, _) =
+            dd_reference_orbit(z0, seed_dd, params.iteration_max, None, false)
+                .expect("orbite dd Julia");
 
         assert_orbit_close(&orbit_gmp.z_ref_f64, &dd_f64, 1e-9);
     }

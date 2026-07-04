@@ -79,6 +79,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         // Tu peux désactiver explicitement via --no-bytecode (à venir) ou
         // en passant use_bytecode_engine = false depuis un loader TOML.
         use_bytecode_engine: true,
+        use_dd_tier: false,
         find_nucleus: false,
         rotation: 0.0,
         transform_k: None,

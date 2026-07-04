@@ -172,6 +172,15 @@ struct Cli {
     #[arg(long)]
     find_nucleus: bool,
 
+    /// Active le tier haute précision **double-double** (~106 bits) pour le path
+    /// perturbation deep-zoom Mandelbrot. Équivalent pur-Rust du `float128` de
+    /// Fraktaler-3 : itère référence + delta en ~106 bits (sans BLA) pour les
+    /// spirales ultra-sensibles où la mantisse f64 (53 b) sature (écart
+    /// d'itération vs GMP, cf. e30/e50). Plus lent (~10×) — n'activer que si
+    /// nécessaire. Mandelbrot escape-time uniquement.
+    #[arg(long)]
+    dd_tier: bool,
+
     /// Rotation du plan en degrés (CCW). Appliquée au mapping pixel→c
     /// (équivalent F3 `transform.rotate`). Override la valeur du TOML si fournie.
     #[arg(long)]
@@ -484,6 +493,11 @@ fn main() {
     params.enable_interior_detection = cli.enable_interior_detection;
     if cli.interior_threshold > 0.0 {
         params.interior_threshold = cli.interior_threshold;
+    }
+
+    // Tier double-double (~106 b) opt-in pour les spirales deep-zoom sensibles.
+    if cli.dd_tier {
+        params.use_dd_tier = true;
     }
 
     // Moteur d'itération bytecode (Fraktaler-3 style)

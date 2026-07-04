@@ -382,21 +382,37 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
   Résiduel de bord ; FAIL uniquement par seuil strict (PASS exige
   max_diff ≤ 1). Idem e13/e17/e18/e100 (tous p95≈0). Cf. calibration seuils
   quality (G6) vs bruit de bord inhérent.
-- [ ] **e30/e50 FAIL = plancher de précision mantisse f64** (re-diagnostiqué
-  2026-07-04, même centre `-0.04947…−0.67478…`, spirale profonde). div_ratio
-  3.6 %/5 %, p99=50/76, **mais** `escape_disagreement=0` et les 10 pixels les
-  plus divergents sont exactement les **plus profonds à escaper** (n≈25000-28000
-  pour e30, 170k-178k pour e50), **dispersés** spatialement (pas un cluster de
-  bord). Erreur relative `|dz|/|z|` > 1 sur ces pixels. **Cause** : `z_ref`
-  (Complex64) ET `delta` (ComplexExp = mantisse **f64** 53 bits) stockent Z et δ
-  à 2⁻⁵² relatif ; dans une spirale à sensibilité extrême l'amplification de
-  Lyapunov sur ~25000 itérations transforme ce 2⁻⁵² en O(1) → ±50-200 iters. Ce
-  n'est **pas** un rebase manqué : **hypothèse rebase-avant-BLA (F3
-  `hybrid.cc:295-308`, portée sur `pixel_loop_exp.rs` puis revert) laisse
-  div_ratio bit-identique** (0.03624). Le vrai levier = **tier mantisse float128**
-  (F3 escalade double→float128 via wisdom pour ces spirales) → **lié à G2
-  (wisdom/auto-précision)**, hors d'une itération /improve. Ne PAS re-tenter un
-  ajustement du rebase/BLA ici.
+- [x] **✅ Tier double-double (~106 b, « float128 » pur-Rust) livré (2026-07-04)**.
+  Diagnostic : e30/e50 FAIL = plancher mantisse **f64** (53 b). `z_ref`
+  (Complex64) ET `delta` (ComplexExp) stockent Z et δ à 2⁻⁵² relatif ; en
+  spirale ultra-sensible (centre `-0.04947…−0.67478…`) l'amplification de
+  Lyapunov sur ~25000 iters transforme ce 2⁻⁵² en O(1) → ±50-200 iters vs GMP
+  (`escape_disagreement=0`, pixels les plus profonds, dispersés — PAS un rebase
+  manqué : hypothèse rebase-avant-BLA testée + revert, div_ratio bit-identique).
+  **Fix** : tier dd opt-in (`params.use_dd_tier` / CLI `--dd-tier`) qui **stocke
+  la référence en dd** (`ReferenceOrbit::z_ref_dd` via `gmp_float_to_ddexp`,
+  indispensable car Z entre non-arrondi dans `2·Z·δ`) et **itère le delta en dd
+  sans BLA** (`pixel_loop_dd.rs` ; la BLA f64 réintroduirait 2⁻⁵² tôt quand δ est
+  minuscule). Noyau `ComplexDDExp` préexistant (`dd.rs`).
+  **Résultats** (quality 96²) : **e100 FAIL→PASS** ; **e30** div_ratio
+  0.03624→**0.00033**, p99 50→**0**, max_diff 223→106 ; **e50** div_ratio
+  0.05035→**0.00022**, p99 76→**0**, max_diff 417→**8**. Parité avec le float128
+  de F3. Coût : ~10× plus lent (pas de BLA) → opt-in. Verrous : presets quality
+  e30/e50/e100 exercent le path dd + tests `pixel_loop_dd`/`dd`.
+  - [ ] **Reste e30/e50 FAIL sur 1-3 pixels de bord** (max_diff 106/8, ≤3 px).
+    Signature bord : pires pixels aux grands |dc| ((4,18) diff 106 > (25,67)
+    diff 2) → probable plancher **`dc` 53 bits** (converti depuis ComplexExp ;
+    l'itération est dd mais dc reste 53 b → pixel calculé à un `c` décalé de
+    2⁻⁵²·|dc| vs GMP exacte). **Follow-up** : `dc` en dd (spans dd via
+    `effective_spans_dd`, fraction pixel via réciproque dd, threader
+    `ComplexDDExp` dans `iterate_pixel`). Sinon plancher 106 b résiduel →
+    triple-double / fallback GMP par-pixel sur les outliers.
+  - [ ] **dd-BLA** (perf) : coefficients BLA `A/B` en dd → retrouver le skip BLA
+    sans réintroduire 2⁻⁵² → auto-dispatch dd viable (wisdom, G2) sans le coût ~10×.
+  - [ ] **seahorse (1e8) / misiurewicz (1e12)** : path **f64** (`pixel_loop.rs`),
+    pas le path exp → le tier dd ne s'y applique pas encore. Étendre `pixel_loop_dd`
+    au f64-range (ou router ces zooms vers dd) si leur FAIL (div_ratio ~0.0018) le
+    justifie.
 - [ ] **Period-detection truncation = LOSSY** → passer **OFF par défaut**.
   Même pour une période *genuine*, `truncate + wrap_periodic` accumule l'erreur
   de quasi-périodicité (~2^(-0.4·prec)) sur ~iter_max/période cycles →

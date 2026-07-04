@@ -143,6 +143,16 @@ pub fn params_from_preset(preset: &Preset, opt: &ComparisonOptions) -> FractalPa
         params.multibrot_power = power;
     }
 
+    // Tier double-double (~106 b) pour les spirales ultra-sensibles profondes
+    // où la mantisse f64 (53 b) du path ComplexExp sature (amplification de
+    // Lyapunov du 2⁻⁵² d'arrondi → écart d'itération vs GMP, cf. TODO G2).
+    // Équivalent du float128 de Fraktaler-3. e30/e50 partagent le centre
+    // spirale `-0.04947…−0.67478…` ; e100 une zone comparable.
+    params.use_dd_tier = matches!(
+        preset.name,
+        "mandelbrot-e30" | "mandelbrot-e50" | "mandelbrot-e100"
+    );
+
     params
 }
 
