@@ -250,6 +250,21 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
   norme GMP calculée seulement près de la frontière. **dragon orbite 4.4→3.26 s
   (−26 %), ratio 2.94→2.50 ; glitch_test_2 3.76→3.15**. Diagnostic préalable :
   interpréteur GMP + copie `z.assign` = 0 gain (A/B) — c'était la norme.
+- [x] **Wisdom mid-tier : orbite référence double-double** (2026-07-04,
+  `51f7950` Phase 1a + `b757e65` Phase 1b) : le module `dd.rs` (double-double
+  ~106 b, dormant) est câblé comme moteur d'orbite référence. Quand Mandelbrot
+  standard ∧ path bytecode ∧ requirement F3 non clampé ≤ 96 b (~1e13–1e19),
+  l'orbite est itérée en dd au lieu de GMP (`dd_reference_orbit_mandelbrot`,
+  gate sur les bits formule bruts car `compute_perturbation_precision_bits`
+  clampe à ≥128). **Orbite 14× plus rapide** (2.6→0.2 ms), **e17 render 66→30 ms,
+  e13 86→55 ms**. Insight : l'orbite est ITÉRÉE haute précision mais STOCKÉE en
+  53 b → dd (106 b) est un drop-in de l'itération GMP pour cette tranche. Pas de
+  period-detection (rebase-at-end F3). Goldens 🟢 (orbites courtes → dd et GMP
+  arrondissent au même 53 b), quality e13/e17 PASS (= GMP), parité inchangée.
+  Verrou `dd_orbit_matches_gmp_midrange` + presets e13/e17/e18. **Réalise le
+  goal G2 « aucun path ne force GMP là où doubledouble suffit » pour la
+  tranche moyenne.** Reste (Phase 2) : Julia dd, étendre à quad-double pour
+  1e28–1e60, câbler le pixel loop dd (P1.6.e original : delta quasi-périodique).
 - [ ] **Reste deep-zoom perf (dragon ~2.50×, glitch_test_2 ~3.1×)** :
   - dragon : orbite GMP ~3.26 s (mul complexe 676 b × 5 M iters, cœur
     incompressible sans float128) + pixels ComplexExp ~5.5 s. Leviers restants
