@@ -217,8 +217,24 @@ fn iterate_pixel_unified_exp_mandelbrot(
         // Inline complet, pas de DeltaStateExp à allouer/lire/écrire.
         let two_z = z_m + z_m;
         let two_z_delta = delta.mul_complex64(two_z);
-        let delta_sq = delta.mul(delta);
-        delta = two_z_delta.add(delta_sq).add(dc);
+        // δ² est droppé par l'add dès que |2Zδ| ≫ |δ²| (l'add FloatExp renvoie
+        // `self` inchangé quand `exp(self) - exp(rhs) >= 54`). À deep zoom δ est
+        // minuscule ⇒ vrai sur la quasi-totalité des pas directs ; on saute alors
+        // le calcul de δ² (6 frexp du `mul` + 2 des adds), **bit-identique**.
+        // Condition conservatrice SANS calculer δ² : borne sup de son exposant =
+        // `2·max(exp δ.re, exp δ.im) + 1` (produit + report), comparée aux deux
+        // composantes NON NULLES de 2Zδ. Si l'une est nulle (Z=0 à l'itér. 0),
+        // l'add ne dropperait pas δ² → on ne saute pas.
+        let dsq_exp_ub = 2 * delta.re.exponent.max(delta.im.exponent) + 1;
+        let skip_dsq = two_z_delta.re.mantissa != 0.0
+            && two_z_delta.im.mantissa != 0.0
+            && two_z_delta.re.exponent.min(two_z_delta.im.exponent) - dsq_exp_ub >= 54;
+        delta = if skip_dsq {
+            two_z_delta.add(dc)
+        } else {
+            let delta_sq = delta.mul(delta);
+            two_z_delta.add(delta_sq).add(dc)
+        };
         n += 1;
         m += 1;
         iters_ptb += 1;

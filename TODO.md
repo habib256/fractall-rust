@@ -270,7 +270,20 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     `dd_orbit_matches_gmp_julia`. Tranche dd couvre Mandelbrot ET Julia.
   - [ ] Reste Phase 2+ : quad-double pour 1e28–1e60 ; câbler le pixel loop dd
     (P1.6.e original : delta quasi-périodique, glitch_test_1/5).
-- [ ] **Reste deep-zoom perf (dragon ~1.91×, glitch_test_2 ~2.24×)** :
+- [ ] **Reste deep-zoom perf (dragon ~1.9×, glitch_test_2 ~2.2×)** :
+  - [x] **Skip du terme δ² quand droppé par l'add (bit-identique)** (2026-07-04) :
+    dans le pas direct `δ'=2Zδ+δ²+dc`, l'add FloatExp rend `self` inchangé dès
+    `exp(2Zδ) − exp(δ²) ≥ 54`. À deep zoom δ est minuscule ⇒ vrai sur la plupart
+    des pas → on saute le calcul de δ² (`delta.mul(delta)` = 6 frexp + 2 des adds).
+    Condition conservatrice SANS calculer δ² : borne sup `exp(δ²) ≤ 2·max(exp δ)+1`
+    vs les deux composantes NON NULLES de 2Zδ (garde `mantissa != 0` : à l'itér. 0
+    Z=0 ⇒ 2Zδ=0, l'add ne dropperait pas). **Bit-identique** (l'add renvoie
+    exactement `self`). glitch_test_2 pixels 0,216→0,202 s (−6,5 %), total
+    0,360→0,345 s (5 runs interleaved vs F3 0,11 s stable). dragon **plat** (réf.
+    BORNÉE → δ reste ~O(1) près des rebases, δ² rarement droppable ; la garde ne
+    coûte rien quand non prise). Goldens 🟢 + 187 unit + quality 11 PASS + parité
+    inchangés. ⚠️ Le ratio harness quick est sous le plancher de bruit thermique
+    pour ce petit cas (mesurer interleaved standalone, cf. mémoire).
   - [x] **frexp sans division (bit-identique) + DIAGNOSTIC CORRIGÉ** (2026-07-04) :
     l'instrumentation `[DIAG BLA]` (compteurs bla_steps/direct_steps) a RÉFUTÉ
     l'IMPASSE #2 « memory-bound ». Faits mesurés : dragon = **286,6 M pas DIRECTS**
