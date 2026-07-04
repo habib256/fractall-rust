@@ -91,7 +91,9 @@ use rayon::prelude::*;
 use crate::fractal::{FractalParams, FractalType, OutColoringMode};
 use crate::fractal::bytecode::compile_formula;
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
-use crate::fractal::perturbation::delta::{bytecode_path_label, iterate_pixel, iterate_pixel_gmp};
+use crate::fractal::perturbation::delta::{
+    bytecode_path_label, iterate_pixel, iterate_pixel_gmp, iterate_pixel_with_dd,
+};
 use crate::fractal::perturbation::orbit::{compute_reference_orbit_cached, compute_reference_orbit};
 use crate::fractal::perturbation::types::{ComplexExp, FloatExp};
 use rug::{Complex, Float};
@@ -510,6 +512,41 @@ pub(crate) fn effective_spans_fexp(params: &FractalParams) -> (crate::fractal::p
         // ±(quelques milliers) — bien dans le range i32 (±2^31).
         let exp_clamped = exp_int.clamp(i32::MIN as f64, i32::MAX as f64) as i32;
         FloatExp::new(mantissa, exp_clamped)
+    };
+    let sx = from_hp_or_f64(params.span_x_hp.as_deref(), params.span_x);
+    let sy = from_hp_or_f64(params.span_y_hp.as_deref(), params.span_y);
+    (sx, sy)
+}
+
+/// Comme `effective_spans_fexp` mais en `DoubleDoubleExp` (~106 b). **Préfère la
+/// string HP** (`span_x_hp`) au f64 (`span_x`) pour capter les bits au-delà de
+/// 53 : c'est tout l'intérêt pour le tier dd — `effective_spans_fexp` renvoie le
+/// f64 dès qu'il est fini (53 b) donc capperait le `dc` dd. Extraction hi+lo
+/// depuis GMP 1024 b (comme `gmp_float_to_ddexp`). Fallback f64 si HP absent ou
+/// span hors range f64 (underflow deep zoom > 1e308 — hors scope dd Mandelbrot).
+pub(crate) fn effective_spans_dd(
+    params: &FractalParams,
+) -> (
+    crate::fractal::perturbation::dd::DoubleDoubleExp,
+    crate::fractal::perturbation::dd::DoubleDoubleExp,
+) {
+    use crate::fractal::perturbation::dd::{DoubleDouble, DoubleDoubleExp};
+    let from_hp_or_f64 = |hp: Option<&str>, fallback: f64| -> DoubleDoubleExp {
+        if let Some(hp_str) = hp {
+            if let Ok(raw) = Float::parse(hp_str) {
+                let v = Float::with_val(1024, raw);
+                if !v.is_zero() && v.is_finite() {
+                    let hi = v.to_f64();
+                    if hi != 0.0 && hi.is_finite() {
+                        let mut rem = v.clone();
+                        rem -= hi;
+                        let lo = rem.to_f64();
+                        return DoubleDoubleExp::normalized(DoubleDouble::new(hi, lo), 0);
+                    }
+                }
+            }
+        }
+        DoubleDoubleExp::from_f64(fallback)
     };
     let sx = from_hp_or_f64(params.span_x_hp.as_deref(), params.span_x);
     let sy = from_hp_or_f64(params.span_y_hp.as_deref(), params.span_y);
@@ -1049,6 +1086,40 @@ pub fn render_perturbation_with_cache(
         .map(|j| y_range_fexp * ((j as f64 + 0.5 + aa_dy) * inv_height - 0.5))
         .collect();
 
+    // Tier dd : précompute `dc` en double-double (~106 b) quand le tier est
+    // actif (Mandelbrot, sans rotation — K non appliqué ici). Le `dc` ComplexExp
+    // ci-dessus est 53 b (span f64 × fraction f64) → plancher résiduel sur les
+    // pixels de bord (grand |dc|). En dd : span depuis la string HP (106 b) et
+    // fraction pixel via division dd. Vide sinon (path ComplexExp inchangé).
+    let build_dc_dd = params.use_dd_tier
+        && matches!(params.fractal_type, FractalType::Mandelbrot)
+        && rot.is_none();
+    let (dc_re_dd, dc_im_dd): (
+        Vec<crate::fractal::perturbation::dd::DoubleDoubleExp>,
+        Vec<crate::fractal::perturbation::dd::DoubleDoubleExp>,
+    ) = if build_dc_dd {
+        use crate::fractal::perturbation::dd::DoubleDoubleExp as DdE;
+        let (x_range_dd, y_range_dd) = effective_spans_dd(params);
+        let width_dd = DdE::from_f64(width as f64);
+        let height_dd = DdE::from_f64(height as f64);
+        let half = DdE::from_f64(0.5);
+        let re = (0..width)
+            .map(|i| {
+                let frac = DdE::from_f64(i as f64 + 0.5 + aa_dx).div(width_dd).sub(half);
+                x_range_dd.mul(frac)
+            })
+            .collect();
+        let im = (0..height)
+            .map(|j| {
+                let frac = DdE::from_f64(j as f64 + 0.5 + aa_dy).div(height_dd).sub(half);
+                y_range_dd.mul(frac)
+            })
+            .collect();
+        (re, im)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
     let t_pixels_start = Instant::now();
     // Finer chunk granularity to improve rayon work-stealing. Whole rows
     // (width pixels) caused load imbalance when a row straddles fast-escaping
@@ -1134,6 +1205,16 @@ pub fn render_perturbation_with_cache(
                 // For a hybrid loop with multiple phases, you need multiple references, one starting at
                 // each phase in the loop. Rebasing switches to the reference for the current phase.
                 // You need one BLA table per reference.
+                // Tier dd : `dc` du pixel en ~106 b (Mandelbrot, précompute plus
+                // haut). `None` → le dispatch retombe sur le dc ComplexExp 53 b.
+                let dc_dd = if build_dc_dd {
+                    Some(crate::fractal::perturbation::dd::ComplexDDExp {
+                        re: dc_re_dd[i],
+                        im: dc_im_dd[j],
+                    })
+                } else {
+                    None
+                };
                 let result = if let Some(ref hybrid) = cache_ref.hybrid_refs {
                     iterate_pixel_hybrid_bla(
                         params,
@@ -1143,13 +1224,14 @@ pub fn render_perturbation_with_cache(
                         dc_term,
                     )
                 } else {
-                    iterate_pixel(
+                    iterate_pixel_with_dd(
                         params,
                         &cache_ref.orbit,
                         &cache_ref.bla_table,
                         cache_ref.series_table.as_ref(),
                         delta0,
                         dc_term,
+                        dc_dd,
                         None,
                         None,
                     )

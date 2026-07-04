@@ -140,6 +140,19 @@ impl DoubleDouble {
         let (hi, lo) = quick_two_sum(p1, p2);
         Self { hi, lo }
     }
+
+    /// Division double-double / double-double (QD `dd_div`, algo de Bailey :
+    /// 3 quotients successifs corrigés par les résidus dd). Précision ~106 bits.
+    #[inline(always)]
+    pub fn div(self, other: Self) -> Self {
+        let q1 = self.hi / other.hi;
+        let r = self.sub(other.mul_f64(q1)); // r = a - q1·b
+        let q2 = r.hi / other.hi;
+        let r = r.sub(other.mul_f64(q2)); // r = r - q2·b
+        let q3 = r.hi / other.hi;
+        let (hi, lo) = quick_two_sum(q1, q2);
+        Self { hi, lo }.add(Self::from_f64(q3))
+    }
 }
 
 /// Nombre double-double + exposant `i32` : valeur = `mantissa · 2^exponent`,
@@ -289,6 +302,15 @@ impl DoubleDoubleExp {
     #[inline(always)]
     pub fn sqr(self) -> Self {
         Self::normalized(self.mantissa.sqr(), self.exponent * 2)
+    }
+
+    /// Division : quotient des mantisses dd, différence des exposants.
+    #[inline(always)]
+    pub fn div(self, rhs: Self) -> Self {
+        if self.mantissa.hi == 0.0 {
+            return Self::ZERO;
+        }
+        Self::normalized(self.mantissa.div(rhs.mantissa), self.exponent - rhs.exponent)
     }
 
     /// Re-normalise (par sécurité après de longues séquences).
@@ -500,6 +522,31 @@ mod tests {
         let y = DoubleDouble::from_f64(7.0);
         assert_eq!(val(x.mul(y)), 21.0);
         assert_eq!(val(x.mul_f64(7.0)), 21.0);
+    }
+
+    #[test]
+    fn dd_div_reciprocal_precision() {
+        // 1/3 en dd doit être plus précis que 1/3 en f64. On vérifie que
+        // (1/3)·3 == 1 à ~106 bits (le résidu dépasse la précision f64).
+        let one = DoubleDouble::from_f64(1.0);
+        let three = DoubleDouble::from_f64(3.0);
+        let third = one.div(three);
+        let back = third.mul(three);
+        // back doit reconstituer 1.0 à mieux que 1e-30 (bien sous 1e-16 f64).
+        assert!((back.hi - 1.0).abs() < 1e-30, "back.hi={}", back.hi);
+        assert!(back.lo.abs() < 1e-30, "back.lo={:e}", back.lo);
+        // Le f64 pur : (1.0/3.0)*3.0 laisse une erreur ~1e-16 (souvent != 1).
+    }
+
+    #[test]
+    fn ddexp_div_matches_mul_inverse() {
+        // (a/b)·b == a en DoubleDoubleExp à travers les exposants.
+        let a = DoubleDoubleExp::normalized(DoubleDouble::new(0.7, 1e-20), 40);
+        let b = DoubleDoubleExp::normalized(DoubleDouble::from_f64(0.6), -25);
+        let q = a.div(b);
+        let back = q.mul(b);
+        assert_eq!(back.exponent, a.exponent);
+        assert!((back.mantissa.hi - a.mantissa.hi).abs() < 1e-14);
     }
 
     #[test]

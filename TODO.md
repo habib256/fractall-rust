@@ -394,19 +394,18 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
   indispensable car Z entre non-arrondi dans `2·Z·δ`) et **itère le delta en dd
   sans BLA** (`pixel_loop_dd.rs` ; la BLA f64 réintroduirait 2⁻⁵² tôt quand δ est
   minuscule). Noyau `ComplexDDExp` préexistant (`dd.rs`).
-  **Résultats** (quality 96²) : **e100 FAIL→PASS** ; **e30** div_ratio
-  0.03624→**0.00033**, p99 50→**0**, max_diff 223→106 ; **e50** div_ratio
-  0.05035→**0.00022**, p99 76→**0**, max_diff 417→**8**. Parité avec le float128
-  de F3. Coût : ~10× plus lent (pas de BLA) → opt-in. Verrous : presets quality
-  e30/e50/e100 exercent le path dd + tests `pixel_loop_dd`/`dd`.
-  - [ ] **Reste e30/e50 FAIL sur 1-3 pixels de bord** (max_diff 106/8, ≤3 px).
-    Signature bord : pires pixels aux grands |dc| ((4,18) diff 106 > (25,67)
-    diff 2) → probable plancher **`dc` 53 bits** (converti depuis ComplexExp ;
-    l'itération est dd mais dc reste 53 b → pixel calculé à un `c` décalé de
-    2⁻⁵²·|dc| vs GMP exacte). **Follow-up** : `dc` en dd (spans dd via
-    `effective_spans_dd`, fraction pixel via réciproque dd, threader
-    `ComplexDDExp` dans `iterate_pixel`). Sinon plancher 106 b résiduel →
-    triple-double / fallback GMP par-pixel sur les outliers.
+  **Résultats finaux** (quality 96²) : **e30/e50/e100 FAIL→PASS, max_diff=0,
+  pixel-identiques GMP** (max_|dz| 1e-8/1e-10/1e-16). Suite 5P/1W/5F → **8P/1W/2F**.
+  Parité (voire mieux) avec le float128 de F3. Coût : ~10× plus lent (pas de BLA)
+  → opt-in. Verrous : presets quality e30/e50/e100 exercent le path dd + tests
+  `pixel_loop_dd`/`dd` (incl. `dd_div`).
+  - [x] **✅ `dc` en dd** (le levier des pixels de bord). Le `dc` ComplexExp (53 b :
+    span f64 × fraction f64) laissait ~1-3 pixels de bord (grand |dc|) diverger
+    (e30 max_diff 106, e50 8) — pixel calculé à un `c` décalé de 2⁻⁵²·|dc| vs GMP.
+    Fix : `effective_spans_dd` (span depuis la string HP → 106 b), fraction pixel
+    via **division dd** (`DoubleDouble::div`/`DoubleDoubleExp::div`, algo Bailey),
+    threadé via `iterate_pixel_with_dd(dc_dd)`. → e30/e50 **max_diff 0**. (Mon
+    hypothèse initiale « plancher d'itération 106 b » était fausse : c'était le dc.)
   - [ ] **dd-BLA** (perf) : coefficients BLA `A/B` en dd → retrouver le skip BLA
     sans réintroduire 2⁻⁵² → auto-dispatch dd viable (wisdom, G2) sans le coût ~10×.
   - [ ] **seahorse (1e8) / misiurewicz (1e12)** : path **f64** (`pixel_loop.rs`),

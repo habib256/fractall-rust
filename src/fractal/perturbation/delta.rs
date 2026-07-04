@@ -136,6 +136,7 @@ fn try_bytecode_unified_path(
     ref_orbit: &ReferenceOrbit,
     delta0: &ComplexExp,
     dc: &ComplexExp,
+    dc_dd: Option<&crate::fractal::perturbation::dd::ComplexDDExp>,
 ) -> Option<DeltaResult> {
     // Le path bytecode supporte désormais distance/interior/orbit_traps
     // en perturbation via ddelta tracking (cf. UnifiedOptions).
@@ -227,7 +228,11 @@ fn try_bytecode_unified_path(
                 && ref_orbit.has_dd()
             {
                 use crate::fractal::perturbation::dd::ComplexDDExp;
-                let dc_dd = ComplexDDExp::from_complex_exp(*dc);
+                // `dc` en dd : préfère le dc dd fourni par la boucle de rendu
+                // (spans HP → 106 b) ; sinon convertit le ComplexExp (53 b).
+                let dc_dd = dc_dd
+                    .copied()
+                    .unwrap_or_else(|| ComplexDDExp::from_complex_exp(*dc));
                 let delta0_dd = ComplexDDExp::from_complex_exp(*delta0);
                 let res_dd =
                     crate::fractal::bytecode::pixel_loop_dd::iterate_pixel_unified_ddexp_mandelbrot(
@@ -1332,6 +1337,28 @@ pub fn iterate_pixel(
     series_table: Option<&SeriesTable>,
     delta0: ComplexExp,
     dc: ComplexExp,
+    current_phase: Option<&mut u32>,
+    hybrid_refs: Option<&HybridBlaReferences>,
+) -> DeltaResult {
+    iterate_pixel_with_dd(
+        params, ref_orbit, bla_table, series_table, delta0, dc, None, current_phase, hybrid_refs,
+    )
+}
+
+/// Variante de `iterate_pixel` acceptant un `dc` **double-double** optionnel
+/// (`dc_dd`), utilisé UNIQUEMENT par le tier dd (`use_dd_tier`) pour porter le
+/// dc du pixel à ~106 bits (le `dc` ComplexExp est 53 b — plancher résiduel des
+/// pixels de bord à grand |dc|, cf. TODO G2). `None` = comportement identique à
+/// `iterate_pixel`.
+#[allow(clippy::too_many_arguments)]
+pub fn iterate_pixel_with_dd(
+    params: &FractalParams,
+    ref_orbit: &ReferenceOrbit,
+    bla_table: &BlaTable,
+    series_table: Option<&SeriesTable>,
+    delta0: ComplexExp,
+    dc: ComplexExp,
+    dc_dd: Option<crate::fractal::perturbation::dd::ComplexDDExp>,
     mut current_phase: Option<&mut u32>,
     hybrid_refs: Option<&HybridBlaReferences>,
 ) -> DeltaResult {
@@ -1342,7 +1369,7 @@ pub fn iterate_pixel(
     // Si activé et type supporté, dispatch vers le pixel loop unifié.
     if params.use_bytecode_engine {
         if let Some(result) =
-            try_bytecode_unified_path(params, ref_orbit, &delta0, &dc)
+            try_bytecode_unified_path(params, ref_orbit, &delta0, &dc, dc_dd.as_ref())
         {
             return result;
         }

@@ -2,8 +2,8 @@
 
 # SCORECARD — fractall vs Fraktaler-3
 
-- **Date** : 2026-07-04T11:51:08+00:00
-- **Commit** : `510af89`  ⚠️ arbre modifié (dirty)
+- **Date** : 2026-07-04T12:38:12+00:00
+- **Commit** : `5b35d77`  ⚠️ arbre modifié (dirty)
 - **Machine** : Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz · 16 threads · Linux 6.14.0-37-generic
 - **Tier** : quick · 256×256 · quality 96×96 · runs=1 · axes=speed,parity,quality,goldens
 - **F3** : /home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux
@@ -12,8 +12,8 @@
 
 | Métrique | Valeur | vs baseline |
 |---|---:|---|
-| geomean ratio | 0.780 |  (↓0.109 ✅) |
-| pire ratio | 3.449 (glitch_test_2) | |
+| geomean ratio | 0.841 |  (↓0.0482 ✅) |
+| pire ratio | 3.144 (glitch_test_2) | |
 | wins (ratio<1) | 4 | |
 | timeouts | 0 | |
 | cas comparés | 10/10 | |
@@ -32,11 +32,11 @@
 
 | Verdict | Nombre | vs baseline |
 |---|---:|---|
-| PASS | 6 |  (↑1 ✅) |
+| PASS | 8 |  (↑3 ✅) |
 | WARN | 1 |  (=) |
-| FAIL | 4 |  (↓1 ✅) |
+| FAIL | 2 |  (↓3 ✅) |
 
-FAIL : seahorse-valley, misiurewicz-m32, mandelbrot-e30, mandelbrot-e50
+FAIL : seahorse-valley, misiurewicz-m32
 
 ## Goldens (pixel-exact)
 
@@ -52,12 +52,9 @@ FAIL : seahorse-valley, misiurewicz-m32, mandelbrot-e30, mandelbrot-e50
 |---:|---|---|---|---|---:|---|
 | 1 | 1 correction | quality | `seahorse-valley` | verdict | FAIL | quality suite FAIL |
 | 2 | 1 correction | quality | `misiurewicz-m32` | verdict | FAIL | quality suite FAIL |
-| 3 | 1 correction | quality | `mandelbrot-e30` | verdict | FAIL | quality suite FAIL |
-| 4 | 1 correction | quality | `mandelbrot-e50` | verdict | FAIL | quality suite FAIL |
-| 5 | 3 vitesse | speed | `glitch_test_2` | ratio | 3.4494 | 3.45× plus lent que F3 |
-| 6 | 3 vitesse | speed | `dragon` | ratio | 2.6814 | 2.68× plus lent que F3 |
-| 7 | 3 vitesse | speed | `e113` | ratio | 2.1545 | 2.15× plus lent que F3 |
-| 8 | 4 qualité | quality | `mandelbrot-e18-minibrot` | verdict | WARN | quality suite WARN |
+| 3 | 3 vitesse | speed | `glitch_test_2` | ratio | 3.1445 | 3.14× plus lent que F3 |
+| 4 | 3 vitesse | speed | `dragon` | ratio | 2.5656 | 2.57× plus lent que F3 |
+| 5 | 4 qualité | quality | `mandelbrot-e18-minibrot` | verdict | WARN | quality suite WARN |
 
 ---
 _Scorecards versionnés : `harness/history/` · baseline : `harness/baseline.json`. Généré par `scripts/harness.py`._
