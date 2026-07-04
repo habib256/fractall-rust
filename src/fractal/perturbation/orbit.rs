@@ -12,6 +12,33 @@ use crate::fractal::perturbation::bla::{BlaTable, build_bla_table};
 use crate::fractal::perturbation::types::ComplexExp;
 use crate::fractal::perturbation::series::{SeriesTable, build_series_table_ho, validate_series_with_probes_tiled, compute_adaptive_series_order};
 
+/// Convertit `z` (Complex GMP borné de l'orbite référence) en `ComplexExp`, en
+/// évitant les 2 clones GMP 676 b de `ComplexExp::from_gmp` dans le cas dominant.
+///
+/// `z_f64` est la valeur f64 de `z` déjà calculée par l'appelant (pour
+/// `z_ref_f64`). Une composante f64 **normale** (≥ `MIN_POSITIVE`) round-trippe
+/// exactement depuis GMP : `from_complex64(z_f64).c == from_gmp(z).c`
+/// bit-à-bit (même arrondi 676 b → 53 b). Une composante f64 nulle est sûre SSI
+/// le GMP est vraiment nul. Le seul cas dangereux — GMP petit non-nul mais f64
+/// underflow (dénormal/0) — retombe sur `from_gmp` qui préserve l'exposant
+/// étendu (nécessaire aux orbites qui frôlent 0, cf. `extended_iterations`).
+#[inline]
+fn z_ref_complexexp(z: &Complex, z_f64: Complex64) -> ComplexExp {
+    #[inline(always)]
+    fn component_safe(f: f64, g: &Float) -> bool {
+        if f == 0.0 {
+            g.is_zero() // f64 nul : sûr seulement si le GMP est vraiment nul
+        } else {
+            f.abs() >= f64::MIN_POSITIVE // non-nul : sûr si normal (pas dénormal)
+        }
+    }
+    if component_safe(z_f64.re, z.real()) && component_safe(z_f64.im, z.imag()) {
+        ComplexExp::from_complex64(z_f64)
+    } else {
+        ComplexExp::from_gmp(z)
+    }
+}
+
 /// Squared escape radius used while iterating the reference orbit.
 ///
 /// Matches Fraktaler-3 `hybrid.cc:87` (`norm(Zp[i]) < 1e10`). Using
@@ -1138,9 +1165,10 @@ pub fn compute_reference_orbit(
         if store_dense_gmp { (params.iteration_max as usize / data_storage_interval) + 2 } else { 0 }
     );
 
-    // Store high-precision, f64, and full GMP versions
-    z_ref.push(ComplexExp::from_gmp(&z));
-    z_ref_f64.push(complex_to_complex64(&z));
+    // Store high-precision, f64, and full GMP versions (cf. `z_ref_complexexp`).
+    let z_f64 = complex_to_complex64(&z);
+    z_ref.push(z_ref_complexexp(&z, z_f64));
+    z_ref_f64.push(z_f64);
     if store_dense_gmp {
         z_ref_gmp.push(z.clone());
         high_precision_data.push(z.clone());
@@ -1293,9 +1321,16 @@ pub fn compute_reference_orbit(
                 _ => return None,
             }
         }
-        // Store high-precision, f64, and full GMP versions
-        z_ref.push(ComplexExp::from_gmp(&z));
-        z_ref_f64.push(complex_to_complex64(&z));
+        // Store high-precision, f64, and full GMP versions.
+        // `z_ref` (ComplexExp) : fast-path depuis le f64 déjà calculé quand z
+        // tient dans le range f64 normal (cas dominant, z borné par l'escape
+        // radius) — évite les 2 clones GMP 676 b de `from_gmp`. Fallback
+        // `from_gmp` seulement si une composante underflow (z proche de 0) où
+        // l'exposant étendu doit être préservé. Bit-identique (cf.
+        // `z_ref_complexexp`).
+        let z_f64 = complex_to_complex64(&z);
+        z_ref.push(z_ref_complexexp(&z, z_f64));
+        z_ref_f64.push(z_f64);
         // GMP dense sauté hors correction glitch (cf. `store_dense_gmp`).
         if store_dense_gmp {
             z_ref_gmp.push(z.clone());
