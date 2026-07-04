@@ -1,0 +1,146 @@
+{
+  "schema": 1,
+  "meta": {
+    "date_utc": "2026-07-04T18:45:52+00:00",
+    "stamp": "20260704T184552Z",
+    "git_sha": "ba4f957",
+    "git_dirty": true,
+    "machine": {
+      "cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz",
+      "nproc": 16,
+      "os": "Linux 6.14.0-37-generic"
+    },
+    "tier": "quick",
+    "axes": [
+      "speed"
+    ],
+    "width": 256,
+    "height": 256,
+    "quality_width": 96,
+    "quality_height": 96,
+    "runs": 1,
+    "f3_bin": "/home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux"
+  },
+  "speed": {
+    "status": "ok",
+    "cases": {
+      "wfs4": {
+        "fractall_s": 18.2474,
+        "f3_s": 13.9873,
+        "ratio": 1.3046,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "wfs2": {
+        "fractall_s": 12.8892,
+        "f3_s": 15.3887,
+        "ratio": 0.8376,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "wfs_extended": {
+        "fractall_s": 20.8524,
+        "f3_s": 19.9484,
+        "ratio": 1.0453,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "wfs": {
+        "fractall_s": 7.2782,
+        "f3_s": 14.6881,
+        "ratio": 0.4955,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "wfs_mb": {
+        "fractall_s": 93.7349,
+        "f3_s": 13.7867,
+        "ratio": 6.7989,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "olbaid5": {
+        "fractall_s": 10.6847,
+        "f3_s": 12.184,
+        "ratio": 0.8769,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_2": {
+        "fractall_s": 0.2147,
+        "f3_s": 0.1639,
+        "ratio": 1.3099,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "dragon": {
+        "fractall_s": 3.0221,
+        "f3_s": 3.8212,
+        "ratio": 0.7909,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e227": {
+        "fractall_s": 0.9684,
+        "f3_s": 1.8167,
+        "ratio": 0.5331,
+        "status": "ok",
+        "f3_exr_ok": true
+      }
+    },
+    "geomean_ratio": 1.0716,
+    "worst_ratio": {
+      "case": "wfs_mb",
+      "ratio": 6.7989
+    },
+    "wins": [
+      "wfs2",
+      "wfs",
+      "olbaid5",
+      "dragon",
+      "e227"
+    ],
+    "timeouts": [],
+    "n_cases": 9,
+    "n_compared": 9
+  },
+  "parity": {
+    "status": "skipped"
+  },
+  "quality": {
+    "status": "skipped"
+  },
+  "goldens": {
+    "status": "skipped"
+  },
+  "beyond_f3": {
+    "speed_wins": [
+      "wfs2",
+      "wfs",
+      "olbaid5",
+      "dragon",
+      "e227"
+    ],
+    "correctness_wins": []
+  },
+  "gaps": [
+    {
+      "axis": "speed",
+      "case": "wfs_mb",
+      "metric": "ratio",
+      "value": 6.7989,
+      "baseline_value": null,
+      "severity": 3,
+      "note": "6.80× plus lent que F3"
+    },
+    {
+      "axis": "speed",
+      "case": "<geomean>",
+      "metric": "geomean_ratio",
+      "value": 1.0716,
+      "baseline_value": 0.3289,
+      "severity": 3,
+      "note": "RÉGRESSION vs baseline (>10%)"
+    }
+  ]
+}

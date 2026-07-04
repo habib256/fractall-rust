@@ -1392,7 +1392,6 @@ pub fn compute_reference_orbit(
     // The hot orbit loop previously created 4-6 fresh Float/Complex values per
     // iteration (norm sqr components, z_prec clone, z_sq clone). For deep zooms
     // (170k+ iterations) that adds up to millions of redundant GMP allocations.
-    let mut scratch = Complex::with_val(prec, (0, 0));
     let mut norm_re = Float::with_val(prec, 0);
     let mut norm_im = Float::with_val(prec, 0);
     let mut norm_sqr = Float::with_val(prec, 0);
@@ -1467,23 +1466,24 @@ pub fn compute_reference_orbit(
         } else {
             // In-place iteration update using a scratch Complex. Previously each
             // match arm allocated 2-3 fresh Complex values per iteration.
+            // `z.square_mut()` (mpc_sqr, ~2 mults) au lieu de `z *= z` (mpc_mul,
+            // ~3 mults) : ~33 % de mults en moins sur la mult dominante de
+            // l'orbite deep-zoom (F3 utilise `sqr`). Correctement arrondi = même
+            // valeur → bit-identique.
             match ftype {
                 FractalType::Mandelbrot => {
-                    scratch.assign(&z);
-                    z *= &scratch; // z = z * z
+                    z.square_mut(); // z = z²
                     z += &cref; // z = z² + cref
                 }
                 FractalType::Julia => {
-                    scratch.assign(&z);
-                    z *= &scratch;
+                    z.square_mut();
                     z += &seed;
                 }
                 FractalType::BurningShip => {
                     // z = (|Re(z)| + i|Im(z)|)² + cref
                     z.mut_real().abs_mut();
                     z.mut_imag().abs_mut();
-                    scratch.assign(&z);
-                    z *= &scratch;
+                    z.square_mut();
                     z += &cref;
                 }
                 FractalType::Multibrot => {
@@ -1494,8 +1494,7 @@ pub fn compute_reference_orbit(
                 FractalType::Tricorn => {
                     // z = conj(z)² + cref
                     z.conj_mut();
-                    scratch.assign(&z);
-                    z *= &scratch;
+                    z.square_mut();
                     z += &cref;
                 }
                 _ => return None,

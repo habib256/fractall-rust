@@ -2,8 +2,8 @@
 
 # SCORECARD — fractall vs Fraktaler-3
 
-- **Date** : 2026-07-04T17:41:46+00:00
-- **Commit** : `f5c424a`  ⚠️ arbre modifié (dirty)
+- **Date** : 2026-07-04T18:53:45+00:00
+- **Commit** : `ba4f957`  ⚠️ arbre modifié (dirty)
 - **Machine** : Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz · 16 threads · Linux 6.14.0-37-generic
 - **Tier** : quick · 256×256 · quality 96×96 · runs=1 · axes=speed,parity,quality,goldens
 - **F3** : /home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux
@@ -12,8 +12,8 @@
 
 | Métrique | Valeur | vs baseline |
 |---|---:|---|
-| geomean ratio | 0.301 |  (↓0.0278 ✅) |
-| pire ratio | 1.307 (glitch_test_2) | |
+| geomean ratio | 0.290 |  (↓0.0389 ✅) |
+| pire ratio | 1.305 (glitch_test_2) | |
 | wins (ratio<1) | 9 | |
 | timeouts | 0 | |
 | cas comparés | 10/10 | |

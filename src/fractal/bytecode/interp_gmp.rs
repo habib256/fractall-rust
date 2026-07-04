@@ -45,9 +45,11 @@ impl GmpInterpState {
         for op in &phase.ops {
             match op {
                 Op::Sqr => {
-                    // z = z * z via scratch pour éviter une alloc
-                    self.cplx_scratch.assign(&self.z);
-                    self.z *= &self.cplx_scratch;
+                    // z = z² via `square_mut` (mpc_sqr, ~2 mults réelles) au lieu
+                    // de `z *= z` (mpc_mul, ~3 mults) → ~33 % de mults en moins sur
+                    // la mult, dominante de l'orbite deep-zoom (F3 utilise `sqr`).
+                    // Correctement arrondi = même valeur que z·z → bit-identique.
+                    self.z.square_mut();
                 }
                 Op::Mul => {
                     self.z *= &self.stored;

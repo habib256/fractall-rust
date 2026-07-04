@@ -270,6 +270,24 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     `dd_orbit_matches_gmp_julia`. Tranche dd couvre Mandelbrot ET Julia.
   - [ ] Reste Phase 2+ : quad-double pour 1e28–1e60 ; câbler le pixel loop dd
     (P1.6.e original : delta quasi-périodique, glitch_test_1/5).
+- [x] **Orbite : `square_mut` (mpc_sqr) au lieu de `z*=z` (mpc_mul)** (2026-07-04) :
+  un sweep du corpus COMPLET (cf. [[harness-sweep-full-corpus]]) a révélé les cas
+  ultra-profonds orbite-bound (wfs*, olbaid5) plus lents que F3. Le pas Mandelbrot
+  `Z²+c` faisait `z *= z` (mpc_mul, ~3 mults réelles) alors que z² se calcule en
+  **~2 mults** (mpc_sqr via `Complex::square_mut`) — comme F3 (`sqr`). Appliqué à
+  `interp_gmp.rs::Op::Sqr` (path bytecode, défaut) + `orbit.rs` (Mandelbrot/Julia/
+  BS/Tricorn direct). Correctement arrondi = même valeur que z·z → **bit-identique**
+  (goldens 🟢 inchangés). **Orbite ~2.1× plus rapide** à haute précision (wfs4 6338 b :
+  30.6→14.6 s). Résultats 256² : wfs4 2.56→**1.30**, wfs2 1.51→**0.84**, wfs_extended
+  1.89→**1.05**, wfs→0.50, olbaid5 1.41→**0.88**, **dragon 1.9→0.79**, e227→0.53.
+  Aide TOUT orbite deep Mandelbrot/Julia/BS/Tricorn. 187 unit + quality 11 PASS +
+  parité inchangés.
+  - [ ] **NOUVEAU gap : wfs_mb 6.8×** (zoom 6.5e2020, **10 M iters**, 6750 b) :
+    orbite 77 s (même avec sqr) vs F3 total 13.8 s → ~5.6×/iter. Pas le squaring
+    (déjà optimisé) : soit F3 détecte la PÉRIODE et raccourcit la réf (fractall a
+    NO_PERIOD=1 pour la parité), soit stratégie bignum F3 plus rapide en ultra-deep.
+    À creuser (period-aware reference OU profiler mpc_sqr vs MPFR direct F3).
+    wfs_mb/e8000/e22522/e52465 = même classe (orbites 10-50 M iters).
 - [x] **Path f64 étendu à 1e280 (seuil 1e-200 → 1e-280)** (2026-07-04) : après
   l'extension initiale à 1e-200, un sweep vitesse du corpus STANDARD/full a révélé
   4 cas encore sur le path exp lent (zoom > 1e200) donc PLUS LENTS que F3 :

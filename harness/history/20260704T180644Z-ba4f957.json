@@ -1,0 +1,694 @@
+{
+  "schema": 1,
+  "meta": {
+    "date_utc": "2026-07-04T18:06:44+00:00",
+    "stamp": "20260704T180644Z",
+    "git_sha": "ba4f957",
+    "git_dirty": true,
+    "machine": {
+      "cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz",
+      "nproc": 16,
+      "os": "Linux 6.14.0-37-generic"
+    },
+    "tier": "quick",
+    "axes": [
+      "speed"
+    ],
+    "width": 256,
+    "height": 256,
+    "quality_width": 96,
+    "quality_height": 96,
+    "runs": 1,
+    "f3_bin": "/home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux"
+  },
+  "speed": {
+    "status": "ok",
+    "cases": {
+      "11_dimensions": {
+        "fractall_s": 0.2142,
+        "f3_s": 0.7151,
+        "ratio": 0.2995,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "adventurous_forest": {
+        "fractall_s": 0.2141,
+        "f3_s": 0.4646,
+        "ratio": 0.4608,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "all_seeing_eye": {
+        "fractall_s": 0.0638,
+        "f3_s": 0.1138,
+        "ratio": 0.5606,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "dinosaur_fossils": {
+        "fractall_s": 0.1138,
+        "f3_s": 0.2642,
+        "ratio": 0.4307,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "dragon_detail": {
+        "fractall_s": 3.4716,
+        "f3_s": 3.7734,
+        "ratio": 0.92,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "dragon": {
+        "fractall_s": 3.4717,
+        "f3_s": 3.5716,
+        "ratio": 0.972,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e113": {
+        "fractall_s": 0.0658,
+        "f3_s": 0.2642,
+        "ratio": 0.2491,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e227": {
+        "fractall_s": 1.2167,
+        "f3_s": 1.6667,
+        "ratio": 0.73,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e318": {
+        "fractall_s": 0.4661,
+        "f3_s": 13.9361,
+        "ratio": 0.0334,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e50": {
+        "fractall_s": 0.2658,
+        "f3_s": 1.1656,
+        "ratio": 0.228,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "evolution_trees": {
+        "fractall_s": 1.2674,
+        "f3_s": 1.8166,
+        "ratio": 0.6977,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "flake": {
+        "fractall_s": 0.1146,
+        "f3_s": 0.2143,
+        "ratio": 0.5348,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "floral_fantasy": {
+        "fractall_s": 0.0343,
+        "f3_s": 0.164,
+        "ratio": 0.2091,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_1": {
+        "fractall_s": 0.2144,
+        "f3_s": 0.3642,
+        "ratio": 0.5887,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_2": {
+        "fractall_s": 0.214,
+        "f3_s": 0.164,
+        "ratio": 1.3049,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_3": {
+        "fractall_s": 0.1139,
+        "f3_s": 0.3143,
+        "ratio": 0.3624,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_4": {
+        "fractall_s": 0.0347,
+        "f3_s": 0.164,
+        "ratio": 0.2116,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_5": {
+        "fractall_s": 0.0325,
+        "f3_s": 0.0155,
+        "ratio": 2.0968,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_6": {
+        "fractall_s": 0.0637,
+        "f3_s": 0.2141,
+        "ratio": 0.2975,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_7": {
+        "fractall_s": 3.0704,
+        "f3_s": 4.3715,
+        "ratio": 0.7024,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "golden_spider": {
+        "fractall_s": 0.214,
+        "f3_s": 0.9153,
+        "ratio": 0.2338,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "hard": {
+        "fractall_s": 3.3759,
+        "f3_s": 23.8051,
+        "ratio": 0.1418,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "heaven": {
+        "fractall_s": 0.1143,
+        "f3_s": 0.2643,
+        "ratio": 0.4325,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "infinity": {
+        "fractall_s": 5.976,
+        "f3_s": 28.9116,
+        "ratio": 0.2067,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "integral_of_ex2": {
+        "fractall_s": 0.1642,
+        "f3_s": 0.5151,
+        "ratio": 0.3188,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "layers": {
+        "fractall_s": 0.465,
+        "f3_s": 1.967,
+        "ratio": 0.2364,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "leaded_glass": {
+        "fractall_s": 0.1644,
+        "f3_s": 1.4163,
+        "ratio": 0.1161,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "lethal_weapon": {
+        "fractall_s": 5.6264,
+        "f3_s": 29.9181,
+        "ratio": 0.1881,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "liiiines": {
+        "fractall_s": 0.1704,
+        "f3_s": 5.2221,
+        "ratio": 0.0326,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "line": {
+        "fractall_s": 0.0325,
+        "f3_s": 0.1138,
+        "ratio": 0.2856,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "long": {
+        "fractall_s": 1.5705,
+        "f3_s": 10.0309,
+        "ratio": 0.1566,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "lya": {
+        "fractall_s": 0.3142,
+        "f3_s": 0.4144,
+        "ratio": 0.7582,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "magic": {
+        "fractall_s": 0.2151,
+        "f3_s": 0.9155,
+        "ratio": 0.235,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "mitosis2": {
+        "fractall_s": 0.0659,
+        "f3_s": 0.1138,
+        "ratio": 0.5791,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "mitosis": {
+        "fractall_s": 0.1148,
+        "f3_s": 0.1639,
+        "ratio": 0.7004,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "nr_fail": {
+        "fractall_s": 0.1149,
+        "f3_s": 1.266,
+        "ratio": 0.0908,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "olbaid1": {
+        "fractall_s": 4.774,
+        "f3_s": 12.8857,
+        "ratio": 0.3705,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "olbaid2": {
+        "fractall_s": 2.22,
+        "f3_s": 9.0289,
+        "ratio": 0.2459,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "olbaid3": {
+        "fractall_s": 6.5269,
+        "f3_s": 20.0982,
+        "ratio": 0.3248,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "olbaid4": {
+        "fractall_s": 15.2453,
+        "f3_s": 42.0857,
+        "ratio": 0.3622,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "olbaid5": {
+        "fractall_s": 16.7487,
+        "f3_s": 11.8852,
+        "ratio": 1.4092,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "opus2": {
+        "fractall_s": null,
+        "f3_s": null,
+        "ratio": null,
+        "status": "fractall_timeout",
+        "f3_exr_ok": false
+      },
+      "opus": {
+        "fractall_s": 3.0703,
+        "f3_s": 12.0353,
+        "ratio": 0.2551,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "orion": {
+        "fractall_s": null,
+        "f3_s": null,
+        "ratio": null,
+        "status": "fractall_timeout",
+        "f3_exr_ok": false
+      },
+      "peanuts": {
+        "fractall_s": 0.0647,
+        "f3_s": 0.2641,
+        "ratio": 0.245,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "rug": {
+        "fractall_s": 0.1142,
+        "f3_s": 0.6647,
+        "ratio": 0.1718,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "safari": {
+        "fractall_s": 0.866,
+        "f3_s": 15.9413,
+        "ratio": 0.0543,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "seahorse": {
+        "fractall_s": null,
+        "f3_s": null,
+        "ratio": null,
+        "status": "fractall_fail",
+        "f3_exr_ok": false
+      },
+      "spiral": {
+        "fractall_s": 0.0318,
+        "f3_s": 0.1638,
+        "ratio": 0.1941,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "ssssss": {
+        "fractall_s": 0.9159,
+        "f3_s": 9.9817,
+        "ratio": 0.0918,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "super_dense": {
+        "fractall_s": null,
+        "f3_s": null,
+        "ratio": null,
+        "status": "fractall_timeout",
+        "f3_exr_ok": false
+      },
+      "test2": {
+        "fractall_s": 0.0321,
+        "f3_s": 0.1139,
+        "ratio": 0.2818,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "test3": {
+        "fractall_s": 0.114,
+        "f3_s": 0.2642,
+        "ratio": 0.4315,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "test4": {
+        "fractall_s": 0.0157,
+        "f3_s": 0.0639,
+        "ratio": 0.2457,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "test5": {
+        "fractall_s": 0.009,
+        "f3_s": 0.0317,
+        "ratio": 0.2839,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "test6": {
+        "fractall_s": 0.0083,
+        "f3_s": 0.0317,
+        "ratio": 0.2618,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "test": {
+        "fractall_s": 0.0323,
+        "f3_s": 0.1139,
+        "ratio": 0.2836,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "the_complexity_of_a_line": {
+        "fractall_s": 1.3168,
+        "f3_s": 7.0752,
+        "ratio": 0.1861,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "threads_colour": {
+        "fractall_s": 6.9788,
+        "f3_s": 13.7373,
+        "ratio": 0.508,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "tick_tock": {
+        "fractall_s": 0.1139,
+        "f3_s": 0.3644,
+        "ratio": 0.3126,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "triangle": {
+        "fractall_s": null,
+        "f3_s": null,
+        "ratio": null,
+        "status": "fractall_timeout",
+        "f3_exr_ok": false
+      },
+      "uranium": {
+        "fractall_s": 0.1642,
+        "f3_s": 1.0152,
+        "ratio": 0.1617,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "verstoppertje": {
+        "fractall_s": 0.8156,
+        "f3_s": 2.017,
+        "ratio": 0.4044,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "virus": {
+        "fractall_s": 0.164,
+        "f3_s": 0.2642,
+        "ratio": 0.6207,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "wfs2": {
+        "fractall_s": 23.1557,
+        "f3_s": 15.3393,
+        "ratio": 1.5096,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "wfs4": {
+        "fractall_s": 34.3754,
+        "f3_s": 13.4354,
+        "ratio": 2.5586,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "wfs_extended": {
+        "fractall_s": 37.0786,
+        "f3_s": 19.5984,
+        "ratio": 1.8919,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "wfs_mb": {
+        "fractall_s": null,
+        "f3_s": 13.5866,
+        "ratio": null,
+        "status": "fractall_timeout",
+        "f3_exr_ok": true
+      },
+      "wfs": {
+        "fractall_s": 12.9379,
+        "f3_s": 14.0873,
+        "ratio": 0.9184,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "windmill": {
+        "fractall_s": 0.1138,
+        "f3_s": 0.3643,
+        "ratio": 0.3124,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "x": {
+        "fractall_s": 0.0659,
+        "f3_s": 0.1639,
+        "ratio": 0.4021,
+        "status": "ok",
+        "f3_exr_ok": true
+      }
+    },
+    "geomean_ratio": 0.3405,
+    "worst_ratio": {
+      "case": "wfs4",
+      "ratio": 2.5586
+    },
+    "wins": [
+      "11_dimensions",
+      "adventurous_forest",
+      "all_seeing_eye",
+      "dinosaur_fossils",
+      "dragon_detail",
+      "dragon",
+      "e113",
+      "e227",
+      "e318",
+      "e50",
+      "evolution_trees",
+      "flake",
+      "floral_fantasy",
+      "glitch_test_1",
+      "glitch_test_3",
+      "glitch_test_4",
+      "glitch_test_6",
+      "glitch_test_7",
+      "golden_spider",
+      "hard",
+      "heaven",
+      "infinity",
+      "integral_of_ex2",
+      "layers",
+      "leaded_glass",
+      "lethal_weapon",
+      "liiiines",
+      "line",
+      "long",
+      "lya",
+      "magic",
+      "mitosis2",
+      "mitosis",
+      "nr_fail",
+      "olbaid1",
+      "olbaid2",
+      "olbaid3",
+      "olbaid4",
+      "opus",
+      "peanuts",
+      "rug",
+      "safari",
+      "spiral",
+      "ssssss",
+      "test2",
+      "test3",
+      "test4",
+      "test5",
+      "test6",
+      "test",
+      "the_complexity_of_a_line",
+      "threads_colour",
+      "tick_tock",
+      "uranium",
+      "verstoppertje",
+      "virus",
+      "wfs",
+      "windmill",
+      "x"
+    ],
+    "timeouts": [
+      "opus2",
+      "orion",
+      "super_dense",
+      "triangle",
+      "wfs_mb"
+    ],
+    "n_cases": 71,
+    "n_compared": 65
+  },
+  "parity": {
+    "status": "skipped"
+  },
+  "quality": {
+    "status": "skipped"
+  },
+  "goldens": {
+    "status": "skipped"
+  },
+  "beyond_f3": {
+    "speed_wins": [
+      "11_dimensions",
+      "adventurous_forest",
+      "all_seeing_eye",
+      "dinosaur_fossils",
+      "dragon_detail",
+      "dragon",
+      "e113",
+      "e227",
+      "e318",
+      "e50",
+      "evolution_trees",
+      "flake",
+      "floral_fantasy",
+      "glitch_test_1",
+      "glitch_test_3",
+      "glitch_test_4",
+      "glitch_test_6",
+      "glitch_test_7",
+      "golden_spider",
+      "hard",
+      "heaven",
+      "infinity",
+      "integral_of_ex2",
+      "layers",
+      "leaded_glass",
+      "lethal_weapon",
+      "liiiines",
+      "line",
+      "long",
+      "lya",
+      "magic",
+      "mitosis2",
+      "mitosis",
+      "nr_fail",
+      "olbaid1",
+      "olbaid2",
+      "olbaid3",
+      "olbaid4",
+      "opus",
+      "peanuts",
+      "rug",
+      "safari",
+      "spiral",
+      "ssssss",
+      "test2",
+      "test3",
+      "test4",
+      "test5",
+      "test6",
+      "test",
+      "the_complexity_of_a_line",
+      "threads_colour",
+      "tick_tock",
+      "uranium",
+      "verstoppertje",
+      "virus",
+      "wfs",
+      "windmill",
+      "x"
+    ],
+    "correctness_wins": []
+  },
+  "gaps": [
+    {
+      "axis": "speed",
+      "case": "wfs4",
+      "metric": "ratio",
+      "value": 2.5586,
+      "baseline_value": null,
+      "severity": 3,
+      "note": "2.56× plus lent que F3"
+    },
+    {
+      "axis": "speed",
+      "case": "glitch_test_5",
+      "metric": "ratio",
+      "value": 2.0968,
+      "baseline_value": null,
+      "severity": 3,
+      "note": "2.10× plus lent que F3"
+    }
+  ]
+}
