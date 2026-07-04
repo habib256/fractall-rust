@@ -2,8 +2,8 @@
 
 # SCORECARD — fractall vs Fraktaler-3
 
-- **Date** : 2026-07-04T09:03:37+00:00
-- **Commit** : `ae1257b`  ⚠️ arbre modifié (dirty)
+- **Date** : 2026-07-04T10:22:39+00:00
+- **Commit** : `51f7950`  ⚠️ arbre modifié (dirty)
 - **Machine** : Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz · 16 threads · Linux 6.14.0-37-generic
 - **Tier** : quick · 256×256 · quality 96×96 · runs=1 · axes=speed,parity,quality,goldens
 - **F3** : /home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux
@@ -12,8 +12,8 @@
 
 | Métrique | Valeur | vs baseline |
 |---|---:|---|
-| geomean ratio | 0.799 |  (↓0.0909 ✅) |
-| pire ratio | 3.147 (glitch_test_2) | |
+| geomean ratio | 0.815 |  (↓0.0751 ✅) |
+| pire ratio | 3.156 (glitch_test_2) | |
 | wins (ratio<1) | 4 | |
 | timeouts | 0 | |
 | cas comparés | 10/10 | |
@@ -55,9 +55,10 @@ FAIL : seahorse-valley, misiurewicz-m32, mandelbrot-e30, mandelbrot-e50, mandelb
 | 3 | 1 correction | quality | `mandelbrot-e30` | verdict | FAIL | quality suite FAIL |
 | 4 | 1 correction | quality | `mandelbrot-e50` | verdict | FAIL | quality suite FAIL |
 | 5 | 1 correction | quality | `mandelbrot-e100` | verdict | FAIL | quality suite FAIL |
-| 6 | 3 vitesse | speed | `glitch_test_2` | ratio | 3.1465 | 3.15× plus lent que F3 |
-| 7 | 3 vitesse | speed | `dragon` | ratio | 2.5002 | 2.50× plus lent que F3 |
-| 8 | 4 qualité | quality | `mandelbrot-e18-minibrot` | verdict | WARN | quality suite WARN |
+| 6 | 3 vitesse | speed | `glitch_test_2` | ratio | 3.1556 | 3.16× plus lent que F3 |
+| 7 | 3 vitesse | speed | `dragon` | ratio | 2.5247 | 2.52× plus lent que F3 |
+| 8 | 3 vitesse | speed | `e113` | ratio | 2.1462 | 2.15× plus lent que F3 |
+| 9 | 4 qualité | quality | `mandelbrot-e18-minibrot` | verdict | WARN | quality suite WARN |
 
 ---
 _Scorecards versionnés : `harness/history/` · baseline : `harness/baseline.json`. Généré par `scripts/harness.py`._

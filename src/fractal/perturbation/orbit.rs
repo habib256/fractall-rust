@@ -41,7 +41,6 @@ fn z_ref_complexexp(z: &Complex, z_f64: Complex64) -> ComplexExp {
 
 /// Convertit un `Float` GMP en `DoubleDoubleExp` (~106 bits) : `hi` = arrondi
 /// f64, `lo` = reste (value − hi) arrondi f64. Capte min(106, prec(value)) bits.
-#[allow(dead_code)] // Phase 1a : validé par test ; câblé au dispatch en Phase 1b.
 fn gmp_float_to_ddexp(value: &Float) -> super::dd::DoubleDoubleExp {
     use super::dd::{DoubleDouble, DoubleDoubleExp};
     let hi = value.to_f64();
@@ -65,7 +64,6 @@ fn gmp_float_to_ddexp(value: &Float) -> super::dd::DoubleDoubleExp {
 /// Renvoie `(z_ref, z_ref_f64)`. Mirror de la structure de boucle de
 /// `compute_reference_orbit` (bailout `REFERENCE_BAILOUT_SQR` en tête, break sur
 /// évasion). Mandelbrot uniquement (`z = z² + c`).
-#[allow(dead_code)] // Phase 1a : validé par test ; câblé au dispatch en Phase 1b.
 fn dd_reference_orbit_mandelbrot(
     cref_gmp: &Complex,
     iteration_max: u32,
@@ -1175,6 +1173,58 @@ pub fn compute_reference_orbit(
 
     let cref = Complex::with_val(prec, (&ref_center_x, &ref_center_y));
     let cref_f64 = Complex64::new(ref_center_x.to_f64(), ref_center_y.to_f64());
+
+    // ── Chemin double-double (Phase 1b) ────────────────────────────────────
+    // Itère l'orbite référence en dd (~106 b, `dd_reference_orbit_mandelbrot`)
+    // au lieu de GMP quand : Mandelbrot standard (seed=0), path bytecode
+    // (`!force_dense_gmp` → z_ref_gmp paresseux), et requirement F3 **non clampé**
+    // ≤ 96 b (marge sous les ~106 b de dd). `compute_perturbation_precision_bits`
+    // clampe à ≥128 b donc ne peut pas servir de gate — on recalcule les bits
+    // formule bruts. ~14× plus rapide que GMP sur cette tranche (~1e13–1e19).
+    // Pas de period-detection ici (cycle_period=0) : le pixel loop gère les
+    // références non-évadantes par rebase-at-end F3 (cf. G2). NON bit-identique
+    // au path GMP (arrondi dd ≠ MPFR) → goldens mid-range régénérés.
+    let dd_eligible = !force_dense_gmp
+        && matches!(params.fractal_type, FractalType::Mandelbrot)
+        && params.seed.re == 0.0
+        && params.seed.im == 0.0
+        && {
+            let px = super::effective_pixel_size(params);
+            px > 0.0 && px.is_finite() && {
+                let log2_zoom = (4.0 / px).log2();
+                let log2_h = (params.height as f64).max(1.0).log2();
+                let formula_bits = 24.0 + (log2_zoom + log2_h).floor();
+                (0.0..=96.0).contains(&formula_bits)
+            }
+        };
+    if dd_eligible {
+        let (z_ref, z_ref_f64) =
+            dd_reference_orbit_mandelbrot(&cref, params.iteration_max, cancel)?;
+        let extended_iterations: Vec<u32> = z_ref_f64
+            .iter()
+            .enumerate()
+            .filter(|(_, z)| z.re.abs() < 1e-300 && z.im.abs() < 1e-300)
+            .map(|(i, _)| i as u32)
+            .collect();
+        return Some((
+            ReferenceOrbit {
+                cref: cref_f64,
+                z_ref,
+                z_ref_f64,
+                z_ref_gmp: Vec::new(), // paresseux (glitch → recompute GMP)
+                cref_gmp: cref,
+                phase_offset: 0,
+                extended_iterations,
+                high_precision_data: Vec::new(),
+                data_storage_interval: 1,
+                cycle_period: 0,
+                cycle_start: 0,
+            },
+            cx_str,
+            cy_str,
+        ));
+    }
+    // ───────────────────────────────────────────────────────────────────────
 
     let mut z = match params.fractal_type {
         FractalType::Mandelbrot | FractalType::BurningShip | FractalType::Multibrot | FractalType::Tricorn => {
