@@ -263,8 +263,13 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
   arrondissent au même 53 b), quality e13/e17 PASS (= GMP), parité inchangée.
   Verrou `dd_orbit_matches_gmp_midrange` + presets e13/e17/e18. **Réalise le
   goal G2 « aucun path ne force GMP là où doubledouble suffit » pour la
-  tranche moyenne.** Reste (Phase 2) : Julia dd, étendre à quad-double pour
-  1e28–1e60, câbler le pixel loop dd (P1.6.e original : delta quasi-périodique).
+  tranche moyenne.**
+  - [x] **Phase 2 — Julia dd** (2026-07-04, `bf88e4d`) : `dd_reference_orbit`
+    généralisé `(z0, c)` — Mandelbrot `z0=0,c=cref` / Julia `z0=cref,c=seed`.
+    julia-siegel-disk orbite GMP→dd, PASS max_diff=0. Verrou
+    `dd_orbit_matches_gmp_julia`. Tranche dd couvre Mandelbrot ET Julia.
+  - [ ] Reste Phase 2+ : quad-double pour 1e28–1e60 ; câbler le pixel loop dd
+    (P1.6.e original : delta quasi-périodique, glitch_test_1/5).
 - [ ] **Reste deep-zoom perf (dragon ~2.50×, glitch_test_2 ~3.1×)** :
   - dragon : orbite GMP ~3.26 s (mul complexe 676 b × 5 M iters, cœur
     incompressible sans float128) + pixels ComplexExp ~5.5 s. Leviers restants
