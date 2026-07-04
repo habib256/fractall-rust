@@ -300,6 +300,31 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     NO_PERIOD) → verrous stricts requis (goldens interior + glitch_test_5/1). Reporté :
     cas extrême (1e2020+), ROI faible vs risque correction. Le reste du corpus est
     déjà ≤ F3 (geomean 0.29). Cf. CLAUDE.md « nucleus phase-aware » (TODO G2/G4).
+  - [ ] **TENTATIVE 2026-07-05 (REVERTÉE) — atom-domain + cyclage MODULO** : porté
+    dans `compute_reference_orbit` (dz suivi en ComplexExp ~35 ns/iter, critère
+    `z_f64==0 ∧ |z|²<s²|dz|²`, troncation → `cycle_period` → `wrap_periodic` modulo).
+    Résultats mesurés (64², diff vs orbite pleine) :
+    - **wfs_mb : truncation à ~271 k iters, 86 s→2.5 s (35×), PIXEL-IDENTIQUE** avec
+      `z_f64==0` SEUL. e8000 : 6→2.6 s, pixel-identique. **Marche pour les vrais
+      nucleus super-attracteurs** (z_P underflow f64 = 0).
+    - **MAIS e22522 CASSÉ** (escape-time à 433 k iters) : `z_f64==0` fire à tort car
+      à prec ≫ 1023 l'orbite FRÔLE 0 (z~1e-500, underflow f64) sans être périodique.
+      Diagnostic [ATOMDIAG] : e22522 z_f64==0 à 1668, 3336, 5005… (espacé régulier,
+      « near-périodique ») MAIS escape à 433 k = 260 périodes plus loin.
+    - **LIMITE FONDAMENTALE du cyclage MODULO** : au point de troncation, un vrai
+      intérieur (wfs_mb) et un near-périodique-qui-escape (e22522) sont
+      INDISTINGUABLES sans calculer ~toute l'orbite. Aucun seuil sur `|z|`/`|dz|`/prec
+      ne les sépare (critère atom `|z|<s|dz|` rejette LES DEUX ; `z_f64==0` accepte
+      les deux). La vérif « z revient au même point à 2P » est bernée (e22522 semble
+      périodique 260× avant d'escape).
+    - **LE VRAI FIX = cyclage REBASE-AT-END (F3 `hybrid.cc:301`), PAS modulo** : le
+      rebase absorbe Z dans δ → tolère une troncation FAUSSE (perturbation compense),
+      donc pas besoin de distinguer intérieur/escape. Tentative rebase-at-end (cycle_
+      period=0) a donné wfs_mb avg=278 k (FAUX, delta devient ~O(1) en milieu d'orbite)
+      → BUG non résolu dans le path exp `end_of_ref` (à débugger : pourquoi le rebase
+      casse alors que F3 le fait). **Prochaine tentative : faire marcher rebase-at-end
+      d'abord (sur wfs_mb tronqué), PUIS activer la troncation atom (n'importe quel
+      seuil, le rebase tolère).** Revert propre, 0 régression.
 - [x] **Path f64 étendu à 1e280 (seuil 1e-200 → 1e-280)** (2026-07-04) : après
   l'extension initiale à 1e-200, un sweep vitesse du corpus STANDARD/full a révélé
   4 cas encore sur le path exp lent (zoom > 1e200) donc PLUS LENTS que F3 :
