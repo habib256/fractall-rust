@@ -2,8 +2,8 @@
 
 # SCORECARD — fractall vs Fraktaler-3
 
-- **Date** : 2026-07-04T10:41:01+00:00
-- **Commit** : `98b9e79`  ⚠️ arbre modifié (dirty)
+- **Date** : 2026-07-04T10:56:23+00:00
+- **Commit** : `3c71e74`
 - **Machine** : Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz · 16 threads · Linux 6.14.0-37-generic
 - **Tier** : quick · 256×256 · quality 96×96 · runs=1 · axes=speed,parity,quality,goldens
 - **F3** : /home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux
@@ -12,7 +12,7 @@
 
 | Métrique | Valeur | vs baseline |
 |---|---:|---|
-| geomean ratio | 0.812 |  (↓0.0774 ✅) |
+| geomean ratio | 0.795 |  (↓0.0944 ✅) |
 | pire ratio | 3.150 (glitch_test_2) | |
 | wins (ratio<1) | 4 | |
 | timeouts | 0 | |
@@ -56,7 +56,7 @@ FAIL : seahorse-valley, misiurewicz-m32, mandelbrot-e30, mandelbrot-e50, mandelb
 | 4 | 1 correction | quality | `mandelbrot-e50` | verdict | FAIL | quality suite FAIL |
 | 5 | 1 correction | quality | `mandelbrot-e100` | verdict | FAIL | quality suite FAIL |
 | 6 | 3 vitesse | speed | `glitch_test_2` | ratio | 3.1501 | 3.15× plus lent que F3 |
-| 7 | 3 vitesse | speed | `dragon` | ratio | 2.4875 | 2.49× plus lent que F3 |
+| 7 | 3 vitesse | speed | `dragon` | ratio | 2.4835 | 2.48× plus lent que F3 |
 | 8 | 4 qualité | quality | `mandelbrot-e18-minibrot` | verdict | WARN | quality suite WARN |
 
 ---

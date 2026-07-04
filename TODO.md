@@ -380,8 +380,23 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
   |dz| ~ 200-430 (delta grandi jusqu'à |z| = vraie perte de précision
   perturbation au bord chaotique), pas d'over-skip BLA (guard sans effet ici).
   Résiduel de bord ; FAIL uniquement par seuil strict (PASS exige
-  max_diff ≤ 1). Idem e13/e17/e18/e30/e100 (tous p95=0). Cf. calibration seuils
+  max_diff ≤ 1). Idem e13/e17/e18/e100 (tous p95≈0). Cf. calibration seuils
   quality (G6) vs bruit de bord inhérent.
+- [ ] **e30/e50 FAIL = plancher de précision mantisse f64** (re-diagnostiqué
+  2026-07-04, même centre `-0.04947…−0.67478…`, spirale profonde). div_ratio
+  3.6 %/5 %, p99=50/76, **mais** `escape_disagreement=0` et les 10 pixels les
+  plus divergents sont exactement les **plus profonds à escaper** (n≈25000-28000
+  pour e30, 170k-178k pour e50), **dispersés** spatialement (pas un cluster de
+  bord). Erreur relative `|dz|/|z|` > 1 sur ces pixels. **Cause** : `z_ref`
+  (Complex64) ET `delta` (ComplexExp = mantisse **f64** 53 bits) stockent Z et δ
+  à 2⁻⁵² relatif ; dans une spirale à sensibilité extrême l'amplification de
+  Lyapunov sur ~25000 itérations transforme ce 2⁻⁵² en O(1) → ±50-200 iters. Ce
+  n'est **pas** un rebase manqué : **hypothèse rebase-avant-BLA (F3
+  `hybrid.cc:295-308`, portée sur `pixel_loop_exp.rs` puis revert) laisse
+  div_ratio bit-identique** (0.03624). Le vrai levier = **tier mantisse float128**
+  (F3 escalade double→float128 via wisdom pour ces spirales) → **lié à G2
+  (wisdom/auto-précision)**, hors d'une itération /improve. Ne PAS re-tenter un
+  ajustement du rebase/BLA ici.
 - [ ] **Period-detection truncation = LOSSY** → passer **OFF par défaut**.
   Même pour une période *genuine*, `truncate + wrap_periodic` accumule l'erreur
   de quasi-périodicité (~2^(-0.4·prec)) sur ~iter_max/période cycles →
