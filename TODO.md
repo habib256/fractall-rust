@@ -243,10 +243,18 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
   calculé quand z est dans le range f64 normal (bit-identique ; fallback from_gmp
   si underflow near-0). dragon orbite ~5.06→4.74 s, ratio 2.97→2.94, geomean
   0.759. Verrou goldens deep-zoom + bit-identité dragon.
-- [ ] **Reste deep-zoom perf (dragon ~2.94×, glitch_test_2 ~3.5×)** :
-  - dragon : orbite GMP ~4.7 s (mul 676 b × 5 M iters, incompressible sans
-    float128) + pixels ComplexExp ~5.3 s. Leviers restants = wisdom/float128
-    pour l'orbite ET la boucle pixel exp (gros chantier, cf. P1.6.d/e).
+- [x] **Pré-check f64 du bailout orbite référence** (2026-07-04, `3f59745`) :
+  la norme GMP du test de bailout (2 carrés 676 b/itér.) tournait à chaque tour
+  même sur les orbites bornées qui ne s'évadent jamais (dragon 5 M iters). Pré-
+  check f64 sur `z_ref_f64.last()` (bit-identique, marge 1 % ≫ l'erreur ~4e-6) →
+  norme GMP calculée seulement près de la frontière. **dragon orbite 4.4→3.26 s
+  (−26 %), ratio 2.94→2.50 ; glitch_test_2 3.76→3.15**. Diagnostic préalable :
+  interpréteur GMP + copie `z.assign` = 0 gain (A/B) — c'était la norme.
+- [ ] **Reste deep-zoom perf (dragon ~2.50×, glitch_test_2 ~3.1×)** :
+  - dragon : orbite GMP ~3.26 s (mul complexe 676 b × 5 M iters, cœur
+    incompressible sans float128) + pixels ComplexExp ~5.5 s. Leviers restants
+    = wisdom/float128 (orbite, cf. AskUser : middle-range only) ET boucle pixel
+    exp f64-scaled (non-bit-identique, cf. P1.6.d/e).
   - glitch_test_2 : fractall 0.605 s stable vs **F3 0.113 s stable** → ~3.5-5.4×
     (bruit F3). Zoom 1e112, orbite 0.23 s + pixels ComplexExp 0.33 s.
   - **IMPASSE (2026-07-04) : spécialiser `FloatExp::mul`/`sqr` (éviter `frexp`
