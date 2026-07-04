@@ -270,7 +270,7 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     `dd_orbit_matches_gmp_julia`. Tranche dd couvre Mandelbrot ET Julia.
   - [ ] Reste Phase 2+ : quad-double pour 1e28–1e60 ; câbler le pixel loop dd
     (P1.6.e original : delta quasi-périodique, glitch_test_1/5).
-- [ ] **Reste deep-zoom perf (dragon ~2.29×, glitch_test_2 ~3.14×)** :
+- [ ] **Reste deep-zoom perf (dragon ~2.07×, glitch_test_2 ~2.5–2.85×)** :
   - dragon : orbite GMP ~3.26 s (mul complexe 676 b × 5 M iters, cœur
     incompressible sans float128) + pixels ComplexExp ~5.5 s. Leviers restants
     = wisdom/float128 (orbite, cf. AskUser : middle-range only) ET boucle pixel
@@ -319,10 +319,20 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     build, une seule table.** dragon pixels 5.71→4.69 s (−18 %), total 8.92→7.91 s,
     ratio 2.63→2.29 ; glitch_test_2 pixels 0.342→0.270 s (−21 %), ratio 3.48→3.14 ;
     e113 sorti des gaps. **Bit-identique** (même table, goldens 🟢 pixel-exact +
-    quality 11 PASS + parité inchangés). Levier restant = **paralléliser le build**
-    (level0 = M single-steps embarrassingly parallel) hors du lock, avant la boucle
-    pixel → dragon perdrait le ~1.2 s de build serial ; nécessite de sortir la table
-    du thread-local vers le pipeline sequentiel de `render_perturbation_with_cache`.
+    quality 11 PASS + parité inchangés).
+  - [x] **Build BLA parallélisé + pré-chauffé hors du lock** (2026-07-04) : suite du
+    point ci-dessus. `BlaTableUnified::build` map level-0 + merges en rayon
+    (order-preserving → bit-identique) au-delà de `PAR_BLA_MIN=65536` nœuds ; sous
+    le seuil (goldens ~2,5 k, e113 35 k) reste serial (pas d'overhead). Le build est
+    **pré-chauffé** par `delta::prewarm_bla_entry(params, &cache.orbit)` appelé dans
+    `render_perturbation_with_cache` AVANT la boucle pixel (pool rayon libre) : sous
+    le lock global depuis un worker, les 15 autres sont parqués → rayon ne les vole
+    pas, donc le parallélisme n'a d'effet QUE pré-chauffé. dragon build serial ~1,2 s
+    → parallèle **~0,11 s**, total 7,91→7,55 s (ratio 2,19→2,07) ; glitch_test_2 plat
+    (table 250 k déjà ~20 ms). Sauté sur hybrides (`hybrid_refs.is_some()` → autres
+    orbites). Goldens 🟢 pixel-exact + 187 unit + quality 11 PASS + parité inchangés.
+    Reste : le pixel loop deep-zoom lui-même (memory-bound, cf. IMPASSE #2) — dragon
+    pixels ~4,3 s, levier = layout cache-friendly `z_ref_f64` / stride BLA.
 - [ ] **Re-sweep corpus complet avec le fix** : confirmer que les 36 ex-perf
   cas rendent ET matchent F3 (probable vu e1000 pixel-identique + e113 == GMP).
 - **Acceptation : ✅ ATTEINTE** — e50 **1.57 s**, e1000 **0.53 s**, dragon

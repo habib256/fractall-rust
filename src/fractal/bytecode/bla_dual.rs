@@ -14,6 +14,7 @@
 //! Chaque opcode met à jour value et jac selon la règle de la chaîne.
 
 use crate::fractal::bytecode::{Formula, Op, Phase};
+use rayon::prelude::*;
 
 /// Matrice 2×2 réelle (compatible avec `nonconformal::Matrix2x2`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -411,28 +412,47 @@ impl BlaTableUnified {
             return Self { levels: Vec::new() };
         }
 
+        // Seuil au-delà duquel le build passe en parallèle (rayon). Les orbites
+        // profondes (dragon 4 M nœuds, e113/glitch_test_2 250 k) dominaient la
+        // phase pixel via le build serial ; le map level-0 et les merges sont
+        // indépendants par index → parallélisables SANS changer l'ordre ni les
+        // valeurs (bit-identique au serial). Sous le seuil (goldens ~2,5 k iter),
+        // on reste serial pour éviter l'overhead rayon. ⚠️ Le gain n'existe QUE si
+        // le build tourne avec des cœurs libres (cf. `delta::prewarm_bla_entry`,
+        // appelé hors de la boucle pixel) — sous le lock global les autres workers
+        // sont parqués et rayon ne peut pas les voler.
+        const PAR_BLA_MIN: usize = 1 << 16; // 65536
+
         // Level 0 : un single-step par itération de référence.
-        let level0: Vec<BlaMultiStep> = (0..m)
-            .map(|i| {
-                let z = ref_orbit[i];
-                BlaMultiStep::from_single(build_bla_single_step(z.re, z.im, phase, epsilon))
-            })
-            .collect();
+        let build_l0 = |i: usize| {
+            let z = ref_orbit[i];
+            BlaMultiStep::from_single(build_bla_single_step(z.re, z.im, phase, epsilon))
+        };
+        let level0: Vec<BlaMultiStep> = if m >= PAR_BLA_MIN {
+            (0..m).into_par_iter().map(build_l0).collect()
+        } else {
+            (0..m).map(build_l0).collect()
+        };
         let mut levels = vec![level0];
 
-        // Niveaux supérieurs : merge adjacents.
+        // Niveaux supérieurs : merge adjacents (paires `[2k, 2k+1]`, tail impair
+        // promu tel quel — identique à la boucle serial d'origine).
         while levels.last().unwrap().len() > 1 {
             let prev = levels.last().unwrap();
-            let mut next: Vec<BlaMultiStep> = Vec::with_capacity((prev.len() + 1) / 2);
-            let mut i = 0;
-            while i + 1 < prev.len() {
-                let merged = BlaMultiStep::merge(prev[i], prev[i + 1], c_norm);
-                next.push(merged);
-                i += 2;
-            }
+            let n_pairs = prev.len() / 2;
+            let mut next: Vec<BlaMultiStep> = if n_pairs >= PAR_BLA_MIN {
+                (0..n_pairs)
+                    .into_par_iter()
+                    .map(|k| BlaMultiStep::merge(prev[2 * k], prev[2 * k + 1], c_norm))
+                    .collect()
+            } else {
+                (0..n_pairs)
+                    .map(|k| BlaMultiStep::merge(prev[2 * k], prev[2 * k + 1], c_norm))
+                    .collect()
+            };
             // Si nombre impair, le dernier est promu tel quel.
-            if i < prev.len() {
-                next.push(prev[i]);
+            if prev.len() % 2 == 1 {
+                next.push(prev[prev.len() - 1]);
             }
             levels.push(next);
         }

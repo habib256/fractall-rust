@@ -1120,6 +1120,15 @@ pub fn render_perturbation_with_cache(
         (Vec::new(), Vec::new())
     };
 
+    // Pré-construit la table BLA partagée pendant que le pool rayon est libre :
+    // son build (parallélisé) serait sinon serial sous le lock au premier pixel.
+    // `cache.orbit` est l'orbite que `iterate_pixel` utilisera (branche
+    // non-hybride, même ptr → hit cache). Sur les hybrides multi-phase, le pixel
+    // loop consomme d'autres orbites → on saute (le build se fera comme avant).
+    if cache.hybrid_refs.is_none() {
+        crate::fractal::perturbation::delta::prewarm_bla_entry(params, &cache.orbit);
+    }
+
     let t_pixels_start = Instant::now();
     // Finer chunk granularity to improve rayon work-stealing. Whole rows
     // (width pixels) caused load imbalance when a row straddles fast-escaping

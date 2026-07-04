@@ -203,6 +203,37 @@ fn get_or_build_bla_entry(
     Some(arc)
 }
 
+/// Pré-construit (et met en cache global) la table BLA du render AVANT la boucle
+/// pixel parallèle, pendant que tous les cœurs rayon sont libres. Le build est
+/// parallélisé (cf. `BlaTableUnified::build`) mais ce parallélisme n'a d'effet
+/// que si des cœurs sont disponibles : sous le lock global depuis un worker de la
+/// boucle pixel, les 15 autres sont parqués sur le lock → build serial. En
+/// pré-chauffant depuis le thread séquentiel de `render_perturbation_with_cache`,
+/// le build utilise tout le pool. No-op si le path bytecode ne s'applique pas
+/// (le pixel loop construira comme avant). **Bit-identique** : même build, plus
+/// tôt. `ref_orbit` DOIT être l'orbite que la boucle pixel utilisera (même ptr
+/// `z_ref_f64` → hit cache), sinon simple rebuild sans régression.
+pub fn prewarm_bla_entry(params: &FractalParams, ref_orbit: &ReferenceOrbit) {
+    if !params.use_bytecode_engine {
+        return;
+    }
+    let formula = match compile_formula(params.fractal_type, params.multibrot_power) {
+        Some(f) if f.phases.len() == 1 => f,
+        _ => return,
+    };
+    let pixel_size = crate::fractal::perturbation::effective_pixel_size(params);
+    if !(pixel_size > 0.0) {
+        return;
+    }
+    // c_norm identique à `try_bytecode_unified_path` (rayon de validité BLA).
+    let c_norm = {
+        let diag_px =
+            ((params.width as f64).powi(2) + (params.height as f64).powi(2)).sqrt();
+        pixel_size * diag_px
+    };
+    let _ = get_or_build_bla_entry(params, ref_orbit, c_norm, &formula);
+}
+
 /// Tente le path bytecode unifié si toutes les conditions sont remplies.
 /// Renvoie `Some(DeltaResult)` si le path a été appliqué, `None` sinon
 /// (le caller fallback sur le path historique).
