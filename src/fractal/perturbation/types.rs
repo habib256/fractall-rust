@@ -99,6 +99,53 @@ impl FloatExp {
     pub fn sqr(self) -> Self {
         Self::new(self.mantissa * self.mantissa, self.exponent * 2)
     }
+
+    /// Division : mantissa/mantissa, exponent-exponent (via `Self::new`).
+    /// Ne underflow/overflow pas (l'exposant est un i32 séparé). Renvoie zéro
+    /// si le numérateur est nul ; division par zéro produit un mantissa non
+    /// fini (comme f64) — les callers gardent contre `rhs == 0`.
+    #[inline(always)]
+    pub fn div(self, rhs: Self) -> Self {
+        Self::new(self.mantissa / rhs.mantissa, self.exponent - rhs.exponent)
+    }
+
+    /// Racine carrée. Mantisse ∈ [0.5, 1) → on ajuste la parité de l'exposant :
+    /// si l'exposant est impair, on multiplie la mantisse par 2 et on décrémente
+    /// l'exposant (le rendant pair), puis on prend la racine de la mantisse et
+    /// on divise l'exposant par 2. Garde : mantissa ≤ 0 → zéro.
+    #[inline(always)]
+    pub fn sqrt(self) -> Self {
+        if self.mantissa <= 0.0 {
+            return Self::zero();
+        }
+        let mut m = self.mantissa;
+        let mut e = self.exponent;
+        if e & 1 != 0 {
+            m *= 2.0;
+            e -= 1;
+        }
+        Self::new(m.sqrt(), e / 2)
+    }
+
+    /// Minimum de deux FloatExp (via `PartialOrd`).
+    #[inline(always)]
+    pub fn min(self, other: Self) -> Self {
+        if self <= other {
+            self
+        } else {
+            other
+        }
+    }
+
+    /// Maximum de deux FloatExp (via `PartialOrd`).
+    #[inline(always)]
+    pub fn max(self, other: Self) -> Self {
+        if self >= other {
+            self
+        } else {
+            other
+        }
+    }
 }
 
 impl PartialOrd for FloatExp {
@@ -411,5 +458,62 @@ mod tests {
         let fx = FloatExp::from_f64(3.0);
         let sq = fx.sqr();
         assert!((sq.to_f64() - 9.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn floatexp_div_matches_f64() {
+        let a = FloatExp::from_f64(7.0);
+        let b = FloatExp::from_f64(2.0);
+        assert!((a.div(b).to_f64() - 3.5).abs() < 1e-12);
+        // Division preserving exponents beyond f64 range. 2^2000 / 2^1000 = 2^1000
+        // → normalized as 0.5·2^1001.
+        let big = FloatExp { mantissa: 0.5, exponent: 2001 }; // 2^2000
+        let small = FloatExp { mantissa: 0.5, exponent: 1001 }; // 2^1000
+        let q = big.div(small);
+        assert_eq!(q.exponent, 1001);
+        assert!((q.mantissa - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn floatexp_sqrt_matches_f64() {
+        for &v in &[9.0f64, 2.0, 0.25, 1e-40, 144.0, 0.5] {
+            let fx = FloatExp::from_f64(v);
+            let got = fx.sqrt().to_f64();
+            assert!(
+                (got - v.sqrt()).abs() < 1e-12 * v.sqrt().max(1.0),
+                "sqrt({v}) got {got} expected {}",
+                v.sqrt()
+            );
+        }
+        // sqrt of a huge exp value: (0.5·2^2001) → sqrt = 0.7071·2^1000.
+        let huge = FloatExp { mantissa: 0.5, exponent: 2001 }; // = 2^2000
+        let sh = huge.sqrt();
+        // 2^2000 → sqrt = 2^1000. Normalized: 0.5·2^1001.
+        assert!((sh.mantissa - 0.5).abs() < 1e-12);
+        assert_eq!(sh.exponent, 1001);
+        // Odd stored exponent path: 0.5·2^2002 = 2^2001 → sqrt = 2^1000.5 = √2·2^1000.
+        let odd = FloatExp { mantissa: 0.5, exponent: 2002 };
+        let so = odd.sqrt();
+        // Value should be √2 · 2^1000 → so.mantissa·2^so.exponent.
+        // Check ratio so²/odd == 1 in exponent space: (so.exponent*2) == odd exponent region.
+        let sq_back = so.sqr();
+        assert_eq!(sq_back.exponent, 2002);
+        assert!((sq_back.mantissa - 0.5).abs() < 1e-9);
+        // Negative / zero mantissa → zero.
+        assert_eq!(FloatExp::zero().sqrt().mantissa, 0.0);
+        assert_eq!(FloatExp::from_f64(-4.0).sqrt().mantissa, 0.0);
+    }
+
+    #[test]
+    fn floatexp_min_max() {
+        let a = FloatExp::from_f64(3.0);
+        let b = FloatExp::from_f64(-5.0);
+        assert!((a.min(b).to_f64() + 5.0).abs() < 1e-12);
+        assert!((a.max(b).to_f64() - 3.0).abs() < 1e-12);
+        // Beyond f64 range: 2^2000 vs 2^3000 (normalized 0.5·2^{2001,3001}).
+        let big = FloatExp { mantissa: 0.5, exponent: 2001 };
+        let bigger = FloatExp { mantissa: 0.5, exponent: 3001 };
+        assert_eq!(big.max(bigger).exponent, 3001);
+        assert_eq!(big.min(bigger).exponent, 2001);
     }
 }

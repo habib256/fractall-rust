@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::fractal::bytecode::bla_dual::BlaTableUnified;
+use crate::fractal::bytecode::bla_dual_exp::BlaTableUnifiedExp;
 use crate::fractal::bytecode::pixel_loop_exp::iterate_pixel_unified_exp;
 use crate::fractal::bytecode::{build_bla_table_for_formula, compile_formula, Formula};
 use crate::fractal::{FractalParams, FractalType};
@@ -63,6 +64,14 @@ fn adaptive_batch_size(power: f64) -> u32 {
     (400.0 / power).round().clamp(64.0, 512.0) as u32
 }
 
+/// `FRACTALL_ATOM_PERIOD=1` : active le path atom-tronqué HP ComplexExp + BLA
+/// FloatExp. Const pour la durée du process (lu une fois). N'affecte QUE la
+/// construction de la table BLA exp — le path f64 par défaut est intact.
+fn atom_hp_enabled() -> bool {
+    static F: OnceLock<bool> = OnceLock::new();
+    *F.get_or_init(|| std::env::var("FRACTALL_ATOM_PERIOD").ok().as_deref() == Some("1"))
+}
+
 // Cache de la BlaTableUnified partagé entre workers rayon.
 //
 // La table BLA (O(M) nœuds pour une orbite de M itérations) est CONSTRUITE UNE
@@ -96,6 +105,12 @@ struct BlaUnifiedCacheEntry {
     /// des itérations en ~106 b sans réintroduire le plancher f64.
     use_dd_tier: bool,
     dd_table: Option<crate::fractal::bytecode::bla_dd::BlaTableDd>,
+    /// Table BLA **FloatExp** (mantisse + exposant) — construite UNIQUEMENT quand
+    /// `FRACTALL_ATOM_PERIOD=1` (path atom-tronqué HP, Mandelbrot). `None` sinon.
+    /// Permet au `iterate_pixel_unified_exp_mandelbrot_hp` de skipper des
+    /// itérations sans under/overflow des coefficients A/B sur réf graze deep
+    /// zoom (~1e-8000). Une entrée par phase (mono-phase ⇒ Vec de 1).
+    bla_exp: Option<Vec<BlaTableUnifiedExp>>,
 }
 
 impl BlaUnifiedCacheEntry {
@@ -147,6 +162,44 @@ fn build_bla_entry(
     } else {
         None
     };
+    // Table BLA FloatExp (path atom-tronqué HP, gated FRACTALL_ATOM_PERIOD=1).
+    // Construite depuis `ref_orbit.z_ref` (ComplexExp) — préserve les grazes
+    // ~1e-8000. Mêmes epsilon (`bla_threshold`) et c_norm que le build f64,
+    // convertis en FloatExp (le c_norm f64 underflow à 0 en deep zoom, donc on
+    // recalcule un c_norm FloatExp fidèle via les spans HP).
+    let bla_exp = if atom_hp_enabled()
+        && matches!(params.fractal_type, FractalType::Mandelbrot)
+        && ref_orbit.z_ref.len() >= 2
+    {
+        let epsilon_fexp = FloatExp::from_f64(params.bla_threshold);
+        let c_norm_fexp = {
+            let (sx, sy) = crate::fractal::perturbation::effective_spans_fexp(params);
+            let px = sx
+                .abs()
+                .div(FloatExp::from_f64(params.width.max(1) as f64))
+                .max(sy.abs().div(FloatExp::from_f64(params.height.max(1) as f64)));
+            let diag_px = ((params.width as f64).powi(2)
+                + (params.height as f64).powi(2))
+            .sqrt();
+            px * diag_px
+        };
+        Some(
+            formula
+                .phases
+                .iter()
+                .map(|phase| {
+                    BlaTableUnifiedExp::build(
+                        &ref_orbit.z_ref,
+                        phase,
+                        c_norm_fexp,
+                        epsilon_fexp,
+                    )
+                })
+                .collect(),
+        )
+    } else {
+        None
+    };
     Some(Arc::new(BlaUnifiedCacheEntry {
         orbit_ptr,
         orbit_len,
@@ -157,6 +210,7 @@ fn build_bla_entry(
         tables,
         use_dd_tier: params.use_dd_tier,
         dd_table,
+        bla_exp,
     }))
 }
 
@@ -423,9 +477,14 @@ fn try_bytecode_unified_path(
             } else {
                 (c_ref, *dc)
             };
+            // Table BLA FloatExp : `Some` uniquement en path atom-tronqué HP
+            // (FRACTALL_ATOM_PERIOD=1). `None` sinon → path HP correctness-ref
+            // lent (sans skip) / path exp f64 par défaut inchangé.
+            let bla_exp = entry.bla_exp.as_ref().map(|v| &v[0]);
             let res_exp = iterate_pixel_unified_exp(
                 ref_orbit,
                 bla,
+                bla_exp,
                 &entry.formula,
                 c_for_add,
                 dc_for_add_exp,

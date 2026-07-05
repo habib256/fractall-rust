@@ -1407,10 +1407,20 @@ pub fn compute_reference_orbit(
     // l'orbite est (quasi-)périodique à l'échelle de la vue → tronquer + cycler par
     // REBASE-AT-END (cycle_period=0). Points de fire VÉRIFIÉS identiques à F3
     // (wfs_mb 542080, e50 86614, e113 11380, dragon 2046924, floral 1704…).
-    // Gaté au path exp (deep zoom > 1e280) où la boucle pixel cycle DÉJÀ par
-    // rebase-at-end pour cycle_period=0 (G2). Les mid-zoom (path f64) n'ont pas
-    // encore le rebase-at-end (bail GMP) → non tronqués ici (pas de régression ;
-    // extension f64 en suivi).
+    //
+    // ⚠️ HOOK EXPÉRIMENTAL, OFF PAR DÉFAUT (validation corpus complet requise avant
+    // défaut). Le CRITÈRE de troncature est F3-EXACT (fire aux mêmes i que F3 :
+    // e8000 44900, wfs_mb 542080 — vérifié par instrumentation directe de
+    // `hybrid_reference` ; F3 tronque AUSSI sa réf de rendu au même point). Le
+    // CYCLAGE de la réf tronquée est désormais CORRECT via le path HP :
+    // `pixel_loop_exp::iterate_pixel_unified_exp_mandelbrot_hp` lit la réf en
+    // `ComplexExp` (`z_ref`) + BLA FloatExp (`bla_dual_exp`) — les grazes
+    // ~1e-8000 zéroés en f64 tuaient la reconstruction d'évasion (tentative 8).
+    // VÉRIFIÉ vs F3 EXR : e8000/e1000/e401 inside_mm=0, e8000 2.75 s. wfs_mb
+    // (1e2020, vrai intérieur) reste imparfait MAIS c'est un écart PRÉ-EXISTANT
+    // du path deep par défaut (atom-off aussi diverge vs F3 : inside_mm=16370) —
+    // pas causé par l'atom ; cf. TODO « TENTATIVE 8 ».
+    // Gaté au path exp (deep zoom > 1e280).
     let atom_period_enabled = matches!(params.fractal_type, FractalType::Mandelbrot)
         && std::env::var("FRACTALL_ATOM_PERIOD").ok().as_deref() == Some("1")
         && super::effective_pixel_size(params) < super::delta::PIXEL_SIZE_EXP_THRESHOLD;

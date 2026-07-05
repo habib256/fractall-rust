@@ -20,10 +20,27 @@
 use num_complex::Complex64;
 
 use super::bla_dual::BlaTableUnified;
+use super::bla_dual_exp::BlaTableUnifiedExp;
 use super::delta_form::DeltaStateExp;
 use super::{Formula, Op, Phase};
 use crate::fractal::perturbation::orbit::ReferenceOrbit;
 use crate::fractal::perturbation::types::{ComplexExp, FloatExp};
+
+/// `FRACTALL_ATOM_PERIOD=1` : active le path atom-tronqué (troncature réf +
+/// variant HP ComplexExp). Lu une fois (cache).
+fn atom_hp_enabled() -> bool {
+    use std::sync::OnceLock;
+    static F: OnceLock<bool> = OnceLock::new();
+    *F.get_or_init(|| std::env::var("FRACTALL_ATOM_PERIOD").ok().as_deref() == Some("1"))
+}
+
+/// DEBUG uniquement : `FRACTALL_ATOM_NOBLA=1` désactive le skip BLA dans le path
+/// HP (pas directs purs) pour isoler la correction BLA de la boucle directe.
+fn atom_nobla_debug() -> bool {
+    use std::sync::OnceLock;
+    static F: OnceLock<bool> = OnceLock::new();
+    *F.get_or_init(|| std::env::var("FRACTALL_ATOM_NOBLA").ok().as_deref() == Some("1"))
+}
 
 /// Phase Mandelbrot = exactement [Sqr, Add]. Détection au runtime pour
 /// activer le path spécialisé qui évite le dispatch opcode et l'update
@@ -54,9 +71,15 @@ pub struct UnifiedPixelResultExp {
 /// Pixel loop unifié extended-precision. Signature mirror de
 /// `iterate_pixel_unified` (pixel_loop.rs) mais accepte `dc` et
 /// `delta_initial` en `ComplexExp`.
+///
+/// `bla_exp` : table BLA FloatExp, `Some` uniquement quand
+/// `FRACTALL_ATOM_PERIOD=1` (path atom-tronqué HP). `None` sinon — le path
+/// f64 par défaut n'y touche jamais.
+#[allow(clippy::too_many_arguments)]
 pub fn iterate_pixel_unified_exp(
     ref_orbit: &ReferenceOrbit,
     bla: &BlaTableUnified,
+    bla_exp: Option<&BlaTableUnifiedExp>,
     formula: &Formula,
     c_ref: Complex64,
     dc: ComplexExp,
@@ -75,6 +98,7 @@ pub fn iterate_pixel_unified_exp(
     iterate_pixel_unified_exp_single_phase(
         ref_orbit,
         bla,
+        bla_exp,
         phase,
         c_ref,
         dc,
@@ -86,9 +110,11 @@ pub fn iterate_pixel_unified_exp(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn iterate_pixel_unified_exp_single_phase(
     ref_orbit: &ReferenceOrbit,
     bla: &BlaTableUnified,
+    bla_exp: Option<&BlaTableUnifiedExp>,
     phase: &Phase,
     c_ref: Complex64,
     dc: ComplexExp,
@@ -101,6 +127,20 @@ fn iterate_pixel_unified_exp_single_phase(
     // Hot path Mandelbrot : évite DeltaStateExp::step (dispatch opcode + update
     // wasted de z_ref) en inlinant `δ' = 2·Z·δ + δ² + dc`.
     if phase_is_mandelbrot(phase) {
+        // Path atom-tronqué (`FRACTALL_ATOM_PERIOD`) : variant HP ComplexExp
+        // ref + BLA FloatExp (réf f64/BLA f64 zéroent les grazes ~1e-8000).
+        if atom_hp_enabled() {
+            return iterate_pixel_unified_exp_mandelbrot_hp(
+                ref_orbit,
+                bla_exp,
+                dc,
+                delta_initial,
+                iteration_max,
+                bailout,
+                max_perturb_iterations,
+                max_bla_steps,
+            );
+        }
         return iterate_pixel_unified_exp_mandelbrot(
             ref_orbit,
             bla,
@@ -303,6 +343,157 @@ fn iterate_pixel_unified_exp_mandelbrot(
     }
 }
 
+/// Variant HAUTE PRÉCISION du pixel loop Mandelbrot pour le path atom-tronqué
+/// (référence périodique / graze deep zoom). Diffère du path f64 rapide :
+/// - **référence lue en `ComplexExp`** (`ref_orbit.z_ref`) : les valeurs de
+///   graze ~1e-8000 (où l'orbite frôle 0 à la fermeture de période) underflow
+///   à 0 en `Complex64` → tue la reconstruction de l'évasion. F3 garde la réf
+///   en `floatexp` pour la même raison.
+/// - **pas de BLA** : la BLA `mat2<f64>` overflow (`A=∏2Z` ~1e444/période) sur
+///   ces réfs. On fait des pas directs `δ'=2Zδ+δ²+dc` en `ComplexExp`.
+/// Le rebase-at-end / `|Z+δ|<|δ|` est identique (mais en ComplexExp).
+///
+/// Avec un `bla_exp: Some(&BlaTableUnifiedExp)` (FloatExp), on skip des
+/// itérations exactement comme le sibling f64 `iterate_pixel_unified_exp_mandelbrot`
+/// (lookup+skip `δ := A·δ + B·dc`), mais les coefficients A/B sont en FloatExp
+/// donc ne under/overflow pas sur les réfs graze deep zoom. `None` ⇒ pas de
+/// skip (mode correctness-reference lent).
+#[allow(clippy::too_many_arguments)]
+fn iterate_pixel_unified_exp_mandelbrot_hp(
+    ref_orbit: &ReferenceOrbit,
+    bla_exp: Option<&BlaTableUnifiedExp>,
+    dc: ComplexExp,
+    delta_initial: ComplexExp,
+    iteration_max: u32,
+    bailout: f64,
+    max_perturb_iterations: u32,
+    max_bla_steps: u32,
+) -> UnifiedPixelResultExp {
+    let bailout_sqr = bailout * bailout;
+    let ref_len = ref_orbit.z_ref.len();
+    // `z_ref` (ComplexExp) et `z_ref_f64` sont poussés ensemble → même longueur.
+    // Garde défensive : réf trop courte ou incohérente ⇒ résultat trivial.
+    if ref_len < 2 || ref_orbit.z_ref_f64.len() != ref_len {
+        return UnifiedPixelResultExp {
+            iteration: 0,
+            z_final: Complex64::new(0.0, 0.0),
+            rebase_count: 0,
+            bla_steps: 0,
+            ref_exhausted: false,
+        };
+    }
+    let bailout_sqr_fexp = FloatExp::from_f64(bailout_sqr);
+    let use_bla = !atom_nobla_debug();
+    let mut delta = delta_initial;
+    let mut n = 0u32;
+    let mut m = 0u32;
+    let mut rebase_count = 0u32;
+    let mut bla_steps = 0u32;
+    let mut iters_ptb = 0u32;
+    const REDUCE_INTERVAL: u32 = 250;
+
+    // Structure de boucle F3 (`hybrid.cc:287-345`) : le **rebase** (`|Z+δ|²<|δ|²`
+    // OU bout de référence) est testé au DÉBUT de chaque itération, AVANT le
+    // lookup BLA. Un skip BLA repasse alors par le rebase avant le prochain
+    // lookup. ⚠️ Sans ce placement (rebase seulement APRÈS un pas direct, `continue`
+    // après un skip), un skip qui atterrit exactement à `ref_len-1` saute le
+    // rebase-at-end → un pas direct parasite par-dessus le graze (δ→δ²) → off-by-one
+    // à la fermeture de période → escape décalé de ~1 période (cf. e8000 : Δ~20000).
+    while n < iteration_max
+        && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
+        && (max_bla_steps == 0 || bla_steps < max_bla_steps)
+    {
+        // 1. Rebase (F3 hybrid.cc:296) — AVANT le lookup. Pour les orbites
+        //    périodiques (cycle_period>0) on garde `wrap_periodic` (cycle m sans
+        //    toucher δ) ; sinon rebase-to-0 (`δ := Z[m]+δ, m := 0`).
+        let end_of_ref = (m as usize) + 1 >= ref_len;
+        let z_m0 = ref_orbit.z_ref[m as usize];
+        let z_curr = z_m0.add(delta);
+        let rebase_mid = !end_of_ref && z_curr.norm_sqr_fexp() < delta.norm_sqr_fexp();
+        if end_of_ref {
+            if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
+                m = m_wrapped;
+            } else {
+                delta = z_curr;
+                m = 0;
+                rebase_count += 1;
+            }
+        } else if rebase_mid {
+            delta = z_curr;
+            m = 0;
+            rebase_count += 1;
+        }
+
+        // 2. Bailout : |Z[m] + δ|² (état POST-rebase, F3 `Zz2 < ER2`).
+        let z_m = ref_orbit.z_ref[m as usize];
+        let z_abs = z_m.add(delta);
+        if !(z_abs.norm_sqr_fexp() < bailout_sqr_fexp) {
+            let delta_approx = delta.to_complex64_approx();
+            return UnifiedPixelResultExp {
+                iteration: n,
+                z_final: ref_orbit.z_ref_f64[m as usize] + delta_approx,
+                rebase_count,
+                bla_steps,
+                ref_exhausted: false,
+            };
+        }
+
+        // 3. BLA lookup+skip FloatExp (mirror du sibling f64). δ := A·δ + B·dc,
+        //    A/B mat2 FloatExp → pas d'under/overflow des coefs sur réf graze.
+        //    DEBUG: `FRACTALL_ATOM_NOBLA=1` désactive le skip (path direct pur).
+        if use_bla {
+            if let Some(bla) = bla_exp {
+                let delta_norm_sqr_fexp = delta.norm_sqr_fexp();
+                if let Some(node) = bla.lookup_fexp(m as usize, delta_norm_sqr_fexp) {
+                    let new_n = n.saturating_add(node.l);
+                    let new_m = m.saturating_add(node.l);
+                    if new_n <= iteration_max && (new_m as usize) < ref_len {
+                        let a = node.a;
+                        let b = node.b;
+                        let new_re = a.m00 * delta.re + a.m01 * delta.im
+                            + b.m00 * dc.re + b.m01 * dc.im;
+                        let new_im = a.m10 * delta.re + a.m11 * delta.im
+                            + b.m10 * dc.re + b.m11 * dc.im;
+                        delta = ComplexExp { re: new_re, im: new_im };
+                        n = new_n;
+                        m = new_m;
+                        bla_steps += 1;
+                        if n % REDUCE_INTERVAL == 0 {
+                            delta.reduce();
+                        }
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // 4. Pas perturbation Mandelbrot direct : δ' = 2·Z·δ + δ² + dc (ComplexExp).
+        //    (Le rebase du prochain tour de boucle traite `|Z+δ|<|δ|`/bout de réf.)
+        let two_z = ComplexExp { re: z_m.re + z_m.re, im: z_m.im + z_m.im };
+        let two_z_delta = delta.mul(two_z);
+        let delta_sq = delta.mul(delta);
+        delta = two_z_delta.add(delta_sq).add(dc);
+        n += 1;
+        m += 1;
+        iters_ptb += 1;
+
+        if n % REDUCE_INTERVAL == 0 {
+            delta.reduce();
+        }
+    }
+
+    let final_m = m.min((ref_len - 1) as u32);
+    let delta_approx = delta.to_complex64_approx();
+    UnifiedPixelResultExp {
+        iteration: n,
+        z_final: ref_orbit.z_ref_f64[final_m as usize] + delta_approx,
+        rebase_count,
+        bla_steps,
+        ref_exhausted: false,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn iterate_pixel_unified_exp_generic(
     ref_orbit: &ReferenceOrbit,
     bla: &BlaTableUnified,
@@ -510,6 +701,7 @@ mod tests {
                 let res = iterate_pixel_unified_exp(
                     &orbit,
                     bla,
+                    None,
                     &formula,
                     orbit.cref,
                     dc_exp,
@@ -575,6 +767,7 @@ mod tests {
         let res = iterate_pixel_unified_exp(
             &orbit,
             bla,
+            None,
             &formula,
             orbit.cref,
             dc_exp,

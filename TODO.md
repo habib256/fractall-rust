@@ -386,7 +386,7 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
       élucider le 15×/iter F3 (mesure/profil dédié). **Recommandation : clore** — cas
       extrême (1e2020), moteur ≤ F3 partout ailleurs (geomean 0.29), 4 sessions déjà
       investies. Ne rouvrir que sur profil précis du 15×/iter, PAS sur la période.
-  - [~] **PERCÉE (2026-07-05, tentative 5, env-gated WIP)** : le « 15×/iter » de la
+  - [x] **PERCÉE (2026-07-05, tentative 5, env-gated) — détection RÉSOLUE, cf. verdict ci-dessous** : le « 15×/iter » de la
     session 4 était FAUX. Mesure fine (F3 orbite vs cap d'itérations) : **F3 a le MÊME
     per-iter que fractall (~8 µs)** ; le 15× vient de la **TRONCATION** (F3 tronque
     wfs_mb à ~540 k = 2 périodes). Instrumenté F3 lui-même (print `hybrid.cc:92` +
@@ -403,8 +403,96 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
       full-ref est le MAUVAIS baseline → comparer à F3 EXR). `pixel_loop.rs` (f64) bail
       en GMP à end_of_ref (rebase-at-end pas porté) → mid-zoom non géré, gaté au path exp.
     - **Env-gated `FRACTALL_ATOM_PERIOD=1`, OFF par défaut** (goldens + 187 unit verts,
-      0 régression). **Prochaine étape : comparer ATOM vs F3 EXR (pas full-ref) pour
-      trancher le cyclage, + porter rebase-at-end au path f64.**
+      0 régression).
+  - [~] **VERDICT tentative 6 (2026-07-05) — RÉVISÉ tentative 7, voir ci-dessous.**
+    Mesure ATOM on/off vs **F3 EXR direct** (`compare_f3.py`, pas le full-ref) :
+    e1000/e8000/e401 atom-ON flip TOUT intérieur (inside_mm=25600) ; wfs_mb identique.
+    J'avais conclu « F3 NE tronque pas e8000, full-ref = bon baseline » — **CONCLUSION
+    FAUSSE**, réfutée par instrumentation directe de F3 (tentative 7). Gardée ici pour
+    trace ; ne pas s'y fier.
+  - [~] **TENTATIVE 7 (2026-07-05) — GROUND TRUTH F3 : F3 TRONQUE TOUT ; le bug est le
+    CYCLAGE de fractall, pas le critère.** Instrumenté `hybrid_reference` (F3
+    `hybrid.cc:82-97`, print gaté `F3_REFDIAG`, rebuild `make SYSTEM=linux-batch`) :
+    **la boucle de RÉFÉRENCE elle-même tronque** via le check périodicité
+    `abs(inverse(radius·dZdC)·Zp[i]) < 1` → `M=i+1; break` — INCONDITIONNEL, PAS gaté
+    par newton/period-lock. Longueurs de référence F3 mesurées :
+    | cas | F3 tronque à | cap toml | réf full-escape (atom-off fractall) |
+    |-----|-------------:|---------:|--------------------------:|
+    | e1000 | **4499** | 32000 | — |
+    | e401  | **13729** | 212138 | — |
+    | e8000 | **44900** | 807345 | escape à 105606 |
+    | wfs_mb | **542081** | 10000000 | jamais (vrai intérieur) |
+    - **Le critère atom de fractall est EXACT** (fire aux mêmes i que F3 : e8000 44900).
+      **F3 tronque e8000 à 44900 ET rend correctement** (inside_mm=0 vs full-ref). Donc
+      la troncature N'EST PAS le problème — **le CYCLAGE de la réf tronquée l'est.**
+    - **Root cause du flip-intérieur (instrumenté `FRACTALL_PIXDIAG`, e8000 atom-on)** :
+      tous les pixels IDENTIQUES, `n=807345=imax` (→ marqués intérieur), rebase=17
+      (~18 périodes de 44900), **`|δ|` COINCÉ à exp 0 (O(1)) sur toutes les périodes —
+      δ ne CROÎT jamais** vers l'évasion. La contribution pixel (dc) est noyée →
+      collapse uniforme. `Z[end]=Z[44899]` lu **= 0.0 exact en f64** (underflow : la vraie
+      valeur ~1e-8000 au graze est zéroée).
+    - **DIAGNOSTIC** : à e8000 la réf tronquée est un GRAZE périodique (pas un vrai
+      cycle : l'orbite pleine s'évade à 105606 = 2,3 périodes). L'évasion doit être
+      reconstruite par la CROISSANCE de δ sur ~2,3 périodes rebasées. F3 y arrive
+      (réf + BLA en **floatexp**, exposant étendu → grazes ~1e-8000 préservés). Fractall
+      **stocke la réf en `Complex64` (f64) ET la BLA en `mat2<f64>`** → les valeurs de
+      graze ~1e-8000 underflow à 0, les coeffs BLA `A=∏2Z` (~1e444/période) overflow →
+      la croissance de δ est perdue → tout intérieur. (Le multiplieur orbital λ=∏2Z NE
+      sépare PAS intérieur/graze : Z[0]=0 ⇒ λ linéaire par période = 0 pour LES DEUX ;
+      l'évasion est NON-linéaire. Pas de gate interior cheap : e22522 graze 260 périodes
+      avant d'évader.)
+    - **CE QU'IL FAUT (= vrai fix, TODO G2/wisdom)** : porter la réf **ET** la BLA du
+      path atom-tronqué en précision étendue (floatexp/ComplexExp) comme F3, pour que le
+      cyclage reconstruise l'évasion. `ReferenceOrbit.z_ref` (ComplexExp) existe déjà ;
+      la BLA `mat2<f64>` est le second morceau (overflow à 1e444). NON trivial —
+      ~réécriture de `pixel_loop_exp.rs` + `bla_dual` en exposant étendu. Gain visé :
+      wfs_mb 89→~5 s (16×) + tous les deep-interior, ET correction des grazes.
+    - **DÉCISION** : `FRACTALL_ATOM_PERIOD` reste gaté OFF (le cyclage tronqué est FAUX
+      tant que réf+BLA sont f64). Le critère de troncature (F3-exact) est BON à garder.
+      Rouvrir = chantier précision-étendue réf+BLA, pas un gate interior. Moteur ≤ F3
+      partout ailleurs (geomean 0.29).
+  - [x] **TENTATIVE 8 (2026-07-05) — RÉFÉRENCE COMPLEXEXP = CORRECTNESS RÉSOLUE (vérifié
+    F3 EXR).** Ajouté `iterate_pixel_unified_exp_mandelbrot_hp` (pixel_loop_exp.rs, gaté
+    `FRACTALL_ATOM_PERIOD`) : **réf lue en `ComplexExp` (`ref_orbit.z_ref`) + pas directs
+    ComplexExp, PAS de BLA.** Résultat e8000 atom-ON vs **F3 EXR** : **Δmean=0.2033,
+    inside_mm=0 — BIT-IDENTIQUE à atom-off/F3** (avant : flip total intérieur). Confirme
+    que **la précision de la réf ÉTAIT la cause** (les grazes ~1e-8000 zéroés en f64
+    tuaient la reconstruction). avg_iter/px=105243 (= full-ref). Goldens 🟢 (path gaté).
+    - **RESTE = perf.** HP sans BLA = 24 s (vs atom-off 6 s) sur e8000 ; INUTILISABLE
+      sur wfs_mb (intérieur → iteration_max=10M pas/px sans skip). **Le gain 16× exige
+      une BLA en exposant étendu** : la BLA f64 (`bla_dual.rs` `mat2<f64>`) est bâtie
+      depuis `z_ref_f64` (grazes zéroés) ET ses coeffs `A=∏2Z` (skip traversant un graze
+      ~1e-8000·… ou ~1e444/période) underflow/overflow f64. Chantier suivant :
+      `bla_dual_exp.rs` (miroir FloatExp de Mat2/DualComplex2/single-step/merge/table),
+      bâtie depuis `z_ref` (ComplexExp), câblée+cachée dans le path HP. Oracle de
+      correction : `compare_f3.py --only e8000` doit rester Δmean≈0.20 inside_mm=0, ET
+      passer sous ~6 s ; puis wfs_mb doit rendre correct + ~5 s (16×).
+  - [x] **TENTATIVE 9 (2026-07-05) — BLA FloatExp IMPLÉMENTÉE + VÉRIFIÉE. Port complet.**
+    Nouveau `bla_dual_exp.rs` (563 l : `Mat2Exp`/`DualComplex2Exp`/`BlaSingleStepExp`/
+    `BlaMultiStepExp::merge`/`BlaTableUnifiedExp`, miroir FloatExp fidèle de `bla_dual.rs`
+    — f64 INTOUCHÉ). `FloatExp::{div,sqrt,min,max}` ajoutés (types.rs). BLA exp bâtie 1×/réf
+    depuis `z_ref` (ComplexExp), cachée dans `BlaUnifiedCacheEntry` (delta.rs), câblée au
+    path HP UNIQUEMENT quand `FRACTALL_ATOM_PERIOD=1 && Mandelbrot`. Boucle HP réordonnée
+    en rebase-avant-lookup (F3). **Vérifié vs F3 EXR (128²) :**
+    | cas | atom-ON + BLA exp | note |
+    |-----|-------------------|------|
+    | e8000 | Δmean=0.25, **inside_mm=0**, Fr **2.75 s** | = F3, **9× vs no-BLA (24 s), < F3 (4.8 s)** |
+    | e1000 | Δmean=0.54, inside_mm=0, 0.12 s | = F3 |
+    | e401  | Δmean=10.8, inside_mm=0, 0.14 s | ≈ atom-off (e401 jamais parfait même off) |
+    - **Régression = ZÉRO** : 196 unit (+9) 🟢, goldens 🟢, `bla_dual.rs` f64 intouché,
+      path défaut (atom-off) inchangé (BLA exp bâtie/utilisée seulement si atom on).
+    - **wfs_mb (1e2020) = ÉCART PRÉ-EXISTANT, PAS une régression** : atom-OFF (path défaut,
+      hors atom) diverge DÉJÀ vs F3 (Δmean=0 sur pixels d'accord MAIS **inside_mm=16370/16384**
+      — désaccord massif intérieur/extérieur au cap 10M). atom-ON fait MIEUX sur la frontière
+      (inside_mm=**6**) mais Δmean=4605 (~0,08 % relatif sur 5,7 M iters) → limite de précision
+      à 6749 b / cyclage ~10 périodes. **wfs_mb est un bug SÉPARÉ du path deep par défaut
+      (classe « ultra-deep intérieur »), à traiter à part — pas bloquant pour ce port.**
+    - **BILAN** : la troncature atom est désormais CORRECTE (réf+BLA exposant-étendu) pour
+      les cas où le path deep défaut l'est (e8000/e1000/e401). Gain perf modeste sur ces cas
+      (troncature réf : e8000 105606→44900, e1000 32000→4499). Le gros gain visé (wfs_mb 16×)
+      reste bloqué par l'écart pré-existant wfs_mb, PAS par le cyclage (enfin correct).
+    - **DÉCISION** : hook reste gaté OFF (validation corpus complet + fix wfs_mb requis avant
+      défaut), mais il est maintenant FONCTIONNEL & sans régression. Rien commité.
 - [x] **Path f64 étendu à 1e280 (seuil 1e-200 → 1e-280)** (2026-07-04) : après
   l'extension initiale à 1e-200, un sweep vitesse du corpus STANDARD/full a révélé
   4 cas encore sur le path exp lent (zoom > 1e200) donc PLUS LENTS que F3 :
