@@ -365,11 +365,27 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
       de fractall (finder apparenté) timeout > 150 s → pas un quick win non plus.
     - **ACQUIS solides** : (a) le MÉCANISME troncation+cyclage MARCHE (wfs_mb tronqué
       = pixel-identique + 35× quand la détection fire) ; (b) le critère atom-domain de
-      référence n'est PAS le bon outil pour wfs_mb ; (c) le vrai levier = Newton
-      hybrid_period + period-lock (GROS, séparé) OU orbite GMP plus rapide (raw MPFR
-      vs rug/MPC). **Investigation CLOSE** : 3 sessions, résultat négatif DÉFINITIF sur
-      l'atom-domain, pointeur clair vers le vrai mécanisme F3. Ne PAS re-tenter
-      l'atom-domain de référence pour wfs_mb.
+      référence n'est PAS le bon outil pour wfs_mb.
+  - [x] **TENTATIVE 4 (2026-07-05) — period-lock aussi ÉCARTÉ ; gap = ORBITE GMP** :
+    vérifié `lock_maximum_reference_iterations_to_period` = **`false` PAR DÉFAUT**
+    (param.cc:208, param.h:47) ET exige `reference.period > 0` connu. Le wrapper batch
+    F3 (compare_f3.py) ne l'active PAS et ne fournit pas de période. **Donc F3 N'A
+    AUCUNE troncation active pour wfs_mb** (period-lock off, atom-domain ne fire pas,
+    pas d'escape — centre intérieur) et calcule quand même la référence PLEINE (10 M)
+    en **4.84 s** (32² orbite-dominé) vs fractall **75 s** ⇒ **~15×/iter à 6737 b**.
+    - **Les DEUX mécanismes période sont donc écartés** (atom-domain + period-lock).
+      Le gap wfs_mb = **vitesse orbite GMP par-itération** (rug/MPC vs MPFR raw F3).
+    - ⚠️ **MAIS 0.48 µs/iter pour un carré complexe 6737 b est SUSPECT** (théorique
+      ~1.5 µs pour une seule mul 105-limbes ; carré complexe = 2-3 muls). Soit F3 a un
+      bignum ~10× plus rapide (improbable, MPFR dessous des deux), soit un DÉTAIL F3
+      non identifié (précision réduite ? représentation ? une troncation que je n'ai
+      pas trouvée ?). **Non élucidé.**
+    - **CONCLUSION FERME (4 sessions)** : wfs_mb NE se résout PAS par la détection de
+      période (les 2 variantes F3 réfutées expérimentalement). Le levier restant =
+      orbite GMP raw-MPFR (gros, incertain, toucherait TOUS les deep zooms) OU
+      élucider le 15×/iter F3 (mesure/profil dédié). **Recommandation : clore** — cas
+      extrême (1e2020), moteur ≤ F3 partout ailleurs (geomean 0.29), 4 sessions déjà
+      investies. Ne rouvrir que sur profil précis du 15×/iter, PAS sur la période.
 - [x] **Path f64 étendu à 1e280 (seuil 1e-200 → 1e-280)** (2026-07-04) : après
   l'extension initiale à 1e-200, un sweep vitesse du corpus STANDARD/full a révélé
   4 cas encore sur le path exp lent (zoom > 1e200) donc PLUS LENTS que F3 :
