@@ -317,14 +317,32 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
       ne les sépare (critère atom `|z|<s|dz|` rejette LES DEUX ; `z_f64==0` accepte
       les deux). La vérif « z revient au même point à 2P » est bernée (e22522 semble
       périodique 260× avant d'escape).
-    - **LE VRAI FIX = cyclage REBASE-AT-END (F3 `hybrid.cc:301`), PAS modulo** : le
-      rebase absorbe Z dans δ → tolère une troncation FAUSSE (perturbation compense),
-      donc pas besoin de distinguer intérieur/escape. Tentative rebase-at-end (cycle_
-      period=0) a donné wfs_mb avg=278 k (FAUX, delta devient ~O(1) en milieu d'orbite)
-      → BUG non résolu dans le path exp `end_of_ref` (à débugger : pourquoi le rebase
-      casse alors que F3 le fait). **Prochaine tentative : faire marcher rebase-at-end
-      d'abord (sur wfs_mb tronqué), PUIS activer la troncation atom (n'importe quel
-      seuil, le rebase tolère).** Revert propre, 0 régression.
+    - **LE VRAI FIX ENVISAGÉ = cyclage REBASE-AT-END (F3 `hybrid.cc:301`)** : le
+      rebase absorbe Z dans δ → cens é tolérer une troncation fausse (le delta compense).
+  - [ ] **TENTATIVE 2 (2026-07-05, REVERTÉE) — rebase-at-end + dz-stabilité** :
+    - **rebase-at-end MARCHE pour wfs_mb** (garder z≈0 en dernier élément, cycle_
+      period=0 → l'exp loop lit z_ref[last]≈0 ⇒ delta petit) : 86→2.4 s PIXEL-IDENTIQUE.
+      (Le bug « delta ~O(1) » de la tentative 1 venait de tronquer à z~O(1), pas z≈0.)
+    - **MAIS rebase-at-end NE tolère PAS e22522** (tronqué à 1668 → faussement
+      intérieur, l'orbite pleine escape à 433 k). La « tolérance F3 » ne vaut que pour
+      une SUR-troncation LÉGÈRE près de la vraie période, pas 1/260ᵉ. Et e8000 (vrai
+      intérieur) CASSE aussi en rebase-at-end alors qu'il marchait en MODULO → rebase
+      vs modulo ont des domaines de validité DIFFÉRENTS par cas, pas de gagnant clair.
+    - **dz-stabilité RÉFUTÉE** : [ATOMDIAG] montre que LES 4 cas (wfs_mb, e8000,
+      e22522, e52465) ont `|dz|²` STABLE (Δlog2≈0) entre passages z≈0 consécutifs
+      (tous « paraissent » périodiques). Le multiplieur dérivée ne distingue PAS
+      intérieur/escape. z≈0 à multiples réguliers pour les 4.
+    - **Critère F3 exact mal reproduit** : `|Z_i| < |radius·dZdC|` avec radius=4/zoom
+      (analysis) → mon calcul REJETTE wfs_mb (|Z_P|≈1e-342 > radius·|dZdC|≈1e-1343).
+      Donc je ne comprends pas encore la sémantique exacte de `radius`/`dZdC` de F3
+      (échelle ? dZdC = matrice 2×2, pas scalaire ? phase ?). **BLOQUANT** : sans le
+      critère F3 exact, aucune heuristique testée (z_f64==0, atom-scalaire, dz-stab)
+      ne sépare {wfs_mb,e8000} de {e22522,e52465}.
+    - **PROCHAINE FOIS** : relire `hybrid.cc:79-97` LIGNE À LIGNE (surtout la
+      construction de `radius`=`K` dans engine.cc:235 et le type `mat2` de dZdC) et
+      reproduire le calcul matriciel EXACT avant de re-tenter. Ne PAS improviser un
+      critère scalaire. 2 sessions déjà brûlées ici ; c'est le point dur. Revert
+      propre à chaque fois, 0 régression. Le reste du moteur reste ≤ F3 (geomean 0.29).
 - [x] **Path f64 étendu à 1e280 (seuil 1e-200 → 1e-280)** (2026-07-04) : après
   l'extension initiale à 1e-200, un sweep vitesse du corpus STANDARD/full a révélé
   4 cas encore sur le path exp lent (zoom > 1e200) donc PLUS LENTS que F3 :
