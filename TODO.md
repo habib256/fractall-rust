@@ -343,6 +343,33 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
       reproduire le calcul matriciel EXACT avant de re-tenter. Ne PAS improviser un
       critère scalaire. 2 sessions déjà brûlées ici ; c'est le point dur. Revert
       propre à chaque fois, 0 régression. Le reste du moteur reste ≤ F3 (geomean 0.29).
+  - [x] **TENTATIVE 3 (2026-07-05) — CRITÈRE F3 EXACT IMPLÉMENTÉ → HYPOTHÈSE RÉFUTÉE** :
+    extrait le calcul EXACT de F3 (`hybrid.cc:92` `abs(inverse(radius·dZdC)·Zp[i])<1`,
+    `matrix.h`, `engine.cc:235`). Cas conforme Mandelbrot = **`|Zp[i]| < (4/zoom)·|dZ/dC|`**
+    avec `|radius|=4/zoom` EXACT (pas 2/zoom ni 4/zoom/height). Implémenté ce critère
+    (dZdC = dérivée ComplexExp, testé CHAQUE itér.). Résultat DÉCISIF [ATOMDIAG-F3] :
+    - **wfs_mb : le critère F3 NE FIRE JAMAIS** (min ratio 2^+2150, jamais proche).
+      **F3 NE TRONQUE PAS wfs_mb par l'atom-domain de référence.** Son centre est
+      DANS le bulbe période-P mais LOIN du nucleus (|Z_P|~2^-1135 ⇒ offset c-space
+      ~2^-3386 ≫ vue 2^-6710). L'atome ne couvre pas la vue.
+    - e8000 : fire à 44899 (vrai nucleus dans la vue). e22522 : ne fire jamais (correct).
+      Donc le critère F3 est bien reproduit (fire e8000, pas e22522) — MAIS il ne
+      cible PAS wfs_mb.
+    - **CONCLUSION : la « period-aware reference via atom-domain » est un CUL-DE-SAC
+      pour wfs_mb.** F3 fait wfs_mb en **4.84 s** (orbite ~single-thread) vs fractall
+      75 s → **~15×/iter à 6750 b**. 0.48 µs/iter est PHYSIQUEMENT impossible en
+      full-precision 6750 b (une mul 105-limb ~1-2 µs) ⇒ **F3 calcule BEAUCOUP moins
+      d'itérations** — probablement via le **NEWTON `hybrid_period`** (hybrid.cc:417,
+      mécanisme SÉPARÉ de l'atom-domain de référence) + **reference period-lock**
+      (engine.cc:225 `lock_maximum_reference_iterations_to_period`). Le `--find-nucleus`
+      de fractall (finder apparenté) timeout > 150 s → pas un quick win non plus.
+    - **ACQUIS solides** : (a) le MÉCANISME troncation+cyclage MARCHE (wfs_mb tronqué
+      = pixel-identique + 35× quand la détection fire) ; (b) le critère atom-domain de
+      référence n'est PAS le bon outil pour wfs_mb ; (c) le vrai levier = Newton
+      hybrid_period + period-lock (GROS, séparé) OU orbite GMP plus rapide (raw MPFR
+      vs rug/MPC). **Investigation CLOSE** : 3 sessions, résultat négatif DÉFINITIF sur
+      l'atom-domain, pointeur clair vers le vrai mécanisme F3. Ne PAS re-tenter
+      l'atom-domain de référence pour wfs_mb.
 - [x] **Path f64 étendu à 1e280 (seuil 1e-200 → 1e-280)** (2026-07-04) : après
   l'extension initiale à 1e-200, un sweep vitesse du corpus STANDARD/full a révélé
   4 cas encore sur le path exp lent (zoom > 1e200) donc PLUS LENTS que F3 :
