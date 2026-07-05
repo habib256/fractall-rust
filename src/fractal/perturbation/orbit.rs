@@ -9,7 +9,7 @@ use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::bytecode::{compile_formula, GmpInterpState, Formula};
 use crate::fractal::gmp::{complex_to_complex64, pow_f64_mpc};
 use crate::fractal::perturbation::bla::{BlaTable, build_bla_table};
-use crate::fractal::perturbation::types::ComplexExp;
+use crate::fractal::perturbation::types::{ComplexExp, FloatExp};
 use crate::fractal::perturbation::series::{SeriesTable, build_series_table_ho, validate_series_with_probes_tiled, compute_adaptive_series_order};
 
 /// Convertit `z` (Complex GMP borné de l'orbite référence) en `ComplexExp`, en
@@ -1398,6 +1398,30 @@ pub fn compute_reference_orbit(
     let ftype = params.fractal_type;
     let multibrot_power = params.multibrot_power;
 
+    // Atom-domain period detection PORT EXACT F3 (`hybrid.cc:92`
+    // `abs(inverse(radius·dZdC)·Zp[i]) < 1`, conforme Mandelbrot =
+    // `|Zp[i]|² < radius²·|dZdC|²`, radius = 4/zoom = demi-span·2 = span). dZdC est
+    // la dérivée dZ/dc suivie EN COMPLEXEXP depuis z_ref ComplexExp (PAS z_f64 :
+    // les Z≈0 near-période underflow f64 → dZdC trop petit de ~2^1108 → critère
+    // jamais atteint ; c'était le bug des tentatives 1-4). Quand le critère fire,
+    // l'orbite est (quasi-)périodique à l'échelle de la vue → tronquer + cycler par
+    // REBASE-AT-END (cycle_period=0). Points de fire VÉRIFIÉS identiques à F3
+    // (wfs_mb 542080, e50 86614, e113 11380, dragon 2046924, floral 1704…).
+    // Gaté au path exp (deep zoom > 1e280) où la boucle pixel cycle DÉJÀ par
+    // rebase-at-end pour cycle_period=0 (G2). Les mid-zoom (path f64) n'ont pas
+    // encore le rebase-at-end (bail GMP) → non tronqués ici (pas de régression ;
+    // extension f64 en suivi).
+    let atom_period_enabled = matches!(params.fractal_type, FractalType::Mandelbrot)
+        && std::env::var("FRACTALL_ATOM_PERIOD").ok().as_deref() == Some("1")
+        && super::effective_pixel_size(params) < super::delta::PIXEL_SIZE_EXP_THRESHOLD;
+    let atom_radius_sqr = {
+        let (adx, ady) = super::effective_spans_fexp(params);
+        let r = if adx.partial_cmp(&ady) == Some(std::cmp::Ordering::Greater) { adx } else { ady };
+        r.sqr()
+    };
+    let mut atom_dz = ComplexExp::zero();
+    let mut atom_truncated = false;
+
     for i in 0..params.iteration_max {
         if let Some(cancel) = cancel {
             if i % 256 == 0 && cancel.load(Ordering::Relaxed) {
@@ -1525,6 +1549,31 @@ pub fn compute_reference_orbit(
                 high_precision_data.push(z.clone());
             }
         }
+
+        // Atom-domain : dZdC_{i+1} = 2·Z_i·dZdC_i + 1 (Z_i en ComplexExp) puis test.
+        if atom_period_enabled {
+            let n = z_ref.len();
+            let zi = z_ref[n - 2]; // Z_i (ComplexExp), avant le pas
+            let two_zi = ComplexExp { re: zi.re + zi.re, im: zi.im + zi.im };
+            atom_dz = atom_dz.mul(two_zi);
+            atom_dz.re = atom_dz.re + FloatExp::from_f64(1.0);
+            if i > 0 {
+                let z_norm = z_ref[n - 1].norm_sqr_fexp(); // |Z_{i+1}|²
+                let thresh = atom_radius_sqr * atom_dz.norm_sqr_fexp();
+                if z_norm.partial_cmp(&thresh) == Some(std::cmp::Ordering::Less) {
+                    // L'atome de la période courante couvre la vue (F3). Tronquer
+                    // ici (garder Z_{i+1} en dernier) ; cycle_period=0 → la boucle
+                    // pixel cycle par rebase-at-end (F3 hybrid.cc:301, tolère la
+                    // troncation, delta compense).
+                    atom_truncated = true;
+                    break;
+                }
+            }
+        }
+    }
+    if atom_truncated && crate::fractal::perturbation::perf_enabled() {
+        eprintln!("[ATOM] Reference tronquée à {} iters (atom-domain F3, rebase-at-end).",
+            z_ref_f64.len());
     }
 
     if detected_period > 0 && crate::fractal::perturbation::perf_enabled() {

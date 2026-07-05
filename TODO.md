@@ -386,6 +386,25 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
       élucider le 15×/iter F3 (mesure/profil dédié). **Recommandation : clore** — cas
       extrême (1e2020), moteur ≤ F3 partout ailleurs (geomean 0.29), 4 sessions déjà
       investies. Ne rouvrir que sur profil précis du 15×/iter, PAS sur la période.
+  - [~] **PERCÉE (2026-07-05, tentative 5, env-gated WIP)** : le « 15×/iter » de la
+    session 4 était FAUX. Mesure fine (F3 orbite vs cap d'itérations) : **F3 a le MÊME
+    per-iter que fractall (~8 µs)** ; le 15× vient de la **TRONCATION** (F3 tronque
+    wfs_mb à ~540 k = 2 périodes). Instrumenté F3 lui-même (print `hybrid.cc:92` +
+    rebuild `make SYSTEM=linux-batch`) : **F3 fire à i=542080**. Reverse-eng : F3
+    `|dZdC|`=2^3359 vs mon 2^2251 → **BUG TROUVÉ** : je calculais dZdC avec `z_curr_f64`
+    (f64) qui UNDERFLOW pour les Z≈0 near-période → dZdC trop petit de ~2^1108. **FIX**:
+    dZdC en ComplexExp (`dZdC=2·Z·dZdC+1`, Z ComplexExp).
+    - **Critère F3 EXACTEMENT reproduit** — points de fire IDENTIQUES à F3 vérifiés :
+      wfs_mb 542080, e50 86614, e113 11380, dragon 2046924, floral 1704, e8000 44899.
+      (C'ÉTAIT LE BLOCAGE des 4 sessions — détection enfin RÉSOLUE.)
+    - **wfs_mb : truncation + rebase-at-end = PIXEL-IDENTIQUE full-ref, 86→4.9 s (17.6×).**
+    - **RESTE : le CYCLAGE**. rebase-at-end marche pour wfs_mb/e52465/floral mais diffère
+      pour e8000/e1000/e401/dragon (comparés à FULL-REF — mais si F3 tronque aussi,
+      full-ref est le MAUVAIS baseline → comparer à F3 EXR). `pixel_loop.rs` (f64) bail
+      en GMP à end_of_ref (rebase-at-end pas porté) → mid-zoom non géré, gaté au path exp.
+    - **Env-gated `FRACTALL_ATOM_PERIOD=1`, OFF par défaut** (goldens + 187 unit verts,
+      0 régression). **Prochaine étape : comparer ATOM vs F3 EXR (pas full-ref) pour
+      trancher le cyclage, + porter rebase-at-end au path f64.**
 - [x] **Path f64 étendu à 1e280 (seuil 1e-200 → 1e-280)** (2026-07-04) : après
   l'extension initiale à 1e-200, un sweep vitesse du corpus STANDARD/full a révélé
   4 cas encore sur le path exp lent (zoom > 1e200) donc PLUS LENTS que F3 :
