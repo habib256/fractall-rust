@@ -1352,20 +1352,32 @@ pub fn compute_reference_orbit(
     //
     // Only for Mandelbrot (for Julia, every pixel has a different c, so the reference
     // orbit periodicity doesn't help).
-    // Period-detection truncation est une optimisation : à la première
-    // approche de l'orbite vers un checkpoint (Brent) sous tolérance, on
-    // tronque la référence et on cycle via `wrap_periodic`. F3 ne tronque
-    // jamais (calcule la référence complète). Sur les faux positifs
-    // (orbite qui frôle un checkpoint sans être vraiment périodique), le
-    // wrap diverge → image uniforme/escape erroné (cf. glitch_test_5 :
-    // F3 intérieur, fractall escape uniforme à iter 844). Désactivable via
-    // `FRACTALL_NO_PERIOD=1` pour la parité F3.
+    // Period-detection truncation (Brent) : à la première approche de l'orbite
+    // vers un checkpoint sous tolérance, on tronque la référence et on cycle via
+    // `wrap_periodic`. C'est une HEURISTIQUE NON SÛRE : sur un faux positif
+    // (orbite qui FRÔLE un checkpoint sans être vraiment périodique), le wrap
+    // diverge → **image fausse**. Prouvé : glitch_test_5 (1e83) rend **75 % des
+    // pixels faux vs GMP** avec Brent ON (période OFF = PIXEL-EXACT vs GMP). La
+    // tolérance resserrée (2^(-prec·0.85)) rejette certains grazes (floral_
+    // fantasy) mais PAS glitch_test_5 : grazes et vraies périodes sont
+    // indistinguables par un seuil scalaire (4 sessions, cf. TODO G2). F3
+    // N'UTILISE PAS ce Brent — il a l'atom-domain F3-exact (séparé, gaté
+    // `FRACTALL_ATOM_PERIOD`), qui est le bon véhicule pour ce speedup.
+    //
+    // ⇒ **OFF PAR DÉFAUT** (correction > vitesse). Opt-in `FRACTALL_PERIOD=1`
+    // pour le speedup Brent risqué (glitch_test_2 4×). `FRACTALL_NO_PERIOD=1`
+    // (legacy, harness) reste honoré et force OFF.
+    let period_opt_in = std::env::var("FRACTALL_PERIOD")
+        .ok()
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
     let period_disabled_env = std::env::var("FRACTALL_NO_PERIOD")
         .ok()
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false);
-    let enable_period_detection =
-        matches!(params.fractal_type, FractalType::Mandelbrot) && !period_disabled_env;
+    let enable_period_detection = matches!(params.fractal_type, FractalType::Mandelbrot)
+        && period_opt_in
+        && !period_disabled_env;
     let period_tolerance = if enable_period_detection {
         // Tolérance ∝ précision GMP. **2^(-prec·0.85)** (et non 0.4 historique) :
         // une période GENUINE matche à ~2^(-prec) (à l'accumulation près,

@@ -42,6 +42,17 @@ F3** pour orbites escape-time (`pixel_loop_exp.rs`) → plus de fallback GMP.
 2. **Divergences restantes élucidées** (G3) : glitch_test_1/5 = victoire fractall
    (F3 dégénéré) ; period-detection faux-positif RÉSOLU (tol 0.85). Seahorse =
    perf (10¹⁰ iter), pas correction.
+   - ⚠️ **CORRIGÉ 2026-07-07 — la tol 0.85 ne résolvait PAS glitch_test_5.** Le
+     harness le masquait (`NO_PERIOD=1` sur speed ET parité) alors que la PROD
+     tournait Brent **ON** par défaut → glitch_test_5 (9.7e83) rendait **75 %
+     des pixels FAUX vs GMP** (12259/16384 ; période OFF = **0 diff, pixel-exact
+     GMP**). Grazes vs vraies périodes = indistinguables par seuil scalaire (4
+     sessions, cf. G2). **Fix : Brent OFF par défaut** (opt-in `FRACTALL_PERIOD=1`
+     pour le speedup risqué ; F3 n'utilise PAS ce Brent — il a l'atom-domain
+     F3-exact `FRACTALL_ATOM_PERIOD`). Prod == config harness désormais (mesure
+     honnête). Verrou : golden `mandelbrot_glitch5`. 196 unit + goldens + quality
+     11 PASS 🟢. Coût : glitch_test_2 0.04→0.17 s en prod (mais glitch_test_5
+     2.16→0.01 s ET correct). `orbit.rs::enable_period_detection`.
 3. **✅ Re-sweep corpus complet** (G1) : 84 cas, 0 échec de correction. Seuls
    e22522 (hors plage précision, désormais **averti** au lieu de faux-silencieux)
    + 6 perf-timeout restent.

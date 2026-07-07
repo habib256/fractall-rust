@@ -151,6 +151,15 @@ const CASES: &[Case] = &[
         name: "mandelbrot_floral",
         args: &["--toml", "toml/floral_fantasy.toml", "--width", "160", "--height", "100"],
     },
+    // Deep 9.7e83 (toml/glitch_test_5.toml) — VERROU du fix « Brent OFF par
+    // défaut ». La détection de période Brent firait un FAUX POSITIF ici →
+    // troncation erronée → 75 % des pixels faux vs GMP (vérifié : période OFF =
+    // PIXEL-EXACT vs GMP, période ON = 12259/16384 faux). Rendu en config défaut
+    // (Brent off) : si quelqu'un ré-active Brent par défaut, ce golden ROUGIT.
+    Case {
+        name: "mandelbrot_glitch5",
+        args: &["--toml", "toml/glitch_test_5.toml", "--width", "128", "--height", "128"],
+    },
 ];
 
 fn cli_binary_path() -> PathBuf {
