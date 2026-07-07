@@ -62,6 +62,13 @@ MARKER = "<!-- généré par scripts/harness.py — ne pas éditer à la main --
 INFLIGHT = HARNESS_DIR / "inflight.json"
 CRASH_JOURNAL = HARNESS_DIR / "crash-journal.jsonl"
 QUARANTINE = HARNESS_DIR / "quarantine.json"
+RESOLVED = HARNESS_DIR / "resolved.json"
+
+# Issues du journal qui prouvent qu'un cas a fait tomber la machine ou a été tué
+# sous cap : la quarantaine DOIT les couvrir. On EXCLUT `interrupted` (Ctrl-C
+# gracieux), `fail` (rc≠0 bénin — ex. F3 HAVE_EXR=0), `timeout` et `ok`.
+HARD_CRASH_OUTCOMES = frozenset(
+    {"died_uncleanly", "killed_oom", "aborted", "killed"})
 
 try:
     import resource  # POSIX only
@@ -165,8 +172,32 @@ def save_quarantine(d: dict) -> None:
     QUARANTINE.write_text(json.dumps(d, indent=2, ensure_ascii=False) + "\n")
 
 
+def load_resolved() -> dict:
+    """Tombstones {case: resolved_utc} : cas retirés MANUELLEMENT de la
+    quarantaine (fix vérifié). La réconciliation journal→quarantaine les
+    respecte tant qu'aucun incident PLUS RÉCENT n'apparaît."""
+    if not RESOLVED.exists():
+        return {}
+    try:
+        d = json.loads(RESOLVED.read_text())
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_resolved(d: dict) -> None:
+    HARNESS_DIR.mkdir(parents=True, exist_ok=True)
+    RESOLVED.write_text(json.dumps(d, indent=2, ensure_ascii=False) + "\n")
+
+
 def add_quarantine(case: str, reason: str | None) -> bool:
     d = load_quarantine()
+    # une (re)mise en quarantaine périme un éventuel tombstone « résolu » :
+    # un nouvel incident supersede le vouching manuel précédent.
+    res = load_resolved()
+    if case in res:
+        del res[case]
+        save_resolved(res)
     if case in d:
         return False
     d[case] = {"reason": reason or "manuel", "added_utc": _now_iso()}
@@ -180,7 +211,72 @@ def remove_quarantine(case: str) -> bool:
         return False
     del d[case]
     save_quarantine(d)
+    # tombstone : l'opérateur atteste le fix (protocole /improve : remove UNIQUEMENT
+    # une fois le fix vérifié) → la réconciliation ne le re-quarantaine pas, sauf
+    # nouvel incident postérieur.
+    res = load_resolved()
+    res[case] = _now_iso()
+    save_resolved(res)
     return True
+
+
+def _incident_ts(rec: dict) -> str:
+    return (rec.get("detected_utc") or rec.get("ended_utc")
+            or rec.get("started_utc") or "")
+
+
+def latest_hard_crashes() -> dict:
+    """Parcourt le journal append-only et renvoie, par cas, l'horodatage du
+    dernier incident PROUVANT un crash/OOM (cf. HARD_CRASH_OUTCOMES)."""
+    out: dict[str, str] = {}
+    if not CRASH_JOURNAL.exists():
+        return out
+    for ln in CRASH_JOURNAL.read_text().splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            rec = json.loads(ln)
+        except Exception:
+            continue
+        if rec.get("outcome") not in HARD_CRASH_OUTCOMES:
+            continue
+        case = rec.get("case")
+        if not case or case == "?":
+            continue
+        ts = _incident_ts(rec)
+        if ts >= out.get(case, ""):
+            out[case] = ts
+    return out
+
+
+def reconcile_quarantine_from_journal() -> list[str]:
+    """Auto-répare l'invariant « crash journalisé ⇒ quarantainé ».
+
+    Le journal (append-only, durable) est la vérité de terrain ; `quarantine.json`
+    est versionné et peut DÉRIVER (revert git, reset, checkout) → un cas qui a
+    tué la machine peut se retrouver hors quarantaine et rejoindre un sweep
+    (cas réel : e22522 died_uncleanly resté loose). On re-quarantaine tout
+    cas hard-crash non couvert, SAUF s'il a été résolu manuellement APRÈS son
+    dernier incident. Renvoie la liste des cas re-quarantainés."""
+    quarantined = set(load_quarantine())
+    resolved = load_resolved()
+    readded: list[str] = []
+    for case, ts in sorted(latest_hard_crashes().items()):
+        if case in quarantined:
+            continue
+        res_ts = resolved.get(case)
+        if res_ts is not None and res_ts >= ts:
+            continue  # fix vouché après le dernier crash → on respecte
+        if add_quarantine(case, f"réconcilié depuis le journal (incident "
+                                 f"{ts or '?'} non couvert)"):
+            readded.append(case)
+    if readded:
+        print(f"⚠️  quarantaine réconciliée depuis le journal : "
+              f"{', '.join(readded)} (crash journalisé, hors quarantaine → "
+              f"ré-exclu des sweeps). Étudier via `preflight`, puis "
+              f"`quarantine remove` une fois le fix vérifié.")
+    return readded
 
 
 def check_stale_inflight(auto_quarantine: bool = True) -> str | None:
@@ -931,6 +1027,8 @@ def cmd_score(args) -> None:
     # pendant un cas (OOM / plantage OS). On le journalise + quarantaine AVANT
     # de relancer, sinon on replante sur le même cas.
     check_stale_inflight(auto_quarantine=not args.no_quarantine)
+    if not args.no_quarantine:
+        reconcile_quarantine_from_journal()
     mem_limit_mb = (0 if args.no_mem_limit
                     else args.mem_limit_mb if args.mem_limit_mb is not None
                     else default_mem_limit_mb())
@@ -1121,6 +1219,8 @@ def cmd_preflight(args) -> None:
     """Passe le corpus un-par-un, SOUS cap mémoire, pour trouver le cas qui
     fait tomber l'OS AVANT le sweep — sans risque (un runaway est tué+loggé)."""
     check_stale_inflight(auto_quarantine=not args.no_quarantine)
+    if not args.no_quarantine:
+        reconcile_quarantine_from_journal()
     if args.cases:
         cases = [c.strip() for c in args.cases.split(",")]
     elif args.tier:
@@ -1198,11 +1298,17 @@ def cmd_quarantine(args) -> None:
         q = load_quarantine()
         if not q:
             print("Quarantaine vide.")
-            return
-        print(f"{len(q)} cas en quarantaine :")
-        for name, info in sorted(q.items()):
-            print(f"  - {name}  ({info.get('added_utc', '?')}) "
-                  f": {info.get('reason', '')}")
+        else:
+            print(f"{len(q)} cas en quarantaine :")
+            for name, info in sorted(q.items()):
+                print(f"  - {name}  ({info.get('added_utc', '?')}) "
+                      f": {info.get('reason', '')}")
+        res = load_resolved()
+        if res:
+            print(f"\n{len(res)} tombstone(s) résolu(s) (fix attesté, non "
+                  f"re-quarantainé sauf nouvel incident) :")
+            for name, ts in sorted(res.items()):
+                print(f"  - {name}  (résolu {ts})")
     elif action == "add":
         if not args.case:
             sys.exit("quarantine add <case> [--reason ...]")

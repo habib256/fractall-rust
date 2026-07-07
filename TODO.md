@@ -154,6 +154,18 @@ comparable entre cas) :
   271 k iters, 86→2.5 s, PIXEL-IDENTIQUE » plus bas) + **iteration_max en u64**
   (seahorse). Retirer de quarantaine (`quarantine remove <cas>`) une fois
   l'orbite bornée en mémoire.
+- **⚠️ Trou d'invariant garde-fou RÉPARÉ (2026-07-07)** : `quarantine.json` est
+  versionné → il peut **dériver** (revert/reset/checkout git) et *dé-quarantainer
+  silencieusement* un cas qui a fait tomber la machine. Cas réel : **e22522**
+  (`died_uncleanly` sur le côté **F3** d'un sweep speed, 1e22522 → orbite GMP
+  ~9 GB @74 852 b) journalisé mais **absent** de la quarantaine → il pouvait
+  rejoindre un `full` sweep et re-crasher l'OS (preflight ne vette QUE le côté
+  fractall, pas F3). Fix : le **journal append-only est la vérité de terrain** ;
+  `reconcile_quarantine_from_journal()` (appelé au démarrage de `score`/`preflight`)
+  ré-quarantaine tout cas `died_uncleanly`/`killed_oom`/`aborted`/`killed` non
+  couvert, en respectant un **tombstone `resolved.json`** posé par
+  `quarantine remove` (fix attesté → pas de ré-ajout, sauf incident postérieur).
+  Verrou : `scripts/test_harness_guard.py` (5 scénarios). e22522 ré-exclu.
 
 **Done when** :
 - [x] **Re-sweep complet 84 cas à 1920×1080** (2026-05-21, sweep A) : 83/84

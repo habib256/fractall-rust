@@ -14,5 +14,9 @@
   "opus2": {
     "reason": "pic RSS 28579MB ≥ seuil 20414MB ; fail (preflight full corpus 40459d7)",
     "added_utc": "2026-07-07T08:11:44+00:00"
+  },
+  "e22522": {
+    "reason": "réconcilié depuis le journal (incident 2026-07-07T09:16:10+00:00 non couvert)",
+    "added_utc": "2026-07-07T15:21:47+00:00"
   }
 }
