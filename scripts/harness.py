@@ -49,6 +49,174 @@ SCHEMA = 1
 SEVERITY_LABEL = {1: "correction", 2: "robustesse", 3: "vitesse", 4: "qualité"}
 MARKER = "<!-- généré par scripts/harness.py — ne pas éditer à la main -->"
 
+# --- garde-fou crash / mémoire (voir SKILL improve §Étape 0) ------------------
+# Un cas gourmand du corpus peut allouer toute la RAM et faire tomber l'OS
+# pendant un sweep étendu. Trois mécanismes évitent que /improve reste coincé :
+#   1. INFLIGHT : breadcrumb écrit AVANT chaque cas, effacé après. Un fichier
+#      résiduel au démarrage = le cas qui a tué la machine (le process a été
+#      emporté avant de pouvoir nettoyer). On le journalise + quarantaine.
+#   2. cap mémoire (RLIMIT_AS) : un runaway est tué proprement (loggé) au lieu
+#      de faire planter l'OS.
+#   3. CRASH_JOURNAL : trace jsonl append-only étudiable de tous les incidents.
+INFLIGHT = HARNESS_DIR / "inflight.json"
+CRASH_JOURNAL = HARNESS_DIR / "crash-journal.jsonl"
+QUARANTINE = HARNESS_DIR / "quarantine.json"
+
+try:
+    import resource  # POSIX only
+except ImportError:  # pragma: no cover
+    resource = None
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def default_mem_limit_mb() -> int:
+    """Cap mémoire par process. Défaut = 85 % de MemTotal (0 = désactivé).
+
+    Override : env `FRACTALL_HARNESS_MEM_MB` ou `--mem-limit-mb`. But : un cas
+    emballé est tué par le noyau (alloc échoue → abort, loggé) au lieu de
+    thrasher le swap et bloquer l'OS. 85 % laisse tourner les cas GMP lourds
+    légitimes ; un faux positif éventuel est visible dans le journal, pas un
+    plantage silencieux.
+    """
+    env = os.environ.get("FRACTALL_HARNESS_MEM_MB")
+    if env is not None:
+        try:
+            return int(env)
+        except ValueError:
+            pass
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemTotal:"):
+                return int(int(line.split()[1]) / 1024 * 0.85)
+    except Exception:
+        pass
+    return 0
+
+
+def _rlimit_preexec(mem_mb: int):
+    """preexec_fn posant RLIMIT_AS sur l'enfant (None si cap off/non-POSIX)."""
+    if not mem_mb or resource is None:
+        return None
+    limit = mem_mb * 1024 * 1024
+
+    def _apply():
+        resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+    return _apply
+
+
+def _classify_rc(rc: int) -> str:
+    """Statut d'un process terminé. rc<0 = tué par signal -rc."""
+    if rc == 0:
+        return "ok"
+    if rc >= 0:
+        return "fail"
+    sig = -rc
+    if sig == 9:
+        return "killed_oom"     # SIGKILL — OOM-killer du noyau
+    if sig == 6:
+        return "aborted"        # SIGABRT — alloc échouée sous cap, ou panic=abort
+    return "killed"             # autre signal
+
+
+def _append_journal(rec: dict) -> None:
+    HARNESS_DIR.mkdir(parents=True, exist_ok=True)
+    with CRASH_JOURNAL.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+def journal_begin(phase: str, case: str, extra: dict | None = None) -> dict:
+    HARNESS_DIR.mkdir(parents=True, exist_ok=True)
+    rec = {"phase": phase, "case": case, "started_utc": _now_iso(),
+           "pid": os.getpid(), "git_sha": git_sha()}
+    if extra:
+        rec.update(extra)
+    INFLIGHT.write_text(json.dumps(rec, ensure_ascii=False))
+    return rec
+
+
+def journal_end(rec: dict, outcome: str, extra: dict | None = None) -> None:
+    rec = dict(rec)
+    rec["outcome"] = outcome
+    rec["ended_utc"] = _now_iso()
+    if extra:
+        rec.update({k: v for k, v in extra.items() if v is not None})
+    # incident (≠ ok/timeout attendu) → trace permanente ; sinon on efface juste
+    if outcome not in ("ok",):
+        _append_journal(rec)
+    INFLIGHT.unlink(missing_ok=True)
+
+
+def load_quarantine() -> dict:
+    if not QUARANTINE.exists():
+        return {}
+    try:
+        d = json.loads(QUARANTINE.read_text())
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_quarantine(d: dict) -> None:
+    HARNESS_DIR.mkdir(parents=True, exist_ok=True)
+    QUARANTINE.write_text(json.dumps(d, indent=2, ensure_ascii=False) + "\n")
+
+
+def add_quarantine(case: str, reason: str | None) -> bool:
+    d = load_quarantine()
+    if case in d:
+        return False
+    d[case] = {"reason": reason or "manuel", "added_utc": _now_iso()}
+    save_quarantine(d)
+    return True
+
+
+def remove_quarantine(case: str) -> bool:
+    d = load_quarantine()
+    if case not in d:
+        return False
+    del d[case]
+    save_quarantine(d)
+    return True
+
+
+def check_stale_inflight(auto_quarantine: bool = True) -> str | None:
+    """Détecte un breadcrumb résiduel = crash non nettoyé du run précédent.
+
+    Journalise l'incident, met le cas fautif en quarantaine (skip auto au
+    prochain sweep), efface le breadcrumb. Retourne le nom du cas ou None.
+    """
+    if not INFLIGHT.exists():
+        return None
+    try:
+        rec = json.loads(INFLIGHT.read_text())
+    except Exception:
+        rec = {"case": "?", "phase": "?"}
+    case = rec.get("case", "?")
+    rec = dict(rec)
+    rec["outcome"] = "died_uncleanly"
+    rec["detected_utc"] = _now_iso()
+    rec["note"] = ("run précédent mort sans nettoyage propre (OOM / crash OS "
+                   "probable) — ce cas tournait au moment du plantage")
+    _append_journal(rec)
+    INFLIGHT.unlink(missing_ok=True)
+    print("\n" + "=" * 72)
+    print("⚠️  CRASH DÉTECTÉ — le run précédent est mort pendant un cas.")
+    print(f"    cas en vol : {case!r}  (phase {rec.get('phase')}, "
+          f"{rec.get('size', '?')})")
+    print(f"    → incident journalisé dans "
+          f"{CRASH_JOURNAL.relative_to(REPO)}")
+    if auto_quarantine and case and case != "?":
+        if add_quarantine(case, rec["note"]):
+            print(f"    → {case!r} mis en QUARANTAINE (skip auto des sweeps).")
+        print("    → étudier via `python3 scripts/harness.py quarantine list` "
+              "puis `preflight`.")
+    print("=" * 72 + "\n")
+    return case
+# -----------------------------------------------------------------------------
+
 QUICK_CASES = [
     "test5", "spiral", "flake", "glitch_test_2", "e50", "e113", "e401",
     "e1000", "floral_fantasy", "dragon",
@@ -118,37 +286,47 @@ def cargo_build(bin_name: str | None = None) -> bool:
     return subprocess.run(cmd, cwd=REPO).returncode == 0
 
 def timed_runs(cmd: list[str], env: dict, timeout: float, runs: int,
-               accept_nonzero: bool = False) -> tuple[str, float | None]:
+               accept_nonzero: bool = False,
+               mem_limit_mb: int = 0) -> tuple[str, float | None]:
     """Chronomètre `cmd` `runs` fois (médiane). Renvoie (status, secondes|None).
 
-    status : ok | timeout | fail. `accept_nonzero=True` enregistre quand même
-    le temps si le process va au bout avec rc != 0 (cas F3 batch sans EXR :
-    rendu complet mais save_exr no-op → rc != 0).
+    status : ok | timeout | fail | killed_oom | aborted | killed.
+    `accept_nonzero=True` enregistre quand même le temps si le process va au
+    bout avec rc != 0 (cas F3 batch sans EXR : rendu complet mais save_exr
+    no-op → rc != 0). `mem_limit_mb` pose RLIMIT_AS sur l'enfant (garde-fou
+    anti-plantage-OS) ; un runaway est alors tué (rc<0) au lieu de saturer la
+    RAM — statut `killed_oom`/`aborted` propagé au caller.
     """
     times: list[float] = []
+    preexec = _rlimit_preexec(mem_limit_mb)
     for _ in range(runs):
         t0 = time.monotonic()
         try:
             proc = subprocess.run(
                 cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                env=env, timeout=timeout,
+                env=env, timeout=timeout, preexec_fn=preexec,
             )
         except subprocess.TimeoutExpired:
             return "timeout", None
         except OSError:
             # binaire non exécutable ici (ex: build .macos lancé sur Linux)
             return "fail", None
-        if proc.returncode != 0 and not accept_nonzero:
+        rc = proc.returncode
+        if rc < 0:
+            return _classify_rc(rc), None
+        if rc != 0 and not accept_nonzero:
             return "fail", None
         times.append(time.monotonic() - t0)
     return "ok", statistics.median(times)
 
 def axis_speed(cases: list[str], width: int, height: int, runs: int,
-               timeout: float, f3_bin: Path | None) -> dict:
+               timeout: float, f3_bin: Path | None,
+               mem_limit_mb: int = 0, quarantined: set | None = None) -> dict:
     outdir = BENCH / "speed"
     outdir.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix="harness_speed_"))
     results: dict[str, dict] = {}
+    quarantined = quarantined or set()
     fr_env = os.environ.copy()
     fr_env["FRACTALL_NO_AUTO_ADJUST"] = "1"
     fr_env["FRACTALL_NO_PERIOD"] = "1"
@@ -158,6 +336,11 @@ def axis_speed(cases: list[str], width: int, height: int, runs: int,
             entry = {"fractall_s": None, "f3_s": None, "ratio": None,
                      "status": "ok", "f3_exr_ok": False}
             print(f"  [{i:>3}/{len(cases)}] speed {name:24s}", end=" ", flush=True)
+            if name in quarantined:
+                entry["status"] = "quarantined"
+                results[name] = entry
+                print("⊘ QUARANTAINE (skip — voir quarantine.json)")
+                continue
             if not toml_path.exists():
                 entry["status"] = "missing_toml"
                 results[name] = entry
@@ -167,11 +350,23 @@ def axis_speed(cases: list[str], width: int, height: int, runs: int,
             fr_cmd = [str(CLI), "--toml", str(toml_path), "--width", str(width),
                       "--height", str(height), "--bailout", "25",
                       "--output", str(outdir / f"{name}.png")]
-            st_fr, med_fr = timed_runs(fr_cmd, fr_env, timeout, runs)
+            jrec = journal_begin("speed", name,
+                                 {"size": f"{width}x{height}",
+                                  "toml": str(toml_path)})
+            st_fr, med_fr = timed_runs(fr_cmd, fr_env, timeout, runs,
+                                       mem_limit_mb=mem_limit_mb)
+            journal_end(jrec, st_fr, {"secs": med_fr})
             if st_fr == "ok":
                 entry["fractall_s"] = round(med_fr, 4)
             elif st_fr == "timeout":
                 entry["status"] = "fractall_timeout"
+            elif st_fr in ("killed_oom", "aborted", "killed"):
+                entry["status"] = f"fractall_{st_fr}"
+                # gourmand mémoire tué par le cap → quarantaine auto pour ne pas
+                # replanter le sweep suivant ; l'incident reste dans le journal.
+                if add_quarantine(name, f"{st_fr} sous cap mémoire "
+                                        f"{mem_limit_mb}MB @ {width}x{height}"):
+                    print("⚠ tué (mémoire) → QUARANTAINE  ", end="")
             else:
                 entry["status"] = "fractall_fail"
 
@@ -196,15 +391,20 @@ def axis_speed(cases: list[str], width: int, height: int, runs: int,
             f3_cmd = [str(f3_bin), "-b", "-P", str(wrapper)]
             # accept_nonzero : le build Linux (HAVE_EXR=0) rend complètement mais
             # exit rc != 0 (save_exr no-op) — on garde le timing si pas timeout.
+            jrec_f3 = journal_begin("speed_f3", name,
+                                    {"size": f"{width}x{height}"})
             st_f3, med_f3 = timed_runs(f3_cmd, os.environ.copy(), timeout, runs,
-                                       accept_nonzero=True)
+                                       accept_nonzero=True,
+                                       mem_limit_mb=mem_limit_mb)
+            journal_end(jrec_f3, st_f3, {"secs": med_f3})
             entry["f3_exr_ok"] = f3_exr.exists()
             if st_f3 == "ok":
                 entry["f3_s"] = round(med_f3, 4)
             elif st_f3 == "timeout" and entry["status"] == "ok":
                 entry["status"] = "f3_timeout"
-            elif st_f3 == "fail" and entry["status"] == "ok":
-                entry["status"] = "f3_fail"
+            elif st_f3 in ("fail", "killed_oom", "aborted", "killed") \
+                    and entry["status"] == "ok":
+                entry["status"] = "f3_fail" if st_f3 == "fail" else f"f3_{st_f3}"
 
             if entry["fractall_s"] and entry["f3_s"]:
                 entry["ratio"] = round(entry["fractall_s"] / entry["f3_s"], 4)
@@ -248,7 +448,7 @@ def _fnum(row: dict, key: str):
         return None
 
 def axis_parity(cases: list[str], width: int, height: int, timeout: float,
-                f3_bin: Path | None) -> dict:
+                f3_bin: Path | None, mem_limit_mb: int = 0) -> dict:
     empty = {"cases": {}, "n_ok": 0, "n_pixel_equiv": 0, "n_fail": 0,
              "n_timeout": 0, "n_f3_degenerate": 0}
     if f3_bin is None:
@@ -260,7 +460,10 @@ def axis_parity(cases: list[str], width: int, height: int, timeout: float,
            "--height", str(height), "--timeout", str(timeout),
            "--out", str(outdir)]
     print(f"  $ compare_f3.py --only {len(cases)} cas", flush=True)
-    subprocess.run(cmd, cwd=REPO)
+    jrec = journal_begin("parity", "<compare_f3-suite>",
+                         {"size": f"{width}x{height}", "n_cases": len(cases)})
+    proc = subprocess.run(cmd, cwd=REPO, preexec_fn=_rlimit_preexec(mem_limit_mb))
+    journal_end(jrec, _classify_rc(proc.returncode))
     csv_path = outdir / "_summary.csv"
     if not csv_path.exists():
         return {"status": "error", **empty}
@@ -404,7 +607,8 @@ def summarize_quality(rows: list[dict]) -> dict:
         "presets": rows,
     }
 
-def axis_quality(no_rebuild: bool, width: int = 256, height: int = 256) -> dict:
+def axis_quality(no_rebuild: bool, width: int = 256, height: int = 256,
+                 mem_limit_mb: int = 0) -> dict:
     if not QUALITY.exists() and not no_rebuild:
         cargo_build("fractall-quality")
     if not QUALITY.exists():
@@ -415,9 +619,12 @@ def axis_quality(no_rebuild: bool, width: int = 256, height: int = 256) -> dict:
     outdir = BENCH / "quality"
     outdir.mkdir(parents=True, exist_ok=True)
     print(f"  $ fractall-quality suite --width {width} --height {height}", flush=True)
+    jrec = journal_begin("quality", "<quality-suite>",
+                         {"size": f"{width}x{height}"})
     proc = subprocess.run([str(QUALITY), "suite", "--output-dir", str(outdir),
                            "--width", str(width), "--height", str(height)],
-                          cwd=REPO)
+                          cwd=REPO, preexec_fn=_rlimit_preexec(mem_limit_mb))
+    journal_end(jrec, _classify_rc(proc.returncode))
     rows = None
     jf = outdir / "suite-summary.json"
     if jf.exists():
@@ -472,8 +679,20 @@ def compute_gaps(card: dict, base: dict | None) -> list[dict]:
         if rel is not None and rel > 2.0 and c.get("status") == "ok":
             gaps.append(_gap("parity", name, "rel_dsi_pct", round(rel, 4),
                              None, 2, "divergence parité >2%"))
-    # --- speed (triées par ratio décroissant) ---
+    # --- robustesse : cas tués mémoire / en quarantaine (sévérité 2) ---
     s = card.get("speed", {})
+    for name, c in s.get("cases", {}).items():
+        st = c.get("status", "")
+        if st == "quarantined":
+            gaps.append(_gap("speed", name, "status", "quarantined", None, 2,
+                             "cas en QUARANTAINE — crash/OOM connu, voir "
+                             "harness/crash-journal.jsonl"))
+        elif st in ("fractall_killed_oom", "fractall_aborted",
+                    "fractall_killed"):
+            gaps.append(_gap("speed", name, "status", st, None, 2,
+                             "cas tué (mémoire) sous cap — voir "
+                             "harness/crash-journal.jsonl"))
+    # --- speed (triées par ratio décroissant) ---
     speed_gaps = []
     for name, c in s.get("cases", {}).items():
         r = c.get("ratio")
@@ -674,6 +893,21 @@ def cmd_score(args) -> None:
     timeout = args.timeout or cfg["timeout"]
     axes = [a.strip() for a in args.axes.split(",") if a.strip()]
 
+    # Garde-fou crash : un breadcrumb résiduel = le run précédent est mort
+    # pendant un cas (OOM / plantage OS). On le journalise + quarantaine AVANT
+    # de relancer, sinon on replante sur le même cas.
+    check_stale_inflight(auto_quarantine=not args.no_quarantine)
+    mem_limit_mb = (0 if args.no_mem_limit
+                    else args.mem_limit_mb if args.mem_limit_mb is not None
+                    else default_mem_limit_mb())
+    quarantined = set() if args.no_quarantine else set(load_quarantine())
+    if mem_limit_mb:
+        print(f"→ cap mémoire/process : {mem_limit_mb} MB "
+              f"(RLIMIT_AS ; --no-mem-limit pour désactiver)")
+    if quarantined:
+        print(f"→ quarantaine active ({len(quarantined)}) : "
+              f"{', '.join(sorted(quarantined))}")
+
     if not args.no_rebuild:
         print("→ cargo build --release", flush=True)
         if not cargo_build():
@@ -699,6 +933,8 @@ def cmd_score(args) -> None:
             "quality_height": cfg.get("quality_height", 256),
             "runs": runs,
             "f3_bin": str(f3_bin) if f3_bin else None,
+            "mem_limit_mb": mem_limit_mb,
+            "quarantined": sorted(quarantined),
         },
         "speed": {"status": "skipped"},
         "parity": {"status": "skipped"},
@@ -712,16 +948,20 @@ def cmd_score(args) -> None:
 
     if "speed" in axes:
         print("\n== SPEED ==")
-        card["speed"] = axis_speed(cases, width, height, runs, timeout, f3_bin)
+        card["speed"] = axis_speed(cases, width, height, runs, timeout, f3_bin,
+                                   mem_limit_mb=mem_limit_mb,
+                                   quarantined=quarantined)
     if "parity" in axes:
         print("\n== PARITY ==")
-        card["parity"] = axis_parity(cases, width, height, timeout, f3_bin)
+        card["parity"] = axis_parity(cases, width, height, timeout, f3_bin,
+                                     mem_limit_mb=mem_limit_mb)
     if "quality" in axes:
         print("\n== QUALITY ==")
         card["quality"] = axis_quality(
             args.no_rebuild,
             cfg.get("quality_width", 256),
             cfg.get("quality_height", 256),
+            mem_limit_mb=mem_limit_mb,
         )
     if "goldens" in axes:
         print("\n== GOLDENS ==")
@@ -774,6 +1014,174 @@ def _print_gaps(gaps: list[dict]) -> None:
         print(f"  {i:>2}. [{g['severity']} {sev:<10}] {g['axis']}/{g['case']} "
               f"{g['metric']}={g['value']} — {g['note']}")
 
+# --- preflight : vet le corpus SANS faire tomber l'OS -------------------------
+
+_TIME_BIN = Path("/usr/bin/time")
+
+
+def run_case_measured(name: str, width: int, height: int, timeout: float,
+                      mem_limit_mb: int) -> dict:
+    """Rend UN cas sous cap mémoire + breadcrumb, mesure temps et pic RSS.
+
+    Renvoie {status, secs, peak_rss_kb, signal?}. status : ok | timeout |
+    fail | killed_oom | aborted | killed | missing_toml. Le pic RSS vient de
+    `/usr/bin/time -v` si dispo (mesure propre par process).
+    """
+    toml_path = TOML_DIR / f"{name}.toml"
+    if not toml_path.exists():
+        return {"status": "missing_toml"}
+    out = BENCH / "preflight"
+    out.mkdir(parents=True, exist_ok=True)
+    cmd = [str(CLI), "--toml", str(toml_path), "--width", str(width),
+           "--height", str(height), "--bailout", "25",
+           "--output", str(out / f"{name}.png")]
+    use_time = _TIME_BIN.exists()
+    full = (["/usr/bin/time", "-v", *cmd] if use_time else cmd)
+    env = os.environ.copy()
+    env["FRACTALL_NO_AUTO_ADJUST"] = "1"
+    env["FRACTALL_NO_PERIOD"] = "1"
+    jrec = journal_begin("preflight", name, {"size": f"{width}x{height}",
+                                             "toml": str(toml_path)})
+    t0 = time.monotonic()
+    try:
+        proc = subprocess.run(full, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.PIPE, env=env, timeout=timeout,
+                              preexec_fn=_rlimit_preexec(mem_limit_mb),
+                              text=True)
+    except subprocess.TimeoutExpired:
+        journal_end(jrec, "timeout")
+        return {"status": "timeout", "secs": None, "peak_rss_kb": None}
+    except OSError:
+        journal_end(jrec, "fail")
+        return {"status": "fail", "secs": None, "peak_rss_kb": None}
+    secs = time.monotonic() - t0
+    rc = proc.returncode
+    status = _classify_rc(rc)
+    peak_kb = None
+    if use_time and proc.stderr:
+        m = re.search(r"Maximum resident set size \(kbytes\):\s*(\d+)",
+                      proc.stderr)
+        if m:
+            peak_kb = int(m.group(1))
+    res = {"status": status, "secs": round(secs, 3), "peak_rss_kb": peak_kb}
+    if rc < 0:
+        res["signal"] = -rc
+    journal_end(jrec, status, {"secs": res["secs"], "peak_rss_kb": peak_kb,
+                               "signal": res.get("signal")})
+    return res
+
+
+def cmd_preflight(args) -> None:
+    """Passe le corpus un-par-un, SOUS cap mémoire, pour trouver le cas qui
+    fait tomber l'OS AVANT le sweep — sans risque (un runaway est tué+loggé)."""
+    check_stale_inflight(auto_quarantine=not args.no_quarantine)
+    if args.cases:
+        cases = [c.strip() for c in args.cases.split(",")]
+    elif args.tier:
+        cases = tier_config(args.tier)["cases"]
+    else:
+        cases = all_toml_stems()
+    width = args.width or 256
+    height = args.height or 256
+    timeout = args.timeout or 300.0
+    mem_limit_mb = (0 if args.no_mem_limit
+                    else args.mem_limit_mb if args.mem_limit_mb is not None
+                    else default_mem_limit_mb())
+    flag_mb = args.flag_rss_mb if args.flag_rss_mb is not None else \
+        int(default_mem_limit_mb() * 0.6) or None
+
+    if not args.no_rebuild and not CLI.exists():
+        cargo_build("fractall-cli")
+
+    print(f"→ preflight {len(cases)} cas · {width}×{height} · "
+          f"timeout={timeout}s · cap={mem_limit_mb or 'off'}MB · "
+          f"flag>{flag_mb or '—'}MB")
+    rows: list[dict] = []
+    for i, name in enumerate(cases, 1):
+        print(f"  [{i:>3}/{len(cases)}] {name:28s}", end=" ", flush=True)
+        r = run_case_measured(name, width, height, timeout, mem_limit_mb)
+        r["name"] = name
+        rows.append(r)
+        rss_mb = (r.get("peak_rss_kb") or 0) / 1024
+        st = r["status"]
+        hog = flag_mb and rss_mb >= flag_mb
+        crashed = st in ("killed_oom", "aborted", "killed", "timeout")
+        note = ""
+        if crashed or (hog and st == "ok"):
+            reason = (f"{st}" if crashed
+                      else f"pic RSS {rss_mb:.0f}MB ≥ seuil {flag_mb}MB")
+            if not args.no_quarantine and add_quarantine(name, reason):
+                note = "  → QUARANTAINE"
+        print(f"{st:11s} {r.get('secs', '—')}s "
+              f"rss={rss_mb:.0f}MB{note}")
+
+    # rapport trié par pic RSS puis temps
+    def _key(r):
+        return (-(r.get("peak_rss_kb") or 0), -(r.get("secs") or 0))
+    rows.sort(key=_key)
+    out = BENCH / "preflight"
+    out.mkdir(parents=True, exist_ok=True)
+    report = out / "preflight-report.md"
+    L = [f"# Preflight — {_now_iso()}  (`{git_sha()}`)", "",
+         f"- corpus : {len(cases)} cas · {width}×{height} · "
+         f"cap {mem_limit_mb or 'off'}MB · flag ≥ {flag_mb or '—'}MB", "",
+         "| Cas | Statut | Temps (s) | Pic RSS (MB) | Signal |",
+         "|---|---|---:|---:|---:|"]
+    for r in rows:
+        rss = f"{(r.get('peak_rss_kb') or 0)/1024:.0f}" if r.get("peak_rss_kb") \
+            else "—"
+        L.append(f"| {r['name']} | {r['status']} | {r.get('secs', '—')} | "
+                 f"{rss} | {r.get('signal', '')} |")
+    report.write_text("\n".join(L) + "\n")
+    q = load_quarantine()
+    print(f"\n✓ rapport : {report.relative_to(REPO)}")
+    print(f"✓ quarantaine : {len(q)} cas — {', '.join(sorted(q)) or '(aucun)'}")
+    print(f"✓ journal incidents : {CRASH_JOURNAL.relative_to(REPO)}")
+
+
+def cmd_quarantine(args) -> None:
+    action = args.action
+    if action == "list":
+        q = load_quarantine()
+        if not q:
+            print("Quarantaine vide.")
+            return
+        print(f"{len(q)} cas en quarantaine :")
+        for name, info in sorted(q.items()):
+            print(f"  - {name}  ({info.get('added_utc', '?')}) "
+                  f": {info.get('reason', '')}")
+    elif action == "add":
+        if not args.case:
+            sys.exit("quarantine add <case> [--reason ...]")
+        ok = add_quarantine(args.case, args.reason)
+        print(f"{'+ ajouté' if ok else '= déjà présent'} : {args.case}")
+    elif action == "remove":
+        if not args.case:
+            sys.exit("quarantine remove <case>")
+        ok = remove_quarantine(args.case)
+        print(f"{'- retiré' if ok else '? absent'} : {args.case}")
+    elif action == "clear":
+        save_quarantine({})
+        print("Quarantaine vidée.")
+
+
+def cmd_journal(_args) -> None:
+    if not CRASH_JOURNAL.exists():
+        print("Aucun incident journalisé 🎉")
+        return
+    lines = CRASH_JOURNAL.read_text().splitlines()
+    print(f"{len(lines)} incident(s) — {CRASH_JOURNAL.relative_to(REPO)} :\n")
+    for ln in lines[-30:]:
+        try:
+            r = json.loads(ln)
+        except Exception:
+            continue
+        print(f"  [{r.get('ended_utc') or r.get('detected_utc', '?')}] "
+              f"{r.get('outcome', '?'):15s} {r.get('phase', '?')}/"
+              f"{r.get('case', '?')} "
+              f"{('sig=' + str(r['signal'])) if r.get('signal') else ''} "
+              f"{r.get('note', '')}")
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -791,7 +1199,44 @@ def main() -> None:
     sc.add_argument("--height", type=int, default=None)
     sc.add_argument("--runs", type=int, default=None)
     sc.add_argument("--timeout", type=float, default=None)
+    sc.add_argument("--mem-limit-mb", type=int, default=None,
+                    help="cap RLIMIT_AS par process (défaut 85%% RAM ; "
+                         "0 = off)")
+    sc.add_argument("--no-mem-limit", action="store_true",
+                    help="désactive le cap mémoire (⚠️ risque plantage OS)")
+    sc.add_argument("--no-quarantine", action="store_true",
+                    help="ne pas skipper les cas en quarantaine")
     sc.set_defaults(func=cmd_score)
+
+    pf = sub.add_parser("preflight",
+                        help="Vet le corpus sous cap mémoire (trouve le cas "
+                             "qui fait planter l'OS AVANT le sweep).")
+    pf.add_argument("--tier", choices=["quick", "standard", "full"],
+                    default=None, help="cases du tier (défaut : tout le corpus)")
+    pf.add_argument("--cases", default=None, help="liste CSV de stems")
+    pf.add_argument("--width", type=int, default=None)
+    pf.add_argument("--height", type=int, default=None)
+    pf.add_argument("--timeout", type=float, default=None)
+    pf.add_argument("--mem-limit-mb", type=int, default=None)
+    pf.add_argument("--no-mem-limit", action="store_true")
+    pf.add_argument("--no-rebuild", action="store_true")
+    pf.add_argument("--flag-rss-mb", type=int, default=None,
+                    help="seuil pic RSS (MB) au-delà duquel un cas est "
+                         "quarantainé (défaut 60%% du cap)")
+    pf.add_argument("--no-quarantine", action="store_true",
+                    help="mesurer sans quarantainer les gourmands")
+    pf.set_defaults(func=cmd_preflight)
+
+    qs = sub.add_parser("quarantine",
+                        help="Gère les cas exclus des sweeps (crash/OOM).")
+    qs.add_argument("action", choices=["list", "add", "remove", "clear"])
+    qs.add_argument("case", nargs="?", default=None)
+    qs.add_argument("--reason", default=None)
+    qs.set_defaults(func=cmd_quarantine)
+
+    js = sub.add_parser("journal",
+                        help="Affiche le journal des incidents (crashes/OOM).")
+    js.set_defaults(func=cmd_journal)
 
     bl = sub.add_parser("baseline", help="Fige le dernier history comme baseline.")
     bl.set_defaults(func=cmd_baseline)

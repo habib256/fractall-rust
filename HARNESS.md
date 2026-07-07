@@ -63,6 +63,9 @@ Plus goldens (`tests/golden_images.rs`, pixel-exact) = non-régression absolue.
 python3 scripts/harness.py score [--tier quick|standard|full] [--axes speed,parity,quality,goldens]
 python3 scripts/harness.py baseline          # fige le score courant comme référence
 python3 scripts/harness.py gaps              # ré-affiche les gaps du dernier score
+python3 scripts/harness.py preflight         # vet le corpus SOUS cap mémoire (anti-crash-OS)
+python3 scripts/harness.py quarantine list   # cas exclus des sweeps (crash/OOM connu)
+python3 scripts/harness.py journal           # trace des incidents (OOM, crash, abort)
 ```
 
 - **Tiers** : `quick` ≈ 10 cas représentatifs à 256², 1 run (~5 min, l'outil
@@ -79,6 +82,28 @@ python3 scripts/harness.py gaps              # ré-affiche les gaps du dernier s
 - **Binaire F3** : auto-détection `fraktaler-3-3.1/fraktaler-3` (Linux) puis
   `fraktaler-3.macos`, override `F3_BIN=…`. Sans F3, l'axe `speed`/`parity`
   est marqué `f3_unavailable` (le reste tourne).
+
+### Garde-fou crash / mémoire (sweeps étendus)
+
+Un cas du corpus peut saturer la RAM et **faire tomber l'OS** pendant un sweep
+`standard`/`full`. Trois mécanismes intégrés évitent que la boucle reste
+coincée dessus :
+
+- **Breadcrumb** `harness/inflight.json` (transient, gitignoré) : écrit avant
+  chaque cas, effacé après. `score`/`preflight` le vérifient au démarrage — un
+  résidu = crash non nettoyé du run précédent → journalisé + **quarantaine auto**.
+- **Cap mémoire** RLIMIT_AS (défaut 85 % RAM ; `--mem-limit-mb N`, `0`/
+  `--no-mem-limit` pour couper) : un runaway est tué (`aborted`/`killed_oom`,
+  loggé) au lieu de planter l'OS. Faux positif éventuel = visible dans le
+  journal, jamais un plantage silencieux.
+- **Journal** `harness/crash-journal.jsonl` (gitignoré) + **quarantaine**
+  `harness/quarantine.json` (versionné, commit délibéré comme la baseline ;
+  les sweeps skippent ces cas, gap sévérité 2 dans le SCORECARD).
+
+**Avant tout sweep au-delà de `quick`**, passer `preflight` : il rend chaque
+cas un-par-un sous cap mémoire, mesure le pic RSS (`/usr/bin/time -v`),
+classe dans `bench/harness/preflight/preflight-report.md` et quarantaine
+les gourmands/plantants — sans jamais risquer l'OS.
 
 ## Priorités de choix du gap (ordre strict)
 

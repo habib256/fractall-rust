@@ -9,6 +9,47 @@ Protocole complet : `HARNESS.md` (racine). Roadmap des gaps connus : `TODO.md`.
 Ne JAMAIS sauter l'étape 5 (vérification). Une itération = un commit (ou un
 revert propre + une note TODO si l'hypothèse échoue).
 
+## Étape 0 — Garde-fou crash (TOUJOURS, avant tout sweep)
+
+Un cas gourmand du corpus peut allouer toute la RAM et **faire tomber l'OS**
+pendant un sweep étendu (`--tier standard`/`full` ou un `--cases` large). Au
+redémarrage, sans trace, la boucle rejoue le même sweep et replante. Trois
+mécanismes intégrés à `scripts/harness.py` évitent ça :
+
+- **Breadcrumb** `harness/inflight.json` : écrit avant chaque cas, effacé
+  après. `score`/`preflight` le vérifient au démarrage → un résidu = le cas qui
+  a tué la machine ; il est journalisé et **mis en quarantaine automatiquement**.
+- **Cap mémoire** (RLIMIT_AS, défaut 85 % RAM) : un runaway est tué proprement
+  (`aborted`/`killed_oom`, loggé) au lieu de planter l'OS.
+- **Journal** `harness/crash-journal.jsonl` + `harness/quarantine.json`.
+
+**Réflexe au (re)démarrage de la session** — vérifier si un crash précédent
+est resté en travers :
+
+```bash
+python3 scripts/harness.py journal          # incidents récents (OOM, crash…)
+python3 scripts/harness.py quarantine list  # cas exclus des sweeps + raison
+```
+
+Si le journal montre un `died_uncleanly`/`killed_oom`/`aborted` : le cas est
+déjà quarantainé (les sweeps le skippent). **Ne pas le réintégrer à l'aveugle** ;
+l'étudier à part (petite taille, `--dd-tier`/précision, cf. TODO), corriger,
+puis `quarantine remove <cas>` seulement une fois le fix vérifié.
+
+**Avant un sweep étendu** (au-delà du tier quick — `standard`, `full`, ou un
+`--cases` inhabituel), passer d'abord le corpus au crible SANS risque :
+
+```bash
+python3 scripts/harness.py preflight        # tout le corpus, sous cap mémoire
+python3 scripts/harness.py preflight --tier standard   # ou un sous-ensemble
+```
+
+`preflight` rend chaque cas un-par-un à la résolution du sweep, sous cap
+mémoire + breadcrumb, mesure le **pic RSS** (`/usr/bin/time -v`), classe les
+cas dans `bench/harness/preflight/preflight-report.md` et quarantaine
+automatiquement les gourmands (pic RSS ≥ seuil) et ceux qui plantent. Le tier
+`quick` (10 cas légers) ne nécessite pas de preflight.
+
 ## Étape 1 — Mesurer
 
 ```bash
@@ -65,6 +106,11 @@ python3 scripts/harness.py score --tier quick
 
 - Comparer au baseline : le gap ciblé doit s'améliorer, **aucun autre axe ne
   doit régresser** (> 10 % = revert ou justification écrite).
+- Les sweeps tournent sous le garde-fou de l'Étape 0 (cap mémoire + journal).
+  Si un cas apparaît soudain **quarantainé** ou en `fractall_aborted`/
+  `killed_oom` dans le SCORECARD (gap sévérité 2 « robustesse »), c'est une
+  régression mémoire de ton patch : consulter `harness journal`, isoler,
+  corriger avant de committer — ne pas laisser passer.
 - Affirmation de perf → re-mesurer en `--tier standard` (3 runs, médiane)
   sur les cas touchés.
 - Goldens modifiés légitimement → `FRACTALL_UPDATE_GOLDENS=1` + **revue

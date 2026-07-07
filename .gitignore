@@ -46,3 +46,10 @@ Thumbs.db
 
 ## Transient runtime locks
 .claude/scheduled_tasks.lock
+
+## Harness garde-fou crash — état runtime local (voir scripts/harness.py)
+## inflight.json : breadcrumb du cas en cours (transient) ; crash-journal :
+## trace machine-locale. quarantine.json EST versionné (liste curée, commit
+## délibéré comme la baseline).
+/harness/inflight.json
+/harness/crash-journal.jsonl
