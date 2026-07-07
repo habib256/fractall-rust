@@ -1056,18 +1056,30 @@ def run_case_measured(name: str, width: int, height: int, timeout: float,
         return {"status": "fail", "secs": None, "peak_rss_kb": None}
     secs = time.monotonic() - t0
     rc = proc.returncode
-    status = _classify_rc(rc)
     peak_kb = None
+    signal_num = None
     if use_time and proc.stderr:
         m = re.search(r"Maximum resident set size \(kbytes\):\s*(\d+)",
                       proc.stderr)
         if m:
             peak_kb = int(m.group(1))
+        # /usr/bin/time masque une mort par signal : il n'y a pas de rc<0, time
+        # loggue "Command terminated by signal N" et sort avec 128+N. Sans ça,
+        # un abort (SIGABRT 6 = alloc échouée sous cap) passerait pour un simple
+        # `fail` — exactement ce qui a masqué seahorse/orion/opus2.
+        ms = re.search(r"Command terminated by signal (\d+)", proc.stderr)
+        if ms:
+            signal_num = int(ms.group(1))
+    if signal_num is None and rc < 0:
+        signal_num = -rc
+    if signal_num is None and use_time and rc >= 128:
+        signal_num = rc - 128     # convention shell/time pour mort par signal
+    status = _classify_rc(-signal_num) if signal_num else _classify_rc(rc)
     res = {"status": status, "secs": round(secs, 3), "peak_rss_kb": peak_kb}
-    if rc < 0:
-        res["signal"] = -rc
+    if signal_num:
+        res["signal"] = signal_num
     journal_end(jrec, status, {"secs": res["secs"], "peak_rss_kb": peak_kb,
-                               "signal": res.get("signal")})
+                               "signal": signal_num})
     return res
 
 
@@ -1104,12 +1116,19 @@ def cmd_preflight(args) -> None:
         rows.append(r)
         rss_mb = (r.get("peak_rss_kb") or 0) / 1024
         st = r["status"]
-        hog = flag_mb and rss_mb >= flag_mb
+        # hog = quel que soit ok/fail : un cas à ~28 GB qui ÉCHOUE (alloc
+        # refusée par le cap) est encore pire qu'un cas à 28 GB qui réussit —
+        # les deux doivent sortir du sweep (bug initial : `and st==ok`).
+        hog = bool(flag_mb) and rss_mb >= flag_mb
         crashed = st in ("killed_oom", "aborted", "killed", "timeout")
         note = ""
-        if crashed or (hog and st == "ok"):
-            reason = (f"{st}" if crashed
-                      else f"pic RSS {rss_mb:.0f}MB ≥ seuil {flag_mb}MB")
+        if crashed or hog:
+            bits = []
+            if hog:
+                bits.append(f"pic RSS {rss_mb:.0f}MB ≥ seuil {flag_mb}MB")
+            if crashed or st != "ok":
+                bits.append(st)
+            reason = " ; ".join(bits) or st
             if not args.no_quarantine and add_quarantine(name, reason):
                 note = "  → QUARANTAINE"
         print(f"{st:11s} {r.get('secs', '—')}s "

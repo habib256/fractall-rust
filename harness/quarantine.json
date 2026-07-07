@@ -1,0 +1,18 @@
+{
+  "wfs_mb": {
+    "reason": "pic RSS 28232MB ≥ seuil 20414MB",
+    "added_utc": "2026-07-07T08:07:11+00:00"
+  },
+  "seahorse": {
+    "reason": "aborted",
+    "added_utc": "2026-07-07T08:10:20+00:00"
+  },
+  "orion": {
+    "reason": "pic RSS 29516MB ≥ seuil 20414MB ; aborted",
+    "added_utc": "2026-07-07T08:11:10+00:00"
+  },
+  "opus2": {
+    "reason": "pic RSS 28579MB ≥ seuil 20414MB ; fail (preflight full corpus 40459d7)",
+    "added_utc": "2026-07-07T08:11:44+00:00"
+  }
+}

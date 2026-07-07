@@ -132,6 +132,17 @@ comparable entre cas) :
   >300 s) + ~23 catégoriquement infaisables (>1M iter : dragon 5M, wfs* 3.5M,
   super_dense/wfs_mb/infinity/triangle 10-15M, hard/orion 20M, opus2 80M,
   **seahorse 10¹⁰**, …) — exp-path trop lent → **G2**.
+- **⚠️ Hazard mémoire / crash OS (2026-07-07, preflight full corpus @256²)** :
+  ces orbites GMP ultra-longues stockées pleine précision par-itération font
+  exploser la RSS — **wfs_mb 28 GB, orion 29.5 GB, opus2 28.6 GB**, et
+  **seahorse tente 137 GB** (iterations 10¹⁰ clampé u32, alloc orbite → `abort`).
+  Sur une machine 40 GB ça faisait **tomber l'OS** pendant les sweeps `full`.
+  Désormais `scripts/harness.py preflight` les mesure sous cap RLIMIT_AS et les
+  **quarantaine automatiquement** (`harness/quarantine.json`) → les sweeps les
+  skippent. Fix racine = **G2** (truncation d'orbite F3, cf. « wfs_mb : truncation
+  271 k iters, 86→2.5 s, PIXEL-IDENTIQUE » plus bas) + **iteration_max en u64**
+  (seahorse). Retirer de quarantaine (`quarantine remove <cas>`) une fois
+  l'orbite bornée en mémoire.
 
 **Done when** :
 - [x] **Re-sweep complet 84 cas à 1920×1080** (2026-05-21, sweep A) : 83/84
