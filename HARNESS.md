@@ -92,6 +92,9 @@ coincée dessus :
 - **Breadcrumb** `harness/inflight.json` (transient, gitignoré) : écrit avant
   chaque cas, effacé après. `score`/`preflight` le vérifient au démarrage — un
   résidu = crash non nettoyé du run précédent → journalisé + **quarantaine auto**.
+  Une interruption GRACIEUSE (Ctrl-C / SIGTERM) est catchée et nettoie le
+  breadcrumb (journal `interrupted`, PAS de quarantaine) : seule une mort NON
+  catchable (SIGKILL, OOM-killer, panne OS) laisse le résidu → `died_uncleanly`.
 - **Cap mémoire** RLIMIT_AS (défaut 85 % RAM ; `--mem-limit-mb N`, `0`/
   `--no-mem-limit` pour couper) : un runaway est tué (`aborted`/`killed_oom`,
   loggé) au lieu de planter l'OS. Faux positif éventuel = visible dans le

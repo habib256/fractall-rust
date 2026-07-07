@@ -24,6 +24,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -215,6 +216,39 @@ def check_stale_inflight(auto_quarantine: bool = True) -> str | None:
               "puis `preflight`.")
     print("=" * 72 + "\n")
     return case
+
+
+def _on_interrupt(signum, _frame):
+    """SIGINT (Ctrl-C) / SIGTERM : terminaison GRACIEUSE → nettoyer le breadcrumb.
+
+    Sans ça, interrompre un sweep laisse `inflight.json` en place → le run
+    suivant le prend pour un crash et QUARANTAINE à tort le cas en vol (le cas
+    n'a pas planté, l'utilisateur a coupé). Une mort NON catchable (SIGKILL,
+    panne OS, OOM-killer) ne passe PAS ici et laisse le breadcrumb → toujours
+    détectée comme `died_uncleanly` : c'est exactement la distinction voulue.
+    """
+    if INFLIGHT.exists():
+        try:
+            rec = json.loads(INFLIGHT.read_text())
+        except Exception:
+            rec = {}
+        rec = dict(rec)
+        rec["outcome"] = "interrupted"
+        rec["ended_utc"] = _now_iso()
+        rec["signal"] = signum
+        _append_journal(rec)          # trace, mais NE déclenche PAS de quarantaine
+        INFLIGHT.unlink(missing_ok=True)
+        print(f"\n⚠️  interruption (signal {signum}) — breadcrumb nettoyé "
+              f"(pas de fausse quarantaine).", flush=True)
+    raise SystemExit(128 + signum)
+
+
+def install_signal_handlers() -> None:
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, _on_interrupt)
+        except (ValueError, OSError):
+            pass  # hors thread principal — best effort
 # -----------------------------------------------------------------------------
 
 QUICK_CASES = [
@@ -1202,6 +1236,7 @@ def cmd_journal(_args) -> None:
               f"{r.get('note', '')}")
 
 def main() -> None:
+    install_signal_handlers()  # Ctrl-C/SIGTERM → pas de fausse quarantaine
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
