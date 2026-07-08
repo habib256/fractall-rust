@@ -1,0 +1,843 @@
+{
+  "schema": 1,
+  "meta": {
+    "date_utc": "2026-07-07T15:31:58+00:00",
+    "stamp": "20260707T153158Z",
+    "git_sha": "6ed5fa9",
+    "git_dirty": false,
+    "machine": {
+      "cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz",
+      "nproc": 16,
+      "os": "Linux 6.14.0-37-generic"
+    },
+    "tier": "full",
+    "axes": [
+      "speed"
+    ],
+    "width": 256,
+    "height": 256,
+    "quality_width": 256,
+    "quality_height": 256,
+    "runs": 1,
+    "f3_bin": "/home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux",
+    "mem_limit_mb": 34024,
+    "quarantined": [
+      "e22522",
+      "opus2",
+      "orion",
+      "seahorse",
+      "wfs_mb"
+    ]
+  },
+  "speed": {
+    "status": "ok",
+    "cases": {
+      "11_dimensions": {
+        "fractall_s": 0.2163,
+        "f3_s": 0.7165,
+        "ratio": 0.3019,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "adventurous_forest": {
+        "fractall_s": 0.1661,
+        "f3_s": 0.4661,
+        "ratio": 0.3564,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "all_seeing_eye": {
+        "fractall_s": 0.0657,
+        "f3_s": 0.1159,
+        "ratio": 0.5669,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "dinosaur_fossils": {
+        "fractall_s": 0.1167,
+        "f3_s": 0.316,
+        "ratio": 0.3693,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "dragon": {
+        "fractall_s": 2.9234,
+        "f3_s": 3.5725,
+        "ratio": 0.8183,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "dragon_detail": {
+        "fractall_s": 2.9784,
+        "f3_s": 3.8224,
+        "ratio": 0.7792,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1000": {
+        "fractall_s": 0.4679,
+        "f3_s": 3.0207,
+        "ratio": 0.1549,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1016": {
+        "fractall_s": 1.3209,
+        "f3_s": 7.178,
+        "ratio": 0.184,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1086": {
+        "fractall_s": 3.0256,
+        "f3_s": 12.4365,
+        "ratio": 0.2433,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1121": {
+        "fractall_s": 0.4227,
+        "f3_s": 2.3198,
+        "ratio": 0.1822,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e113": {
+        "fractall_s": 0.1236,
+        "f3_s": 0.2658,
+        "ratio": 0.465,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1200": {
+        "fractall_s": 0.469,
+        "f3_s": 2.7707,
+        "ratio": 0.1693,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1298": {
+        "fractall_s": 4.5759,
+        "f3_s": 13.4394,
+        "ratio": 0.3405,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e22522": {
+        "fractall_s": null,
+        "f3_s": null,
+        "ratio": null,
+        "status": "quarantined",
+        "f3_exr_ok": false
+      },
+      "e227": {
+        "fractall_s": 0.9677,
+        "f3_s": 1.7185,
+        "ratio": 0.5631,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e318": {
+        "fractall_s": 0.4695,
+        "f3_s": 13.746,
+        "ratio": 0.0342,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e401": {
+        "fractall_s": 0.517,
+        "f3_s": 6.2765,
+        "ratio": 0.0824,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e50": {
+        "fractall_s": 0.2725,
+        "f3_s": 1.1676,
+        "ratio": 0.2334,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e52465": {
+        "fractall_s": 50.4207,
+        "f3_s": null,
+        "ratio": null,
+        "status": "f3_timeout",
+        "f3_exr_ok": false
+      },
+      "e533": {
+        "fractall_s": 0.8177,
+        "f3_s": 9.9329,
+        "ratio": 0.0823,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e634": {
+        "fractall_s": 1.7273,
+        "f3_s": 20.4504,
+        "ratio": 0.0845,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e8000": {
+        "fractall_s": 6.6319,
+        "f3_s": 4.9244,
+        "ratio": 1.3467,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e890": {
+        "fractall_s": 1.0178,
+        "f3_s": 5.4246,
+        "ratio": 0.1876,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "evolution_trees": {
+        "fractall_s": 0.9677,
+        "f3_s": 1.8187,
+        "ratio": 0.5321,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "flake": {
+        "fractall_s": 0.0694,
+        "f3_s": 0.1657,
+        "ratio": 0.4188,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "floral_fantasy": {
+        "fractall_s": 0.0334,
+        "f3_s": 0.1657,
+        "ratio": 0.2016,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_1": {
+        "fractall_s": 0.2159,
+        "f3_s": 0.3664,
+        "ratio": 0.5892,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_2": {
+        "fractall_s": 0.2162,
+        "f3_s": 0.1656,
+        "ratio": 1.3056,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_3": {
+        "fractall_s": 0.1178,
+        "f3_s": 0.3165,
+        "ratio": 0.3722,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_4": {
+        "fractall_s": 0.0335,
+        "f3_s": 0.1658,
+        "ratio": 0.2021,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_5": {
+        "fractall_s": 0.0343,
+        "f3_s": 0.0173,
+        "ratio": 1.9827,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_6": {
+        "fractall_s": 0.1668,
+        "f3_s": 0.2158,
+        "ratio": 0.7729,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_7": {
+        "fractall_s": 1.92,
+        "f3_s": 4.3224,
+        "ratio": 0.4442,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "golden_spider": {
+        "fractall_s": 0.2161,
+        "f3_s": 0.8671,
+        "ratio": 0.2492,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "hard": {
+        "fractall_s": 2.671,
+        "f3_s": 23.3046,
+        "ratio": 0.1146,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "heaven": {
+        "fractall_s": 0.0656,
+        "f3_s": 0.2658,
+        "ratio": 0.2468,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "infinity": {
+        "fractall_s": 3.3729,
+        "f3_s": 28.8147,
+        "ratio": 0.1171,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "integral_of_ex2": {
+        "fractall_s": 0.166,
+        "f3_s": 0.4661,
+        "ratio": 0.3561,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "layers": {
+        "fractall_s": 0.4667,
+        "f3_s": 1.9693,
+        "ratio": 0.237,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "leaded_glass": {
+        "fractall_s": 0.1664,
+        "f3_s": 1.3177,
+        "ratio": 0.1263,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "lethal_weapon": {
+        "fractall_s": 5.677,
+        "f3_s": 29.1664,
+        "ratio": 0.1946,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "liiiines": {
+        "fractall_s": 0.1659,
+        "f3_s": 5.1238,
+        "ratio": 0.0324,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "line": {
+        "fractall_s": 0.0336,
+        "f3_s": 0.1155,
+        "ratio": 0.2909,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "long": {
+        "fractall_s": 1.1701,
+        "f3_s": 9.9826,
+        "ratio": 0.1172,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "lya": {
+        "fractall_s": 0.3159,
+        "f3_s": 0.4662,
+        "ratio": 0.6776,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "magic": {
+        "fractall_s": 0.2168,
+        "f3_s": 0.8669,
+        "ratio": 0.2501,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "mitosis": {
+        "fractall_s": 0.1157,
+        "f3_s": 0.1731,
+        "ratio": 0.6684,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "mitosis2": {
+        "fractall_s": 0.0745,
+        "f3_s": 0.1156,
+        "ratio": 0.6445,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "nr_fail": {
+        "fractall_s": 0.1164,
+        "f3_s": 1.2673,
+        "ratio": 0.0918,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "olbaid1": {
+        "fractall_s": 3.122,
+        "f3_s": 12.7885,
+        "ratio": 0.2441,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "olbaid2": {
+        "fractall_s": 1.5689,
+        "f3_s": 8.9304,
+        "ratio": 0.1757,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "olbaid3": {
+        "fractall_s": 3.9239,
+        "f3_s": 19.9508,
+        "ratio": 0.1967,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "olbaid4": {
+        "fractall_s": 9.8381,
+        "f3_s": 41.7878,
+        "ratio": 0.2354,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "olbaid5": {
+        "fractall_s": 10.5868,
+        "f3_s": 11.7351,
+        "ratio": 0.9021,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "opus": {
+        "fractall_s": 2.171,
+        "f3_s": 12.5877,
+        "ratio": 0.1725,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "opus2": {
+        "fractall_s": null,
+        "f3_s": null,
+        "ratio": null,
+        "status": "quarantined",
+        "f3_exr_ok": false
+      },
+      "orion": {
+        "fractall_s": null,
+        "f3_s": null,
+        "ratio": null,
+        "status": "quarantined",
+        "f3_exr_ok": false
+      },
+      "peanuts": {
+        "fractall_s": 0.0661,
+        "f3_s": 0.2658,
+        "ratio": 0.2487,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "rug": {
+        "fractall_s": 0.1156,
+        "f3_s": 0.6666,
+        "ratio": 0.1734,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "safari": {
+        "fractall_s": 0.7174,
+        "f3_s": 15.8918,
+        "ratio": 0.0451,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "seahorse": {
+        "fractall_s": null,
+        "f3_s": null,
+        "ratio": null,
+        "status": "quarantined",
+        "f3_exr_ok": false
+      },
+      "spiral": {
+        "fractall_s": 0.0349,
+        "f3_s": 0.2158,
+        "ratio": 0.1617,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "ssssss": {
+        "fractall_s": 0.8674,
+        "f3_s": 10.3327,
+        "ratio": 0.0839,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "super_dense": {
+        "fractall_s": 134.5148,
+        "f3_s": null,
+        "ratio": null,
+        "status": "f3_timeout",
+        "f3_exr_ok": false
+      },
+      "test": {
+        "fractall_s": 0.0655,
+        "f3_s": 0.1154,
+        "ratio": 0.5676,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "test2": {
+        "fractall_s": 0.0359,
+        "f3_s": 0.1158,
+        "ratio": 0.31,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "test3": {
+        "fractall_s": 0.1189,
+        "f3_s": 0.2157,
+        "ratio": 0.5512,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "test4": {
+        "fractall_s": 0.018,
+        "f3_s": 0.0335,
+        "ratio": 0.5373,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "test5": {
+        "fractall_s": 0.01,
+        "f3_s": 0.017,
+        "ratio": 0.5882,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "test6": {
+        "fractall_s": 0.0097,
+        "f3_s": 0.0333,
+        "ratio": 0.2913,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "the_complexity_of_a_line": {
+        "fractall_s": 1.0683,
+        "f3_s": 6.9767,
+        "ratio": 0.1531,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "threads_colour": {
+        "fractall_s": 4.7248,
+        "f3_s": 13.688,
+        "ratio": 0.3452,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "tick_tock": {
+        "fractall_s": 0.1156,
+        "f3_s": 0.3661,
+        "ratio": 0.3158,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "triangle": {
+        "fractall_s": 32.3261,
+        "f3_s": 71.8319,
+        "ratio": 0.45,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "uranium": {
+        "fractall_s": 0.1658,
+        "f3_s": 1.0177,
+        "ratio": 0.1629,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "verstoppertje": {
+        "fractall_s": 0.8671,
+        "f3_s": 2.0192,
+        "ratio": 0.4294,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "virus": {
+        "fractall_s": 0.1155,
+        "f3_s": 0.2659,
+        "ratio": 0.4344,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "wfs": {
+        "fractall_s": 7.229,
+        "f3_s": 14.2908,
+        "ratio": 0.5058,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "wfs2": {
+        "fractall_s": 12.3897,
+        "f3_s": 14.6395,
+        "ratio": 0.8463,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "wfs4": {
+        "fractall_s": 17.6016,
+        "f3_s": 13.0882,
+        "ratio": 1.3448,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "wfs_extended": {
+        "fractall_s": 20.1547,
+        "f3_s": 19.202,
+        "ratio": 1.0496,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "wfs_mb": {
+        "fractall_s": null,
+        "f3_s": null,
+        "ratio": null,
+        "status": "quarantined",
+        "f3_exr_ok": false
+      },
+      "windmill": {
+        "fractall_s": 0.166,
+        "f3_s": 0.3665,
+        "ratio": 0.4529,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "x": {
+        "fractall_s": 0.0656,
+        "f3_s": 0.1657,
+        "ratio": 0.3959,
+        "status": "ok",
+        "f3_exr_ok": true
+      }
+    },
+    "geomean_ratio": 0.2944,
+    "worst_ratio": {
+      "case": "glitch_test_5",
+      "ratio": 1.9827
+    },
+    "wins": [
+      "11_dimensions",
+      "adventurous_forest",
+      "all_seeing_eye",
+      "dinosaur_fossils",
+      "dragon",
+      "dragon_detail",
+      "e1000",
+      "e1016",
+      "e1086",
+      "e1121",
+      "e113",
+      "e1200",
+      "e1298",
+      "e227",
+      "e318",
+      "e401",
+      "e50",
+      "e533",
+      "e634",
+      "e890",
+      "evolution_trees",
+      "flake",
+      "floral_fantasy",
+      "glitch_test_1",
+      "glitch_test_3",
+      "glitch_test_4",
+      "glitch_test_6",
+      "glitch_test_7",
+      "golden_spider",
+      "hard",
+      "heaven",
+      "infinity",
+      "integral_of_ex2",
+      "layers",
+      "leaded_glass",
+      "lethal_weapon",
+      "liiiines",
+      "line",
+      "long",
+      "lya",
+      "magic",
+      "mitosis",
+      "mitosis2",
+      "nr_fail",
+      "olbaid1",
+      "olbaid2",
+      "olbaid3",
+      "olbaid4",
+      "olbaid5",
+      "opus",
+      "peanuts",
+      "rug",
+      "safari",
+      "spiral",
+      "ssssss",
+      "test",
+      "test2",
+      "test3",
+      "test4",
+      "test5",
+      "test6",
+      "the_complexity_of_a_line",
+      "threads_colour",
+      "tick_tock",
+      "triangle",
+      "uranium",
+      "verstoppertje",
+      "virus",
+      "wfs",
+      "wfs2",
+      "windmill",
+      "x"
+    ],
+    "timeouts": [
+      "e52465",
+      "super_dense"
+    ],
+    "n_cases": 84,
+    "n_compared": 77
+  },
+  "parity": {
+    "status": "skipped"
+  },
+  "quality": {
+    "status": "skipped"
+  },
+  "goldens": {
+    "status": "skipped"
+  },
+  "beyond_f3": {
+    "speed_wins": [
+      "11_dimensions",
+      "adventurous_forest",
+      "all_seeing_eye",
+      "dinosaur_fossils",
+      "dragon",
+      "dragon_detail",
+      "e1000",
+      "e1016",
+      "e1086",
+      "e1121",
+      "e113",
+      "e1200",
+      "e1298",
+      "e227",
+      "e318",
+      "e401",
+      "e50",
+      "e533",
+      "e634",
+      "e890",
+      "evolution_trees",
+      "flake",
+      "floral_fantasy",
+      "glitch_test_1",
+      "glitch_test_3",
+      "glitch_test_4",
+      "glitch_test_6",
+      "glitch_test_7",
+      "golden_spider",
+      "hard",
+      "heaven",
+      "infinity",
+      "integral_of_ex2",
+      "layers",
+      "leaded_glass",
+      "lethal_weapon",
+      "liiiines",
+      "line",
+      "long",
+      "lya",
+      "magic",
+      "mitosis",
+      "mitosis2",
+      "nr_fail",
+      "olbaid1",
+      "olbaid2",
+      "olbaid3",
+      "olbaid4",
+      "olbaid5",
+      "opus",
+      "peanuts",
+      "rug",
+      "safari",
+      "spiral",
+      "ssssss",
+      "test",
+      "test2",
+      "test3",
+      "test4",
+      "test5",
+      "test6",
+      "the_complexity_of_a_line",
+      "threads_colour",
+      "tick_tock",
+      "triangle",
+      "uranium",
+      "verstoppertje",
+      "virus",
+      "wfs",
+      "wfs2",
+      "windmill",
+      "x"
+    ],
+    "correctness_wins": []
+  },
+  "gaps": [
+    {
+      "axis": "speed",
+      "case": "e22522",
+      "metric": "status",
+      "value": "quarantined",
+      "baseline_value": null,
+      "severity": 2,
+      "note": "cas en QUARANTAINE — crash/OOM connu, voir harness/crash-journal.jsonl"
+    },
+    {
+      "axis": "speed",
+      "case": "opus2",
+      "metric": "status",
+      "value": "quarantined",
+      "baseline_value": null,
+      "severity": 2,
+      "note": "cas en QUARANTAINE — crash/OOM connu, voir harness/crash-journal.jsonl"
+    },
+    {
+      "axis": "speed",
+      "case": "orion",
+      "metric": "status",
+      "value": "quarantined",
+      "baseline_value": null,
+      "severity": 2,
+      "note": "cas en QUARANTAINE — crash/OOM connu, voir harness/crash-journal.jsonl"
+    },
+    {
+      "axis": "speed",
+      "case": "seahorse",
+      "metric": "status",
+      "value": "quarantined",
+      "baseline_value": null,
+      "severity": 2,
+      "note": "cas en QUARANTAINE — crash/OOM connu, voir harness/crash-journal.jsonl"
+    },
+    {
+      "axis": "speed",
+      "case": "wfs_mb",
+      "metric": "status",
+      "value": "quarantined",
+      "baseline_value": null,
+      "severity": 2,
+      "note": "cas en QUARANTAINE — crash/OOM connu, voir harness/crash-journal.jsonl"
+    }
+  ]
+}
