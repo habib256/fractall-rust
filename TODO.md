@@ -591,6 +591,26 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
       reste bloqué par l'écart pré-existant wfs_mb, PAS par le cyclage (enfin correct).
     - **DÉCISION** : hook reste gaté OFF (validation corpus complet + fix wfs_mb requis avant
       défaut), mais il est maintenant FONCTIONNEL & sans régression. Rien commité.
+  - [~] **VALIDATION CORPUS ATOM (2026-07-11) — snapshot post-TENTATIVE 9 + réfutation
+    micro-opt.** Gaps vitesse actuels (3 runs médiane, corpus complet propre, quarantaine
+    vide) : **e8000 1.336** (fr 6.58 s / F3 4.92 s, **98 % orbite** : 807 k iters × 26 616 b),
+    **glitch_test_2 1.302** (0.22/0.17), **wfs4 1.175** (15.5/13.2). Tous Mandelbrot,
+    orbite-bound. Le levier est la **troncature atom** (TENTATIVE 9) : e8000 atom-ON =
+    3.03 s **< F3**, **PIXEL-IDENTIQUE** atom-off (revérifié).
+    - **Snapshot atom-ON vs atom-OFF, 17 cas ultra-deep (>1e280), 256²** — étape « validation
+      corpus complet » demandée par T9 : **7 sûrs** (identiques/bruit bord : e1000, e8000,
+      e401, e634, e890, e1016 [10 px], e1298 [1.7 %]) — tous **escape-time** ; **10 divergents**
+      (**intérieur/near-interior** : wfs2, wfs4, wfs_extended, olbaid5, triangle = 100 % ;
+      wfs_mb, e1121, e1200 ≈ 100 % ; olbaid1 21 % ; e1086 14 %). ⇒ atom **PAS enable-able tel
+      quel**. Prochaine étape G2 : adjuger CHAQUE divergent vs **F3 EXR** (`compare_f3.py`) —
+      certains (wfs_mb) atom-ON est PLUS correct (T9 inside_mm 16370→6), d'autres atom-ON casse.
+      Hypothèse : atom sûr ⇔ réf **escape-time** ; buggé ⇔ réf **bornée/intérieure** (cyclage).
+    - **RÉFUTÉ — l'overhead orbite n'est PAS la copie `z.assign(&state.z)`** : bypasser
+      l'interpréteur bytecode pour l'orbite Mandelbrot (hand-path `square_mut`+add, bit-identique,
+      goldens 🟢) = **0 gain mesuré** (e8000 orbite 6.02→6.02 s ; glitch_test_2 0.128 s inchangé).
+      Confirme le verdict T7 (« per-iter ≈ F3 ~8 µs, rug≈MPFR ») : le gap est la **longueur de
+      réf** (troncature), pas le coût par itération. Reverté. ⇒ le SEUL levier vitesse deep-zoom
+      reste **le cyclage atom correct sur les cas intérieurs** (chantier G2, non trivial).
 - [x] **Path f64 étendu à 1e280 (seuil 1e-200 → 1e-280)** (2026-07-04) : après
   l'extension initiale à 1e-200, un sweep vitesse du corpus STANDARD/full a révélé
   4 cas encore sur le path exp lent (zoom > 1e200) donc PLUS LENTS que F3 :
