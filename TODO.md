@@ -162,13 +162,21 @@ comparable entre cas) :
     **Résultats** (16², RSS mesuré via VmHWM) : wfs_mb 10 M **28 GB→2.0 GB**
     (14×), orion 20 M **29.5 GB→<6 GB** (exit 0 sous cap 6 GB), opus2 80 M
     **28.6 GB→13.9 GB**. Tous < seuil quarantaine 20 GB → **dé-quarantainés**.
-    NB opus2 : le résidu 13.9 GB = pic de BUILD de la `BlaTableUnified` *utilisée*
-    (level0+level1 ~160 o/itér coexistent avant le clear des niveaux 0-2, F3
-    `bla_skip_levels`) — orthogonal à ce fix (la table conformale morte, elle,
-    est éliminée). Réduire ce pic (clear incrémental des bas niveaux pendant le
-    build) donnerait de la marge pour des orbites > 80 M — follow-up.
+    NB opus2 : le résidu venait du pic de BUILD de la `BlaTableUnified` *utilisée*
+    (tous les niveaux ~2m nœuds coexistaient avant le clear des niveaux 0-2, F3
+    `bla_skip_levels`).
     Verrous : goldens 10/10 pixel-exact (path <1 M inchangé, cf. e113 35 k iters),
     196 + 2 unit PASS (`conformal_bla_skip_tests`).
+  - **✅ SUITE (2026-07-10) — pic de BUILD `BlaTableUnified` abaissé ~2m→0,75m** :
+    le build matérialisait tous les niveaux (level0 = m nœuds = le plus gros) puis
+    vidait 0-2 À LA FIN. Fix (`bla_dual.rs::build`) : (a) construire le **level 1
+    en streaming** depuis l'orbite (2 single-steps fusionnés/nœud) SANS matérialiser
+    le level 0 — bit-identique car `single(i)==level0[i]` ; (b) **vider les niveaux
+    skip (1,2) DANS la boucle** dès qu'ils ont servi à merger le niveau du dessus.
+    Pic build 2m→~0,75m nœuds. **opus2 80 M : 13.9 GB→8.0 GB (−42 %)**. Bénéficie
+    à TOUT rendu perturbation deep (table BLA = terme dominant après le fix
+    conformale). Verrous : goldens 10/10 pixel-exact, 32 tests `bla_dual*`
+    (dont `table_build_levels_8_iterations`), 198 unit PASS.
   - **RESTENT quarantinés (2)** : **seahorse** (iterations 10¹⁰ → `z_ref` avec
     `Vec::with_capacity(iteration_max)` réserve ~137 GB d'entrée, **+** runtime
     10¹⁰ squarings GMP = infaisable ; besoin iteration_max u64 + cap réel ou
