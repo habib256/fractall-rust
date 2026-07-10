@@ -917,6 +917,25 @@ pub fn compute_reference_orbit_cached(
     let store_dense_gmp = !super::uses_bytecode_path(params)
         || super::should_use_full_gmp_perturbation(params);
 
+    // La table BLA conformale historique (`BlaTable`) est LUE par : (1) le path
+    // CPU legacy `iterate_pixel` (fallback quand `try_bytecode_unified_path`
+    // renvoie None) et (2) le shader perturbation GPU legacy (`gpu/mod.rs`
+    // `render_perturbation_with_cache`). Quand `bytecode_path_label` est `Some`,
+    // le path CPU bytecode unifié construit sa PROPRE `BlaTableUnified` (delta.rs)
+    // et ne lit JAMAIS la table conformale. Elle pèse pourtant ~1450 o/itér
+    // (≈13 nœuds/itér × 112 o) : sur les orbites ultra-longues (wfs_mb 10 M,
+    // orion 20 M, opus2 80 M, dragon 5 M, glitch_test_6 15 M itérations) ça fait
+    // exploser la RSS (28-237 Go) — cause racine des quarantaines OOM
+    // (cf. TODO G6/robustesse). On la SAUTE (table vide) au-delà d'un seuil
+    // d'itérations : le shader perturbation GPU (f32) n'est de toute façon PAS
+    // viable à ce régime (précision f32 → CPU prend le relais), donc la table
+    // n'y sert plus. Sous le seuil (rendu GPU perturbation possible), on la garde.
+    // Le fallback CPU legacy éventuel avec table vide reste CORRECT
+    // (num_levels()==0 → pas de saut BLA, pas perturbation directe = exact).
+    const CONFORMAL_BLA_SKIP_ITER_THRESHOLD: u32 = 1_000_000;
+    let skip_conformal_bla = adjusted_params.iteration_max > CONFORMAL_BLA_SKIP_ITER_THRESHOLD
+        && crate::fractal::perturbation::delta::bytecode_path_label(&adjusted_params).is_some();
+
     // Compute orbit + BLA + series, potentially re-running with doubled iteration_max
     let t_orbit_first = Instant::now();
     let (mut orbit, mut center_x_gmp, mut center_y_gmp) =
@@ -924,7 +943,11 @@ pub fn compute_reference_orbit_cached(
     let mut dt_orbit = t_orbit_first.elapsed();
 
     let t_bla_first = Instant::now();
-    let mut bla_table = build_bla_table(&orbit.z_ref_f64, &adjusted_params, orbit.cref);
+    let mut bla_table = if skip_conformal_bla {
+        BlaTable::empty()
+    } else {
+        build_bla_table(&orbit.z_ref_f64, &adjusted_params, orbit.cref)
+    };
     let mut dt_bla = t_bla_first.elapsed();
 
     let mut series_table: Option<SeriesTable> = None;
@@ -941,7 +964,11 @@ pub fn compute_reference_orbit_cached(
             dt_orbit = t_orbit_start.elapsed();
 
             let t_bla_start = Instant::now();
-            bla_table = build_bla_table(&orbit.z_ref_f64, &adjusted_params, orbit.cref);
+            bla_table = if skip_conformal_bla {
+                BlaTable::empty()
+            } else {
+                build_bla_table(&orbit.z_ref_f64, &adjusted_params, orbit.cref)
+            };
             dt_bla = t_bla_start.elapsed();
         }
 
@@ -1906,5 +1933,51 @@ mod dd_orbit_tests {
                 .max((gmp[i].im - dd[i].im).abs());
         }
         assert!(max_err < tol, "orbite dd diverge de GMP: max_err={max_err:.3e} sur {n} points");
+    }
+}
+
+#[cfg(test)]
+mod conformal_bla_skip_tests {
+    use super::*;
+    use crate::fractal::{default_params_for_type, FractalType};
+
+    // Verrou robustesse (2026-07-10) : la `BlaTable` conformale historique est
+    // SAUTÉE sur le path bytecode au-delà de `CONFORMAL_BLA_SKIP_ITER_THRESHOLD`
+    // (1 M itérations). C'était le poids mort ~1450 o/itér qui faisait OOM les
+    // orbites ultra-longues (wfs_mb/orion/opus2, 28-30 Go → <6 Go). Ces tests
+    // verrouillent le seuil ET la construction normale sous le seuil.
+
+    /// iteration_max > 1 M sur Mandelbrot (path bytecode) → table conformale vide.
+    /// Point extérieur : l'orbite s'évade en ~1 itér, donc le cap 2 M ne coûte rien.
+    #[test]
+    fn conformal_bla_skipped_above_threshold() {
+        let mut params = default_params_for_type(FractalType::Mandelbrot, 32, 32);
+        params.center_x = 2.0; // hors du set → évasion immédiate
+        params.center_y = 2.0;
+        params.iteration_max = 2_000_000; // > seuil 1 M
+        let cache = compute_reference_orbit_cached(&params, None, None)
+            .expect("orbite référence");
+        assert_eq!(
+            cache.bla_table.num_levels(),
+            0,
+            "la BlaTable conformale doit être vide (sautée) au-delà du seuil"
+        );
+    }
+
+    /// iteration_max < 1 M → table conformale construite normalement (GPU legacy
+    /// perturbation en dépend). Point intérieur non trivial → orbite bornée avec
+    /// des niveaux BLA réels.
+    #[test]
+    fn conformal_bla_built_below_threshold() {
+        let mut params = default_params_for_type(FractalType::Mandelbrot, 32, 32);
+        params.center_x = -0.5; // intérieur cardioïde → orbite bornée
+        params.center_y = 0.0;
+        params.iteration_max = 20_000; // < seuil 1 M
+        let cache = compute_reference_orbit_cached(&params, None, None)
+            .expect("orbite référence");
+        assert!(
+            cache.bla_table.num_levels() > 0,
+            "la BlaTable conformale doit être construite sous le seuil"
+        );
     }
 }

@@ -423,17 +423,31 @@ impl BlaTableUnified {
         // sont parqués et rayon ne peut pas les voler.
         const PAR_BLA_MIN: usize = 1 << 16; // 65536
 
-        // Level 0 : un single-step par itération de référence.
-        let build_l0 = |i: usize| {
+        // Single-step level-0 par index d'orbite (jamais matérialisé en entier).
+        let single = |i: usize| -> BlaMultiStep {
             let z = ref_orbit[i];
             BlaMultiStep::from_single(build_bla_single_step(z.re, z.im, phase, epsilon))
         };
-        let level0: Vec<BlaMultiStep> = if m >= PAR_BLA_MIN {
-            (0..m).into_par_iter().map(build_l0).collect()
+
+        // Level 1 construit en STREAMING : chaque nœud fusionne 2 single-steps
+        // adjacents SANS stocker le niveau 0 (m nœuds = le plus gros). Comme
+        // `single(i) == level0[i]`, `level1[k] = merge(level0[2k], level0[2k+1])`
+        // est **bit-identique** au build « level0 puis merge » historique (tail
+        // impair = `single(m-1)` promu = `level0[m-1]` promu). Sur les orbites
+        // ultra-longues (opus2 80 M) la table BLA domine la RSS (cf. TODO OOM) :
+        // ne pas matérialiser le niveau 0 retire ~m nœuds du pic de build.
+        let n_pairs1 = m / 2;
+        let build_l1 = |k: usize| BlaMultiStep::merge(single(2 * k), single(2 * k + 1), c_norm);
+        let mut level1: Vec<BlaMultiStep> = if n_pairs1 >= PAR_BLA_MIN {
+            (0..n_pairs1).into_par_iter().map(build_l1).collect()
         } else {
-            (0..m).map(build_l0).collect()
+            (0..n_pairs1).map(build_l1).collect()
         };
-        let mut levels = vec![level0];
+        if m % 2 == 1 {
+            level1.push(single(m - 1));
+        }
+        // levels[0] = Vec vide (niveau 0 skip, jamais matérialisé) ; level1 à l'index 1.
+        let mut levels: Vec<Vec<BlaMultiStep>> = vec![Vec::new(), level1];
 
         // Niveaux supérieurs : merge adjacents (paires `[2k, 2k+1]`, tail impair
         // promu tel quel — identique à la boucle serial d'origine).
@@ -455,15 +469,25 @@ impl BlaTableUnified {
                 next.push(prev[prev.len() - 1]);
             }
             levels.push(next);
+            // Libère IMMÉDIATEMENT le niveau consommé s'il est < BLA_SKIP_LEVELS :
+            // il vient de servir à merger le niveau du dessus et n'est JAMAIS
+            // consulté par lookup (cf. F3 bla_skip_levels). Le libérer ici (au
+            // lieu de tout garder jusqu'à la fin) abaisse le pic de build de ~2m
+            // à ~0,75m nœuds. `levels.last()` (utilisé au tour suivant) est
+            // l'index len-1 ; on ne touche que len-2. Idempotent avec le clear
+            // final ci-dessous.
+            let consumed = levels.len() - 2;
+            if (1..BLA_SKIP_LEVELS).contains(&consumed) {
+                levels[consumed] = Vec::new();
+                levels[consumed].shrink_to_fit();
+            }
         }
 
-        // Libère les niveaux < BLA_SKIP_LEVELS : ils sont construits (nécessaires
-        // pour merger les niveaux supérieurs) mais JAMAIS consultés par `lookup`/
-        // `lookup_fexp` (cf. F3 bla_skip_levels). Or level 0 = 1 nœud/itération,
-        // donc les 3 plus bas niveaux ≈ 87 % des nœuds. Les vider rend la table
-        // BLA ~8× plus petite → cache-résidente → gros gain hot-loop deep zoom
-        // (le goulot est memory-bound, cf. G2). Les Vec vides préservent
-        // l'indexation `levels[level]` pour level ≥ BLA_SKIP_LEVELS.
+        // Libère les niveaux < BLA_SKIP_LEVELS restants (level 0 déjà vide ;
+        // les autres déjà vidés dans la boucle sauf si l'orbite est trop courte
+        // pour atteindre ce niveau). JAMAIS consultés par `lookup`/`lookup_fexp`
+        // (cf. F3 bla_skip_levels). Les Vec vides préservent l'indexation
+        // `levels[level]` pour level ≥ BLA_SKIP_LEVELS.
         for l in 0..BLA_SKIP_LEVELS.min(levels.len()) {
             levels[l] = Vec::new();
             levels[l].shrink_to_fit();

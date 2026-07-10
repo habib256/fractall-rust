@@ -320,7 +320,7 @@ impl ReportJson {
 struct ThresholdsJson {
     max_iter_diff_pass: f64,
     divergence_ratio_pass: f64,
-    max_iter_diff_warn: f64,
+    p99_iter_diff_fail: f64,
     divergence_ratio_warn: f64,
 }
 
@@ -329,7 +329,7 @@ impl ThresholdsJson {
         ThresholdsJson {
             max_iter_diff_pass: t.max_iter_diff_pass,
             divergence_ratio_pass: t.divergence_ratio_pass,
-            max_iter_diff_warn: t.max_iter_diff_warn,
+            p99_iter_diff_fail: t.p99_iter_diff_fail,
             divergence_ratio_warn: t.divergence_ratio_warn,
         }
     }
