@@ -198,10 +198,23 @@ comparable entre cas) :
     désormais corrigée). C'est un cas **hors-plage précision** (zoom 1e22522 →
     ~74 852 b requis > plafond 65 536 b ⇒ image dégradée/uniforme, *averti*),
     lent mais robuste et < timeout `full` (600 s). Tombstone `resolved.json`.
-  - **RESTE quarantiné (1)** : **seahorse** — runtime 4.3e9 squarings GMP +
-    orbite de 4.3e9 entrées (>200 GB) = **infaisable** en l'état ; besoin
-    `iteration_max` u64 + cap réel d'itérations ou period-detection. Échoue
-    maintenant proprement (cf. `orbit_reserve` ci-dessus).
+  - **✅ QUARANTAINE VIDE (2026-07-11) — corpus 84 cas 100 % memory-safe.**
+    Preflight full (`f5b7c90`, cap 34 GB) : **les 84 cas rendent, exit 0, 0 OOM**,
+    pic RSS max = opus2 **8.0 GB** (< seuil 20.4 GB). seahorse DÉ-QUARANTAINÉ :
+    la réserve 137 GB corrigée, il rend en **216 s / pic RSS 5.1 GB @256²** (orbite
+    escape-time ~50 M iters, prec 4667 b — SUFFISANTE pour 1e1392). Le mécanisme
+    de quarantaine ne vise que les **crashers** (HARNESS.md) ; seahorse ne crashe
+    plus → hors quarantaine (tombstone `resolved.json`, fix vérifié). But projet
+    « corpus complet supporté » **atteint côté robustesse/mémoire**.
+  - **⚠️ Gap résiduel seahorse (QUALITÉ + VITESSE, pas mémoire)** : image
+    **uniforme** (magenta plat, avg_iter 49.7 M ≈ max 50.1 M, spread 0.8 % — pas
+    de structure) car l'orbite référence escape-time à ~50 M ne révèle pas le
+    minibrot sans **nucleus-centering** (cf. §Nucleus finder : réf périodique
+    exacte requise à deep zoom). **F3 lui-même échoue** sur seahorse (`f3_fail`,
+    parité `f5b7c90`) → pas de ground-truth, fractall est ici **plus robuste que
+    F3**. Leviers : `--find-nucleus` sur ce type de vue ultra-deep ; et vitesse
+    216 s (orbite 207 s = 4667 b × ~50 M iters GMP, incompressible sans float128).
+    Comparable au cas hors-plage e22522 : *rend mais dégradé, à améliorer plus tard*.
   - Reste orthogonal pour la PERF (pas la mémoire) de ces cas intérieurs :
     period-aware reference (G2, cf. plus bas, 4 sessions brûlées — bloqué sur le
     critère atom-domain F3 exact).
