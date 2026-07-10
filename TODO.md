@@ -177,11 +177,31 @@ comparable entre cas) :
     à TOUT rendu perturbation deep (table BLA = terme dominant après le fix
     conformale). Verrous : goldens 10/10 pixel-exact, 32 tests `bla_dual*`
     (dont `table_build_levels_8_iterations`), 198 unit PASS.
-  - **RESTENT quarantinés (2)** : **seahorse** (iterations 10¹⁰ → `z_ref` avec
-    `Vec::with_capacity(iteration_max)` réserve ~137 GB d'entrée, **+** runtime
-    10¹⁰ squarings GMP = infaisable ; besoin iteration_max u64 + cap réel ou
-    period-detection) et **e22522** (incident côté **F3** journalisé, pas un OOM
-    fractall — cf. reconcile_quarantine).
+  - **✅ SUITE (2026-07-10) — réservation d'orbite pathologique bornée
+    (`orbit_reserve`)** : `Vec::with_capacity(iteration_max + 1)` réservait une
+    capacité proportionnelle à `iteration_max` (venu du TOML utilisateur). Pour
+    **seahorse** (`iterations=1e10` → clampé `u32::MAX≈4.3e9`), `z_ref` réservait
+    **137 GB d'un coup** (`memory allocation of 137438953472 bytes failed`) **avant
+    même de lancer l'orbite** → abort en 1 s qui, hors cap, faisait **tomber l'OS**
+    pendant un sweep (et a collatéralement quarantainé e22522, in-flight au moment
+    du crash). Fix (`orbit.rs`) : plafonner la pré-réserve à `MAX_ORBIT_RESERVE`
+    (32 M entrées) sur les 8 sites `with_capacity` d'orbite — **no-op pour toute
+    orbite légitime du corpus** (≤ ~15 M iters, glitch_test_6) qui réserve sa
+    taille exacte ; seuls les `iteration_max` pathologiques sont bornés, le `Vec`
+    croissant ensuite à la demande. seahorse ne réserve plus 137 GB → **échoue
+    proprement** (timeout/`killed_oom` sous cap) au lieu de crasher l'OS. Verrou :
+    `orbit_reserve_caps_pathological_iteration_max` (200 unit PASS), goldens 10/10.
+  - **✅ e22522 DÉ-QUARANTAINÉ (2026-07-10)** : vérifié — rend en fractall en
+    **92 s / pic RSS 1.23 GB @256²** (orbite GMP 88 s à 65 536 b, pixels 3.6 s),
+    exit 0, **aucun OOM**. Ce n'était PAS un OOM fractall : `died_uncleanly`
+    collatéral (in-flight quand seahorse a crashé l'OS via la réserve 137 GB,
+    désormais corrigée). C'est un cas **hors-plage précision** (zoom 1e22522 →
+    ~74 852 b requis > plafond 65 536 b ⇒ image dégradée/uniforme, *averti*),
+    lent mais robuste et < timeout `full` (600 s). Tombstone `resolved.json`.
+  - **RESTE quarantiné (1)** : **seahorse** — runtime 4.3e9 squarings GMP +
+    orbite de 4.3e9 entrées (>200 GB) = **infaisable** en l'état ; besoin
+    `iteration_max` u64 + cap réel d'itérations ou period-detection. Échoue
+    maintenant proprement (cf. `orbit_reserve` ci-dessus).
   - Reste orthogonal pour la PERF (pas la mémoire) de ces cas intérieurs :
     period-aware reference (G2, cf. plus bas, 4 sessions brûlées — bloqué sur le
     critère atom-domain F3 exact).

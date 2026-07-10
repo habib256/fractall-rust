@@ -74,11 +74,12 @@ fn dd_reference_orbit(
     build_dd: bool,
 ) -> Option<(Vec<ComplexExp>, Vec<Complex64>, Vec<super::dd::ComplexDDExp>)> {
     let mut z = z0;
-    let mut z_ref = Vec::with_capacity(iteration_max as usize + 1);
-    let mut z_ref_f64 = Vec::with_capacity(iteration_max as usize + 1);
+    let mut z_ref = Vec::with_capacity(orbit_reserve(iteration_max as usize + 1));
+    let mut z_ref_f64 = Vec::with_capacity(orbit_reserve(iteration_max as usize + 1));
     // `z_ref_dd` : la trajectoire dd COMPLÈTE (Z à 106 bits) — nécessaire au
     // tier dd où Z entre non-arrondi dans `2·Z·δ`. Vide si `!build_dd`.
-    let mut z_ref_dd = Vec::with_capacity(if build_dd { iteration_max as usize + 1 } else { 0 });
+    let mut z_ref_dd =
+        Vec::with_capacity(if build_dd { orbit_reserve(iteration_max as usize + 1) } else { 0 });
     let mut zf = z.to_complex64_approx();
     z_ref.push(ComplexExp::from_complex64(zf));
     z_ref_f64.push(zf);
@@ -121,6 +122,33 @@ fn dd_reference_orbit(
 /// The pixel-side bailout is independent — pixel escape is tested against
 /// `params.bailout` in `iterate_pixel` / `pixel_loop` / `pixel_loop_exp`.
 pub const REFERENCE_BAILOUT_SQR: f64 = 1e10;
+
+/// Plafond de pré-réservation des vecteurs d'orbite référence.
+///
+/// `Vec::with_capacity(iteration_max + 1)` réserve d'un coup une capacité
+/// proportionnelle à `iteration_max`. Or `iteration_max` vient du TOML/params
+/// utilisateur et peut être pathologique (ex. seahorse : `iterations=1e10`,
+/// clampé à `u32::MAX ≈ 4.3e9`). À 32 o/`ComplexExp`, réserver 4.3e9 entrées =
+/// **137 Go** alloués AVANT même de lancer l'orbite → `memory allocation …
+/// failed` immédiat qui, hors cap mémoire, peut faire tomber l'OS pendant un
+/// sweep (seahorse a ainsi collatéralement quarantainé e22522, cf. crash-journal).
+///
+/// F3 fait croître l'orbite dynamiquement (pas de pré-réserve géante). On borne
+/// donc la réservation : les orbites légitimes du corpus (max ~15 M iters,
+/// glitch_test_6) réservent exactement leur taille ; seuls les `iteration_max`
+/// pathologiques sont plafonnés — le `Vec` croît ensuite à la demande (push +
+/// doublement), et un dépassement réel est rattrapé proprement par le cap
+/// mémoire du harness (`killed_oom`) au lieu d'un crash OS.
+const MAX_ORBIT_RESERVE: usize = 32_000_000;
+
+/// Capacité de pré-réservation bornée pour un vecteur d'orbite référence (cf.
+/// [`MAX_ORBIT_RESERVE`]). `n` = longueur maximale théorique (typiquement
+/// `iteration_max + 1`) ; on ne réserve jamais plus que le plafond, le `Vec`
+/// croissant à la demande au-delà.
+#[inline]
+fn orbit_reserve(n: usize) -> usize {
+    n.min(MAX_ORBIT_RESERVE)
+}
 
 /// Hybrid BLA: Multiple references for different phases of a periodic loop.
 /// For a hybrid loop with multiple phases, you need multiple references, one starting at
@@ -369,9 +397,9 @@ impl ReferenceOrbit {
         let _is_julia = params.fractal_type == FractalType::Julia;
         let remaining_iters = params.iteration_max.saturating_sub(iteration);
 
-        let mut z_ref = Vec::with_capacity(remaining_iters as usize + 1);
-        let mut z_ref_f64 = Vec::with_capacity(remaining_iters as usize + 1);
-        let mut z_ref_gmp = Vec::with_capacity(remaining_iters as usize + 1);
+        let mut z_ref = Vec::with_capacity(orbit_reserve(remaining_iters as usize + 1));
+        let mut z_ref_f64 = Vec::with_capacity(orbit_reserve(remaining_iters as usize + 1));
+        let mut z_ref_gmp = Vec::with_capacity(orbit_reserve(remaining_iters as usize + 1));
 
         z_ref.push(ComplexExp::from_gmp(&z));
         z_ref_f64.push(complex_to_complex64(&z));
@@ -1328,15 +1356,18 @@ pub fn compute_reference_orbit(
     // not the per-pixel bailout. See REFERENCE_BAILOUT_SQR doc.
     let bailout_sqr = Float::with_val(prec, REFERENCE_BAILOUT_SQR);
 
-    let mut z_ref = Vec::with_capacity(params.iteration_max as usize + 1);
-    let mut z_ref_f64 = Vec::with_capacity(params.iteration_max as usize + 1);
+    let mut z_ref = Vec::with_capacity(orbit_reserve(params.iteration_max as usize + 1));
+    let mut z_ref_f64 = Vec::with_capacity(orbit_reserve(params.iteration_max as usize + 1));
     // Tier dd (opt-in) : stocke la référence en double-double (~106 b) depuis
     // l'orbite GMP courante — Z à 106 b pour le pas `2·Z·δ` du pixel_loop_dd.
     let build_dd = params.use_dd_tier;
-    let mut z_ref_dd = Vec::with_capacity(if build_dd { params.iteration_max as usize + 1 } else { 0 });
+    let mut z_ref_dd = Vec::with_capacity(
+        if build_dd { orbit_reserve(params.iteration_max as usize + 1) } else { 0 },
+    );
     let store_dense_gmp = force_dense_gmp;
-    let mut z_ref_gmp =
-        Vec::with_capacity(if store_dense_gmp { params.iteration_max as usize + 1 } else { 0 });
+    let mut z_ref_gmp = Vec::with_capacity(
+        if store_dense_gmp { orbit_reserve(params.iteration_max as usize + 1) } else { 0 },
+    );
 
     // Inspired by rust-fractal-core's data_storage_interval:
     // Store high-precision orbit data at intervals to reduce memory usage.
@@ -1349,7 +1380,11 @@ pub fn compute_reference_orbit(
         1
     };
     let mut high_precision_data = Vec::with_capacity(
-        if store_dense_gmp { (params.iteration_max as usize / data_storage_interval) + 2 } else { 0 }
+        if store_dense_gmp {
+            orbit_reserve((params.iteration_max as usize / data_storage_interval) + 2)
+        } else {
+            0
+        },
     );
 
     // Store high-precision, f64, and full GMP versions (cf. `z_ref_complexexp`).
@@ -1865,6 +1900,26 @@ mod dd_orbit_tests {
     use super::*;
     use crate::fractal::perturbation::dd::ComplexDDExp;
     use crate::fractal::{default_params_for_type, FractalType};
+
+    /// Verrou robustesse : la pré-réservation d'orbite est bornée. `iteration_max`
+    /// vient du TOML utilisateur et peut être pathologique (seahorse `1e10` →
+    /// clampé `u32::MAX ≈ 4.3e9`). Sans plafond, `with_capacity(4.3e9)` réserve
+    /// ~137 Go d'un coup → `memory allocation failed` avant même de lancer
+    /// l'orbite (crash OS pendant un sweep, cf. seahorse ayant collatéralement
+    /// quarantainé e22522). On vérifie que le plafond mord sur le pathologique
+    /// tout en laissant les orbites légitimes du corpus (≤ ~15 M) intactes.
+    #[test]
+    fn orbit_reserve_caps_pathological_iteration_max() {
+        // Pathologique : plafonné.
+        assert_eq!(orbit_reserve(u32::MAX as usize + 1), MAX_ORBIT_RESERVE);
+        assert_eq!(orbit_reserve(4_300_000_000), MAX_ORBIT_RESERVE);
+        // Légitimes : réservation exacte (no-op). glitch_test_6 = 15 M iters,
+        // dinosaur_fossils = 5 M, cap auto-adjust = 10 M — tous < plafond.
+        assert_eq!(orbit_reserve(15_000_001), 15_000_001);
+        assert_eq!(orbit_reserve(1025), 1025);
+        assert_eq!(orbit_reserve(0), 0);
+        assert!(MAX_ORBIT_RESERVE >= 16_000_000, "doit couvrir les orbites légitimes du corpus");
+    }
 
     /// Verrou Phase 1a : l'orbite référence itérée en double-double (~106 b) doit
     /// matcher celle itérée en GMP (676 b) à la précision de stockage f64, sur un
