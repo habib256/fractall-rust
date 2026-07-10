@@ -242,14 +242,27 @@ fn iterate_pixel_unified_exp_mandelbrot(
                     + (b.m00 * dc.re) + (b.m01 * dc.im);
                 let new_im = (a.m10 * delta.re) + (a.m11 * delta.im)
                     + (b.m10 * dc.re) + (b.m11 * dc.im);
-                delta = ComplexExp { re: new_re, im: new_im };
-                n = new_n;
-                m = new_m;
-                bla_steps += 1;
-                if n % REDUCE_INTERVAL == 0 {
-                    delta.reduce();
+                let cand = ComplexExp { re: new_re, im: new_im };
+                // Garde anti-over-skip BLA (mirror `pixel_loop.rs`) : un saut
+                // l ≥ 2 dont le point d'arrivée `Z[m']+δ'` est déjà échappé
+                // rapporterait l'iter d'évasion trop tard. Test en FloatExp
+                // (cohérent avec le bailout ci-dessus, survit à > 2^1023).
+                let overshoots_escape = node.l >= 2 && {
+                    let ze_m = ref_orbit.z_ref_f64[new_m as usize];
+                    let z_end_re = FloatExp::from_f64(ze_m.re) + cand.re;
+                    let z_end_im = FloatExp::from_f64(ze_m.im) + cand.im;
+                    !((z_end_re.sqr() + z_end_im.sqr()) < bailout_sqr_fexp)
+                };
+                if !overshoots_escape {
+                    delta = cand;
+                    n = new_n;
+                    m = new_m;
+                    bla_steps += 1;
+                    if n % REDUCE_INTERVAL == 0 {
+                        delta.reduce();
+                    }
+                    continue;
                 }
-                continue;
             }
         }
 
@@ -454,14 +467,25 @@ fn iterate_pixel_unified_exp_mandelbrot_hp(
                             + b.m00 * dc.re + b.m01 * dc.im;
                         let new_im = a.m10 * delta.re + a.m11 * delta.im
                             + b.m10 * dc.re + b.m11 * dc.im;
-                        delta = ComplexExp { re: new_re, im: new_im };
-                        n = new_n;
-                        m = new_m;
-                        bla_steps += 1;
-                        if n % REDUCE_INTERVAL == 0 {
-                            delta.reduce();
+                        let cand = ComplexExp { re: new_re, im: new_im };
+                        // Garde anti-over-skip BLA (mirror `pixel_loop.rs`) : rejeter
+                        // un saut l ≥ 2 dont l'endpoint `Z[m']+δ'` est déjà échappé.
+                        // Test en ComplexExp/FloatExp (réf `z_ref` HP, cohérent avec
+                        // le bailout POST-rebase ci-dessus).
+                        let overshoots_escape = node.l >= 2 && {
+                            let z_end = ref_orbit.z_ref[new_m as usize].add(cand);
+                            !(z_end.norm_sqr_fexp() < bailout_sqr_fexp)
+                        };
+                        if !overshoots_escape {
+                            delta = cand;
+                            n = new_n;
+                            m = new_m;
+                            bla_steps += 1;
+                            if n % REDUCE_INTERVAL == 0 {
+                                delta.reduce();
+                            }
+                            continue;
                         }
-                        continue;
                     }
                 }
             }
@@ -571,17 +595,33 @@ fn iterate_pixel_unified_exp_generic(
                     + (b.m00 * dc.re) + (b.m01 * dc.im);
                 let new_im = (a.m10 * delta.re) + (a.m11 * delta.im)
                     + (b.m10 * dc.re) + (b.m11 * dc.im);
-                delta = ComplexExp {
+                let cand = ComplexExp {
                     re: new_re,
                     im: new_im,
                 };
-                n = new_n;
-                m = new_m;
-                bla_steps += 1;
-                if n % REDUCE_INTERVAL == 0 {
-                    delta.reduce();
+                // Garde anti-over-skip BLA (mirror `pixel_loop.rs`) : un saut
+                // multi-pas (l ≥ 2) est linéarisé autour de la RÉFÉRENCE, aveugle
+                // à la divergence propre du pixel. Si le point d'arrivée
+                // `Z[m']+δ'` est déjà échappé, l'escape a eu lieu PENDANT le saut
+                // → le pas BLA le rapporterait jusqu'à l-1 itérations trop tard
+                // (bug over-skip, cf. julia-siegel côté f64 déjà corrigé ; le
+                // path exp partageait le même bloc SANS ce guard). Escape
+                // irréversible (|z| > ER ≫ |c|) → tester le seul endpoint suffit.
+                let overshoots_escape = node.l >= 2 && {
+                    let z_end =
+                        ref_orbit.z_ref_f64[new_m as usize] + cand.to_complex64_approx();
+                    z_end.norm_sqr() >= bailout_sqr
+                };
+                if !overshoots_escape {
+                    delta = cand;
+                    n = new_n;
+                    m = new_m;
+                    bla_steps += 1;
+                    if n % REDUCE_INTERVAL == 0 {
+                        delta.reduce();
+                    }
+                    continue;
                 }
-                continue;
             }
         }
 
@@ -784,6 +824,109 @@ mod tests {
         eprintln!(
             "exp zoom 1e20 : n={} (max {}), z={:?}, rebases={}",
             res.iteration, iter_max, res.z_final, res.rebase_count
+        );
+    }
+
+    /// Verrou over-skip BLA côté PATH EXP (mirror du sibling f64
+    /// `bla_no_overskip_past_escape_julia_siegel`). Julia c=-0.8+0.156i : la
+    /// référence (critique, centre 0,0) est BORNÉE (siegel) mais les pixels
+    /// s'échappent → un saut BLA `l≥2` linéarisé autour de la réf bornée peut
+    /// sauter par-dessus l'évasion propre du pixel et rapporter l'iter d'escape
+    /// jusqu'à `l-1` trop tard. Le path exp partageait ce bloc SANS le guard
+    /// (bug latent : exp seulement > 1e278 en prod, mais reproductible en
+    /// forçant le path ; div_ratio 1.0, +2 uniforme sans le guard). Avec le
+    /// guard, le path BLA suit le f64 direct au pixel près (biais ~0).
+    #[test]
+    fn exp_bla_no_overskip_past_escape_julia_siegel() {
+        let width = 96u32;
+        let height = 96u32;
+        let iter_max = 3000u32;
+        let (sx, sy) = (-0.8f64, 0.156f64);
+        let zoom = 1e10f64;
+        let bailout = 25.0f64;
+        let bailout_sqr = bailout * bailout;
+
+        let mut params = default_params_for_type(FractalType::Julia, width, height);
+        params.center_x = 0.0;
+        params.center_y = 0.0;
+        params.seed = Complex64::new(sx, sy);
+        let span_x = 4.0 / zoom;
+        let span_y = span_x * height as f64 / width as f64;
+        params.span_x = span_x;
+        params.span_y = span_y;
+        params.iteration_max = iter_max;
+        params.bailout = bailout;
+        params.algorithm_mode = AlgorithmMode::Perturbation;
+
+        let (orbit, _, _) =
+            compute_reference_orbit(&params, None, true).expect("ref orbit (Julia)");
+        let formula = compile_formula(FractalType::Julia, 2.0).unwrap();
+        let c_norm = crate::fractal::perturbation::effective_pixel_size(&params)
+            * ((width as f64).powi(2) + (height as f64).powi(2)).sqrt();
+        let tables = build_bla_table_for_formula(&formula, &orbit.z_ref_f64, c_norm, 6e-8)
+            .expect("BLA (Julia)");
+        let bla = &tables[0];
+
+        let seed = Complex64::new(sx, sy);
+        let plain_escape = |z0x: f64, z0y: f64| -> Option<u32> {
+            let (mut zx, mut zy) = (z0x, z0y);
+            let mut i = 0u32;
+            while i < iter_max {
+                if zx * zx + zy * zy >= bailout_sqr {
+                    return Some(i);
+                }
+                let nzx = zx * zx - zy * zy + sx;
+                let nzy = 2.0 * zx * zy + sy;
+                zx = nzx;
+                zy = nzy;
+                i += 1;
+            }
+            None
+        };
+
+        let mut sum_signed = 0i64;
+        let mut sum_abs = 0i64;
+        let mut escaped = 0i64;
+        for j in 0..height {
+            for i in 0..width {
+                let dx = ((i as f64 + 0.5) / width as f64 - 0.5) * span_x;
+                let dy = ((j as f64 + 0.5) / height as f64 - 0.5) * span_y;
+                // Julia : delta_init = pixel, c_ref = seed, dc = 0.
+                let delta_init = ComplexExp::from_complex64(Complex64::new(dx, dy));
+                let res = iterate_pixel_unified_exp(
+                    &orbit,
+                    bla,
+                    None,
+                    &formula,
+                    seed,
+                    ComplexExp::zero(),
+                    delta_init,
+                    iter_max,
+                    bailout,
+                    0,
+                    0,
+                );
+                if let Some(plain) = plain_escape(dx, dy) {
+                    if res.iteration < iter_max {
+                        let d = res.iteration as i64 - plain as i64;
+                        sum_signed += d;
+                        sum_abs += d.abs();
+                        escaped += 1;
+                    }
+                }
+            }
+        }
+
+        assert!(escaped > 500, "trop peu de pixels échappés ({escaped})");
+        let mean_signed = sum_signed as f64 / escaped as f64;
+        let mean_abs = sum_abs as f64 / escaped as f64;
+        assert!(
+            mean_signed.abs() < 0.5,
+            "biais d'iter escape BLA exp vs f64 direct = {mean_signed:.4} (over-skip non gardé côté exp ?)"
+        );
+        assert!(
+            mean_abs < 0.5,
+            "erreur moyenne iter BLA exp vs f64 direct = {mean_abs:.4} (over-skip BLA exp)"
         );
     }
 }

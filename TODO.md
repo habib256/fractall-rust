@@ -750,10 +750,17 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
   **strictement plus correct que F3** ici. Verrou : test unit
   `bla_no_overskip_past_escape_julia_siegel` (BLA ≡ f64 direct, 9216/9216
   pixels, biais 0) + preset quality `julia-siegel-disk` (FAIL→PASS).
-  - **Reste (path exp, deep zoom > 1e13)** : `pixel_loop_exp.rs` a le même bloc
-    BLA sans le guard. Les cas deep actuels (e30/e50/e100) sont des Mandelbrot
-    à référence longue non-échappée → divergence = bord chaotique (p95=0), pas
-    d'over-skip mesuré. À porter quand un preset **Julia deep-zoom** l'exercera.
+  - **✅ Guard porté au path exp (2026-07-10)** : `pixel_loop_exp.rs` partageait
+    le même bloc BLA SANS le guard, sur les **3** fonctions (mandelbrot inline,
+    mandelbrot_hp `bla_exp`, generic Julia/autres). Bug latent (exp seulement
+    utilisé > 1e278 en prod), mais **reproduit** en forçant le path via
+    `FRACTALL_EXP_THRESHOLD=1` sur `julia-siegel-disk` : **FAIL div_ratio 1.0,
+    +2 uniforme** (signature over-skip identique au f64 pré-fix) → **PASS
+    max_diff 0** avec le guard. Test chaque endpoint `Z[m']+δ'` (ComplexExp/
+    FloatExp selon le bloc) ; escape irréversible → un seul point suffit.
+    Verrou : unit `exp_bla_no_overskip_past_escape_julia_siegel` (BLA exp ≡ f64
+    direct, biais ~0). Goldens 10/10 pixel-exact (e1000 exerce le path exp,
+    inchangé — les Mandelbrot deep à réf longue n'over-skippent pas).
 - [ ] **seahorse-valley FAIL** (Mandelbrot 1e8) — **re-mesuré 2026-07-03** :
   div_ratio **0.00146** (p50/p95/p99 = 0, mean 0.205), PAS 0.627 (note périmée,
   fix G2/floral). Les ~24 pixels divergents sont **dispersés** au bord avec
