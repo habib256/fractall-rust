@@ -143,17 +143,40 @@ comparable entre cas) :
   >300 s) + ~23 catégoriquement infaisables (>1M iter : dragon 5M, wfs* 3.5M,
   super_dense/wfs_mb/infinity/triangle 10-15M, hard/orion 20M, opus2 80M,
   **seahorse 10¹⁰**, …) — exp-path trop lent → **G2**.
-- **⚠️ Hazard mémoire / crash OS (2026-07-07, preflight full corpus @256²)** :
-  ces orbites GMP ultra-longues stockées pleine précision par-itération font
-  exploser la RSS — **wfs_mb 28 GB, orion 29.5 GB, opus2 28.6 GB**, et
-  **seahorse tente 137 GB** (iterations 10¹⁰ clampé u32, alloc orbite → `abort`).
-  Sur une machine 40 GB ça faisait **tomber l'OS** pendant les sweeps `full`.
-  Désormais `scripts/harness.py preflight` les mesure sous cap RLIMIT_AS et les
-  **quarantaine automatiquement** (`harness/quarantine.json`) → les sweeps les
-  skippent. Fix racine = **G2** (truncation d'orbite F3, cf. « wfs_mb : truncation
-  271 k iters, 86→2.5 s, PIXEL-IDENTIQUE » plus bas) + **iteration_max en u64**
-  (seahorse). Retirer de quarantaine (`quarantine remove <cas>`) une fois
-  l'orbite bornée en mémoire.
+- **⚠️ Hazard mémoire / crash OS — RÉSOLU pour 3/5 cas (2026-07-10)** :
+  RSS explosait — **wfs_mb 28 GB, orion 29.5 GB, opus2 28.6 GB** — faisant
+  **tomber l'OS** pendant les sweeps `full` sur machine 40 GB. `harness.py
+  preflight` les quarantaine (cap RLIMIT_AS) → les sweeps les skippent.
+  - **CAUSE RACINE CORRIGÉE (2026-07-10)** : l'hypothèse « orbites GMP stockées
+    pleine précision » était **FAUSSE** — le path bytecode ne stocke PAS le GMP
+    dense (`store_dense_gmp=false`). Mesuré (`FRACTALL_MEMDBG`, wfs_mb) : **1453
+    o/itér venaient de la `BlaTable` conformale historique** (orbit.rs:927,
+    ~13 nœuds/itér × 112 o) — **jamais lue par le path bytecode** (qui a sa
+    propre `BlaTableUnified`), pur poids mort. z_ref+z_ref_f64 = 48 o/itér ;
+    le reste (2900→48 o/itér) = cette table. **Fix** : la SAUTER (`BlaTable::
+    empty()`) quand `bytecode_path_label().is_some()` **et** `iteration_max >
+    1 M` (sous 1 M on la garde : le shader perturbation GPU legacy la lit, et
+    le GPU f32 n'est viable qu'à iter modérées — filet de sécurité : le GPU la
+    rebuild localement si vide, `gpu/mod.rs`). Le fallback CPU legacy avec table
+    vide reste CORRECT (num_levels()==0 → pas de saut BLA = pas direct = exact).
+    **Résultats** (16², RSS mesuré via VmHWM) : wfs_mb 10 M **28 GB→2.0 GB**
+    (14×), orion 20 M **29.5 GB→<6 GB** (exit 0 sous cap 6 GB), opus2 80 M
+    **28.6 GB→13.9 GB**. Tous < seuil quarantaine 20 GB → **dé-quarantainés**.
+    NB opus2 : le résidu 13.9 GB = pic de BUILD de la `BlaTableUnified` *utilisée*
+    (level0+level1 ~160 o/itér coexistent avant le clear des niveaux 0-2, F3
+    `bla_skip_levels`) — orthogonal à ce fix (la table conformale morte, elle,
+    est éliminée). Réduire ce pic (clear incrémental des bas niveaux pendant le
+    build) donnerait de la marge pour des orbites > 80 M — follow-up.
+    Verrous : goldens 10/10 pixel-exact (path <1 M inchangé, cf. e113 35 k iters),
+    196 + 2 unit PASS (`conformal_bla_skip_tests`).
+  - **RESTENT quarantinés (2)** : **seahorse** (iterations 10¹⁰ → `z_ref` avec
+    `Vec::with_capacity(iteration_max)` réserve ~137 GB d'entrée, **+** runtime
+    10¹⁰ squarings GMP = infaisable ; besoin iteration_max u64 + cap réel ou
+    period-detection) et **e22522** (incident côté **F3** journalisé, pas un OOM
+    fractall — cf. reconcile_quarantine).
+  - Reste orthogonal pour la PERF (pas la mémoire) de ces cas intérieurs :
+    period-aware reference (G2, cf. plus bas, 4 sessions brûlées — bloqué sur le
+    critère atom-domain F3 exact).
 - **⚠️ Trou d'invariant garde-fou RÉPARÉ (2026-07-07)** : `quarantine.json` est
   versionné → il peut **dériver** (revert/reset/checkout git) et *dé-quarantainer
   silencieusement* un cas qui a fait tomber la machine. Cas réel : **e22522**

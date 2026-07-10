@@ -543,8 +543,24 @@ impl GpuRenderer {
         let cache = compute_reference_orbit_cached(&orbit_params, Some(cancel), orbit_cache)?;
         let dt_ref = t_ref.elapsed();
         let ref_orbit = &cache.orbit;
-        let bla_table = &cache.bla_table;
         let supports_bla = matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia);
+        // Le path CPU bytecode saute la BlaTable conformale au-delà de ~1 M
+        // itérations (mémoire, cf. `compute_reference_orbit_cached`). Le shader
+        // perturbation GPU (legacy) en a besoin : si la table cachée est vide
+        // alors qu'on en veut une, on la reconstruit localement depuis l'orbite.
+        // Rare (GPU perturbation > 1 M iters est hors du régime f32 viable), donc
+        // pas de coût sur l'usage GPU nominal.
+        let rebuilt_bla;
+        let bla_table = if supports_bla && cache.bla_table.num_levels() == 0 {
+            rebuilt_bla = crate::fractal::perturbation::bla::build_bla_table(
+                &ref_orbit.z_ref_f64,
+                &orbit_params,
+                ref_orbit.cref,
+            );
+            &rebuilt_bla
+        } else {
+            &cache.bla_table
+        };
         let bla_levels = if supports_bla {
             bla_table.num_levels().min(MAX_LEVELS)
         } else {
