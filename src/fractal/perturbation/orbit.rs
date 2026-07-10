@@ -1495,8 +1495,11 @@ pub fn compute_reference_orbit(
     // du path deep par défaut (atom-off aussi diverge vs F3 : inside_mm=16370) —
     // pas causé par l'atom ; cf. TODO « TENTATIVE 8 ».
     // Gaté au path exp (deep zoom > 1e280).
+    // Troncature atom-domain : **ON par défaut** (Mandelbrot + path exp >1e280).
+    // `FRACTALL_ATOM_PERIOD=0` désactive. Flag canonique partagé (cf.
+    // `delta::atom_hp_enabled` — pourquoi + validation corpus 2026-07-11 vs F3 EXR).
     let atom_period_enabled = matches!(params.fractal_type, FractalType::Mandelbrot)
-        && std::env::var("FRACTALL_ATOM_PERIOD").ok().as_deref() == Some("1")
+        && super::delta::atom_hp_enabled()
         && super::effective_pixel_size(params) < super::delta::PIXEL_SIZE_EXP_THRESHOLD;
     let atom_radius_sqr = {
         let (adx, ady) = super::effective_spans_fexp(params);

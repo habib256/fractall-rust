@@ -64,12 +64,22 @@ fn adaptive_batch_size(power: f64) -> u32 {
     (400.0 / power).round().clamp(64.0, 512.0) as u32
 }
 
-/// `FRACTALL_ATOM_PERIOD=1` : active le path atom-tronqué HP ComplexExp + BLA
-/// FloatExp. Const pour la durée du process (lu une fois). N'affecte QUE la
-/// construction de la table BLA exp — le path f64 par défaut est intact.
-fn atom_hp_enabled() -> bool {
+/// Path atom-tronqué HP ComplexExp + BLA FloatExp : **ON par défaut**
+/// (`FRACTALL_ATOM_PERIOD=0` force OFF pour debug/comparaison). Const pour la
+/// durée du process (lu une fois). N'affecte QUE le path exp (deep zoom >1e280,
+/// Mandelbrot) : la construction de la table BLA exp — le path f64 mid-range est
+/// intact.
+///
+/// **Pourquoi ON par défaut** (validation corpus 2026-07-11 vs F3 EXR) : le path
+/// deep-interior par défaut (réf pleine + rebase-at-end) DIVERGE massivement de
+/// F3 — ex. wfs_mb rendu **tout noir** (inside_mm 65479/65536), wfs4/wfs2/
+/// wfs_extended/e1121/e1200/olbaid5/triangle rel Δ 0.03–1.3 %. La troncature
+/// atom-domain (port F3, réf ComplexExp + BLA FloatExp) matche F3 à ~1e-4 rel
+/// (inside_mm 0–12) ET rend 2–16× plus vite (wfs_mb 79→5 s). Aucune régression
+/// sur les cas escape-time (e8000/e1000/e401 identiques). Cf. TODO G2.
+pub(crate) fn atom_hp_enabled() -> bool {
     static F: OnceLock<bool> = OnceLock::new();
-    *F.get_or_init(|| std::env::var("FRACTALL_ATOM_PERIOD").ok().as_deref() == Some("1"))
+    *F.get_or_init(|| std::env::var("FRACTALL_ATOM_PERIOD").ok().as_deref() != Some("0"))
 }
 
 // Cache de la BlaTableUnified partagé entre workers rayon.

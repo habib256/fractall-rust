@@ -611,6 +611,34 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
       Confirme le verdict T7 (« per-iter ≈ F3 ~8 µs, rug≈MPFR ») : le gap est la **longueur de
       réf** (troncature), pas le coût par itération. Reverté. ⇒ le SEUL levier vitesse deep-zoom
       reste **le cyclage atom correct sur les cas intérieurs** (chantier G2, non trivial).
+  - [x] **⭐ ATOM-PERIOD ON PAR DÉFAUT (2026-07-11) — CORRECTION MAJEURE deep-interior +
+    vitesse. La conclusion « atom-ON casse » ci-dessus était FAUSSE** (comparait atom-ON à
+    atom-OFF en supposant atom-OFF correct). **Adjugé vs F3 EXR** (`compare_f3.py`, 17 cas
+    ultra-deep) : c'est **atom-OFF (le défaut !) qui DIVERGE de F3**, atom-ON qui matche.
+    | cas | atom-OFF rel Δ% vs F3 | atom-ON rel Δ% | temps off→on |
+    |-----|------:|------:|-----|
+    | wfs_mb | inside_mm **65479/65536** (tout NOIR) | inside_mm 12 | 79→**5 s** (15.8×) |
+    | wfs4 | 1.296 | **0.003** | 15.2→**4.3 s** |
+    | e1121 | 0.283 | **0.0002** | — |
+    | wfs2 | 0.400 | **0.002** | 10.4→**4.0 s** |
+    | wfs_extended | 0.376 | **0.002** | — |
+    | e1200 | 0.044 | **0.0003** | — |
+    | olbaid5 | 0.022 | **0.0002** | — |
+    | triangle | 0.034 | **0.0006** | 28.8→**16 s** |
+    | e8000/e1000/e401/e634/e890/e1086/olbaid1 | (déjà bas) | **= atom-OFF** | e8000 6.6→3.0 |
+    - **atom-ON n'est JAMAIS pire** (égal sur les escape-time déjà corrects, 50–1400× meilleur
+      sur l'intérieur) ET 2–16× plus rapide. Visuel wfs_mb : atom-OFF = **écran noir**, atom-ON =
+      structure F3 (diff quasi-blanc). ⇒ le path deep-interior par défaut produisait des images
+      FAUSSES depuis toujours (masqué par le gate parité laxiste — inside_mm=0 sur les cas où les
+      masques concordent mais smooth-iter faux).
+    - **Décision** : `atom_hp_enabled()` (flag canonique `delta.rs`, partagé par les 3 portes
+      orbit/delta/pixel_loop_exp) **default ON** ; `FRACTALL_ATOM_PERIOD=0` force OFF (debug).
+      N'active QUE Mandelbrot + path exp >1e280 (mid-range/shallow/goldens INTOUCHÉS). Ferme le
+      chantier T9 (« validation corpus + fix wfs_mb requis » → fait : wfs_mb 15.8× + correct).
+    - **Verrous** : golden `mandelbrot_e1121_interior` (deep-interior, 41 k iters), 200 unit +
+      10 goldens 🟢, parité full corpus atom-ON. Reste : wfs_mb résidu inside_mm=12 (≈parfait,
+      vs 65479 avant) ; mid-range 1e13–1e280 pas encore atom (rebase-at-end pas porté au path f64,
+      cf. glitch_test_2 1.30× — prochain levier).
 - [x] **Path f64 étendu à 1e280 (seuil 1e-200 → 1e-280)** (2026-07-04) : après
   l'extension initiale à 1e-200, un sweep vitesse du corpus STANDARD/full a révélé
   4 cas encore sur le path exp lent (zoom > 1e200) donc PLUS LENTS que F3 :

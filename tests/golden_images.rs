@@ -130,6 +130,15 @@ const CASES: &[Case] = &[
         name: "mandelbrot_e1000",
         args: &["--toml", "toml/e1000.toml", "--width", "160", "--height", "100"],
     },
+    // Deep INTÉRIEUR 1e1200 (toml/e1200.toml, 45 k iters) — VERROU de la troncature
+    // atom-domain ON PAR DÉFAUT (2026-07-11). Structure en étoile (matche F3 à
+    // ~3e-4 rel avec atom). Sans atom, le path deep-interior par défaut (réf pleine
+    // + rebase-at-end) DIVERGE de F3 (rel Δ 0.044 % ici, jusqu'à wfs_mb rendu tout
+    // noir). Régression du cyclage atom = cette golden casse. Rapide (45 k iters).
+    Case {
+        name: "mandelbrot_e1200_interior",
+        args: &["--toml", "toml/e1200.toml", "--width", "160", "--height", "160"],
+    },
     // Cusp -0.75, zoom 2.8e10 (image utilisateur) — verrouille le fix G3
     // `max_perturb_iterations` : régression = anneaux concentriques. Args
     // explicites → chemin par défaut (cap 1024 → clamp à iteration_max).

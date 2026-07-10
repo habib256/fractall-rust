@@ -26,12 +26,12 @@ use super::{Formula, Op, Phase};
 use crate::fractal::perturbation::orbit::ReferenceOrbit;
 use crate::fractal::perturbation::types::{ComplexExp, FloatExp};
 
-/// `FRACTALL_ATOM_PERIOD=1` : active le path atom-tronqué (troncature réf +
-/// variant HP ComplexExp). Lu une fois (cache).
+/// Path atom-tronqué (troncature réf + variant HP ComplexExp) : **ON par défaut**
+/// (`FRACTALL_ATOM_PERIOD=0` force OFF). Délègue au flag canonique de `delta`
+/// pour rester cohérent avec les 2 autres portes (delta::atom_hp_enabled +
+/// orbit::atom_period_enabled). Cf. `delta::atom_hp_enabled` pour le pourquoi.
 fn atom_hp_enabled() -> bool {
-    use std::sync::OnceLock;
-    static F: OnceLock<bool> = OnceLock::new();
-    *F.get_or_init(|| std::env::var("FRACTALL_ATOM_PERIOD").ok().as_deref() == Some("1"))
+    crate::fractal::perturbation::delta::atom_hp_enabled()
 }
 
 /// DEBUG uniquement : `FRACTALL_ATOM_NOBLA=1` désactive le skip BLA dans le path
