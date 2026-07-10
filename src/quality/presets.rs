@@ -34,6 +34,12 @@ pub const PRESETS: &[Preset] = &[
         julia_seed: None,
         precision_bits: None,
     },
+    // NB : PASS à ≤96² mais FAIL à ≥128²/256² (2 px symétriques, iter_diff≈201).
+    // Plancher de précision f64 du δ au voisinage de l'antenne période-2 (c≈-1.75) :
+    // ~11 rebases près de |Z|≈0.027 → cancellation → faux escape anticipé.
+    // `--dd-tier` corrige à 100 %. C'est le cas moteur du wisdom auto-dispatch
+    // (cf. TODO.md §G3 « auto-dispatch (wisdom) », diagnostic 2026-07-10) — pas
+    // une régression : le tier quick (quality 96²) le voit PASS.
     Preset {
         name: "mandelbrot-e13",
         description: "Mandelbrot at zoom 1e13 — just above perturbation activation threshold.",

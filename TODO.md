@@ -781,6 +781,38 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     estimation de sensibilité/conditionnement par frame (F3-style), au lieu de
     l'opt-in `use_dd_tier`. Prérequis perf : dd-BLA ✅ + epsilon adaptatif (sinon coût hors
     des cas sensibles).
+    - **Cas moteur pour le wisdom (2026-07-10, diagnostic)** : preset quality
+      `mandelbrot-e13` (centre `-1.7499537683537087`, zoom 1e13, 16384 iters —
+      juste au-dessus du seuil d'activation perturbation). **FAIL à ≥128²**
+      (2 px symétriques, `iter_diff=201` : perturbation f64 escape à n=1261 avec
+      `|z|=33.6` alors que le GMP ground truth n'escape qu'à n=1462), **PASS à 96²**
+      (les pixels pathologiques ne tombent pas sur la grille). Donc INVISIBLE au
+      tier `quick` (quality 96²) mais réel au `suite` défaut (256²) — les 2 px
+      apparaissent aux coords (131,118)/(131,137) à 256². **Racine** : plancher
+      f64 du δ. L'orbite de c≈-1.75 (pointe de l'antenne période-2) repasse
+      périodiquement près de |Z|≈0.027 → le pixel rebase 11× et chaque rebase
+      `δ:=Z+δ` (Z,δ comparables) subit une cancellation catastrophique ; sur
+      ~1261 iters le 2⁻⁵² relatif devient O(1) → faux escape anticipé. Les boucles
+      pixel f64 (nôtre) et F3 (`hybrid.cc`) sont **algorithmiquement équivalentes**
+      pour Mandelbrot (rebase-avant-step au même index m, escape post-rebase) —
+      ce n'est PAS un bug d'ordre. **`--dd-tier` corrige à 100 %** (0 px divergent
+      vs GMP), confirmant que c'est bien la précision du δ, pas la BLA
+      (dd tourne sans BLA). C'est le **même plancher que e30/e50** (cf. dd-tier
+      livré ci-dessus), juste à zoom plus faible et sur 2 px seulement.
+    - **Détecteur cheap réfuté** : hypothèse « flag les pixels à forte
+      cancellation cumulée aux rebases (`Σ ½·log2(|δ|²/|Z+δ|²)`) → re-render GMP ».
+      **Infirmé sur données** : les 2 px fautifs ont `cbits≈11.2`, mais des px
+      **corrects** montent à `cbits≈11.6` → pas de séparation. Pire, `cbits` ne
+      corrèle qu'à l'activité de rebasing, PAS à la justesse : e50 a **3.2 %** de px
+      `cbits≥8` (1.37 % `≥10`) et e113 **1.2 %** (0.45 % `≥10`) — tous stables au
+      golden — contre **0.098 %** (0.015 % `≥10`) pour e13@256². Un flag `cbits≥T`
+      + cap de comptage ne « marcherait » sur e13 que parce qu'il est peu profond
+      (peu de px rebasent) → hack qui game la métrique, pas un détecteur de justesse.
+      Réintroduire une correction GMP par-pixel contredirait aussi l'archi bytecode
+      (le rebasing F3 a **remplacé** la glitch-detection, cf. CLAUDE.md + mod.rs:1341).
+      **Conclusion** : pas de fix cheap/principled — c'est exactement le boulot du
+      **wisdom auto-dispatch dd** (choisir dd par sensibilité de frame). Le seul
+      « fix » correct aujourd'hui = `--dd-tier` opt-in.
 - [ ] **Period-detection truncation = LOSSY** → passer **OFF par défaut**.
   Même pour une période *genuine*, `truncate + wrap_periodic` accumule l'erreur
   de quasi-périodicité (~2^(-0.4·prec)) sur ~iter_max/période cycles →
