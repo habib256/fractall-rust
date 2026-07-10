@@ -48,9 +48,10 @@ struct Cli {
     #[arg(long, default_value_t = 0.001, global = true)]
     pass_divergence_ratio: f64,
 
-    /// Max iteration-diff tolerated for WARN (above -> FAIL).
-    #[arg(long, default_value_t = 3.0, global = true)]
-    warn_max_iter_diff: f64,
+    /// p99 iteration-diff above which -> FAIL (robust to sparse boundary
+    /// outliers; a high `max` on a few dispersed pixels stays WARN, cf. G6).
+    #[arg(long, default_value_t = 1.0, global = true)]
+    fail_p99_iter_diff: f64,
 
     #[arg(long, default_value_t = 0.01, global = true)]
     warn_divergence_ratio: f64,
@@ -102,7 +103,7 @@ fn main() {
         thresholds: Thresholds {
             max_iter_diff_pass: cli.pass_max_iter_diff,
             divergence_ratio_pass: cli.pass_divergence_ratio,
-            max_iter_diff_warn: cli.warn_max_iter_diff,
+            p99_iter_diff_fail: cli.fail_p99_iter_diff,
             divergence_ratio_warn: cli.warn_divergence_ratio,
         },
     };

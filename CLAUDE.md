@@ -502,9 +502,18 @@ cargo run --release --bin fractall-quality -- compare --type 3 \
 ratio divergence (>1), `|z_pert - z_gmp|`, erreur relative, désaccord
 d'échappement, temps pert vs GMP.
 
-**Seuils défaut** : PASS si max_iter_diff ≤ 1 et div_ratio ≤ 0.001 ; WARN
-si ≤ 3 / ≤ 0.01 ; sinon FAIL. Override : `--pass-max-iter-diff`,
-`--warn-divergence-ratio`.
+**Seuils défaut (recalibrés G6, 2026-07-10 — robustes au bruit de bord)** :
+- **PASS** : `max_iter_diff ≤ 1` ET `div_ratio ≤ 0.001` (quasi-exact, strict).
+- **FAIL** : `p99_iter_diff > 1` (divergence LARGE : > 1 % des pixels divergent
+  de > 1 → vrai bug) **OU** `div_ratio > 0.01` (SYSTÉMATIQUE : offset uniforme,
+  signature over-skip BLA…).
+- **WARN** : sinon (divergence éparse — quelques pixels de bord au plancher f64,
+  cf. e13/e17/seahorse-valley : `max` grand mais `p99=0`, `div_ratio` minuscule).
+
+⚠️ Le gate ne FAIL PLUS sur le `max` outlier seul (ancien comportement) : un `max`
+élevé sur quelques pixels DISPERSÉS = bruit inhérent, pas une régression. `max`
+reste rapporté dans `report.md`. Override : `--pass-max-iter-diff`,
+`--fail-p99-iter-diff`, `--warn-divergence-ratio`.
 
 **8 presets** (`src/quality/presets.rs`) : Mandelbrot (seahorse 1e8,
 activation 1e13, GMP perturbation 1e17, Misiurewicz 1e12, minibrot 1e18),

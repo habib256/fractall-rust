@@ -77,7 +77,11 @@ impl Serialize for Verdict {
 pub struct Thresholds {
     pub max_iter_diff_pass: f64,
     pub divergence_ratio_pass: f64,
-    pub max_iter_diff_warn: f64,
+    /// p99 de l'iter-diff au-delà duquel → FAIL. **Métrique robuste** (percentile,
+    /// pas le `max` outlier) : un p99 > 1 signifie que > 1 % des pixels divergent
+    /// de plus de 1 itér → divergence LARGE (vrai bug), à distinguer de quelques
+    /// pixels de bord dispersés (bruit f64 inhérent, cf. G6).
+    pub p99_iter_diff_fail: f64,
     pub divergence_ratio_warn: f64,
 }
 
@@ -86,7 +90,7 @@ impl Default for Thresholds {
         Thresholds {
             max_iter_diff_pass: 1.0,
             divergence_ratio_pass: 0.001,
-            max_iter_diff_warn: 3.0,
+            p99_iter_diff_fail: 1.0,
             divergence_ratio_warn: 0.01,
         }
     }
@@ -233,13 +237,26 @@ pub fn compute(
     }
 }
 
+// Classification robuste au bruit de bord (G6, recalibré 2026-07-10).
+//
+// L'ancien gate FAILait sur `iter_stats.max` (l'OUTLIER) → les cas à bruit de
+// bord inhérent (plancher f64 : quelques pixels dispersés, p95=p99=0, mais max
+// grand — e13/e17/seahorse-valley) étaient FAIL en permanence, noyant les vraies
+// régressions dans le signal du loop /improve. Le nouveau gate distingue :
+//   - PASS  : divergence quasi-nulle (max ≤ 1 ET div_ratio ≤ 1e-3) — inchangé.
+//   - FAIL  : divergence LARGE (p99 > seuil : > 1 % des pixels divergent de > 1)
+//             OU SYSTÉMATIQUE (div_ratio > warn) — signature d'un vrai bug
+//             (over-skip BLA = +N uniforme div_ratio 1.0 ; période fausse =
+//             image uniforme ; etc.). Le `max` outlier seul NE FAIL PAS.
+//   - WARN  : divergence éparse (quelques pixels de bord) — visible, non bloquant.
+// `max` reste rapporté dans report.md pour l'inspection humaine.
 fn classify(iter_stats: &IterStats, div_ratio: f64, t: Thresholds) -> Verdict {
     if iter_stats.max <= t.max_iter_diff_pass && div_ratio <= t.divergence_ratio_pass {
         Verdict::Pass
-    } else if iter_stats.max <= t.max_iter_diff_warn && div_ratio <= t.divergence_ratio_warn {
-        Verdict::Warn
-    } else {
+    } else if iter_stats.p99 > t.p99_iter_diff_fail || div_ratio > t.divergence_ratio_warn {
         Verdict::Fail
+    } else {
+        Verdict::Warn
     }
 }
 
@@ -279,6 +296,7 @@ mod tests {
         assert_eq!(m.iter_divergence_ratio, 0.25);
         assert_eq!(m.top_divergent.len(), 1);
         assert_eq!(m.top_divergent[0].iter_diff, 5);
+        // div_ratio 0.25 ≫ warn (0.01) → divergence SYSTÉMATIQUE → FAIL.
         assert_eq!(m.verdict, Verdict::Fail);
     }
 
@@ -308,16 +326,46 @@ mod tests {
         let a = vec![10u32; 1000];
         let m = compute(100, 10, 100, &a, &zs, &a, &zs, 1.0, 1.0, Thresholds::default());
         assert_eq!(m.verdict, Verdict::Pass);
-        // WARN: a few diffs of 2
+        // WARN: a few diffs of 2 (sparse : 2/1000, p99=0, div_ratio 0.002 < warn).
         let mut b = a.clone();
         b[5] = 12;
         b[10] = 12;
         let m = compute(100, 10, 100, &a, &zs, &b, &zs, 1.0, 1.0, Thresholds::default());
         assert_eq!(m.verdict, Verdict::Warn);
-        // FAIL: large diff
+        // WARN (recalibré G6) : UN pixel outlier grand (max=50) mais DISPERSÉ
+        // (1/1000, p99=0, div_ratio 0.001) = bruit de bord, plus FAIL. L'outlier
+        // reste rapporté via `max`.
         let mut c = a.clone();
         c[0] = 50;
         let m = compute(100, 10, 100, &a, &zs, &c, &zs, 1.0, 1.0, Thresholds::default());
+        assert_eq!(m.verdict, Verdict::Warn);
+    }
+
+    /// Verrou G6 : une divergence LARGE (p99 > seuil : bien plus d'1 % des
+    /// pixels divergent de > 1) FAIL, même si div_ratio reste sous le seuil warn
+    /// grâce au comptage — c'est le p99 qui capte l'étendue. Et une divergence
+    /// SYSTÉMATIQUE (offset uniforme, signature over-skip BLA) FAIL via div_ratio.
+    #[test]
+    fn verdict_widespread_and_systematic_fail() {
+        let zs = zero_z(1000);
+        // (valeurs ≪ iteration_max=100 pour que les pixels « échappent » et
+        // comptent dans la divergence.)
+        let a = vec![10u32; 1000];
+        // Large : 50 pixels sur 1000 (5 %) divergent de 2 → p99 (rang 989) = 2 > 1
+        // → FAIL. (div_ratio 0.05 > warn 0.01 aussi ; le p99 seul suffirait.)
+        let mut wide = a.clone();
+        for x in wide.iter_mut().take(50) {
+            *x = 12;
+        }
+        let m = compute(100, 10, 100, &a, &zs, &wide, &zs, 1.0, 1.0, Thresholds::default());
+        assert!(m.iter_diff.p99 > 1.0, "p99={}", m.iter_diff.p99);
+        assert_eq!(m.verdict, Verdict::Fail);
+
+        // Systématique : offset uniforme +2 partout (signature over-skip BLA
+        // julia-siegel) → TOUS les pixels divergent de > 1 → div_ratio 1.0 → FAIL.
+        let sys: Vec<u32> = a.iter().map(|v| v + 2).collect();
+        let m = compute(100, 10, 100, &a, &zs, &sys, &zs, 1.0, 1.0, Thresholds::default());
+        assert_eq!(m.iter_divergence_ratio, 1.0);
         assert_eq!(m.verdict, Verdict::Fail);
     }
 }

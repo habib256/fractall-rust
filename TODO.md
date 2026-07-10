@@ -761,14 +761,20 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     Verrou : unit `exp_bla_no_overskip_past_escape_julia_siegel` (BLA exp ≡ f64
     direct, biais ~0). Goldens 10/10 pixel-exact (e1000 exerce le path exp,
     inchangé — les Mandelbrot deep à réf longue n'over-skippent pas).
-- [ ] **seahorse-valley FAIL** (Mandelbrot 1e8) — **re-mesuré 2026-07-03** :
-  div_ratio **0.00146** (p50/p95/p99 = 0, mean 0.205), PAS 0.627 (note périmée,
-  fix G2/floral). Les ~24 pixels divergents sont **dispersés** au bord avec
-  |dz| ~ 200-430 (delta grandi jusqu'à |z| = vraie perte de précision
-  perturbation au bord chaotique), pas d'over-skip BLA (guard sans effet ici).
-  Résiduel de bord ; FAIL uniquement par seuil strict (PASS exige
-  max_diff ≤ 1). Idem e13/e17/e18/e100 (tous p95≈0). Cf. calibration seuils
-  quality (G6) vs bruit de bord inhérent.
+- [x] **✅ seahorse-valley / e13 / e17 « FAIL » = bruit de bord — RÉSOLU via
+  recalibration G6 (2026-07-10)**. Ces cas ont ~2-24 pixels **dispersés** au bord
+  (plancher f64 : delta grandi, |dz| ~ 200-430) → `max_diff` grand (137/210/7)
+  mais `p95=p99=0`, `div_ratio` minuscule (2e-5…1.5e-3). L'ANCIEN gate FAILait sur
+  le `max` outlier → FAIL permanent, noyant le vrai signal du loop /improve.
+  **Fix** (`quality/metrics.rs::classify`) : gate robuste — FAIL si `p99 > 1`
+  (divergence LARGE) OU `div_ratio > warn` (SYSTÉMATIQUE, ex. over-skip = +N
+  uniforme div_ratio 1.0) ; le `max` outlier seul → **WARN**. Résultat mesuré
+  256² : seahorse/e13/e17 **FAIL→WARN**, misiurewicz/julia-siegel/… restent PASS.
+  Le vrai bug (over-skip forced-exp, div_ratio 1.0) resterait FAIL. Verrous : unit
+  `verdict_widespread_and_systematic_fail` + `verdict_pass_warn_fail_tiers` (maj).
+  `max` toujours rapporté dans report.md. NB : la divergence physique (plancher
+  f64) est réelle — seul `--dd-tier` la supprime (cf. wisdom auto-dispatch, G3) ;
+  la recalibration classe juste correctement « bruit épars » vs « régression ».
 - [x] **✅ Tier double-double (~106 b, « float128 » pur-Rust) livré (2026-07-04)**.
   Diagnostic : e30/e50 FAIL = plancher mantisse **f64** (53 b). `z_ref`
   (Complex64) ET `delta` (ComplexExp) stockent Z et δ à 2⁻⁵² relatif ; en
