@@ -283,6 +283,16 @@ fn iterate_pixel_unified_multi_phase(
             if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
                 // Orbite périodique (centre intérieur) : cycler m via modulo.
                 m = m_wrapped;
+            } else if ref_orbit.atom_truncated {
+                // Réf tronquée atom-domain (quasi-périodique à l'échelle de la
+                // vue) : rebase-at-end F3 (`hybrid.cc:301`, port de
+                // pixel_loop_exp.rs) — `δ := Z[end]+δ, m := 0`. Sûr en f64
+                // mid-range : Z[end] est petit (critère atom) et les grazes
+                // > 1e-280 ne sous-débordent pas (cf. diag G2, TODO).
+                let z_m_end = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
+                delta = z_m_end + delta;
+                m = 0;
+                rebase_count += 1;
             } else {
                 // Orbite tronquée par escape (centre escape-time, non-périodique) :
                 // rebaser sur z_ref[end] colle tous les pixels au même état
@@ -425,7 +435,17 @@ fn iterate_pixel_unified_single_phase(
             if let Some(node) = bla.lookup(m as usize, delta_norm_sqr) {
                 let new_n = n.saturating_add(node.l);
                 let new_m = m.saturating_add(node.l);
-                if new_n <= iteration_max && (new_m as usize) < ref_len {
+                // Réf atom-tronquée : interdire au BLA d'atterrir SUR la dernière
+                // entrée (le graze |Z[end]| ~ atome). Le `continue` BLA saute le
+                // check end-of-ref du bas de boucle → le pas direct suivant
+                // partirait du graze (δ' ≈ δ²+dc, minuscule) puis le rebase
+                // ajouterait Z[end] ≫ δ' qui ABSORBE δ en f64 → tous les pixels
+                // identiques → image intérieure uniforme (cf. G2 mid-range atom).
+                // En forçant l'arrivée en fin de réf par pas direct, le check du
+                // bas rebase AVANT le pas de graze (ordre F3 `hybrid.cc:295-308`).
+                let lands_on_ref_end =
+                    ref_orbit.atom_truncated && (new_m as usize) + 1 >= ref_len;
+                if new_n <= iteration_max && (new_m as usize) < ref_len && !lands_on_ref_end {
                     let a = node.a;
                     let b = node.b;
                     let (a_re, a_im) = (
@@ -529,13 +549,20 @@ fn iterate_pixel_unified_single_phase(
         // Quand l'orbite référence est tronquée par période détectée (interior
         // center), on cycle m via modulo (orbite cyclique, valeurs identiques
         // à epsilon près) — évite l'uniformisation observée sur glitch_test_1.
-        // Sinon (orbite échappée ou non-périodique), on flag exhaustion : le
-        // rebase blind sur z_ref[end] uniformiserait tous les pixels post-escape
+        // Réf tronquée atom-domain : rebase-at-end F3 (cf. site homologue de
+        // `iterate_pixel_unified_mandelbrot` plus bas). Sinon (orbite échappée
+        // ou non-périodique), on flag exhaustion : le rebase blind sur
+        // z_ref[end] uniformiserait tous les pixels post-escape
         // (cf. e113.toml). Le caller route ces pixels vers `iterate_pixel_gmp`.
         let end_of_ref = (m as usize) + 1 >= ref_len;
         if end_of_ref {
             if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
                 m = m_wrapped;
+            } else if ref_orbit.atom_truncated {
+                let z_m_end = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
+                delta = z_m_end + delta;
+                m = 0;
+                rebase_count += 1;
             } else {
                 ref_exhausted_flag = true;
                 break;
@@ -662,10 +689,17 @@ pub fn iterate_pixel_unified_mandelbrot(
         // Étape 1 : essai BLA
         let delta_norm_sqr = delta.norm_sqr();
         if let Some(node) = bla.lookup(m as usize, delta_norm_sqr) {
-            // Vérifier qu'on ne dépasse pas iteration_max ni ref_len.
+            // Vérifier qu'on ne dépasse pas iteration_max ni ref_len. Réf
+            // atom-tronquée : le BLA ne doit pas atterrir SUR la dernière entrée
+            // (graze) — le `continue` sauterait le check end-of-ref du bas et le
+            // pas direct partirait du graze, puis le rebase absorberait δ en f64
+            // (image uniforme). Arrivée en fin de réf par pas direct uniquement,
+            // pour rebaser AVANT le pas de graze (ordre F3 `hybrid.cc:295-308`).
             let new_n = n.saturating_add(node.l);
             let new_m = m.saturating_add(node.l);
-            if new_n <= iteration_max && (new_m as usize) < ref_len {
+            let lands_on_ref_end =
+                ref_orbit.atom_truncated && (new_m as usize) + 1 >= ref_len;
+            if new_n <= iteration_max && (new_m as usize) < ref_len && !lands_on_ref_end {
                 // δ := A·δ + B·dc
                 let a = node.a;
                 let b = node.b;
@@ -734,12 +768,19 @@ pub fn iterate_pixel_unified_mandelbrot(
             };
         }
 
-        // Étape 3 : cyclage si périodique (intérieur), sinon flag exhaustion
+        // Étape 3 : cyclage si périodique (intérieur) ; rebase-at-end F3 si réf
+        // tronquée atom-domain (quasi-périodique, `δ := Z[end]+δ, m := 0`,
+        // cf. `hybrid.cc:301` + diag G2) ; sinon flag exhaustion
         // (cf. e113.toml : rebase blind = uniformise tous les pixels post-escape).
         let end_of_ref = (m as usize) + 1 >= ref_len;
         if end_of_ref {
             if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
                 m = m_wrapped;
+            } else if ref_orbit.atom_truncated {
+                let z_m_end = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
+                delta = z_m_end + delta;
+                m = 0;
+                rebase_count += 1;
             } else {
                 ref_exhausted_flag = true;
                 break;

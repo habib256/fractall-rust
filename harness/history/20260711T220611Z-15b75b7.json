@@ -1,0 +1,150 @@
+{
+  "schema": 1,
+  "meta": {
+    "date_utc": "2026-07-11T22:06:11+00:00",
+    "stamp": "20260711T220611Z",
+    "git_sha": "15b75b7",
+    "git_dirty": true,
+    "machine": {
+      "cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz",
+      "nproc": 16,
+      "os": "Linux 6.14.0-37-generic"
+    },
+    "tier": "quick",
+    "axes": [
+      "parity"
+    ],
+    "width": 256,
+    "height": 256,
+    "quality_width": 96,
+    "quality_height": 96,
+    "runs": 1,
+    "f3_bin": "/home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux",
+    "mem_limit_mb": 34024,
+    "quarantined": []
+  },
+  "speed": {
+    "status": "skipped"
+  },
+  "parity": {
+    "status": "ok",
+    "cases": {
+      "11_dimensions": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0407,
+        "mean_abs_dsi": 81.3856,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.7025,
+        "fr_secs_num": 0.1203
+      },
+      "adventurous_forest": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0387,
+        "mean_abs_dsi": 52.9582,
+        "inside_mismatch": 1,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.428,
+        "fr_secs_num": 0.1003
+      },
+      "dinosaur_fossils": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0001,
+        "mean_abs_dsi": 4.4157,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.2616,
+        "fr_secs_num": 0.0823
+      },
+      "e227": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0993,
+        "mean_abs_dsi": 1192.1367,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 1.669,
+        "fr_secs_num": 0.5395
+      },
+      "evolution_trees": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0965,
+        "mean_abs_dsi": 1157.857,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 1.7785,
+        "fr_secs_num": 0.547
+      },
+      "integral_of_ex2": {
+        "status": "ok",
+        "rel_dsi_pct": 0.024,
+        "mean_abs_dsi": 57.0647,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.4566,
+        "fr_secs_num": 0.0961
+      },
+      "mitosis": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0319,
+        "mean_abs_dsi": 28.2792,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1397,
+        "fr_secs_num": 0.0532
+      },
+      "test3": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0218,
+        "mean_abs_dsi": 26.2034,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.2077,
+        "fr_secs_num": 0.0752
+      },
+      "virus": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0296,
+        "mean_abs_dsi": 39.3139,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.2211,
+        "fr_secs_num": 0.0687
+      },
+      "x": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0387,
+        "mean_abs_dsi": 19.3725,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1386,
+        "fr_secs_num": 0.0471
+      }
+    },
+    "n_ok": 10,
+    "n_pixel_equiv": 1,
+    "n_fail": 0,
+    "n_timeout": 0,
+    "n_f3_degenerate": 0
+  },
+  "quality": {
+    "status": "skipped"
+  },
+  "goldens": {
+    "status": "skipped"
+  },
+  "beyond_f3": {
+    "speed_wins": [],
+    "correctness_wins": []
+  },
+  "gaps": [
+    {
+      "axis": "parity",
+      "case": "<agg>",
+      "metric": "n_pixel_equiv",
+      "value": 1,
+      "baseline_value": 5,
+      "severity": 2,
+      "note": "RÉGRESSION vs baseline (>10%)"
+    }
+  ]
+}

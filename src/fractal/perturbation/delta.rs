@@ -64,11 +64,13 @@ fn adaptive_batch_size(power: f64) -> u32 {
     (400.0 / power).round().clamp(64.0, 512.0) as u32
 }
 
-/// Path atom-tronqué HP ComplexExp + BLA FloatExp : **ON par défaut**
+/// Troncature atom-domain de la référence : **ON par défaut**
 /// (`FRACTALL_ATOM_PERIOD=0` force OFF pour debug/comparaison). Const pour la
-/// durée du process (lu une fois). N'affecte QUE le path exp (deep zoom >1e280,
-/// Mandelbrot) : la construction de la table BLA exp — le path f64 mid-range est
-/// intact.
+/// durée du process (lu une fois). Mandelbrot uniquement, dès que la
+/// perturbation est le path réel (`ATOM_PERIOD_PIXEL_SIZE_THRESHOLD`).
+/// Deep (>1e280) : path HP ComplexExp + BLA FloatExp. Mid-range (1e13–1e280,
+/// hors fast-path dd ≤96 b) : réf tronquée cyclée par rebase-at-end du pixel
+/// loop f64 (`ReferenceOrbit::atom_truncated`, extension 2026-07-12, G2).
 ///
 /// **Pourquoi ON par défaut** (validation corpus 2026-07-11 vs F3 EXR) : le path
 /// deep-interior par défaut (réf pleine + rebase-at-end) DIVERGE massivement de
@@ -343,6 +345,17 @@ pub fn prewarm_bla_entry(params: &FractalParams, ref_orbit: &ReferenceOrbit) {
 pub const PIXEL_SIZE_EXP_THRESHOLD: f64 = 1e-280;
 #[allow(dead_code)]
 pub const PIXEL_SIZE_GMP_THRESHOLD: f64 = 1e-150;
+
+/// Gate de la troncature atom-domain de la référence (cf. `orbit.rs`,
+/// `atom_period_enabled`). La troncature fire dès que la perturbation est le
+/// path réel (pixel_size < ~1e-13, zoom ≳ 1e13) : la réf est coupée à la
+/// période atom (quasi-périodique à l'échelle de la vue) et le pixel loop
+/// cycle par rebase-at-end F3 (`ReferenceOrbit::atom_truncated`). En deçà
+/// (perturbation FORCÉE à shallow zoom), la vue couvre plusieurs atomes →
+/// réf pleine. Étendu de 1e-280 (deep only, validé corpus 2026-07-11) au
+/// mid-range le 2026-07-12 (G2 : glitch_test_2 réf intérieure 250 k iters →
+/// période ~1143, orbite 0.226 → ~0.001 s).
+pub const ATOM_PERIOD_PIXEL_SIZE_THRESHOLD: f64 = 1e-13;
 
 /// Seuil effectif (overridable via `FRACTALL_EXP_THRESHOLD` pour expérimentation
 /// A/B du path f64 vs exp). Défaut = `PIXEL_SIZE_EXP_THRESHOLD`.

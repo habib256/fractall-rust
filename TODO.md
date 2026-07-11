@@ -661,6 +661,34 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
       11 goldens 🟢, parité full corpus atom-ON. Reste : wfs_mb résidu inside_mm=12 (≈parfait,
       vs 65479 avant) ; mid-range 1e13–1e280 pas encore atom (rebase-at-end pas porté au path f64,
       cf. glitch_test_2 1.30× — prochain levier).
+  - [x] **TENTATIVE 10 — mid-range atom FAIT (2026-07-12) : gate atom étendu à
+    pixel_size < 1e-13 + rebase-at-end porté au path f64 + guard BLA.** Changements :
+    (1) `orbit.rs` gate `atom_period_enabled` : seuil `PIXEL_SIZE_EXP_THRESHOLD`
+    (1e-280) → `ATOM_PERIOD_PIXEL_SIZE_THRESHOLD` (1e-13, delta.rs). NB : le
+    fast-path dd (≤96 b, ~zoom<1e19) court-circuite la boucle GMP → tranche
+    1e13–1e19 non tronquée (réf déjà bon marché). (2) Nouveau champ
+    `ReferenceOrbit::atom_truncated` ; `pixel_loop.rs` (3 sites end-of-ref) rebase
+    par `δ:=Z[end]+δ, m:=0` au lieu de `ref_exhausted`→GMP per-pixel.
+    (3) **PIÈGE trouvé — guard BLA `lands_on_ref_end`** : sans lui, un pas BLA qui
+    atterrit SUR la dernière entrée (graze |Z[end]|~4e-58 pour glitch_test_2) fait
+    `continue` par-dessus le check end-of-ref → le pas direct suivant part du graze
+    (δ'≈δ²+dc ~1e-115) puis le rebase ajoute Z[end] ≫ δ' qui ABSORBE δ en f64 →
+    tous les pixels identiques → **image intérieure uniforme (tout noir)**. F3
+    checke rebase/end AVANT chaque pas (`hybrid.cc:295-308`) ; notre boucle le
+    fait après les pas directs seulement → on interdit au BLA d'atterrir sur la
+    dernière entrée (réfs atom-tronquées uniquement, zéro impact ailleurs).
+    **Résultats** : glitch_test_2 réf 250 k→1143 (orbite 0.226→0.002 s), total
+    0.27→**0.022 s** (F3 0.17 s → WIN ~0.15×), avg_iter/px=7779 exact ; e50 réf
+    1.05 M→86 615, parité Fr 0.55 s vs F3 3.35 s ; dragon réf 5 M→2.05 M, parité
+    4.10 s vs atom-off 7.48 s (F3 9.9 s) ; floral 1705, gt1/gt3/gt4/heaven ✓.
+    **Validation** : parité EXR 10 cas mid-range tous ✓, inside_mismatch
+    IDENTIQUES atom-ON/OFF (dragon 28, gt1 44, gt2 12 = pré-existants) ; quality
+    suite (voir commit) ; goldens : e50 178 px/max Δ15, e113 15 px/max Δ101
+    (bruit dispersé plancher f64, revus visuellement), 15 autres PIXEL-IDENTIQUES.
+    **Verrou** : golden `mandelbrot_glitch_test_2_atom` (régression guard BLA =
+    tout noir). Latent noté : le path exp (`pixel_loop_exp.rs`) a le même flaw
+    théorique (BLA→continue saute le check end-of-ref) mais masqué deep (graze
+    ≪ dc) — candidat wfs_mb inside_mm=12 résiduel, à tester séparément.
   - [~] **DIAGNOSTIC mid-range atom (2026-07-11) — glitch_test_2 = SEUL perdant mid-range,
     le fix est scopé mais coûte cher.** Mesure 3-runs des cas 1e13–1e280 : glitch_test_2
     **1.60×** (0.27/0.17 s) est le seul >1 ; integral_of_ex2/x/mitosis/virus/glitch_test_3/4

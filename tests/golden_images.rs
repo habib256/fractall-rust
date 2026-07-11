@@ -130,6 +130,16 @@ const CASES: &[Case] = &[
         name: "mandelbrot_e1000",
         args: &["--toml", "toml/e1000.toml", "--width", "160", "--height", "100"],
     },
+    // Mid-range 1.5e115 (toml/glitch_test_2.toml) — VERROU de la troncature
+    // atom-domain MID-RANGE (2026-07-12, G2) : réf intérieure 250 k iters coupée
+    // à la période atom ~1143, cyclée par rebase-at-end du pixel loop f64.
+    // Régression du guard BLA « lands_on_ref_end » (pixel_loop.rs) = le pas
+    // direct part du graze |Z[end]|~4e-58 puis le rebase absorbe δ en f64 →
+    // image intérieure uniforme (tout noir) → cette golden casse massivement.
+    Case {
+        name: "mandelbrot_glitch_test_2_atom",
+        args: &["--toml", "toml/glitch_test_2.toml", "--width", "160", "--height", "100"],
+    },
     // Deep INTÉRIEUR 1e1200 (toml/e1200.toml, 45 k iters) — VERROU de la troncature
     // atom-domain ON PAR DÉFAUT (2026-07-11). Structure en étoile (matche F3 à
     // ~3e-4 rel avec atom). Sans atom, le path deep-interior par défaut (réf pleine

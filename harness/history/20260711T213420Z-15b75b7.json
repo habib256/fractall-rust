@@ -1,0 +1,142 @@
+{
+  "schema": 1,
+  "meta": {
+    "date_utc": "2026-07-11T21:34:20+00:00",
+    "stamp": "20260711T213420Z",
+    "git_sha": "15b75b7",
+    "git_dirty": true,
+    "machine": {
+      "cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz",
+      "nproc": 16,
+      "os": "Linux 6.14.0-37-generic"
+    },
+    "tier": "quick",
+    "axes": [
+      "parity"
+    ],
+    "width": 256,
+    "height": 256,
+    "quality_width": 96,
+    "quality_height": 96,
+    "runs": 1,
+    "f3_bin": "/home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux",
+    "mem_limit_mb": 34024,
+    "quarantined": []
+  },
+  "speed": {
+    "status": "skipped"
+  },
+  "parity": {
+    "status": "ok",
+    "cases": {
+      "dragon": {
+        "status": "ok",
+        "rel_dsi_pct": 0.1714,
+        "mean_abs_dsi": 8568.8423,
+        "inside_mismatch": 28,
+        "f3_degenerate": false,
+        "f3_secs_num": 9.9504,
+        "fr_secs_num": 4.1024
+      },
+      "e113": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0786,
+        "mean_abs_dsi": 27.8825,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.7215,
+        "fr_secs_num": 0.1797
+      },
+      "e50": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0347,
+        "mean_abs_dsi": 91.2391,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 3.3547,
+        "fr_secs_num": 0.5473
+      },
+      "floral_fantasy": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0032,
+        "mean_abs_dsi": 0.3894,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.4815,
+        "fr_secs_num": 0.111
+      },
+      "glitch_test_1": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0529,
+        "mean_abs_dsi": 145.6909,
+        "inside_mismatch": 44,
+        "f3_degenerate": false,
+        "f3_secs_num": 1.0084,
+        "fr_secs_num": 0.2069
+      },
+      "glitch_test_2": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0079,
+        "mean_abs_dsi": 19.7256,
+        "inside_mismatch": 12,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.4756,
+        "fr_secs_num": 0.146
+      },
+      "glitch_test_3": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0088,
+        "mean_abs_dsi": 5.292,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.9291,
+        "fr_secs_num": 0.2276
+      },
+      "glitch_test_4": {
+        "status": "ok",
+        "rel_dsi_pct": 0.002,
+        "mean_abs_dsi": 0.2433,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.471,
+        "fr_secs_num": 0.0895
+      },
+      "glitch_test_5": {
+        "status": "f3_degenerate",
+        "rel_dsi_pct": 0.0,
+        "mean_abs_dsi": 0.0,
+        "inside_mismatch": 54148,
+        "f3_degenerate": true,
+        "f3_secs_num": 0.0381,
+        "fr_secs_num": 0.1421
+      },
+      "heaven": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0099,
+        "mean_abs_dsi": 5.9262,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.7621,
+        "fr_secs_num": 0.1648
+      }
+    },
+    "n_ok": 9,
+    "n_pixel_equiv": 5,
+    "n_fail": 0,
+    "n_timeout": 0,
+    "n_f3_degenerate": 1
+  },
+  "quality": {
+    "status": "skipped"
+  },
+  "goldens": {
+    "status": "skipped"
+  },
+  "beyond_f3": {
+    "speed_wins": [],
+    "correctness_wins": [
+      "glitch_test_5"
+    ]
+  },
+  "gaps": []
+}

@@ -299,6 +299,14 @@ pub struct ReferenceOrbit {
     /// arrondi f64 (2⁻⁵²·|Z|) capperait sinon la précision. Construite depuis
     /// l'orbite GMP (via `gmp_float_to_ddexp`) ou l'itération dd.
     pub z_ref_dd: Vec<super::dd::ComplexDDExp>,
+    /// La référence a été TRONQUÉE par le critère atom-domain F3 (l'orbite est
+    /// quasi-périodique à l'échelle de la vue, cf. `atom_period_enabled`).
+    /// Le pixel loop doit alors cycler la réf par REBASE-AT-END F3
+    /// (`hybrid.cc:301` : `z := Z[end]+δ, m := 0`) au lieu de flagger
+    /// `ref_exhausted` (→ GMP per-pixel, catastrophique : cf. diag G2
+    /// glitch_test_2, pixels 51 s). Distinct de `cycle_period` (période EXACTE
+    /// détectée par Brent's, cyclée par `wrap_periodic`).
+    pub atom_truncated: bool,
 }
 
 impl ReferenceOrbit {
@@ -485,6 +493,7 @@ impl ReferenceOrbit {
             // Références de résolution de glitch (path legacy) : tier dd non
             // concerné (le dd remplace la glitch-correction, pas l'inverse).
             z_ref_dd: Vec::new(),
+            atom_truncated: false,
         })
     }
 
@@ -690,6 +699,7 @@ fn build_hybrid_bla_references(
                 cycle_period: primary_orbit.cycle_period,
                 cycle_start: primary_orbit.cycle_start,
                 z_ref_dd: primary_orbit.z_ref_dd.clone(),
+                atom_truncated: primary_orbit.atom_truncated,
             };
 
             // Build BLA table for this phase reference (one BLA table per reference)
@@ -1316,6 +1326,7 @@ pub fn compute_reference_orbit(
                 cycle_period: 0,
                 cycle_start: 0,
                 z_ref_dd,
+                atom_truncated: false,
             },
             cx_str,
             cy_str,
@@ -1494,13 +1505,18 @@ pub fn compute_reference_orbit(
     // (1e2020, vrai intérieur) reste imparfait MAIS c'est un écart PRÉ-EXISTANT
     // du path deep par défaut (atom-off aussi diverge vs F3 : inside_mm=16370) —
     // pas causé par l'atom ; cf. TODO « TENTATIVE 8 ».
-    // Gaté au path exp (deep zoom > 1e280).
-    // Troncature atom-domain : **ON par défaut** (Mandelbrot + path exp >1e280).
-    // `FRACTALL_ATOM_PERIOD=0` désactive. Flag canonique partagé (cf.
-    // `delta::atom_hp_enabled` — pourquoi + validation corpus 2026-07-11 vs F3 EXR).
+    // Troncature atom-domain : **ON par défaut** (Mandelbrot, dès que la
+    // perturbation est le path réel : pixel_size < 1e-13). `FRACTALL_ATOM_PERIOD=0`
+    // désactive. Flag canonique partagé (cf. `delta::atom_hp_enabled` — pourquoi +
+    // validation corpus 2026-07-11 vs F3 EXR). Étendu du deep (>1e280) au mid-range
+    // le 2026-07-12 (G2 : glitch_test_2 orbite-bound, réf 250 k → période ~1143) ;
+    // le pixel loop f64 cycle la réf tronquée par rebase-at-end (`atom_truncated`).
+    // NB : le fast-path dd (≤96 b, ~zoom < 1e19) court-circuite cette boucle GMP →
+    // pas de troncature sur cette tranche (réf déjà bon marché).
     let atom_period_enabled = matches!(params.fractal_type, FractalType::Mandelbrot)
         && super::delta::atom_hp_enabled()
-        && super::effective_pixel_size(params) < super::delta::PIXEL_SIZE_EXP_THRESHOLD;
+        && super::effective_pixel_size(params)
+            < super::delta::ATOM_PERIOD_PIXEL_SIZE_THRESHOLD;
     let atom_radius_sqr = {
         let (adx, ady) = super::effective_spans_fexp(params);
         let r = if adx.partial_cmp(&ady) == Some(std::cmp::Ordering::Greater) { adx } else { ady };
@@ -1659,8 +1675,12 @@ pub fn compute_reference_orbit(
         }
     }
     if atom_truncated && crate::fractal::perturbation::perf_enabled() {
-        eprintln!("[ATOM] Reference tronquée à {} iters (atom-domain F3, rebase-at-end).",
-            z_ref_f64.len());
+        let z_end = z_ref_f64[z_ref_f64.len() - 1];
+        eprintln!(
+            "[ATOM] Reference tronquée à {} iters (atom-domain F3, rebase-at-end). |Z[end]|={:.3e}",
+            z_ref_f64.len(),
+            z_end.norm_sqr().sqrt()
+        );
     }
 
     if detected_period > 0 && crate::fractal::perturbation::perf_enabled() {
@@ -1705,6 +1725,7 @@ pub fn compute_reference_orbit(
             cycle_period: detected_period,
             cycle_start: detected_cycle_start,
             z_ref_dd,
+            atom_truncated,
         },
         cx_str,
         cy_str,

@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "meta": {
+    "date_utc": "2026-07-11T21:35:14+00:00",
+    "stamp": "20260711T213514Z",
+    "git_sha": "15b75b7",
+    "git_dirty": true,
+    "machine": {
+      "cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz",
+      "nproc": 16,
+      "os": "Linux 6.14.0-37-generic"
+    },
+    "tier": "quick",
+    "axes": [
+      "parity"
+    ],
+    "width": 256,
+    "height": 256,
+    "quality_width": 96,
+    "quality_height": 96,
+    "runs": 1,
+    "f3_bin": "/home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux",
+    "mem_limit_mb": 34024,
+    "quarantined": []
+  },
+  "speed": {
+    "status": "skipped"
+  },
+  "parity": {
+    "status": "ok",
+    "cases": {
+      "dragon": {
+        "status": "ok",
+        "rel_dsi_pct": 0.1713,
+        "mean_abs_dsi": 8567.0739,
+        "inside_mismatch": 28,
+        "f3_degenerate": false,
+        "f3_secs_num": 9.7711,
+        "fr_secs_num": 7.4819
+      },
+      "glitch_test_1": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0529,
+        "mean_abs_dsi": 145.6909,
+        "inside_mismatch": 44,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.8972,
+        "fr_secs_num": 0.5961
+      },
+      "glitch_test_2": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0079,
+        "mean_abs_dsi": 19.7274,
+        "inside_mismatch": 12,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.4612,
+        "fr_secs_num": 0.6332
+      }
+    },
+    "n_ok": 3,
+    "n_pixel_equiv": 1,
+    "n_fail": 0,
+    "n_timeout": 0,
+    "n_f3_degenerate": 0
+  },
+  "quality": {
+    "status": "skipped"
+  },
+  "goldens": {
+    "status": "skipped"
+  },
+  "beyond_f3": {
+    "speed_wins": [],
+    "correctness_wins": []
+  },
+  "gaps": [
+    {
+      "axis": "parity",
+      "case": "<agg>",
+      "metric": "n_pixel_equiv",
+      "value": 1,
+      "baseline_value": 5,
+      "severity": 2,
+      "note": "RÉGRESSION vs baseline (>10%)"
+    }
+  ]
+}
