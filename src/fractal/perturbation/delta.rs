@@ -177,7 +177,18 @@ fn build_bla_entry(
     // ~1e-8000. Mêmes epsilon (`bla_threshold`) et c_norm que le build f64,
     // convertis en FloatExp (le c_norm f64 underflow à 0 en deep zoom, donc on
     // recalcule un c_norm FloatExp fidèle via les spans HP).
-    let bla_exp = if atom_hp_enabled()
+    //
+    // ⚠️ PERF : `bla_exp` n'est LU que par le path pixel `use_exp_path`
+    // (`try_bytecode_unified_path`, `pixel_size < pixel_size_exp_threshold()`,
+    // 1e-280). Aux zooms f64 (~1e13 … 1e280) le pixel loop f64 lit `tables`
+    // et JAMAIS `bla_exp` → le construire est du poids mort (build FloatExp
+    // O(M) sur toute l'orbite, ~10× le build f64 : glitch_test_2 250 k iters
+    // = 0.14 s gaspillés). On le gate sur la MÊME condition que son unique
+    // consommateur pour ne le matérialiser que quand le path exp sera pris.
+    let exp_path_active = crate::fractal::perturbation::effective_pixel_size(params)
+        < pixel_size_exp_threshold();
+    let bla_exp = if exp_path_active
+        && atom_hp_enabled()
         && matches!(params.fractal_type, FractalType::Mandelbrot)
         && ref_orbit.z_ref.len() >= 2
     {
@@ -2846,5 +2857,66 @@ mod tests {
         assert!((smooth_p2 - smooth_p3).abs() > 0.01);
     }
 
+    // Verrou perf (2026-07-11) : la table BLA FloatExp (`bla_exp`) n'est LUE que
+    // par le path pixel exp (`use_exp_path`, `pixel_size < pixel_size_exp_threshold()`
+    // = 1e-280). Aux zooms f64 (~1e13 … 1e280) le pixel loop lit `tables` et
+    // JAMAIS `bla_exp` → la construire (build FloatExp O(M) sur toute l'orbite,
+    // ~10× le build f64) était du poids mort (glitch_test_2 250 k iters : 0.14 s
+    // gaspillés, ratio F3 2.74→1.89). On gate le build sur la même condition que
+    // son unique consommateur. Ces tests verrouillent : None en f64, Some en exp.
+    fn build_entry_for(params: &FractalParams) -> std::sync::Arc<BlaUnifiedCacheEntry> {
+        let cache = crate::fractal::perturbation::orbit::compute_reference_orbit_cached(
+            params, None, None,
+        )
+        .expect("orbite référence");
+        let formula = compile_formula(params.fractal_type, params.multibrot_power)
+            .expect("formule compilable");
+        let pixel_size = crate::fractal::perturbation::effective_pixel_size(params);
+        let diag_px =
+            ((params.width as f64).powi(2) + (params.height as f64).powi(2)).sqrt();
+        let c_norm = pixel_size * diag_px;
+        let ptr = cache.orbit.z_ref_f64.as_ptr() as usize;
+        let len = cache.orbit.z_ref_f64.len();
+        // Appel DIRECT (pas via le cache global) → pas d'interférence entre tests.
+        build_bla_entry(params, &cache.orbit, c_norm, ptr, len, &formula)
+            .expect("entrée BLA")
+    }
+
+    #[test]
+    fn bla_exp_skipped_on_f64_path() {
+        let mut params = default_params_for_type(FractalType::Mandelbrot, 64, 64);
+        params.center_x = -0.5; // intérieur cardioïde → orbite bornée (≫2 nœuds)
+        params.center_y = 0.0;
+        params.span_x = 4e-5; // pixel_size ~6e-7 ≫ 1e-280 → path pixel f64
+        params.span_y = 4e-5;
+        params.iteration_max = 3000;
+        let entry = build_entry_for(&params);
+        assert!(
+            entry.bla_exp.is_none(),
+            "bla_exp ne doit PAS être construite sur le path f64 (poids mort, jamais lue)"
+        );
+    }
+
+    #[test]
+    fn bla_exp_built_on_exp_path() {
+        let mut params = default_params_for_type(FractalType::Mandelbrot, 64, 64);
+        params.center_x = -0.5;
+        params.center_y = 0.0;
+        // Spans HP < 1e-280 → pixel_size ~1.6e-302 → path pixel exp (lit bla_exp).
+        params.center_x_hp = Some("-0.5".to_string());
+        params.center_y_hp = Some("0.0".to_string());
+        params.span_x_hp = Some("1e-300".to_string());
+        params.span_y_hp = Some("1e-300".to_string());
+        // À ce zoom le span f64 underflow à 0 → `effective_pixel_size` retombe
+        // sur les spans HP (~1.6e-302 < 1e-280) et le path pixel exp est pris.
+        params.span_x = 0.0;
+        params.span_y = 0.0;
+        params.iteration_max = 300;
+        let entry = build_entry_for(&params);
+        assert!(
+            entry.bla_exp.is_some(),
+            "bla_exp DOIT être construite quand le path exp la consommera"
+        );
+    }
 }
 

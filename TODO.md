@@ -1071,6 +1071,28 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
 
 ## ✅ Shipped (condensé, le plus récent en haut)
 
+**2026-07-11** (`/improve`, axe vitesse) :
+- **Fix perf — table BLA FloatExp (`bla_exp`) morte sur le path f64** (`delta.rs`
+  `build_bla_entry`) : `bla_exp` (`BlaTableUnifiedExp`, coefficients FloatExp)
+  n'est **LUE** que par le pixel loop exp (`use_exp_path`, `pixel_size <
+  pixel_size_exp_threshold()` = 1e-280, `try_bytecode_unified_path`). Or son
+  build était gaté uniquement sur `atom_hp_enabled()` (ON par défaut) + type
+  Mandelbrot → **construite pour TOUT Mandelbrot perturbation** y compris aux
+  zooms f64 (~1e13 … 1e280) qui lisent `tables` et jamais `bla_exp`. Build
+  FloatExp O(M) sur toute l'orbite ≈ **10× le build f64** → poids mort pur.
+  Mesuré sur **glitch_test_2** (zoom 5.97e112, réf intérieure 250 001 iters,
+  path `bytecode_f64`) : `prewarm_bla` **0.139 s → 0.014 s**, rendu total
+  0.389 s → 0.261 s, wall-clock 0.44 s → 0.29 s. **Ratio vs F3 2.74 → 1.89**
+  (c'était le pire cas de l'axe vitesse). Bit-identique (image pixel-exacte —
+  `bla_exp` n'était pas lue). **Fix** : gate le build sur la MÊME condition que
+  son consommateur (`effective_pixel_size(params) < pixel_size_exp_threshold()`).
+  Bénéficie à TOUT rendu Mandelbrot perturbation zoom f64 (1e13-1e280). Verrous :
+  unit `bla_exp_skipped_on_f64_path` + `bla_exp_built_on_exp_path` (202 tests
+  PASS), goldens 10/10 pixel-exact (e1000/e401 exercent le path exp → `bla_exp`
+  toujours construite là), quality 11 PASS. NB : vérifié sur une machine
+  éphémère 4 cœurs Xeon (≠ baseline i7-10700F) → baseline/SCORECARD du
+  mainteneur préservés (pas de rebaseline cross-machine).
+
 **2026-07-03** (`53a55cc`, `a8bf871`, `d26274b`, `cdb4f1d`) :
 - **Fix perf — latence progress reporter** (`53a55cc` puis `d26274b`) : la boucle
   du reporter dormait 500ms fixes ; `reporter.join()` post-rendu bloquait donc
