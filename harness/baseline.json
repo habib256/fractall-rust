@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "meta": {
-    "date_utc": "2026-07-04T17:08:41+00:00",
-    "stamp": "20260704T170841Z",
-    "git_sha": "bae004c",
+    "date_utc": "2026-07-11T22:00:26+00:00",
+    "stamp": "20260711T220026Z",
+    "git_sha": "15b75b7",
     "git_dirty": true,
     "machine": {
       "cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz",
@@ -22,91 +22,94 @@
     "quality_width": 96,
     "quality_height": 96,
     "runs": 1,
-    "f3_bin": "/home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux"
+    "f3_bin": "/home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux",
+    "mem_limit_mb": 34024,
+    "quarantined": []
   },
   "speed": {
     "status": "ok",
     "cases": {
       "test5": {
-        "fractall_s": 0.0074,
-        "f3_s": 0.0154,
-        "ratio": 0.4805,
+        "fractall_s": 0.0107,
+        "f3_s": 0.0171,
+        "ratio": 0.6257,
         "status": "ok",
         "f3_exr_ok": true
       },
       "spiral": {
-        "fractall_s": 0.0316,
-        "f3_s": 0.164,
-        "ratio": 0.1927,
+        "fractall_s": 0.0348,
+        "f3_s": 0.1657,
+        "ratio": 0.21,
         "status": "ok",
         "f3_exr_ok": true
       },
       "flake": {
-        "fractall_s": 0.1148,
-        "f3_s": 0.214,
-        "ratio": 0.5364,
+        "fractall_s": 0.0692,
+        "f3_s": 0.1657,
+        "ratio": 0.4176,
         "status": "ok",
         "f3_exr_ok": true
       },
       "glitch_test_2": {
-        "fractall_s": 0.2141,
-        "f3_s": 0.1642,
-        "ratio": 1.3039,
+        "fractall_s": 0.0684,
+        "f3_s": 0.1658,
+        "ratio": 0.4125,
         "status": "ok",
         "f3_exr_ok": true
       },
       "e50": {
-        "fractall_s": 0.2654,
-        "f3_s": 1.2158,
-        "ratio": 0.2183,
+        "fractall_s": 0.166,
+        "f3_s": 1.218,
+        "ratio": 0.1363,
         "status": "ok",
         "f3_exr_ok": true
       },
       "e113": {
-        "fractall_s": 0.1151,
-        "f3_s": 0.3143,
-        "ratio": 0.3662,
+        "fractall_s": 0.0666,
+        "f3_s": 0.2659,
+        "ratio": 0.2505,
         "status": "ok",
         "f3_exr_ok": true
       },
       "e401": {
-        "fractall_s": 0.5658,
-        "f3_s": 6.9753,
-        "ratio": 0.0811,
+        "fractall_s": 0.5677,
+        "f3_s": 6.7284,
+        "ratio": 0.0844,
         "status": "ok",
         "f3_exr_ok": true
       },
       "e1000": {
-        "fractall_s": 0.5658,
-        "f3_s": 3.2689,
-        "ratio": 0.1731,
+        "fractall_s": 0.4739,
+        "f3_s": 3.2219,
+        "ratio": 0.1471,
         "status": "ok",
         "f3_exr_ok": true
       },
       "floral_fantasy": {
-        "fractall_s": 0.0352,
-        "f3_s": 0.1638,
-        "ratio": 0.2149,
+        "fractall_s": 0.0364,
+        "f3_s": 0.1654,
+        "ratio": 0.2201,
         "status": "ok",
         "f3_exr_ok": true
       },
       "dragon": {
-        "fractall_s": 3.6719,
-        "f3_s": 3.8707,
-        "ratio": 0.9486,
+        "fractall_s": 1.6697,
+        "f3_s": 3.7729,
+        "ratio": 0.4426,
         "status": "ok",
         "f3_exr_ok": true
       }
     },
-    "geomean_ratio": 0.3289,
+    "geomean_ratio": 0.2495,
     "worst_ratio": {
-      "case": "glitch_test_2",
-      "ratio": 1.3039
+      "case": "test5",
+      "ratio": 0.6257
     },
     "wins": [
       "test5",
       "spiral",
       "flake",
+      "glitch_test_2",
       "e50",
       "e113",
       "e401",
@@ -123,12 +126,12 @@
     "cases": {
       "dragon": {
         "status": "ok",
-        "rel_dsi_pct": 0.1713,
-        "mean_abs_dsi": 8567.0739,
+        "rel_dsi_pct": 0.1714,
+        "mean_abs_dsi": 8568.8423,
         "inside_mismatch": 28,
         "f3_degenerate": false,
-        "f3_secs_num": 4.4863,
-        "fr_secs_num": 4.7329
+        "f3_secs_num": 3.7532,
+        "fr_secs_num": 1.6399
       },
       "e1000": {
         "status": "ok",
@@ -136,35 +139,35 @@
         "mean_abs_dsi": 0.3236,
         "inside_mismatch": 0,
         "f3_degenerate": false,
-        "f3_secs_num": 7.3954,
-        "fr_secs_num": 1.1985
+        "f3_secs_num": 3.1125,
+        "fr_secs_num": 0.4347
       },
       "e113": {
         "status": "ok",
-        "rel_dsi_pct": 0.0785,
-        "mean_abs_dsi": 27.8788,
+        "rel_dsi_pct": 0.0786,
+        "mean_abs_dsi": 27.8825,
         "inside_mismatch": 0,
         "f3_degenerate": false,
-        "f3_secs_num": 0.4479,
-        "fr_secs_num": 0.0677
+        "f3_secs_num": 0.2448,
+        "fr_secs_num": 0.051
       },
       "e401": {
         "status": "ok",
         "rel_dsi_pct": 0.004,
-        "mean_abs_dsi": 8.516,
+        "mean_abs_dsi": 8.5156,
         "inside_mismatch": 0,
         "f3_degenerate": false,
-        "f3_secs_num": 15.4825,
-        "fr_secs_num": 1.6521
+        "f3_secs_num": 6.6044,
+        "fr_secs_num": 0.5077
       },
       "e50": {
         "status": "ok",
         "rel_dsi_pct": 0.0347,
-        "mean_abs_dsi": 91.2008,
+        "mean_abs_dsi": 91.2391,
         "inside_mismatch": 0,
         "f3_degenerate": false,
-        "f3_secs_num": 3.0666,
-        "fr_secs_num": 0.693
+        "f3_secs_num": 1.1728,
+        "fr_secs_num": 0.1612
       },
       "flake": {
         "status": "ok",
@@ -172,8 +175,8 @@
         "mean_abs_dsi": 26.0319,
         "inside_mismatch": 0,
         "f3_degenerate": false,
-        "f3_secs_num": 0.5677,
-        "fr_secs_num": 0.1783
+        "f3_secs_num": 0.1719,
+        "fr_secs_num": 0.0589
       },
       "floral_fantasy": {
         "status": "ok",
@@ -181,17 +184,17 @@
         "mean_abs_dsi": 0.3894,
         "inside_mismatch": 0,
         "f3_degenerate": false,
-        "f3_secs_num": 0.4703,
-        "fr_secs_num": 0.1046
+        "f3_secs_num": 0.1426,
+        "fr_secs_num": 0.0282
       },
       "glitch_test_2": {
         "status": "ok",
         "rel_dsi_pct": 0.0079,
-        "mean_abs_dsi": 19.7274,
+        "mean_abs_dsi": 19.7256,
         "inside_mismatch": 12,
         "f3_degenerate": false,
-        "f3_secs_num": 0.486,
-        "fr_secs_num": 0.5798
+        "f3_secs_num": 0.1193,
+        "fr_secs_num": 0.0414
       },
       "spiral": {
         "status": "ok",
@@ -199,8 +202,8 @@
         "mean_abs_dsi": 9.7899,
         "inside_mismatch": 16,
         "f3_degenerate": false,
-        "f3_secs_num": 0.6078,
-        "fr_secs_num": 0.0937
+        "f3_secs_num": 0.1666,
+        "fr_secs_num": 0.0237
       },
       "test5": {
         "status": "ok",
@@ -208,8 +211,8 @@
         "mean_abs_dsi": 0.0,
         "inside_mismatch": 0,
         "f3_degenerate": false,
-        "f3_secs_num": 0.0613,
-        "fr_secs_num": 0.0542
+        "f3_secs_num": 0.0161,
+        "fr_secs_num": 0.0107
       }
     },
     "n_ok": 10,
@@ -232,8 +235,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 668.8813580000001,
-        "time_gmp_ms": 2675.169973
+        "time_pert_ms": 251.59721499999998,
+        "time_gmp_ms": 1055.235653
       },
       {
         "name": "mandelbrot-e13",
@@ -241,8 +244,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 87.202593,
-        "time_gmp_ms": 934.7833439999999
+        "time_pert_ms": 23.989513,
+        "time_gmp_ms": 326.91972699999997
       },
       {
         "name": "mandelbrot-e17",
@@ -250,8 +253,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 14.963341999999999,
-        "time_gmp_ms": 1149.48919
+        "time_pert_ms": 3.538924,
+        "time_gmp_ms": 409.774068
       },
       {
         "name": "misiurewicz-m32",
@@ -259,8 +262,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 258.566937,
-        "time_gmp_ms": 938.074065
+        "time_pert_ms": 84.11426900000001,
+        "time_gmp_ms": 364.742573
       },
       {
         "name": "julia-siegel-disk",
@@ -268,8 +271,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 8.721011,
-        "time_gmp_ms": 576.768425
+        "time_pert_ms": 0.902738,
+        "time_gmp_ms": 197.553267
       },
       {
         "name": "burning-ship-antenna",
@@ -277,8 +280,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 12.802069,
-        "time_gmp_ms": 83.538033
+        "time_pert_ms": 1.046075,
+        "time_gmp_ms": 22.636011
       },
       {
         "name": "tricorn-spiral",
@@ -286,8 +289,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 5.353816,
-        "time_gmp_ms": 42.421099
+        "time_pert_ms": 0.657091,
+        "time_gmp_ms": 9.088787
       },
       {
         "name": "mandelbrot-e18-minibrot",
@@ -295,8 +298,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 314.952629,
-        "time_gmp_ms": 993.027941
+        "time_pert_ms": 81.46060800000001,
+        "time_gmp_ms": 356.80490100000003
       },
       {
         "name": "mandelbrot-e30",
@@ -304,8 +307,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 10677.720941,
-        "time_gmp_ms": 20242.024523
+        "time_pert_ms": 4750.009724,
+        "time_gmp_ms": 19903.177406000003
       },
       {
         "name": "mandelbrot-e50",
@@ -313,8 +316,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 20840.959451,
-        "time_gmp_ms": 169156.08368900002
+        "time_pert_ms": 19418.695365,
+        "time_gmp_ms": 165284.870673
       },
       {
         "name": "mandelbrot-e100",
@@ -322,8 +325,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 790.121571,
-        "time_gmp_ms": 19574.368481
+        "time_pert_ms": 731.530109,
+        "time_gmp_ms": 18906.696593
       }
     ]
   },
@@ -336,6 +339,7 @@
       "test5",
       "spiral",
       "flake",
+      "glitch_test_2",
       "e50",
       "e113",
       "e401",
