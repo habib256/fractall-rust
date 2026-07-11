@@ -635,10 +635,29 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
       orbit/delta/pixel_loop_exp) **default ON** ; `FRACTALL_ATOM_PERIOD=0` force OFF (debug).
       N'active QUE Mandelbrot + path exp >1e280 (mid-range/shallow/goldens INTOUCHÉS). Ferme le
       chantier T9 (« validation corpus + fix wfs_mb requis » → fait : wfs_mb 15.8× + correct).
-    - **Verrous** : golden `mandelbrot_e1121_interior` (deep-interior, 41 k iters), 200 unit +
-      10 goldens 🟢, parité full corpus atom-ON. Reste : wfs_mb résidu inside_mm=12 (≈parfait,
+    - **Verrous** : golden `mandelbrot_e1200_interior` (deep-interior, 45 k iters), 200 unit +
+      11 goldens 🟢, parité full corpus atom-ON. Reste : wfs_mb résidu inside_mm=12 (≈parfait,
       vs 65479 avant) ; mid-range 1e13–1e280 pas encore atom (rebase-at-end pas porté au path f64,
       cf. glitch_test_2 1.30× — prochain levier).
+  - [~] **DIAGNOSTIC mid-range atom (2026-07-11) — glitch_test_2 = SEUL perdant mid-range,
+    le fix est scopé mais coûte cher.** Mesure 3-runs des cas 1e13–1e280 : glitch_test_2
+    **1.60×** (0.27/0.17 s) est le seul >1 ; integral_of_ex2/x/mitosis/virus/glitch_test_3/4
+    = tous WINS (0.2–0.7×). glitch_test_2 orbite-bound (0.226 s / 0.239 s, réf INTÉRIEURE
+    court les 250 k iters pleins, avg_iter/px=7779 max=250000). **Test throwaway** (gate atom
+    abaissé à pixel_size<1e-13) : **l'atome FIRE — réf 250000→1143 iters** (période ~1143),
+    orbite **0.226→0.001 s**. Image quasi-correcte (24 px/0.04 % vs atom-off). **MAIS pixels
+    = 51 s** : le path f64 `pixel_loop.rs` n'a PAS le rebase-at-end (ligne ~293 : bail GMP
+    per-pixel à end_of_ref) → les pixels qui dépassent 1143 retombent en GMP → catastrophe.
+    - **Fix scopé** : (a) porter le rebase-at-end de `pixel_loop_exp.rs:332-340` (`δ:=z_ref[m]+δ ;
+      m:=0`) dans `pixel_loop.rs` — SÛR dans le domaine f64 (mid-range : grazes >1e-280 ne
+      sous-débordent pas, contrairement au deep qui exigeait ComplexExp) ; (b) étendre le gate
+      atom à mid-range (`pixel_size < ~1e-13`).
+    - **Pourquoi PAS fait maintenant (ROI/risque)** : gain = 100 ms sur 1 cas ; mais le gate large
+      ferait FIRER l'atome sur floral_fantasy (période 284), glitch_test_5, glitch_test_1
+      (intérieurs mid-range) → **change plusieurs goldens** + exige une validation mid-range
+      complète vs F3 EXR. C'est un chantier « TENTATIVE 10 » (probablement CORRECTION+vitesse
+      comme le deep, pas juste 100 ms) qui mérite une itération dédiée, pas un rush. Prérequis
+      validé : le critère atome fire correctement mid-range, le rebase-at-end f64 est sûr.
 - [x] **Path f64 étendu à 1e280 (seuil 1e-200 → 1e-280)** (2026-07-04) : après
   l'extension initiale à 1e-200, un sweep vitesse du corpus STANDARD/full a révélé
   4 cas encore sur le path exp lent (zoom > 1e200) donc PLUS LENTS que F3 :
