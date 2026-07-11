@@ -263,6 +263,28 @@ comparable entre cas) :
 
 ### G2 — Performance deep-zoom · `[✅ RÉSOLU 2026-05-21 — rebase-at-end F3, fallback GMP éliminé]`
 
+> **Résidu vitesse mesuré (2026-07-11, harness quick vs F3 sur Xeon 4c)** — après
+> le fix `bla_exp` (cf. Shipped), les 2 seuls cas où fractall reste plus lent que
+> F3 sont **orbite-bound sur référence INTÉRIEURE pleine longueur** :
+> - `glitch_test_2` (zoom 1.53e115, réf 250 001 iters, prec 414 b) : ratio **1.92** ;
+>   orbite GMP **0.163 s** > rendu TOTAL F3 (0.168 s).
+> - `dragon` (zoom 9.47e193, réf 5 M iters, prec 676 b) : ratio **1.24** ;
+>   orbite GMP **3.196 s** = 70 % du rendu (BLA 0.13 s, pixels 1.27 s).
+>
+> Les deux références n'ÉVADENT PAS (centre intérieur → boucle jusqu'à
+> `iteration_max`) et fractall calcule l'orbite GMP pleine longueur, alors que
+> **F3 tronque via son atom-domain period detection** (réf = 1 période ≪ 250 k /
+> 5 M). Précision IDENTIQUE à F3 (formule `24+⌊log2(zoom·h)⌋` portée), donc pas
+> d'over-provisioning ; l'arithmétique GMP est déjà optimale (`mpc_sqr`). **Le
+> seul levier = tronquer la réf via atom-domain sur le path f64** — c'est
+> exactement le blocage `atom_period_enabled` gaté `< 1e-280` (path exp only,
+> cf. §G3 « period-aware reference », **4 sessions brûlées**) : les grazes de la
+> réf tronquée ~1e-56…1e-8000 tuent la reconstruction d'évasion en f64. Candidat
+> mémoire adjacent : `z_ref`/`z_ref_dd` (ComplexExp, 32 o/iter → dragon **160 Mo**)
+> sont MORTS sur le path f64 (lus seulement par exp/dd/legacy/hybrid) mais leur
+> skip demande un gate 4-conditions sur le hot-loop orbite → différé (risque >
+> gain, n'aide pas les OOM qui sont exp-path). **Non re-litigé ici** (cas tranché).
+
 > **🏆 RÉSOLU (2026-05-21)** — fix de **~20 lignes** : rebase à `m=0` au bout de
 > la référence pour les orbites escape-time (F3 `hybrid.cc:301` : `m+1==size` ⇒
 > `z=Z+δ, m=0`), au lieu d'abandonner (`ref_exhausted` → fallback GMP). La
@@ -1071,7 +1093,23 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
 
 ## ✅ Shipped (condensé, le plus récent en haut)
 
-**2026-07-11** (`/improve`, axe vitesse) :
+**2026-07-11** (`/improve`, axe vitesse + infra harness) :
+- **Fix harness — fausse « RÉGRESSION geomean » cross-machine** (`scripts/
+  harness.py`) : `_regression_gaps` flaggait une régression de VITESSE dès que
+  `geomean_ratio > baseline·1.10`, SANS vérifier que la baseline vient de la
+  même machine. Or les ratios fractall/F3 sont **machine-sensibles** (cœurs +
+  CPU → équilibre orbite/série différent) — HARNESS.md pose « baseline **par
+  machine** ». Rejouer le harness sur une autre machine (baseline i7-10700F
+  16 threads vs Xeon 4 threads → geomean 0.33→0.62) levait donc une fausse
+  alarme qui masquait le vrai signal `/improve` (gap #1 fantôme). **Fix** :
+  `_same_machine(card, base)` (cpu + nproc) gate la régression geomean ; les
+  régressions de CORRECTION (quality FAIL, parité pixel-equiv, goldens) restent
+  machine-INDÉPENDANTES (non gatées). Le SCORECARD note « baseline d'une autre
+  machine — pas de delta vitesse » et masque le delta trompeur. Vérifié : sur
+  le vrai card Xeon vs baseline i7 `compute_gaps` renvoie `[]` (0 gap fantôme) ;
+  même-machine + geomean +25 % → toujours flaggé. Verrous :
+  `test_harness_guard.py::run_regression_gates` (3 scénarios : même-machine
+  flag, cross-machine no-flag vitesse, cross-machine quality-fail toujours flag).
 - **Fix perf — table BLA FloatExp (`bla_exp`) morte sur le path f64** (`delta.rs`
   `build_bla_entry`) : `bla_exp` (`BlaTableUnifiedExp`, coefficients FloatExp)
   n'est **LUE** que par le pixel loop exp (`use_exp_path`, `pixel_size <

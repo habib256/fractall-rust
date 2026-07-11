@@ -784,6 +784,20 @@ def _gap(axis, case, metric, value, baseline_value, severity, note):
 def _comparable(card: dict, base: dict) -> bool:
     return (base.get("meta", {}).get("tier") == card["meta"]["tier"])
 
+def _same_machine(card: dict, base: dict) -> bool:
+    """Baseline par machine (cf. HARNESS.md) : les métriques de VITESSE (ratios
+    fractall/F3, geomean) ne sont comparables qu'entre runs de la MÊME machine —
+    le nombre de cœurs et le CPU changent l'équilibre orbite-série (F3 et fractall
+    ne scalent pas identiquement). Sans ce garde-fou, rejouer le harness sur une
+    autre machine que la baseline flagge une fausse « RÉGRESSION geomean » (ex.
+    baseline i7-10700F 16 threads vs Xeon 4 threads → geomean 0.33→0.63 alarme à
+    tort). Les axes de CORRECTION (parité pixel-equiv, quality FAIL, goldens) sont
+    machine-indépendants → non gatés."""
+    cm = card.get("meta", {}).get("machine", {}) or {}
+    bm = base.get("meta", {}).get("machine", {}) or {}
+    return (cm.get("cpu") == bm.get("cpu")
+            and cm.get("nproc") == bm.get("nproc"))
+
 def compute_gaps(card: dict, base: dict | None) -> list[dict]:
     gaps: list[dict] = []
     # --- goldens (correction) ---
@@ -838,9 +852,12 @@ def compute_gaps(card: dict, base: dict | None) -> list[dict]:
 
 def _regression_gaps(card: dict, base: dict) -> list[dict]:
     out = []
+    # Régression VITESSE : machine-sensible → seulement si même machine que la
+    # baseline (HARNESS.md « baseline par machine »). Évite la fausse alarme
+    # geomean cross-machine (cf. `_same_machine`).
     cg = card.get("speed", {}).get("geomean_ratio")
     bg = base.get("speed", {}).get("geomean_ratio")
-    if cg and bg and cg > bg * 1.10:
+    if cg and bg and cg > bg * 1.10 and _same_machine(card, base):
         out.append(_gap("speed", "<geomean>", "geomean_ratio", cg, bg, 3,
                         "RÉGRESSION vs baseline (>10%)"))
     cpe = card.get("parity", {}).get("n_pixel_equiv")
@@ -903,7 +920,14 @@ def build_scorecard_md(card: dict, base: dict | None) -> str:
         if s.get("status") == "f3_unavailable":
             L.append("_F3 indisponible — timings fractall seuls "
                      "(voir history JSON)._\n")
-        bs = (b or {}).get("speed", {})
+        # Delta vitesse : seulement si même machine (ratios machine-sensibles,
+        # cf. `_same_machine`). Sur une autre machine, on n'affiche pas de delta
+        # trompeur (ni fausse alarme geomean côté gaps).
+        speed_comparable = bool(b and _same_machine(card, base))
+        bs = (b or {}).get("speed", {}) if speed_comparable else {}
+        if b and not speed_comparable:
+            L.append("_baseline d'une autre machine — pas de delta vitesse "
+                     "(ratios machine-sensibles ; correction comparée ci-dessous)._\n")
         L.append("| Métrique | Valeur | vs baseline |")
         L.append("|---|---:|---|")
         L.append(f"| geomean ratio | {_fmt(s.get('geomean_ratio'))} | "

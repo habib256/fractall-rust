@@ -89,7 +89,48 @@ def run():
         _check("hog" not in harness.load_resolved(),
                "add quarantine périme le tombstone résolu")
 
+    run_regression_gates()
+
     print("\nTOUS LES TESTS PASSENT ✅")
+
+
+def run_regression_gates():
+    """Verrou (2026-07-11) : la régression geomean VITESSE ne se déclenche que
+    sur la MÊME machine que la baseline (HARNESS.md « baseline par machine »).
+    Une baseline d'une autre machine (≠ cpu/nproc) NE DOIT PAS flagger une fausse
+    régression de vitesse ; les régressions de CORRECTION (quality FAIL) restent
+    machine-indépendantes."""
+    def _card(cpu, nproc, geomean, n_fail=0):
+        return {
+            "meta": {"tier": "quick", "machine": {"cpu": cpu, "nproc": nproc}},
+            "speed": {"geomean_ratio": geomean},
+            "quality": {"n_fail": n_fail, "fail_presets": [], "warn_presets": []},
+            "parity": {"cases": {}},
+            "goldens": {"passed": True},
+        }
+
+    i7 = ("Intel i7-10700F", 16)
+    xeon = ("Intel Xeon", 4)
+
+    # (a) Même machine, geomean dégradé >10 % → régression flaggée.
+    base = _card(*i7, 0.32)
+    card = _card(*i7, 0.40)  # +25 %
+    gaps = harness.compute_gaps(card, base)
+    _check(any(g["axis"] == "speed" and g["case"] == "<geomean>" for g in gaps),
+           "geomean régresse sur MÊME machine → flaggé")
+
+    # (b) Machine différente, geomean « pire » → PAS de fausse alarme vitesse.
+    card_x = _card(*xeon, 0.63)  # 0.63 > 0.32*1.1 mais autre machine
+    gaps_x = harness.compute_gaps(card_x, base)
+    _check(not any(g["axis"] == "speed" and g["case"] == "<geomean>" for g in gaps_x),
+           "geomean cross-machine → PAS de fausse régression vitesse")
+
+    # (c) Correction (quality FAIL) reste machine-indépendante.
+    card_xf = _card(*xeon, 0.30, n_fail=2)
+    gaps_xf = harness.compute_gaps(card_xf, base)
+    _check(any(g["axis"] == "quality" and "n_fail" in str(g.get("metric"))
+               for g in gaps_xf),
+           "régression quality (n_fail) flaggée même cross-machine")
 
 
 if __name__ == "__main__":
