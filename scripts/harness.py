@@ -63,6 +63,13 @@ INFLIGHT = HARNESS_DIR / "inflight.json"
 CRASH_JOURNAL = HARNESS_DIR / "crash-journal.jsonl"
 QUARANTINE = HARNESS_DIR / "quarantine.json"
 RESOLVED = HARNESS_DIR / "resolved.json"
+# Cas où F3 rend une image DÉGÉNÉRÉE (fast-path uniforme faux, cf. glitch_test_5)
+# alors que fractall rend la vraie structure. Détecté par l'axe parité
+# (compare_f3 status `f3_degenerate`), persisté ici pour que l'axe VITESSE
+# (qui peut tourner seul) exclue ces cas du geomean et des gaps : comparer un
+# rendu correct à un fast-path faux n'a pas de sens. Auto-entretenu : un run
+# parité qui re-classe le cas `ok` le retire.
+F3_DEGENERATE = HARNESS_DIR / "f3-degenerate.json"
 
 # Issues du journal qui prouvent qu'un cas a fait tomber la machine ou a été tué
 # sous cap : la quarantaine DOIT les couvrir. On EXCLUT `interrupted` (Ctrl-C
@@ -172,6 +179,38 @@ def save_quarantine(d: dict) -> None:
     QUARANTINE.write_text(json.dumps(d, indent=2, ensure_ascii=False) + "\n")
 
 
+def load_f3_degenerate() -> dict:
+    if not F3_DEGENERATE.exists():
+        return {}
+    try:
+        d = json.loads(F3_DEGENERATE.read_text())
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def update_f3_degenerate(parity_cases: dict) -> None:
+    """Réconcilie le registre avec le dernier run parité : ajoute les cas
+    classés `f3_degenerate`, retire ceux re-mesurés `ok` (F3 corrigé/re-testé).
+    Les cas non couverts par ce run restent tels quels."""
+    d = load_f3_degenerate()
+    changed = False
+    for name, c in parity_cases.items():
+        if c.get("status") == "f3_degenerate":
+            if name not in d:
+                d[name] = {"added_utc": _now_iso(),
+                           "note": "F3 uniforme (fast-path faux), fractall "
+                                   "structuré — cf. bench/harness/parity"}
+                changed = True
+        elif c.get("status") == "ok" and name in d:
+            del d[name]
+            changed = True
+    if changed:
+        HARNESS_DIR.mkdir(parents=True, exist_ok=True)
+        F3_DEGENERATE.write_text(
+            json.dumps(d, indent=2, ensure_ascii=False) + "\n")
+
+
 def load_resolved() -> dict:
     """Tombstones {case: resolved_utc} : cas retirés MANUELLEMENT de la
     quarantaine (fix vérifié). La réconciliation journal→quarantaine les
@@ -240,6 +279,13 @@ def latest_hard_crashes() -> dict:
         except Exception:
             continue
         if rec.get("outcome") not in HARD_CRASH_OUTCOMES:
+            continue
+        # Seuls les crashs du binaire FRACTALL justifient la quarantaine (elle
+        # protège la machine des sweeps fractall). Un abort/OOM CÔTÉ F3
+        # (phase `speed_f3` — ex. seahorse 1e1392 : F3 sig 6, fractall rend en
+        # 119 s) ne doit PAS exclure le cas ; il apparaît déjà comme
+        # `f3_aborted`/`f3_timeout` dans l'axe vitesse.
+        if rec.get("phase") == "speed_f3":
             continue
         case = rec.get("case")
         if not case or case == "?":
@@ -544,17 +590,29 @@ def axis_speed(cases: list[str], width: int, height: int, runs: int,
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
-    ratios = [e["ratio"] for e in results.values() if e["ratio"] is not None]
+    # Exclure les cas F3-dégénérés des AGRÉGATS (geomean/pire/wins) : F3 y rend
+    # un fast-path uniforme FAUX (cf. registre f3-degenerate.json, entretenu par
+    # l'axe parité) → le ratio mesuré est un artefact, pas un gap moteur
+    # (glitch_test_5 3.8× fantôme, 2026-07-12). Le ratio mesuré reste stocké
+    # dans l'entrée (flag `f3_degenerate`) et listé à part dans le scorecard.
+    degen = set(load_f3_degenerate())
+    for n, e in results.items():
+        if n in degen:
+            e["f3_degenerate"] = True
+    excluded_degen = [n for n in results if n in degen
+                      and results[n]["ratio"] is not None]
+    ratios = [e["ratio"] for n, e in results.items()
+              if e["ratio"] is not None and n not in degen]
     geomean = (math.exp(sum(math.log(r) for r in ratios) / len(ratios))
                if ratios else None)
     worst = None
     worst_pairs = [(n, e["ratio"]) for n, e in results.items()
-                   if e["ratio"] is not None]
+                   if e["ratio"] is not None and n not in degen]
     if worst_pairs:
         n, r = max(worst_pairs, key=lambda x: x[1])
         worst = {"case": n, "ratio": round(r, 4)}
     wins = [n for n, e in results.items()
-            if e["ratio"] is not None and e["ratio"] < 1.0]
+            if e["ratio"] is not None and e["ratio"] < 1.0 and n not in degen]
     timeouts = [n for n, e in results.items()
                 if e["status"] in ("fractall_timeout", "f3_timeout")]
     return {
@@ -564,6 +622,7 @@ def axis_speed(cases: list[str], width: int, height: int, runs: int,
         "worst_ratio": worst,
         "wins": wins,
         "timeouts": timeouts,
+        "excluded_f3_degenerate": excluded_degen,
         "n_cases": len(cases),
         "n_compared": len(ratios),
     }
@@ -635,6 +694,10 @@ def axis_parity(cases: list[str], width: int, height: int, timeout: float,
             and all(x in ("f3_fail", "f3_timeout") for x in statuses)
             and any(x == "f3_fail" for x in statuses)):
         axis_status = "f3_no_exr"
+    # Persister les cas F3-dégénérés pour l'axe vitesse (qui peut tourner seul) :
+    # leurs ratios n'ont pas de sens (F3 fast-path faux vs rendu correct).
+    if axis_status == "ok":
+        update_f3_degenerate(cases_out)
     return {
         "status": axis_status,
         "cases": cases_out,
@@ -840,6 +903,10 @@ def compute_gaps(card: dict, base: dict | None) -> list[dict]:
     speed_gaps = []
     for name, c in s.get("cases", {}).items():
         r = c.get("ratio")
+        if c.get("f3_degenerate"):
+            # F3 fast-path FAUX sur ce cas (registre f3-degenerate.json) : le
+            # ratio n'est pas un gap moteur — listé à part dans le scorecard.
+            continue
         if r is not None and r > 2.0:
             speed_gaps.append(_gap("speed", name, "ratio", round(r, 4), None,
                                    3, f"{r:.2f}× plus lent que F3"))
@@ -939,6 +1006,11 @@ def build_scorecard_md(card: dict, base: dict | None) -> str:
         L.append(f"| timeouts | {len(s.get('timeouts', []))} | |")
         L.append(f"| cas comparés | {s.get('n_compared', 0)}/"
                  f"{s.get('n_cases', 0)} | |")
+        excl = s.get("excluded_f3_degenerate") or []
+        if excl:
+            names = ", ".join(
+                f"{n} ({_fmt(s['cases'][n].get('ratio'))})" for n in excl)
+            L.append(f"| exclus (F3-dégénéré, ratio sans objet) | {names} | |")
         L.append("")
 
     # Parity

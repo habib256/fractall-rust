@@ -686,9 +686,12 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     suite (voir commit) ; goldens : e50 178 px/max Δ15, e113 15 px/max Δ101
     (bruit dispersé plancher f64, revus visuellement), 15 autres PIXEL-IDENTIQUES.
     **Verrou** : golden `mandelbrot_glitch_test_2_atom` (régression guard BLA =
-    tout noir). Latent noté : le path exp (`pixel_loop_exp.rs`) a le même flaw
-    théorique (BLA→continue saute le check end-of-ref) mais masqué deep (graze
-    ≪ dc) — candidat wfs_mb inside_mm=12 résiduel, à tester séparément.
+    tout noir). ~~Latent : même flaw dans pixel_loop_exp ?~~ **RÉFUTÉ (2026-07-12)** :
+    la boucle HP (`iterate_pixel_unified_exp_mandelbrot_hp`) checke déjà le
+    rebase/end-of-ref EN TÊTE de boucle (ordre F3, cf. son commentaire) — wfs_mb
+    inside_mm=12 n'est PAS causé par ça. Le flaw ne subsiste que dans les loops
+    exp non-HP (`_exp_mandelbrot` = dead code sauf FRACTALL_ATOM_PERIOD=0 ;
+    `_exp_generic` = types non-Mandelbrot deep, jamais atom-tronqués) → bénin.
   - [~] **DIAGNOSTIC mid-range atom (2026-07-11) — glitch_test_2 = SEUL perdant mid-range,
     le fix est scopé mais coûte cher.** Mesure 3-runs des cas 1e13–1e280 : glitch_test_2
     **1.60×** (0.27/0.17 s) est le seul >1 ; integral_of_ex2/x/mitosis/virus/glitch_test_3/4

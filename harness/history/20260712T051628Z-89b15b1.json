@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "meta": {
+    "date_utc": "2026-07-12T05:16:28+00:00",
+    "stamp": "20260712T051628Z",
+    "git_sha": "89b15b1",
+    "git_dirty": true,
+    "machine": {
+      "cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz",
+      "nproc": 16,
+      "os": "Linux 6.14.0-37-generic"
+    },
+    "tier": "quick",
+    "axes": [
+      "speed"
+    ],
+    "width": 256,
+    "height": 256,
+    "quality_width": 96,
+    "quality_height": 96,
+    "runs": 3,
+    "f3_bin": "/home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux",
+    "mem_limit_mb": 34024,
+    "quarantined": [
+      "seahorse"
+    ]
+  },
+  "speed": {
+    "status": "ok",
+    "cases": {
+      "glitch_test_5": {
+        "fractall_s": 0.0679,
+        "f3_s": 0.0177,
+        "ratio": 3.8362,
+        "status": "ok",
+        "f3_exr_ok": true,
+        "f3_degenerate": true
+      },
+      "test4": {
+        "fractall_s": 0.0177,
+        "f3_s": 0.0337,
+        "ratio": 0.5252,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e50": {
+        "fractall_s": 0.1671,
+        "f3_s": 1.1678,
+        "ratio": 0.1431,
+        "status": "ok",
+        "f3_exr_ok": true
+      }
+    },
+    "geomean_ratio": 0.2741,
+    "worst_ratio": {
+      "case": "test4",
+      "ratio": 0.5252
+    },
+    "wins": [
+      "test4",
+      "e50"
+    ],
+    "timeouts": [],
+    "excluded_f3_degenerate": [
+      "glitch_test_5"
+    ],
+    "n_cases": 3,
+    "n_compared": 2
+  },
+  "parity": {
+    "status": "skipped"
+  },
+  "quality": {
+    "status": "skipped"
+  },
+  "goldens": {
+    "status": "skipped"
+  },
+  "beyond_f3": {
+    "speed_wins": [
+      "test4",
+      "e50"
+    ],
+    "correctness_wins": []
+  },
+  "gaps": []
+}
