@@ -29,6 +29,8 @@
 //! - `burning_ship_perturb_1e3` : BS perturbation zoom 1e3 (path nonconformal BLA)
 //! - `newton_default` : Newton (type qui NE compile PAS en bytecode → reste sur path dédié)
 //! - `mandelbrot_minibrot_1e8` : Mandelbrot zoom 1e8 sur minibrot (BLA + glitch detect)
+//! - `mandelbrot_e10` / `mandelbrot_e15` / `mandelbrot_e20` : zooms intermédiaires
+//!   (G6) — path perturbation par défaut `bytecode_f64` aux frontières 1e10/1e15/1e20
 //! - `mandelbrot_deep_e113` : Mandelbrot deep zoom 5e113 (toml/e113.toml) — stress GMP+BLA
 
 use std::path::{Path, PathBuf};
@@ -103,6 +105,47 @@ const CASES: &[Case] = &[
             "--center-x=-1.7693831791955", "--center-y=0.004236847918736",
             "--zoom", "1e8",
             "--width", "160", "--height", "100", "--iterations", "3000",
+        ],
+    },
+    // --- Zooms intermédiaires (G6) : verrouillent le path perturbation par
+    // défaut aux frontières 1e10 / 1e15 / 1e20 (chemin `bytecode_f64`, le f64
+    // s'étendant à 1e280). Comblent le trou golden entre 1e8 (minibrot) et
+    // 1e50+ (escape-time deep). Tous Mandelbrot, structurés, revus visuellement.
+    //
+    // 1e10 : centre minibrot (même que perturb_1e6/minibrot_1e8), PASS
+    // pixel-exact vs GMP pur (max_diff=0) — dendrites + mini-spirales.
+    Case {
+        name: "mandelbrot_e10",
+        args: &[
+            "--type", "3", "--algorithm", "perturbation",
+            "--center-x=-1.7693831791955", "--center-y=0.004236847918736",
+            "--zoom", "1e10",
+            "--width", "160", "--height", "100", "--iterations", "4000",
+        ],
+    },
+    // 1e15 : centre e113 (180 digits HP), zoom sorti à 1e15 — spirale
+    // structurée. Divergence vs GMP = bruit de bord dispersé (p99=0,
+    // div_ratio≈0.0036, plancher f64), comme les goldens seahorse/e17.
+    Case {
+        name: "mandelbrot_e15",
+        args: &[
+            "--type", "3", "--algorithm", "perturbation",
+            "--center-x-hp=-1.47981577613247326072298452597877854692240725774045369689878510139864920741002293820250517329282011227363313053159203914640783415609608168660705123082446357179491909705403381200",
+            "--center-y-hp=-0.00063911193261361727152139632255671572957303918943984736047394936471220951961813321928573067036466151147195436388486168819318341208023229522609015461543581599807510715681229605",
+            "--zoom", "1e15",
+            "--width", "160", "--height", "100", "--iterations", "6000",
+        ],
+    },
+    // 1e20 : même centre e113, zoom 1e20 — étoile multi-spirale symétrique.
+    // Bruit de bord dispersé vs GMP (p99=0, div_ratio≈0.005).
+    Case {
+        name: "mandelbrot_e20",
+        args: &[
+            "--type", "3", "--algorithm", "perturbation",
+            "--center-x-hp=-1.47981577613247326072298452597877854692240725774045369689878510139864920741002293820250517329282011227363313053159203914640783415609608168660705123082446357179491909705403381200",
+            "--center-y-hp=-0.00063911193261361727152139632255671572957303918943984736047394936471220951961813321928573067036466151147195436388486168819318341208023229522609015461543581599807510715681229605",
+            "--zoom", "1e20",
+            "--width", "160", "--height", "100", "--iterations", "10000",
         ],
     },
     // Deep zoom Mandelbrot 5e113 (cf. toml/e113.toml) — exerce le path GMP

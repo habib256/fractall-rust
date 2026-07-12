@@ -25,13 +25,15 @@ Prérequis natifs : GMP / MPFR / MPC (pour `rug`).
   glitch,orbit,types,nucleus,mod}`, `jitter` (AA), `lyapunov`, `progressive`,
   et tout le `bytecode/` (`compile`, `interp{,_gmp}`, `bla_dual`, `delta_form`,
   `pixel_loop{,_exp}`).
-- **Golden image tests** (`tests/golden_images.rs`) : 10 cas pixel-exact —
-  paths f64 standard, perturbation, deep zoom GMP, types non-bytecode.
+- **Golden image tests** (`tests/golden_images.rs`) : 21 cas pixel-exact —
+  paths f64 standard, perturbation, deep zoom GMP, types non-bytecode, zooms
+  intermédiaires (1e10/1e15/1e20, path perturbation par défaut), atom-domain.
   - Lancer : `cargo test --release --test golden_images`
   - Régénérer : `FRACTALL_UPDATE_GOLDENS=1 cargo test --release --test
     golden_images`. **Toujours** vérifier visuellement les nouveaux PNG.
-  - Note : les 10 goldens ont été régénérés + revus pour l'escape radius
-    ER=25 (2026-05-20), `mandelbrot_deep_e113.png` inclus.
+  - Note : les goldens ER=25 (2026-05-20) ; `mandelbrot_e10/e15/e20` (G6,
+    2026-07-12) comblent le trou 1e8→1e50 (revus visuellement, e10 PASS
+    pixel-exact vs GMP, e15/e20 bruit de bord dispersé p99=0).
 - **QA perturbation vs GMP** (`fractall-quality`) : compare le chemin
   perturbation au rendu GMP pur pixel-par-pixel. Voir §Quality plus bas.
 

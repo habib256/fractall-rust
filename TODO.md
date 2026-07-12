@@ -1119,8 +1119,13 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
   `mandelbrot_cusp_m075` (cusp -0.75, fix max_perturb G3), `mandelbrot_floral`
   (1.55e85, fix period-detection G3). Rendus == chemin par défaut == GMP, revus
   visuellement, verts en CI (déjà câblée). 4 nouveaux goldens.
-- [ ] **CI : étendre le corpus golden** à zooms intermédiaires (1e10, 1e15,
-  1e20), cap ~70 s/cas. (CI de base déjà en place : unit + golden sur push/PR.)
+- [x] **CI : étendre le corpus golden** à zooms intermédiaires (2026-07-12) :
+  `mandelbrot_e10` (centre minibrot, **PASS pixel-exact vs GMP** max_diff=0,
+  dendrites), `mandelbrot_e15` + `mandelbrot_e20` (centre e113 180-digits,
+  spirale/étoile structurées, bruit de bord dispersé p99=0 vs GMP — comme
+  seahorse/e17). Comblent le trou golden entre 1e8 (minibrot) et 1e50+
+  (escape-time). Path perturbation par défaut `bytecode_f64`. 21 goldens (était
+  18), revus visuellement, déterministes (re-run vert). Rendu <50 ms/cas.
 - [ ] **Vérifier visuellement la GUI AA** (env de dev headless ici → non testé
   à l'écran ; la logique compile et le CLI est vérifié).
 - [ ] **AA polish** : per-pixel decorrelation (`burtle_hash`, utile à bas N) ;
