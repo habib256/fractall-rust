@@ -130,9 +130,31 @@ comparable entre cas) :
   virus, mitosis, test3, tick_tock, all_seeing_eye, e50, test2, golden_spider,
   leaded_glass, e113, test, mitosis2, magic, flake, lya, line, uranium.
 - **À investiguer** (>2 %, 8) — tous explicables : test4 (31 iter → rel% = bruit),
-  spiral/nr_fail/peanuts/liiiines (bord chaotique), **rug** (BLA over-skip connu),
+  spiral/nr_fail/peanuts/liiiines (bord chaotique), **rug** (glitch réf unique —
+  cf. diag 2026-07-12 ci-dessous, l'étiquette « BLA over-skip » est INFIRMÉE),
   lethal_weapon/**threads_colour** (1.5–1.6M iter, zoom jusqu'à 1e652 — frontière
   perf/précision extrême).
+
+> **🔬 DIAG rug 1e56 (2026-07-12) — « BLA over-skip » INFIRMÉ ; glitch réf unique.**
+> vs **GMP pur** (ground truth, pas F3) : FAIL max_diff=298, p99=78, div_ratio=4.2 %,
+> **escape_disagreement=0** (aucun pixel ne flippe intérieur/extérieur — pur écart
+> de *compte* d'itération → banding). Signature : les pixels divergents sont des
+> **paires point-symétriques** (±dc autour du centre) au **z_pert bit-identique**
+> mais z_gmp différent → la perturbation impose une fausse symétrie δ↔−δ. 4 hypothèses
+> réfutées par expérience contrôlée (chacune → résultat **bit-identique** au défaut) :
+> **(1)** BLA off (`bytecode_f64` direct) ; **(2)** tier **dd** (Z 106 b non-arrondi
+> dans `2·Z·δ`, `path=bytecode_dd` confirmé) ; **(3)** précision réf+GMP **1024 b** ;
+> **(4)** **rebasing désactivé**. z_pert invariant aux 4 → l'écart est **structurel,
+> pas numérique**. Cause réelle : **glitch de référence unique** — à n≈40327 la réf
+> intérieure a une grande excursion (|Z|≈44 > ER) qui pousse `Z+δ` au bailout
+> (fausse évasion) alors que le vrai pixel (GMP) s'évade à 40625 ; δ a décorrélé de
+> `z_pixel−Z_ref` sans que ni le critère de rebase (`|Z+δ|²<|δ|²`) ni la validité BLA
+> ne le captent. **fractall matche F3** ici (parité inside_mismatch=10/16384) → PAS
+> une régression vs F3 ; divergence partagée, inhérente à la perturbation **réf
+> unique**. Vrai correctif = **références secondaires / glitch-correction** (machinerie
+> Pauldelbrot retirée au profit du rebasing F3-strict) — gros chantier, hors périmètre
+> d'une itération. Distinct de la classe **dd-sensibilité** (seahorse/e50 : dd CORRIGE ;
+> rug : dd n'aide PAS). Verrou impossible tant que non corrigé (le gate FAIL).
 - **F3-dégénéré (2)** : glitch_test_5 (F3 100 % intérieur, 0.014 s) **et
   glitch_test_1** (F3 extérieur uniforme 0.3 % intérieur, 0.085 s fast-path) —
   fractall structuré dans les deux cas. **Le détecteur tranche enfin
@@ -276,6 +298,17 @@ comparable entre cas) :
 
 ### G2 — Performance deep-zoom · `[✅ RÉSOLU 2026-05-21 — rebase-at-end F3, fallback GMP éliminé]`
 
+> **🏁 Sweep vitesse ciblé i7-10700F (2026-07-12) — les résidus « Xeon 4c » sont
+> DISSOUS sur cette machine.** 16 cas deep orbite-bound à 256² (`--axes speed`),
+> **tous WIN vs F3** (ratio fractall/F3, <1 = win) : threads_colour **0.06**,
+> e634 0.06, e533 0.07, olbaid4 0.08, lethal_weapon 0.08, e1086 0.11, e1016 0.13,
+> e890 0.14, e1298 0.14, rug 0.16, wfs 0.25, wfs2 0.28, olbaid5 0.31, wfs4 0.33,
+> e227 0.34, wfs_extended 0.48. Parité de ces cas : 14/14 **ok** vs F3
+> (inside_mismatch ≤ 321 à zoom jusqu'à 1e652). Les ratios 1.92 (glitch_test_2) /
+> 1.24 (dragon) ci-dessous étaient **spécifiques au Xeon 4 cœurs** ; sur l'i7 8c/16t
+> ils WIN aussi (quick tier : geomean **0.247**, 10/10 wins). Aucun déficit vitesse
+> mesurable hors la classe ultra-deep-intérieur bloquée (période-aware, cf. plus bas).
+>
 > **Résidu vitesse mesuré (2026-07-11, harness quick vs F3 sur Xeon 4c)** — après
 > le fix `bla_exp` (cf. Shipped), les 2 seuls cas où fractall reste plus lent que
 > F3 sont **orbite-bound sur référence INTÉRIEURE pleine longueur** :
