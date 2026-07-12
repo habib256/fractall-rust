@@ -1151,14 +1151,19 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
 
 **Done when** :
 - [x] **Protocole écrit** (`HARNESS.md`) + skill `/improve` (2026-07-03).
-- [ ] **`scripts/harness.py`** opérationnel (score/baseline/gaps, tiers
-  quick/standard/full, JSON + SCORECARD.md, gaps triés) — en cours.
+- [x] **`scripts/harness.py`** opérationnel (2026-07-12) : score/baseline/gaps,
+  tiers quick/standard/full, JSON (`harness/history/*.json`) + SCORECARD.md +
+  gaps triés — vérifié bout-en-bout sur le run standard (25 cas, 4 axes).
 - [ ] **`fractall-quality` émet du JSON** (`suite-summary.json`,
   `report.json`) — en cours.
-- [ ] **Binaire F3 Linux** buildé (`fraktaler-3-3.1/`) — la machine courante
-  (i7-10700F Linux) remplace le M4 ; les baselines macOS ne sont plus
-  comparables.
-- [ ] **Baseline v1 committée** sur cette machine (tier standard).
+- [x] **Binaire F3 Linux** buildé (`fraktaler-3-3.1/fraktaler-3-3.1.linux`) —
+  la machine courante (i7-10700F 16 threads Linux) remplace le M4 ; utilisé par
+  les axes speed/parity.
+- [x] **Baseline v1 committée** sur cette machine (2026-07-12) : **tier standard**
+  (256², runs=3 médiane, 25 cas) figée depuis `20260712T120028Z-cd05f6a.json`.
+  **geomean vitesse 0.223** (25/25 wins, pire test5 0.580), parité 25/25 ok,
+  quality 8 PASS / 3 WARN (seahorse/e13/e17 bruit de bord) / 0 FAIL, goldens
+  verts. Remplace l'ancienne baseline quick/runs=1. Machine-spécifique (i7).
 - [x] **Boucle exécutée au moins 1×** de bout en bout (`/improve`) avec
   amélioration mesurée committée + verrou posé (2026-07-03, `53a55cc` :
   latence progress reporter → geomean vitesse 1.712→0.966 ; rebaseline
