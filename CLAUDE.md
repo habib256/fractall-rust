@@ -257,10 +257,29 @@ dont l'orbite ne s'évade pas. Sans K, un minibrot rotated apparaît noir
 ou en bandes diagonales car les pixels échantillonnent à travers les
 branches voisines.
 
-Reste pour la parité/perf F3 (cf. TODO G2/G4) : **wisdom file** (auto-precision
-f64→doubleexp→float128→GMP) et **nucleus phase-aware** pour les hybrides. La
-rotation de vue est gérée au pixel→c (CPU + GPU bytecode) ; `Op::Rot` reste un
-opcode CPU dormant, utile seulement pour une rotation *par phase* (TODO G4).
+Reste pour la parité/perf F3 (cf. TODO G2/G4) : **auto-firing dd par
+sensibilité** (l'échelle wisdom est livrée, cf. §Wisdom ci-dessous) et
+**nucleus phase-aware** pour les hybrides. La rotation de vue est gérée au
+pixel→c (CPU + GPU bytecode) ; `Op::Rot` reste un opcode CPU dormant, utile
+seulement pour une rotation *par phase* (TODO G4).
+
+### Wisdom auto-dispatch (`fractal/wisdom.rs`, 2026-07-12)
+
+Source UNIQUE de la sélection de tier numérique perturbation.
+`wisdom::number_tier(params)` → `F64 | Exp | Dd` (ordre dd demandé > exp
+`pixel_size<1e-280` > f64), consommée par `bytecode_path_label` ET le dispatch
+d'exécution (`try_bytecode_unified_path`) — dédup de la logique jadis copiée aux
+deux endroits. `wisdom::plan(params)` renvoie un `WisdomPlan` inspectable
+(algorithme + tier + exposant/mantisse requis F3-style + précision GMP orbite) ;
+`FRACTALL_WISDOM=1` logue la ligne `[WISDOM]`. Modèle F3 (`wisdom.cc:240` /
+`render.cc:219`) : un type de mantisse `M` / exposant `E` est viable si
+`req_exp+16 < 2^E/2` ET `req_prec < M` ; pour une frame **centrée**
+`req_prec ≈ log2(hypot(w,h))` (~8-13 b), donc **f64 (53 b) suffit toujours sur la
+mantisse** — l'escalade f64→exp se fait sur l'**exposant** (profondeur), jamais
+la mantisse (vérifié : à 1e300, `req_exp=1003` mais `req_prec=8`). Le tier **dd
+(~106 b)** reste opt-in (`--dd-tier`) : son besoin vient d'une sensibilité pixel
+non captée par un détecteur cheap fiable (proxy `cbits` réfuté, cf. TODO G3).
+Seuils calibrés **préservés** (208 unit + 21 golden pixel-exact + sweep-lock).
 
 ### Précision GMP perturbation
 

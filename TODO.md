@@ -1013,10 +1013,27 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     Un epsilon adaptatif = précision *nécessaire* (fonction de δ/sensibilité, pas
     du type) élargirait le skip là où < 106 b suffit → plus rapide sans casser le
     max_diff. Lié au wisdom ci-dessous.
-  - [ ] **auto-dispatch (wisdom)** : sélectionner dd automatiquement selon une
-    estimation de sensibilité/conditionnement par frame (F3-style), au lieu de
-    l'opt-in `use_dd_tier`. Prérequis perf : dd-BLA ✅ + epsilon adaptatif (sinon coût hors
-    des cas sensibles).
+  - [x] **✅ Échelle wisdom (module `fractal/wisdom.rs`, 2026-07-12)**. Source
+    UNIQUE de la sélection de tier numérique (`number_tier` : dd demandé > exp
+    > f64), consommée par `bytecode_path_label` ET `try_bytecode_unified_path`
+    (dédup de la logique jadis copiée aux deux endroits). Calcule le
+    `WisdomPlan` inspectable (algorithme + tier + exposant/mantisse requis
+    F3-style `render.cc:219` + précision GMP orbite) ; log `[WISDOM]` via
+    `FRACTALL_WISDOM=1`. **Seuils calibrés préservés** (aucune régression :
+    208 unit + 21 golden pixel-exact + sweep-lock `tier_matches_legacy_thresholds`).
+    Confirme empiriquement le modèle F3 : à 1e300 l'escalade f64→exp se fait sur
+    l'**exposant** (`req_exp=1003`) tandis que `req_prec` reste 8 b ≪ 53 b — la
+    mantisse ne force JAMAIS l'escalade sur une frame centrée. `log2_zoom`
+    extrait (HP-aware, partagé avec `compute_perturbation_precision_bits`).
+  - [ ] **auto-dispatch dd (wisdom, suite)** : sélectionner dd automatiquement
+    selon une estimation de sensibilité/conditionnement par frame (F3-style), au
+    lieu de l'opt-in `use_dd_tier`. **Hors périmètre de l'échelle ci-dessus**
+    (décision 2026-07-12 : variante sûre d'abord) : la viabilité F3 ne réclame
+    jamais dd (mantisse requise ~8 b), le besoin vient de la sensibilité pixel
+    qu'aucun détecteur cheap fiable ne capte (proxy `cbits` réfuté, cf. ci-dessous).
+    Point d'accroche prêt dans `wisdom.rs` (`required_precision` vs
+    `tier.mantissa_bits()`). Prérequis perf : dd-BLA ✅ + epsilon adaptatif (sinon
+    coût hors des cas sensibles).
     - **Cas moteur pour le wisdom (2026-07-10, diagnostic)** : preset quality
       `mandelbrot-e13` (centre `-1.7499537683537087`, zoom 1e13, 16384 iters —
       juste au-dessus du seuil d'activation perturbation). **FAIL à ≥128²**

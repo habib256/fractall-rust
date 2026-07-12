@@ -8,6 +8,7 @@ pub mod lyapunov;
 pub mod vectorial;
 pub mod buddhabrot;
 pub mod perturbation;
+pub mod wisdom;
 pub mod orbit_traps;
 
 pub use types::{AlgorithmMode, FractalParams, FractalResult, FractalType, OutColoringMode, PlaneTransform, ColorSpace};

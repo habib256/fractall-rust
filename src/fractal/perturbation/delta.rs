@@ -375,34 +375,11 @@ pub fn pixel_size_exp_threshold() -> f64 {
 /// Utilisé par la couche d'affichage perf pour étiqueter `[FRACTALL] path=...`
 /// avec la valeur réellement prise. `None` si bytecode désactivé ou pas applicable.
 pub fn bytecode_path_label(params: &FractalParams) -> Option<&'static str> {
-    if !params.use_bytecode_engine {
-        return None;
-    }
-    let formula = compile_formula(params.fractal_type, params.multibrot_power)?;
-    if formula.phases.len() != 1 {
-        return None;
-    }
-    // pixel_size HP-aware. À zoom > 1e308, le calcul f64 underflow à 0, mais
-    // effective_pixel_size reconstruit depuis les coords HP. Le path bytecode_exp
-    // (ComplexExp, exposant i32) gère arbitrairement profond et est strictement
-    // préférable à `legacy_fexp` qui capte la boucle à `effective_len-1` et
-    // produit une image uniforme sur orbite référence escapée (cf. e1000).
-    // L'ancien seuil PIXEL_SIZE_GMP_THRESHOLD était surconservateur ; on
-    // route TOUS les zooms bytecode-supportés vers bytecode (f64 ou exp).
-    let pixel_size = crate::fractal::perturbation::effective_pixel_size(params);
-    if pixel_size <= 0.0 {
-        return None;
-    }
-    // Tier dd (~106 b) opt-in : Mandelbrot escape-time, tout range (cf. dispatch
-    // hoisté avant le split exp/f64).
-    if params.use_dd_tier && matches!(params.fractal_type, FractalType::Mandelbrot) {
-        return Some("bytecode_dd");
-    }
-    if pixel_size < pixel_size_exp_threshold() {
-        Some("bytecode_exp")
-    } else {
-        Some("bytecode_f64")
-    }
+    // Source unique de la sélection de tier : `wisdom::number_tier` (f64 / exp /
+    // dd). Voir `fractal/wisdom.rs` pour la logique (dd demandé > exp > f64) et
+    // la justification F3 (viabilité exposant/mantisse). Le label sert la ligne
+    // `[FRACTALL] path=…`. `None` si le path bytecode ne s'applique pas.
+    crate::fractal::wisdom::number_tier(params).map(|t| t.path_label())
 }
 
 fn try_bytecode_unified_path(
@@ -433,7 +410,11 @@ fn try_bytecode_unified_path(
     if pixel_size <= 0.0 {
         return None;
     }
-    let use_exp_path = pixel_size < pixel_size_exp_threshold();
+    // Split exp/f64 via la source unique wisdom (identique à `number_tier` /
+    // `bytecode_path_label`). NB : si le tier dd est demandé mais que l'orbite
+    // n'a pas la réf dd (`has_dd` faux plus bas), on retombe ici sur exp/f64
+    // selon `pixel_size` — d'où le prédicat `wants_exp` indépendant du dd.
+    let use_exp_path = crate::fractal::wisdom::wants_exp(pixel_size);
 
     // Table BLA du render : construite UNE fois, partagée entre workers via Arc
     // (cf. `get_or_build_bla_entry`). Rayon de validité = max |δc| sur l'image
@@ -467,10 +448,7 @@ fn try_bytecode_unified_path(
         // Équivalent du float128 de F3. Indépendant de use_exp_path : le dd loop
         // fonctionne à tout zoom (la référence dd et le dc dd sont construits sans
         // gating de zoom), donc couvre aussi le range f64 (< 1e13, ex. seahorse).
-        if params.use_dd_tier
-            && matches!(params.fractal_type, FractalType::Mandelbrot)
-            && ref_orbit.has_dd()
-        {
+        if crate::fractal::wisdom::dd_requested(params) && ref_orbit.has_dd() {
             use crate::fractal::perturbation::dd::ComplexDDExp;
             // `dc` en dd : préfère le dc dd fourni par la boucle de rendu
             // (spans HP → 106 b) ; sinon convertit le ComplexExp (53 b).

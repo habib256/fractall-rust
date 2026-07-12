@@ -633,6 +633,70 @@ pub(crate) fn effective_pixel_size(params: &FractalParams) -> f64 {
 /// sweeps harness restent protégés par RLIMIT_AS + timeouts.
 pub(crate) const MAX_PERTURB_PRECISION_BITS: u32 = u32::MAX;
 
+/// `log2(zoom)` HP-aware, avec `zoom = 4 / pixel_size` et `pixel_size =
+/// max(|span_x|/width, |span_y|/height)`. Point d'entrée unique du calcul de
+/// profondeur : partagé par `compute_perturbation_precision_bits` (précision
+/// GMP de l'orbite) et le module `wisdom` (exposant requis du tier numérique).
+///
+/// Aux zooms extrêmes (> 1e308) le `pixel_size` f64 underflow à 0 ; on
+/// reconstruit alors `log2(zoom)` depuis les strings HP (`span_x_hp`) — 1024
+/// bits captent l'exposant jusqu'à ~10^10^4, au-delà de tout le corpus.
+/// Retourne `None` si les dimensions/spans sont dégénérés (zoom ≤ 1, non-fini).
+pub(crate) fn log2_zoom(params: &FractalParams) -> Option<f64> {
+    if params.width == 0 || params.height == 0 {
+        return None;
+    }
+    let log2_from_f64 = || -> Option<f64> {
+        let pixel_size = (params.span_x.abs() / params.width as f64)
+            .max(params.span_y.abs() / params.height as f64);
+        if !pixel_size.is_finite() || pixel_size <= 0.0 {
+            return None;
+        }
+        let zoom = 4.0 / pixel_size;
+        if !zoom.is_finite() || zoom <= 1.0 {
+            return None;
+        }
+        Some(zoom.log2())
+    };
+    let log2_from_hp = || -> Option<f64> {
+        // span_x_hp stores the span as a decimal string; parse with enough precision
+        // to capture the exponent regardless of magnitude (1024 bits = ~308 decimal digits,
+        // which is sufficient for zoom up to ~10^10^4 — anything deeper than the corpus).
+        let sx = params.span_x_hp.as_deref()?;
+        let sy = params.span_y_hp.as_deref().unwrap_or(sx);
+        let parse = |s: &str| -> Option<Float> {
+            let raw = Float::parse(s).ok()?;
+            Some(Float::with_val(1024, raw))
+        };
+        let px_x = parse(sx)?;
+        let px_y = parse(sy)?;
+        // pixel_size in HP = max(|sx|/w, |sy|/h) ; we want log2(4/pixel_size).
+        let w = Float::with_val(1024, params.width as f64);
+        let h = Float::with_val(1024, params.height as f64);
+        let mut a = px_x.clone().abs();
+        a /= &w;
+        let mut b = px_y.clone().abs();
+        b /= &h;
+        let pixel = if a > b { a } else { b };
+        if pixel.is_zero() || !pixel.is_finite() {
+            return None;
+        }
+        let mut zoom = Float::with_val(1024, 4.0);
+        zoom /= &pixel;
+        if zoom <= 1.0 {
+            return None;
+        }
+        // Float::to_f64 saturates to ±inf for values outside f64 range, so use log2
+        // first then convert — log2(1e8000) ≈ 26575 fits comfortably in f64.
+        let lz = zoom.ln() / Float::with_val(1024, 2.0f64.ln());
+        Some(lz.to_f64())
+    };
+    match log2_from_hp().or_else(log2_from_f64) {
+        Some(v) if v.is_finite() && v > 0.0 => Some(v),
+        _ => None,
+    }
+}
+
 pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32 {
     if params.width == 0 || params.height == 0 {
         return params.precision_bits.max(128);
@@ -642,60 +706,12 @@ pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32
     // For super-deep zooms (zoom > 1e308) the f64 pixel_size underflows to 0, which
     // previously made this function fall through to params.precision_bits (typically
     // 256). At zoom 1e1000 that yields garbage reference orbits because the center
-    // is rounded to ~75 decimal digits when we actually need ~1000. Compute log2(zoom)
-    // from the HP span strings when available to keep precision correct down to any
-    // depth the corpus throws at us (corpus has zoom 1e8000).
-    let log2_zoom = {
-        let log2_from_f64 = || -> Option<f64> {
-            let pixel_size = (params.span_x.abs() / params.width as f64)
-                .max(params.span_y.abs() / params.height as f64);
-            if !pixel_size.is_finite() || pixel_size <= 0.0 {
-                return None;
-            }
-            let zoom = 4.0 / pixel_size;
-            if !zoom.is_finite() || zoom <= 1.0 {
-                return None;
-            }
-            Some(zoom.log2())
-        };
-        let log2_from_hp = || -> Option<f64> {
-            // span_x_hp stores the span as a decimal string; parse with enough precision
-            // to capture the exponent regardless of magnitude (1024 bits = ~308 decimal digits,
-            // which is sufficient for zoom up to ~10^10^4 — anything deeper than the corpus).
-            let sx = params.span_x_hp.as_deref()?;
-            let sy = params.span_y_hp.as_deref().unwrap_or(sx);
-            let parse = |s: &str| -> Option<Float> {
-                let raw = Float::parse(s).ok()?;
-                Some(Float::with_val(1024, raw))
-            };
-            let px_x = parse(sx)?;
-            let px_y = parse(sy)?;
-            // pixel_size in HP = max(|sx|/w, |sy|/h) ; we want log2(4/pixel_size).
-            let w = Float::with_val(1024, params.width as f64);
-            let h = Float::with_val(1024, params.height as f64);
-            let mut a = px_x.clone().abs();
-            a /= &w;
-            let mut b = px_y.clone().abs();
-            b /= &h;
-            let pixel = if a > b { a } else { b };
-            if pixel.is_zero() || !pixel.is_finite() {
-                return None;
-            }
-            let mut zoom = Float::with_val(1024, 4.0);
-            zoom /= &pixel;
-            if zoom <= 1.0 {
-                return None;
-            }
-            // Float::to_f64 saturates to ±inf for values outside f64 range, so use log2
-            // first then convert — log2(1e8000) ≈ 26575 fits comfortably in f64.
-            let lz = zoom.ln() / Float::with_val(1024, 2.0f64.ln());
-            Some(lz.to_f64())
-        };
-        log2_from_hp().or_else(log2_from_f64)
-    };
-    let log2_zoom = match log2_zoom {
-        Some(v) if v.is_finite() && v > 0.0 => v,
-        _ => return params.precision_bits.max(128),
+    // is rounded to ~75 decimal digits when we actually need ~1000. `log2_zoom`
+    // computes it from the HP span strings when available to keep precision correct
+    // down to any depth the corpus throws at us (corpus has zoom 1e8000).
+    let log2_zoom = match log2_zoom(params) {
+        Some(v) => v,
+        None => return params.precision_bits.max(128),
     };
 
     let final_bits = if params.use_reference_precision_formula {
@@ -1820,6 +1836,7 @@ pub fn render_perturbation_with_cache(
         progress.tile.store(100, Ordering::Relaxed);
         progress.finish();
         let _ = reporter.join();
+        crate::fractal::wisdom::log_plan_if_enabled(params);
         let path_label = bytecode_path_label(params).unwrap_or("legacy_fexp");
         print_fractall_summary(
             path_label,
