@@ -674,6 +674,16 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
       11 goldens 🟢, parité full corpus atom-ON. Reste : wfs_mb résidu inside_mm=12 (≈parfait,
       vs 65479 avant) ; mid-range 1e13–1e280 pas encore atom (rebase-at-end pas porté au path f64,
       cf. glitch_test_2 1.30× — prochain levier).
+    - **✅ wfs_mb inside_mm=12 ADJUGÉ : FRACTALL CORRECT, F3 FAUX (2026-07-12).**
+      Les 12 px de désaccord bordent le cœur intérieur (~58 px au centre de la vue,
+      évasions 7.7-9.7 M proches du cap 10 M). Probes GMP PUR 1×1 aux coordonnées
+      exactes de 2 px opposés (orientation du mapping pixel→c validée : pert 1×1
+      = EXR à 9 iters près sur 9.5 M) : (a) px(122,123) F3=intérieur/FR=évasion
+      9 487 965 → GMP s'évade, **max_diff=1** ; (b) px(125,122) F3=évasion 8.5 M/
+      FR=intérieur → GMP intérieur jusqu'à 12 M, **max_diff=0**. Dans les DEUX sens
+      fractall = ground truth ; le résidu est l'erreur de F3 (précision de son type
+      numérique à 1e2020 sur bord chaotique). **AUCUN déficit de correction
+      fractall connu sur le corpus 84 cas.**
   - [x] **Auto-adjust × atom-truncated : orbite payée 2× en mode normal (2026-07-12).**
     L'heuristique auto-adjust (`skip_ratio > 25 % → double iteration_max + RECALCULE
     l'orbite`) prenait la réf ATOM-TRONQUÉE (ref_len ≪ iter_max, intentionnel) pour
