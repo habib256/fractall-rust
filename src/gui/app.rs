@@ -436,7 +436,13 @@ impl FractallApp {
             .and_then(|p| Float::with_val(128, p).get_exp())
             .map(|e| (-(e as i64)).max(0) + 96) // -log2(span) + marge 96 bits
             .unwrap_or(HP_PRECISION as i64);
-        bits.clamp(HP_PRECISION as i64, 65536) as u32
+        // Plafond aligné sur MAX_PERTURB_PRECISION_BITS (262 144 ≈ 1e78900) :
+        // un clamp GUI plus bas que le moteur arrondirait le centre au zoom
+        // → vue fausse aux zooms ultra-profonds (e22522, e52465).
+        bits.clamp(
+            HP_PRECISION as i64,
+            crate::fractal::perturbation::MAX_PERTURB_PRECISION_BITS as i64,
+        ) as u32
     }
 
     /// Effectue un zoom en haute précision.

@@ -621,11 +621,15 @@ pub(crate) fn effective_pixel_size(params: &FractalParams) -> f64 {
 ///   `bits = max(24, 24 + floor(log2(zoom * height)))`, puis clamp 128..8192.
 /// - **Politique conservative** (défaut): `bits = log2(zoom) + marge_par_palier`, 128..8192.  
 ///   Choix délibéré plus conservateur pour éviter les glitches aux zooms extrêmes.
-/// Plafond de précision GMP pour la perturbation (≈ zoom 1e19700, largement
-/// au-dessus du corpus documenté 1e8000). Borné pour éviter que la mémoire ne
-/// dérape aux zooms pathologiques (cf. [[memory-caution]]) ; un dépassement
-/// déclenche un avertissement plutôt qu'un rendu faux silencieux.
-pub(crate) const MAX_PERTURB_PRECISION_BITS: u32 = 65536;
+/// Plafond de précision GMP pour la perturbation (≈ zoom 1e78900). F3 n'a
+/// AUCUN plafond (`param.cc:132`) ; le nôtre est un garde-fou anti-boucle
+/// pathologique, pas une contrainte mémoire — l'orbite est stockée en
+/// ComplexExp/f64 (le GMP dense est paresseux), seuls quelques temporaires
+/// GMP portent la pleine précision (≈ 32 Ko à 262 144 b). Relevé de 65 536
+/// (≈ 1e19700) à 262 144 le 2026-07-12 : e22522 (74 855 b requis) et e52465
+/// (174 350 b) rendaient une image UNIFORME fausse (réf sous-précise,
+/// avertie). Coût = temps d'orbite GMP uniquement. Au-delà : avertissement.
+pub(crate) const MAX_PERTURB_PRECISION_BITS: u32 = 262_144;
 
 pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32 {
     if params.width == 0 || params.height == 0 {
@@ -699,14 +703,14 @@ pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32
         let exp = (log2_zoom + log2_height).floor() as i64;
         // 1 + exp matches max(24, 24 + exp) when exp grows; clamp negative to 0.
         let bits = if exp >= 0 { (24 + exp) as i64 } else { 24 } as u64;
-        // Garde-fou « zéro sortie fausse silencieuse » : au-delà du clamp (65536 b
-        // ≈ zoom 1e19700, bien au-dessus du corpus documenté 1e8000), la référence
-        // est sous-précise → image potentiellement uniforme/fausse (cf. e22522,
-        // 1e22522, ~74800 b requis). On AVERTIT au lieu de rendre faux en silence.
+        // Garde-fou « zéro sortie fausse silencieuse » : au-delà du clamp
+        // (262 144 b ≈ zoom 1e78900, > corpus max e52465 = 174 350 b), la
+        // référence est sous-précise → image potentiellement uniforme/fausse.
+        // On AVERTIT au lieu de rendre faux en silence.
         if bits > MAX_PERTURB_PRECISION_BITS as u64 {
             eprintln!(
                 "[PRECISION] ⚠ zoom requiert ~{} bits > plafond {} : référence sous-précise, \
-                 l'image peut être uniforme/fausse (zoom hors plage supportée ~1e19700).",
+                 l'image peut être uniforme/fausse (zoom hors plage supportée ~1e78900).",
                 bits, MAX_PERTURB_PRECISION_BITS
             );
         }
@@ -2035,6 +2039,31 @@ mod tests {
                 (actual_log2 - expected_log2).abs() < 5.0,
                 "{} log2 mismatch: got {} expected {}",
                 label, actual_log2, expected_log2
+            );
+        }
+    }
+
+    /// VERROU précision ultra-deep (2026-07-12) : le plafond 65 536 b rendait
+    /// e22522 (74 855 b requis) et e52465 (174 350 b) en image UNIFORME fausse
+    /// (réf sous-précise). F3 n'a AUCUN plafond (`param.cc:132`) ; le nôtre
+    /// (262 144 b) doit couvrir tout le corpus. Régression = ce test casse.
+    #[test]
+    fn precision_bits_covers_ultra_deep_corpus() {
+        use super::compute_perturbation_precision_bits;
+        for (label, span_str, min_bits) in [
+            ("e22522", "1.38e-22522", 74_000u32),
+            ("e52465", "3.88e-52465", 174_000u32),
+        ] {
+            let mut p = default_params_for_type(FractalType::Mandelbrot, 256, 256);
+            p.span_x = 0.0;
+            p.span_y = 0.0;
+            p.span_x_hp = Some(span_str.to_string());
+            p.span_y_hp = Some(span_str.to_string());
+            let bits = compute_perturbation_precision_bits(&p);
+            assert!(
+                bits >= min_bits,
+                "{label}: {bits} bits < {min_bits} requis — plafond MAX_PERTURB_PRECISION_BITS \
+                 trop bas (réf sous-précise → image uniforme fausse)"
             );
         }
     }

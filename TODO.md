@@ -191,6 +191,16 @@ comparable entre cas) :
     croissant ensuite à la demande. seahorse ne réserve plus 137 GB → **échoue
     proprement** (timeout/`killed_oom` sous cap) au lieu de crasher l'OS. Verrou :
     `orbit_reserve_caps_pathological_iteration_max` (200 unit PASS), goldens 10/10.
+  - **✅ HORS-PLAGE PRÉCISION RÉSOLU (2026-07-12) : plafond 65 536 → 262 144 b
+    (`MAX_PERTURB_PRECISION_BITS`), e22522 + e52465 CORRIGÉS.** F3 n'a AUCUN
+    plafond (`param.cc:132`) ; le nôtre datait d'une crainte mémoire infondée
+    (l'orbite est stockée ComplexExp/f64, la précision ne porte que sur quelques
+    temporaires GMP ≈ 32 Ko à 262 144 b). À pleine précision, l'atom-domain FIRE
+    (la réf sous-précise cassait le critère) : e22522 réf 1 M→213 574 iters,
+    orbite 87.6→52.7 s, **53.1 s vs F3 56.3 s (WIN, était 1.58× ET faux)**,
+    parité Δmean=1.96/inside_mm=0 ✓ ; e52465 (174 322 b) réf 2.88 M→639 392,
+    rend structuré en 576 s @96². GUI `hp_arith_precision` aligné sur le même
+    plafond. Verrou : unit `precision_bits_covers_ultra_deep_corpus`.
   - **✅ e22522 DÉ-QUARANTAINÉ (2026-07-10)** : vérifié — rend en fractall en
     **92 s / pic RSS 1.23 GB @256²** (orbite GMP 88 s à 65 536 b, pixels 3.6 s),
     exit 0, **aucun OOM**. Ce n'était PAS un OOM fractall : `died_uncleanly`
