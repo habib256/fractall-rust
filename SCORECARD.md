@@ -2,21 +2,11 @@
 
 # SCORECARD — fractall vs Fraktaler-3
 
-- **Date** : 2026-07-12T06:38:49+00:00
-- **Commit** : `00ca329`  ⚠️ arbre modifié (dirty)
+- **Date** : 2026-07-12T09:29:05+00:00
+- **Commit** : `8169cf8`  ⚠️ arbre modifié (dirty)
 - **Machine** : Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz · 16 threads · Linux 6.14.0-37-generic
-- **Tier** : quick · 256×256 · quality 96×96 · runs=3 · axes=speed,parity,quality,goldens
+- **Tier** : quick · 256×256 · quality 96×96 · runs=1 · axes=quality,parity,goldens
 - **F3** : /home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux
-
-## Vitesse (ratio fractall/F3, <1 = fractall gagne)
-
-| Métrique | Valeur | vs baseline |
-|---|---:|---|
-| geomean ratio | 0.243 |  (↓0.0063 ✅) |
-| pire ratio | 0.551 (test5) | |
-| wins (ratio<1) | 10 | |
-| timeouts | 0 | |
-| cas comparés | 10/10 | |
 
 ## Parité (compare_f3 — Δsmooth-iter vs F3)
 
@@ -39,10 +29,6 @@
 ## Goldens (pixel-exact)
 
 - 🟢 VERT
-
-## Au-delà de F3
-
-- **speed_wins** : test5, spiral, flake, glitch_test_2, e50, e113, e401, e1000, floral_fantasy, dragon
 
 ## Gaps (top 10 — sévérité asc, magnitude desc)
 

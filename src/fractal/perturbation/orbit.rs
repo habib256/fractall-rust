@@ -1070,7 +1070,16 @@ pub fn compute_reference_orbit_cached(
                 let max_iter = adjusted_params.iteration_max as f64;
                 if max_iter > 0.0 {
                     let skip_ratio = skip / max_iter;
+                    // Réf ATOM-TRONQUÉE : `validated_skip` sature à la période
+                    // atom (ref_len ≪ iteration_max, intentionnel — le pixel
+                    // loop cycle par rebase-at-end). Ce n'est PAS un signal
+                    // « iter_max trop bas » : doubler recalculerait l'orbite
+                    // entière pour re-tronquer au même point (orbite payée 2×,
+                    // dragon 96² total 4.0→1.6 s) et gonflerait l'iter_max des
+                    // pixels intérieurs. L'heuristique ne vaut que pour les
+                    // réfs pleines/escape-truncated.
                     if skip_ratio > SKIP_RATIO_INCREASE
+                        && !orbit.atom_truncated
                         && adjusted_params.iteration_max < MAX_ITERATION_CAP
                     {
                         // Series skips >25% of iterations: double and recompute

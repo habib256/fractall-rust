@@ -674,6 +674,21 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
       11 goldens 🟢, parité full corpus atom-ON. Reste : wfs_mb résidu inside_mm=12 (≈parfait,
       vs 65479 avant) ; mid-range 1e13–1e280 pas encore atom (rebase-at-end pas porté au path f64,
       cf. glitch_test_2 1.30× — prochain levier).
+  - [x] **Auto-adjust × atom-truncated : orbite payée 2× en mode normal (2026-07-12).**
+    L'heuristique auto-adjust (`skip_ratio > 25 % → double iteration_max + RECALCULE
+    l'orbite`) prenait la réf ATOM-TRONQUÉE (ref_len ≪ iter_max, intentionnel) pour
+    un signal « iter_max trop bas » : dragon 96² total 4.0 s (orbite 1.43 s × 2 +
+    série × 2) et iter_max silencieusement doublé (pixels 5 M → 10 M, écart au TOML
+    et à F3 qui n'ajuste jamais). INVISIBLE au harness (sweeps = NO_AUTO_ADJUST=1) —
+    seul le mode normal CLI/GUI payait. Fix : l'heuristique ignore les réfs
+    `atom_truncated` (elle reste active pour les réfs pleines/escape-truncated, son
+    but d'origine). Vérif : goldens 18/18 pixel-exact (aucune image ne change : les
+    cas concernés s'évadent sous l'iter_max demandé), quality 11 PASS, parité 10 ok.
+    **Timing confirmé (3 runs A/B binaires, machine ~libre)** : dragon 96² mode
+    normal 4.07-4.11 s → **2.05-2.11 s (2.0×)**.
+    Reste (perf orbite, non mesuré) : la table de SÉRIE est construite sur le path
+    bytecode uniquement pour nourrir cette heuristique (~0.6 s dragon) — candidate
+    à un gating plus fin.
   - [x] **TENTATIVE 10 — mid-range atom FAIT (2026-07-12) : gate atom étendu à
     pixel_size < 1e-13 + rebase-at-end porté au path f64 + guard BLA.** Changements :
     (1) `orbit.rs` gate `atom_period_enabled` : seuil `PIXEL_SIZE_EXP_THRESHOLD`
