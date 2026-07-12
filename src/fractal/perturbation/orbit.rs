@@ -1014,9 +1014,20 @@ pub fn compute_reference_orbit_cached(
         // `series_will_be_used` court-circuite le build mort sur le path bytecode
         // sans auto-adjust (cf. définition plus haut). `force_series` (debug)
         // reste prioritaire.
+        //
+        // Réf ATOM-TRONQUÉE + path bytecode : la série n'y sert QU'À
+        // l'heuristique auto-adjust (les pixels bytecode ne la lisent jamais),
+        // et cette heuristique ignore désormais les réfs atom-tronquées (cf.
+        // branche « increase ») → build 100 % mort. On le saute : dragon 96²
+        // série 0.59 s / total 1.98 s (30 %). Les réfs pleines/escape-truncated
+        // gardent la série (l'heuristique peut encore firer).
+        let series_dead_for_atom = orbit.atom_truncated
+            && crate::fractal::perturbation::delta::bytecode_path_label(&adjusted_params)
+                .is_some();
         let should_build_series = !disable_series
             && (force_series
                 || (series_will_be_used
+                    && !series_dead_for_atom
                     && adjusted_params.series_standalone
                     && matches!(adjusted_params.fractal_type, FractalType::Mandelbrot | FractalType::Julia)
                     && (!small_image || adjusted_params.iteration_max >= 5000)

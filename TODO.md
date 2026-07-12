@@ -686,9 +686,10 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     cas concernés s'évadent sous l'iter_max demandé), quality 11 PASS, parité 10 ok.
     **Timing confirmé (3 runs A/B binaires, machine ~libre)** : dragon 96² mode
     normal 4.07-4.11 s → **2.05-2.11 s (2.0×)**.
-    Reste (perf orbite, non mesuré) : la table de SÉRIE est construite sur le path
-    bytecode uniquement pour nourrir cette heuristique (~0.6 s dragon) — candidate
-    à un gating plus fin.
+    **Suivi FAIT (même jour)** : série gatée off quand `atom_truncated` + path
+    bytecode (elle ne nourrissait que l'heuristique, désormais inerte sur ces réfs) —
+    dragon 96² phase réf 1.98 → **1.40 s** (−30 %), série=0 aussi sur e50/gt2/e22522.
+    `force_series` (debug) continue de forcer. Legacy path : série conservée.
   - [x] **TENTATIVE 10 — mid-range atom FAIT (2026-07-12) : gate atom étendu à
     pixel_size < 1e-13 + rebase-at-end porté au path f64 + guard BLA.** Changements :
     (1) `orbit.rs` gate `atom_period_enabled` : seuil `PIXEL_SIZE_EXP_THRESHOLD`
