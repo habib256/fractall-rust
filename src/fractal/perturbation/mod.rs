@@ -621,15 +621,17 @@ pub(crate) fn effective_pixel_size(params: &FractalParams) -> f64 {
 ///   `bits = max(24, 24 + floor(log2(zoom * height)))`, puis clamp 128..8192.
 /// - **Politique conservative** (défaut): `bits = log2(zoom) + marge_par_palier`, 128..8192.  
 ///   Choix délibéré plus conservateur pour éviter les glitches aux zooms extrêmes.
-/// Plafond de précision GMP pour la perturbation (≈ zoom 1e78900). F3 n'a
-/// AUCUN plafond (`param.cc:132`) ; le nôtre est un garde-fou anti-boucle
-/// pathologique, pas une contrainte mémoire — l'orbite est stockée en
-/// ComplexExp/f64 (le GMP dense est paresseux), seuls quelques temporaires
-/// GMP portent la pleine précision (≈ 32 Ko à 262 144 b). Relevé de 65 536
-/// (≈ 1e19700) à 262 144 le 2026-07-12 : e22522 (74 855 b requis) et e52465
-/// (174 350 b) rendaient une image UNIFORME fausse (réf sous-précise,
-/// avertie). Coût = temps d'orbite GMP uniquement. Au-delà : avertissement.
-pub(crate) const MAX_PERTURB_PRECISION_BITS: u32 = 262_144;
+/// PAS de plafond de précision par design — parité F3 (`param.cc:132` :
+/// aucun clamp haut). Historique : un plafond 65 536 b (crainte mémoire
+/// infondée — la précision ne vit que dans quelques temporaires GMP, l'orbite
+/// est stockée ComplexExp/f64) rendait e22522/e52465 en image UNIFORME fausse ;
+/// relevé à 262 144 puis SUPPRIMÉ le 2026-07-12 (décision utilisateur : « il
+/// ne devrait pas y avoir de limite de précision »). La seule borne restante
+/// est celle du type : `rug::Float::with_val` prend un `u32` (≈ 4.3 G bits ≈
+/// zoom 1e1.3e9) — borne technique, pas un choix. Le coût d'un zoom extrême
+/// est du TEMPS d'orbite (observable), pas un rendu faux silencieux ; les
+/// sweeps harness restent protégés par RLIMIT_AS + timeouts.
+pub(crate) const MAX_PERTURB_PRECISION_BITS: u32 = u32::MAX;
 
 pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32 {
     if params.width == 0 || params.height == 0 {
@@ -703,15 +705,15 @@ pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32
         let exp = (log2_zoom + log2_height).floor() as i64;
         // 1 + exp matches max(24, 24 + exp) when exp grows; clamp negative to 0.
         let bits = if exp >= 0 { (24 + exp) as i64 } else { 24 } as u64;
-        // Garde-fou « zéro sortie fausse silencieuse » : au-delà du clamp
-        // (262 144 b ≈ zoom 1e78900, > corpus max e52465 = 174 350 b), la
-        // référence est sous-précise → image potentiellement uniforme/fausse.
-        // On AVERTIT au lieu de rendre faux en silence.
+        // Pas de plafond (parité F3) : la précision suit le zoom sans limite
+        // de design. Seule borne = le type (`rug` prec u32) ; si un zoom
+        // l'atteignait un jour (~1e1.3e9), on avertit — c'est la limite de la
+        // bibliothèque, pas un rendu faux silencieux choisi.
         if bits > MAX_PERTURB_PRECISION_BITS as u64 {
             eprintln!(
-                "[PRECISION] ⚠ zoom requiert ~{} bits > plafond {} : référence sous-précise, \
-                 l'image peut être uniforme/fausse (zoom hors plage supportée ~1e78900).",
-                bits, MAX_PERTURB_PRECISION_BITS
+                "[PRECISION] ⚠ zoom requiert ~{} bits > max u32 rug/MPFR : précision \
+                 saturée au maximum du type.",
+                bits
             );
         }
         bits.clamp(128, MAX_PERTURB_PRECISION_BITS as u64) as u32
@@ -2045,14 +2047,17 @@ mod tests {
 
     /// VERROU précision ultra-deep (2026-07-12) : le plafond 65 536 b rendait
     /// e22522 (74 855 b requis) et e52465 (174 350 b) en image UNIFORME fausse
-    /// (réf sous-précise). F3 n'a AUCUN plafond (`param.cc:132`) ; le nôtre
-    /// (262 144 b) doit couvrir tout le corpus. Régression = ce test casse.
+    /// (réf sous-précise). F3 n'a AUCUN plafond (`param.cc:132`) ; le nôtre est
+    /// SUPPRIMÉ (u32::MAX = borne du type rug, décision utilisateur 2026-07-12) —
+    /// le cas 1e300000 verrouille l'absence de plafond de design. Régression =
+    /// ce test casse.
     #[test]
     fn precision_bits_covers_ultra_deep_corpus() {
         use super::compute_perturbation_precision_bits;
         for (label, span_str, min_bits) in [
             ("e22522", "1.38e-22522", 74_000u32),
             ("e52465", "3.88e-52465", 174_000u32),
+            ("no-design-cap-1e300000", "1e-300000", 996_000u32),
         ] {
             let mut p = default_params_for_type(FractalType::Mandelbrot, 256, 256);
             p.span_x = 0.0;
