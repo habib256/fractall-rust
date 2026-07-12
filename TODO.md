@@ -216,15 +216,18 @@ comparable entre cas) :
     de quarantaine ne vise que les **crashers** (HARNESS.md) ; seahorse ne crashe
     plus → hors quarantaine (tombstone `resolved.json`, fix vérifié). But projet
     « corpus complet supporté » **atteint côté robustesse/mémoire**.
-  - **⚠️ Gap résiduel seahorse (QUALITÉ + VITESSE, pas mémoire)** : image
-    **uniforme** (magenta plat, avg_iter 49.7 M ≈ max 50.1 M, spread 0.8 % — pas
-    de structure) car l'orbite référence escape-time à ~50 M ne révèle pas le
-    minibrot sans **nucleus-centering** (cf. §Nucleus finder : réf périodique
-    exacte requise à deep zoom). **F3 lui-même échoue** sur seahorse (`f3_fail`,
-    parité `f5b7c90`) → pas de ground-truth, fractall est ici **plus robuste que
-    F3**. Leviers : `--find-nucleus` sur ce type de vue ultra-deep ; et vitesse
-    216 s (orbite 207 s = 4667 b × ~50 M iters GMP, incompressible sans float128).
-    Comparable au cas hors-plage e22522 : *rend mais dégradé, à améliorer plus tard*.
+  - **✅ seahorse ADJUGÉ CORRECT (2026-07-12) — l'image uniforme est la VRAIE
+    image, pas un bug.** Ground truth par GMP PUR per-pixel (probe 4×2, 8 px
+    à ~49.7 M iters chacun, 4654 b, 38 min de calcul) : **max_diff=0** — la
+    perturbation reproduit EXACTEMENT les itérations vraies. Le spread réel de
+    la vue n'est que ~6 445 iters sur 49.7 M (1.3e-4 relatif) → une seule
+    couleur, légitimement. L'ancienne hypothèse « nucleus-centering requis »
+    est INFIRMÉE (il n'y a pas de structure à révéler à cette résolution).
+    F3 crashe sur ce cas (sig 6) → fractall va au-delà de F3 ici. Piège
+    d'instrumentation corrigé : le log quality « bits=256 » affichait le champ
+    PLANCHER utilisateur, pas la précision effective (4654 b) — faux signal de
+    probe invalide. Vitesse (216 s, orbite ~50 M iters GMP) : seul levier
+    restant = float128/wisdom sur l'orbite, orthogonal.
   - Reste orthogonal pour la PERF (pas la mémoire) de ces cas intérieurs :
     period-aware reference (G2, cf. plus bas, 4 sessions brûlées — bloqué sur le
     critère atom-domain F3 exact).

@@ -76,9 +76,16 @@ pub fn compare(params: &FractalParams, opt: &ComparisonOptions) -> Result<Compar
     let perturb_time_ms = t0.elapsed().as_secs_f64() * 1000.0;
     println!("[quality] perturbation done in {:.0} ms", perturb_time_ms);
 
+    // Afficher la précision EFFECTIVE (formule zoom-aware), pas le champ
+    // utilisateur (plancher, souvent 256) : le rendu GMP interne recalcule via
+    // `compute_perturbation_precision_bits` — imprimer le plancher a fait
+    // croire à un probe invalide (seahorse 1e1392 : « bits=256 » affiché,
+    // 4654 b réellement utilisés).
     println!(
         "[quality] rendering pure GMP reference (slow): {}x{} bits={}",
-        gmp_params.width, gmp_params.height, gmp_params.precision_bits,
+        gmp_params.width,
+        gmp_params.height,
+        crate::fractal::perturbation::compute_perturbation_precision_bits(&gmp_params),
     );
     let t1 = Instant::now();
     let (gmp_iters, gmp_zs, _, _) = render_escape_time_cancellable_with_reuse(&gmp_params, &cancel, None, &mut None)
