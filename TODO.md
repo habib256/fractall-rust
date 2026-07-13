@@ -1346,10 +1346,30 @@ Actions candidates pour la boucle (ordre suggéré) :
   la sémantique `--zoom`, câbler la colonne speed Mandelbrot ; F3 reste la
   référence tous-types. Fallback si le port Linux est trop vert : suivre les
   releases.
-- [ ] **Étudier `ImaginaFractal/Algorithms`** (MipLA/HarmonicLLA vs BLA mat2 ;
-  PTWithCompression vs notre orbite 32-48 o/iter) et porter ce qui gagne —
-  c'est le successeur naturel de « porter l'approche F3 ». Clone :
-  ~/src/Imagina-Algorithms.
+- [x] **✅ Étude `ImaginaFractal/Algorithms` (2026-07-14)** — analyse complète
+  dans **`docs/imagina-algorithms-analysis.md`** (pendant de
+  fraktaler-3-analysis.md ; clone ~/src/Imagina-Algorithms, 5 évaluateurs,
+  1169 lignes). Acquis : notre rebasing/boucle pixel = le canon de Zhuoran
+  (aucune glitch-detection → architecture validée) ; MipLA ≈ notre BLA (on
+  fait même mieux sur la mémoire via skip-levels) ; leur arrêt de réf =
+  atom-domain inconditionnel ×2 (nous : gaté par plage). Deux techniques à
+  porter, en ordre :
+  - [ ] **Port PTWithCompression** (orbite fantôme f64 + waypoints, tol 2⁻³²,
+    stockage O(waypoints)) : vise wfs_mb ~2 GB / opus2 8 GB / dragon 240 Mo
+    d'orbite → ~Mo, + gain cache probable ≥10⁶ iters. Pont : stocker
+    Z_atterrissage dans `BlaMultiStep` (+16 o/nœud) pour l'accès aléatoire
+    post-saut. Env-gated, A/B wfs_mb/dragon/opus2, verrous goldens+quality+
+    fuzz. Piège connu à tester : e22522 (réf frôlant 0 sous 1e-308).
+  - [ ] **Prototype Harmonic LA** (`FRACTALL_HARMONIC_LA=1`, Mandelbrot f64) :
+    segments variables coupés aux dips, plafonnés à la période, étages =
+    hiérarchie des minibrots, évaluation par descente (1 check/segment au lieu
+    d'un lookup/position), premier pas de segment quadratique EXACT. Commencer
+    par la variante MLA (segmentation magnitude, plus simple), A/B sur les cas
+    BLA-bound (glitch_test_2, e113, dragon, e50) ; si gain → LLA puis
+    généralisation Mat2 + tier exp. C'est LE levier vitesse d'Imagina.
+  - [ ] **Micro-A/B** (une itération) : chaînage des sauts BLA avant le check
+    de rebase (style MipLA) ; chebyshev vs norm_sqr sur la validité BLA.
+    Mesure standard-tier, revert si neutre.
 - [x] **✅ Cross-check ground truth indépendant (2026-07-14)** :
   `scripts/independent_probe.py` — mpmath pur-Python (zéro GMP/MPFR/rug),
   réplique exactement mapping pixel→c + boucle escape des 7 familles QA, lit
