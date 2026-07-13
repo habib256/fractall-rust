@@ -1302,6 +1302,61 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
   latence progress reporter → geomean vitesse 1.712→0.966 ; rebaseline
   `a8bf871`).
 
+**🧭 G8.2 — Après F3 : évolution des références de la boucle (survey 2026-07-14).**
+Constat en 3 points : (a) **vitesse** — fractall bat F3 partout (quick 10/10,
+standard 25/25, full 77/80) : l'axe head-to-head F3 ne tire plus vers le haut ;
+(b) **correction** — F3 n'est PAS ground truth aux zooms modérés (wisdom défaut
+= tier float 24 b, cf. diag 3-voies G3 2026-07-13 : 9391 px faux vs 16 chez
+fractall) — le vrai juge reste notre GMP per-pixel ; (c) **algorithmique** —
+F3 3.1 (2025-06) reste la dernière stable, KF2+ est arrêté (jamais de BLA), mais
+la frontière algo est chez **Imagina** (Zhuoran) et **FractalShark**. Paysage
+vérifié (2026-07-14) :
+- **Imagina** (AGPL-3, Windows, réécriture `ImaginaFractal/ImaginaCore` WIP) —
+  réputé le plus rapide CPU. Surtout : **`ImaginaFractal/Algorithms`** (GPL-3)
+  = implémentations de référence de **HarmonicLLA / HarmonicMLA / MipLA /
+  PTWithCompression** (compression d'orbite de référence) — la génération
+  d'après-BLA. À étudier pour les prochains goals perf (candidats : LA
+  harmonique vs notre BLA mat2 ; compression de réf pour la mémoire deep).
+- **FractalShark** (GPL-3, actif — release 0.532 du 2026-07-05, Mandelbrot
+  SEULEMENT) : `FractalSharkCli` batch + port **Linux expérimental** (CMake/
+  Clang) ; orbite de référence **GPU par NTT** (~10× vs CPU MPIR à précision
+  extrême), 2 implémentations LA CUDA, compression de réf à la Zhuoran, custom
+  float 2×32+exp GPU. **Cette machine a une RTX 4060 Ti 16 GB (driver 595)**
+  → exploitable, MAIS `nvcc` absent : le build exige `sudo apt install
+  cuda-toolkit` (action utilisateur, pas de sudo autonome).
+Actions candidates pour la boucle (ordre suggéré) :
+- [x] **✅ Arbitre 3-voies intégré au harness (2026-07-14)** :
+  `harness.py adjudicate <stem>` (via `three_way_gmp.py --case`) rend
+  fractall/F3/GMP et persiste le verdict (`fractall_wrong`/`f3_wrong`/
+  `shared`/`both_match_gmp`) dans `harness/adjudications.json` (versionné) ;
+  `compute_gaps` annote les gaps parité avec le verdict (un `f3_wrong` est
+  déclassé sév. 2→4). Premiers adjugés : test5 `both_match_gmp` ; **rug
+  `shared` MAIS fractall big=156 vs F3 big=3852 (max 28181) à 64² — fractall
+  ~25× plus fidèle à GMP que F3 même sur notre seul déficit connu.**
+- [x] **✅ Axe fuzz livré (2026-07-14)** : `scripts/fuzz_scenes.py` (scènes
+  frontière stables déterministes — bump additif 2⁻⁴⁶, filtre axes de pliage,
+  6 familles, zoom 1e5-1e11) + `axis_fuzz` dans harness.py (quick=3/standard=6/
+  full=8 sondes 96², seed committée `FUZZ_SEED_DEFAULT=20260714`, cache
+  bench/harness/fuzz/, section scorecard + gaps sév. 1 sur FAIL). Premier run :
+  2 PASS + 1 WARN (mandelbrot 6e7, 75 px épars p99=0 — la classe plancher-f64
+  visée, détectée du premier coup). Rotation de seed au rebaseline (HARNESS.md).
+- [ ] **2e référence vitesse Mandelbrot-deep : FractalSharkCli** — script prêt
+  (`scripts/build_fractalshark_linux.sh`, gated nvcc ; clone ~/src/FractalShark
+  fait) ; ATTEND l'install CUDA toolkit (en cours, user). Puis : build, calibrer
+  la sémantique `--zoom`, câbler la colonne speed Mandelbrot ; F3 reste la
+  référence tous-types. Fallback si le port Linux est trop vert : suivre les
+  releases.
+- [ ] **Étudier `ImaginaFractal/Algorithms`** (MipLA/HarmonicLLA vs BLA mat2 ;
+  PTWithCompression vs notre orbite 32-48 o/iter) et porter ce qui gagne —
+  c'est le successeur naturel de « porter l'approche F3 ». Clone :
+  ~/src/Imagina-Algorithms.
+- [x] **✅ Cross-check ground truth indépendant (2026-07-14)** :
+  `scripts/independent_probe.py` — mpmath pur-Python (zéro GMP/MPFR/rug),
+  réplique exactement mapping pixel→c + boucle escape des 7 familles QA, lit
+  les params dans le PNG (chunk fractall-params) et arbitre les top-divergents
+  d'un report.json. Validé : e13 4/4 top-divergents → mpmath 512 b == juge GMP
+  (pert diverge comme documenté) — notre juge est confirmé sans common-mode.
+
 ---
 
 ## ✅ Shipped (condensé, le plus récent en haut)

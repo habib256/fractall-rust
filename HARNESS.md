@@ -23,7 +23,7 @@
 └────────────────────────────────────────────────────────────┘
 ```
 
-## Les trois axes et leurs métriques
+## Les quatre axes et leurs métriques
 
 ### 1. Vitesse (`speed`)
 Head-to-head **fractall vs F3**, mêmes cas, même taille, mêmes itérations,
@@ -57,12 +57,37 @@ Plus goldens (`tests/golden_images.rs`, pixel-exact) = non-régression absolue.
 - Au-delà : AA multi-sample, smooth coloring, modes hors-F3 — toute nouvelle
   feature de qualité DOIT arriver avec sa métrique dans la suite ou un golden.
 
+### 4. Fuzz (`fuzz`, G8.2 2026-07-14)
+N sondes **aléatoires déterministes** pert-vs-GMP (96², même juge que quality).
+Les scènes (`scripts/fuzz_scenes.py`) sont des points frontière **stables**
+(échappement invariant à un bump 2⁻⁴⁶ de c — ground truth bien conditionnée,
+les frontières hirsutes sont filtrées) tirés sur 6 familles, zoom 1e5-1e11.
+Vise les classes de divergence que les presets figés ratent (la classe
+e13/dd-sensibilité avait été trouvée PAR ACCIDENT). Quick=3, standard=6,
+full=8 sondes. La **seed est committée** (`FUZZ_SEED_DEFAULT`, affichée dans
+le scorecard) → chaque score rejoue les mêmes scènes ; la faire **tourner au
+rebaseline** (`--fuzz-seed`) pour élargir la couverture au fil du temps.
+- Gap : FAIL fuzz = sévérité 1 (correction) ; WARN = 4 ; ERROR (rendu KO) = 2.
+
+### Arbitre 3-voies (`adjudicate`, G8.2 2026-07-14)
+**F3 n'est PAS ground truth aux zooms modérés** (wisdom défaut = tier float
+24 b, cf. TODO G3 diag 2026-07-13). Une divergence parité ne dit donc pas qui
+a tort. `harness.py adjudicate <stem>` rend le cas en 3 voies (fractall-pert /
+F3 / GMP per-pixel, via `scripts/three_way_gmp.py`) et **persiste** le verdict
+(`fractall_wrong` / `f3_wrong` / `shared` / `both_match_gmp`) dans
+`harness/adjudications.json` (versionné). Les scores suivants annotent les
+gaps parité avec ce verdict — un cas `f3_wrong` est déclassé (sév. 2→4).
+Fin du re-litige manuel. ⚠️ GMP per-pixel ≈ 1 µs/iter × size² : `--size 64`
+sur les cas profonds. Adjugés au 2026-07-14 : test5 (`both_match_gmp`), rug
+(`shared` — mais fractall big=156 vs F3 big=3852 : ~25× plus fidèle même là).
+
 ## L'outil : `scripts/harness.py`
 
 ```bash
-python3 scripts/harness.py score [--tier quick|standard|full] [--axes speed,parity,quality,goldens]
+python3 scripts/harness.py score [--tier quick|standard|full] [--axes speed,parity,quality,fuzz,goldens]
 python3 scripts/harness.py baseline          # fige le score courant comme référence
 python3 scripts/harness.py gaps              # ré-affiche les gaps du dernier score
+python3 scripts/harness.py adjudicate <stem> # arbitre 3-voies d'un cas parité (verdict persisté)
 python3 scripts/harness.py preflight         # vet le corpus SOUS cap mémoire (anti-crash-OS)
 python3 scripts/harness.py quarantine list   # cas exclus des sweeps (crash/OOM connu)
 python3 scripts/harness.py journal           # trace des incidents (OOM, crash, abort)

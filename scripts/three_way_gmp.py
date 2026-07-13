@@ -112,6 +112,9 @@ def main():
     ap.add_argument("--height", type=int, default=256)
     ap.add_argument("--scene", action="append", default=[],
                     help="custom scene NAME:RE:IM:ZOOM:ITERS (repeatable)")
+    ap.add_argument("--case", action="append", default=[],
+                    help="stem du corpus toml/ (repeatable) — remplace les "
+                         "scènes par défaut ; utilisé par `harness.py adjudicate`")
     ap.add_argument("--out", type=Path, default=REPO / "bench" / "three_way")
     args = ap.parse_args()
 
@@ -120,12 +123,15 @@ def main():
     if not CLI.exists():
         sys.exit("fractall-cli absent — cargo build --release")
 
-    scenes = list(DEFAULT_SCENES)
+    scenes = [] if (args.scene or args.case) else list(DEFAULT_SCENES)
     for s in args.scene:
         parts = s.split(":")
         if len(parts) != 5:
             sys.exit(f"--scene mal formé: {s!r} (attendu NAME:RE:IM:ZOOM:ITERS)")
         scenes.append((parts[0], parts[1], parts[2], parts[3], int(parts[4])))
+    for stem in args.case:
+        t = c.parse_light_toml(REPO / "toml" / f"{stem}.toml")
+        scenes.append((stem, t.real, t.imag, t.zoom, int(t.iterations or 1000)))
 
     args.out.mkdir(parents=True, exist_ok=True)
     print(f"# Three-way accuracy vs GMP ground truth ({args.width}x{args.height}, ER {ESCAPE_RADIUS})\n")

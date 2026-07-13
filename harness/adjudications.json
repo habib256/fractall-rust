@@ -1,0 +1,24 @@
+{
+ "test5": {
+  "date": "2026-07-13T21:41:40+00:00",
+  "git_sha": "898bcbd",
+  "size": 96,
+  "iters": 4000,
+  "fractall_big": 0,
+  "f3_big": 0,
+  "fractall_max": 0,
+  "f3_max": 0,
+  "verdict": "both_match_gmp"
+ },
+ "rug": {
+  "date": "2026-07-13T21:42:31+00:00",
+  "git_sha": "898bcbd",
+  "size": 64,
+  "iters": 100000,
+  "fractall_big": 156,
+  "f3_big": 3852,
+  "fractall_max": 367,
+  "f3_max": 28181,
+  "verdict": "shared"
+ }
+}

@@ -45,6 +45,12 @@ HISTORY_DIR = HARNESS_DIR / "history"
 BASELINE = HARNESS_DIR / "baseline.json"
 SCORECARD = REPO / "SCORECARD.md"
 BENCH = REPO / "bench" / "harness"
+ADJUDICATIONS = HARNESS_DIR / "adjudications.json"
+
+# Seed de l'axe fuzz (sondes aléatoires DÉTERMINISTES pert-vs-GMP, cf.
+# scripts/fuzz_scenes.py). Committée ici → chaque score rejoue les MÊMES
+# scènes ; la faire tourner au rebaseline pour élargir la couverture.
+FUZZ_SEED_DEFAULT = 20260714
 
 SCHEMA = 1
 SEVERITY_LABEL = {1: "correction", 2: "robustesse", 3: "vitesse", 4: "qualité"}
@@ -414,15 +420,18 @@ def tier_config(tier: str) -> dict:
     if tier == "quick":
         return {"cases": list(QUICK_CASES), "width": 256, "height": 256,
                 "runs": 1, "timeout": 120.0,
-                "quality_width": 96, "quality_height": 96}
+                "quality_width": 96, "quality_height": 96,
+                "fuzz_probes": 3}
     if tier == "standard":
         return {"cases": QUICK_CASES + STANDARD_EXTRA, "width": 256,
                 "height": 256, "runs": 3, "timeout": 300.0,
-                "quality_width": 256, "quality_height": 256}
+                "quality_width": 256, "quality_height": 256,
+                "fuzz_probes": 6}
     if tier == "full":
         return {"cases": all_toml_stems(), "width": 256, "height": 256,
                 "runs": 1, "timeout": 600.0,
-                "quality_width": 256, "quality_height": 256}
+                "quality_width": 256, "quality_height": 256,
+                "fuzz_probes": 8}
     raise SystemExit(f"tier inconnu: {tier}")
 
 def git_sha() -> str:
@@ -839,6 +848,79 @@ def axis_goldens() -> dict:
     detail = "" if passed else "\n".join(proc.stdout.splitlines()[-40:])
     return {"passed": passed, "detail": detail}
 
+def axis_fuzz(probes: int, seed: int, width: int = 96, height: int = 96,
+              mem_limit_mb: int = 0) -> dict:
+    """Sondes aléatoires DÉTERMINISTES pert-vs-GMP (G8.2). Les scènes sont des
+    points frontière stables (échappement invariant à un bump 2⁻⁴⁶ de c —
+    ground truth bien conditionnée, cf. scripts/fuzz_scenes.py) tirés sur les
+    6 familles Mandelbrot-like, zoom 1e5-1e11. Vise les classes de divergence
+    que les presets figés ratent (ex. e13/dd-sensibilité, trouvée par accident).
+    Seed committée dans le scorecard → reproductible."""
+    if not QUALITY.exists():
+        cargo_build("fractall-quality")
+    if not QUALITY.exists():
+        return {"status": "no_binary"}
+    sys.path.insert(0, str(REPO / "scripts"))
+    import fuzz_scenes
+    outdir = BENCH / "fuzz"
+    outdir.mkdir(parents=True, exist_ok=True)
+    # Cache des scènes par (seed, n) : la génération coûte ~5 s/scène.
+    cache = outdir / f"scenes-{seed}-{probes}.json"
+    if cache.exists():
+        scenes = json.loads(cache.read_text())
+    else:
+        print(f"  génération de {probes} scènes fuzz (seed {seed})…", flush=True)
+        scenes = fuzz_scenes.generate(seed, probes)
+        cache.write_text(json.dumps(scenes, indent=1))
+    cases: dict[str, dict] = {}
+    for s in scenes:
+        name = s["name"]
+        print(f"  $ fractall-quality compare --type {s['type_id']} "
+              f"--zoom {s['zoom']} --name {name}", flush=True)
+        jrec = journal_begin("fuzz", name, {"size": f"{width}x{height}"})
+        proc = subprocess.run(
+            [str(QUALITY), "compare", "--type", str(s["type_id"]),
+             f"--center-x-hp={s['center_x']}",
+             f"--center-y-hp={s['center_y']}",
+             "--zoom", s["zoom"], "--iterations", str(s["iterations"]),
+             "--width", str(width), "--height", str(height),
+             "--name", name, "--output-dir", str(outdir)],
+            cwd=REPO, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            preexec_fn=_rlimit_preexec(mem_limit_mb))
+        journal_end(jrec, _classify_rc(proc.returncode))
+        verdict = "ERROR"
+        rj = outdir / name / "report.json"
+        if proc.returncode == 0 and rj.exists():
+            try:
+                verdict = json.loads(rj.read_text()).get("verdict") or "ERROR"
+            except (json.JSONDecodeError, OSError):
+                pass
+        cases[name] = {"verdict": verdict, "type": s["type"],
+                       "center_x": s["center_x"], "center_y": s["center_y"],
+                       "zoom": s["zoom"], "iterations": s["iterations"]}
+    verdicts = [c["verdict"] for c in cases.values()]
+    return {
+        "status": "ok", "seed": seed, "n_probes": len(scenes),
+        "n_pass": verdicts.count("PASS"),
+        "n_warn": verdicts.count("WARN"),
+        "n_fail": len(verdicts) - verdicts.count("PASS") - verdicts.count("WARN"),
+        "cases": cases,
+        "fail_cases": [k for k, v in cases.items()
+                       if v["verdict"] not in ("PASS", "WARN")],
+        "warn_cases": [k for k, v in cases.items() if v["verdict"] == "WARN"],
+    }
+
+def load_adjudications() -> dict:
+    """Verdicts 3-voies persistés (harness adjudicate) : case → qui avait tort
+    (fractall/F3/partagé) vs GMP ground truth. Consommés par compute_gaps pour
+    annoter les divergences parité — fin du re-litige manuel."""
+    if ADJUDICATIONS.exists():
+        try:
+            return json.loads(ADJUDICATIONS.read_text())
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
 def _gap(axis, case, metric, value, baseline_value, severity, note):
     return {"axis": axis, "case": case, "metric": metric, "value": value,
             "baseline_value": baseline_value, "severity": severity,
@@ -876,7 +958,20 @@ def compute_gaps(card: dict, base: dict | None) -> list[dict]:
     for name in q.get("warn_presets", []):
         gaps.append(_gap("quality", name, "verdict", "WARN", None, 4,
                          "quality suite WARN"))
+    # --- fuzz (sondes aléatoires pert-vs-GMP — même juge que quality) ---
+    f = card.get("fuzz", {})
+    for name in f.get("fail_cases", []):
+        c = f.get("cases", {}).get(name, {})
+        sev = 2 if c.get("verdict") == "ERROR" else 1
+        gaps.append(_gap("fuzz", name, "verdict", c.get("verdict", "FAIL"),
+                         None, sev,
+                         f"fuzz pert≠GMP (seed {f.get('seed')} ; scène : "
+                         f"type {c.get('type')} zoom {c.get('zoom')})"))
+    for name in f.get("warn_cases", []):
+        gaps.append(_gap("fuzz", name, "verdict", "WARN", None, 4,
+                         f"fuzz WARN — divergence éparse (seed {f.get('seed')})"))
     # --- parity ---
+    adjudications = load_adjudications()
     p = card.get("parity", {})
     for name, c in p.get("cases", {}).items():
         if c.get("status") == "fractall_fail":
@@ -884,8 +979,19 @@ def compute_gaps(card: dict, base: dict | None) -> list[dict]:
                              1, "rendu fractall échoué"))
         rel = c.get("rel_dsi_pct")
         if rel is not None and rel > 2.0 and c.get("status") == "ok":
+            adj = adjudications.get(name)
+            note = "divergence parité >2%"
+            sev = 2
+            if adj:
+                note += (f" — ADJUGÉ {adj.get('verdict')} vs GMP "
+                         f"({adj.get('date', '?')[:10]}, harness adjudicate)")
+                # F3 fautif vs ground truth → pas un gap moteur fractall
+                if adj.get("verdict") == "f3_wrong":
+                    sev = 4
+            else:
+                note += " — non adjugé (harness adjudicate " + name + ")"
             gaps.append(_gap("parity", name, "rel_dsi_pct", round(rel, 4),
-                             None, 2, "divergence parité >2%"))
+                             None, sev, note))
     # --- robustesse : cas tués mémoire / en quarantaine (sévérité 2) ---
     s = card.get("speed", {})
     for name, c in s.get("cases", {}).items():
@@ -1057,6 +1163,28 @@ def build_scorecard_md(card: dict, base: dict | None) -> str:
                 L.append(f"\nFAIL : {', '.join(q['fail_presets'])}")
             L.append("")
 
+    # Fuzz
+    f = card.get("fuzz")
+    if f and f.get("status") != "skipped":
+        L += ["## Fuzz (sondes aléatoires pert vs GMP)", ""]
+        if f.get("status") != "ok":
+            L.append(f"_axe indisponible : {f.get('status')}._\n")
+        else:
+            bf = (b or {}).get("fuzz", {})
+            base_txt = ""
+            if bf and bf.get("seed") == f.get("seed"):
+                base_txt = (f" (baseline : {bf.get('n_pass')}P/"
+                            f"{bf.get('n_warn')}W/{bf.get('n_fail')}F)")
+            L.append(f"- seed `{f['seed']}` · {f['n_probes']} sondes → "
+                     f"**{f['n_pass']} PASS · {f['n_warn']} WARN · "
+                     f"{f['n_fail']} FAIL**{base_txt}")
+            for name in (f.get("fail_cases", []) + f.get("warn_cases", [])):
+                c = f["cases"][name]
+                L.append(f"  - `{name}` **{c['verdict']}** — "
+                         f"c=({c['center_x']}, {c['center_y']}) "
+                         f"zoom {c['zoom']} iters {c['iterations']}")
+            L.append("")
+
     # Goldens
     g = card.get("goldens")
     if g and g.get("status") != "skipped":
@@ -1167,6 +1295,7 @@ def cmd_score(args) -> None:
         "speed": {"status": "skipped"},
         "parity": {"status": "skipped"},
         "quality": {"status": "skipped"},
+        "fuzz": {"status": "skipped"},
         "goldens": {"status": "skipped"},
     }
 
@@ -1191,6 +1320,11 @@ def cmd_score(args) -> None:
             cfg.get("quality_height", 256),
             mem_limit_mb=mem_limit_mb,
         )
+    if "fuzz" in axes:
+        print("\n== FUZZ ==")
+        card["meta"]["fuzz_seed"] = args.fuzz_seed
+        card["fuzz"] = axis_fuzz(cfg.get("fuzz_probes", 3), args.fuzz_seed,
+                                 mem_limit_mb=mem_limit_mb)
     if "goldens" in axes:
         print("\n== GOLDENS ==")
         card["goldens"] = axis_goldens()
@@ -1437,6 +1571,62 @@ def cmd_journal(_args) -> None:
               f"{('sig=' + str(r['signal'])) if r.get('signal') else ''} "
               f"{r.get('note', '')}")
 
+def cmd_adjudicate(args) -> None:
+    """Arbitre 3-voies (fractall-pert / F3 / GMP per-pixel) d'un cas parité,
+    et PERSISTE le verdict dans harness/adjudications.json (versionné). Les
+    scores suivants annotent les gaps parité avec ce verdict — un cas adjugé
+    `f3_wrong` est déclassé (sévérité 2→4) : F3 fautif ≠ gap moteur fractall.
+    ⚠️ coût : GMP per-pixel ≈ 1 µs/iter × size² — garder --size petit sur les
+    cas profonds (>100k iters)."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import three_way_gmp as tw
+    if tw.c.F3 is None:
+        sys.exit("F3 binaire introuvable — bash scripts/build_f3_linux.sh")
+    outdir = BENCH / "three_way"
+    outdir.mkdir(parents=True, exist_ok=True)
+    adjudications = load_adjudications()
+    for stem in args.cases:
+        toml = TOML_DIR / f"{stem}.toml"
+        if not toml.exists():
+            print(f"  {stem}: toml absent — skip")
+            continue
+        t = compare_f3.parse_light_toml(toml)
+        iters = int(t.iterations or 1000)
+        print(f"→ adjudication {stem} ({args.size}² · {iters} iters · "
+              f"zoom {t.zoom})", flush=True)
+        jrec = journal_begin("adjudicate", stem, {"size": f"{args.size}"})
+        try:
+            _, _, fp, f3s, total = tw.compare(
+                stem, t.real, t.imag, t.zoom, iters, outdir,
+                args.size, args.size)
+        except Exception as e:  # rendu F3/fractall/GMP échoué
+            journal_end(jrec, "fail", {"note": str(e)})
+            print(f"  {stem}: ÉCHEC ({e})")
+            continue
+        journal_end(jrec, "ok")
+        # Verdict sur les erreurs LARGES (>5, débruité du ±1 cross-implé).
+        fb, f3b = fp["big"], f3s["big"]
+        if fb <= max(2, total // 5000) and f3b > 4 * max(fb, 1):
+            verdict = "f3_wrong"
+        elif f3b <= max(2, total // 5000) and fb > 4 * max(f3b, 1):
+            verdict = "fractall_wrong"
+        elif fb > 0 and f3b > 0:
+            verdict = "shared"
+        else:
+            verdict = "both_match_gmp"
+        adjudications[stem] = {
+            "date": _now_iso(), "git_sha": git_sha(), "size": args.size,
+            "iters": iters, "fractall_big": fb, "f3_big": f3b,
+            "fractall_max": fp["max"], "f3_max": f3s["max"],
+            "verdict": verdict,
+        }
+        print(f"  {stem}: fractall big={fb} (max {fp['max']}) · "
+              f"F3 big={f3b} (max {f3s['max']}) → {verdict}")
+    ADJUDICATIONS.write_text(json.dumps(adjudications, indent=1,
+                                        ensure_ascii=False) + "\n")
+    print(f"\n✓ {ADJUDICATIONS.relative_to(REPO)} mis à jour "
+          f"({len(adjudications)} cas adjugés)")
+
 def main() -> None:
     install_signal_handlers()  # Ctrl-C/SIGTERM → pas de fausse quarantaine
     ap = argparse.ArgumentParser(
@@ -1447,7 +1637,10 @@ def main() -> None:
     sc = sub.add_parser("score", help="Mesure et écrit un scorecard.")
     sc.add_argument("--tier", choices=["quick", "standard", "full"],
                     default="quick")
-    sc.add_argument("--axes", default="speed,parity,quality,goldens")
+    sc.add_argument("--axes", default="speed,parity,quality,fuzz,goldens")
+    sc.add_argument("--fuzz-seed", type=int, default=FUZZ_SEED_DEFAULT,
+                    help="seed des sondes fuzz (défaut committé ; le faire "
+                         "tourner au rebaseline)")
     sc.add_argument("--no-rebuild", action="store_true")
     sc.add_argument("--cases", default=None,
                     help="liste CSV de stems (override du tier)")
@@ -1496,6 +1689,15 @@ def main() -> None:
 
     bl = sub.add_parser("baseline", help="Fige le dernier history comme baseline.")
     bl.set_defaults(func=cmd_baseline)
+
+    aj = sub.add_parser("adjudicate",
+                        help="Arbitre 3-voies fractall/F3/GMP d'un cas parité "
+                             "et persiste le verdict (fin du re-litige).")
+    aj.add_argument("cases", nargs="+", help="stems toml/ à adjuger")
+    aj.add_argument("--size", type=int, default=96,
+                    help="résolution (GMP per-pixel ~1µs/iter — petit sur "
+                         "les cas profonds)")
+    aj.set_defaults(func=cmd_adjudicate)
 
     gp = sub.add_parser("gaps", help="Ré-affiche les gaps du dernier history.")
     gp.set_defaults(func=cmd_gaps)

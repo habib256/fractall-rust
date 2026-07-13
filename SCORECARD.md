@@ -2,10 +2,10 @@
 
 # SCORECARD — fractall vs Fraktaler-3
 
-- **Date** : 2026-07-13T20:16:54+00:00
-- **Commit** : `e4325de`  ⚠️ arbre modifié (dirty)
+- **Date** : 2026-07-13T21:44:27+00:00
+- **Commit** : `898bcbd`  ⚠️ arbre modifié (dirty)
 - **Machine** : Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz · 16 threads · Linux 6.14.0-37-generic
-- **Tier** : quick · 256×256 · quality 96×96 · runs=1 · axes=speed,parity,quality,goldens
+- **Tier** : quick · 256×256 · quality 96×96 · runs=1 · axes=speed,parity,quality,fuzz,goldens
 - **F3** : /home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux
 - _baseline présente mais tier différent (standard) — pas de delta._
 
@@ -13,8 +13,8 @@
 
 | Métrique | Valeur | vs baseline |
 |---|---:|---|
-| geomean ratio | 0.264 |  |
-| pire ratio | 0.615 (test5) | |
+| geomean ratio | 0.238 |  |
+| pire ratio | 0.571 (test5) | |
 | wins (ratio<1) | 10 | |
 | timeouts | 0 | |
 | cas comparés | 10/10 | |
@@ -37,6 +37,11 @@
 | WARN | 0 |  |
 | FAIL | 0 |  |
 
+## Fuzz (sondes aléatoires pert vs GMP)
+
+- seed `20260714` · 3 sondes → **2 PASS · 1 WARN · 0 FAIL**
+  - `fuzz-20260714-1-mandelbrot` **WARN** — c=(-0.6152286330858866, 0.40106525023778294) zoom 6.023813e+07 iters 2048
+
 ## Goldens (pixel-exact)
 
 - 🟢 VERT
@@ -47,7 +52,9 @@
 
 ## Gaps (top 10 — sévérité asc, magnitude desc)
 
-_aucun gap détecté 🎉_
+| # | Sévérité | Axe | Cas | Métrique | Valeur | Note |
+|---:|---|---|---|---|---:|---|
+| 1 | 4 qualité | fuzz | `fuzz-20260714-1-mandelbrot` | verdict | WARN | fuzz WARN — divergence éparse (seed 20260714) |
 
 ---
 _Scorecards versionnés : `harness/history/` · baseline : `harness/baseline.json`. Généré par `scripts/harness.py`._

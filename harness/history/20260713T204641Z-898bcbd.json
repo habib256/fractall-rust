@@ -1,0 +1,683 @@
+{
+  "schema": 1,
+  "meta": {
+    "date_utc": "2026-07-13T20:46:41+00:00",
+    "stamp": "20260713T204641Z",
+    "git_sha": "898bcbd",
+    "git_dirty": true,
+    "machine": {
+      "cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz",
+      "nproc": 16,
+      "os": "Linux 6.14.0-37-generic"
+    },
+    "tier": "standard",
+    "axes": [
+      "speed",
+      "parity",
+      "quality",
+      "goldens"
+    ],
+    "width": 256,
+    "height": 256,
+    "quality_width": 256,
+    "quality_height": 256,
+    "runs": 3,
+    "f3_bin": "/home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux",
+    "mem_limit_mb": 34024,
+    "quarantined": []
+  },
+  "speed": {
+    "status": "ok",
+    "cases": {
+      "test5": {
+        "fractall_s": 0.0101,
+        "f3_s": 0.017,
+        "ratio": 0.5941,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "spiral": {
+        "fractall_s": 0.0346,
+        "f3_s": 0.2155,
+        "ratio": 0.1606,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "flake": {
+        "fractall_s": 0.068,
+        "f3_s": 0.2156,
+        "ratio": 0.3154,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_2": {
+        "fractall_s": 0.068,
+        "f3_s": 0.1655,
+        "ratio": 0.4109,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e50": {
+        "fractall_s": 0.166,
+        "f3_s": 1.1672,
+        "ratio": 0.1422,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e113": {
+        "fractall_s": 0.0659,
+        "f3_s": 0.2658,
+        "ratio": 0.2479,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e401": {
+        "fractall_s": 0.5207,
+        "f3_s": 6.3765,
+        "ratio": 0.0817,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1000": {
+        "fractall_s": 0.4673,
+        "f3_s": 3.0706,
+        "ratio": 0.1522,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "floral_fantasy": {
+        "fractall_s": 0.036,
+        "f3_s": 0.1656,
+        "ratio": 0.2174,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "dragon": {
+        "fractall_s": 1.669,
+        "f3_s": 3.6717,
+        "ratio": 0.4546,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e318": {
+        "fractall_s": 0.4181,
+        "f3_s": 14.6418,
+        "ratio": 0.0286,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1121": {
+        "fractall_s": 0.5171,
+        "f3_s": 2.4702,
+        "ratio": 0.2093,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1200": {
+        "fractall_s": 0.5191,
+        "f3_s": 2.9202,
+        "ratio": 0.1778,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_3": {
+        "fractall_s": 0.116,
+        "f3_s": 0.3159,
+        "ratio": 0.3672,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_4": {
+        "fractall_s": 0.036,
+        "f3_s": 0.1654,
+        "ratio": 0.2177,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "heaven": {
+        "fractall_s": 0.066,
+        "f3_s": 0.2657,
+        "ratio": 0.2484,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "integral_of_ex2": {
+        "fractall_s": 0.116,
+        "f3_s": 0.5161,
+        "ratio": 0.2248,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "windmill": {
+        "fractall_s": 0.1164,
+        "f3_s": 0.3663,
+        "ratio": 0.3178,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "mitosis": {
+        "fractall_s": 0.0657,
+        "f3_s": 0.1654,
+        "ratio": 0.3972,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "golden_spider": {
+        "fractall_s": 0.166,
+        "f3_s": 1.0173,
+        "ratio": 0.1632,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "leaded_glass": {
+        "fractall_s": 0.1661,
+        "f3_s": 1.4177,
+        "ratio": 0.1172,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "magic": {
+        "fractall_s": 0.1675,
+        "f3_s": 0.8666,
+        "ratio": 0.1933,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "tick_tock": {
+        "fractall_s": 0.1163,
+        "f3_s": 0.4163,
+        "ratio": 0.2794,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "virus": {
+        "fractall_s": 0.1157,
+        "f3_s": 0.2658,
+        "ratio": 0.4353,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "x": {
+        "fractall_s": 0.0653,
+        "f3_s": 0.1654,
+        "ratio": 0.3948,
+        "status": "ok",
+        "f3_exr_ok": true
+      }
+    },
+    "geomean_ratio": 0.224,
+    "worst_ratio": {
+      "case": "test5",
+      "ratio": 0.5941
+    },
+    "wins": [
+      "test5",
+      "spiral",
+      "flake",
+      "glitch_test_2",
+      "e50",
+      "e113",
+      "e401",
+      "e1000",
+      "floral_fantasy",
+      "dragon",
+      "e318",
+      "e1121",
+      "e1200",
+      "glitch_test_3",
+      "glitch_test_4",
+      "heaven",
+      "integral_of_ex2",
+      "windmill",
+      "mitosis",
+      "golden_spider",
+      "leaded_glass",
+      "magic",
+      "tick_tock",
+      "virus",
+      "x"
+    ],
+    "timeouts": [],
+    "excluded_f3_degenerate": [],
+    "n_cases": 25,
+    "n_compared": 25
+  },
+  "parity": {
+    "status": "ok",
+    "cases": {
+      "dragon": {
+        "status": "ok",
+        "rel_dsi_pct": 0.1714,
+        "mean_abs_dsi": 8568.8423,
+        "inside_mismatch": 28,
+        "f3_degenerate": false,
+        "f3_secs_num": 3.6882,
+        "fr_secs_num": 1.7068
+      },
+      "e1000": {
+        "status": "ok",
+        "rel_dsi_pct": 0.001,
+        "mean_abs_dsi": 0.3236,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 3.1531,
+        "fr_secs_num": 0.4334
+      },
+      "e1121": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0002,
+        "mean_abs_dsi": 0.0663,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 2.4587,
+        "fr_secs_num": 0.4718
+      },
+      "e113": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0786,
+        "mean_abs_dsi": 27.8825,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.2633,
+        "fr_secs_num": 0.0497
+      },
+      "e1200": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0003,
+        "mean_abs_dsi": 0.1307,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 2.8984,
+        "fr_secs_num": 0.5001
+      },
+      "e318": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0102,
+        "mean_abs_dsi": 21.5896,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 14.6628,
+        "fr_secs_num": 0.4071
+      },
+      "e401": {
+        "status": "ok",
+        "rel_dsi_pct": 0.004,
+        "mean_abs_dsi": 8.5156,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 6.6435,
+        "fr_secs_num": 0.5084
+      },
+      "e50": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0347,
+        "mean_abs_dsi": 91.2391,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 1.1809,
+        "fr_secs_num": 0.1705
+      },
+      "flake": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0434,
+        "mean_abs_dsi": 26.0319,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1714,
+        "fr_secs_num": 0.06
+      },
+      "floral_fantasy": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0032,
+        "mean_abs_dsi": 0.3894,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1502,
+        "fr_secs_num": 0.0314
+      },
+      "glitch_test_2": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0079,
+        "mean_abs_dsi": 19.7256,
+        "inside_mismatch": 12,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1231,
+        "fr_secs_num": 0.0411
+      },
+      "glitch_test_3": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0088,
+        "mean_abs_dsi": 5.292,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.3017,
+        "fr_secs_num": 0.0673
+      },
+      "glitch_test_4": {
+        "status": "ok",
+        "rel_dsi_pct": 0.002,
+        "mean_abs_dsi": 0.2433,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1491,
+        "fr_secs_num": 0.027
+      },
+      "golden_spider": {
+        "status": "ok",
+        "rel_dsi_pct": 0.159,
+        "mean_abs_dsi": 317.9816,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.9369,
+        "fr_secs_num": 0.1437
+      },
+      "heaven": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0099,
+        "mean_abs_dsi": 5.9262,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.2335,
+        "fr_secs_num": 0.0515
+      },
+      "integral_of_ex2": {
+        "status": "ok",
+        "rel_dsi_pct": 0.024,
+        "mean_abs_dsi": 57.0647,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.4709,
+        "fr_secs_num": 0.1014
+      },
+      "leaded_glass": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0215,
+        "mean_abs_dsi": 27.5439,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 1.3617,
+        "fr_secs_num": 0.147
+      },
+      "magic": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0758,
+        "mean_abs_dsi": 180.5223,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.8766,
+        "fr_secs_num": 0.1507
+      },
+      "mitosis": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0319,
+        "mean_abs_dsi": 28.2792,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1449,
+        "fr_secs_num": 0.0546
+      },
+      "spiral": {
+        "status": "ok",
+        "rel_dsi_pct": 0.979,
+        "mean_abs_dsi": 9.7899,
+        "inside_mismatch": 16,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.18,
+        "fr_secs_num": 0.0245
+      },
+      "test5": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0,
+        "mean_abs_dsi": 0.0,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.015,
+        "fr_secs_num": 0.0095
+      },
+      "tick_tock": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0499,
+        "mean_abs_dsi": 22.6113,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.3543,
+        "fr_secs_num": 0.0689
+      },
+      "virus": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0296,
+        "mean_abs_dsi": 39.3139,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.2311,
+        "fr_secs_num": 0.0736
+      },
+      "windmill": {
+        "status": "ok",
+        "rel_dsi_pct": 0.01,
+        "mean_abs_dsi": 11.951,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.3428,
+        "fr_secs_num": 0.0713
+      },
+      "x": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0387,
+        "mean_abs_dsi": 19.3725,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1482,
+        "fr_secs_num": 0.0469
+      }
+    },
+    "n_ok": 25,
+    "n_pixel_equiv": 10,
+    "n_fail": 0,
+    "n_timeout": 0,
+    "n_f3_degenerate": 0
+  },
+  "quality": {
+    "status": "ok",
+    "n_pass": 11,
+    "n_warn": 3,
+    "n_fail": 0,
+    "fail_presets": [],
+    "warn_presets": [
+      "seahorse-valley",
+      "mandelbrot-e13",
+      "mandelbrot-e17"
+    ],
+    "presets": [
+      {
+        "name": "seahorse-valley",
+        "verdict": "WARN",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 1.52587890625e-05,
+        "time_pert_ms": 1826.121412,
+        "time_gmp_ms": 7465.984105
+      },
+      {
+        "name": "mandelbrot-e13",
+        "verdict": "WARN",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0001220703125,
+        "time_pert_ms": 32.983326,
+        "time_gmp_ms": 2349.703858
+      },
+      {
+        "name": "mandelbrot-e17",
+        "verdict": "WARN",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.000152587890625,
+        "time_pert_ms": 9.43025,
+        "time_gmp_ms": 2861.857864
+      },
+      {
+        "name": "misiurewicz-m32",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 619.247384,
+        "time_gmp_ms": 2608.06408
+      },
+      {
+        "name": "julia-siegel-disk",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 4.888018,
+        "time_gmp_ms": 1494.323737
+      },
+      {
+        "name": "burning-ship-antenna",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 5.6302579999999995,
+        "time_gmp_ms": 187.69392200000001
+      },
+      {
+        "name": "tricorn-spiral",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 3.94051,
+        "time_gmp_ms": 68.340175
+      },
+      {
+        "name": "celtic-fold-edge",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 152.301327,
+        "time_gmp_ms": 24473.087663000002
+      },
+      {
+        "name": "buffalo-fold-edge",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 180.74815999999998,
+        "time_gmp_ms": 27422.33596
+      },
+      {
+        "name": "perpbs-escape-band",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 134.65706,
+        "time_gmp_ms": 18938.559289
+      },
+      {
+        "name": "mandelbrot-e18-minibrot",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 531.600912,
+        "time_gmp_ms": 2778.158247
+      },
+      {
+        "name": "mandelbrot-e30",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 37511.698666000004,
+        "time_gmp_ms": 142295.494291
+      },
+      {
+        "name": "mandelbrot-e50",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 144530.998358,
+        "time_gmp_ms": 1252578.794989
+      },
+      {
+        "name": "mandelbrot-e100",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 5398.364673,
+        "time_gmp_ms": 146612.30185299998
+      }
+    ]
+  },
+  "goldens": {
+    "passed": true,
+    "detail": ""
+  },
+  "beyond_f3": {
+    "speed_wins": [
+      "test5",
+      "spiral",
+      "flake",
+      "glitch_test_2",
+      "e50",
+      "e113",
+      "e401",
+      "e1000",
+      "floral_fantasy",
+      "dragon",
+      "e318",
+      "e1121",
+      "e1200",
+      "glitch_test_3",
+      "glitch_test_4",
+      "heaven",
+      "integral_of_ex2",
+      "windmill",
+      "mitosis",
+      "golden_spider",
+      "leaded_glass",
+      "magic",
+      "tick_tock",
+      "virus",
+      "x"
+    ],
+    "correctness_wins": []
+  },
+  "gaps": [
+    {
+      "axis": "quality",
+      "case": "seahorse-valley",
+      "metric": "verdict",
+      "value": "WARN",
+      "baseline_value": null,
+      "severity": 4,
+      "note": "quality suite WARN"
+    },
+    {
+      "axis": "quality",
+      "case": "mandelbrot-e13",
+      "metric": "verdict",
+      "value": "WARN",
+      "baseline_value": null,
+      "severity": 4,
+      "note": "quality suite WARN"
+    },
+    {
+      "axis": "quality",
+      "case": "mandelbrot-e17",
+      "metric": "verdict",
+      "value": "WARN",
+      "baseline_value": null,
+      "severity": 4,
+      "note": "quality suite WARN"
+    }
+  ]
+}
