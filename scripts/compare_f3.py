@@ -26,8 +26,10 @@ Usage:
   python3 scripts/compare_f3.py --rebuild  # cargo build avant + rebuild F3
 
 Pré-requis:
-  - F3 build avec EXR: `cd fraktaler-3-3.1 && make SYSTEM=macos-batch`
+  - F3 build avec EXR (macOS) : `cd fraktaler-3-3.1 && make SYSTEM=macos-batch`
     (cf. build/macos-batch.mk, requiert `brew install openexr`)
+  - F3 build avec EXR (Linux) : `bash scripts/build_f3_linux.sh` (batch GUI-free,
+    installe les deps apt + produit `fraktaler-3-3.1/fraktaler-3-3.1.linux`)
   - Python : pip install OpenEXR (déjà installé sur la machine de l'utilisateur)
 """
 
@@ -86,7 +88,7 @@ def find_f3(required: bool = False) -> Path | None:
         if sys.platform == "darwin":
             hint = "cd fraktaler-3-3.1 && make SYSTEM=macos-batch"
         else:
-            hint = ("cd fraktaler-3-3.1 && make SYSTEM=linux-batch"
+            hint = ("bash scripts/build_f3_linux.sh"
                     "  (ou définir F3_BIN=/chemin/vers/fraktaler-3)")
         sys.exit(
             "F3 binaire introuvable (essayé F3_BIN, fraktaler-3-3.1.linux, "

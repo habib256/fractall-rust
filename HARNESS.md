@@ -79,9 +79,14 @@ python3 scripts/harness.py journal           # trace des incidents (OOM, crash, 
   - `SCORECARD.md` (racine) — dernier score lisible : tableau par axe,
     delta vs baseline, **gaps triés** (la liste de travail).
   - Les rendus/artefacts lourds restent dans `bench/` (gitignoré).
-- **Binaire F3** : auto-détection `fraktaler-3-3.1/fraktaler-3` (Linux) puis
-  `fraktaler-3.macos`, override `F3_BIN=…`. Sans F3, l'axe `speed`/`parity`
-  est marqué `f3_unavailable` (le reste tourne).
+- **Binaire F3** : auto-détection `fraktaler-3-3.1/fraktaler-3-3.1.linux`
+  (préféré sur Linux) puis `fraktaler-3.macos`, override `F3_BIN=…`. Sans F3,
+  l'axe `speed`/`parity` est marqué `f3_unavailable` (le reste tourne).
+  - **Build Linux** : `bash scripts/build_f3_linux.sh` compile un binaire F3
+    **batch GUI-free** (le mode raw-EXR N0/NF passe par `batch()`, sans SDL/GL/
+    imgui — submodules absents ici) et l'écrit à `fraktaler-3-3.1.linux`
+    (gitignoré, par-machine). Installe les deps apt (gmp/mpfr/mpc/openexr/glm/
+    sdl2/…) ; `SKIP_APT=1` si déjà présentes. macOS : `make SYSTEM=macos-batch`.
 
 ### Garde-fou crash / mémoire (sweeps étendus)
 

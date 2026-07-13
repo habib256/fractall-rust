@@ -53,3 +53,4 @@ Thumbs.db
 ## délibéré comme la baseline).
 /harness/inflight.json
 /harness/crash-journal.jsonl
+/fraktaler-3-3.1/build-linux-batch/
