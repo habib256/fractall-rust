@@ -2160,6 +2160,71 @@ mod tests {
         assert_close_iterations(&params, &[(0, 4), (2, 2), (4, 0)], 1);
     }
 
+    // VERROU (2026-07-13) : la perturbation des types non-conformes Celtic /
+    // Buffalo / PerpendicularBurningShip doit égaler l'itération f64 directe
+    // (`iterate_point`), comme Mandelbrot/Julia/BurningShip ci-dessus. Ces types
+    // partagent le pixel-loop bytecode unifié (opcodes AbsX/AbsY/NegY après/avant
+    // Sqr) mais n'avaient AUCUN verrou perturbation↔f64. Diagnostic 2026-07-13 :
+    // à un zoom modéré (span 4) f64 est ample, donc pert == f64 exactement ; la
+    // divergence vs GMP observée à l'antenne -1.75 (zoom 1e6) est une
+    // sensibilité de PRÉCISION (GMP-128 lui-même non convergé, il faut 256+ b —
+    // même classe que e13/dd-sensibilité), PAS un bug de perturbation. Ces
+    // verrous protègent la correction de la boucle pixel pour ces 3 types.
+    // Ces 3 types passent par le pixel-loop BYTECODE perturbation (via le
+    // dispatcher unique), pas par le `render_perturbation_cancellable_with_reuse`
+    // legacy (réservé Mandelbrot/Julia/BurningShip/Tricorn — renvoie None sinon).
+    // On vérifie donc le chemin de PRODUCTION (dispatcher, mode Perturbation forcé)
+    // vs l'itération f64 directe `iterate_point`.
+    fn assert_pert_dispatch_matches_f64(base: &FractalParams, indices: &[(u32, u32)], tol: i32) {
+        use crate::render::escape_time::render_escape_time;
+        let mut params = base.clone();
+        params.algorithm_mode = AlgorithmMode::Perturbation;
+        let (iters, _zs) = render_escape_time(&params);
+        for &(x, y) in indices {
+            let idx = (y * params.width + x) as usize;
+            let x_ratio = (x as f64 + 0.5) / params.width as f64;
+            let y_ratio = (y as f64 + 0.5) / params.height as f64;
+            let xg = params.center_x + (x_ratio - 0.5) * params.span_x;
+            let yg = params.center_y + (y_ratio - 0.5) * params.span_y;
+            let z_pixel = Complex64::new(xg, yg);
+            let ref_iter = iterate_point(&params, z_pixel).iteration;
+            let got = iters[idx];
+            let diff = (got as i32 - ref_iter as i32).abs();
+            assert!(
+                diff <= tol,
+                "{:?} pixel ({x},{y}): pert {got}, f64 {ref_iter}, diff {diff} > {tol}",
+                params.fractal_type
+            );
+        }
+    }
+
+    fn celtic_family_params(fractal_type: FractalType) -> FractalParams {
+        let mut p = base_params(fractal_type);
+        p.center_x = -0.5;
+        p.center_y = 0.0;
+        p.span_x = 4.0;
+        p.span_y = 4.0;
+        p
+    }
+
+    #[test]
+    fn perturbation_matches_f64_celtic() {
+        assert_pert_dispatch_matches_f64(
+            &celtic_family_params(FractalType::Celtic), &[(0, 4), (2, 2), (4, 0)], 1);
+    }
+
+    #[test]
+    fn perturbation_matches_f64_buffalo() {
+        assert_pert_dispatch_matches_f64(
+            &celtic_family_params(FractalType::Buffalo), &[(0, 4), (2, 2), (4, 0)], 1);
+    }
+
+    #[test]
+    fn perturbation_matches_f64_perpendicular_burning_ship() {
+        assert_pert_dispatch_matches_f64(
+            &celtic_family_params(FractalType::PerpendicularBurningShip), &[(0, 4), (2, 2), (4, 0)], 1);
+    }
+
     #[test]
     fn neighbor_glitch_detection_marks_outliers() {
         let width = 5;
