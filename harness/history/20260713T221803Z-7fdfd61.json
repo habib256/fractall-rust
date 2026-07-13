@@ -1,0 +1,114 @@
+{
+  "schema": 1,
+  "meta": {
+    "date_utc": "2026-07-13T22:18:03+00:00",
+    "stamp": "20260713T221803Z",
+    "git_sha": "7fdfd61",
+    "git_dirty": true,
+    "machine": {
+      "cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz",
+      "nproc": 16,
+      "os": "Linux 6.14.0-37-generic"
+    },
+    "tier": "standard",
+    "axes": [
+      "speed"
+    ],
+    "width": 256,
+    "height": 256,
+    "quality_width": 256,
+    "quality_height": 256,
+    "runs": 3,
+    "f3_bin": "/home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux",
+    "mem_limit_mb": 34024,
+    "quarantined": []
+  },
+  "speed": {
+    "status": "ok",
+    "cases": {
+      "e113": {
+        "fractall_s": 0.0659,
+        "f3_s": 0.266,
+        "ratio": 0.2477,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_2": {
+        "fractall_s": 0.068,
+        "f3_s": 0.1656,
+        "ratio": 0.4106,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e50": {
+        "fractall_s": 0.1666,
+        "f3_s": 1.1673,
+        "ratio": 0.1427,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "dragon": {
+        "fractall_s": 1.669,
+        "f3_s": 3.6229,
+        "ratio": 0.4607,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1000": {
+        "fractall_s": 0.417,
+        "f3_s": 2.9712,
+        "ratio": 0.1403,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "floral_fantasy": {
+        "fractall_s": 0.036,
+        "f3_s": 0.1658,
+        "ratio": 0.2171,
+        "status": "ok",
+        "f3_exr_ok": true
+      }
+    },
+    "geomean_ratio": 0.2426,
+    "worst_ratio": {
+      "case": "dragon",
+      "ratio": 0.4607
+    },
+    "wins": [
+      "e113",
+      "glitch_test_2",
+      "e50",
+      "dragon",
+      "e1000",
+      "floral_fantasy"
+    ],
+    "timeouts": [],
+    "excluded_f3_degenerate": [],
+    "n_cases": 6,
+    "n_compared": 6
+  },
+  "parity": {
+    "status": "skipped"
+  },
+  "quality": {
+    "status": "skipped"
+  },
+  "fuzz": {
+    "status": "skipped"
+  },
+  "goldens": {
+    "status": "skipped"
+  },
+  "beyond_f3": {
+    "speed_wins": [
+      "e113",
+      "glitch_test_2",
+      "e50",
+      "dragon",
+      "e1000",
+      "floral_fantasy"
+    ],
+    "correctness_wins": []
+  },
+  "gaps": []
+}

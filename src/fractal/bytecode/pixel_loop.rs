@@ -666,14 +666,22 @@ pub fn iterate_pixel_unified_mandelbrot(
     let mut iters_ptb = 0u32;
     let mut ref_exhausted_flag = false;
 
+    // Cache tête-de-boucle : le bas de boucle (check de rebase) et la garde
+    // anti-over-skip BLA calculent déjà `Z[m']+δ'` et sa norme pour l'état
+    // suivant — les réutiliser évite un load + add + norm_sqr redondants par
+    // itération (bit-identique : mêmes opérandes f64, style chaînage MipLA,
+    // cf. docs/imagina-algorithms-analysis.md).
+    let mut z_m = ref_orbit.z_ref_f64[0];
+    let mut z_abs = z_m + delta;
+    let mut z_abs_norm_sqr = z_abs.norm_sqr();
+    let mut delta_norm_sqr = delta.norm_sqr();
+
     while n < iteration_max
         && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
         && (max_bla_steps == 0 || bla_steps < max_bla_steps)
     {
         // Bailout absolu : |Z[m] + δ|² ≥ bailout²
-        let z_m = ref_orbit.z_ref_f64[m as usize];
-        let z_abs = z_m + delta;
-        if z_abs.norm_sqr() >= bailout_sqr {
+        if z_abs_norm_sqr >= bailout_sqr {
             return UnifiedPixelResult {
                 iteration: n,
                 z_final: z_abs,
@@ -687,7 +695,6 @@ pub fn iterate_pixel_unified_mandelbrot(
         }
 
         // Étape 1 : essai BLA
-        let delta_norm_sqr = delta.norm_sqr();
         if let Some(node) = bla.lookup(m as usize, delta_norm_sqr) {
             // Vérifier qu'on ne dépasse pas iteration_max ni ref_len. Réf
             // atom-tronquée : le BLA ne doit pas atterrir SUR la dernière entrée
@@ -718,10 +725,13 @@ pub fn iterate_pixel_unified_mandelbrot(
                 // (cf. julia-siegel). Escape irréversible (|z| > ER ≫ |c|) → le
                 // seul point d'arrivée suffit ; si échappé, on rejette le saut et
                 // on single-steppe pour l'iter exacte.
-                let overshoots_escape = node.l >= 2 && {
-                    let z_end = ref_orbit.z_ref_f64[new_m as usize] + cand;
-                    z_end.norm_sqr() >= bailout_sqr
-                };
+                // (z_end calculé sans condition : c'est la valeur de cache de la
+                // tête suivante ; pour l == 1 — dernier nœud d'un niveau — la
+                // garde n'est juste pas appliquée, comme avant.)
+                let z_new_m = ref_orbit.z_ref_f64[new_m as usize];
+                let z_end = z_new_m + cand;
+                let z_end_norm_sqr = z_end.norm_sqr();
+                let overshoots_escape = node.l >= 2 && z_end_norm_sqr >= bailout_sqr;
                 if !overshoots_escape {
                     delta = cand;
                     n = new_n;
@@ -732,7 +742,7 @@ pub fn iterate_pixel_unified_mandelbrot(
                     if !delta.re.is_finite() || !delta.im.is_finite() {
                         return UnifiedPixelResult {
                             iteration: n,
-                            z_final: ref_orbit.z_ref_f64[m as usize] + delta,
+                            z_final: z_end,
                             rebase_count,
                             bla_steps,
                             orbit: None,
@@ -741,6 +751,10 @@ pub fn iterate_pixel_unified_mandelbrot(
                             ref_exhausted: false,
                         };
                     }
+                    z_m = z_new_m;
+                    z_abs = z_end;
+                    z_abs_norm_sqr = z_end_norm_sqr;
+                    delta_norm_sqr = delta.norm_sqr();
                     continue;
                 }
             }
@@ -785,15 +799,31 @@ pub fn iterate_pixel_unified_mandelbrot(
                 ref_exhausted_flag = true;
                 break;
             }
+            // m (et éventuellement δ) a changé : recalculer le cache de tête
+            // (froid — au plus 1×/tour de référence).
+            z_m = ref_orbit.z_ref_f64[m as usize];
+            z_abs = z_m + delta;
+            z_abs_norm_sqr = z_abs.norm_sqr();
+            delta_norm_sqr = delta.norm_sqr();
         } else {
             let z_m_new = ref_orbit.z_ref_f64[m as usize];
             let z_curr = z_m_new + delta;
             let z_curr_norm_sqr = z_curr.norm_sqr();
-            let delta_norm_sqr = delta.norm_sqr();
+            delta_norm_sqr = delta.norm_sqr();
             if z_curr_norm_sqr < delta_norm_sqr {
                 delta = z_curr;
                 m = 0;
                 rebase_count += 1;
+                z_m = ref_orbit.z_ref_f64[0];
+                z_abs = z_m + delta;
+                z_abs_norm_sqr = z_abs.norm_sqr();
+                // |δ_nouveau|² = |z_curr|², déjà calculé.
+                delta_norm_sqr = z_curr_norm_sqr;
+            } else {
+                // Pas de rebase : la tête suivante lit exactement z_curr.
+                z_m = z_m_new;
+                z_abs = z_curr;
+                z_abs_norm_sqr = z_curr_norm_sqr;
             }
         }
     }

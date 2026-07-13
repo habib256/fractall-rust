@@ -209,17 +209,26 @@ fn iterate_pixel_unified_exp_mandelbrot(
     const REDUCE_INTERVAL: u32 = 250;
 
     let bailout_sqr_fexp = FloatExp::from_f64(bailout_sqr);
+    // Cache tête-de-boucle (mirror `pixel_loop.rs`, style chaînage MipLA) : le
+    // bas de boucle et la garde anti-over-skip calculent déjà `Z[m']+δ'` et sa
+    // norme FloatExp — les réutiliser évite load + 2 from_f64 + 2 add + 2 sqr
+    // redondants par itération. Bit-identique SAUF si `delta.reduce()` vient de
+    // tirer (représentation renormalisée → décisions d'exposant possiblement
+    // différentes) : dans ce cas on recalcule depuis le δ réduit, comme la
+    // tête d'origine.
+    let mut z_m = ref_orbit.z_ref_f64[0];
+    let mut z_abs_re = FloatExp::from_f64(z_m.re) + delta.re;
+    let mut z_abs_im = FloatExp::from_f64(z_m.im) + delta.im;
+    let mut z_abs_norm_sqr = z_abs_re.sqr() + z_abs_im.sqr();
+    let mut delta_norm_sqr_fexp = delta.norm_sqr_fexp();
+
     while n < iteration_max
         && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
         && (max_bla_steps == 0 || bla_steps < max_bla_steps)
     {
-        let z_m = ref_orbit.z_ref_f64[m as usize];
         // Bailout en FloatExp pour préserver la différentiation pixel-à-pixel
         // au-delà de 2^1023 (où to_complex64_approx sature à inf et tous les
         // pixels bailent au même iter, cf. floral_fantasy).
-        let z_abs_re = FloatExp::from_f64(z_m.re) + delta.re;
-        let z_abs_im = FloatExp::from_f64(z_m.im) + delta.im;
-        let z_abs_norm_sqr = z_abs_re.sqr() + z_abs_im.sqr();
         if !(z_abs_norm_sqr < bailout_sqr_fexp) {
             let delta_approx = delta.to_complex64_approx();
             return UnifiedPixelResultExp {
@@ -231,7 +240,6 @@ fn iterate_pixel_unified_exp_mandelbrot(
             };
         }
 
-        let delta_norm_sqr_fexp = delta.norm_sqr_fexp();
         if let Some(node) = bla.lookup_fexp(m as usize, delta_norm_sqr_fexp) {
             let new_n = n.saturating_add(node.l);
             let new_m = m.saturating_add(node.l);
@@ -247,20 +255,31 @@ fn iterate_pixel_unified_exp_mandelbrot(
                 // l ≥ 2 dont le point d'arrivée `Z[m']+δ'` est déjà échappé
                 // rapporterait l'iter d'évasion trop tard. Test en FloatExp
                 // (cohérent avec le bailout ci-dessus, survit à > 2^1023).
-                let overshoots_escape = node.l >= 2 && {
-                    let ze_m = ref_orbit.z_ref_f64[new_m as usize];
-                    let z_end_re = FloatExp::from_f64(ze_m.re) + cand.re;
-                    let z_end_im = FloatExp::from_f64(ze_m.im) + cand.im;
-                    !((z_end_re.sqr() + z_end_im.sqr()) < bailout_sqr_fexp)
-                };
+                // z_end calculé sans condition : cache de la tête suivante.
+                let ze_m = ref_orbit.z_ref_f64[new_m as usize];
+                let z_end_re = FloatExp::from_f64(ze_m.re) + cand.re;
+                let z_end_im = FloatExp::from_f64(ze_m.im) + cand.im;
+                let z_end_norm_sqr = z_end_re.sqr() + z_end_im.sqr();
+                let overshoots_escape = node.l >= 2 && !(z_end_norm_sqr < bailout_sqr_fexp);
                 if !overshoots_escape {
                     delta = cand;
                     n = new_n;
                     m = new_m;
                     bla_steps += 1;
+                    z_m = ze_m;
                     if n % REDUCE_INTERVAL == 0 {
                         delta.reduce();
+                        // δ renormalisé : recalcul de tête sur la représentation
+                        // réduite (bit-identité avec la tête d'origine).
+                        z_abs_re = FloatExp::from_f64(z_m.re) + delta.re;
+                        z_abs_im = FloatExp::from_f64(z_m.im) + delta.im;
+                        z_abs_norm_sqr = z_abs_re.sqr() + z_abs_im.sqr();
+                    } else {
+                        z_abs_re = z_end_re;
+                        z_abs_im = z_end_im;
+                        z_abs_norm_sqr = z_end_norm_sqr;
                     }
+                    delta_norm_sqr_fexp = delta.norm_sqr_fexp();
                     continue;
                 }
             }
@@ -328,7 +347,7 @@ fn iterate_pixel_unified_exp_mandelbrot(
         let z_curr_re = FloatExp::from_f64(z_m_new.re) + delta.re;
         let z_curr_im = FloatExp::from_f64(z_m_new.im) + delta.im;
         let z_curr_norm_sqr_fexp = z_curr_re.sqr() + z_curr_im.sqr();
-        let delta_norm_sqr_fexp = delta.norm_sqr_fexp();
+        delta_norm_sqr_fexp = delta.norm_sqr_fexp();
         if end_of_ref {
             if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
                 m = m_wrapped;
@@ -337,11 +356,29 @@ fn iterate_pixel_unified_exp_mandelbrot(
                 delta = ComplexExp { re: z_curr_re, im: z_curr_im };
                 m = 0;
                 rebase_count += 1;
+                delta_norm_sqr_fexp = z_curr_norm_sqr_fexp;
             }
+            // m (et éventuellement δ) a changé : recalcul de tête (froid).
+            z_m = ref_orbit.z_ref_f64[m as usize];
+            z_abs_re = FloatExp::from_f64(z_m.re) + delta.re;
+            z_abs_im = FloatExp::from_f64(z_m.im) + delta.im;
+            z_abs_norm_sqr = z_abs_re.sqr() + z_abs_im.sqr();
         } else if z_curr_norm_sqr_fexp < delta_norm_sqr_fexp {
             delta = ComplexExp { re: z_curr_re, im: z_curr_im };
             m = 0;
             rebase_count += 1;
+            // |δ_nouveau|² = |z_curr|², déjà calculé.
+            delta_norm_sqr_fexp = z_curr_norm_sqr_fexp;
+            z_m = ref_orbit.z_ref_f64[0];
+            z_abs_re = FloatExp::from_f64(z_m.re) + delta.re;
+            z_abs_im = FloatExp::from_f64(z_m.im) + delta.im;
+            z_abs_norm_sqr = z_abs_re.sqr() + z_abs_im.sqr();
+        } else {
+            // Pas de rebase : la tête suivante lit exactement z_curr.
+            z_m = z_m_new;
+            z_abs_re = z_curr_re;
+            z_abs_im = z_curr_im;
+            z_abs_norm_sqr = z_curr_norm_sqr_fexp;
         }
     }
 
