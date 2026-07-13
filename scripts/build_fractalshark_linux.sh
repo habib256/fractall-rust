@@ -36,9 +36,15 @@ else
 fi
 echo "nvcc : $NVCC ($("$NVCC" --version | tail -1))"
 
-for tool in clang clang++ cmake; do
-    command -v "$tool" >/dev/null 2>&1 || die "$tool introuvable (sudo apt install clang cmake)"
-done
+command -v cmake >/dev/null 2>&1 || die "cmake introuvable (sudo apt install cmake)"
+# Upstream builde avec clang, mais gcc marche (vérifié 2026-07-14, CUDA 13.3,
+# gcc 13) — fallback si clang absent.
+if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
+    CC_BIN=clang CXX_BIN=clang++
+else
+    echo "info: clang absent — build avec gcc/g++ (vérifié fonctionnel)"
+    CC_BIN=gcc CXX_BIN=g++
+fi
 
 cd "$FS_DIR"
 
@@ -54,8 +60,8 @@ fi
 # Release only (leur build_linux.sh fait Debug+Release : inutile ici).
 cmake -S . -B build-release \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_C_COMPILER=clang \
-    -DCMAKE_CXX_COMPILER=clang++ \
+    -DCMAKE_C_COMPILER="$CC_BIN" \
+    -DCMAKE_CXX_COMPILER="$CXX_BIN" \
     -DCMAKE_CUDA_HOST_COMPILER=g++ \
     -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG" \
     -DCMAKE_CUDA_FLAGS_RELEASE="-O3 -DNDEBUG"

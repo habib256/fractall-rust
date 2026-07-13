@@ -1340,12 +1340,23 @@ Actions candidates pour la boucle (ordre suggéré) :
   bench/harness/fuzz/, section scorecard + gaps sév. 1 sur FAIL). Premier run :
   2 PASS + 1 WARN (mandelbrot 6e7, 75 px épars p99=0 — la classe plancher-f64
   visée, détectée du premier coup). Rotation de seed au rebaseline (HARNESS.md).
-- [ ] **2e référence vitesse Mandelbrot-deep : FractalSharkCli** — script prêt
-  (`scripts/build_fractalshark_linux.sh`, gated nvcc ; clone ~/src/FractalShark
-  fait) ; ATTEND l'install CUDA toolkit (en cours, user). Puis : build, calibrer
-  la sémantique `--zoom`, câbler la colonne speed Mandelbrot ; F3 reste la
-  référence tous-types. Fallback si le port Linux est trop vert : suivre les
-  releases.
+- [x] **✅ FractalSharkCli buildé + calibré (2026-07-14)** — CUDA 13.3 installé
+  (user), build **gcc** OK (upstream = clang ; 1 patch local au clone :
+  `#include <x86intrin.h>` pour `__rdtsc`, gcc-only ; script fallback gcc).
+  Binaire : `~/src/FractalShark/build-release/FractalSharkCli/FractalSharkCli`.
+  **Calibration** : `--zoom` = même sémantique que nous (span = 4/zoom,
+  `PointZoomBBConverter.h Factor=2`) ; **axe y inversé** (math vs écran) —
+  sans impact vitesse, flip vertical pour comparer des images. GPU (RTX 4060
+  Ti) opérationnel : seahorse 1e8 256² CPU 2.5 s / GPU 1.7 s (≈1 s d'overhead
+  init CUDA constant — comparer à grande résolution ou soustraire).
+  - ⚠️ **Limite du port Linux (dev preview)** : OK jusqu'à ~**1e80**
+    (CPU `Cpu64PerturbedBLAV2HDR` structuré) ; **abort (core dump) vers
+    1e100**, sortie uniforme à 1e113. Le range utile comme référence vitesse =
+    **1e15-1e80** (couvre le mid-deep). Suivre les releases upstream pour le
+    deep ; éventuellement rapporter le bug.
+  - [ ] Câbler la colonne speed Mandelbrot 1e15-1e80 dans `harness.py`
+    (`FS_BIN`, 2048² ou soustraction d'overhead) ; F3 reste la référence
+    tous-types/toutes-profondeurs.
 - [x] **✅ Étude `ImaginaFractal/Algorithms` (2026-07-14)** — analyse complète
   dans **`docs/imagina-algorithms-analysis.md`** (pendant de
   fraktaler-3-analysis.md ; clone ~/src/Imagina-Algorithms, 5 évaluateurs,
