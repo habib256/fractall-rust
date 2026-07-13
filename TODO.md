@@ -1106,6 +1106,27 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
       modérés (tier bas) — l'axe parité mesure « match l'affichage F3 », l'axe
       qualité (vs GMP) reste le vrai juge de correction. Verrou : commentaire
       `mandelbrot-e13` (presets.rs) porte le chiffre 16 vs 9391.
+    - **🔬 GÉNÉRALISÉ + ROOT-CAUSE (2026-07-13, `scripts/three_way_gmp.py`).**
+      L'arbitre 3-voies (fractall-pert / F3 / GMP per-pixel, escape-count entier,
+      seuil « grosse erreur » >5 px pour ôter le bruit ±1 cross-implémentation)
+      confirme le pattern sur **4 scènes Mandelbrot zoom modéré** (192², erreurs
+      >5 vs GMP) : seahorse-1e8 **fractall 41 / F3 15766** (385×), misiurewicz-1e12
+      66 / 4341 (66×), e13 0 / 1087 (1087×), e17 2 / 1357 (678×). **Root cause
+      côté F3** (`wisdom.cc::wisdom_enumerate`) : la wisdom PAR DÉFAUT (aucune
+      `wisdom.toml` → `wisdom_default` = enumerate) donne `nt_float` **vitesse 0.6
+      = la plus rapide**, et sa viabilité (`render.cc:243`) n'exige que
+      `mantissa ≥ max(24, 24−pixel_precision)` ≈ **24 b** pour une frame centrée
+      (même modèle `req_prec≈log2(diag)` que notre `wisdom.rs`). Donc F3 tourne en
+      **float 24 b** tant que l'exposant float tient (jusqu'à ~1e38), et sa
+      précision s'effondre là où la sensibilité de Lyapunov l'amplifie (filaments,
+      antenne). fractall plancher **f64 53 b** → ~66-1087× plus fidèle. **Contrôle
+      décisif** : à deep zoom (>1e38, float non-viable par exposant) F3 bascule
+      floatexp ⇒ parité EXACTE (quick parity e50/e113/e1000 `mean_abs=0.0`,
+      `max_abs=0.0`) — la divergence n'apparaît QUE là où float est viable, ce qui
+      **exclut un artefact de mapping** et prouve le mécanisme tier. NB : l'écart
+      est souvent **sous-visible** en rendu colorisé (quelques iters sur filaments
+      chaotiques) — F3 assume ce compromis vitesse ; fractall assume la précision.
+      Outil réutilisable = arbitre « qui a raison » quand la parité diverge.
     - **Détecteur cheap réfuté** : hypothèse « flag les pixels à forte
       cancellation cumulée aux rebases (`Σ ½·log2(|δ|²/|Z+δ|²)`) → re-render GMP ».
       **Infirmé sur données** : les 2 px fautifs ont `cbits≈11.2`, mais des px
@@ -1128,6 +1149,27 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
   troncature off par défaut, opt-in seulement aux nucleus exacts
   (`--find-nucleus`) où l'orbite est exactement périodique. Valider goldens +
   GUI avant de flipper.
+
+- [x] **✅ Couverture perturbation Celtic/Buffalo/PerpBS + diag précision-sensibilité
+  (2026-07-13)**. Ces 3 types bytecode non-conformes n'avaient AUCUN verrou
+  perturbation↔f64 (contrairement à Mandelbrot/Julia/BurningShip). Enquête partie
+  d'une divergence apparente pert-vs-GMP à l'antenne `-1.75` (zoom 1e6 : Buffalo
+  big(>5)=1465, PerpBS=603, inside_mm=505/202). **Tranché par cross-check à 3
+  voies** : (a) f64-standard ET perturbation **coïncident exactement** (big=0) →
+  la perturbation n'est PAS en cause ; (b) `buffalo_mpc`/`perpendicular_burning_ship_mpc`
+  (gmp.rs) **matchent** la formule bytecode → pas de bug de formule ; (c) **stabilité
+  GMP par précision** : GMP-128 ≠ GMP-256 (big=25) mais GMP-256 == GMP-512 == GMP-1024
+  → la scène **exige 256+ b**, GMP-128 (défaut à 1e6) est lui-même non convergé. ⇒
+  **PAS un bug** : l'antenne de ces familles hirsutes est à sensibilité de précision
+  extrême (même classe que e13/dd-sensibilité, mais bien pire — abs-après-Sqr crée
+  des annulations à chaque passage près de zéro), f64 ne peut la résoudre. **Verrous
+  posés** : `perturbation_matches_f64_{celtic,buffalo,perpendicular_burning_ship}`
+  (pert dispatcher == f64 direct à zoom modéré, GMP-free donc robuste au confound
+  de précision). Message trompeur du garde-fou `quality::compare` corrigé (« la
+  perturbation ne marche que pour M/J/BS/Tricorn » → FAUX ; c'est la comparaison
+  vs GMP qui n'est fiable que là). Reste ouvert : presets QA propres pour ces types
+  (precision_bits ≥ 256 sur frontières lisses non pathologiques — non trivial car
+  leurs frontières SONT les zones sensibles).
 
 ### G4 — Hybrides multi-phase : la feature unique · `[P1 · différenciation]`
 
