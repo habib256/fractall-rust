@@ -116,6 +116,49 @@ pub const PRESETS: &[Preset] = &[
         julia_seed: None,
         precision_bits: None,
     },
+    // --- Celtic/Buffalo/PerpBS : familles non-conformes à pliage abs (cf. TODO G3).
+    // Scènes choisies sur des frontières LISSES hors axes de pliage : la zone
+    // hirsute (ex. antenne -1.75) est à sensibilité de précision extrême (GMP-256
+    // lui-même non convergé, un écart pert↔GMP y reflète le plancher f64, pas un
+    // bug). Sélection outillée (2026-07-13) : descente de zoom sur cellules
+    // frontière à faible variance locale + itération d'échappement invariante à
+    // une perturbation 2⁻⁴⁶ de c ; contrôle ground truth GMP-256 == GMP-512.
+    Preset {
+        name: "celtic-fold-edge",
+        description: "Celtic smooth fold-edge at zoom 1e9 — non-conformal abs(Re(z²)), interior + deep escapes (~4090).",
+        fractal_type: FractalType::Celtic,
+        center_x_hp: "0.18034153496846556",
+        center_y_hp: "-0.18571428521536293",
+        zoom: "1e9",
+        iterations: 4096,
+        multibrot_power: None,
+        julia_seed: None,
+        precision_bits: None,
+    },
+    Preset {
+        name: "buffalo-fold-edge",
+        description: "Buffalo smooth fold-edge at zoom 1e9 — double abs folding, interior + deep escapes (~4090).",
+        fractal_type: FractalType::Buffalo,
+        center_x_hp: "0.2625929825473577",
+        center_y_hp: "0.144079340971075",
+        zoom: "1e9",
+        iterations: 4096,
+        multibrot_power: None,
+        julia_seed: None,
+        precision_bits: None,
+    },
+    Preset {
+        name: "perpbs-escape-band",
+        description: "Perpendicular Burning Ship at zoom 1e9 — all-escape band (~3000 iters), exercises escaping reference + rebase-at-end.",
+        fractal_type: FractalType::PerpendicularBurningShip,
+        center_x_hp: "-0.2230574102140963",
+        center_y_hp: "0.16348968017846344",
+        zoom: "1e9",
+        iterations: 4096,
+        multibrot_power: None,
+        julia_seed: None,
+        precision_bits: None,
+    },
     Preset {
         name: "mandelbrot-e18-minibrot",
         description: "Mandelbrot deep minibrot at zoom 1e18.",

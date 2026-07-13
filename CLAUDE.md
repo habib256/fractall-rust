@@ -536,10 +536,13 @@ d'échappement, temps pert vs GMP.
 reste rapporté dans `report.md`. Override : `--pass-max-iter-diff`,
 `--fail-p99-iter-diff`, `--warn-divergence-ratio`.
 
-**8 presets** (`src/quality/presets.rs`) : Mandelbrot (seahorse 1e8,
-activation 1e13, GMP perturbation 1e17, Misiurewicz 1e12, minibrot 1e18),
-Julia (seed -0.8+0.156i à 1e10), Burning Ship antenna 1e9 (non-conformal
-BLA), Tricorn spiral 1e8.
+**14 presets** (`src/quality/presets.rs`) : Mandelbrot (seahorse 1e8,
+activation 1e13, GMP perturbation 1e17, Misiurewicz 1e12, minibrot 1e18,
+spirales profondes e30/e50/e100), Julia (seed -0.8+0.156i à 1e10), Burning
+Ship antenna 1e9 (non-conformal BLA), Tricorn spiral 1e8, et frontières
+lisses hors axes de pliage Celtic/Buffalo/PerpBS 1e9 (G3 2026-07-13 — les
+frontières hirsutes de ces familles sont à sensibilité de précision extrême,
+GMP-256 non convergé, donc non comparables).
 
 **Perf** : GMP pur O(1e3-1e4) plus lent que perturbation, d'où la résolution
 défaut 256×256. La suite peut prendre plusieurs minutes au-delà de 1e15.

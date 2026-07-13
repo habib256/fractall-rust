@@ -45,23 +45,29 @@ impl Default for ComparisonOptions {
 }
 
 pub fn compare(params: &FractalParams, opt: &ComparisonOptions) -> Result<ComparisonOutput, String> {
-    // NB : la perturbation FONCTIONNE pour d'autres types bytecode (Celtic,
-    // Buffalo, PerpendicularBurningShip, Multibrot… — vérifié == f64 direct, cf.
+    // NB : la perturbation FONCTIONNE pour d'autres types bytecode (Multibrot,
+    // variantes Julia… — vérifié == f64 direct, cf.
     // `perturbation::tests::perturbation_matches_f64_{celtic,buffalo,perpendicular…}`).
-    // Cette suite QA se limite volontairement aux 4 types ci-dessous parce que la
-    // comparaison vs GMP y est FIABLE : les autres familles non-conformes ont des
-    // frontières à sensibilité de précision extrême (l'antenne -1.75 de Buffalo/
-    // PerpBS exige 256+ b, GMP-128 lui-même non convergé — cf. TODO G3) où un écart
-    // pert↔GMP reflète le plancher f64, PAS un bug. Étendre la suite à ces types
-    // demanderait des presets à `precision_bits` ≥ 256 sur des lieux non
-    // pathologiques (frontières lisses), non trivial pour ces familles hirsutes.
+    // La comparaison vs GMP exige un renderer GMP du type ET un lieu où la ground
+    // truth converge à la précision demandée. Celtic/Buffalo/PerpBS sont admis :
+    // leurs presets (`presets.rs`) visent des frontières lisses HORS axes de
+    // pliage — l'antenne -1.75 de Buffalo/PerpBS, elle, exige 256+ b (GMP-128
+    // non convergé, cf. TODO G3) et un écart pert↔GMP y reflèterait le plancher
+    // f64, PAS un bug. Pour un `compare` ad-hoc sur ces familles hirsutes,
+    // vérifier la stabilité GMP par précision (P vs 2P) avant de conclure.
     if !matches!(
         params.fractal_type,
-        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn
+        FractalType::Mandelbrot
+            | FractalType::Julia
+            | FractalType::BurningShip
+            | FractalType::Tricorn
+            | FractalType::Celtic
+            | FractalType::Buffalo
+            | FractalType::PerpendicularBurningShip
     ) {
         return Err(format!(
-            "QA suite vs GMP limitée à Mandelbrot/Julia/BurningShip/Tricorn (comparaison fiable); \
-             la perturbation marche pour {:?} mais sa frontière est sensible à la précision",
+            "QA suite vs GMP limitée aux types Mandelbrot-family à renderer GMP vérifié \
+             (M/J/BS/Tricorn/Celtic/Buffalo/PerpBS); pas de comparaison fiable pour {:?}",
             params.fractal_type
         ));
     }

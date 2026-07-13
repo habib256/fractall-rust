@@ -1141,14 +1141,14 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
       **Conclusion** : pas de fix cheap/principled — c'est exactement le boulot du
       **wisdom auto-dispatch dd** (choisir dd par sensibilité de frame). Le seul
       « fix » correct aujourd'hui = `--dd-tier` opt-in.
-- [ ] **Period-detection truncation = LOSSY** → passer **OFF par défaut**.
-  Même pour une période *genuine*, `truncate + wrap_periodic` accumule l'erreur
-  de quasi-périodicité (~2^(-0.4·prec)) sur ~iter_max/période cycles →
-  perturbation divergente (image uniforme, glitch_test_5). Gain perf de la
-  troncature **négligeable** (orbite calculée une fois). **Done when** :
-  troncature off par défaut, opt-in seulement aux nucleus exacts
-  (`--find-nucleus`) où l'orbite est exactement périodique. Valider goldens +
-  GUI avant de flipper.
+- [x] **✅ Period-detection truncation = LOSSY → OFF par défaut — FAIT
+  (2026-07-07, cf. G2 point 2)**. Brent OFF par défaut dans
+  `orbit.rs::enable_period_detection` (opt-in `FRACTALL_PERIOD=1`), verrou
+  golden `mandelbrot_glitch5`. Le rationale de cet item (erreur de
+  quasi-périodicité accumulée par `truncate + wrap_periodic`) est exactement
+  ce qui a été observé sur glitch_test_5 (75 % px faux). L'opt-in reste l'env
+  var (pas `--find-nucleus`) : aux nucleus exacts l'orbite est exactement
+  périodique et le rebase-at-end suffit déjà.
 
 - [x] **✅ Couverture perturbation Celtic/Buffalo/PerpBS + diag précision-sensibilité
   (2026-07-13)**. Ces 3 types bytecode non-conformes n'avaient AUCUN verrou
@@ -1167,9 +1167,20 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
   (pert dispatcher == f64 direct à zoom modéré, GMP-free donc robuste au confound
   de précision). Message trompeur du garde-fou `quality::compare` corrigé (« la
   perturbation ne marche que pour M/J/BS/Tricorn » → FAUX ; c'est la comparaison
-  vs GMP qui n'est fiable que là). Reste ouvert : presets QA propres pour ces types
-  (precision_bits ≥ 256 sur frontières lisses non pathologiques — non trivial car
-  leurs frontières SONT les zones sensibles).
+  vs GMP qui n'est fiable que là).
+  - [x] **✅ Presets QA Celtic/Buffalo/PerpBS livrés (2026-07-13)** : suite quality
+    étendue à 14 presets (`celtic-fold-edge`, `buffalo-fold-edge`,
+    `perpbs-escape-band`, zoom 1e9) + garde-fou `quality::compare` élargi aux 3
+    types. Sélection outillée : descente de zoom sur cellules frontière à faible
+    variance locale + échappement invariant à une perturbation 2⁻⁴⁶ de c
+    (les frontières hirsutes de ces familles échouent ce critère : GMP-256 lui-même
+    non convergé, div_ratio 0.3-0.9 vs GMP quel que soit le tier — confirmé
+    expérimentalement à 1e6 ET 1e9, cohérent avec le diag antenne ci-dessus).
+    Les 3 scènes : **PASS max_diff=0 à 256²** (pert bit-exact GMP) + contrôle
+    ground truth GMP-256 == GMP-512. Celtic/Buffalo : ~57-62 % intérieur +
+    échappements profonds ~4090 (orbites longues) ; PerpBS : tout-échappement
+    ~3000 (réf évadante → rebase-at-end). Un bug classe over-skip (+N uniforme)
+    ou coefficient BLA non-conforme y FAILerait immédiatement.
 
 ### G4 — Hybrides multi-phase : la feature unique · `[P1 · différenciation]`
 
@@ -1267,8 +1278,9 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
 - [x] **`scripts/harness.py`** opérationnel (2026-07-12) : score/baseline/gaps,
   tiers quick/standard/full, JSON (`harness/history/*.json`) + SCORECARD.md +
   gaps triés — vérifié bout-en-bout sur le run standard (25 cas, 4 axes).
-- [ ] **`fractall-quality` émet du JSON** (`suite-summary.json`,
-  `report.json`) — en cours.
+- [x] **✅ `fractall-quality` émet du JSON** (`suite-summary.json` toujours écrit
+  par la commande suite, `report.json` par preset — `quality/report.rs`) ;
+  `harness.py::parse_quality_json` le consomme avec fallback markdown.
 - [x] **Binaire F3 Linux** buildé (`fraktaler-3-3.1/fraktaler-3-3.1.linux`) —
   la machine courante (i7-10700F 16 threads Linux) remplace le M4 ; utilisé par
   les axes speed/parity.
