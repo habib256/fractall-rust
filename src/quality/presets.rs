@@ -34,12 +34,16 @@ pub const PRESETS: &[Preset] = &[
         julia_seed: None,
         precision_bits: None,
     },
-    // NB : PASS à ≤96² mais FAIL à ≥128²/256² (2 px symétriques, iter_diff≈201).
-    // Plancher de précision f64 du δ au voisinage de l'antenne période-2 (c≈-1.75) :
-    // ~11 rebases près de |Z|≈0.027 → cancellation → faux escape anticipé.
+    // NB : PASS à ≤96² mais WARN à ≥128²/256² (post-recalibrage p99 G6 ; ~8-16 px
+    // divergents dont 2 symétriques à iter_diff=210). Plancher de précision f64 du
+    // δ au voisinage de l'antenne période-2 (c≈-1.75) : ~11 rebases près de
+    // |Z|≈0.027 → cancellation → escape TARDIF (pert=867 > gmp=657, sur-compte).
     // `--dd-tier` corrige à 100 %. C'est le cas moteur du wisdom auto-dispatch
-    // (cf. TODO.md §G3 « auto-dispatch (wisdom) », diagnostic 2026-07-10) — pas
-    // une régression : le tier quick (quality 96²) le voit PASS.
+    // (cf. TODO.md §G3 « auto-dispatch (wisdom) »).
+    // ⚠️ Trois voies vs GMP ground truth (2026-07-13, F3 Linux dispo) : fractall
+    // sur-compte 16/65536 px (99.98 % exact), F3 diverge 9391/65536 px (mean 3.74,
+    // max 1582) — fractall est ~600× plus fidèle à GMP que F3 ici. Le WARN N'EST
+    // donc PAS un retard sur F3 : c'est 2 px dd-sensibles, F3 fait pire partout.
     Preset {
         name: "mandelbrot-e13",
         description: "Mandelbrot at zoom 1e13 — just above perturbation activation threshold.",

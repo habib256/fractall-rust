@@ -1085,6 +1085,27 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
       vs GMP), confirmant que c'est bien la précision du δ, pas la BLA
       (dd tourne sans BLA). C'est le **même plancher que e30/e50** (cf. dd-tier
       livré ci-dessus), juste à zoom plus faible et sur 2 px seulement.
+    - **🔬 TROIS VOIES fractall / F3 / GMP (2026-07-13, F3 Linux enfin dispo).**
+      Question longtemps ouverte : le WARN e13 est-il un **retard sur F3** (F3
+      rendrait ces px justes → porter sa précision) ou une **limite partagée** ?
+      Réponse tranchée par mesure (256², ER 625 aligné, escape-count ENTIER vs
+      GMP per-pixel ground truth) : **fractall-pert 16/65536 px faux** (99.98 %
+      exact, dont 8 à ±1, 6 à ±2-5, **2** dd-sensibles à +210) ; **F3 9391/65536
+      px faux** (14 %, mean 3.74, max 1582, 1612 px >5). Corr(pert,gmp)=0.9999,
+      corr(F3,gmp)=0.928. Centre + coins : N entier **identique** F3=GMP=fractall.
+      → **fractall est ~600× plus fidèle à GMP que F3 sur cette scène.** Le WARN
+      e13 n'est PAS un retard sur F3 ; c'est fractall qui DOMINE F3 en exactitude,
+      avec 2 px dd-résiduels comme seul défaut (F3 fait pire *partout*, sans doute
+      parce que son wisdom par défaut choisit un tier bas — `float` 24 b — sur
+      cette profondeur modérée, là où fractall tient f64 53 b minimum). ⚠️ Deux
+      corrections au diagnostic 2026-07-10 ci-dessus : (a) direction — fractall
+      **sur-compte** (escape TARDIF pert=867 > gmp=657), pas « anticipé » ;
+      (b) « F3 algorithmiquement équivalent » vaut pour la *boucle* mais PAS pour
+      la *précision effective* — reproductible via `compare_f3.py --only <probe>`
+      (Δmean 3.75). **Conséquence méta** : F3 n'est PAS ground truth aux zooms
+      modérés (tier bas) — l'axe parité mesure « match l'affichage F3 », l'axe
+      qualité (vs GMP) reste le vrai juge de correction. Verrou : commentaire
+      `mandelbrot-e13` (presets.rs) porte le chiffre 16 vs 9391.
     - **Détecteur cheap réfuté** : hypothèse « flag les pixels à forte
       cancellation cumulée aux rebases (`Σ ½·log2(|δ|²/|Z+δ|²)`) → re-render GMP ».
       **Infirmé sur données** : les 2 px fautifs ont `cbits≈11.2`, mais des px
