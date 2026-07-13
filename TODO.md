@@ -1209,6 +1209,14 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
 - [x] **Binaire F3 Linux** buildé (`fraktaler-3-3.1/fraktaler-3-3.1.linux`) —
   la machine courante (i7-10700F 16 threads Linux) remplace le M4 ; utilisé par
   les axes speed/parity.
+  - [x] **Build reproductible (`scripts/build_f3_linux.sh`, 2026-07-13)** : le
+    `.linux` est gitignoré/par-machine → sur un nouveau container (ex. Xeon 4c CI)
+    les axes speed/parity retombent dark faute de binaire. Le script rebuild un F3
+    **batch GUI-free** (raw-EXR N0/NF → `batch()`, pas de SDL/GL/imgui — submodules
+    absents) : deps apt + shim 3 symboles gui.cc/colour.cc + 15 TUs cœur. Rallume
+    speed/parity sur toute machine Linux. Premier score Xeon 4c : geomean **0.282**
+    (10/10 wins), parité 10/10 ok, quality 11 PASS, goldens 🟢
+    (`20260713T093029Z`). Hint `compare_f3.py` + doc HARNESS.md alignés.
 - [x] **Baseline v1 committée** sur cette machine (2026-07-12) : **tier standard**
   (256², runs=3 médiane, 25 cas) figée depuis `20260712T120028Z-cd05f6a.json`.
   **geomean vitesse 0.223** (25/25 wins, pire test5 0.580), parité 25/25 ok,
