@@ -1349,14 +1349,21 @@ Actions candidates pour la boucle (ordre suggéré) :
   sans impact vitesse, flip vertical pour comparer des images. GPU (RTX 4060
   Ti) opérationnel : seahorse 1e8 256² CPU 2.5 s / GPU 1.7 s (≈1 s d'overhead
   init CUDA constant — comparer à grande résolution ou soustraire).
-  - ⚠️ **Limite du port Linux (dev preview)** : OK jusqu'à ~**1e80**
-    (CPU `Cpu64PerturbedBLAV2HDR` structuré) ; **abort (core dump) vers
-    1e100**, sortie uniforme à 1e113. Le range utile comme référence vitesse =
-    **1e15-1e80** (couvre le mid-deep). Suivre les releases upstream pour le
-    deep ; éventuellement rapporter le bug.
-  - [ ] Câbler la colonne speed Mandelbrot 1e15-1e80 dans `harness.py`
-    (`FS_BIN`, 2048² ou soustraction d'overhead) ; F3 reste la référence
-    tous-types/toutes-profondeurs.
+  - ⚠️ **Limites du port Linux (dev preview) — resserrées après duel réel
+    (2026-07-14)** : à 1e50 le CPU sort UNIFORME (263k iters) et le GPU rend
+    un **AUTRE lieu** (spirale ≠ notre étoile golden — précision de réf
+    insuffisante, « structuré » ≠ « correct ») ; abort vers 1e100. Lieu
+    vérifié correct à **1e30** (== fractall). Et le path CPU Linux est
+    ~50× plus lent que fractall (62 s vs 1.25 s, e50-coords 1e30 1024²
+    131k iters) → seul le **GPU** sert de barre.
+  - **📊 Duel valide (1e30, 1024², 131k iters, 3 runs)** : fractall CPU
+    **1.25 s** · FS CPU 62 s · **FS GPU (RTX 4060 Ti) ~0.6 s** après warm-up
+    (~1 s d'init CUDA au 1er run). ⇒ La barre FS = GPU ~**2× notre CPU 16t**
+    sur le mid-deep. Notre GPU wgpu (bytecode f32) s'arrête à ~1e7 → ouvre le
+    goal « **GPU perturbation deep** » (kernel delta HDR wgpu), cible
+    mesurable : 0.6 s. Câblage harness (colonne speed FS-GPU ≤1e30) : ROI
+    faible tant que le range fiable est si étroit — suivre les releases
+    upstream (le Windows gère e1000+), re-tester à chaque 0.5x.
 - [x] **✅ Étude `ImaginaFractal/Algorithms` (2026-07-14)** — analyse complète
   dans **`docs/imagina-algorithms-analysis.md`** (pendant de
   fraktaler-3-analysis.md ; clone ~/src/Imagina-Algorithms, 5 évaluateurs,
