@@ -1106,6 +1106,27 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
       modérés (tier bas) — l'axe parité mesure « match l'affichage F3 », l'axe
       qualité (vs GMP) reste le vrai juge de correction. Verrou : commentaire
       `mandelbrot-e13` (presets.rs) porte le chiffre 16 vs 9391.
+    - **🔬 GÉNÉRALISÉ + ROOT-CAUSE (2026-07-13, `scripts/three_way_gmp.py`).**
+      L'arbitre 3-voies (fractall-pert / F3 / GMP per-pixel, escape-count entier,
+      seuil « grosse erreur » >5 px pour ôter le bruit ±1 cross-implémentation)
+      confirme le pattern sur **4 scènes Mandelbrot zoom modéré** (192², erreurs
+      >5 vs GMP) : seahorse-1e8 **fractall 41 / F3 15766** (385×), misiurewicz-1e12
+      66 / 4341 (66×), e13 0 / 1087 (1087×), e17 2 / 1357 (678×). **Root cause
+      côté F3** (`wisdom.cc::wisdom_enumerate`) : la wisdom PAR DÉFAUT (aucune
+      `wisdom.toml` → `wisdom_default` = enumerate) donne `nt_float` **vitesse 0.6
+      = la plus rapide**, et sa viabilité (`render.cc:243`) n'exige que
+      `mantissa ≥ max(24, 24−pixel_precision)` ≈ **24 b** pour une frame centrée
+      (même modèle `req_prec≈log2(diag)` que notre `wisdom.rs`). Donc F3 tourne en
+      **float 24 b** tant que l'exposant float tient (jusqu'à ~1e38), et sa
+      précision s'effondre là où la sensibilité de Lyapunov l'amplifie (filaments,
+      antenne). fractall plancher **f64 53 b** → ~66-1087× plus fidèle. **Contrôle
+      décisif** : à deep zoom (>1e38, float non-viable par exposant) F3 bascule
+      floatexp ⇒ parité EXACTE (quick parity e50/e113/e1000 `mean_abs=0.0`,
+      `max_abs=0.0`) — la divergence n'apparaît QUE là où float est viable, ce qui
+      **exclut un artefact de mapping** et prouve le mécanisme tier. NB : l'écart
+      est souvent **sous-visible** en rendu colorisé (quelques iters sur filaments
+      chaotiques) — F3 assume ce compromis vitesse ; fractall assume la précision.
+      Outil réutilisable = arbitre « qui a raison » quand la parité diverge.
     - **Détecteur cheap réfuté** : hypothèse « flag les pixels à forte
       cancellation cumulée aux rebases (`Σ ½·log2(|δ|²/|Z+δ|²)`) → re-render GMP ».
       **Infirmé sur données** : les 2 px fautifs ont `cbits≈11.2`, mais des px
