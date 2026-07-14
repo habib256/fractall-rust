@@ -108,6 +108,7 @@ fn uses_bytecode_path(params: &FractalParams) -> bool {
 }
 
 pub mod types;
+pub mod compress;
 pub mod dd;
 pub mod orbit;
 pub mod bla;

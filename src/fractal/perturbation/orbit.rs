@@ -1565,6 +1565,24 @@ pub fn compute_reference_orbit_with_progress(
     let mut atom_dz = ComplexExp::zero();
     let mut atom_truncated = false;
 
+    // Instrumentation compression d'orbite (G8.2 phase 1, Imagina
+    // PTWithCompression) : fantôme f64 en parallèle du build, log [COMPRESS]
+    // (densité de waypoints = le GO/NO-GO du swap de stockage phase 2).
+    // Mandelbrot seed=0 uniquement (le fantôme réplique z²+c depuis 0).
+    let mut compress_ref = super::compress::CompressedReference::default();
+    let mut compressor = if super::compress::compress_stats_enabled()
+        && matches!(ftype, FractalType::Mandelbrot)
+        && params.seed.re == 0.0
+        && params.seed.im == 0.0
+    {
+        Some(super::compress::ReferenceCompressor::new(
+            &mut compress_ref,
+            cref_f64,
+        ))
+    } else {
+        None
+    };
+
     for i in 0..params.iteration_max {
         if let Some(cancel) = cancel {
             if i % 256 == 0 && cancel.load(Ordering::Relaxed) {
@@ -1685,6 +1703,9 @@ pub fn compute_reference_orbit_with_progress(
         let z_f64 = complex_to_complex64(&z);
         z_ref.push(z_ref_complexexp(&z, z_f64));
         z_ref_f64.push(z_f64);
+        if let Some(comp) = compressor.as_mut() {
+            comp.add(z_f64);
+        }
         if build_dd {
             z_ref_dd.push(super::dd::ComplexDDExp {
                 re: gmp_float_to_ddexp(z.real()),
@@ -1728,6 +1749,29 @@ pub fn compute_reference_orbit_with_progress(
             "[ATOM] Reference tronquée à {} iters (atom-domain F3, rebase-at-end). |Z[end]|={:.3e}",
             z_ref_f64.len(),
             z_end.norm_sqr().sqrt()
+        );
+    }
+
+    // Rapport d'instrumentation compression (cf. init plus haut). La dernière
+    // valeur stockée devient le waypoint terminal (contrat `finalize` : l'accès
+    // `z_ref[ref_len-1]` du rebase-at-end doit être exact).
+    if let Some(mut comp) = compressor.take() {
+        if z_ref_f64.len() > 1 {
+            let last = z_ref_f64[z_ref_f64.len() - 1];
+            comp.finalize(last);
+        }
+        drop(comp);
+        let iters = z_ref_f64.len().max(1);
+        let wps = compress_ref.waypoints.len().max(1);
+        let full_bytes = iters * 48; // z_ref ComplexExp 32 o + z_ref_f64 16 o
+        eprintln!(
+            "[COMPRESS] iters={} waypoints={} ratio={:.1}x orbit_full={:.1}Mo compressed={:.3}Mo atom_truncated={}",
+            iters,
+            wps,
+            iters as f64 / wps as f64,
+            full_bytes as f64 / 1e6,
+            compress_ref.memory_bytes() as f64 / 1e6,
+            atom_truncated,
         );
     }
 

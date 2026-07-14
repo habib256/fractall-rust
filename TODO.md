@@ -1335,7 +1335,9 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
 
 **🧭 G8.2 — Après F3 : évolution des références de la boucle (survey 2026-07-14).**
 Constat en 3 points : (a) **vitesse** — fractall bat F3 partout (quick 10/10,
-standard 25/25, full 77/80) : l'axe head-to-head F3 ne tire plus vers le haut ;
+standard 25/25, full **80/80 — sweep 2026-07-14 post-escalade : geomean 0.193,
+pire cas e22522 0.943, plus AUCUN perdant** ; seul e52465 quarantainé, adjugé
+plancher-GMP) : l'axe head-to-head F3 ne tire plus vers le haut ;
 (b) **correction** — F3 n'est PAS ground truth aux zooms modérés (wisdom défaut
 = tier float 24 b, cf. diag 3-voies G3 2026-07-13 : 9391 px faux vs 16 chez
 fractall) — le vrai juge reste notre GMP per-pixel ; (c) **algorithmique** —
@@ -1403,12 +1405,26 @@ Actions candidates pour la boucle (ordre suggéré) :
   fait même mieux sur la mémoire via skip-levels) ; leur arrêt de réf =
   atom-domain inconditionnel ×2 (nous : gaté par plage). Deux techniques à
   porter, en ordre :
-  - [ ] **Port PTWithCompression** (orbite fantôme f64 + waypoints, tol 2⁻³²,
-    stockage O(waypoints)) : vise wfs_mb ~2 GB / opus2 8 GB / dragon 240 Mo
-    d'orbite → ~Mo, + gain cache probable ≥10⁶ iters. Pont : stocker
-    Z_atterrissage dans `BlaMultiStep` (+16 o/nœud) pour l'accès aléatoire
-    post-saut. Env-gated, A/B wfs_mb/dragon/opus2, verrous goldens+quality+
-    fuzz. Piège connu à tester : e22522 (réf frôlant 0 sous 1e-308).
+  - [~] **Port PTWithCompression — PHASE 1 LIVRÉE (2026-07-14) : structs +
+    instrumentation, GO pour la phase 2.** `perturbation/compress.rs` :
+    `ReferenceCompressor`/`ReferenceDecompressor` port fidèle d'Imagina
+    (fantôme f64, cheb·2⁻³², waypoint au décrochage, reset() = rebase), 4 unit
+    locks (roundtrip intérieur/chaotique, trap quasi-nucleus, replay reset).
+    Hook `FRACTALL_COMPRESS_REF_STATS=1` dans le build d'orbite (Mandelbrot
+    seed=0) → ligne `[COMPRESS]`. **Densités mesurées (corpus)** : dragon
+    2.05M iters → 1 918 wp (**1067×**, 98 Mo→46 Ko) ; e22522 213 k → 769
+    (**278×** — le piège |Z|≈0 sous-f64 est GÉRÉ : |Z[end]|=0.0 exact snappé,
+    cf. unit lock) ; e50 116× ; glitch_test_6 47× ; glitch_test_2 39× ;
+    wfs_mb 542 k → 38 721 (**14×**, le plus dense — orbite frôlant des zéros).
+    ⚠️ Piège découvert en test : un orbite de VALIDATION calculée en f64 est
+    bit-identique au fantôme → 0 waypoint ; toute validation doit sourcer
+    l'orbite en GMP (comme la prod).
+    **Phase 2 (le vrai gain)** : swap du stockage `z_ref_f64`/`z_ref` →
+    O(waypoints) + décompresseur séquentiel per-pixel + pont BLA
+    (Z_atterrissage dans `BlaMultiStep`, +16 o/nœud) + wrap_periodic
+    (waypoint forcé à cycle_start). NB : les 32 o/iter de `z_ref` ComplexExp
+    demandent un fantôme/compare FloatExp au voisinage des zéros sous-f64
+    (wfs_mb) — commencer par `z_ref_f64` seul (16 o/iter) sur le path f64.
   - [ ] **Prototype Harmonic LA** (`FRACTALL_HARMONIC_LA=1`, Mandelbrot f64) :
     segments variables coupés aux dips, plafonnés à la période, étages =
     hiérarchie des minibrots, évaluation par descente (1 check/segment au lieu
