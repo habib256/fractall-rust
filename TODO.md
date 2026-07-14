@@ -1106,8 +1106,54 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     jamais dd (mantisse requise ~8 b), le besoin vient de la sensibilité pixel
     qu'aucun détecteur cheap fiable ne capte (proxy `cbits` réfuté, cf. ci-dessous).
     Point d'accroche prêt dans `wisdom.rs` (`required_precision` vs
-    `tier.mantissa_bits()`). Prérequis perf : dd-BLA ✅ + epsilon adaptatif (sinon
-    coût hors des cas sensibles).
+    `tier.mantissa_bits()`). Prérequis perf : dd-BLA ✅ (epsilon 2⁻⁸⁰ calibré).
+    - [ ] **📐 DÉTECTEUR PROPOSÉ (survey web 2026-07-15) : borne d'erreur
+      propagée par-pixel + test de shadowing — « Reliable Mandelbrot »
+      (Claude Heiland-Allen, https://mathr.co.uk/web/m-reliable.html).**
+      Idée : une orbite f64 bruitée est CORRECTE au sens pixel tant que son
+      erreur, ramenée en espace-c via la dérivée, reste sous ~1 pixel
+      (shadowing) : `fiable ⟺ Δz_n < κ·pixel_size·|dδ_n/dδc|` (κ ≈ ½…1).
+      Borne `Δz` propagée par récurrence (u = 2⁻⁵³), transposée à nos trois
+      événements de `pixel_loop.rs` :
+      · pas direct : `Δz ← Δz·(2·|Z+δ| + Δz) + u·2·|Z|·|δ|` (normes déjà
+        cachées en tête de boucle) ;
+      · saut BLA (l iters) : `Δz ← ‖A‖·Δz + (ε_bla + u)·|z_land|` ;
+      · **rebase `δ:=Z+δ` : `Δz ← Δz + u·|Z_m|`** (ajout fractall — capture
+        EXACTEMENT le mécanisme e13 : la cancellation révèle l'arrondi f64 du
+        Z de référence face au δ minuscule).
+      La dérivée `dδ_n/dδc` = le tracking dual-number EXISTANT du path
+      distance-estimation (`UnifiedOptions`/ddelta) — rien à inventer.
+      **Pourquoi ça sépare là où cbits échouait** : cbits comptait l'activité
+      de cancellation sans propagation multiplicative NI normalisation par la
+      dérivée. Vérifié contre les 3 points de données du repo : e13 (2 px,
+      amplification Lyapunov ≠ entre px à cbits voisins → Δz/|dδdc| sépare) ;
+      e50 (3.2 % px cbits≥8 STABLES : |dδdc| énorme à deep zoom → tolérance
+      `pixel_size·|dδdc|` explose → pas de faux positifs) ; presets dd
+      shallow (seahorse 1e8 : grande Δz / dérivée modeste → flag, le cas
+      invisible au req_prec F3). mathr conclut comme nous : « per-pixel
+      status » obligatoire, aucun proxy par-frame ne marche. AUCUNE
+      implémentation existante (KF/F3 sélectionnent par profondeur seulement)
+      — première pratique, adossée à l'analyse de l'auteur de F3.
+      **Plan en 2 itérations /improve** :
+      1. Détecteur seul en OBSERVATION (`FRACTALL_RELIABILITY=1`) : tracking
+         Δz + dual dans le path f64, flag dans `UnifiedPixelResult`, ligne
+         `[RELIABILITY] flagged=N/total`. Validation = précision/rappel vs
+         vérité GMP per-pixel sur les presets QA (doit attraper les 2 px
+         d'e13@256² + les divergents seahorse/misiurewicz/minibrot en f64
+         forcé ; ~0 faux positif sur e50/e113). Coût attendu ~10-25 % quand
+         activé (dual 2 muls + borne 3-4 flops/iter ; borne cheb majorante
+         si le sqrt gêne).
+      2. ESCALADE : px flaggés ré-itérés sur `pixel_loop_dd` (même motif que
+         l'escalade still-glitched→GMP, verrou `single-ref-glitch-interior`) ;
+         fraction flaggée > seuil (~5-10 %) → bascule frame entière dd = le
+         wisdom auto-dispatch débloqué. e13 : 2 px ≈ gratuit ; seahorse :
+         flag massif → dd frame, la bonne réponse.
+      **Risques** : borne conservatrice (produit de majorations) → sur-flag,
+      κ/seuil à calibrer sur corpus QA (méthode bissection, cf. epsilon dd) ;
+      coût du tracking permanent → si > ~10 %, opt-in `Auto` gaté wisdom
+      (zoom < 1e18 + iters élevées, la zone documentée du besoin dd) ; test
+      en fin d'orbite seulement (suffisant a priori — l'erreur qui fausse un
+      escape est dans l'état final) à confirmer en validation 1.
     - **Cas moteur pour le wisdom (2026-07-10, diagnostic)** : preset quality
       `mandelbrot-e13` (centre `-1.7499537683537087`, zoom 1e13, 16384 iters —
       juste au-dessus du seuil d'activation perturbation). **FAIL à ≥128²**
