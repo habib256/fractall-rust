@@ -243,14 +243,30 @@ fn build_bla_entry(
 /// Chemin rapide : thread-local (lock-free, hot-loop par-pixel). Si absent ou
 /// périmé, prend le lock global : le premier worker construit, les autres
 /// attendent puis clonent l'`Arc` (un seul build, une seule table en RAM).
+/// Identité de l'orbite pour la clé du cache BLA. Par défaut : (ptr, len) de
+/// `z_ref_f64`. Quand une réf COMPRESSÉE existe (phase 2, gate
+/// `FRACTALL_COMPRESS_REF=1` au build d'orbite) : (ptr, len logique) des
+/// waypoints — identité STABLE à travers la libération des tableaux pleins
+/// (cf. `mod.rs::strip_orbit_arrays_for_compress` : prewarm AVANT le strip,
+/// lookups par-pixel APRÈS ; le buffer waypoints ne bouge pas tant que le
+/// `ReferenceOrbit` n'est pas cloné, garanti par le strip via `Arc::try_unwrap`).
+fn orbit_identity(ref_orbit: &ReferenceOrbit) -> (usize, usize) {
+    match ref_orbit.compressed_f64.as_ref() {
+        Some(c) if !c.waypoints.is_empty() => (c.waypoints.as_ptr() as usize, c.len as usize),
+        _ => (
+            ref_orbit.z_ref_f64.as_ptr() as usize,
+            ref_orbit.z_ref_f64.len(),
+        ),
+    }
+}
+
 fn get_or_build_bla_entry(
     params: &FractalParams,
     ref_orbit: &ReferenceOrbit,
     c_norm: f64,
     formula: &Formula,
 ) -> Option<Arc<BlaUnifiedCacheEntry>> {
-    let orbit_ptr = ref_orbit.z_ref_f64.as_ptr() as usize;
-    let orbit_len = ref_orbit.z_ref_f64.len();
+    let (orbit_ptr, orbit_len) = orbit_identity(ref_orbit);
 
     // 1. Chemin rapide thread-local.
     if let Some(arc) = BLA_UNIFIED_CACHE.with(|cell| {
@@ -380,6 +396,38 @@ pub fn bytecode_path_label(params: &FractalParams) -> Option<&'static str> {
     // la justification F3 (viabilité exposant/mantisse). Le label sert la ligne
     // `[FRACTALL] path=…`. `None` si le path bytecode ne s'applique pas.
     crate::fractal::wisdom::number_tier(params).map(|t| t.path_label())
+}
+
+/// Le routage COMPRESSÉ (PTWithCompression phase 2, `FRACTALL_COMPRESS_REF=1`)
+/// est-il actif pour ce rendu ? Prédicat PARTAGÉ entre le dispatch par-pixel
+/// (`try_bytecode_unified_path` → `iterate_pixel_unified_mandelbrot_compressed`)
+/// et la libération des tableaux pleins (`mod.rs::strip_orbit_arrays_for_
+/// compress`) — les deux DOIVENT rester cohérents : si le strip fire, chaque
+/// pixel doit passer par le décompresseur (les tableaux sont vides).
+///
+/// Conditions (fast-path Mandelbrot f64 pur uniquement) :
+/// - gate env + réf compressée construite (Mandelbrot seed=0, orbite GMP) ;
+/// - tier wisdom == F64 (PAS exp — lit `z_ref` ComplexExp ; PAS dd — lit
+///   `z_ref_dd`) ; couvre `use_bytecode_engine`, formule single-phase,
+///   `pixel_size > 0` ;
+/// - `cycle_period == 0` (pas de wrap_periodic Brent — accès aléatoire) ;
+/// - pas de distance/interior/orbit_traps (autres variantes de boucle, qui
+///   lisent le tableau) ;
+/// - `phase_offset == 0` (pas de phase hybride — indexation décalée).
+pub(crate) fn compressed_ref_route_active(
+    params: &FractalParams,
+    orbit: &ReferenceOrbit,
+) -> bool {
+    crate::fractal::perturbation::compress::compress_enabled()
+        && matches!(params.fractal_type, FractalType::Mandelbrot)
+        && orbit.compressed_f64.as_ref().is_some_and(|c| c.len >= 2)
+        && orbit.cycle_period == 0
+        && orbit.phase_offset == 0
+        && !params.enable_orbit_traps
+        && !params.enable_distance_estimation
+        && !params.enable_interior_detection
+        && crate::fractal::wisdom::number_tier(params)
+            == Some(crate::fractal::wisdom::NumberTier::F64)
 }
 
 fn try_bytecode_unified_path(
@@ -522,6 +570,29 @@ fn try_bytecode_unified_path(
         // Path f64 standard (rapide).
         let delta_init = delta0.to_complex64_approx();
         let dc_approx = dc.to_complex64_approx();
+
+        // ── Path f64 COMPRESSÉ (FRACTALL_COMPRESS_REF=1, G8.2 phase 2) ─────
+        // Réf lue via le décompresseur à waypoints (Imagina PTWithCompression)
+        // au lieu de `z_ref_f64` — qui peut avoir été LIBÉRÉ (cf. mod.rs
+        // `strip_orbit_arrays_for_compress`). Prédicat partagé avec le strip :
+        // Mandelbrot f64 pur, sans features dual-numbers ni wrap périodique.
+        // delta0 est structurellement 0 pour Mandelbrot (mêmes conditions que
+        // le fast-path `iterate_pixel_unified_mandelbrot`).
+        if compressed_ref_route_active(params, ref_orbit) {
+            debug_assert!(delta_init.norm_sqr() == 0.0, "Mandelbrot ⇒ delta0 = 0");
+            return Some(
+                crate::fractal::bytecode::pixel_loop::iterate_pixel_unified_mandelbrot_compressed(
+                    ref_orbit,
+                    bla,
+                    dc_approx,
+                    params.iteration_max,
+                    params.bailout,
+                    params.max_perturb_iterations,
+                    params.max_bla_steps,
+                ),
+            );
+        }
+
         let (c_for_add, dc_for_add) = if is_julia {
             (
                 Complex64::new(params.seed.re, params.seed.im),

@@ -220,6 +220,7 @@ mod tests {
             cycle_start: 0,
             z_ref_dd,
             atom_truncated: false,
+            compressed_f64: None,
         };
         let dc = ComplexDDExp::from_complex64(Complex64::new(1e-30, 1e-30));
         let res = iterate_pixel_unified_ddexp_mandelbrot(

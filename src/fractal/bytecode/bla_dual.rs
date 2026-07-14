@@ -287,16 +287,26 @@ pub struct BlaMultiStep {
     pub b: Mat2,
     pub r2: f64,
     pub l: u32,
+    /// Valeur f64 EXACTE de l'orbite référence au point d'ATTERRISSAGE du saut
+    /// (`Z[position + l]`, bit-copie de `z_ref_f64`). Pont PTWithCompression
+    /// (G8.2 phase 2) : permet la garde anti-over-skip ET le `seek` du
+    /// décompresseur sans lecture aléatoire du tableau d'orbite. Rempli par
+    /// `BlaTableUnified::build` (l'orbite complète y est disponible) ;
+    /// propagé par `merge` (atterrissage final = celui du DERNIER sous-nœud).
+    pub z_land: num_complex::Complex64,
 }
 
 impl BlaMultiStep {
-    /// Promotion d'un single-step (avec `B = I`, `l = 1`).
-    pub fn from_single(s: BlaSingleStep) -> Self {
+    /// Promotion d'un single-step (avec `B = I`, `l = 1`). `z_land` = valeur
+    /// de l'orbite au point d'atterrissage du pas (`Z[i+1]` pour le
+    /// single-step à l'index `i`).
+    pub fn from_single(s: BlaSingleStep, z_land: num_complex::Complex64) -> Self {
         Self {
             a: s.a,
             b: Mat2::IDENTITY,
             r2: s.r2,
             l: 1,
+            z_land,
         }
     }
 
@@ -338,6 +348,9 @@ impl BlaMultiStep {
             b: bz,
             r2: rz * rz,
             l: x.l + y.l,
+            // Atterrissage du nœud fusionné = atterrissage FINAL, i.e. celui
+            // du dernier sous-nœud (y couvre [pos+l_x, pos+l_x+l_y)).
+            z_land: y.z_land,
         }
     }
 }
@@ -424,9 +437,14 @@ impl BlaTableUnified {
         const PAR_BLA_MIN: usize = 1 << 16; // 65536
 
         // Single-step level-0 par index d'orbite (jamais matérialisé en entier).
+        // `z_land` = Z[i+1] (atterrissage : le pas couvre [i, i+1) ; i ≤ m-1
+        // donc i+1 ≤ m < ref_orbit.len(), toujours en bornes).
         let single = |i: usize| -> BlaMultiStep {
             let z = ref_orbit[i];
-            BlaMultiStep::from_single(build_bla_single_step(z.re, z.im, phase, epsilon))
+            BlaMultiStep::from_single(
+                build_bla_single_step(z.re, z.im, phase, epsilon),
+                ref_orbit[i + 1],
+            )
         };
 
         // Level 1 construit en STREAMING : chaque nœud fusionne 2 single-steps
@@ -880,13 +898,16 @@ mod tests {
         let phase = &formula.phases[0];
         let z0 = Complex64::new(0.2, 0.1);
         let z1 = Complex64::new(-0.3, 0.4);
+        let z2 = Complex64::new(0.05, -0.2); // atterrissage du 2e pas (arbitraire)
         let s0 = build_bla_single_step(z0.re, z0.im, phase, 1e-6);
         let s1 = build_bla_single_step(z1.re, z1.im, phase, 1e-6);
         let merged = BlaMultiStep::merge(
-            BlaMultiStep::from_single(s0),
-            BlaMultiStep::from_single(s1),
+            BlaMultiStep::from_single(s0, z1),
+            BlaMultiStep::from_single(s1, z2),
             0.5,
         );
+        // z_land du nœud fusionné = atterrissage FINAL (dernier sous-nœud).
+        assert_eq!(merged.z_land, z2);
 
         // 4·Z_0·Z_1 = 4 * (0.2+0.1i)(-0.3+0.4i)
         // = 4 * (-0.06 - 0.04 + i(0.08 - 0.03))
@@ -942,8 +963,10 @@ mod tests {
         }
         assert_eq!(table.levels[3].len(), 1);
 
-        // Le BLA top-level (consulté) doit avoir l = 8.
+        // Le BLA top-level (consulté) doit avoir l = 8, et son z_land doit être
+        // la valeur d'orbite au point d'atterrissage Z[0+8] (pont compression).
         assert_eq!(table.levels[3][0].l, 8);
+        assert_eq!(table.levels[3][0].z_land, orbit[8]);
     }
 
     /// Le lookup retourne `None` quand delta est trop grand, et un BLA de

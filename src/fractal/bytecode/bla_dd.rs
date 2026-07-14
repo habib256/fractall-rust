@@ -254,8 +254,9 @@ mod tests {
         // f64
         let phase = &compile_formula(FractalType::Mandelbrot, 2.0).unwrap().phases[0];
         let mf = BlaMultiStep::merge(
-            BlaMultiStep::from_single(build_bla_single_step(z0.re, z0.im, phase, 1e-6)),
-            BlaMultiStep::from_single(build_bla_single_step(z1.re, z1.im, phase, 1e-6)),
+            // z_land arbitraire : non lu par ce test (compare A/B/r² seulement).
+            BlaMultiStep::from_single(build_bla_single_step(z0.re, z0.im, phase, 1e-6), z1),
+            BlaMultiStep::from_single(build_bla_single_step(z1.re, z1.im, phase, 1e-6), z0),
             0.5,
         );
         assert_eq!(md.l, 2);

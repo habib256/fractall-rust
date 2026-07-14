@@ -915,6 +915,60 @@ pub fn render_perturbation_cancellable_with_reuse(
     Some(result)
 }
 
+/// PTWithCompression phase 2 (`FRACTALL_COMPRESS_REF=1`) : libère les tableaux
+/// pleins `z_ref_f64` (16 o/iter) + `z_ref` ComplexExp (32 o/iter) de l'orbite
+/// quand le routage compressé est actif — mémoire orbite steady-state
+/// O(waypoints). Choix d'implémentation « simple et sûr » : la libération se
+/// fait sur NOTRE copie locale de l'Arc, via `Arc::try_unwrap` (rendu CLI/QA
+/// nominal : refcount 1 → libération effective). Si l'Arc est PARTAGÉ (cache
+/// GUI réutilisé entre passes), on ne libère pas : le path compressé tourne
+/// quand même (routage indépendant du strip), le gain mémoire est simplement
+/// différé — libérer in-place dans le cache partagé imposerait de reconstruire
+/// l'Arc chez tous les détenteurs. Un cache strippé n'est JAMAIS réutilisé
+/// (`ReferenceOrbitCache::is_valid_for` → false → recompute). No-op complet
+/// sans le gate env.
+fn strip_orbit_arrays_for_compress(
+    cache: Arc<ReferenceOrbitCache>,
+    params: &FractalParams,
+) -> Arc<ReferenceOrbitCache> {
+    if !delta::compressed_ref_route_active(params, &cache.orbit) {
+        return cache;
+    }
+    let (wp_count, wp_bytes) = cache
+        .orbit
+        .compressed_f64
+        .as_ref()
+        .map(|c| (c.waypoints.len(), c.memory_bytes()))
+        .unwrap_or((0, 0));
+    let full_bytes = cache.orbit.z_ref_f64.len() * std::mem::size_of::<Complex64>()
+        + cache.orbit.z_ref.len() * std::mem::size_of::<ComplexExp>();
+    match Arc::try_unwrap(cache) {
+        Ok(mut owned) => {
+            // Le buffer waypoints ne bouge pas (move de la struct, pas des
+            // heaps) → la clé du cache BLA (`delta::orbit_identity`) reste
+            // valide après le strip.
+            owned.orbit.z_ref_f64 = Vec::new();
+            owned.orbit.z_ref = Vec::new();
+            eprintln!(
+                "[COMPRESS] actif : réf via {} waypoints ({:.3} Mo) ; libéré z_ref_f64+z_ref = {:.1} Mo",
+                wp_count,
+                wp_bytes as f64 / 1e6,
+                full_bytes as f64 / 1e6,
+            );
+            Arc::new(owned)
+        }
+        Err(shared) => {
+            eprintln!(
+                "[COMPRESS] actif : réf via {} waypoints ({:.3} Mo) ; libération sautée (Arc partagé) — {:.1} Mo évités au prochain rendu",
+                wp_count,
+                wp_bytes as f64 / 1e6,
+                full_bytes as f64 / 1e6,
+            );
+            shared
+        }
+    }
+}
+
 /// Rend une fractale en utilisant la méthode de perturbation.
 ///
 /// Cette fonction calcule l'orbite de référence haute précision au centre de l'image,
@@ -1092,9 +1146,6 @@ pub fn render_perturbation_with_cache(
     // Ne pas réutiliser les pixels pour la perturbation (voir commentaire ci-dessus)
     let reuse = build_reuse(params, reuse_for_pixels);
 
-    // Clone cache for use in parallel iteration
-    let cache_ref = Arc::clone(&cache);
-
     // Offset sous-pixel AA « per-frame » (en unités de pixel), constant sur
     // tout le frame : décale la grille pour le sample courant. Replié dans le
     // précalcul dc ci-dessous (la moyenne des frames colorés est faite par
@@ -1155,6 +1206,18 @@ pub fn render_perturbation_with_cache(
     if cache.hybrid_refs.is_none() {
         crate::fractal::perturbation::delta::prewarm_bla_entry(params, &cache.orbit);
     }
+
+    // ── COMPRESS phase 2 (FRACTALL_COMPRESS_REF=1) : la boucle pixel lit la
+    // réf via le décompresseur à waypoints (routage delta.rs) → les tableaux
+    // pleins `z_ref_f64` (16 o/iter) + `z_ref` (32 o/iter) deviennent du poids
+    // mort. On les libère APRÈS le prewarm BLA (le build lit le tableau plein ;
+    // la clé de cache = identité COMPRESSÉE, stable à travers la libération,
+    // cf. `delta::orbit_identity`). ⚠️ Doit précéder le clone `cache_ref`
+    // (Arc::try_unwrap exige refcount 1).
+    let cache = strip_orbit_arrays_for_compress(cache, params);
+
+    // Clone cache for use in parallel iteration
+    let cache_ref = Arc::clone(&cache);
 
     let t_pixels_start = Instant::now();
     // Finer chunk granularity to improve rayon work-stealing. Whole rows
@@ -1866,7 +1929,14 @@ pub fn render_perturbation_with_cache(
         progress.finish();
         let _ = reporter.join();
         crate::fractal::wisdom::log_plan_if_enabled(params);
-        let path_label = bytecode_path_label(params).unwrap_or("legacy_fexp");
+        // Marqueur du path compressé (vérifiable dans la ligne [FRACTALL]) :
+        // le routage delta.rs a envoyé chaque pixel Mandelbrot f64 vers le
+        // décompresseur à waypoints.
+        let path_label = if delta::compressed_ref_route_active(params, &cache.orbit) {
+            "bytecode_f64_compressed"
+        } else {
+            bytecode_path_label(params).unwrap_or("legacy_fexp")
+        };
         print_fractall_summary(
             path_label,
             params.fractal_type,

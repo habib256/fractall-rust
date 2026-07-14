@@ -307,6 +307,13 @@ pub struct ReferenceOrbit {
     /// glitch_test_2, pixels 51 s). Distinct de `cycle_period` (période EXACTE
     /// détectée par Brent's, cyclée par `wrap_periodic`).
     pub atom_truncated: bool,
+    /// Référence f64 COMPRESSÉE par waypoints (Imagina PTWithCompression,
+    /// G8.2 phase 2). Construite UNIQUEMENT sous `FRACTALL_COMPRESS_REF=1`
+    /// (Mandelbrot seed=0, orbite GMP). Quand le routage compressé est actif
+    /// (cf. `delta::compressed_ref_route_active`), le pixel loop f64 lit la
+    /// réf via cette structure et `z_ref_f64`/`z_ref` peuvent être LIBÉRÉS
+    /// (cf. `mod.rs::strip_orbit_arrays_for_compress`). `None` sinon.
+    pub compressed_f64: Option<super::compress::CompressedReference>,
 }
 
 impl ReferenceOrbit {
@@ -494,6 +501,7 @@ impl ReferenceOrbit {
             // concerné (le dd remplace la glitch-correction, pas l'inverse).
             z_ref_dd: Vec::new(),
             atom_truncated: false,
+            compressed_f64: None,
         })
     }
 
@@ -532,6 +540,15 @@ impl ReferenceOrbitCache {
     /// IMPORTANT: Compare la précision calculée (via compute_perturbation_precision_bits)
     /// avec la précision stockée dans le cache (qui est aussi la précision calculée, pas le preset).
     pub fn is_valid_for(&self, params: &FractalParams) -> bool {
+        // Orbite « strippée » (compression phase 2, FRACTALL_COMPRESS_REF=1 :
+        // z_ref_f64/z_ref libérés après le build BLA, cf. mod.rs
+        // `strip_orbit_arrays_for_compress`) : JAMAIS réutilisable — les paths
+        // pleins (exp/dd/GPU/features/legacy) liraient des tableaux vides, et
+        // même le path compressé d'un nouveau rendu doit rebâtir son entrée
+        // BLA depuis le tableau plein. Invalide → recompute.
+        if self.orbit.z_ref_f64.is_empty() {
+            return false;
+        }
         // Compute center in GMP precision for exact comparison
         // Utiliser la précision calculée pour la comparaison
         use crate::fractal::perturbation::compute_perturbation_precision_bits;
@@ -700,6 +717,9 @@ fn build_hybrid_bla_references(
                 cycle_start: primary_orbit.cycle_start,
                 z_ref_dd: primary_orbit.z_ref_dd.clone(),
                 atom_truncated: primary_orbit.atom_truncated,
+                // Phases hybrides (cycle détecté) : hors périmètre du routage
+                // compressé (gaté `cycle_period == 0`) — pas de réf compressée.
+                compressed_f64: None,
             };
 
             // Build BLA table for this phase reference (one BLA table per reference)
@@ -1367,6 +1387,11 @@ pub fn compute_reference_orbit_with_progress(
                 cycle_start: 0,
                 z_ref_dd,
                 atom_truncated: false,
+                // Fast-path dd (≤96 b) : le compresseur phase 2 ne tourne que
+                // sur la boucle GMP ci-dessous — pas de réf compressée ici
+                // (l'orbite dd est déjà bon marché ; le routage retombe sur le
+                // path plein).
+                compressed_f64: None,
             },
             cx_str,
             cy_str,
@@ -1565,12 +1590,15 @@ pub fn compute_reference_orbit_with_progress(
     let mut atom_dz = ComplexExp::zero();
     let mut atom_truncated = false;
 
-    // Instrumentation compression d'orbite (G8.2 phase 1, Imagina
-    // PTWithCompression) : fantôme f64 en parallèle du build, log [COMPRESS]
-    // (densité de waypoints = le GO/NO-GO du swap de stockage phase 2).
+    // Compression d'orbite (G8.2, Imagina PTWithCompression) : fantôme f64 en
+    // parallèle du build. Tourne sous `FRACTALL_COMPRESS_REF_STATS=1` (phase 1,
+    // instrumentation : log [COMPRESS] densité de waypoints) **ou**
+    // `FRACTALL_COMPRESS_REF=1` (phase 2 : le résultat est stocké dans
+    // `orbit.compressed_f64` et consommé par le pixel loop f64, cf. delta.rs).
     // Mandelbrot seed=0 uniquement (le fantôme réplique z²+c depuis 0).
     let mut compress_ref = super::compress::CompressedReference::default();
-    let mut compressor = if super::compress::compress_stats_enabled()
+    let mut compressor = if (super::compress::compress_stats_enabled()
+        || super::compress::compress_enabled())
         && matches!(ftype, FractalType::Mandelbrot)
         && params.seed.re == 0.0
         && params.seed.im == 0.0
@@ -1752,27 +1780,35 @@ pub fn compute_reference_orbit_with_progress(
         );
     }
 
-    // Rapport d'instrumentation compression (cf. init plus haut). La dernière
-    // valeur stockée devient le waypoint terminal (contrat `finalize` : l'accès
-    // `z_ref[ref_len-1]` du rebase-at-end doit être exact).
+    // Clôture compression (cf. init plus haut). `seal` garantit que la
+    // DERNIÈRE valeur stockée est un waypoint EXACT à l'itération finale, sans
+    // avancer le compteur (`add` a déjà couvert toutes les valeurs) — contrat
+    // rebase-at-end : `Z[ref_len-1]` doit être lu exact via `end_value`.
+    let mut compressed_f64: Option<super::compress::CompressedReference> = None;
     if let Some(mut comp) = compressor.take() {
         if z_ref_f64.len() > 1 {
             let last = z_ref_f64[z_ref_f64.len() - 1];
-            comp.finalize(last);
+            comp.seal(last);
         }
         drop(comp);
-        let iters = z_ref_f64.len().max(1);
-        let wps = compress_ref.waypoints.len().max(1);
-        let full_bytes = iters * 48; // z_ref ComplexExp 32 o + z_ref_f64 16 o
-        eprintln!(
-            "[COMPRESS] iters={} waypoints={} ratio={:.1}x orbit_full={:.1}Mo compressed={:.3}Mo atom_truncated={}",
-            iters,
-            wps,
-            iters as f64 / wps as f64,
-            full_bytes as f64 / 1e6,
-            compress_ref.memory_bytes() as f64 / 1e6,
-            atom_truncated,
-        );
+        if super::compress::compress_stats_enabled() {
+            let iters = z_ref_f64.len().max(1);
+            let wps = compress_ref.waypoints.len().max(1);
+            let full_bytes = iters * 48; // z_ref ComplexExp 32 o + z_ref_f64 16 o
+            eprintln!(
+                "[COMPRESS] iters={} waypoints={} ratio={:.1}x orbit_full={:.1}Mo compressed={:.3}Mo atom_truncated={}",
+                iters,
+                wps,
+                iters as f64 / wps as f64,
+                full_bytes as f64 / 1e6,
+                compress_ref.memory_bytes() as f64 / 1e6,
+                atom_truncated,
+            );
+        }
+        // Phase 2 : stockage effectif (consommé par le routage delta.rs).
+        if super::compress::compress_enabled() {
+            compressed_f64 = Some(compress_ref);
+        }
     }
 
     if detected_period > 0 && crate::fractal::perturbation::perf_enabled() {
@@ -1818,6 +1854,7 @@ pub fn compute_reference_orbit_with_progress(
             cycle_start: detected_cycle_start,
             z_ref_dd,
             atom_truncated,
+            compressed_f64,
         },
         cx_str,
         cy_str,

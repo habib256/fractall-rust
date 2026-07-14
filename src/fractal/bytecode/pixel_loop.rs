@@ -620,6 +620,105 @@ fn compute_distance_from_dz(z_abs: Complex64, dz: Complex64, is_julia: bool) -> 
     }
 }
 
+/// Source de lecture de la référence f64 pour le fast-path Mandelbrot
+/// (PTWithCompression G8.2 phase 2). Deux impls :
+/// - [`SliceSource`] : indexation directe de `z_ref_f64` (path par défaut,
+///   inline zéro coût, BIT-IDENTIQUE à l'ancienne indexation).
+/// - [`CompressedSource`] : décompresseur à waypoints Imagina
+///   (`FRACTALL_COMPRESS_REF=1`), mémoire O(waypoints).
+///
+/// La boucle n'accède la référence QUE séquentiellement (`advance`), aux
+/// rebases (`reset`), à l'atterrissage d'un saut BLA accepté (`teleport`,
+/// valeur exacte = `BlaMultiStep::z_land`) et au rebase-at-end (`end_value`).
+trait RefF64Source {
+    /// État → itération 0, rend `Z[0]` (= 0 pour Mandelbrot seed 0).
+    fn reset(&mut self) -> Complex64;
+    /// Itération += 1, rend `Z[iter]`. Précondition : le nouvel index est
+    /// dans l'orbite (le caller garde `m < ref_len`).
+    fn advance(&mut self) -> Complex64;
+    /// État → itération `m` (atterrissage BLA) avec la valeur EXACTE fournie
+    /// (`node.z_land`, bit-copie de l'orbite). Rend `Z[m]`. À n'appeler QUE si
+    /// le saut est ACCEPTÉ (la garde anti-over-skip lit `z_land` sans état).
+    fn teleport(&mut self, m: u32, z_exact: Complex64) -> Complex64;
+    /// `Z[ref_len-1]` (rebase-at-end F3). Ne modifie pas l'état.
+    fn end_value(&self) -> Complex64;
+    /// Accès arbitraire `Z[m]` SANS valeur exacte fournie (wrap_periodic
+    /// Brent, `cycle_period > 0`). Jamais atteint sur la source compressée
+    /// (routage gaté `cycle_period == 0`, cf. delta.rs) — l'impl compressée
+    /// reste correcte (replay) mais lente.
+    fn wrap(&mut self, m: u32) -> Complex64;
+}
+
+/// Indexation directe du tableau `z_ref_f64` (path par défaut).
+struct SliceSource<'a> {
+    z: &'a [Complex64],
+    cursor: usize,
+}
+
+impl RefF64Source for SliceSource<'_> {
+    #[inline(always)]
+    fn reset(&mut self) -> Complex64 {
+        self.cursor = 0;
+        self.z[0]
+    }
+    #[inline(always)]
+    fn advance(&mut self) -> Complex64 {
+        self.cursor += 1;
+        self.z[self.cursor]
+    }
+    #[inline(always)]
+    fn teleport(&mut self, m: u32, _z_exact: Complex64) -> Complex64 {
+        self.cursor = m as usize;
+        self.z[self.cursor]
+    }
+    #[inline(always)]
+    fn end_value(&self) -> Complex64 {
+        self.z[self.z.len() - 1]
+    }
+    #[inline(always)]
+    fn wrap(&mut self, m: u32) -> Complex64 {
+        self.cursor = m as usize;
+        self.z[self.cursor]
+    }
+}
+
+/// Lecture via le décompresseur à waypoints (`FRACTALL_COMPRESS_REF=1`).
+struct CompressedSource<'a> {
+    dec: crate::fractal::perturbation::compress::ReferenceDecompressor<'a>,
+}
+
+impl RefF64Source for CompressedSource<'_> {
+    #[inline]
+    fn reset(&mut self) -> Complex64 {
+        self.dec.reset()
+    }
+    #[inline]
+    fn advance(&mut self) -> Complex64 {
+        self.dec.next()
+    }
+    #[inline]
+    fn teleport(&mut self, m: u32, z_exact: Complex64) -> Complex64 {
+        // `z_exact` = `node.z_land` (valeur f64 exacte de l'orbite) : le seek
+        // repart d'un point exact → erreur de replay ≤ fantôme canonique.
+        self.dec.seek(m, z_exact);
+        z_exact
+    }
+    #[inline]
+    fn end_value(&self) -> Complex64 {
+        self.dec.end_value()
+    }
+    fn wrap(&mut self, m: u32) -> Complex64 {
+        // Jamais atteint (routage gaté `cycle_period == 0`) : replay complet
+        // correct-mais-lent, par sûreté.
+        debug_assert!(false, "wrap_periodic sur source compressée (gate cycle_period)");
+        let mut z = self.dec.reset();
+        for _ in 0..m {
+            z = self.dec.next();
+        }
+        z
+    }
+}
+
 /// Pixel loop Mandelbrot spécialisé : BLA mat2 + perturbation delta + rebasing F3.
 /// Inline `δ' = 2·Z·δ + δ² + dc` sans DeltaState ni dispatch opcode, ~2× plus
 /// rapide que `iterate_pixel_unified_full` pour le cas Mandelbrot pur.
@@ -643,8 +742,83 @@ pub fn iterate_pixel_unified_mandelbrot(
     max_perturb_iterations: u32,
     max_bla_steps: u32,
 ) -> UnifiedPixelResult {
-    let bailout_sqr = bailout * bailout;
     let ref_len = ref_orbit.z_ref_f64.len();
+    let mut src = SliceSource { z: &ref_orbit.z_ref_f64, cursor: 0 };
+    iterate_pixel_unified_mandelbrot_impl(
+        ref_orbit,
+        &mut src,
+        ref_len,
+        bla,
+        dc,
+        iteration_max,
+        bailout,
+        max_perturb_iterations,
+        max_bla_steps,
+    )
+}
+
+/// Variante COMPRESSÉE (`FRACTALL_COMPRESS_REF=1`, G8.2 phase 2) : lit la
+/// référence via `ReferenceOrbit::compressed_f64` (waypoints + replay f64) au
+/// lieu de `z_ref_f64` — qui peut avoir été LIBÉRÉ (cf. mod.rs
+/// `strip_orbit_arrays_for_compress`). `ref_len` = longueur LOGIQUE
+/// (`CompressedReference::len`). Routage : `delta.rs`
+/// (`compressed_ref_route_active`), Mandelbrot f64 pur uniquement.
+pub fn iterate_pixel_unified_mandelbrot_compressed(
+    ref_orbit: &ReferenceOrbit,
+    bla: &BlaTableUnified,
+    dc: Complex64,
+    iteration_max: u32,
+    bailout: f64,
+    max_perturb_iterations: u32,
+    max_bla_steps: u32,
+) -> UnifiedPixelResult {
+    let Some(compressed) = ref_orbit.compressed_f64.as_ref() else {
+        // Garde défensive : sans réf compressée, path plein classique.
+        return iterate_pixel_unified_mandelbrot(
+            ref_orbit,
+            bla,
+            dc,
+            iteration_max,
+            bailout,
+            max_perturb_iterations,
+            max_bla_steps,
+        );
+    };
+    let ref_len = compressed.len as usize;
+    let mut src = CompressedSource {
+        dec: crate::fractal::perturbation::compress::ReferenceDecompressor::new(compressed),
+    };
+    iterate_pixel_unified_mandelbrot_impl(
+        ref_orbit,
+        &mut src,
+        ref_len,
+        bla,
+        dc,
+        iteration_max,
+        bailout,
+        max_perturb_iterations,
+        max_bla_steps,
+    )
+}
+
+/// Cœur générique du fast-path Mandelbrot, paramétré par la source de
+/// référence (cf. [`RefF64Source`]). Avec [`SliceSource`], monomorphise en un
+/// code logiquement identique à l'ancienne indexation directe (bit-identique,
+/// verrouillé par les goldens). `ref_len` est passé explicitement (longueur
+/// logique pour la source compressée ; `z_ref_f64` peut être vide).
+#[allow(clippy::too_many_arguments)]
+fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source>(
+    ref_orbit: &ReferenceOrbit,
+    src: &mut S,
+    ref_len: usize,
+    bla: &BlaTableUnified,
+    dc: Complex64,
+    iteration_max: u32,
+    bailout: f64,
+    max_perturb_iterations: u32,
+    max_bla_steps: u32,
+) -> UnifiedPixelResult {
+    let bailout_sqr = bailout * bailout;
     if ref_len < 2 {
         return UnifiedPixelResult {
             iteration: 0,
@@ -670,8 +844,9 @@ pub fn iterate_pixel_unified_mandelbrot(
     // anti-over-skip BLA calculent déjà `Z[m']+δ'` et sa norme pour l'état
     // suivant — les réutiliser évite un load + add + norm_sqr redondants par
     // itération (bit-identique : mêmes opérandes f64, style chaînage MipLA,
-    // cf. docs/imagina-algorithms-analysis.md).
-    let mut z_m = ref_orbit.z_ref_f64[0];
+    // cf. docs/imagina-algorithms-analysis.md). Invariant : en tête de boucle,
+    // `z_m == Z[m]` et `m ≤ ref_len-1`.
+    let mut z_m = src.reset();
     let mut z_abs = z_m + delta;
     let mut z_abs_norm_sqr = z_abs.norm_sqr();
     let mut delta_norm_sqr = delta.norm_sqr();
@@ -725,10 +900,13 @@ pub fn iterate_pixel_unified_mandelbrot(
                 // (cf. julia-siegel). Escape irréversible (|z| > ER ≫ |c|) → le
                 // seul point d'arrivée suffit ; si échappé, on rejette le saut et
                 // on single-steppe pour l'iter exacte.
+                // `Z[m']` = `node.z_land` (bit-copie de l'orbite, remplie au
+                // build BLA) : la garde n'accède PAS la source — le saut peut
+                // être REJETÉ sans toucher l'état du décompresseur.
                 // (z_end calculé sans condition : c'est la valeur de cache de la
                 // tête suivante ; pour l == 1 — dernier nœud d'un niveau — la
                 // garde n'est juste pas appliquée, comme avant.)
-                let z_new_m = ref_orbit.z_ref_f64[new_m as usize];
+                let z_new_m = node.z_land;
                 let z_end = z_new_m + cand;
                 let z_end_norm_sqr = z_end.norm_sqr();
                 let overshoots_escape = node.l >= 2 && z_end_norm_sqr >= bailout_sqr;
@@ -751,7 +929,9 @@ pub fn iterate_pixel_unified_mandelbrot(
                             ref_exhausted: false,
                         };
                     }
-                    z_m = z_new_m;
+                    // Saut ACCEPTÉ : téléporter la source au point
+                    // d'atterrissage (valeur exacte = z_land).
+                    z_m = src.teleport(new_m, z_new_m);
                     z_abs = z_end;
                     z_abs_norm_sqr = z_end_norm_sqr;
                     delta_norm_sqr = delta.norm_sqr();
@@ -769,10 +949,19 @@ pub fn iterate_pixel_unified_mandelbrot(
         m += 1;
         iters_ptb += 1;
 
+        // Avance de la source : `Z[m]` si m est dans l'orbite. `m == ref_len`
+        // (possible quand un BLA a atterri sur ref_len-1) ne correspond à
+        // aucune valeur → clamp historique `Z[min(m, ref_len-1)]` = end_value.
+        let z_after = if (m as usize) < ref_len {
+            src.advance()
+        } else {
+            src.end_value()
+        };
+
         if !delta.re.is_finite() || !delta.im.is_finite() {
             return UnifiedPixelResult {
                 iteration: n,
-                z_final: ref_orbit.z_ref_f64[m.min((ref_len - 1) as u32) as usize] + delta,
+                z_final: z_after + delta,
                 rebase_count,
                 bla_steps,
                 orbit: None,
@@ -790,48 +979,51 @@ pub fn iterate_pixel_unified_mandelbrot(
         if end_of_ref {
             if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
                 m = m_wrapped;
+                z_m = src.wrap(m);
             } else if ref_orbit.atom_truncated {
-                let z_m_end = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
-                delta = z_m_end + delta;
+                // `z_after` == Z[min(m, ref_len-1)] == Z[end] ici (m ≥ ref_len-1).
+                delta = z_after + delta;
                 m = 0;
                 rebase_count += 1;
+                z_m = src.reset();
             } else {
                 ref_exhausted_flag = true;
+                // Pour le z_final du bas : Z[min(m, ref_len-1)] = Z[end].
+                z_m = z_after;
                 break;
             }
             // m (et éventuellement δ) a changé : recalculer le cache de tête
             // (froid — au plus 1×/tour de référence).
-            z_m = ref_orbit.z_ref_f64[m as usize];
             z_abs = z_m + delta;
             z_abs_norm_sqr = z_abs.norm_sqr();
             delta_norm_sqr = delta.norm_sqr();
         } else {
-            let z_m_new = ref_orbit.z_ref_f64[m as usize];
-            let z_curr = z_m_new + delta;
+            let z_curr = z_after + delta;
             let z_curr_norm_sqr = z_curr.norm_sqr();
             delta_norm_sqr = delta.norm_sqr();
             if z_curr_norm_sqr < delta_norm_sqr {
                 delta = z_curr;
                 m = 0;
                 rebase_count += 1;
-                z_m = ref_orbit.z_ref_f64[0];
+                z_m = src.reset();
                 z_abs = z_m + delta;
                 z_abs_norm_sqr = z_abs.norm_sqr();
                 // |δ_nouveau|² = |z_curr|², déjà calculé.
                 delta_norm_sqr = z_curr_norm_sqr;
             } else {
                 // Pas de rebase : la tête suivante lit exactement z_curr.
-                z_m = z_m_new;
+                z_m = z_after;
                 z_abs = z_curr;
                 z_abs_norm_sqr = z_curr_norm_sqr;
             }
         }
     }
 
-    let final_m = m.min((ref_len - 1) as u32);
+    // Sortie de boucle (iteration_max / caps / exhaustion) : l'invariant de
+    // tête garantit `z_m == Z[min(m, ref_len-1)]` (cf. branche exhaustion).
     UnifiedPixelResult {
         iteration: n,
-        z_final: ref_orbit.z_ref_f64[final_m as usize] + delta,
+        z_final: z_m + delta,
         rebase_count,
         bla_steps,
                 orbit: None,

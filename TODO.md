@@ -1419,12 +1419,31 @@ Actions candidates pour la boucle (ordre suggéré) :
     ⚠️ Piège découvert en test : un orbite de VALIDATION calculée en f64 est
     bit-identique au fantôme → 0 waypoint ; toute validation doit sourcer
     l'orbite en GMP (comme la prod).
-    **Phase 2 (le vrai gain)** : swap du stockage `z_ref_f64`/`z_ref` →
-    O(waypoints) + décompresseur séquentiel per-pixel + pont BLA
-    (Z_atterrissage dans `BlaMultiStep`, +16 o/nœud) + wrap_periodic
-    (waypoint forcé à cycle_start). NB : les 32 o/iter de `z_ref` ComplexExp
-    demandent un fantôme/compare FloatExp au voisinage des zéros sous-f64
-    (wfs_mb) — commencer par `z_ref_f64` seul (16 o/iter) sur le path f64.
+    **✅ PHASE 2 LIVRÉE (2026-07-14) — swap de stockage env-gated
+    `FRACTALL_COMPRESS_REF=1`, path f64 Mandelbrot.** Trait `RefF64Source`
+    (reset/advance/teleport/end_value/wrap) monomorphisé : `SliceSource`
+    (défaut, **bit-identique à HEAD vérifié octet-à-octet** sur
+    dragon/e50/glitch_test_2 + goldens) vs `CompressedSource` (décompresseur).
+    Pont BLA : `BlaMultiStep.z_land` (+16 o/nœud) — la garde anti-over-skip lit
+    z_land SANS toucher l'état, `teleport` (=`seek` depuis valeur exacte)
+    seulement si saut accepté. Libération `z_ref_f64`+`z_ref` post-prewarm BLA
+    via `Arc::try_unwrap` (refcount 1 : CLI/QA ; partagé GUI : sautée, path
+    compressé tourne quand même) ; cache strippé jamais réutilisé
+    (`is_valid_for`→false). Routage `delta.rs::compressed_ref_route_active`
+    (Mandelbrot, tier F64, cycle_period=0, pas de distance/interior/traps) ;
+    clé du cache BLA = identité des waypoints (stable au strip).
+    **Mesuré (dragon 5M iters 256²)** : `path=bytecode_f64_compressed`,
+    **98.3 Mo libérés** (orbite → 1 917 wp = 46 Ko), total +~1-3 % (pixels
+    +20 % — replay ; le gain visé est la mémoire steady-state). opus2 25.9M
+    iters : 1.24 GB → 0.58 Mo (1067×). Gate ON vs OFF : 2-244 px/65536
+    divergents épars (replay ≤2⁻³², e13 vs GMP : métriques IDENTIQUES au
+    défaut). 218 unit (3 nouveaux : seek mi-segment ≤ tol vs GMP, seek(0)==
+    reset, seal idempotent) + goldens 🟢.
+    **Reste (phase 3, si besoin)** : compression `z_ref` ComplexExp (tier exp —
+    fantôme FloatExp au voisinage des zéros sous-f64, wfs_mb) ; build streaming
+    (pic RSS, aujourd'hui build-then-drop) ; défaut ON après validation corpus
+    élargie ; wrap_periodic Brent (waypoint forcé à cycle_start) si jamais
+    réactivé par défaut.
   - [ ] **Prototype Harmonic LA** (`FRACTALL_HARMONIC_LA=1`, Mandelbrot f64) :
     segments variables coupés aux dips, plafonnés à la période, étages =
     hiérarchie des minibrots, évaluation par descente (1 check/segment au lieu
