@@ -183,6 +183,19 @@ comparable entre cas) :
   >300 s) + ~23 catégoriquement infaisables (>1M iter : dragon 5M, wfs* 3.5M,
   super_dense/wfs_mb/infinity/triangle 10-15M, hard/orion 20M, opus2 80M,
   **seahorse 10¹⁰**, …) — exp-path trop lent → **G2**.
+  - **e52465 quarantainé (2026-07-14) — infaisable AU PLANCHER GMP, pas un bug.**
+    Preflight flip ok(48.5 s)→timeout : le « ok » du 2026-07-12 (89b15b1) datait
+    d'AVANT la suppression du plafond de précision (e6f958c/db6407b) — rendu
+    rapide-mais-FAUX à 65 536 b (l'orbite complète à 65 k b coûterait déjà ~574 s,
+    le 48.5 s n'a jamais calculé l'orbite entière). Correct = 174 319 b × 2.87 M
+    iters : mesuré **970 µs/iter** dans le moteur vs **860 µs/iter** GMP brut
+    (`examples/bench_gmp_iter.rs`) → +13 % du plancher matériel, ~46 min
+    d'orbite incompressible. Bisecté : PAS une régression (binaire pré-f9030c9
+    identique) ; F3 timeout aussi (journal). Centre ≈ −2 (Misiurewicz, pas de
+    période atom) → aucune troncature possible. Quarantaine = garde-fou harness
+    conforme à la décision « aucune limite moteur ». Sous-produit : fix
+    progression `Ref[%]` live (l'orbite restait affichée 0 % → ressemblait à un
+    hang, c'est ce qui a coûté le diagnostic).
 - **⚠️ Hazard mémoire / crash OS — RÉSOLU pour 3/5 cas (2026-07-10)** :
   RSS explosait — **wfs_mb 28 GB, orion 29.5 GB, opus2 28.6 GB** — faisant
   **tomber l'OS** pendant les sweeps `full` sur machine 40 GB. `harness.py

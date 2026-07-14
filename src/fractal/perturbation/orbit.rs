@@ -737,6 +737,11 @@ pub fn compute_reference_orbit_cached(
     params: &FractalParams,
     cancel: Option<&AtomicBool>,
     cache: Option<&Arc<ReferenceOrbitCache>>,
+    // Sink de progression du calcul d'orbite (pourcentage 0..100, cf.
+    // `ProgressState.ref`). Sans lui, les orbites multi-minutes (e22522 ~75k b,
+    // e52465 ~174k b × 2.87M iters ≈ 46 min au plancher GMP) affichent
+    // `Ref[0%]` du début à la fin — indistinguable d'un hang.
+    ref_progress: Option<&std::sync::atomic::AtomicU32>,
 ) -> Option<Arc<ReferenceOrbitCache>> {
     let perf = crate::fractal::perturbation::perf_enabled();
     let t_all = Instant::now();
@@ -977,7 +982,7 @@ pub fn compute_reference_orbit_cached(
     // Compute orbit + BLA + series, potentially re-running with doubled iteration_max
     let t_orbit_first = Instant::now();
     let (mut orbit, mut center_x_gmp, mut center_y_gmp) =
-        compute_reference_orbit(&adjusted_params, cancel, store_dense_gmp)?;
+        compute_reference_orbit_with_progress(&adjusted_params, cancel, store_dense_gmp, ref_progress)?;
     let mut dt_orbit = t_orbit_first.elapsed();
 
     let t_bla_first = Instant::now();
@@ -995,7 +1000,9 @@ pub fn compute_reference_orbit_cached(
         if round > 0 {
             // Recompute orbit + BLA with adjusted iteration_max
             let t_orbit_start = Instant::now();
-            let result = compute_reference_orbit(&adjusted_params, cancel, store_dense_gmp)?;
+            let result = compute_reference_orbit_with_progress(
+                &adjusted_params, cancel, store_dense_gmp, ref_progress,
+            )?;
             orbit = result.0;
             center_x_gmp = result.1;
             center_y_gmp = result.2;
@@ -1205,6 +1212,14 @@ pub fn compute_reference_orbit_cached(
 pub fn compute_reference_orbit(
     params: &FractalParams,
     cancel: Option<&AtomicBool>,
+    force_dense_gmp: bool,
+) -> Option<(ReferenceOrbit, String, String)> {
+    compute_reference_orbit_with_progress(params, cancel, force_dense_gmp, None)
+}
+
+pub fn compute_reference_orbit_with_progress(
+    params: &FractalParams,
+    cancel: Option<&AtomicBool>,
     // Stocke l'orbite GMP dense (`z_ref_gmp` + `high_precision_data`), lue
     // UNIQUEMENT par la correction glitch perturbation-GMP (`iterate_pixel_gmp`)
     // et `new_reference_from`. Sur le path bytecode (BLA + rebase-at-end), aucun
@@ -1213,6 +1228,11 @@ pub fn compute_reference_orbit(
     // l'orbite dense localement (avec `true`) SEULEMENT si des pixels glitchent
     // — même chemin bytecode donc `z_ref_gmp` bit-identique à l'ancien eager.
     force_dense_gmp: bool,
+    // Progression 0..100 publiée pendant la boucle GMP (toutes les 1024 iters).
+    // Les orbites extrêmes (e52465 : 174k bits × 2.87M iters ≈ 46 min au
+    // plancher GMP, cf. examples/bench_gmp_iter.rs) restaient sur `Ref[0%]`
+    // pendant tout le calcul — indistinguable d'un hang.
+    ref_progress: Option<&std::sync::atomic::AtomicU32>,
 ) -> Option<(ReferenceOrbit, String, String)> {
     // Utiliser la précision calculée au lieu du preset
     use crate::fractal::perturbation::compute_perturbation_precision_bits;
@@ -1549,6 +1569,14 @@ pub fn compute_reference_orbit(
         if let Some(cancel) = cancel {
             if i % 256 == 0 && cancel.load(Ordering::Relaxed) {
                 return None;
+            }
+        }
+        // Progression live (cf. doc du paramètre) : un store atomique toutes
+        // les 1024 iters (~1 s aux ~1 ms/iter des orbites 174k bits) — coût nul.
+        if i % 1024 == 0 {
+            if let Some(p) = ref_progress {
+                let pct = (i as u64 * 100 / params.iteration_max.max(1) as u64) as u32;
+                p.store(pct, Ordering::Relaxed);
             }
         }
         // Bailout check. Fast pré-check f64 avant la norme GMP (2 carrés 676 b +
@@ -2054,7 +2082,7 @@ mod conformal_bla_skip_tests {
         params.center_x = 2.0; // hors du set → évasion immédiate
         params.center_y = 2.0;
         params.iteration_max = 2_000_000; // > seuil 1 M
-        let cache = compute_reference_orbit_cached(&params, None, None)
+        let cache = compute_reference_orbit_cached(&params, None, None, None)
             .expect("orbite référence");
         assert_eq!(
             cache.bla_table.num_levels(),
@@ -2072,7 +2100,7 @@ mod conformal_bla_skip_tests {
         params.center_x = -0.5; // intérieur cardioïde → orbite bornée
         params.center_y = 0.0;
         params.iteration_max = 20_000; // < seuil 1 M
-        let cache = compute_reference_orbit_cached(&params, None, None)
+        let cache = compute_reference_orbit_cached(&params, None, None, None)
             .expect("orbite référence");
         assert!(
             cache.bla_table.num_levels() > 0,

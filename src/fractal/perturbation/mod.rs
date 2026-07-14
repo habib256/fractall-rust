@@ -998,8 +998,12 @@ pub fn render_perturbation_with_cache(
     let use_full_gmp = should_use_full_gmp_perturbation(params);
 
     // Use cached orbit/BLA or compute fresh
-    let cache =
-        compute_reference_orbit_cached(&orbit_params, Some(cancel.as_ref()), orbit_cache)?;
+    let cache = compute_reference_orbit_cached(
+        &orbit_params,
+        Some(cancel.as_ref()),
+        orbit_cache,
+        Some(&progress.r#ref),
+    )?;
     let t_orbit = t_orbit_start.elapsed();
     // Ref + BLA + series complétés en bloc dans compute_reference_orbit_cached.
     progress.r#ref.store(100, Ordering::Relaxed);

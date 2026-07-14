@@ -540,7 +540,7 @@ impl GpuRenderer {
 
         // Use cached orbit/BLA or compute fresh
         let t_ref = Instant::now();
-        let cache = compute_reference_orbit_cached(&orbit_params, Some(cancel), orbit_cache)?;
+        let cache = compute_reference_orbit_cached(&orbit_params, Some(cancel), orbit_cache, None)?;
         let dt_ref = t_ref.elapsed();
         let ref_orbit = &cache.orbit;
         let supports_bla = matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia);

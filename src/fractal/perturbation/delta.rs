@@ -2857,7 +2857,7 @@ mod tests {
     // son unique consommateur. Ces tests verrouillent : None en f64, Some en exp.
     fn build_entry_for(params: &FractalParams) -> std::sync::Arc<BlaUnifiedCacheEntry> {
         let cache = crate::fractal::perturbation::orbit::compute_reference_orbit_cached(
-            params, None, None,
+            params, None, None, None,
         )
         .expect("orbite référence");
         let formula = compile_formula(params.fractal_type, params.multibrot_power)
