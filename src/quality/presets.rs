@@ -208,6 +208,24 @@ pub const PRESETS: &[Preset] = &[
         julia_seed: None,
         precision_bits: Some(500),
     },
+    // Verrou « glitch de référence unique » (fuzz seed 20260714). Blob intérieur
+    // (~513 px) faussement évadé à iter 304 vs 2048 réel : δ décorrèle du vrai
+    // orbit sans que rebase/BLA ne le capte, et la correction GMP-delta sur la
+    // MÊME référence reste glitchée (structural, pas numérique). Résolu par
+    // l'escalade des pixels encore glitchés vers `iterate_point_mpc` (full GMP
+    // indépendant de la référence). Sans le fix : WARN max_diff=1744 div_ratio=0.78 %.
+    Preset {
+        name: "single-ref-glitch-interior",
+        description: "Mandelbrot 6e7 — interior blob wrongly escaped by single-reference glitch; locks the still-glitched → full-GMP escalation.",
+        fractal_type: FractalType::Mandelbrot,
+        center_x_hp: "-0.6152286330858866",
+        center_y_hp: "0.40106525023778294",
+        zoom: "6.023813e7",
+        iterations: 2048,
+        multibrot_power: None,
+        julia_seed: None,
+        precision_bits: None,
+    },
 ];
 
 pub fn find(name: &str) -> Option<&'static Preset> {

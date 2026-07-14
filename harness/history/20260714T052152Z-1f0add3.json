@@ -1,0 +1,431 @@
+{
+  "schema": 1,
+  "meta": {
+    "date_utc": "2026-07-14T05:21:52+00:00",
+    "stamp": "20260714T052152Z",
+    "git_sha": "1f0add3",
+    "git_dirty": false,
+    "machine": {
+      "cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz",
+      "nproc": 16,
+      "os": "Linux 6.14.0-37-generic"
+    },
+    "tier": "quick",
+    "axes": [
+      "speed",
+      "parity",
+      "quality",
+      "fuzz",
+      "goldens"
+    ],
+    "width": 256,
+    "height": 256,
+    "quality_width": 96,
+    "quality_height": 96,
+    "runs": 1,
+    "f3_bin": "/home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux",
+    "mem_limit_mb": 34024,
+    "quarantined": [],
+    "fuzz_seed": 20260714
+  },
+  "speed": {
+    "status": "ok",
+    "cases": {
+      "test5": {
+        "fractall_s": 0.0107,
+        "f3_s": 0.0173,
+        "ratio": 0.6185,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "spiral": {
+        "fractall_s": 0.0349,
+        "f3_s": 0.1661,
+        "ratio": 0.2101,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "flake": {
+        "fractall_s": 0.0678,
+        "f3_s": 0.2161,
+        "ratio": 0.3137,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_2": {
+        "fractall_s": 0.0666,
+        "f3_s": 0.1661,
+        "ratio": 0.401,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e50": {
+        "fractall_s": 0.1663,
+        "f3_s": 1.1177,
+        "ratio": 0.1488,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e113": {
+        "fractall_s": 0.0672,
+        "f3_s": 0.2664,
+        "ratio": 0.2523,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e401": {
+        "fractall_s": 0.518,
+        "f3_s": 6.2783,
+        "ratio": 0.0825,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1000": {
+        "fractall_s": 0.4181,
+        "f3_s": 2.9714,
+        "ratio": 0.1407,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "floral_fantasy": {
+        "fractall_s": 0.0367,
+        "f3_s": 0.1659,
+        "ratio": 0.2212,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "dragon": {
+        "fractall_s": 1.6703,
+        "f3_s": 3.5724,
+        "ratio": 0.4676,
+        "status": "ok",
+        "f3_exr_ok": true
+      }
+    },
+    "geomean_ratio": 0.2436,
+    "worst_ratio": {
+      "case": "test5",
+      "ratio": 0.6185
+    },
+    "wins": [
+      "test5",
+      "spiral",
+      "flake",
+      "glitch_test_2",
+      "e50",
+      "e113",
+      "e401",
+      "e1000",
+      "floral_fantasy",
+      "dragon"
+    ],
+    "timeouts": [],
+    "excluded_f3_degenerate": [],
+    "n_cases": 10,
+    "n_compared": 10
+  },
+  "parity": {
+    "status": "ok",
+    "cases": {
+      "dragon": {
+        "status": "ok",
+        "rel_dsi_pct": 0.1714,
+        "mean_abs_dsi": 8568.8423,
+        "inside_mismatch": 28,
+        "f3_degenerate": false,
+        "f3_secs_num": 3.5791,
+        "fr_secs_num": 1.6461
+      },
+      "e1000": {
+        "status": "ok",
+        "rel_dsi_pct": 0.001,
+        "mean_abs_dsi": 0.3236,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 2.9189,
+        "fr_secs_num": 0.4017
+      },
+      "e113": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0786,
+        "mean_abs_dsi": 27.8825,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.2379,
+        "fr_secs_num": 0.0492
+      },
+      "e401": {
+        "status": "ok",
+        "rel_dsi_pct": 0.004,
+        "mean_abs_dsi": 8.5156,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 6.2389,
+        "fr_secs_num": 0.4695
+      },
+      "e50": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0347,
+        "mean_abs_dsi": 91.2391,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 1.1093,
+        "fr_secs_num": 0.1582
+      },
+      "flake": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0434,
+        "mean_abs_dsi": 26.0319,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1663,
+        "fr_secs_num": 0.0597
+      },
+      "floral_fantasy": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0032,
+        "mean_abs_dsi": 0.3894,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1398,
+        "fr_secs_num": 0.03
+      },
+      "glitch_test_2": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0079,
+        "mean_abs_dsi": 19.7256,
+        "inside_mismatch": 12,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1197,
+        "fr_secs_num": 0.0424
+      },
+      "spiral": {
+        "status": "ok",
+        "rel_dsi_pct": 0.979,
+        "mean_abs_dsi": 9.7899,
+        "inside_mismatch": 16,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1587,
+        "fr_secs_num": 0.0247
+      },
+      "test5": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0,
+        "mean_abs_dsi": 0.0,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.0151,
+        "fr_secs_num": 0.01
+      }
+    },
+    "n_ok": 10,
+    "n_pixel_equiv": 5,
+    "n_fail": 0,
+    "n_timeout": 0,
+    "n_f3_degenerate": 0
+  },
+  "quality": {
+    "status": "ok",
+    "n_pass": 14,
+    "n_warn": 0,
+    "n_fail": 0,
+    "fail_presets": [],
+    "warn_presets": [],
+    "presets": [
+      {
+        "name": "seahorse-valley",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 260.91913999999997,
+        "time_gmp_ms": 952.0678
+      },
+      {
+        "name": "mandelbrot-e13",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 23.160021999999998,
+        "time_gmp_ms": 298.82545799999997
+      },
+      {
+        "name": "mandelbrot-e17",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 3.6519410000000003,
+        "time_gmp_ms": 363.267511
+      },
+      {
+        "name": "misiurewicz-m32",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 80.522487,
+        "time_gmp_ms": 318.638221
+      },
+      {
+        "name": "julia-siegel-disk",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 1.069715,
+        "time_gmp_ms": 183.189079
+      },
+      {
+        "name": "burning-ship-antenna",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 1.102213,
+        "time_gmp_ms": 21.968877000000003
+      },
+      {
+        "name": "tricorn-spiral",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 0.696229,
+        "time_gmp_ms": 8.388022
+      },
+      {
+        "name": "celtic-fold-edge",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 18.884459,
+        "time_gmp_ms": 2951.893565
+      },
+      {
+        "name": "buffalo-fold-edge",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 21.009193999999997,
+        "time_gmp_ms": 3203.74583
+      },
+      {
+        "name": "perpbs-escape-band",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 15.932762,
+        "time_gmp_ms": 2251.24303
+      },
+      {
+        "name": "mandelbrot-e18-minibrot",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 75.314645,
+        "time_gmp_ms": 332.887661
+      },
+      {
+        "name": "mandelbrot-e30",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 4477.003307,
+        "time_gmp_ms": 19377.123573999997
+      },
+      {
+        "name": "mandelbrot-e50",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 18894.717678999998,
+        "time_gmp_ms": 165563.211204
+      },
+      {
+        "name": "mandelbrot-e100",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 741.990355,
+        "time_gmp_ms": 19439.516461
+      }
+    ]
+  },
+  "fuzz": {
+    "status": "ok",
+    "seed": 20260714,
+    "n_probes": 3,
+    "n_pass": 2,
+    "n_warn": 1,
+    "n_fail": 0,
+    "cases": {
+      "fuzz-20260714-0-tricorn": {
+        "verdict": "PASS",
+        "type": "tricorn",
+        "center_x": "-0.5912971496582031",
+        "center_y": "-0.043022791544596366",
+        "zoom": "9.005324e+05",
+        "iterations": 2048
+      },
+      "fuzz-20260714-1-mandelbrot": {
+        "verdict": "WARN",
+        "type": "mandelbrot",
+        "center_x": "-0.6152286330858866",
+        "center_y": "0.40106525023778294",
+        "zoom": "6.023813e+07",
+        "iterations": 2048
+      },
+      "fuzz-20260714-2-tricorn": {
+        "verdict": "PASS",
+        "type": "tricorn",
+        "center_x": "0.25293623520216574",
+        "center_y": "-0.10817046263643233",
+        "zoom": "9.216840e+09",
+        "iterations": 2048
+      }
+    },
+    "fail_cases": [],
+    "warn_cases": [
+      "fuzz-20260714-1-mandelbrot"
+    ]
+  },
+  "goldens": {
+    "passed": true,
+    "detail": ""
+  },
+  "beyond_f3": {
+    "speed_wins": [
+      "test5",
+      "spiral",
+      "flake",
+      "glitch_test_2",
+      "e50",
+      "e113",
+      "e401",
+      "e1000",
+      "floral_fantasy",
+      "dragon"
+    ],
+    "correctness_wins": []
+  },
+  "gaps": [
+    {
+      "axis": "fuzz",
+      "case": "fuzz-20260714-1-mandelbrot",
+      "metric": "verdict",
+      "value": "WARN",
+      "baseline_value": null,
+      "severity": 4,
+      "note": "fuzz WARN — divergence éparse (seed 20260714)"
+    }
+  ]
+}

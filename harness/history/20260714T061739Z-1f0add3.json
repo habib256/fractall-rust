@@ -1,0 +1,426 @@
+{
+  "schema": 1,
+  "meta": {
+    "date_utc": "2026-07-14T06:17:39+00:00",
+    "stamp": "20260714T061739Z",
+    "git_sha": "1f0add3",
+    "git_dirty": true,
+    "machine": {
+      "cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz",
+      "nproc": 16,
+      "os": "Linux 6.14.0-37-generic"
+    },
+    "tier": "quick",
+    "axes": [
+      "speed",
+      "parity",
+      "quality",
+      "fuzz",
+      "goldens"
+    ],
+    "width": 256,
+    "height": 256,
+    "quality_width": 96,
+    "quality_height": 96,
+    "runs": 1,
+    "f3_bin": "/home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux",
+    "mem_limit_mb": 34024,
+    "quarantined": [],
+    "fuzz_seed": 20260714
+  },
+  "speed": {
+    "status": "ok",
+    "cases": {
+      "test5": {
+        "fractall_s": 0.0179,
+        "f3_s": 0.0178,
+        "ratio": 1.0056,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "spiral": {
+        "fractall_s": 0.0364,
+        "f3_s": 0.1661,
+        "ratio": 0.2191,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "flake": {
+        "fractall_s": 0.0718,
+        "f3_s": 0.1659,
+        "ratio": 0.4328,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_2": {
+        "fractall_s": 0.0682,
+        "f3_s": 0.1661,
+        "ratio": 0.4106,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e50": {
+        "fractall_s": 0.1683,
+        "f3_s": 1.1681,
+        "ratio": 0.1441,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e113": {
+        "fractall_s": 0.0667,
+        "f3_s": 0.2661,
+        "ratio": 0.2507,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e401": {
+        "fractall_s": 0.5174,
+        "f3_s": 6.3762,
+        "ratio": 0.0811,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1000": {
+        "fractall_s": 0.4674,
+        "f3_s": 3.0208,
+        "ratio": 0.1547,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "floral_fantasy": {
+        "fractall_s": 0.0363,
+        "f3_s": 0.1659,
+        "ratio": 0.2188,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "dragon": {
+        "fractall_s": 1.7713,
+        "f3_s": 3.5742,
+        "ratio": 0.4956,
+        "status": "ok",
+        "f3_exr_ok": true
+      }
+    },
+    "geomean_ratio": 0.2682,
+    "worst_ratio": {
+      "case": "test5",
+      "ratio": 1.0056
+    },
+    "wins": [
+      "spiral",
+      "flake",
+      "glitch_test_2",
+      "e50",
+      "e113",
+      "e401",
+      "e1000",
+      "floral_fantasy",
+      "dragon"
+    ],
+    "timeouts": [],
+    "excluded_f3_degenerate": [],
+    "n_cases": 10,
+    "n_compared": 10
+  },
+  "parity": {
+    "status": "ok",
+    "cases": {
+      "dragon": {
+        "status": "ok",
+        "rel_dsi_pct": 0.1714,
+        "mean_abs_dsi": 8568.8423,
+        "inside_mismatch": 28,
+        "f3_degenerate": false,
+        "f3_secs_num": 3.573,
+        "fr_secs_num": 1.6258
+      },
+      "e1000": {
+        "status": "ok",
+        "rel_dsi_pct": 0.001,
+        "mean_abs_dsi": 0.3236,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 3.0599,
+        "fr_secs_num": 0.4268
+      },
+      "e113": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0786,
+        "mean_abs_dsi": 27.8825,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.2495,
+        "fr_secs_num": 0.0493
+      },
+      "e401": {
+        "status": "ok",
+        "rel_dsi_pct": 0.004,
+        "mean_abs_dsi": 8.5156,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 6.5562,
+        "fr_secs_num": 0.5094
+      },
+      "e50": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0347,
+        "mean_abs_dsi": 91.2391,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 1.16,
+        "fr_secs_num": 0.1573
+      },
+      "flake": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0434,
+        "mean_abs_dsi": 26.0319,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1663,
+        "fr_secs_num": 0.0578
+      },
+      "floral_fantasy": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0032,
+        "mean_abs_dsi": 0.3894,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1447,
+        "fr_secs_num": 0.0285
+      },
+      "glitch_test_2": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0079,
+        "mean_abs_dsi": 19.7256,
+        "inside_mismatch": 12,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1232,
+        "fr_secs_num": 0.0403
+      },
+      "spiral": {
+        "status": "ok",
+        "rel_dsi_pct": 0.979,
+        "mean_abs_dsi": 9.7899,
+        "inside_mismatch": 16,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1692,
+        "fr_secs_num": 0.0241
+      },
+      "test5": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0,
+        "mean_abs_dsi": 0.0,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.0151,
+        "fr_secs_num": 0.0109
+      }
+    },
+    "n_ok": 10,
+    "n_pixel_equiv": 5,
+    "n_fail": 0,
+    "n_timeout": 0,
+    "n_f3_degenerate": 0
+  },
+  "quality": {
+    "status": "ok",
+    "n_pass": 15,
+    "n_warn": 0,
+    "n_fail": 0,
+    "fail_presets": [],
+    "warn_presets": [],
+    "presets": [
+      {
+        "name": "seahorse-valley",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 245.97754,
+        "time_gmp_ms": 1033.1026610000001
+      },
+      {
+        "name": "mandelbrot-e13",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 23.522965,
+        "time_gmp_ms": 341.173888
+      },
+      {
+        "name": "mandelbrot-e17",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 3.605994,
+        "time_gmp_ms": 395.83185199999997
+      },
+      {
+        "name": "misiurewicz-m32",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 83.626316,
+        "time_gmp_ms": 349.88008199999996
+      },
+      {
+        "name": "julia-siegel-disk",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 0.976144,
+        "time_gmp_ms": 199.896173
+      },
+      {
+        "name": "burning-ship-antenna",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 1.0643269999999998,
+        "time_gmp_ms": 24.534627
+      },
+      {
+        "name": "tricorn-spiral",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 0.723536,
+        "time_gmp_ms": 8.347534999999999
+      },
+      {
+        "name": "celtic-fold-edge",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 20.980788,
+        "time_gmp_ms": 3174.414233
+      },
+      {
+        "name": "buffalo-fold-edge",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 29.775112999999997,
+        "time_gmp_ms": 3510.05776
+      },
+      {
+        "name": "perpbs-escape-band",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 17.829771,
+        "time_gmp_ms": 2476.640442
+      },
+      {
+        "name": "mandelbrot-e18-minibrot",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 79.287228,
+        "time_gmp_ms": 371.078185
+      },
+      {
+        "name": "mandelbrot-e30",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 4869.802943,
+        "time_gmp_ms": 19479.172857999998
+      },
+      {
+        "name": "mandelbrot-e50",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 19495.654745,
+        "time_gmp_ms": 171105.861445
+      },
+      {
+        "name": "mandelbrot-e100",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 759.07362,
+        "time_gmp_ms": 19570.471784999998
+      },
+      {
+        "name": "single-ref-glitch-interior",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 32.073958,
+        "time_gmp_ms": 1644.733232
+      }
+    ]
+  },
+  "fuzz": {
+    "status": "ok",
+    "seed": 20260714,
+    "n_probes": 3,
+    "n_pass": 3,
+    "n_warn": 0,
+    "n_fail": 0,
+    "cases": {
+      "fuzz-20260714-0-tricorn": {
+        "verdict": "PASS",
+        "type": "tricorn",
+        "center_x": "-0.5912971496582031",
+        "center_y": "-0.043022791544596366",
+        "zoom": "9.005324e+05",
+        "iterations": 2048
+      },
+      "fuzz-20260714-1-mandelbrot": {
+        "verdict": "PASS",
+        "type": "mandelbrot",
+        "center_x": "-0.6152286330858866",
+        "center_y": "0.40106525023778294",
+        "zoom": "6.023813e+07",
+        "iterations": 2048
+      },
+      "fuzz-20260714-2-tricorn": {
+        "verdict": "PASS",
+        "type": "tricorn",
+        "center_x": "0.25293623520216574",
+        "center_y": "-0.10817046263643233",
+        "zoom": "9.216840e+09",
+        "iterations": 2048
+      }
+    },
+    "fail_cases": [],
+    "warn_cases": []
+  },
+  "goldens": {
+    "passed": true,
+    "detail": ""
+  },
+  "beyond_f3": {
+    "speed_wins": [
+      "spiral",
+      "flake",
+      "glitch_test_2",
+      "e50",
+      "e113",
+      "e401",
+      "e1000",
+      "floral_fantasy",
+      "dragon"
+    ],
+    "correctness_wins": []
+  },
+  "gaps": []
+}

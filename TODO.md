@@ -155,6 +155,24 @@ comparable entre cas) :
 > Pauldelbrot retirée au profit du rebasing F3-strict) — gros chantier, hors périmètre
 > d'une itération. Distinct de la classe **dd-sensibilité** (seahorse/e50 : dd CORRIGE ;
 > rug : dd n'aide PAS). Verrou impossible tant que non corrigé (le gate FAIL).
+>
+> **✅ SOUS-CAS RÉSOLU (2026-07-14) — escalade full-GMP des pixels encore glitchés.**
+> Le correctif « références secondaires » complet reste un chantier, MAIS le sous-cas
+> **fausse évasion** (blob intérieur faussement évadé, `escape_disagreement>0`) est
+> résolu sans machinerie lourde : dans `render_perturbation_with_cache`, les pixels
+> qui reviennent **encore glitchés** de la correction `iterate_pixel_gmp` (précision
+> GMP sur la même réf → toujours glitché = glitch structurel réf-unique) sont escaladés
+> vers `iterate_point_mpc` (full GMP par-pixel, **indépendant de la référence**). Avant,
+> seul le sous-cas ref-exhausted (`cap_iter<iter_max`) déclenchait le full GMP ; le
+> sous-cas δ-trop-grand sur réf pleine (`cap_iter==iter_max`) gardait la valeur glitchée.
+> Débloqué par le fuzz `mandelbrot -0.615+0.401i zoom 6e7` (WARN div_ratio 0.78 %) et,
+> **bonus**, corrige le golden `mandelbrot_cusp_m075` qui verrouillait 201 px FAUX
+> (vs GMP : **FAIL** max_diff 1723 p99 1722 div_ratio 1.26 % → **near-exact** max_diff 159
+> p99 0 div_ratio 0.006 %). Verrou : preset quality `single-ref-glitch-interior` +
+> golden cusp régénéré. Coût : full GMP sur les seuls px encore glitchés (rare, borné,
+> < seuil 30 % sinon fallback total). **Reste ouvert** : le sous-cas *banding* de rug
+> (`escape_disagreement=0`, pas de flip intérieur/extérieur) — non couvert ici car les
+> px n'y sont pas forcément flaggés glitchés ; à vérifier séparément (full corpus).
 - **F3-dégénéré (2)** : glitch_test_5 (F3 100 % intérieur, 0.014 s) **et
   glitch_test_1** (F3 extérieur uniforme 0.3 % intérieur, 0.085 s fast-path) —
   fractall structuré dans les deux cas. **Le détecteur tranche enfin

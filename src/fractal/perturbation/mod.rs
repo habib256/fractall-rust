@@ -1726,20 +1726,49 @@ pub fn render_perturbation_with_cache(
                         &dc_gmp,
                         prec,
                     );
-                    (idx, result.iteration, result.z_final)
+                    (idx, result.iteration, result.z_final, result.glitched)
                 })
                 .collect();
 
             // Détection de saturation : si la grande majorité des pixels glitchés
             // sont coincés à `cap_iter` (saturation à la fin de l'orbite référence),
             // l'orbite référence est inutilisable — on refait ces pixels en pure GMP.
-            let saturated_count = corrections.iter().filter(|&&(_, it, _)| it >= cap_iter).count();
+            let saturated_count = corrections.iter().filter(|&&(_, it, _, _)| it >= cap_iter).count();
             let need_pure_gmp = bytecode_path
                 && cap_iter < params.iteration_max
                 && corrections.len() > 0
                 && saturated_count as f64 / corrections.len() as f64 > 0.30;
 
-            if need_pure_gmp {
+            // Pixels à escalader vers le full GMP par-pixel (`iterate_point_mpc`,
+            // sans dépendance à l'orbite référence) :
+            //  - `need_pure_gmp` : orbite référence trop courte (ref-exhausted,
+            //    saturation à `cap_iter`) → tout le cluster.
+            //  - sinon : les pixels TOUJOURS glitchés après la correction GMP-delta.
+            //    C'est le **glitch de référence unique** — δ a décorrélé du vrai
+            //    orbit sans que le rebase (`|Z+δ|²<|δ|²`) ni la validité BLA ne le
+            //    captent. La précision GMP sur la MÊME référence ne corrige rien
+            //    (structural, pas numérique) ; seul un rendu GMP indépendant de la
+            //    référence résout ces pixels (cf. fuzz mandelbrot -0.615+0.401i
+            //    zoom 6e7 : blob intérieur au z_pert bit-identique, faussement
+            //    évadé à iter 304 vs 2048 réel).
+            let escalate: Vec<usize> = if need_pure_gmp {
+                glitched_indices.clone()
+            } else {
+                corrections
+                    .iter()
+                    .filter_map(|&(idx, _, _, g)| if g { Some(idx) } else { None })
+                    .collect()
+            };
+            let escalate_set: std::collections::HashSet<usize> =
+                escalate.iter().copied().collect();
+            // Applique les corrections GMP-delta rapides pour les pixels résolus.
+            for (idx, iter_val, z_final, _) in &corrections {
+                if !escalate_set.contains(idx) {
+                    iterations[*idx] = *iter_val;
+                    zs[*idx] = *z_final;
+                }
+            }
+            if !escalate.is_empty() {
                 let gmp_params = MpcParams::from_params(&orbit_params);
                 let center_x_gmp = if let Some(ref cx_hp) = params.center_x_hp {
                     match Float::parse(cx_hp) {
@@ -1757,7 +1786,7 @@ pub fn render_perturbation_with_cache(
                 } else {
                     Float::with_val(prec, params.center_y)
                 };
-                let pure_corrections: Vec<_> = glitched_indices
+                let pure_corrections: Vec<_> = escalate
                     .par_iter()
                     .map(|&idx| {
                         let i = (idx as u32 % width_u32) as usize;
@@ -1773,11 +1802,6 @@ pub fn render_perturbation_with_cache(
                     })
                     .collect();
                 for (idx, iter_val, z_final) in pure_corrections {
-                    iterations[idx] = iter_val;
-                    zs[idx] = z_final;
-                }
-            } else {
-                for (idx, iter_val, z_final) in corrections {
                     iterations[idx] = iter_val;
                     zs[idx] = z_final;
                 }
