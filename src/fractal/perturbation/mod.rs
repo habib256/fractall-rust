@@ -1935,10 +1935,15 @@ pub fn render_perturbation_with_cache(
         let path_label = if delta::compressed_ref_route_active(params, &cache.orbit) {
             "bytecode_f64_compressed"
         } else if delta::harmonic_route_active(params, &cache.orbit) {
-            // Marqueur du path Harmonic MLA (FRACTALL_HARMONIC_LA=1, G8.2) :
+            // Marqueur du path Harmonic LA (FRACTALL_HARMONIC_LA, G8.2) :
             // le routage delta.rs a envoyé chaque pixel Mandelbrot f64 vers
-            // l'évaluateur à descente d'étages.
-            "bytecode_f64_harmonic_mla"
+            // l'évaluateur à descente d'étages (variante = valeur du gate).
+            match crate::fractal::bytecode::harmonic_mla::harmonic_variant() {
+                Some(crate::fractal::bytecode::harmonic_mla::HarmonicVariant::Mla) => {
+                    "bytecode_f64_harmonic_mla"
+                }
+                _ => "bytecode_f64_harmonic_lla",
+            }
         } else {
             bytecode_path_label(params).unwrap_or("legacy_fexp")
         };

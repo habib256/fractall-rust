@@ -228,22 +228,29 @@ fn build_bla_entry(
     } else {
         None
     };
-    // Table Harmonic MLA (prototype G8.2, gate `FRACTALL_HARMONIC_LA=1`).
-    // Construite ici (une fois par render, sous le lock global) quand le
-    // routage harmonique s'appliquera aux pixels — mêmes conditions que le
-    // dispatch (`harmonic_route_active`). Log `[HARMONIC]` une fois par table.
+    // Table Harmonic LA (prototype G8.2, gate `FRACTALL_HARMONIC_LA` :
+    // 1/lla → LLA, mla → MLA). Construite ici (une fois par render, sous le
+    // lock global) quand le routage harmonique s'appliquera aux pixels —
+    // mêmes conditions que le dispatch (`harmonic_route_active`).
+    // Log `[HARMONIC]` une fois par table.
     let harmonic = if harmonic_route_active(params, ref_orbit) {
-        crate::fractal::bytecode::harmonic_mla::build_harmonic_mla_table(&ref_orbit.z_ref_f64)
-            .map(|t| {
-                eprintln!(
-                    "[HARMONIC] stages={} steps={} orbit_len={} period0={}",
-                    t.stages.len(),
-                    t.steps.len(),
-                    ref_orbit.z_ref_f64.len(),
-                    t.period0
-                );
-                Arc::new(t)
-            })
+        use crate::fractal::bytecode::harmonic_mla as hla;
+        let variant = hla::harmonic_variant().unwrap_or(hla::HarmonicVariant::Lla);
+        let built = match variant {
+            hla::HarmonicVariant::Lla => hla::build_harmonic_lla_table(&ref_orbit.z_ref_f64),
+            hla::HarmonicVariant::Mla => hla::build_harmonic_mla_table(&ref_orbit.z_ref_f64),
+        };
+        built.map(|t| {
+            eprintln!(
+                "[HARMONIC] variant={:?} stages={} steps={} orbit_len={} period0={}",
+                variant,
+                t.stages.len(),
+                t.steps.len(),
+                ref_orbit.z_ref_f64.len(),
+                t.period0
+            );
+            Arc::new(t)
+        })
     } else {
         None
     };
@@ -455,11 +462,12 @@ pub(crate) fn compressed_ref_route_active(
             == Some(crate::fractal::wisdom::NumberTier::F64)
 }
 
-/// Le routage **Harmonic MLA** (prototype G8.2, `FRACTALL_HARMONIC_LA=1`)
-/// est-il actif pour ce rendu ? Prédicat PARTAGÉ entre le build de table
-/// (`build_bla_entry`), le dispatch par-pixel (`try_bytecode_unified_path` →
-/// `iterate_pixel_harmonic_mla`) et le label perf (`mod.rs`,
-/// `path=bytecode_f64_harmonic_mla`).
+/// Le routage **Harmonic LA** (prototype G8.2, `FRACTALL_HARMONIC_LA` :
+/// 1/lla → LLA, mla → MLA) est-il actif pour ce rendu ? Prédicat PARTAGÉ
+/// entre le build de table (`build_bla_entry`), le dispatch par-pixel
+/// (`try_bytecode_unified_path` → `iterate_pixel_harmonic_mla`, évaluateur
+/// commun aux deux variantes) et le label perf (`mod.rs`,
+/// `path=bytecode_f64_harmonic_{lla,mla}`).
 ///
 /// Conditions (fast-path Mandelbrot f64 pur uniquement) :
 /// - gate env `FRACTALL_HARMONIC_LA=1` ;

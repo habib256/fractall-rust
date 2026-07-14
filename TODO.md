@@ -1459,8 +1459,9 @@ Actions candidates pour la boucle (ordre suggéré) :
     21 goldens + revue visuelle + décision utilisateur (les rendus par défaut
     bougent de quelques px) ; wrap_periodic Brent (waypoint forcé à
     cycle_start) si jamais réactivé par défaut.
-  - [~] **Prototype Harmonic LA — JALON MLA LIVRÉ (2026-07-14),
-    `FRACTALL_HARMONIC_LA=1`, verdict A/B MITIGÉ → prochain jalon = LLA.**
+  - [x] **Prototype Harmonic LA — CONCLU (2026-07-14) : jalons MLA + LLA
+    livrés, verdict final = BLA mat2 reste le défaut, harmonic opt-in
+    gagnant seulement sur orbites courtes.**
     `bytecode/harmonic_mla.rs` (~640 l.) : port fidèle d'Imagina HarmonicMLA —
     `LaStep` (Step/Composite chebyshev, ValidRadiusScale 2⁻²⁴), build
     étages harmoniques (période par chute des minima 2⁻⁴, coupe à la moyenne
@@ -1478,10 +1479,37 @@ Actions candidates pour la boucle (ordre suggéré) :
     0.03–4.3 % px (approximation LA ≠ BLA). 221 unit (3 verrous : period0=3
     détecté, éval == BLA 100/100 dc à mismatch 0) + goldens 🟢 gate OFF
     bit-identique.
-    - [ ] **Jalon suivant : segmentation LLA** (dips de rayon au lieu de
-      magnitude — cible EXACTEMENT la classe d'échec e50/dragon : rayons
-      élargis, moins de descentes) ; puis généralisation Mat2 (non-conforme)
-      + tier exp si gain confirmé.
+    - [x] **✅ Jalon LLA LIVRÉ (2026-07-14)** — segmentation aux dips de rayon
+      (`HarmonicLLA.cpp`, chute > 2⁻¹⁰/pas) portée dans le même module
+      (LaStep + évaluateur communs, `new2`/`detect_dip`/flags dip) ; gate
+      `FRACTALL_HARMONIC_LA=1|lla` → LLA, `mla` → MLA (A/B), label
+      `bytecode_f64_harmonic_{lla,mla}`.
+      **Hypothèse « les dips corrigent e50/dragon » INFIRMÉE** : A/B
+      entrelacé 256² (phase pixels, médiane) LLA ≈ MLA — vs BLA :
+      glitch_test_2 0.021→0.009 s (**2.3×** ✓), e113 0.023→0.027 (+17 %),
+      e50 0.084→0.103 (+23 %), dragon 0.180→0.286 (+59 %). La segmentation
+      n'est PAS le levier : la phase LA gère déjà les wraps en interne
+      (rebase d'étage `j=begin`) et la couverture LA est déjà élevée
+      (compteurs e50 : 92 segments appliqués/px pour 172k iters/px ≈
+      ~1.9k iters/segment composite) — le déficit vs BLA vient de la
+      granularité (frontières de segments fixes vs mip skip-anywhere).
+      + **Écart fractall #4 — ré-ascension GARDÉE après rebase de la queue
+      directe** (absent d'Imagina : leur queue ne ré-accélère jamais) :
+      l'état post-rebase (`m=0`, `z=δ`) = état d'entrée de la phase LA →
+      `continue 'render` vers l'étage sommet, SEULEMENT si le dernier
+      passage LA a été productif (≥ 1 segment ; anti-ping-pong). A/B
+      politiques (jamais/toujours/gardée, entrelacé ×3) : e50 **−24 %**
+      (0.135→0.103), dragon/glitch_test_2 neutres, e113 +8 % ; gardée ≥
+      toujours partout. Correction gate ON RENFORCÉE : e13 vs GMP pur
+      **PASS max_diff=0** (jalon MLA : WARN 221). 224 unit (3 verrous LLA :
+      period0=3 par premier dip, éval ≥ 99 % vs BLA, next_stage_la_index
+      dans les bornes de l'étage précédent) + quality 15/15 PASS +
+      goldens 🟢 (gate OFF bit-identique — path défaut non touché).
+    - [ ] Prochain levier harmonic SI repris un jour : granularité de fin de
+      segment (un pixel qui échoue au rayon d'un segment long retombe en
+      direct pour TOUT le reste du segment — un mini-étage en pas 2^k
+      pourrait combler) ; généralisation Mat2 (non-conforme) + tier exp
+      seulement si un cas gagnant net apparaît.
   - [ ] **Micro-A/B** (une itération) : chaînage des sauts BLA avant le check
     de rebase (style MipLA) ; chebyshev vs norm_sqr sur la validité BLA.
     Mesure standard-tier, revert si neutre.

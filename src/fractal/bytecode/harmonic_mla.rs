@@ -1,19 +1,33 @@
-//! Prototype **Harmonic MLA** (Imagina / Zhuoran Yu, variante « Mag » de la
-//! Linear Approximation harmonique) — port fidèle de
-//! `Imagina-Algorithms/HarmonicMLA.{h,cpp}` (333 lignes). Design commenté :
-//! `docs/imagina-algorithms-analysis.md` §HarmonicMLA. TODO G8.2 « Prototype
-//! Harmonic LA », env-gated `FRACTALL_HARMONIC_LA=1`.
+//! Prototype **Harmonic LA** (Imagina / Zhuoran Yu) — port fidèle de
+//! `Imagina-Algorithms/HarmonicMLA.{h,cpp}` (variante « Mag », premier jalon)
+//! ET `HarmonicLLA.{h,cpp}` (variante aux **dips de rayon**, EN PRODUCTION
+//! dans Imagina). Design commenté : `docs/imagina-algorithms-analysis.md`
+//! §HarmonicLLA/§HarmonicMLA. TODO G8.2 « Prototype Harmonic LA », env-gated :
+//! `FRACTALL_HARMONIC_LA=1|lla` → **LLA** (défaut du prototype),
+//! `FRACTALL_HARMONIC_LA=mla` → MLA (conservée pour l'A/B).
 //!
 //! Idée : remplacer la table BLA mip 2^k par des **segments LA à longueur
-//! variable** coupés par magnitude (période détectée quand le min courant de
-//! cheb|Z| chute sous `prevMin·2⁻⁴`), organisés en **étages**
-//! période/super-période, évalués par **descente d'étage** : ~1 check de
-//! validité par segment accepté au lieu d'un lookup multi-niveaux par
-//! position. Mandelbrot f64 conforme uniquement (A/B complexes, PAS Mat2).
-//! Le premier pas d'un segment est **quadratique EXACT** (`δ' = δ·(Z+z)` =
-//! `δ·(2Z+δ)`) : le seul terme non-linéaire de la perturbation est traité
-//! exactement là où δ est le plus gros relatif → rayons de validité plus
-//! larges que la BLA linéarisée.
+//! variable**, organisés en **étages** période/super-période, évalués par
+//! **descente d'étage** : ~1 check de validité par segment accepté au lieu
+//! d'un lookup multi-niveaux par position. Mandelbrot f64 conforme uniquement
+//! (A/B complexes, PAS Mat2). Le premier pas d'un segment est **quadratique
+//! EXACT** (`δ' = δ·(Z+z)` = `δ·(2Z+δ)`) : le seul terme non-linéaire de la
+//! perturbation est traité exactement là où δ est le plus gros relatif →
+//! rayons de validité plus larges que la BLA linéarisée.
+//!
+//! Les deux variantes ne diffèrent QUE par la segmentation (même `LaStep`,
+//! même évaluateur) :
+//! - **MLA** : coupe quand le min courant de cheb|Z| chute sous `prevMin·2⁻⁴`
+//!   (période) puis au seuil moyenne-géométrique. Simple, mais les segments
+//!   traversent les passages près de 0 → rayons de validité étroits sur les
+//!   orbites longues (e50/dragon +44/+47 % mesurés, cf. TODO G8.2).
+//! - **LLA** : coupe aux **dips** = chute du rayon de validité > 2⁻¹⁰ en UN
+//!   pas (`DipDetectionThreshold`, HarmonicLLA.h:18) = passage de l'orbite
+//!   près de 0 (frontière d'atome). Les segments épousent la STRUCTURE de
+//!   l'orbite ; le premier dip de l'étage ≈ sa période (plafond des
+//!   longueurs). Un segment démarre en longueur 2 (`new2`, premier pas déjà
+//!   étendu) sauf si le point suivant dipperait aussitôt (`detect_dip`) →
+//!   longueur 1 (pas exact, rayon 1).
 //!
 //! Écarts VOLONTAIRES vs Imagina (nos garanties de qualité, cf. spec G8.2) :
 //! 1. **Cap itérations** : un segment n'est appliqué que si
@@ -46,8 +60,12 @@ use crate::fractal::perturbation::orbit::ReferenceOrbit;
 const VALID_RADIUS_SCALE: f64 = 1.0 / 16_777_216.0; // 2^-24, exact
 
 /// `PeriodDetectionThreshold` (HarmonicMLA.h:83) : période détectée quand le
-/// min courant de cheb|Z| chute sous `prevMin · 2⁻⁴`.
+/// min courant de cheb|Z| chute sous `prevMin · 2⁻⁴`. (Variante MLA.)
 const PERIOD_DETECTION_THRESHOLD: f64 = 0.0625; // 2^-4, exact
+
+/// `DipDetectionThreshold` (HarmonicLLA.h:18) : dip détecté quand le rayon de
+/// validité chute sous `prev · 2⁻¹⁰` en un seul pas. (Variante LLA.)
+const DIP_DETECTION_THRESHOLD: f64 = 1.0 / 1024.0; // 2^-10, exact
 
 /// Garde-fou fractall (absent d'Imagina) : plafond d'étages. La construction
 /// s'arrête aussi quand un étage ne RÉDUIT plus le nombre de segments (un
@@ -90,44 +108,90 @@ impl LaStep {
         }
     }
 
-    /// `Step(complex z)` (HarmonicMLA.h:32-46) : extension du segment d'un pas
-    /// (z = valeur de l'orbite à la fin actuelle du segment).
-    fn step(&self, z: Complex64) -> LaStep {
-        let radius = chebyshev_norm(z) * VALID_RADIUS_SCALE;
+    /// `LAStep(size_t i, complex z0, complex z1)` (HarmonicLLA.h:30-34) :
+    /// segment de DEUX pas — le premier (quadratique exact) déjà consommé,
+    /// le second linéarisé autour de `z1` (`A = 2·z1`, `B = A+1`).
+    fn new2(i: u32, z0: Complex64, z1: Complex64) -> Self {
+        let a = 2.0 * z1;
+        let valid_radius = chebyshev_norm(z1) * VALID_RADIUS_SCALE;
         LaStep {
-            valid_radius: self.valid_radius.min(radius / chebyshev_norm(self.a)),
-            valid_radius_c: self.valid_radius_c.min(radius / chebyshev_norm(self.b)),
-            a: 2.0 * z * self.a,
-            b: 2.0 * z * self.b + Complex64::new(1.0, 0.0),
-            z: self.z,
-            length: self.length + 1,
-            next_stage_la_index: self.next_stage_la_index,
+            z: z0,
+            a,
+            b: a + Complex64::new(1.0, 0.0),
+            valid_radius,
+            valid_radius_c: valid_radius,
+            length: 2,
+            next_stage_la_index: i,
         }
     }
 
-    /// `Composite(const LAStep &step)` (HarmonicMLA.h:48-68) : composition
-    /// `self` puis `step`. Récurrences EXACTES du .h — le rayon intermédiaire
-    /// utilise `A/B` AVANT multiplication par `step.a` (et `step.valid_radius`
-    /// pour les DEUX rayons, fidèle à la source).
-    fn composite(&self, step: &LaStep) -> LaStep {
+    /// `DetectDip(complex z)` (HarmonicLLA.h:39-41) : est-ce qu'étendre le
+    /// segment par `z` provoquerait un dip ? (Prédictif — sans construire
+    /// l'extension.)
+    fn detect_dip(&self, z: Complex64) -> bool {
+        chebyshev_norm(z) * VALID_RADIUS_SCALE / chebyshev_norm(self.a)
+            < self.valid_radius * DIP_DETECTION_THRESHOLD
+    }
+
+    /// `Step(complex z)` (HarmonicLLA.h:43-59) : extension du segment d'un pas
+    /// (z = valeur de l'orbite à la fin actuelle du segment) + flag dip (le
+    /// rayon chute sous `prev · DipDetectionThreshold` en ce pas). La math du
+    /// LaStep est IDENTIQUE à HarmonicMLA.h:32-46 (MLA ignore le flag).
+    fn step_dip(&self, z: Complex64) -> (LaStep, bool) {
+        let radius = chebyshev_norm(z) * VALID_RADIUS_SCALE;
+        let valid_radius = self.valid_radius.min(radius / chebyshev_norm(self.a));
+        let dip = valid_radius < self.valid_radius * DIP_DETECTION_THRESHOLD;
+        (
+            LaStep {
+                valid_radius,
+                valid_radius_c: self.valid_radius_c.min(radius / chebyshev_norm(self.b)),
+                a: 2.0 * z * self.a,
+                b: 2.0 * z * self.b + Complex64::new(1.0, 0.0),
+                z: self.z,
+                length: self.length + 1,
+                next_stage_la_index: self.next_stage_la_index,
+            },
+            dip,
+        )
+    }
+
+    fn step(&self, z: Complex64) -> LaStep {
+        self.step_dip(z).0
+    }
+
+    /// `Composite(const LAStep &step)` (HarmonicLLA.h:61-84) : composition
+    /// `self` puis `step` + flag dip. Récurrences EXACTES du .h — le rayon
+    /// intermédiaire utilise `A/B` AVANT multiplication par `step.a` (et
+    /// `step.valid_radius` pour les DEUX rayons, fidèle à la source) ; le
+    /// flag dip est évalué sur ce rayon INTERMÉDIAIRE (avant le second min),
+    /// comme HarmonicLLA.h:72. Math identique à HarmonicMLA.h:48-68.
+    fn composite_dip(&self, step: &LaStep) -> (LaStep, bool) {
         let radius = chebyshev_norm(step.z) * VALID_RADIUS_SCALE;
 
         let mut valid_radius = self.valid_radius.min(radius / chebyshev_norm(self.a));
         let mut valid_radius_c = self.valid_radius_c.min(radius / chebyshev_norm(self.b));
+        let dip = valid_radius < self.valid_radius * DIP_DETECTION_THRESHOLD;
         let a = 2.0 * step.z * self.a;
         let b = 2.0 * step.z * self.b;
 
         valid_radius = valid_radius.min(step.valid_radius / chebyshev_norm(a));
         valid_radius_c = valid_radius_c.min(step.valid_radius / chebyshev_norm(b));
-        LaStep {
-            a: a * step.a,
-            b: b * step.a + step.b,
-            z: self.z,
-            valid_radius,
-            valid_radius_c,
-            length: self.length + step.length,
-            next_stage_la_index: self.next_stage_la_index,
-        }
+        (
+            LaStep {
+                a: a * step.a,
+                b: b * step.a + step.b,
+                z: self.z,
+                valid_radius,
+                valid_radius_c,
+                length: self.length + step.length,
+                next_stage_la_index: self.next_stage_la_index,
+            },
+            dip,
+        )
+    }
+
+    fn composite(&self, step: &LaStep) -> LaStep {
+        self.composite_dip(step).0
     }
 }
 
@@ -147,14 +211,34 @@ pub struct HarmonicMlaTable {
     pub period0: u32,
 }
 
-/// Gate env `FRACTALL_HARMONIC_LA=1`.
-pub fn harmonic_enabled() -> bool {
-    static F: OnceLock<bool> = OnceLock::new();
+/// Variante de segmentation sélectionnée par la VALEUR du gate env.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HarmonicVariant {
+    /// Segmentation par minima de magnitude (`HarmonicMLA.cpp`).
+    Mla,
+    /// Segmentation aux dips de rayon (`HarmonicLLA.cpp`) — prod Imagina.
+    Lla,
+}
+
+/// Gate env `FRACTALL_HARMONIC_LA` : `1`/`true`/`lla` → LLA (défaut du
+/// prototype depuis le jalon LLA), `mla` → MLA (A/B), sinon inactif.
+pub fn harmonic_variant() -> Option<HarmonicVariant> {
+    static F: OnceLock<Option<HarmonicVariant>> = OnceLock::new();
     *F.get_or_init(|| {
-        std::env::var("FRACTALL_HARMONIC_LA")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
+        match std::env::var("FRACTALL_HARMONIC_LA")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "1" | "true" | "lla" => Some(HarmonicVariant::Lla),
+            "mla" => Some(HarmonicVariant::Mla),
+            _ => None,
+        }
     })
+}
+
+pub fn harmonic_enabled() -> bool {
+    harmonic_variant().is_some()
 }
 
 /// Construit la table depuis l'orbite brute f64. Mirror de `Prepare`
@@ -187,6 +271,186 @@ pub fn build_harmonic_mla_table(z_ref_f64: &[Complex64]) -> Option<HarmonicMlaTa
         }
     }
     Some(table)
+}
+
+/// Construit la table LLA depuis l'orbite brute f64. Mirror de `Prepare`
+/// (HarmonicLLA.cpp:10-21) — même contrat que `build_harmonic_mla_table`
+/// (mêmes garde-fous plafond d'étages + anti-stagnation fractall).
+pub fn build_harmonic_lla_table(z_ref_f64: &[Complex64]) -> Option<HarmonicMlaTable> {
+    if z_ref_f64.len() < 9 {
+        return None;
+    }
+    let mut table = HarmonicMlaTable {
+        stages: Vec::new(),
+        steps: Vec::new(),
+        period0: 0,
+    };
+    if create_la_from_orbit_lla(z_ref_f64, &mut table) {
+        loop {
+            let prev_count = {
+                let s = table.stages.last().unwrap();
+                s.end - s.begin
+            };
+            if table.stages.len() >= MAX_STAGES || !create_new_la_stage_lla(&mut table) {
+                break;
+            }
+            let s = table.stages.last().unwrap();
+            if s.end - s.begin >= prev_count {
+                break;
+            }
+        }
+    }
+    Some(table)
+}
+
+/// Mirror de `CreateLAFromOrbit` (HarmonicLLA.cpp:48-102). Étage 0 : le
+/// premier segment (longueur 2 au départ, `LAStep(0, 0, ref[1])`) s'étend
+/// jusqu'au premier **dip** → sa longueur = la période de l'atome dominant.
+/// Ensuite : segments coupés à `dip || length ≥ Period` ; chaque nouveau
+/// segment démarre en longueur 2 (`new2`) SAUF si le point suivant dipperait
+/// aussitôt (`detect_dip` sur l'extension rejetée) → longueur 1.
+/// `next_stage_la_index` = index dans l'orbite brute du début du segment.
+fn create_la_from_orbit_lla(reference: &[Complex64], table: &mut HarmonicMlaTable) -> bool {
+    let reference_length = reference.len() - 1;
+    let steps = &mut table.steps;
+
+    let mut period: usize = 0;
+    let mut step = LaStep::new2(0, Complex64::new(0.0, 0.0), reference[1]);
+
+    let mut i = 2usize;
+    while i < reference_length {
+        let (new_step, dip) = step.step_dip(reference[i]);
+        if dip {
+            period = i;
+            break;
+        }
+        step = new_step;
+        i += 1;
+    }
+
+    steps.push(step);
+
+    if period == 0 {
+        table.stages.push(StageInfo { begin: 0, end: 1 });
+        steps.push(LaStep::new(0, reference[reference_length]));
+        return false;
+    }
+    table.period0 = period as u32;
+
+    let mut step = if i + 1 >= reference_length {
+        let s = LaStep::new(i as u32, reference[i]);
+        i += 1;
+        s
+    } else {
+        let s = LaStep::new2(i as u32, reference[i], reference[i + 1]);
+        i += 2;
+        s
+    };
+
+    while i < reference_length {
+        let (new_step, dip) = step.step_dip(reference[i]);
+        if dip || step.length as usize >= period {
+            // L'extension par reference[i] est REJETÉE : le point de dip
+            // devient le premier pas (quadratique exact) du segment suivant.
+            steps.push(step);
+            if i + 1 >= reference_length || new_step.detect_dip(reference[i + 1]) {
+                step = LaStep::new(i as u32, reference[i]);
+            } else {
+                step = LaStep::new2(i as u32, reference[i], reference[i + 1]);
+                i += 1;
+            }
+        } else {
+            step = new_step;
+        }
+        i += 1;
+    }
+
+    steps.push(step);
+    table.stages.push(StageInfo {
+        begin: 0,
+        end: steps.len() as u32,
+    });
+    steps.push(LaStep::new(0, reference[reference_length]));
+
+    true
+}
+
+/// Mirror de `CreateNewLAStage` (HarmonicLLA.cpp:104-175) : composition des
+/// segments de l'étage précédent, dips sur le rayon composé ; la période de
+/// l'étage = `step.length` au premier dip (super-période).
+/// `next_stage_la_index` = index GLOBAL dans `steps` du segment de l'étage
+/// précédent où descendre.
+fn create_new_la_stage_lla(table: &mut HarmonicMlaTable) -> bool {
+    let prev_stage = *table.stages.last().unwrap();
+    let steps = &mut table.steps;
+    let begin = steps.len() as u32;
+    let prev_end = prev_stage.end as usize;
+
+    let mut period: u32 = 0;
+    let mut i = prev_stage.begin as usize;
+
+    let mut step = steps[i].composite_dip(&steps[i + 1]).0;
+    step.next_stage_la_index = i as u32;
+    i += 2;
+
+    while i < prev_end {
+        let (new_step, dip) = step.composite_dip(&steps[i]);
+        if dip {
+            period = step.length;
+            steps.push(step);
+            if i + 1 >= prev_end || new_step.detect_dip(steps[i + 1].z) {
+                step = steps[i];
+                step.next_stage_la_index = i as u32;
+                i += 1;
+            } else {
+                step = steps[i].composite_dip(&steps[i + 1]).0;
+                step.next_stage_la_index = i as u32;
+                i += 2;
+            }
+            break;
+        }
+        step = new_step;
+        i += 1;
+    }
+
+    if period == 0 {
+        steps.push(step);
+        table.stages.push(StageInfo {
+            begin,
+            end: steps.len() as u32,
+        });
+        let sentinel = steps[prev_end];
+        steps.push(sentinel);
+        return false;
+    }
+
+    while i < prev_end {
+        let (new_step, dip) = step.composite_dip(&steps[i]);
+        if dip || step.length >= period {
+            steps.push(step);
+            if i + 1 >= prev_end || new_step.detect_dip(steps[i + 1].z) {
+                step = steps[i];
+                step.next_stage_la_index = i as u32;
+            } else {
+                step = steps[i].composite_dip(&steps[i + 1]).0;
+                step.next_stage_la_index = i as u32;
+                i += 1;
+            }
+        } else {
+            step = new_step;
+        }
+        i += 1;
+    }
+
+    steps.push(step);
+    table.stages.push(StageInfo {
+        begin,
+        end: steps.len() as u32,
+    });
+    let sentinel = steps[prev_end];
+    steps.push(sentinel);
+
+    true
 }
 
 /// Mirror de `CreateLAFromOrbit` (HarmonicMLA.cpp:48-102). Étage 0 : scan des
@@ -381,97 +645,92 @@ pub fn iterate_pixel_harmonic_mla(
     let mut j: usize = table.stages[table.stages.len() - 1].begin as usize;
     let mut bla_steps = 0u32;
     let mut rebase_count = 0u32;
-
-    // ── Phase LA : descente d'étages depuis le plus haut ───────────────────
-    let mut stage = table.stages.len();
-    while stage > 0 {
-        stage -= 1;
-        let begin = table.stages[stage].begin as usize;
-        let end = table.stages[stage].end as usize;
-
-        while i < iteration_max {
-            let step = &table.steps[j];
-            // Premier pas quadratique EXACT : δ' = δ·(Z+z) = δ·(2Z+δ).
-            let new_dz = dz * (step.z + z);
-
-            // 1 check de validité par segment (chebyshev, mirror).
-            if chebyshev_norm(new_dz) > step.valid_radius || norm_dc > step.valid_radius_c {
-                j = step.next_stage_la_index as usize;
-                break;
-            }
-            // Écart fractall #1 : cap itérations — ne jamais dépasser
-            // iteration_max (les étages fins ont des segments courts, la
-            // queue directe finit).
-            if i + step.length > iteration_max {
-                j = step.next_stage_la_index as usize;
-                break;
-            }
-
-            let cand_dz = new_dz * step.a + dc * step.b;
-            // `steps[j+1].z` : Z de début du segment SUIVANT (la sentinelle
-            // fournit la valeur de FIN d'étage).
-            let cand_z = cand_dz + table.steps[j + 1].z;
-
-            // Écart fractall #2 : garde anti-over-skip à l'atterrissage. Le
-            // segment a sauté PAR-DESSUS l'escape → rejet (dz/i/j inchangés),
-            // descente ; le check d'escape de la queue directe attrape le
-            // pixel à l'itération exacte.
-            if cand_z.norm_sqr() >= bailout_sqr {
-                j = step.next_stage_la_index as usize;
-                break;
-            }
-
-            dz = cand_dz;
-            i += step.length;
-            j += 1;
-            z = cand_z;
-            bla_steps += 1;
-
-            // Rebase d'étage (mirror) : fin d'étage OU |z| < |δ| (chebyshev).
-            if j == end || chebyshev_norm(z) < chebyshev_norm(dz) {
-                j = begin;
-                dz = z;
-                rebase_count += 1;
-            }
-        }
-    }
-
-    if i >= iteration_max {
-        // iteration_max atteint PENDANT la descente : `j` peut être en espace
-        // segments (pas un index d'orbite) — ne pas indexer l'orbite. `z` est
-        // le z absolu courant (invariant LA), et le cap #1 garantit
-        // `i == iteration_max` exactement.
-        return UnifiedPixelResult {
-            iteration: i,
-            z_final: z,
-            rebase_count,
-            bla_steps,
-            orbit: None,
-            distance: None,
-            is_interior: false,
-            ref_exhausted: false,
-        };
-    }
-
-    // ── Queue directe sur l'orbite brute ───────────────────────────────────
-    // `j` = index ORBITE (next_stage_la_index d'un segment étage 0). Réplique
-    // `iterate_pixel_unified_mandelbrot_impl` sans BLA : escape en tête de
-    // boucle, rebase F3 strict, rebase-at-end atom, flag ref_exhausted.
-    let mut m = j;
-    let mut z_m = reference[m.min(ref_len - 1)];
-    let mut z_abs = z_m + dz; // == z (invariant LA)
     let mut ref_exhausted_flag = false;
+    // Budget de pas directs GLOBAL au pixel (PAS remis à zéro par la
+    // ré-ascension de l'écart #4).
     let mut iters_ptb = 0u32;
+    let mut z_abs = Complex64::new(0.0, 0.0);
 
-    while i < iteration_max
-        && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
-    {
-        // Bailout absolu |Z[m]+δ|² ≥ bailout² (attrape aussi l'escape des
-        // segments rejetés par la garde anti-over-skip).
-        if z_abs.norm_sqr() >= bailout_sqr {
+    // Écart fractall #4 : **ré-ascension après rebase de la queue directe**
+    // (absent d'Imagina — leur évaluateur ne quitte jamais la queue). Un
+    // rebase de la queue (F3 strict ou rebase-at-end) laisse EXACTEMENT
+    // l'état d'entrée de la phase LA (`m = 0`, `z = Z[0]+δ = δ`) → on remonte
+    // au sommet des étages via `continue 'render`. Récupère les pixels dont
+    // les rayons redeviennent valides après rebase (e50 : −15 % mesuré).
+    // Garde-fou anti-ping-pong : on ne remonte que si le DERNIER passage LA
+    // a été productif (≥ 1 segment appliqué) — sinon les pixels quasi-
+    // périodiques à rayons morts paieraient une descente stérile (≤
+    // MAX_STAGES checks) à CHAQUE rebase (dragon : +10 % sans le garde).
+    // Terminaison : chaque rebase de queue consomme ≥ 1 pas direct et `i`
+    // est monotone → au plus une descente par rebase.
+    let mut reascend = true;
+    'render: loop {
+        let segs_at_entry = bla_steps;
+        // ── Phase LA : descente d'étages depuis le plus haut ───────────────
+        let mut stage = table.stages.len();
+        while stage > 0 {
+            stage -= 1;
+            let begin = table.stages[stage].begin as usize;
+            let end = table.stages[stage].end as usize;
+
+            while i < iteration_max {
+                let step = &table.steps[j];
+                // Premier pas quadratique EXACT : δ' = δ·(Z+z) = δ·(2Z+δ).
+                let new_dz = dz * (step.z + z);
+
+                // 1 check de validité par segment (chebyshev, mirror).
+                if chebyshev_norm(new_dz) > step.valid_radius
+                    || norm_dc > step.valid_radius_c
+                {
+                    j = step.next_stage_la_index as usize;
+                    break;
+                }
+                // Écart fractall #1 : cap itérations — ne jamais dépasser
+                // iteration_max (les étages fins ont des segments courts, la
+                // queue directe finit).
+                if i + step.length > iteration_max {
+                    j = step.next_stage_la_index as usize;
+                    break;
+                }
+
+                let cand_dz = new_dz * step.a + dc * step.b;
+                // `steps[j+1].z` : Z de début du segment SUIVANT (la
+                // sentinelle fournit la valeur de FIN d'étage).
+                let cand_z = cand_dz + table.steps[j + 1].z;
+
+                // Écart fractall #2 : garde anti-over-skip à l'atterrissage.
+                // Le segment a sauté PAR-DESSUS l'escape → rejet (dz/i/j
+                // inchangés), descente ; le check d'escape de la queue
+                // directe attrape le pixel à l'itération exacte.
+                if cand_z.norm_sqr() >= bailout_sqr {
+                    j = step.next_stage_la_index as usize;
+                    break;
+                }
+
+                dz = cand_dz;
+                i += step.length;
+                j += 1;
+                z = cand_z;
+                bla_steps += 1;
+
+                // Rebase d'étage (mirror) : fin d'étage OU |z| < |δ|
+                // (chebyshev).
+                if j == end || chebyshev_norm(z) < chebyshev_norm(dz) {
+                    j = begin;
+                    dz = z;
+                    rebase_count += 1;
+                }
+            }
+        }
+
+        if i >= iteration_max {
+            // iteration_max atteint PENDANT la descente : `j` peut être en
+            // espace segments (pas un index d'orbite) — ne pas indexer
+            // l'orbite. `z` est le z absolu courant (invariant LA), et le
+            // cap #1 garantit `i == iteration_max` exactement.
             return UnifiedPixelResult {
                 iteration: i,
-                z_final: z_abs,
+                z_final: z,
                 rebase_count,
                 bla_steps,
                 orbit: None,
@@ -481,61 +740,113 @@ pub fn iterate_pixel_harmonic_mla(
             };
         }
 
-        // Pas direct : δ' = δ·(Z[m]+z) + dc (forme factorisée Imagina de
-        // 2·Z·δ + δ² + dc, avec z = Z[m]+δ).
-        dz = dz * (z_m + z_abs) + dc;
-        i += 1;
-        m += 1;
-        iters_ptb += 1;
-
-        // `Z[min(m, ref_len-1)]` : clamp historique (m == ref_len possible).
-        let z_after = reference[m.min(ref_len - 1)];
-
-        if !dz.re.is_finite() || !dz.im.is_finite() {
-            return UnifiedPixelResult {
-                iteration: i,
-                z_final: z_after + dz,
-                rebase_count,
-                bla_steps,
-                orbit: None,
-                distance: None,
-                is_interior: false,
-                ref_exhausted: false,
-            };
+        // Un passage LA stérile désarme la ré-ascension pour ce pixel (les
+        // rebases suivants restent dans la queue directe, comme Imagina).
+        // A/B mesuré (LLA, entrelacé ×3) : gardée vs jamais = e50 −24 %,
+        // dragon/glitch_test_2 neutres, e113 +8 % ; gardée ≥ toujours partout.
+        if bla_steps == segs_at_entry {
+            reascend = false;
         }
 
-        let end_of_ref = m + 1 >= ref_len;
-        if end_of_ref {
-            if ref_orbit.atom_truncated {
-                // Rebase-at-end F3 (`hybrid.cc:301`) : δ := Z[end]+δ, m := 0.
-                dz = z_after + dz;
-                m = 0;
-                rebase_count += 1;
-                z_m = reference[0];
-                z_abs = z_m + dz;
-            } else {
-                // Réf épuisée (centre escape-time) : même contrat que le path
-                // BLA — flag + break, le caller route `glitched` → GMP/pixel.
-                ref_exhausted_flag = true;
-                z_m = z_after;
-                z_abs = z_m + dz;
-                break;
+        // ── Queue directe sur l'orbite brute ───────────────────────────────
+        // `j` = index ORBITE (next_stage_la_index d'un segment étage 0).
+        // Réplique `iterate_pixel_unified_mandelbrot_impl` sans BLA : escape
+        // en tête de boucle, rebase F3 strict, rebase-at-end atom, flag
+        // ref_exhausted.
+        let mut m = j;
+        let mut z_m = reference[m.min(ref_len - 1)];
+        z_abs = z_m + dz; // == z (invariant LA)
+
+        while i < iteration_max
+            && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
+        {
+            // Bailout absolu |Z[m]+δ|² ≥ bailout² (attrape aussi l'escape des
+            // segments rejetés par la garde anti-over-skip).
+            if z_abs.norm_sqr() >= bailout_sqr {
+                return UnifiedPixelResult {
+                    iteration: i,
+                    z_final: z_abs,
+                    rebase_count,
+                    bla_steps,
+                    orbit: None,
+                    distance: None,
+                    is_interior: false,
+                    ref_exhausted: false,
+                };
             }
-        } else {
-            let z_curr = z_after + dz;
-            let z_curr_norm_sqr = z_curr.norm_sqr();
-            if z_curr_norm_sqr < dz.norm_sqr() {
-                // Rebase F3 strict : |Z+δ|² < |δ|² → δ := Z+δ, m := 0.
-                dz = z_curr;
-                m = 0;
-                rebase_count += 1;
-                z_m = reference[0];
-                z_abs = z_m + dz;
+
+            // Pas direct : δ' = δ·(Z[m]+z) + dc (forme factorisée Imagina de
+            // 2·Z·δ + δ² + dc, avec z = Z[m]+δ).
+            dz = dz * (z_m + z_abs) + dc;
+            i += 1;
+            m += 1;
+            iters_ptb += 1;
+
+            // `Z[min(m, ref_len-1)]` : clamp historique (m == ref_len
+            // possible).
+            let z_after = reference[m.min(ref_len - 1)];
+
+            if !dz.re.is_finite() || !dz.im.is_finite() {
+                return UnifiedPixelResult {
+                    iteration: i,
+                    z_final: z_after + dz,
+                    rebase_count,
+                    bla_steps,
+                    orbit: None,
+                    distance: None,
+                    is_interior: false,
+                    ref_exhausted: false,
+                };
+            }
+
+            let end_of_ref = m + 1 >= ref_len;
+            if end_of_ref {
+                if ref_orbit.atom_truncated {
+                    // Rebase-at-end F3 (`hybrid.cc:301`) : δ := Z[end]+δ,
+                    // m := 0 — puis ré-ascension (écart #4) si armée.
+                    dz = z_after + dz;
+                    rebase_count += 1;
+                    if reascend {
+                        z = dz; // Z[0] = 0 ⇒ z absolu = δ (invariant LA)
+                        j = table.stages[table.stages.len() - 1].begin as usize;
+                        continue 'render;
+                    }
+                    m = 0;
+                    z_m = reference[0];
+                    z_abs = z_m + dz;
+                } else {
+                    // Réf épuisée (centre escape-time) : même contrat que le
+                    // path BLA — flag + break, le caller route `glitched` →
+                    // GMP/pixel.
+                    ref_exhausted_flag = true;
+                    z_abs = z_after + dz;
+                    break 'render;
+                }
             } else {
-                z_m = z_after;
-                z_abs = z_curr;
+                let z_curr = z_after + dz;
+                let z_curr_norm_sqr = z_curr.norm_sqr();
+                if z_curr_norm_sqr < dz.norm_sqr() {
+                    // Rebase F3 strict : |Z+δ|² < |δ|² → δ := Z+δ, m := 0 —
+                    // puis ré-ascension (écart #4) si armée.
+                    dz = z_curr;
+                    rebase_count += 1;
+                    if reascend {
+                        z = dz;
+                        j = table.stages[table.stages.len() - 1].begin as usize;
+                        continue 'render;
+                    }
+                    m = 0;
+                    z_m = reference[0];
+                    z_abs = z_m + dz;
+                } else {
+                    z_m = z_after;
+                    z_abs = z_curr;
+                }
             }
         }
+
+        // iteration_max ou budget max_perturb_iterations atteint.
+        break 'render;
     }
 
     UnifiedPixelResult {
@@ -675,6 +986,124 @@ mod tests {
         }
         eprintln!(
             "[HARMONIC TEST] mismatches={mismatches}/{total} max_iter_diff={max_diff}"
+        );
+        assert!(
+            mismatches <= 1,
+            "≥ 99 % attendu : {mismatches}/{total} divergents (max diff {max_diff})"
+        );
+    }
+
+    /// (a-LLA) Build LLA sur l'orbite superstable période 3 : le premier dip
+    /// (|Z₃| ≈ 0) doit donner period0=3, ≥ 2 étages, segments étage 0
+    /// plafonnés à la période, indices d'orbite valides, sentinelles en place.
+    #[test]
+    fn lla_build_detects_period_3_on_airplane_orbit() {
+        let orbit = gmp_orbit(-1.7548776662466927, 0.0, 200);
+        let table = build_harmonic_lla_table(&orbit).expect("table Harmonic LLA");
+
+        assert_eq!(table.period0, 3, "période étage 0 (premier dip)");
+        assert!(
+            table.stages.len() >= 2,
+            "au moins 2 étages, obtenu {}",
+            table.stages.len()
+        );
+
+        let s0 = table.stages[0];
+        for (k, step) in table.steps[s0.begin as usize..s0.end as usize]
+            .iter()
+            .enumerate()
+        {
+            assert!(
+                step.length <= table.period0,
+                "segment étage 0 #{k} : length {} > période {}",
+                step.length,
+                table.period0
+            );
+            assert!(
+                (step.next_stage_la_index as usize) < orbit.len(),
+                "segment étage 0 #{k} : index orbite hors bornes"
+            );
+        }
+        for (s, stage) in table.stages.iter().enumerate() {
+            assert!(
+                (stage.end as usize) < table.steps.len(),
+                "étage {s} : sentinelle manquante"
+            );
+            // Cohérence descente : les next_stage_la_index des étages > 0
+            // pointent dans les bornes de l'étage précédent.
+            if s > 0 {
+                let prev = table.stages[s - 1];
+                for step in &table.steps[stage.begin as usize..stage.end as usize] {
+                    assert!(
+                        step.next_stage_la_index >= prev.begin
+                            && step.next_stage_la_index < prev.end,
+                        "étage {s} : next_stage_la_index {} hors [{}, {})",
+                        step.next_stage_la_index,
+                        prev.begin,
+                        prev.end
+                    );
+                }
+            }
+        }
+    }
+
+    /// Orbite trop courte → pas de table LLA non plus.
+    #[test]
+    fn lla_build_rejects_short_orbit() {
+        let orbit = gmp_orbit(-1.7548776662466927, 0.0, 7);
+        assert!(build_harmonic_lla_table(&orbit).is_none());
+    }
+
+    /// (b-LLA) Évaluateur (commun) sur table LLA vs boucle BLA actuelle,
+    /// même harnais que `evaluator_matches_bla_loop_mid_zoom`.
+    #[test]
+    fn lla_evaluator_matches_bla_loop_mid_zoom() {
+        let width = 160u32;
+        let height = 100u32;
+        let iter_max = 1500u32;
+        let zoom = 1e6;
+        let span_x = 4.0 / zoom;
+        let span_y = span_x * height as f64 / width as f64;
+
+        let mut params = default_params_for_type(FractalType::Mandelbrot, width, height);
+        params.center_x = -1.7693831791955;
+        params.center_y = 0.004236847918736;
+        params.span_x = span_x;
+        params.span_y = span_y;
+        params.iteration_max = iter_max;
+        params.algorithm_mode = AlgorithmMode::Perturbation;
+        let (orbit, _, _) =
+            compute_reference_orbit(&params, None, true).expect("compute_reference_orbit");
+        assert_eq!(orbit.cycle_period, 0, "test suppose cycle_period == 0");
+
+        let formula = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
+        let diag_px = ((width as f64).powi(2) + (height as f64).powi(2)).sqrt();
+        let c_norm = (span_x / width as f64) * diag_px;
+        let tables = build_bla_table_for_formula(&formula, &orbit.z_ref_f64, c_norm, 6e-8)
+            .expect("BLA table");
+        let bla = &tables[0];
+        let table = build_harmonic_lla_table(&orbit.z_ref_f64).expect("table Harmonic LLA");
+
+        let total = 100u32;
+        let mut mismatches = 0u32;
+        let mut max_diff = 0u32;
+        for k in 0..total {
+            let fx = (k % 10) as f64 / 9.0 - 0.5;
+            let fy = (k / 10) as f64 / 9.0 - 0.5;
+            let dc = Complex64::new(fx * span_x, fy * span_y);
+
+            let r_bla =
+                iterate_pixel_unified_mandelbrot(&orbit, bla, dc, iter_max, 25.0, 0, 0);
+            let r_lla =
+                iterate_pixel_harmonic_mla(&orbit, &table, dc, iter_max, 25.0, 0);
+
+            if r_bla.iteration != r_lla.iteration {
+                mismatches += 1;
+                max_diff = max_diff.max(r_bla.iteration.abs_diff(r_lla.iteration));
+            }
+        }
+        eprintln!(
+            "[HARMONIC LLA TEST] mismatches={mismatches}/{total} max_iter_diff={max_diff}"
         );
         assert!(
             mismatches <= 1,
