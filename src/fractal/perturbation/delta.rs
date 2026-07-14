@@ -123,6 +123,11 @@ struct BlaUnifiedCacheEntry {
     /// itérations sans under/overflow des coefficients A/B sur réf graze deep
     /// zoom (~1e-8000). Une entrée par phase (mono-phase ⇒ Vec de 1).
     bla_exp: Option<Vec<BlaTableUnifiedExp>>,
+    /// Table **Harmonic MLA** (Imagina, prototype G8.2) — construite UNIQUEMENT
+    /// quand `harmonic_route_active` (gate `FRACTALL_HARMONIC_LA=1`, Mandelbrot
+    /// f64 pur). `None` sinon. Même pattern de cache que la table BLA : un
+    /// build par render, partagé entre workers via l'`Arc` de l'entrée.
+    harmonic: Option<Arc<crate::fractal::bytecode::harmonic_mla::HarmonicMlaTable>>,
 }
 
 impl BlaUnifiedCacheEntry {
@@ -223,6 +228,25 @@ fn build_bla_entry(
     } else {
         None
     };
+    // Table Harmonic MLA (prototype G8.2, gate `FRACTALL_HARMONIC_LA=1`).
+    // Construite ici (une fois par render, sous le lock global) quand le
+    // routage harmonique s'appliquera aux pixels — mêmes conditions que le
+    // dispatch (`harmonic_route_active`). Log `[HARMONIC]` une fois par table.
+    let harmonic = if harmonic_route_active(params, ref_orbit) {
+        crate::fractal::bytecode::harmonic_mla::build_harmonic_mla_table(&ref_orbit.z_ref_f64)
+            .map(|t| {
+                eprintln!(
+                    "[HARMONIC] stages={} steps={} orbit_len={} period0={}",
+                    t.stages.len(),
+                    t.steps.len(),
+                    ref_orbit.z_ref_f64.len(),
+                    t.period0
+                );
+                Arc::new(t)
+            })
+    } else {
+        None
+    };
     Some(Arc::new(BlaUnifiedCacheEntry {
         orbit_ptr,
         orbit_len,
@@ -234,6 +258,7 @@ fn build_bla_entry(
         use_dd_tier: params.use_dd_tier,
         dd_table,
         bla_exp,
+        harmonic,
     }))
 }
 
@@ -430,6 +455,53 @@ pub(crate) fn compressed_ref_route_active(
             == Some(crate::fractal::wisdom::NumberTier::F64)
 }
 
+/// Le routage **Harmonic MLA** (prototype G8.2, `FRACTALL_HARMONIC_LA=1`)
+/// est-il actif pour ce rendu ? Prédicat PARTAGÉ entre le build de table
+/// (`build_bla_entry`), le dispatch par-pixel (`try_bytecode_unified_path` →
+/// `iterate_pixel_harmonic_mla`) et le label perf (`mod.rs`,
+/// `path=bytecode_f64_harmonic_mla`).
+///
+/// Conditions (fast-path Mandelbrot f64 pur uniquement) :
+/// - gate env `FRACTALL_HARMONIC_LA=1` ;
+/// - Mandelbrot seed=0 (la table suppose `Z[0]=0`, orbite critique) ;
+/// - `FRACTALL_COMPRESS_REF` INACTIF : la table ET la queue directe lisent
+///   `z_ref_f64` PLEIN (le strip compressé le libère) — si les deux gates
+///   sont posés, harmonic est sauté avec un avertissement une-fois ;
+/// - tier wisdom == F64 (couvre `use_bytecode_engine`, formule single-phase,
+///   `pixel_size > 0`) ;
+/// - `cycle_period == 0` (pas de wrap_periodic Brent) et `phase_offset == 0` ;
+/// - pas de distance/interior/orbit_traps (autres variantes de boucle) ;
+/// - orbite ≥ 9 entrées (`referenceLength ≥ 8`, mirror Imagina `Prepare`) —
+///   garantit que le build de table réussit quand le routage est actif.
+pub(crate) fn harmonic_route_active(params: &FractalParams, orbit: &ReferenceOrbit) -> bool {
+    if !crate::fractal::bytecode::harmonic_mla::harmonic_enabled() {
+        return false;
+    }
+    if !matches!(params.fractal_type, FractalType::Mandelbrot) {
+        return false;
+    }
+    if crate::fractal::perturbation::compress::compress_enabled() {
+        static WARNED: OnceLock<()> = OnceLock::new();
+        WARNED.get_or_init(|| {
+            eprintln!(
+                "[HARMONIC] FRACTALL_COMPRESS_REF actif — Harmonic MLA sauté \
+                 (la table et la queue directe lisent z_ref_f64 plein)"
+            );
+        });
+        return false;
+    }
+    params.seed.re == 0.0
+        && params.seed.im == 0.0
+        && orbit.cycle_period == 0
+        && orbit.phase_offset == 0
+        && orbit.z_ref_f64.len() >= 9
+        && !params.enable_orbit_traps
+        && !params.enable_distance_estimation
+        && !params.enable_interior_detection
+        && crate::fractal::wisdom::number_tier(params)
+            == Some(crate::fractal::wisdom::NumberTier::F64)
+}
+
 fn try_bytecode_unified_path(
     params: &FractalParams,
     ref_orbit: &ReferenceOrbit,
@@ -591,6 +663,27 @@ fn try_bytecode_unified_path(
                     params.max_bla_steps,
                 ),
             );
+        }
+
+        // ── Path f64 HARMONIC MLA (FRACTALL_HARMONIC_LA=1, prototype G8.2) ──
+        // Segments LA à longueur variable + descente d'étages (Imagina) au
+        // lieu de la BLA mip 2^k. Mutuellement exclusif avec le path
+        // compressé (le prédicat refuse quand FRACTALL_COMPRESS_REF est posé).
+        // La table vit dans l'entrée cache BLA (un build par render).
+        if harmonic_route_active(params, ref_orbit) {
+            if let Some(harmonic) = entry.harmonic.as_ref() {
+                debug_assert!(delta_init.norm_sqr() == 0.0, "Mandelbrot ⇒ delta0 = 0");
+                return Some(
+                    crate::fractal::bytecode::harmonic_mla::iterate_pixel_harmonic_mla(
+                        ref_orbit,
+                        harmonic,
+                        dc_approx,
+                        params.iteration_max,
+                        params.bailout,
+                        params.max_perturb_iterations,
+                    ),
+                );
+            }
         }
 
         let (c_for_add, dc_for_add) = if is_julia {

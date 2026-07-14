@@ -1459,13 +1459,29 @@ Actions candidates pour la boucle (ordre suggéré) :
     21 goldens + revue visuelle + décision utilisateur (les rendus par défaut
     bougent de quelques px) ; wrap_periodic Brent (waypoint forcé à
     cycle_start) si jamais réactivé par défaut.
-  - [ ] **Prototype Harmonic LA** (`FRACTALL_HARMONIC_LA=1`, Mandelbrot f64) :
-    segments variables coupés aux dips, plafonnés à la période, étages =
-    hiérarchie des minibrots, évaluation par descente (1 check/segment au lieu
-    d'un lookup/position), premier pas de segment quadratique EXACT. Commencer
-    par la variante MLA (segmentation magnitude, plus simple), A/B sur les cas
-    BLA-bound (glitch_test_2, e113, dragon, e50) ; si gain → LLA puis
-    généralisation Mat2 + tier exp. C'est LE levier vitesse d'Imagina.
+  - [~] **Prototype Harmonic LA — JALON MLA LIVRÉ (2026-07-14),
+    `FRACTALL_HARMONIC_LA=1`, verdict A/B MITIGÉ → prochain jalon = LLA.**
+    `bytecode/harmonic_mla.rs` (~640 l.) : port fidèle d'Imagina HarmonicMLA —
+    `LaStep` (Step/Composite chebyshev, ValidRadiusScale 2⁻²⁴), build
+    étages harmoniques (période par chute des minima 2⁻⁴, coupe à la moyenne
+    géométrique, plafond à la période, sentinelles), évaluateur par descente
+    (1 check/segment, premier pas quadratique EXACT `dz·(Z+z)`), queue directe
+    aux sémantiques fractall (escape 625, rebase F3, rebase-at-end atom).
+    Écarts sûreté : cap `i+length ≤ iter_max`, garde anti-over-skip à
+    l'atterrissage, plafond 64 étages. Routage delta.rs (`harmonic_route_active`,
+    exclusif de COMPRESS_REF), label `bytecode_f64_harmonic_mla`.
+    **A/B 256², phase pixels (3 runs)** : glitch_test_2 (period0=3, orbite
+    1143) **0.021→0.007 s = 3×** 🎯 ; e113 −15 % ; **e50 +44 % ✗, dragon
+    +47 % ✗** (orbites 86 k–2 M : rayons de validité MLA étroits → descente
+    retombe en queue directe). Arbitre GMP e13 gate ON : WARN max_diff=221
+    p99=0 div_ratio=0.00031 (≈ défaut 210/0.00012, même classe). Diff ON-vs-OFF
+    0.03–4.3 % px (approximation LA ≠ BLA). 221 unit (3 verrous : period0=3
+    détecté, éval == BLA 100/100 dc à mismatch 0) + goldens 🟢 gate OFF
+    bit-identique.
+    - [ ] **Jalon suivant : segmentation LLA** (dips de rayon au lieu de
+      magnitude — cible EXACTEMENT la classe d'échec e50/dragon : rayons
+      élargis, moins de descentes) ; puis généralisation Mat2 (non-conforme)
+      + tier exp si gain confirmé.
   - [ ] **Micro-A/B** (une itération) : chaînage des sauts BLA avant le check
     de rebase (style MipLA) ; chebyshev vs norm_sqr sur la validité BLA.
     Mesure standard-tier, revert si neutre.

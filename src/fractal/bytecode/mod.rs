@@ -19,6 +19,7 @@ pub mod delta_form;
 pub mod interp;
 pub mod interp_gmp;
 pub mod bla_dd;
+pub mod harmonic_mla;
 pub mod pixel_loop;
 pub mod pixel_loop_dd;
 pub mod pixel_loop_exp;

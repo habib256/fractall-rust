@@ -1934,6 +1934,11 @@ pub fn render_perturbation_with_cache(
         // décompresseur à waypoints.
         let path_label = if delta::compressed_ref_route_active(params, &cache.orbit) {
             "bytecode_f64_compressed"
+        } else if delta::harmonic_route_active(params, &cache.orbit) {
+            // Marqueur du path Harmonic MLA (FRACTALL_HARMONIC_LA=1, G8.2) :
+            // le routage delta.rs a envoyé chaque pixel Mandelbrot f64 vers
+            // l'évaluateur à descente d'étages.
+            "bytecode_f64_harmonic_mla"
         } else {
             bytecode_path_label(params).unwrap_or("legacy_fexp")
         };
