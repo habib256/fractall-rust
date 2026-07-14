@@ -1586,6 +1586,64 @@ Actions candidates pour la boucle (ordre suggéré) :
 
 ---
 
+### G9 — Moteur multi-techniques orchestré par le wisdom · `[P0 · BUT FINAL — directive utilisateur 2026-07-15]`
+
+**Vision** : le moteur dispose de PLUSIEURS techniques de rendu (tiers
+numériques f64/exp/dd/GMP ; accélérations BLA mat2 / Harmonic LA / compression
+d'orbite ; devices **CPU et GPU**) et le **wisdom choisit par rendu la
+technique la plus rapide parmi les VIABLES** — viabilité = exposant + mantisse
+requis + fiabilité pixel (détecteur shadowing), vitesse = mesurée sur LA
+machine (benchmarks persistés, modèle F3 `wisdom.cc` complet). Le GPU est un
+first-class citizen : sélectionné automatiquement quand il est plus rapide,
+pas un flag `--gpu` opt-in.
+
+État des briques (tout existe en pièces détachées — le goal = l'orchestration) :
+- ✅ `wisdom::number_tier` (F64/Exp/Dd) + `WisdomPlan` inspectable — mais
+  statique (seuils), ne couvre ni device ni variantes d'accélération.
+- ✅ Dispatcher CPU unique + `GpuRenderer::render_dispatch` — mais la décision
+  GPU est côté caller (`--gpu`), et le GPU s'arrête à ~1e7 (f32).
+- ✅ Techniques env-gated prêtes à router : compression (`FRACTALL_COMPRESS_REF`,
+  corpus-validée), Harmonic LA (`FRACTALL_HARMONIC_LA`, gagnant 2.3× sur
+  orbites courtes — critère de routage MESURABLE : `period0 ≪ orbit_len`,
+  connu au build de table), dd-BLA (epsilon calibré 2⁻⁸⁰).
+- 📐 Détecteur de fiabilité proposé (mathr m-reliable, cf. G-dd) = la brique
+  « viabilité mantisse » qui manque au wisdom.
+
+Jalons (chacun ≈ 1-2 itérations /improve, ordre suggéré) :
+- [ ] **9.1 — Wisdom = planificateur UNIQUE** : étendre `WisdomPlan` à
+  `{device (Cpu|Gpu), algorithme (StandardF64|Perturbation|Gmp), tier,
+  variantes (bla|harmonic, compression on/off)}` ; le dispatcher CPU ET
+  `render_dispatch` GPU consomment LE MÊME plan (aujourd'hui : sélection
+  éclatée entre `should_use_perturbation`, caller `--gpu`, env gates).
+  Invariant CLAUDE.md préservé : UN dispatcher, le plan est un INPUT.
+- [ ] **9.2 — Benchmarks machine persistés (F3 wisdom.cc-style)** :
+  micro-bench ns/iter par (device × tier) au premier run (ou `fractall-cli
+  --wisdom-bench`), persisté en TOML par machine (comme F3), consommé par le
+  plan pour départager les techniques viables. Sans ça le choix GPU/CPU et
+  harmonic/BLA reste des seuils devinés.
+- [ ] **9.3 — Routage harmonic par le wisdom** (premier consommateur de 9.1,
+  facile) : `period0`/`orbit_len` connus au build → router harmonic quand la
+  classe « orbite courte » est détectée (glitch_test_2 : 2.3×), BLA sinon.
+  Sort le prototype de l'env-gate, verrous = corpus + QA existants.
+- [ ] **9.4 — GPU perturbation deep (kernel delta HDR wgsl)** : étendre le
+  range GPU de ~1e7 → ~1e300 (f32 mantisse + exposant par pixel, table BLA en
+  storage buffer, rebasing F3 dans le kernel). **Cible mesurable : ≥ 2× notre
+  CPU 16t sur mid-deep (barre FS-GPU : 0.6 s à 1e30 1024², cf. G8.2)**.
+  Fallback CPU inchangé quand le GPU est non viable (exposant, features).
+- [ ] **9.5 — Auto-GPU** : le plan choisit le device par benchmark 9.2 +
+  viabilité (zoom range du kernel, features supportées) ; `--gpu`/`--no-gpu`
+  deviennent des overrides. Parité pixel GPU↔CPU verrouillée par presets QA
+  dédiés (le juge GMP reste CPU).
+- [ ] **9.6 — Fiabilité → escalade de tier** (= G-dd auto-dispatch, plan déjà
+  écrit) : détecteur shadowing en observation puis escalade px→dd /
+  frame→dd ; ferme la boucle « le wisdom ne sous-provisionne jamais »
+  (contrairement au wisdom F3, cf. diag 3-voies : F3 float 24 b = 9391 px faux).
+
+**Critère d'excellence G9** : sur le corpus + presets QA, le plan choisi par
+le wisdom n'est JAMAIS battu > 10 % par un plan alternatif (vitesse), et
+JAMAIS moins correct que le tier au-dessus (correction) — mesurable par un
+axe harness « wisdom-optimality » (sweep des plans sur un échantillon).
+
 ## ✅ Shipped (condensé, le plus récent en haut)
 
 **2026-07-11** (`/improve`, axe vitesse + infra harness) :
