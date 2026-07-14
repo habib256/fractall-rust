@@ -1439,11 +1439,26 @@ Actions candidates pour la boucle (ordre suggéré) :
     divergents épars (replay ≤2⁻³², e13 vs GMP : métriques IDENTIQUES au
     défaut). 218 unit (3 nouveaux : seek mi-segment ≤ tol vs GMP, seek(0)==
     reset, seal idempotent) + goldens 🟢.
+    **✅ VALIDATION CORPUS (2026-07-14, 83 cas 256², gate ON vs OFF + arbitre
+    GMP)** : 0 crash, 0 timeout nouveau ; 38 cas routés compressés (tier F64
+    jusqu'à ~1e280 — e50/e113/dragon/e227/lethal_weapon inclus), 45 correctement
+    NON routés (exp/dd/features). Diffs ON-vs-OFF : majorité ≤ 300 px épars
+    (classe replay ≤2⁻³²) ; outliers concentrés sur la classe « frontière
+    précision extrême » DÉJÀ décorrélée de GMP au path par défaut :
+    **lethal_weapon 37 607 px (57 %) MAIS arbitre GMP 8×8 : div_ratio
+    IDENTIQUE 0.78125 aux deux gates** (OFF max_diff 21k / ON 33k — deux
+    échantillons chaotiques équivalents, limite f64-δ documentée, PAS un défaut
+    de compression) ; **e227 idem : div_ratio 0.10938 identique** (ON même
+    nominalement plus proche : max_diff 1292 vs 2938). golden_spider/
+    verstoppertje/evolution_trees/uranium = même classe (deep 1M+ iters) ;
+    rug = classe glitch réf-unique connue.
     **Reste (phase 3, si besoin)** : compression `z_ref` ComplexExp (tier exp —
     fantôme FloatExp au voisinage des zéros sous-f64, wfs_mb) ; build streaming
-    (pic RSS, aujourd'hui build-then-drop) ; défaut ON après validation corpus
-    élargie ; wrap_periodic Brent (waypoint forcé à cycle_start) si jamais
-    réactivé par défaut.
+    (pic RSS, aujourd'hui build-then-drop) ; **défaut ON** — critère atteint sur
+    l'axe correction (jamais pire que le défaut vs GMP), bloqué par : regen des
+    21 goldens + revue visuelle + décision utilisateur (les rendus par défaut
+    bougent de quelques px) ; wrap_periodic Brent (waypoint forcé à
+    cycle_start) si jamais réactivé par défaut.
   - [ ] **Prototype Harmonic LA** (`FRACTALL_HARMONIC_LA=1`, Mandelbrot f64) :
     segments variables coupés aux dips, plafonnés à la période, étages =
     hiérarchie des minibrots, évaluation par descente (1 check/segment au lieu
