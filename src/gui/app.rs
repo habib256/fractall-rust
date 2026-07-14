@@ -91,25 +91,13 @@ fn colorize_buffer(
 /// en Auto, perturbation pour les types escape-time supportés (plan Mu), sinon
 /// GMP reference au-delà de ~1e16, sinon f64 standard.
 fn effective_cpu_mode(params: &FractalParams) -> AlgorithmMode {
+    use crate::fractal::wisdom;
     match params.algorithm_mode {
-        AlgorithmMode::Auto => {
-            let pert = crate::render::escape_time::should_use_perturbation(params, false)
-                && params.plane_transform == PlaneTransform::Mu
-                && matches!(
-                    params.fractal_type,
-                    FractalType::Mandelbrot
-                        | FractalType::Julia
-                        | FractalType::BurningShip
-                        | FractalType::Tricorn
-                );
-            if pert {
-                AlgorithmMode::Perturbation
-            } else if crate::render::escape_time::should_use_gmp_reference(params) {
-                AlgorithmMode::ReferenceGmp
-            } else {
-                AlgorithmMode::StandardF64
-            }
-        }
+        AlgorithmMode::Auto => match wisdom::select_algorithm(params, wisdom::Device::Cpu) {
+            wisdom::Algorithm::Perturbation => AlgorithmMode::Perturbation,
+            wisdom::Algorithm::ReferenceGmp => AlgorithmMode::ReferenceGmp,
+            wisdom::Algorithm::StandardF64 => AlgorithmMode::StandardF64,
+        },
         m => m,
     }
 }
@@ -746,17 +734,10 @@ impl FractallApp {
                 | FractalType::Nebulabrot | FractalType::AntiBuddhabrot | FractalType::Lyapunov
         );
         let will_use_perturbation = allow_intermediate
-            && matches!(
-                render_params.algorithm_mode,
-                AlgorithmMode::Auto | AlgorithmMode::Perturbation
-            )
-            && matches!(
-                render_params.fractal_type,
-                FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn
-            )
-            && render_params.plane_transform == PlaneTransform::Mu
-            && (render_params.algorithm_mode == AlgorithmMode::Perturbation
-                || crate::render::escape_time::should_use_perturbation(&render_params, false));
+            && crate::fractal::wisdom::select_algorithm(
+                &render_params,
+                crate::fractal::wisdom::Device::Cpu,
+            ) == crate::fractal::wisdom::Algorithm::Perturbation;
         let config = ProgressiveConfig::for_params_with_intermediate(
             render_width,
             render_height,
@@ -888,17 +869,14 @@ impl FractallApp {
                 FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
             );
         let will_use_perturbation = allow_intermediate
-            && matches!(
-                self.params.algorithm_mode,
-                AlgorithmMode::Auto | AlgorithmMode::Perturbation
-            )
-            && matches!(
-                self.params.fractal_type,
-                FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn
-            )
-            && self.params.plane_transform == PlaneTransform::Mu
-            && (self.params.algorithm_mode == AlgorithmMode::Perturbation
-                || crate::render::escape_time::should_use_perturbation(&self.params, use_gpu));
+            && crate::fractal::wisdom::select_algorithm(
+                &self.params,
+                if use_gpu {
+                    crate::fractal::wisdom::Device::Gpu
+                } else {
+                    crate::fractal::wisdom::Device::Cpu
+                },
+            ) == crate::fractal::wisdom::Algorithm::Perturbation;
         let config = ProgressiveConfig::for_params_with_intermediate(
             self.params.width,
             self.params.height,

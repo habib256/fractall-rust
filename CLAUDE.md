@@ -263,15 +263,27 @@ sensibilité** (l'échelle wisdom est livrée, cf. §Wisdom ci-dessous) et
 pixel→c (CPU + GPU bytecode) ; `Op::Rot` reste un opcode CPU dormant, utile
 seulement pour une rotation *par phase* (TODO G4).
 
-### Wisdom auto-dispatch (`fractal/wisdom.rs`, 2026-07-12)
+### Wisdom auto-dispatch (`fractal/wisdom.rs`, 2026-07-12 · G9.1 2026-07-15)
 
-Source UNIQUE de la sélection de tier numérique perturbation.
-`wisdom::number_tier(params)` → `F64 | Exp | Dd` (ordre dd demandé > exp
-`pixel_size<1e-280` > f64), consommée par `bytecode_path_label` ET le dispatch
-d'exécution (`try_bytecode_unified_path`) — dédup de la logique jadis copiée aux
-deux endroits. `wisdom::plan(params)` renvoie un `WisdomPlan` inspectable
-(algorithme + tier + exposant/mantisse requis F3-style + précision GMP orbite) ;
-`FRACTALL_WISDOM=1` logue la ligne `[WISDOM]`. Modèle F3 (`wisdom.cc:240` /
+Source UNIQUE de la sélection **algorithme + tier + variantes** :
+- `wisdom::select_algorithm(params, Device::Cpu|Gpu)` → `StandardF64 |
+  Perturbation | ReferenceGmp`. Consommée par le dispatcher CPU
+  (`render/escape_time.rs`, famille `perturbation_family` = M/J/BS/Tricorn),
+  par `GpuRenderer::render_dispatch` (device Gpu : seuil perturbation f32 ~1e5
+  vs ~1e12 CPU) et par les labels/passes GUI (`effective_cpu_mode`,
+  `will_use_perturbation`). Couvre modes forcés, fallback plane≠Mu, Auto.
+- `wisdom::number_tier(params)` → `F64 | Exp | Dd` (ordre dd demandé > exp
+  `pixel_size<1e-280` > f64), consommée par `bytecode_path_label` ET le dispatch
+  d'exécution (`try_bytecode_unified_path`).
+- `wisdom::variants(params)` → `{compression, harmonic}` : partie STATIQUE des
+  prédicats de routage env-gated (`FRACTALL_COMPRESS_REF`,
+  `FRACTALL_HARMONIC_LA`) ; `delta.rs::{compressed_ref,harmonic}_route_active`
+  la composent avec les conditions orbite (cycle/phase/longueur).
+
+`wisdom::plan(params)` / `plan_for(params, device)` renvoie un `WisdomPlan`
+inspectable (device + algorithme + tier + variantes + exposant/mantisse requis
+F3-style + précision GMP orbite) ; `FRACTALL_WISDOM=1` logue la ligne
+`[WISDOM]`. Modèle F3 (`wisdom.cc:240` /
 `render.cc:219`) : un type de mantisse `M` / exposant `E` est viable si
 `req_exp+16 < 2^E/2` ET `req_prec < M` ; pour une frame **centrée**
 `req_prec ≈ log2(hypot(w,h))` (~8-13 b), donc **f64 (53 b) suffit toujours sur la

@@ -38,10 +38,14 @@
 //! est donc explicitement hors périmètre ; ce module fournit le point d'accroche
 //! (`required_precision` vs `tier.mantissa_bits()`) pour le brancher plus tard.
 
+use std::sync::OnceLock;
+
+use crate::fractal::bytecode::harmonic_mla::{harmonic_variant, HarmonicVariant};
 use crate::fractal::types::{FractalParams, FractalType, PlaneTransform};
 use crate::fractal::perturbation::{
     compute_perturbation_precision_bits, effective_pixel_size, log2_zoom,
 };
+use crate::fractal::perturbation::compress::compress_enabled;
 use crate::fractal::perturbation::delta::pixel_size_exp_threshold;
 use crate::render::escape_time::{should_use_gmp_reference, should_use_perturbation};
 
@@ -54,6 +58,32 @@ pub enum Algorithm {
     Perturbation,
     /// GMP complet par pixel (garde-fou / types non perturbés profonds).
     ReferenceGmp,
+}
+
+/// Device d'exécution du rendu. La sélection d'algorithme en dépend (le seuil
+/// d'activation perturbation GPU f32 est ~1e5 vs ~1e12 CPU f64). Aujourd'hui le
+/// device est un INPUT (le caller `--gpu`/GUI choisit) ; l'auto-sélection par
+/// benchmark machine est le jalon G9.5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Device {
+    Cpu,
+    Gpu,
+}
+
+/// Variantes d'accélération du path perturbation CPU f64 — partie **statique**
+/// (paramètres de frame + gates env) des prédicats de routage. Les conditions
+/// dépendantes de l'orbite construite (réf compressée présente, `cycle_period`,
+/// `phase_offset`, longueur) restent dans `delta.rs::{compressed_ref_route_
+/// active, harmonic_route_active}`, qui composent CE prédicat — source unique,
+/// pas de drift possible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Variants {
+    /// Lecture de la référence via le décompresseur à waypoints
+    /// (`FRACTALL_COMPRESS_REF=1`, G8.2 phase 2).
+    pub compression: bool,
+    /// Table Harmonic LA au lieu de la BLA mat2 (`FRACTALL_HARMONIC_LA`,
+    /// prototype G8.2 — routage wisdom = jalon G9.3).
+    pub harmonic: Option<HarmonicVariant>,
 }
 
 /// Tier numérique de la boucle pixel perturbation. Analogue du type numérique
@@ -92,10 +122,14 @@ impl NumberTier {
 /// aucun rendu (les call-sites consomment [`number_tier`]/[`dd_requested`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WisdomPlan {
+    /// Device d'exécution (INPUT du plan aujourd'hui, cf. [`Device`]).
+    pub device: Device,
     pub algorithm: Algorithm,
     /// Tier numérique perturbation, `None` si le path bytecode ne s'applique pas
     /// (type non compilable, multi-phase, `--no-bytecode`) ou hors perturbation.
     pub tier: Option<NumberTier>,
+    /// Variantes d'accélération actives (partie statique, cf. [`Variants`]).
+    pub variants: Variants,
     /// `pixel_spacing` effectif en espace-c (HP-aware ; peut être dénormal).
     pub pixel_size: f64,
     /// `~log2(zoom)` = exposant binaire requis (magnitude). `None` si dégénéré.
@@ -174,26 +208,47 @@ fn required_precision_bits(params: &FractalParams) -> u32 {
     diag.log2().ceil() as u32
 }
 
-/// Sélectionne l'algorithme escape-time (Auto). Compose les gardes existantes
-/// `should_use_perturbation`/`should_use_gmp_reference` — même ordre que le
-/// dispatcher (`render/escape_time.rs`) : perturbation d'abord, puis GMP, sinon
-/// f64. Les types spéciaux (non escape-time) ne passent pas par ici.
-fn select_algorithm(params: &FractalParams) -> Algorithm {
+/// La famille escape-time que le dispatcher unique route en perturbation.
+/// Multibrot est volontairement exclu : `should_use_perturbation` l'accepte
+/// mais le dispatcher CLI/GUI ne l'a jamais routé en perturbation (bytecode
+/// f64/GMP, cf. table des types CLAUDE.md).
+#[inline]
+pub fn perturbation_family(t: FractalType) -> bool {
+    matches!(
+        t,
+        FractalType::Mandelbrot
+            | FractalType::Julia
+            | FractalType::BurningShip
+            | FractalType::Tricorn
+    )
+}
+
+/// Sélectionne l'algorithme escape-time pour un device donné. **Source unique
+/// consommée par les dispatchers** (G9.1) : `render/escape_time.rs` (CPU),
+/// `GpuRenderer::render_dispatch` (GPU, seuil perturbation f32 ~1e5) et les
+/// labels/passes GUI. Ordre Auto : perturbation d'abord, puis GMP, sinon f64.
+/// Les types spéciaux (densité, vectoriel, Lyapunov…) ne passent pas par ici.
+pub fn select_algorithm(params: &FractalParams, device: Device) -> Algorithm {
     use crate::fractal::types::AlgorithmMode;
-    // Perturbation forcée incompatible plane_transform ≠ Mu → fallback (miroir
-    // exact de `render/escape_time.rs`). En Auto, `should_use_perturbation`
-    // retourne déjà false pour un plane ≠ Mu, donc pas de garde ici.
-    if params.plane_transform != PlaneTransform::Mu
-        && params.algorithm_mode == AlgorithmMode::Perturbation
-    {
-        return if params.use_gmp { Algorithm::ReferenceGmp } else { Algorithm::StandardF64 };
-    }
+    // Perturbation viable : famille escape-time supportée + plan Mu (le delta
+    // ne commute pas avec les transformations de plan). Miroir exact de l'ancien
+    // inline du dispatcher CPU.
+    let perturbation_viable = perturbation_family(params.fractal_type)
+        && params.plane_transform == PlaneTransform::Mu;
     match params.algorithm_mode {
         AlgorithmMode::ReferenceGmp => Algorithm::ReferenceGmp,
         AlgorithmMode::StandardF64 => Algorithm::StandardF64,
-        AlgorithmMode::Perturbation => Algorithm::Perturbation,
+        AlgorithmMode::Perturbation => {
+            if perturbation_viable {
+                Algorithm::Perturbation
+            } else if params.use_gmp {
+                Algorithm::ReferenceGmp
+            } else {
+                Algorithm::StandardF64
+            }
+        }
         AlgorithmMode::Auto => {
-            if should_use_perturbation(params, false) {
+            if perturbation_viable && should_use_perturbation(params, device == Device::Gpu) {
                 Algorithm::Perturbation
             } else if should_use_gmp_reference(params) {
                 Algorithm::ReferenceGmp
@@ -204,20 +259,71 @@ fn select_algorithm(params: &FractalParams) -> Algorithm {
     }
 }
 
-/// Calcule le [`WisdomPlan`] complet pour une frame — algorithme, tier et les
-/// grandeurs F3 (exposant/précision requis, précision GMP orbite). Descriptif :
-/// aucun effet de bord sur le rendu.
-pub fn plan(params: &FractalParams) -> WisdomPlan {
-    let algorithm = select_algorithm(params);
-    // Le tier n'a de sens qu'en perturbation.
-    let tier = if algorithm == Algorithm::Perturbation {
-        number_tier(params)
+/// Variantes d'accélération actives pour cette frame — partie **statique** des
+/// prédicats de routage (gates env + type + tier + flags de coloring). Les
+/// conditions dépendantes de l'orbite (réf compressée construite,
+/// `cycle_period`, `phase_offset`, longueur) sont composées par-dessus dans
+/// `delta.rs`. Fast-path Mandelbrot f64 pur uniquement (cf. doc des prédicats).
+pub fn variants(params: &FractalParams) -> Variants {
+    let compress_gate = compress_enabled();
+    let harmonic_gate = harmonic_variant();
+    // ⚠️ Hot path : ce prédicat est appelé PAR PIXEL (via `try_bytecode_
+    // unified_path` → `{compressed_ref,harmonic}_route_active`). Sans gate
+    // posé (cas nominal), sortir AVANT le calcul d'éligibilité — `number_tier`
+    // recompile la formule et `effective_pixel_size` peut parser les spans HP,
+    // coût mesurable ×pixels (geomean quick 0.223→0.269 sans ce short-circuit).
+    if !compress_gate && harmonic_gate.is_none() {
+        return Variants::default();
+    }
+    if compress_gate && harmonic_gate.is_some() {
+        static WARNED: OnceLock<()> = OnceLock::new();
+        WARNED.get_or_init(|| {
+            eprintln!(
+                "[HARMONIC] FRACTALL_COMPRESS_REF actif — Harmonic MLA sauté \
+                 (la table et la queue directe lisent z_ref_f64 plein)"
+            );
+        });
+    }
+    let eligible = matches!(params.fractal_type, FractalType::Mandelbrot)
+        && !params.enable_orbit_traps
+        && !params.enable_distance_estimation
+        && !params.enable_interior_detection
+        && number_tier(params) == Some(NumberTier::F64);
+    if !eligible {
+        return Variants::default();
+    }
+    let harmonic = if !compress_gate && params.seed.re == 0.0 && params.seed.im == 0.0 {
+        harmonic_gate
     } else {
         None
     };
+    Variants { compression: compress_gate, harmonic }
+}
+
+/// Calcule le [`WisdomPlan`] complet pour une frame CPU (device par défaut des
+/// paths de rendu actuels). Cf. [`plan_for`].
+pub fn plan(params: &FractalParams) -> WisdomPlan {
+    plan_for(params, Device::Cpu)
+}
+
+/// Calcule le [`WisdomPlan`] complet pour une frame sur un device donné —
+/// device, algorithme, tier, variantes et les grandeurs F3 (exposant/précision
+/// requis, précision GMP orbite). Descriptif : aucun effet de bord sur le rendu
+/// (les dispatchers consomment [`select_algorithm`]/[`number_tier`]/[`variants`]).
+pub fn plan_for(params: &FractalParams, device: Device) -> WisdomPlan {
+    let algorithm = select_algorithm(params, device);
+    // Tier et variantes n'ont de sens que sur le path perturbation CPU (le
+    // kernel GPU est f32, sans compression ni harmonic).
+    let (tier, variants) = if algorithm == Algorithm::Perturbation && device == Device::Cpu {
+        (number_tier(params), variants(params))
+    } else {
+        (None, Variants::default())
+    };
     WisdomPlan {
+        device,
         algorithm,
         tier,
+        variants,
         pixel_size: effective_pixel_size(params),
         required_exponent: log2_zoom(params),
         required_precision: required_precision_bits(params),
@@ -233,11 +339,19 @@ pub fn log_plan_if_enabled(params: &FractalParams) {
     }
     let p = plan(params);
     let tier = p.tier.map(|t| t.path_label()).unwrap_or("legacy");
+    let variants = match (p.variants.compression, p.variants.harmonic) {
+        (true, _) => "compress",
+        (false, Some(HarmonicVariant::Lla)) => "harmonic_lla",
+        (false, Some(HarmonicVariant::Mla)) => "harmonic_mla",
+        (false, None) => "bla",
+    };
     eprintln!(
-        "[WISDOM] type={:?} algo={:?} tier={} req_exp={} req_prec={}b tier_mantissa={}b ref_prec={}b pixel_size={:.3e}",
+        "[WISDOM] type={:?} device={:?} algo={:?} tier={} variants={} req_exp={} req_prec={}b tier_mantissa={}b ref_prec={}b pixel_size={:.3e}",
         params.fractal_type,
+        p.device,
         p.algorithm,
         tier,
+        variants,
         p.required_exponent.map(|e| format!("{:.1}", e)).unwrap_or_else(|| "-".into()),
         p.required_precision,
         p.tier.map(|t| t.mantissa_bits()).unwrap_or(0),
@@ -316,6 +430,40 @@ mod tests {
         let mut p = frame(1e3);
         p.algorithm_mode = AlgorithmMode::ReferenceGmp;
         assert_eq!(plan(&p).algorithm, Algorithm::ReferenceGmp);
+    }
+
+    #[test]
+    fn gpu_device_lowers_perturbation_threshold() {
+        // Même frame 1e8 : CPU (seuil ~1e12) → f64 ; GPU f32 (seuil ~1e5) →
+        // perturbation. C'est l'ancien `use_perturbation` inline de
+        // `render_dispatch`, désormais servi par la même fonction wisdom.
+        let p = frame(1e8);
+        assert_eq!(select_algorithm(&p, Device::Cpu), Algorithm::StandardF64);
+        assert_eq!(select_algorithm(&p, Device::Gpu), Algorithm::Perturbation);
+        assert_eq!(plan_for(&p, Device::Gpu).device, Device::Gpu);
+        // Le tier/variantes ne s'appliquent qu'au path perturbation CPU.
+        assert_eq!(plan_for(&p, Device::Gpu).tier, None);
+    }
+
+    #[test]
+    fn forced_perturbation_falls_back_outside_family() {
+        // Mode Perturbation forcé sur un type hors famille escape-time
+        // perturbation → fallback f64/GMP (miroir du dispatcher historique).
+        let mut p = frame(1e14);
+        p.fractal_type = FractalType::Newton;
+        p.algorithm_mode = AlgorithmMode::Perturbation;
+        assert_eq!(select_algorithm(&p, Device::Cpu), Algorithm::StandardF64);
+        p.use_gmp = true;
+        assert_eq!(select_algorithm(&p, Device::Cpu), Algorithm::ReferenceGmp);
+    }
+
+    #[test]
+    fn variants_inactive_without_env_gates() {
+        // Sans FRACTALL_COMPRESS_REF / FRACTALL_HARMONIC_LA, aucune variante —
+        // et le plan les rapporte à défaut (BLA mat2).
+        let p = frame(1e14);
+        assert_eq!(variants(&p), Variants::default());
+        assert_eq!(plan(&p).variants, Variants::default());
     }
 
     #[test]

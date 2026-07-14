@@ -5,8 +5,9 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 use rug::Float;
 
-use crate::fractal::{AlgorithmMode, FractalParams, FractalResult, FractalType, OutColoringMode, PlaneTransform};
+use crate::fractal::{FractalParams, FractalResult, FractalType, OutColoringMode, PlaneTransform};
 use crate::fractal::iterations::iterate_point;
+use crate::fractal::wisdom;
 use crate::fractal::orbit_traps::OrbitData;
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
 use crate::fractal::{render_von_koch, render_dragon};
@@ -217,43 +218,22 @@ pub fn render_escape_time_cancellable_with_reuse(
         _ => {}
     }
 
-    if matches!(
-        params.fractal_type,
-        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn
-    ) {
-        // Perturbation ne supporte pas les transformations de plan.
-        // Si forcé, fallback sur standard (f64 ou GMP suivant use_gmp).
-        if params.plane_transform != PlaneTransform::Mu
-            && params.algorithm_mode == AlgorithmMode::Perturbation
-        {
-            let reuse = build_reuse(params, reuse);
-            if params.use_gmp {
-                return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse);
-            }
-            return render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse);
-        }
-        match params.algorithm_mode {
-            AlgorithmMode::ReferenceGmp => {
-                let reuse = build_reuse(params, reuse);
-                return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse);
-            }
-            AlgorithmMode::StandardF64 => {
-                let reuse = build_reuse(params, reuse);
-                return render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse);
-            }
-            AlgorithmMode::Perturbation => {
+    if wisdom::perturbation_family(params.fractal_type) {
+        // Sélection wisdom (source UNIQUE, G9.1) : le plan est l'INPUT du
+        // dispatcher — la même fonction est consommée par le dispatch GPU
+        // (`GpuRenderer::render_dispatch`, device Gpu) et les labels/passes
+        // GUI. Couvre les modes forcés, le fallback plane_transform ≠ Mu et
+        // l'Auto (perturbation > ~1e12, GMP > 1e16, sinon f64).
+        match wisdom::select_algorithm(params, wisdom::Device::Cpu) {
+            wisdom::Algorithm::Perturbation => {
                 return run_perturbation(reuse);
             }
-            AlgorithmMode::Auto => {
-                // Auto mode dispatch for cancellable version:
-                // Use perturbation for moderate to deep zooms (10^13 to 10^15)
-                if should_use_perturbation(params, false) {
-                    return run_perturbation(reuse);
-                }
+            wisdom::Algorithm::ReferenceGmp => {
                 let reuse = build_reuse(params, reuse);
-                if should_use_gmp_reference(params) {
-                    return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse);
-                }
+                return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse);
+            }
+            wisdom::Algorithm::StandardF64 => {
+                let reuse = build_reuse(params, reuse);
                 return render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse);
             }
         }

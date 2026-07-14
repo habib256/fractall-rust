@@ -445,29 +445,21 @@ pub fn bytecode_path_label(params: &FractalParams) -> Option<&'static str> {
 /// compress`) — les deux DOIVENT rester cohérents : si le strip fire, chaque
 /// pixel doit passer par le décompresseur (les tableaux sont vides).
 ///
-/// Conditions (fast-path Mandelbrot f64 pur uniquement) :
-/// - gate env + réf compressée construite (Mandelbrot seed=0, orbite GMP) ;
-/// - tier wisdom == F64 (PAS exp — lit `z_ref` ComplexExp ; PAS dd — lit
-///   `z_ref_dd`) ; couvre `use_bytecode_engine`, formule single-phase,
-///   `pixel_size > 0` ;
+/// Conditions statiques (gate env, Mandelbrot, tier wisdom F64 — qui couvre
+/// `use_bytecode_engine`, formule single-phase, `pixel_size > 0` —, pas de
+/// distance/interior/orbit_traps) : **`wisdom::variants`** (source unique,
+/// G9.1). S'y ajoutent les conditions dépendantes de l'orbite construite :
+/// - réf compressée construite (Mandelbrot seed=0, orbite GMP) ;
 /// - `cycle_period == 0` (pas de wrap_periodic Brent — accès aléatoire) ;
-/// - pas de distance/interior/orbit_traps (autres variantes de boucle, qui
-///   lisent le tableau) ;
 /// - `phase_offset == 0` (pas de phase hybride — indexation décalée).
 pub(crate) fn compressed_ref_route_active(
     params: &FractalParams,
     orbit: &ReferenceOrbit,
 ) -> bool {
-    crate::fractal::perturbation::compress::compress_enabled()
-        && matches!(params.fractal_type, FractalType::Mandelbrot)
+    crate::fractal::wisdom::variants(params).compression
         && orbit.compressed_f64.as_ref().is_some_and(|c| c.len >= 2)
         && orbit.cycle_period == 0
         && orbit.phase_offset == 0
-        && !params.enable_orbit_traps
-        && !params.enable_distance_estimation
-        && !params.enable_interior_detection
-        && crate::fractal::wisdom::number_tier(params)
-            == Some(crate::fractal::wisdom::NumberTier::F64)
 }
 
 /// Le routage **Harmonic LA** (prototype G8.2, `FRACTALL_HARMONIC_LA` :
@@ -477,45 +469,19 @@ pub(crate) fn compressed_ref_route_active(
 /// commun aux deux variantes) et le label perf (`mod.rs`,
 /// `path=bytecode_f64_harmonic_{lla,mla}`).
 ///
-/// Conditions (fast-path Mandelbrot f64 pur uniquement) :
-/// - gate env `FRACTALL_HARMONIC_LA=1` ;
-/// - Mandelbrot seed=0 (la table suppose `Z[0]=0`, orbite critique) ;
-/// - `FRACTALL_COMPRESS_REF` INACTIF : la table ET la queue directe lisent
-///   `z_ref_f64` PLEIN (le strip compressé le libère) — si les deux gates
-///   sont posés, harmonic est sauté avec un avertissement une-fois ;
-/// - tier wisdom == F64 (couvre `use_bytecode_engine`, formule single-phase,
-///   `pixel_size > 0`) ;
+/// Conditions statiques (gate env `FRACTALL_HARMONIC_LA`, Mandelbrot seed=0 —
+/// la table suppose `Z[0]=0`, orbite critique —, `FRACTALL_COMPRESS_REF`
+/// INACTIF avec avertissement une-fois si les deux gates sont posés, tier
+/// wisdom F64, pas de distance/interior/orbit_traps) : **`wisdom::variants`**
+/// (source unique, G9.1). S'y ajoutent les conditions dépendantes de l'orbite :
 /// - `cycle_period == 0` (pas de wrap_periodic Brent) et `phase_offset == 0` ;
-/// - pas de distance/interior/orbit_traps (autres variantes de boucle) ;
 /// - orbite ≥ 9 entrées (`referenceLength ≥ 8`, mirror Imagina `Prepare`) —
 ///   garantit que le build de table réussit quand le routage est actif.
 pub(crate) fn harmonic_route_active(params: &FractalParams, orbit: &ReferenceOrbit) -> bool {
-    if !crate::fractal::bytecode::harmonic_mla::harmonic_enabled() {
-        return false;
-    }
-    if !matches!(params.fractal_type, FractalType::Mandelbrot) {
-        return false;
-    }
-    if crate::fractal::perturbation::compress::compress_enabled() {
-        static WARNED: OnceLock<()> = OnceLock::new();
-        WARNED.get_or_init(|| {
-            eprintln!(
-                "[HARMONIC] FRACTALL_COMPRESS_REF actif — Harmonic MLA sauté \
-                 (la table et la queue directe lisent z_ref_f64 plein)"
-            );
-        });
-        return false;
-    }
-    params.seed.re == 0.0
-        && params.seed.im == 0.0
+    crate::fractal::wisdom::variants(params).harmonic.is_some()
         && orbit.cycle_period == 0
         && orbit.phase_offset == 0
         && orbit.z_ref_f64.len() >= 9
-        && !params.enable_orbit_traps
-        && !params.enable_distance_estimation
-        && !params.enable_interior_detection
-        && crate::fractal::wisdom::number_tier(params)
-            == Some(crate::fractal::wisdom::NumberTier::F64)
 }
 
 fn try_bytecode_unified_path(

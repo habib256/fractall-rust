@@ -1610,12 +1610,19 @@ pas un flag `--gpu` opt-in.
   « viabilité mantisse » qui manque au wisdom.
 
 Jalons (chacun ≈ 1-2 itérations /improve, ordre suggéré) :
-- [ ] **9.1 — Wisdom = planificateur UNIQUE** : étendre `WisdomPlan` à
-  `{device (Cpu|Gpu), algorithme (StandardF64|Perturbation|Gmp), tier,
-  variantes (bla|harmonic, compression on/off)}` ; le dispatcher CPU ET
-  `render_dispatch` GPU consomment LE MÊME plan (aujourd'hui : sélection
-  éclatée entre `should_use_perturbation`, caller `--gpu`, env gates).
-  Invariant CLAUDE.md préservé : UN dispatcher, le plan est un INPUT.
+- [x] **9.1 — Wisdom = planificateur UNIQUE** `[✅ 2026-07-15]` : `WisdomPlan`
+  étendu à `{device (Cpu|Gpu), algorithme, tier, variantes (compression,
+  harmonic)}`. `wisdom::select_algorithm(params, device)` est LA source de la
+  sélection d'algorithme, consommée par le dispatcher CPU (`render/escape_
+  time.rs`), `render_dispatch` GPU (seuil pert f32 ~1e5 via `Device::Gpu`),
+  et les 3 sites GUI exacts-équivalents (`effective_cpu_mode` + 2×
+  `will_use_perturbation`). `wisdom::variants(params)` porte la partie
+  STATIQUE des prédicats de routage compression/harmonic ; `delta.rs::
+  {compressed_ref,harmonic}_route_active` la composent avec les conditions
+  orbite (plus de duplication env-gate). Comportement strictement préservé
+  (227 unit + goldens + QA 15/15 PASS + quick 0 gap) ; `[WISDOM]` logue
+  désormais `device=… variants=…`. Reste hors périmètre 9.1 : `effective_
+  algorithm_mode` GUI (forme délibérée sans GMP, stats display).
 - [ ] **9.2 — Benchmarks machine persistés (F3 wisdom.cc-style)** :
   micro-bench ns/iter par (device × tier) au premier run (ou `fractall-cli
   --wisdom-bench`), persisté en TOML par machine (comme F3), consommé par le

@@ -237,10 +237,6 @@ pub fn harmonic_variant() -> Option<HarmonicVariant> {
     })
 }
 
-pub fn harmonic_enabled() -> bool {
-    harmonic_variant().is_some()
-}
-
 /// Construit la table depuis l'orbite brute f64. Mirror de `Prepare`
 /// (HarmonicMLA.cpp:10-21) : `None` si l'orbite est trop courte
 /// (`referenceLength < 8`, avec `referenceLength = len-1` — leur

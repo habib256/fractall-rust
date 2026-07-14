@@ -470,12 +470,11 @@ impl GpuRenderer {
         reuse: Option<(&[u32], &[Complex64], u32, u32)>,
         orbit_cache: Option<&Arc<ReferenceOrbitCache>>,
     ) -> Option<GpuDispatchResult> {
-        use crate::fractal::{AlgorithmMode, PlaneTransform};
-        let use_perturbation = match params.algorithm_mode {
-            AlgorithmMode::Auto => crate::render::escape_time::should_use_perturbation(params, true),
-            AlgorithmMode::Perturbation => true,
-            _ => false,
-        } && params.plane_transform == PlaneTransform::Mu;
+        use crate::fractal::wisdom;
+        // Sélection wisdom (source unique, G9.1) — device Gpu : seuil
+        // d'activation perturbation f32 (~1e5) au lieu du seuil CPU (~1e12).
+        let use_perturbation = wisdom::select_algorithm(params, wisdom::Device::Gpu)
+            == wisdom::Algorithm::Perturbation;
 
         let std_result = |r: Option<(Vec<u32>, Vec<Complex64>)>| {
             r.map(|(iterations, zs)| GpuDispatchResult {
