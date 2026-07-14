@@ -1073,10 +1073,20 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     sur e30/e50 : leur δ (1e-30/1e-50) + forte amplification effondrent les rayons
     mergés → surtout des pas directs (inhérent, comme F3 float128 à zoom modéré).
     Verrous : tests `bla_dd` (single/merge vs f64 BLA, table+lookup).
-  - [ ] **Tuning perf dd-BLA** : l'epsilon 2⁻¹⁰⁶ (précision max) restreint la BLA.
-    Un epsilon adaptatif = précision *nécessaire* (fonction de δ/sensibilité, pas
-    du type) élargirait le skip là où < 106 b suffit → plus rapide sans casser le
-    max_diff. Lié au wisdom ci-dessous.
+  - [x] **✅ Tuning perf dd-BLA (2026-07-15)** : epsilon **2⁻¹⁰⁶ → 2⁻⁸⁰**
+    (constante calibrée, pas d'adaptatif). Fondement : l'erreur relative par
+    saut accepté est ~ε/2 quelle que soit sa longueur (δ² droppé borné par
+    r = ε·|Z|) → 2⁻⁸⁰ reste ≫ sous le bruit f64 (2⁻⁵²) qui motive le tier dd,
+    en élargissant les rayons ×2²⁶. Bissection QA (presets dd 96², max_diff
+    vs GMP) : 2⁻⁸⁰/2⁻⁷² exacts partout, **2⁻⁶⁴ casse e30 (max_diff=14)** →
+    2⁻⁸⁰ = 16 bits de marge sous la falaise observée (falaise DÉPENDANTE du
+    cas → pas de constante plus lâche sans nouveau verrou). Gains :
+    **e50 18.7→8.0 s (~2.3×)**, e100 744→505 ms (1.5×), e30 ~neutre (bruit),
+    presets peu profonds inchangés (δ relatif au-dessus des rayons avant
+    comme après). Suite 15/15 PASS max_diff=0 (le preset e30 EST le verrou
+    anti-ε-lâche, prouvé par la bissection). L'epsilon ADAPTATIF (par
+    δ/sensibilité) reste ouvert mais bloqué par le même mur que l'auto-
+    dispatch dd : pas de détecteur de sensibilité cheap fiable (cbits réfuté).
   - [x] **✅ Échelle wisdom (module `fractal/wisdom.rs`, 2026-07-12)**. Source
     UNIQUE de la sélection de tier numérique (`number_tier` : dd demandé > exp
     > f64), consommée par `bytecode_path_label` ET `try_bytecode_unified_path`
@@ -1510,9 +1520,17 @@ Actions candidates pour la boucle (ordre suggéré) :
       direct pour TOUT le reste du segment — un mini-étage en pas 2^k
       pourrait combler) ; généralisation Mat2 (non-conforme) + tier exp
       seulement si un cas gagnant net apparaît.
-  - [ ] **Micro-A/B** (une itération) : chaînage des sauts BLA avant le check
-    de rebase (style MipLA) ; chebyshev vs norm_sqr sur la validité BLA.
-    Mesure standard-tier, revert si neutre.
+  - [x] **Micro-A/B — ADJUGÉ (2026-07-15)** : (a) chaînage des sauts BLA =
+    **déjà livré** (`2365da9`, cache tête-de-boucle −4.5 % phase pixels : les
+    sauts s'enchaînent via `continue` sans rebase check intermédiaire, lookup
+    démarrant au niveau aligné max via `trailing_zeros`) ; (b) chebyshev vs
+    norm_sqr sur la validité BLA = **no-go par analyse** : à check égal la
+    norme est déjà cachée (aucun gain de vitesse propre) ; mixer cheb|δ| avec
+    nos rayons euclidiens (dérivation F3 blaR2) ÉLARGIT l'acceptation hors de
+    la borne d'erreur (cheb ≤ euclid) = improvisation contre F3-source-de-
+    vérité ; le faire proprement = re-dériver tout le build mat2 en métrique
+    chebyshev (normes d'opérateur incluses) — pas un micro-A/B, ROI attendu
+    faible (pixel loop memory-bound, cf. G2).
 - [x] **✅ Cross-check ground truth indépendant (2026-07-14)** :
   `scripts/independent_probe.py` — mpmath pur-Python (zéro GMP/MPFR/rug),
   réplique exactement mapping pixel→c + boucle escape des 7 familles QA, lit

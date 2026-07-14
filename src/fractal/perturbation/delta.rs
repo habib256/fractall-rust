@@ -162,15 +162,23 @@ fn build_bla_entry(
         params.bla_threshold,
     )?;
     // Table BLA dd (tier dd Mandelbrot) : coefficients ~106 b depuis l'orbite dd.
-    // **Epsilon = 2⁻¹⁰⁶** (epsilon machine du dd), PAS `bla_threshold` (2⁻²⁴,
-    // tuné f32) : avec 2⁻²⁴ la BLA introduirait une erreur ~24 b qui masquerait
-    // la précision dd. Avec 2⁻¹⁰⁶ la BLA ne skippe que là où δ est assez petit
-    // pour préserver la précision.
+    // **Epsilon = 2⁻⁸⁰** (calibré empiriquement 2026-07-15, ex-2⁻¹⁰⁶), PAS
+    // `bla_threshold` (2⁻²⁴, tuné f32) : avec 2⁻²⁴ la BLA introduirait une
+    // erreur ~24 b qui masquerait la précision dd (div_ratio au plancher f64,
+    // cf. TODO G-dd). L'erreur relative par saut accepté est ~ε/2 quelle que
+    // soit sa longueur (le terme δ² droppé est borné par le rayon r = ε·|Z|) ;
+    // 2⁻⁸⁰ reste ≫ sous le bruit f64 (2⁻⁵²) qui motive le tier dd, tout en
+    // élargissant les rayons de 2²⁶ vs l'epsilon machine dd. Bissection QA
+    // (presets dd 96², max_diff vs GMP pur) : 2⁻¹⁰⁶/2⁻⁸⁰/2⁻⁷² exacts partout,
+    // **2⁻⁶⁴ casse e30 (max_diff=14)** → 2⁻⁸⁰ = 16 bits de marge sous la
+    // falaise observée. Gains : e100 744→500 ms, e30 4.8→4.1 s ; presets
+    // peu profonds (seahorse/misiurewicz/minibrot) inchangés (leurs δ
+    // relatifs restent au-dessus des rayons, avant comme après).
     let dd_table = if params.use_dd_tier
         && matches!(params.fractal_type, FractalType::Mandelbrot)
         && ref_orbit.has_dd()
     {
-        const DD_BLA_EPSILON: f64 = 1.232_595_164_407_831e-32; // 2^-106
+        const DD_BLA_EPSILON: f64 = 8.271_806_125_530_277e-25; // 2^-80
         Some(crate::fractal::bytecode::bla_dd::BlaTableDd::build_mandelbrot(
             &ref_orbit.z_ref_dd,
             c_norm,
