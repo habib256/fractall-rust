@@ -1814,6 +1814,31 @@ le wisdom n'est JAMAIS battu > 10 % par un plan alternatif (vitesse), et
 JAMAIS moins correct que le tier au-dessus (correction) — mesurable par un
 axe harness « wisdom-optimality » (sweep des plans sur un échantillon).
 
+- [~] **Axe `wisdom-optimality` LIVRÉ (2026-07-15, /improve)** :
+  `harness.py wisdom-optimality [--cases --size --runs]` chronométre le plan
+  CHOISI par le wisdom (`auto`) contre les plans forcés alternatifs sur la
+  dimension de routage active (harmonic vs BLA, `FRACTALL_HARMONIC_LA`), sur un
+  échantillon 2-régimes (période courte→LLA gagne / longue→BLA gagne). Verdicts :
+  **PASS** (dans 10 %), **FAIL** (plus lent À SORTIE IDENTIQUE = vrai gap),
+  **ADJUDICATE** (plus lent mais l'alternative rend une AUTRE image → tradeoff
+  correction possiblement voulu, vérifier vs GMP avant de recalibrer), avec
+  plancher de bruit 60 ms (rendus <200 ms non fiables sur machine chargée).
+  CPU-only, sans effet render. Rapport `bench/harness/wisdom-opt/`. Couvre la
+  moitié VITESSE du critère sur la dimension harmonic ; restent (a) les
+  dimensions tier (dd/exp, = 9.6) et device (= 9.5), (b) la moitié CORRECTION
+  (jamais moins correct que le tier au-dessus).
+  - **🔎 FINDING À ADJUGER (surfacé par l'axe 2026-07-15)** : sur les cas
+    long-période deep **e50 (3.48×), e113 (1.81×), dragon (1.14×)**, le wisdom
+    route BLA (period0>100) mais la LLA forcée est PLUS RAPIDE **avec une sortie
+    DIFFÉRENTE**. Hypothèse : le **fix epsilon 2⁻⁵³** (2026-07-15) a ralenti la
+    BLA f64 ~4× (e50 0.21→0.83 s) → il a pu INVALIDER la calibration harmonic
+    G9.3 (seuil `period0≤100`, établie contre l'ancienne BLA rapide) sur ces
+    cas. **À faire** : adjuger LLA vs BLA vs **GMP pur** sur e50/e113 (⚠️ lent :
+    GMP 96² > 2 min/cas à ~263 k iters) — si LLA est CORRECTE à ces profondeurs,
+    remonter le seuil `HARMONIC_AUTO_PERIOD0_MAX` ; si LLA est faster-but-wrong,
+    le wisdom a raison (BLA) et l'axe le confirme (verdict ADJUDICATE, pas FAIL).
+    Ne PAS recalibrer à l'aveugle. Verrou une fois tranché : golden e50 + seuil.
+
 ## ✅ Shipped (condensé, le plus récent en haut)
 
 **2026-07-11** (`/improve`, axe vitesse + infra harness) :
