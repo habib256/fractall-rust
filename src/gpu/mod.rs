@@ -91,7 +91,7 @@ pub struct GpuRenderer {
     pipeline_f64: Option<PipelinesF64>,
     pipeline_julia_f32: wgpu::ComputePipeline,
     pipeline_burning_ship_f32: wgpu::ComputePipeline,
-    pipeline_perturbation: wgpu::ComputePipeline,
+    pipeline_perturbation: Option<wgpu::ComputePipeline>,
     /// Pipeline bytecode unifié (P3.1 #7). Remplace les 3 shaders dupliqués
     /// mandelbrot_f32/julia_f32/burning_ship_f32 pour les types supportés
     /// par `bytecode::compile_formula`. Activé via `use_bytecode_engine`.
@@ -140,9 +140,17 @@ impl GpuRenderer {
             // et info.backend contient le backend (Metal)
             eprintln!("[GPU] {} ({:?})", info.name, info.backend);
 
-            // Ne plus utiliser f64 en mode GPU, toujours utiliser f32
-            let supports_f64 = false;
-            let required_features = wgpu::Features::empty();
+            // SHADER_F64 requis par le kernel perturbation (f64 natif — le
+            // double-float 2×f32 est non-sound sur la stack WGSL→SPIR-V,
+            // cf. perturbation.wgsl + `df64_gpu_probe`). Absent (ex. Metal) →
+            // pipeline perturbation non créée → fallback CPU. Les shaders
+            // std f32 restent inconditionnels.
+            let supports_f64 = adapter.features().contains(wgpu::Features::SHADER_F64);
+            let required_features = if supports_f64 {
+                wgpu::Features::SHADER_F64
+            } else {
+                wgpu::Features::empty()
+            };
 
             let (device, queue) = adapter
                 .request_device(&wgpu::DeviceDescriptor {
@@ -317,20 +325,25 @@ impl GpuRenderer {
                     immediate_size: 0,
                 });
 
-            let shader_perturb = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("perturbation-shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("perturbation.wgsl").into()),
-            });
-
-            let pipeline_perturbation =
-                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            // Kernel f64 natif : compilable uniquement avec SHADER_F64
+            // (sinon None → render_perturbation_with_cache renvoie None →
+            // fallback CPU via le dispatcher unique).
+            let pipeline_perturbation = if supports_f64 {
+                let shader_perturb = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("perturbation-shader"),
+                    source: wgpu::ShaderSource::Wgsl(include_str!("perturbation.wgsl").into()),
+                });
+                Some(device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                     label: Some("perturbation-pipeline"),
                     layout: Some(&pipeline_layout_perturb),
                     module: &shader_perturb,
                     entry_point: Some("main"),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                     cache: None,
-                });
+                }))
+            } else {
+                None
+            };
 
             // Pipeline bytecode unifié (P3.1 #7).
             // Layout : 3 bindings — uniform Params, storage out_pixels,
@@ -523,6 +536,11 @@ impl GpuRenderer {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return None;
         }
+        // Kernel f64 natif : sans SHADER_F64 (ex. Metal) la pipeline n'existe
+        // pas → fallback CPU via le dispatcher unique.
+        let Some(pipeline_perturbation) = self.pipeline_perturbation.as_ref() else {
+            return None;
+        };
         let supports = matches!(
             params.fractal_type,
             FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
@@ -564,7 +582,7 @@ impl GpuRenderer {
         } else {
             &cache.bla_table
         };
-        let bla_levels = if supports_bla {
+        let bla_levels = if supports_bla && !env_flag("FRACTALL_GPU_NO_BLA") {
             bla_table.num_levels().min(MAX_LEVELS)
         } else {
             0
@@ -583,23 +601,17 @@ impl GpuRenderer {
             level_lengths[idx] = bla_table.level_lengths[idx] as u32;
         }
         let flattened: Vec<BlaNode> = bla_table.nodes.iter().map(|node| BlaNode {
-            a_re: node.a.re as f32,
-            a_im: node.a.im as f32,
-            b_re: node.b.re as f32,
-            b_im: node.b.im as f32,
-            c_re: node.c.re as f32,
-            c_im: node.c.im as f32,
-            validity: node.validity_radius as f32,
+            a: [node.a.re, node.a.im],
+            b: [node.b.re, node.b.im],
+            c: [node.c.re, node.c.im],
+            validity: node.validity_radius,
             _pad: 0.0,
         }).collect();
 
         let z_ref_data: Vec<ZRef> = ref_orbit
             .z_ref_f64
             .iter()
-            .map(|z| ZRef {
-                re: z.re as f32,
-                im: z.im as f32,
-            })
+            .map(|z| ZRef { re: z.re, im: z.im })
             .collect();
 
         // Access the cache with interior mutability via Mutex.
@@ -621,10 +633,7 @@ impl GpuRenderer {
 
             // wgpu n'accepte pas les buffers de taille zéro dans un bind group
             let bla_contents: Vec<BlaNode> = if flattened.is_empty() {
-                vec![BlaNode {
-                    a_re: 0.0, a_im: 0.0, b_re: 0.0, b_im: 0.0, c_re: 0.0, c_im: 0.0,
-                    validity: 0.0, _pad: 0.0,
-                }]
+                vec![BlaNode::zeroed()]
             } else {
                 flattened
             };
@@ -659,9 +668,17 @@ impl GpuRenderer {
         let bla_buffer = &cached.bla_buffer;
         let meta_buffer = &cached.meta_buffer;
 
-        let iter_max = params
-            .iteration_max
-            .min(ref_orbit.z_ref_f64.len().saturating_sub(1) as u32);
+        // Kernel F3-strict : `m ≤ n < iter_max` exige que la référence couvre
+        // iteration_max (`ref_len-1 ≥ iter_max`). Référence tronquée (centre
+        // escape-time, période détectée, atom-domain) → fallback CPU, qui gère
+        // wrap périodique / rebase-at-end / per-pixel GMP. L'ancien clamp
+        // `iter_max = min(iter_max, ref_len-1)` faussait les comptes
+        // d'itération (les pixels tardifs devenaient "intérieurs").
+        let ref_len = ref_orbit.z_ref_f64.len() as u32;
+        if ref_len.saturating_sub(1) < params.iteration_max {
+            return None;
+        }
+        let iter_max = params.iteration_max;
 
         let width = params.width as usize;
         let height = params.height as usize;
@@ -754,36 +771,38 @@ impl GpuRenderer {
 
         let params_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("perturb-params"),
-            contents: bytemuck::bytes_of(&PerturbParams {
-                center_x: center_x as f32,
-                center_y: center_y as f32,
-                span_x: span_x as f32,
-                span_y: span_y as f32,
-                cref_x: ref_orbit.cref.re as f32,
-                cref_y: ref_orbit.cref.im as f32,
-                width: params.width,
-                height: params.height,
-                iter_max,
-                bailout: params.bailout as f32,
-                bla_levels: bla_levels as u32,
-                fractal_kind: match params.fractal_type {
-                    FractalType::Mandelbrot => 0,
-                    FractalType::Julia => 1,
-                    FractalType::BurningShip => 2,
-                    FractalType::Tricorn => 3,
-                    FractalType::TricornJulia => 4,
-                    _ => 0,
-                },
-                glitch_tolerance: {
-                    let pixel_size = span_x / params.width as f64;
-                    crate::fractal::perturbation::delta::compute_adaptive_glitch_tolerance(
-                        pixel_size,
-                        params.glitch_tolerance,
-                    ) as f32
-                },
-                series_order: params.series_order as u32,
-                series_threshold: params.series_threshold as f32,
-                _pad_align: 0,
+            contents: bytemuck::bytes_of(&{
+                let (offset_x_hi, offset_x_lo) = df_split(center_x - ref_orbit.cref.re);
+                let (offset_y_hi, offset_y_lo) = df_split(center_y - ref_orbit.cref.im);
+                let (span_x_hi, span_x_lo) = df_split(span_x);
+                let (span_y_hi, span_y_lo) = df_split(span_y);
+                PerturbParams {
+                    offset_x_hi,
+                    offset_x_lo,
+                    offset_y_hi,
+                    offset_y_lo,
+                    span_x_hi,
+                    span_x_lo,
+                    span_y_hi,
+                    span_y_lo,
+                    width: params.width,
+                    height: params.height,
+                    iter_max,
+                    bailout: params.bailout as f32,
+                    bla_levels: bla_levels as u32,
+                    fractal_kind: match params.fractal_type {
+                        FractalType::Mandelbrot => 0,
+                        FractalType::Julia => 1,
+                        FractalType::BurningShip => 2,
+                        _ => 0,
+                    },
+                    ref_len,
+                    series_order: params.series_order as u32,
+                    series_threshold: params.series_threshold as f32,
+                    _pad0: 0,
+                    _pad1: 0,
+                    _pad2: 0,
+                }
             }),
             usage: wgpu::BufferUsages::UNIFORM,
         });
@@ -840,7 +859,7 @@ impl GpuRenderer {
                 label: Some("perturb-pass"),
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&self.pipeline_perturbation);
+            pass.set_pipeline(pipeline_perturbation);
             pass.set_bind_group(0, &bind_group, &[]);
             let dispatch_x = (params.width + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
             let dispatch_y = (params.height + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
@@ -1784,24 +1803,34 @@ struct PixelOut {
     flags: u32,
 }
 
+/// Z de référence f64 natif (kernel SHADER_F64, layout vec2<f64>).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ZRef {
-    re: f32,
-    im: f32,
+    re: f64,
+    im: f64,
 }
 
+/// Split double-float d'un f64 : `hi` = arrondi f32, `lo` = résidu. Utilisé
+/// pour passer span/offset au kernel via l'uniform buffer (reconstruction
+/// `f64(hi)+f64(lo)`, évite les f64 en uniform).
+#[inline]
+fn df_split(v: f64) -> (f32, f32) {
+    let hi = v as f32;
+    let lo = (v - hi as f64) as f32;
+    (hi, lo)
+}
+
+/// Nœud BLA f64 natif — layout WGSL : vec2<f64> (align 16) ×3 + validity +
+/// pad = 64 octets.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct BlaNode {
-    a_re: f32,
-    a_im: f32,
-    b_re: f32,
-    b_im: f32,
-    c_re: f32,
-    c_im: f32,
-    validity: f32,
-    _pad: f32,
+    a: [f64; 2],
+    b: [f64; 2],
+    c: [f64; 2],
+    validity: f64,
+    _pad: f64,
 }
 
 #[repr(C)]
@@ -1815,22 +1844,28 @@ struct BlaMeta {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct PerturbParams {
-    center_x: f32,
-    center_y: f32,
-    span_x: f32,
-    span_y: f32,
-    cref_x: f32,
-    cref_y: f32,
+    /// Offset `center − cref` en df64, calculé en f64 côté host (soustraction
+    /// catastrophique en f32 : les deux sont O(1), la différence est minuscule).
+    offset_x_hi: f32,
+    offset_x_lo: f32,
+    offset_y_hi: f32,
+    offset_y_lo: f32,
+    span_x_hi: f32,
+    span_x_lo: f32,
+    span_y_hi: f32,
+    span_y_lo: f32,
     width: u32,
     height: u32,
     iter_max: u32,
     bailout: f32,
     bla_levels: u32,
     fractal_kind: u32,
-    glitch_tolerance: f32,
+    ref_len: u32,
     series_order: u32,
     series_threshold: f32,
-    _pad_align: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 struct ReuseData<'a> {

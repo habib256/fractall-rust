@@ -1,25 +1,63 @@
+// Kernel perturbation GPU — port F3-strict du pixel loop CPU en F64 NATIF.
+//
+// Sémantique alignée sur le chemin CPU (`bytecode/pixel_loop.rs::
+// iterate_pixel_unified_mandelbrot`, jugé par `fractall-quality gpu-suite`
+// contre le GMP pur) :
+// - Compteur d'itération `n` et index de référence `m` SÉPARÉS : le rebase
+//   remet `m := 0` mais préserve `n` (le kernel legacy confondait les deux —
+//   chaque rebase faussait le compte d'itérations).
+// - Rebasing F3 strict : après un pas direct, si `|Z[m]+δ|² < |δ|²` alors
+//   `δ := Z[m]+δ, m := 0`. Pas d'hystérésis, pas de glitch detection
+//   Pauldelbrot (remplacée par le rebasing proactif, cf. hybrid.cc:295-308).
+// - Garde anti-over-skip BLA : un saut l ≥ 2 dont le point d'arrivée
+//   `Z[m']+δ'` est déjà échappé est rejeté (single-step pour trouver
+//   l'itération d'évasion exacte, cf. pixel_loop.rs).
+// - Bailout en tête de boucle sur `|Z[m]+δ|²` (mêmes comptes que le CPU).
+//
+// Précision : f64 NATIF (SHADER_F64, requis — sans le feature le host
+// retombe sur le CPU). Le double-float 2×f32 (Dekker/two_sum) est IMPOSSIBLE
+// sur la stack WGSL→naga→SPIR-V actuelle : sans décorations NoContraction/
+// precise, `fma(a,b,-(a·b))` peut être évalué non-fusionné (→ 0) et les
+// transformations sans-erreur sont réassociées — mesuré sur RTX 4060 Ti
+// (NVIDIA) ET llvmpipe : le df64 s'effondre silencieusement en f32 en
+// contexte de boucle (div 0.067 vs GMP = stats f32 pures), alors que chaque
+// primitive isolée passe. Diagnostic reproductible : `cargo run --release
+// --bin df64_gpu_probe`. Revisiter 2×f32 (perf ~10× f64 NVIDIA) via
+// passthrough SPIR-V décoré — cf. TODO G9.4.
+//
+// La mantisse f32 seule (24 b) est insuffisante : p99 146-237 vs GMP sur
+// l'échelle seahorse (le kernel legacy ne tenait WARN qu'en re-rendant les
+// pixels flagués en GMP côté CPU).
+//
+// Le caller Rust garantit `ref_len-1 >= iter_max` (sinon fallback CPU), donc
+// `m <= n < iter_max <= ref_len-1` — pas de rebase-at-end nécessaire.
+// Le tier HDR (exposant par pixel, deep zoom > ~1e290) = TODO G9.4.
+
 struct Params {
-    center_x: f32,
-    center_y: f32,
-    span_x: f32,
-    span_y: f32,
-    cref_x: f32,
-    cref_y: f32,
+    // Offset centre-vue − centre-référence (center − cref) et span, en paires
+    // hi/lo f32 (reconstruction f64 exacte à 2^-48, suffisant pour le mapping
+    // pixel→c ; évite les f64 en uniform buffer). L'offset est calculé en f64
+    // côté host (soustraction catastrophique en f32).
+    offset_x_hi: f32,
+    offset_x_lo: f32,
+    offset_y_hi: f32,
+    offset_y_lo: f32,
+    span_x_hi: f32,
+    span_x_lo: f32,
+    span_y_hi: f32,
+    span_y_lo: f32,
     width: u32,
     height: u32,
     iter_max: u32,
     bailout: f32,
     bla_levels: u32,
     fractal_kind: u32,
-    glitch_tolerance: f32,
+    ref_len: u32,
     series_order: u32,
     series_threshold: f32,
     _pad0: u32,
-};
-
-struct ZRef {
-    re: f32,
-    im: f32,
+    _pad1: u32,
+    _pad2: u32,
 };
 
 struct PixelOut {
@@ -29,25 +67,16 @@ struct PixelOut {
     flags: u32,
 };
 
+// Nœud BLA conforme (f64 natif) : δ' = A·δ + B·dc + C·δ².
 struct BlaNode {
-    a_re: f32,
-    a_im: f32,
-    b_re: f32,
-    b_im: f32,
-    c_re: f32,
-    c_im: f32,
-    validity: f32,
-    _pad: f32,
+    a: vec2<f64>,
+    b: vec2<f64>,
+    c: vec2<f64>,
+    validity: f64,
+    _pad: f64,
 };
 
 const MAX_LEVELS: u32 = 17u;
-// Extended rescaling thresholds for better precision at deep zooms
-// FloatExp-style: keep mantissa in reasonable range while tracking scale separately
-const RESCALE_HI: f32 = 1.0e6;
-const RESCALE_LO: f32 = 1.0e-6;
-// ============================================================================
-
-// Adaptive glitch tolerance is pre-computed on CPU and passed via params.glitch_tolerance
 
 struct BlaMeta {
     level_offsets: array<u32, MAX_LEVELS>,
@@ -59,58 +88,19 @@ struct BlaMeta {
 @group(0) @binding(1) var<storage, read_write> out_pixels: array<PixelOut>;
 @group(0) @binding(2) var<storage, read> bla_meta: BlaMeta;
 @group(0) @binding(3) var<storage, read> bla_nodes: array<BlaNode>;
-@group(0) @binding(4) var<storage, read> z_ref: array<ZRef>;
+@group(0) @binding(4) var<storage, read> z_ref: array<vec2<f64>>;
 @group(0) @binding(5) var<storage, read> reuse_mask: array<u32>;
 
-// ============================================================================
-// Cache BLA en mémoire partagée (workgroup memory)
-// Réduit les accès à la mémoire globale pour les nœuds BLA fréquemment utilisés
-// ============================================================================
-
-const BLA_CACHE_SIZE: u32 = 256u;
-var<workgroup> shared_bla_cache: array<BlaNode, 256>;
-var<workgroup> bla_cache_base: u32;
-var<workgroup> bla_cache_level: u32;
-var<workgroup> bla_cache_valid: bool;
-
-// Charge les nœuds BLA dans le cache partagé
-// Appelé par chaque thread du workgroup, avec synchronisation via workgroupBarrier
-fn load_bla_cache(level: u32, base_n: u32, local_idx: u32) {
-    // Seuls les premiers BLA_CACHE_SIZE threads chargent les données
-    if (local_idx < BLA_CACHE_SIZE) {
-        let offset = bla_meta.level_offsets[level];
-        let len = bla_meta.level_lengths[level];
-        let load_idx = base_n + local_idx;
-        if (load_idx < len) {
-            shared_bla_cache[local_idx] = bla_nodes[offset + load_idx];
-        }
-    }
+fn cmul(a: vec2<f64>, b: vec2<f64>) -> vec2<f64> {
+    return vec2<f64>(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }
 
-// Récupère un nœud BLA depuis le cache ou la mémoire globale
-fn get_bla_node(level: u32, n: u32) -> BlaNode {
-    // Vérifier si le nœud est dans le cache
-    if (bla_cache_valid && level == bla_cache_level) {
-        let cache_idx = n - bla_cache_base;
-        if (cache_idx < BLA_CACHE_SIZE) {
-            return shared_bla_cache[cache_idx];
-        }
-    }
-    // Fallback: accès direct à la mémoire globale
-    let offset = bla_meta.level_offsets[level];
-    return bla_nodes[offset + n];
+fn norm_sqr(a: vec2<f64>) -> f64 {
+    return a.x * a.x + a.y * a.y;
 }
 
-// ============================================================================
-
-fn complex_mul(a_re: f32, a_im: f32, b_re: f32, b_im: f32) -> vec2<f32> {
-    return vec2<f32>(a_re * b_re - a_im * b_im, a_re * b_im + a_im * b_re);
-}
-
-// Stable computation of |c + d| - |c| avoiding catastrophic cancellation.
-// Inspired by rust-fractal-core's diff_abs() function.
-// Used for Burning Ship perturbation where we need the variation of |x|.
-fn diffabs(c: f32, d: f32) -> f32 {
+// |c + d| - |c| stable — perturbation Burning Ship (cf. delta_form.rs).
+fn diffabs(c: f64, d: f64) -> f64 {
     let cd = c + d;
     let c2d = 2.0 * c + d;
     if (c >= 0.0) {
@@ -128,107 +118,69 @@ fn diffabs(c: f32, d: f32) -> f32 {
     }
 }
 
-fn rescale_delta(re: f32, im: f32, scale: f32) -> vec3<f32> {
-    let abs_max = max(abs(re), abs(im));
-    // Fast path: no rescaling needed
-    if (abs_max <= RESCALE_HI && abs_max >= RESCALE_LO) {
-        return vec3<f32>(re, im, scale);
-    }
-    if (abs_max == 0.0) {
-        return vec3<f32>(re, im, scale);
-    }
+fn zref_at(m: u32) -> vec2<f64> {
+    // ⚠️ clamp CLAUDE.md : après un pas, m peut valoir ref_len.
+    return z_ref[min(m, params.ref_len - 1u)];
+}
 
-    var new_re = re;
-    var new_im = im;
-    var new_scale = scale;
-    let max_scale = 1.0e30;
-    let min_scale = 1.0e-30;
-
-    if (abs_max > RESCALE_HI && new_scale < max_scale) {
-        let k = floor(log2(abs_max / RESCALE_HI));
-        let factor = exp2(min(k, 20.0));
-        new_re = new_re / factor;
-        new_im = new_im / factor;
-        new_scale = min(new_scale * factor, max_scale);
-    } else if (abs_max < RESCALE_LO && new_scale > min_scale) {
-        let k = floor(log2(RESCALE_LO / abs_max));
-        let factor = exp2(min(k, 20.0));
-        new_re = new_re * factor;
-        new_im = new_im * factor;
-        new_scale = max(new_scale / factor, min_scale);
-    }
-    return vec3<f32>(new_re, new_im, new_scale);
+fn write_pixel(idx: u32, iter: u32, z: vec2<f64>) {
+    out_pixels[idx].iter = iter;
+    out_pixels[idx].z_re = f32(z.x);
+    out_pixels[idx].z_im = f32(z.y);
+    out_pixels[idx].flags = 0u;
 }
 
 @compute @workgroup_size(16, 16)
-fn main(
-    @builtin(global_invocation_id) gid: vec3<u32>,
-    @builtin(local_invocation_index) local_idx: u32
-) {
-    // Initialiser le cache BLA (niveau 0 par défaut)
-    // Tous les threads participent au chargement initial
-    if (params.bla_levels > 0u) {
-        if (local_idx == 0u) {
-            bla_cache_base = 0u;
-            bla_cache_level = 0u;
-            bla_cache_valid = true;
-        }
-        workgroupBarrier();
-        load_bla_cache(0u, 0u, local_idx);
-        workgroupBarrier();
-    } else {
-        if (local_idx == 0u) {
-            bla_cache_valid = false;
-        }
-        workgroupBarrier();
-    }
-
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x >= params.width || gid.y >= params.height) {
         return;
     }
-
     let idx = gid.y * params.width + gid.x;
-    // IMPORTANT: Si reuse_mask est rempli de 1 partout (reuse désactivé), cette vérification
-    // est toujours vraie et ne skip rien. Mais si le buffer n'est pas correctement initialisé,
-    // tous les pixels seraient skippés. Pour debug, on peut commenter cette ligne temporairement.
-    // En production, on garde cette vérification pour supporter le reuse quand activé.
+    // reuse_mask == 0 : pixel déjà rempli par la passe précédente (progressive).
     if (reuse_mask[idx] == 0u) {
         return;
     }
-    
-    // Calcul de la position du pixel en f32 standard
-    // IMPORTANT: Utiliser la même formule que le code CPU pour éviter les erreurs de précision:
-    // dc = (pixel_index/dimension - 0.5) * range
-    // Cette formule divise d'abord, puis multiplie, ce qui évite la perte de précision
-    // lors de la multiplication de grands nombres avec de très petits nombres aux zooms profonds
-    let pixel_size = params.span_x / f32(params.width);
-    let inv_width = 1.0 / f32(params.width);
-    let inv_height = 1.0 / f32(params.height);
-    let x_ratio = (f32(gid.x) + 0.5) * inv_width - 0.5;
-    let y_ratio = (f32(gid.y) + 0.5) * inv_height - 0.5;
-    let dc_re = x_ratio * params.span_x;
-    let dc_im = y_ratio * params.span_y;
+
+    // Mapping pixel→dc en f64 : ratio d'abord puis multiplication (même
+    // formule que le CPU), span/offset reconstruits depuis les paires hi/lo.
+    let span_x = f64(params.span_x_hi) + f64(params.span_x_lo);
+    let span_y = f64(params.span_y_hi) + f64(params.span_y_lo);
+    let offset_x = f64(params.offset_x_hi) + f64(params.offset_x_lo);
+    let offset_y = f64(params.offset_y_hi) + f64(params.offset_y_lo);
+    let x_ratio = (f64(gid.x) + 0.5) / f64(params.width) - 0.5;
+    let y_ratio = (f64(gid.y) + 0.5) / f64(params.height) - 0.5;
+    let dc = vec2<f64>(x_ratio * span_x + offset_x, y_ratio * span_y + offset_y);
 
     let is_julia = params.fractal_kind == 1u;
     let is_burning_ship = params.fractal_kind == 2u;
-    let is_tricorn = params.fractal_kind == 3u;
-    let is_tricorn_julia = params.fractal_kind == 4u;
-    var delta_re = select(0.0, dc_re, is_julia);
-    var delta_im = select(0.0, dc_im, is_julia);
-    var delta_scale = 1.0;
+    // Julia : le pixel entre par δ₀ = dc (z₀ = pixel, c = seed constant).
+    // Mandelbrot-like : δ₀ = 0, dc entre par la formule.
+    var delta = vec2<f64>();
+    if (is_julia) {
+        delta = dc;
+    }
     var n: u32 = 0u;
-    let bailout_sqr = params.bailout * params.bailout;
-    
-    // Adaptive glitch tolerance is pre-computed on CPU
-    let glitch_tolerance_sqr = params.glitch_tolerance * params.glitch_tolerance;
+    var m: u32 = 0u;
+    let bailout_sqr = f64(params.bailout) * f64(params.bailout);
+    let use_bla = !is_burning_ship && params.bla_levels > 0u;
+    let use_series = params.series_order >= 2u;
+    let series_threshold_sqr = f64(params.series_threshold) * f64(params.series_threshold);
 
-    loop {
-        if (n >= params.iter_max) {
-            break;
+    while (n < params.iter_max) {
+        // Bailout en tête : |Z[m] + δ|² ≥ bailout² → escape à l'itération n.
+        let z_m = zref_at(m);
+        let z_abs = z_m + delta;
+        if (norm_sqr(z_abs) >= bailout_sqr) {
+            write_pixel(idx, n, z_abs);
+            return;
         }
 
+        // Étape 1 : essai BLA (Mandelbrot/Julia, table conforme par niveaux,
+        // skip 2^level, nœud indexé par m). Niveaux décroissants = plus grand
+        // saut valide d'abord.
         var stepped = false;
-        if (!is_burning_ship && !is_tricorn && !is_tricorn_julia && params.bla_levels > 0u) {
+        if (use_bla) {
+            let delta_norm_sqr = norm_sqr(delta);
             var level: i32 = i32(params.bla_levels);
             loop {
                 level = level - 1;
@@ -236,199 +188,85 @@ fn main(
                     break;
                 }
                 let lvl = u32(level);
-                let len = bla_meta.level_lengths[lvl];
-                if (n >= len) {
+                if (m >= bla_meta.level_lengths[lvl]) {
                     continue;
                 }
-                // Utiliser le cache BLA en mémoire partagée si disponible
-                let node = get_bla_node(lvl, n);
-                let delta_actual_re = delta_re * delta_scale;
-                let delta_actual_im = delta_im * delta_scale;
-                let delta_norm_sqr = delta_actual_re * delta_actual_re + delta_actual_im * delta_actual_im;
-                if (delta_norm_sqr < node.validity * node.validity) {
-                    let mul1 = complex_mul(node.a_re, node.a_im, delta_actual_re, delta_actual_im);
-                    let mul2 = complex_mul(node.b_re, node.b_im, dc_re, dc_im);
-                    if (params.series_order >= 2u && delta_norm_sqr < params.series_threshold * params.series_threshold) {
-                        let delta_sq = complex_mul(delta_actual_re, delta_actual_im, delta_actual_re, delta_actual_im);
-                        let mul3 = complex_mul(node.c_re, node.c_im, delta_sq.x, delta_sq.y);
-                        // BLA: mul2 contient le terme dc. Pour Mandelbrot, on doit l'ajouter. Pour Julia, non.
-                        // WGSL: select(false_val, true_val, cond) => cond ? true_val : false_val
-                        let next_re = mul1.x + select(0.0, mul2.x, !is_julia) + mul3.x;
-                        let next_im = mul1.y + select(0.0, mul2.y, !is_julia) + mul3.y;
-                        let scaled = rescale_delta(next_re, next_im, 1.0);
-                        delta_re = scaled.x;
-                        delta_im = scaled.y;
-                        delta_scale = scaled.z;
-                    } else {
-                        // BLA: mul2 contient le terme dc. Pour Mandelbrot, on doit l'ajouter. Pour Julia, non.
-                        // WGSL: select(false_val, true_val, cond) => cond ? true_val : false_val
-                        let next_re = mul1.x + select(0.0, mul2.x, !is_julia);
-                        let next_im = mul1.y + select(0.0, mul2.y, !is_julia);
-                        let scaled = rescale_delta(next_re, next_im, 1.0);
-                        delta_re = scaled.x;
-                        delta_im = scaled.y;
-                        delta_scale = scaled.z;
-                    }
-                    n = n + (1u << lvl);
-                    stepped = true;
+                let node = bla_nodes[bla_meta.level_offsets[lvl] + m];
+                if (delta_norm_sqr >= node.validity * node.validity) {
+                    continue;
+                }
+                let skip = 1u << lvl;
+                let new_n = n + skip;
+                let new_m = m + skip;
+                if (new_n > params.iter_max || new_m >= params.ref_len) {
+                    continue;
+                }
+                // δ' = A·δ (+ B·dc pour Mandelbrot) (+ C·δ² série ordre 2)
+                var cand = cmul(node.a, delta);
+                if (!is_julia) {
+                    cand = cand + cmul(node.b, dc);
+                }
+                if (use_series && delta_norm_sqr < series_threshold_sqr) {
+                    cand = cand + cmul(node.c, cmul(delta, delta));
+                }
+                // Garde anti-over-skip : saut multi-pas linéarisé autour de la
+                // référence, aveugle à l'évasion propre du pixel. Si le point
+                // d'arrivée est déjà échappé, rejeter et single-stepper.
+                let z_end = zref_at(new_m) + cand;
+                if (skip >= 2u && norm_sqr(z_end) >= bailout_sqr) {
                     break;
                 }
+                delta = cand;
+                n = new_n;
+                m = new_m;
+                stepped = true;
+                break;
             }
         }
 
-        if (!stepped) {
-            let z = z_ref[n];
-            if (is_tricorn || is_tricorn_julia) {
-                // Tricorn perturbation: z' = conj(z)² + c
-                // Inspired by rust-fractal-core's non-conformal perturbation approach.
-                // Since Tricorn uses conjugation (anti-conformal), we compute z_curr = z_ref + delta,
-                // apply conj(z_curr)² + c, then subtract the next z_ref to get the new delta.
-                let delta_actual_re = delta_re * delta_scale;
-                let delta_actual_im = delta_im * delta_scale;
-                let z_re = z.re + delta_actual_re;
-                let z_im = z.im + delta_actual_im;
-                // conj(z) = (z_re, -z_im), then square: (z_re² - z_im², -2*z_re*z_im)
-                let z_sq = complex_mul(z_re, -z_im, z_re, -z_im);
-                var z_next_re: f32;
-                var z_next_im: f32;
-                if (is_tricorn_julia) {
-                    z_next_re = z_sq.x + params.cref_x;
-                    z_next_im = z_sq.y + params.cref_y;
-                } else {
-                    z_next_re = z_sq.x + (params.cref_x + dc_re);
-                    z_next_im = z_sq.y + (params.cref_y + dc_im);
-                }
-                n = n + 1u;
-                if (n >= params.iter_max) {
-                    break;
-                }
-                let z_next_ref = z_ref[n];
-                let next_re = z_next_re - z_next_ref.re;
-                let next_im = z_next_im - z_next_ref.im;
-                let scaled = rescale_delta(next_re, next_im, 1.0);
-                delta_re = scaled.x;
-                delta_im = scaled.y;
-                delta_scale = scaled.z;
-            } else if (is_burning_ship) {
-                // Burning Ship perturbation using diffabs (inspired by rust-fractal-core).
-                // Uses the scaled delta approach for better precision, matching the CPU path.
-                // Key insight: diffabs(c, d) = |c + d| - |c| computed stably.
-                //
-                // Formula from rust-fractal-core:
-                //   delta_re' = (2*Z_re + d_re*sf) * d_re - (2*Z_im + d_im*sf) * d_im + dc_re
-                //   delta_im' = 2 * diffabs(Z_re*Z_im/sf, Z_re*d_im + d_re*(Z_im + d_im*sf)) + dc_im
-                let sf = delta_scale;
-                let inv_sf = 1.0 / max(sf, 1.0e-38);
-                let d_re = delta_re;
-                let d_im = delta_im;
-                let temp_re = d_re;
-                let new_re = (2.0 * z.re * inv_sf + temp_re * sf * inv_sf) * temp_re
-                           - (2.0 * z.im * inv_sf + d_im * sf * inv_sf) * d_im
-                           + dc_re * inv_sf;
-                let new_im = 2.0 * diffabs(
-                    z.re * z.im * inv_sf,
-                    z.re * d_im + temp_re * (z.im * inv_sf + d_im * sf * inv_sf)
-                ) + dc_im * inv_sf;
-                let scaled = rescale_delta(new_re, new_im, sf);
-                delta_re = scaled.x;
-                delta_im = scaled.y;
-                delta_scale = scaled.z;
-                n = n + 1u;
-            } else {
-                // Mandelbrot/Julia perturbation using scaled delta approach
-                // (inspired by rust-fractal-core's perturb_function).
-                // Keeps delta as mantissa * scale_factor, doing arithmetic in scaled space
-                // for better precision. Formula:
-                //   delta' = delta * (2*z_ref + delta*sf) + dc
-                // In scaled space (dividing by sf):
-                //   d' = (2*z_ref/sf)*d + sf*(d*d) + dc/sf
-                let sf = delta_scale;
-                let inv_sf = 1.0 / max(sf, 1.0e-38);
-                let d_re = delta_re;
-                let d_im = delta_im;
-                let two_zr_re = 2.0 * z.re * inv_sf;
-                let two_zr_im = 2.0 * z.im * inv_sf;
-                let new_re = two_zr_re * d_re - two_zr_im * d_im + sf * (d_re * d_re - d_im * d_im)
-                           + select(0.0, dc_re * inv_sf, !is_julia);
-                let new_im = two_zr_re * d_im + two_zr_im * d_re + sf * (2.0 * d_re * d_im)
-                           + select(0.0, dc_im * inv_sf, !is_julia);
-                let scaled = rescale_delta(new_re, new_im, sf);
-                delta_re = scaled.x;
-                delta_im = scaled.y;
-                delta_scale = scaled.z;
-                n = n + 1u;
-            }
+        if (stepped) {
+            // Saut BLA accepté : pas de check de rebase (mirror CPU), le
+            // bailout de tête gère l'état d'arrivée.
+            continue;
         }
 
-        // ====================================================================================
-        // REBASING + BAILOUT + GLITCH DETECTION (merged to compute delta_actual once)
-        // ====================================================================================
-        // Compute delta_actual once and reuse for rebase check, bailout, and glitch detection.
-        // small_delta flag skips rebase and glitch checks when delta is tiny (no precision loss).
-        if (n > 0u && n < params.iter_max) {
-            let z_check = z_ref[n];
-            let delta_actual_re = delta_re * delta_scale;
-            let delta_actual_im = delta_im * delta_scale;
-            let z_curr_re = z_check.re + delta_actual_re;
-            let z_curr_im = z_check.im + delta_actual_im;
-            let z_curr_norm_sqr = z_curr_re * z_curr_re + z_curr_im * z_curr_im;
-            let delta_norm_sqr = delta_actual_re * delta_actual_re + delta_actual_im * delta_actual_im;
-            let small_delta = (delta_scale < 1.0e-15);
-
-            // Rebasing with hysteresis (inspired by rust-fractal-core):
-            // Only rebase if z_curr is meaningfully smaller than delta (factor 0.5),
-            // preventing ping-pong rebasing that wastes iterations.
-            // Skip rebasing when delta is tiny (no precision loss) or z_ref is very small.
-            if (!small_delta) {
-                let z_ref_ns = z_check.re * z_check.re + z_check.im * z_check.im;
-                if (z_curr_norm_sqr > 0.0 && delta_norm_sqr > 0.0 && z_curr_norm_sqr < delta_norm_sqr * 0.5 && z_ref_ns > 1.0e-20) {
-                    let scaled = rescale_delta(z_curr_re, z_curr_im, 1.0);
-                    delta_re = scaled.x;
-                    delta_im = scaled.y;
-                    delta_scale = scaled.z;
-                    n = 0u;
-                    continue;
-                }
+        // Étape 2 : pas perturbation direct.
+        if (is_burning_ship) {
+            // δ_re' = (2·Z_re + δ_re)·δ_re − (2·Z_im + δ_im)·δ_im + dc_re
+            // δ_im' = 2·diffabs(Z_re·Z_im, Z_re·δ_im + δ_re·(Z_im + δ_im)) + dc_im
+            let new_re = (2.0 * z_m.x + delta.x) * delta.x
+                - (2.0 * z_m.y + delta.y) * delta.y + dc.x;
+            let new_im = 2.0 * diffabs(
+                z_m.x * z_m.y,
+                z_m.x * delta.y + delta.x * (z_m.y + delta.y),
+            ) + dc.y;
+            delta = vec2<f64>(new_re, new_im);
+        } else {
+            // Mandelbrot/Julia : δ' = (2·Z + δ)·δ (+ dc pour Mandelbrot).
+            var next = cmul(2.0 * z_m + delta, delta);
+            if (!is_julia) {
+                next = next + dc;
             }
+            delta = next;
+        }
+        n = n + 1u;
+        m = m + 1u;
 
-            // Glitch detection: NaN/Inf always invalid, delta_too_large only when delta is not tiny
-            let nan_re = z_curr_re != z_curr_re;
-            let nan_im = z_curr_im != z_curr_im;
-            let inf_re = abs(z_curr_re) > 1e30;
-            let inf_im = abs(z_curr_im) > 1e30;
-            let z_ref_norm_sqr = z_check.re * z_check.re + z_check.im * z_check.im;
-            let glitch_scale = max(z_ref_norm_sqr, 1.0e-6);
-            let delta_too_large = delta_norm_sqr > glitch_tolerance_sqr * glitch_scale;
-            let glitched = (nan_re || nan_im || inf_re || inf_im || (!small_delta && delta_too_large));
+        // Garde NaN/Inf (mirror CPU : sortie avec l'état courant, pas de flag).
+        if (delta.x != delta.x || delta.y != delta.y
+            || abs(delta.x) > 1.0e300 || abs(delta.y) > 1.0e300) {
+            write_pixel(idx, n, zref_at(m) + delta);
+            return;
+        }
 
-            if (glitched) {
-                out_pixels[idx].iter = n;
-                out_pixels[idx].z_re = z_check.re;
-                out_pixels[idx].z_im = z_check.im;
-                out_pixels[idx].flags = 1u;
-                return;
-            }
-            if (z_curr_norm_sqr > bailout_sqr) {
-                out_pixels[idx].iter = n;
-                out_pixels[idx].z_re = z_curr_re;
-                out_pixels[idx].z_im = z_curr_im;
-                out_pixels[idx].flags = 0u;
-                return;
-            }
-        } else if (n >= params.iter_max) {
-            break;
+        // Étape 3 : rebase F3 strict — |Z[m]+δ|² < |δ|² → δ := Z[m]+δ, m := 0.
+        let z_curr = zref_at(m) + delta;
+        if (norm_sqr(z_curr) < norm_sqr(delta)) {
+            delta = z_curr;
+            m = 0u;
         }
     }
 
-    // Clamp n to valid range to avoid out-of-bounds access
-    // If n >= iter_max, the point is in the set (will be colored black by color_for_pixel)
-    let final_n = min(n, params.iter_max - 1u);
-    let z = z_ref[final_n];
-    let delta_actual_re = delta_re * delta_scale;
-    let delta_actual_im = delta_im * delta_scale;
-    // Store iter_max if n >= iter_max to indicate point is in set
-    out_pixels[idx].iter = select(final_n, params.iter_max, n >= params.iter_max);
-    out_pixels[idx].z_re = z.re + delta_actual_re;
-    out_pixels[idx].z_im = z.im + delta_actual_im;
-    out_pixels[idx].flags = 0u;
+    // n == iter_max : pixel intérieur.
+    write_pixel(idx, params.iter_max, zref_at(m) + delta);
 }

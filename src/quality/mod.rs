@@ -135,14 +135,19 @@ pub fn compare(params: &FractalParams, opt: &ComparisonOptions) -> Result<Compar
 
 /// Compare le rendu **GPU** (dispatch unifié `GpuRenderer::render_dispatch`,
 /// injecté par le binaire via closure — ce module ne dépend pas de `gpu/`) au
-/// **CPU juge** (dispatcher unique, mode Auto = ce qu'un utilisateur obtient
-/// sans GPU ; f64 exact aux zooms shallow, perturbation au-delà). Verrou de
+/// **juge GMP pur** (ground truth, même standard que `compare`). Verrou de
 /// parité device du jalon G9.4/9.5 : l'auto-GPU exige que le kernel passe ce
-/// gate aux seuils standard — mesure 2026-07-15 : les shaders f32 actuels
-/// FAILent partout sauf la bande 1e4-3e5 (WARN), cf. TODO G9.5.
+/// gate aux seuils standard.
 ///
-/// Réutilise `ComparisonOutput` : champs `pert_*` = GPU, `gmp_*` = CPU juge
-/// (mêmes rapports/heatmaps ; `pert.png` = image GPU, `gmp.png` = image CPU).
+/// ⚠️ Le juge N'EST PAS le CPU Auto : à iterations élevées le f64 direct
+/// diverge lui-même de la vérité sur le bord chaotique (mesuré seahorse
+/// 1e6/5000 iters 256² : CPU-std vs GMP div ~6 %, quand CPU-perturbation vs
+/// GMP div 0.001 — la perturbation est ancrée sur une référence GMP exacte).
+/// Un juge Auto pénaliserait un kernel GPU perturbation PLUS JUSTE que lui
+/// (observé : kernel df64 « FAIL p99 174 » vs juge Auto, artefact du juge).
+///
+/// Réutilise `ComparisonOutput` : champs `pert_*` = GPU, `gmp_*` = juge GMP
+/// (mêmes rapports/heatmaps ; `pert.png` = image GPU, `gmp.png` = image juge).
 pub fn compare_gpu(
     params: &FractalParams,
     opt: &ComparisonOptions,
@@ -161,17 +166,18 @@ pub fn compare_gpu(
     println!("[quality] GPU done in {:.0} ms", gpu_time_ms);
 
     let mut cpu_params = params.clone();
-    cpu_params.algorithm_mode = AlgorithmMode::Auto;
+    cpu_params.algorithm_mode = AlgorithmMode::ReferenceGmp;
+    cpu_params.use_gmp = true;
     println!(
-        "[quality] rendering CPU judge (dispatcher unique, Auto): {}x{}",
+        "[quality] rendering GMP judge (ground truth): {}x{}",
         cpu_params.width, cpu_params.height,
     );
     let t1 = Instant::now();
     let (cpu_iters, cpu_zs, _, _) =
         render_escape_time_cancellable_with_reuse(&cpu_params, &cancel, None, &mut None)
-            .ok_or_else(|| "CPU judge render cancelled or failed".to_string())?;
+            .ok_or_else(|| "GMP judge render cancelled or failed".to_string())?;
     let cpu_time_ms = t1.elapsed().as_secs_f64() * 1000.0;
-    println!("[quality] CPU judge done in {:.0} ms", cpu_time_ms);
+    println!("[quality] GMP judge done in {:.0} ms", cpu_time_ms);
 
     let m = metrics::compute(
         params.width,

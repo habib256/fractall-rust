@@ -1660,29 +1660,50 @@ Jalons (chacun ≈ 1-2 itérations /improve, ordre suggéré) :
   (routage auto + évaluateur LA) ; golden `_atom` épinglé
   `FRACTALL_HARMONIC_LA=0` (préserve le verrou du guard BLA lands_on_ref_end ;
   runner golden étendu aux env par cas) ; tests seuils politique + probe==build.
-- [ ] **9.4 — GPU perturbation deep (kernel delta HDR wgsl)** : étendre le
-  range GPU de ~1e7 → ~1e300 (f32 mantisse + exposant par pixel, table BLA en
-  storage buffer, rebasing F3 dans le kernel). **Cible mesurable : ≥ 2× notre
-  CPU 16t sur mid-deep (barre FS-GPU : 0.6 s à 1e30 1024², cf. G8.2)** ET
-  **`fractall-quality gpu-suite` PASS** (harnais d'acceptance livré 2026-07-15,
-  cf. 9.5) — la perf sans la parité ne suffit pas.
-  Fallback CPU inchangé quand le GPU est non viable (exposant, features).
-- [ ] **9.5 — Auto-GPU** `[🔒 BLOQUÉ par la précision des kernels — verrou
-  livré 2026-07-15]` : le plan choisit le device par benchmark 9.2 + viabilité ;
-  `--gpu`/`--no-gpu` deviennent des overrides. **Mesure 2026-07-15 (probe EXR
-  256² + `gpu-suite`, juge CPU Auto)** : les shaders f32 ACTUELS échouent au
-  standard de correction du projet sur TOUT le range — FAIL 1e2-1e3 (7-10 %
-  px diff>1, p99 215-578 : bord chaotique, la mantisse f32 diverge du f64
-  après ~20 iters), WARN 1e4-1e6 (p99 0-1, div 0.3-0.9 %), FAIL ≥ 1e8
-  (perturbation f32, p99 87). « Jamais moins correct que le tier au-dessus »
-  (critère G9) ⇒ **le wisdom NE DOIT PAS router le GPU f32** ; router par
-  vitesse seule troquerait la correction (leçon F3 : float 24 b = 9391 px
-  faux). Auto-GPU se débloque quand un kernel (9.4 HDR, ou f64-emul 2×f32)
-  PASSe `gpu-suite`. Verrou livré : `fractall-quality gpu-compare/gpu-suite`
-  (juge = dispatcher CPU unique en Auto, rapports `quality-reports/gpu/`,
-  presets `GPU_PRESETS` échelle seahorse 1e2→1e8, baseline versionnée dans la
-  doc du preset) + tests unitaires quality en CI (gap CI comblé : le bin
-  fractall-quality n'était jamais testé).
+- [~] **9.4 — GPU perturbation deep (kernel delta HDR wgsl)** — **étape 1
+  livrée 2026-07-15 : kernel F3-strict f64 natif, parité CPU-grade** :
+  réécriture de `perturbation.wgsl` en port fidèle de `pixel_loop.rs::
+  iterate_pixel_unified_mandelbrot` (n/m séparés — le legacy remettait n:=0 à
+  chaque rebase, faussant les comptes ; rebasing strict `|Z+δ|²<|δ|²` sans
+  hystérésis ; garde anti-over-skip BLA ; suppression glitch Pauldelbrot +
+  correction GMP-CPU qui masquait l'imprécision f32 ; suppression du clamp
+  `iter_max=min(iter_max, ref_len-1)` côté host — gate `ref_len-1 ≥ iter_max`
+  sinon fallback CPU). Précision **f64 natif (`SHADER_F64`)**, buffers zref/
+  BLA en f64. Résultat gpu-suite (juge GMP) : **WARN p99=0 div 0.0007-0.0015
+  escape_disagree=0 sur tout le range perturbation 1e4→1e8** = le niveau exact
+  du CPU-perturbation vs GMP (0.001). Sans SHADER_F64 (Metal) → fallback CPU.
+  - **☠️ IMPASSE df64 (2×f32 double-float) sur la stack WGSL→naga→SPIR-V** :
+    sans décorations NoContraction/precise, `fma(a,b,-(a·b))` peut être évalué
+    non-fusionné (→0) et les EFT two_sum sont réassociées (`(a+b)-a → b`) —
+    mesuré sur NVIDIA RTX 4060 Ti ET llvmpipe : le df64 s'effondre en f32 en
+    contexte de boucle (div 0.067 = simulation f32 pure) alors que chaque
+    primitive isolée passe. Garde runtime `×u(=1)` : défait en boucle aussi.
+    Diagnostic reproductible : `cargo run --release --bin df64_gpu_probe`
+    (sonde exactitude two_sum/fma/split + boucle perturbation par adaptateur).
+  - Restant 9.4 : (a) **perf** — mesurer 1e30 1024² vs CPU 16t (cible ≥2×,
+    barre FS-GPU 0.6 s ; le f64 NVIDIA est 1:64 — probablement insuffisant →
+    2×f32 via passthrough SPIR-V décoré NoContraction, ou kernel exp-par-pixel
+    f32) ; (b) **range** — le kernel f64 couvre ~1e290 d'exposant, étendre le
+    seuil d'éligibilité GPU au-delà de ~1e8 une fois la perf mesurée ;
+    (c) presets gpu-suite deep (1e30+) au moment de (b).
+- [ ] **9.5 — Auto-GPU** `[🔓 partiellement débloqué 2026-07-15 : le path
+  perturbation GPU (≥1e4) est au niveau CPU ; restent les shaders std f32]` :
+  le plan choisit le device par benchmark 9.2 + viabilité ; `--gpu`/`--no-gpu`
+  deviennent des overrides. Verrou : `fractall-quality gpu-compare/gpu-suite`
+  (presets `GPU_PRESETS` seahorse 1e2→1e8, rapports `quality-reports/gpu/`) +
+  tests quality en CI. **⚠️ Juge = GMP PUR depuis 2026-07-15** : le juge
+  initial (CPU Auto = f64-std à ces zooms) divergeait LUI-MÊME de ~6 % de la
+  vérité à 5000 iters sur bord chaotique (CPU-std vs GMP div 0.06 quand
+  CPU-perturbation vs GMP div 0.001 — la perturbation ancrée sur référence
+  GMP est plus juste que l'itération f64 directe) et aurait pénalisé un
+  kernel GPU plus correct que lui. État verdicts (kernel f64 9.4) : WARN
+  1e4→1e8 (= niveau CPU), FAIL 1e2-1e3 (shaders std f32, mantisse 24 b, p99
+  215-578, leçon F3 : float 24 b = 9391 px faux) ⇒ le wisdom ne doit PAS
+  router le GPU en dessous du seuil perturbation (pixel ≥ 1e-5) tant que les
+  shaders std restent f32 — options : les passer f64 (SHADER_F64, coût DP),
+  ou router la perturbation f64 aussi en shallow (δ grand + rebasing, à
+  mesurer), ou tier std f64→GPU interdit. Arbitrage device par vitesse benchée
+  (9.2) une fois la perf 9.4 mesurée.
 - [ ] **9.6 — Fiabilité → escalade de tier** (= G-dd auto-dispatch, plan déjà
   écrit) : détecteur shadowing en observation puis escalade px→dd /
   frame→dd ; ferme la boucle « le wisdom ne sous-provisionne jamais »

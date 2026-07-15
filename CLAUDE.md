@@ -102,7 +102,7 @@ src/
 ├── gpu/                  # wgpu Vulkan/Metal/DX12
 │   ├── mod.rs              # GpuRenderer + pipeline bytecode
 │   ├── *_f32.wgsl          # paths legacy par type
-│   ├── perturbation.wgsl   # BLA cache workgroup + série
+│   ├── perturbation.wgsl   # kernel perturbation F3-strict f64 (SHADER_F64)
 │   └── bytecode_kernel.wgsl # runtime bytecode unifié (P3.1)
 ├── gui/                  # FractallApp (egui)
 ├── color/                # 27 palettes + RGB/HSB/LCH + 15 modes
@@ -453,10 +453,17 @@ fractall-cli --type N --output FILE [OPTIONS]
 
 ## GPU (wgpu)
 
-**Shaders f32 uniquement** (les `*_f64.wgsl` ont été retirés) :
 - `mandelbrot_f32.wgsl`, `julia_f32.wgsl`, `burning_ship_f32.wgsl` — paths
-  legacy par type
-- `perturbation.wgsl` — BLA cache workgroup, série, glitch adaptatif
+  legacy f32 par type
+- `perturbation.wgsl` — **kernel perturbation F3-strict en f64 natif**
+  (2026-07-15, G9.4) : port de `pixel_loop.rs::iterate_pixel_unified_
+  mandelbrot` (n/m séparés, rebasing strict, anti-over-skip BLA, PAS de
+  glitch detection), buffers zref/BLA f64, span/offset en paires hi/lo f32.
+  Exige `Features::SHADER_F64` (NVIDIA/AMD/Intel/llvmpipe OK ; **Metal NON**
+  → pipeline absente → fallback CPU). ⚠️ Le double-float 2×f32 est
+  IMPOSSIBLE en WGSL : naga/drivers réassocient les EFT (two_sum → 0, fma
+  non-fusionné) — diagnostic : `cargo run --release --bin df64_gpu_probe`.
+  Gate host : `ref_len-1 ≥ iter_max` sinon fallback CPU (réfs tronquées).
 - `bytecode_kernel.wgsl` — runtime bytecode unifié (P3.1 Task 7). Applique la
   matrice K (rotation/transform) au mapping pixel→c, parité CPU/F3.
 
@@ -464,9 +471,10 @@ fractall-cli --type N --output FILE [OPTIONS]
 paths GPU (perturbation, shaders f32 dédiés) retombent sur le CPU quand
 `transform_matrix().is_some()` (garde-fou anti-sortie-non-tournée).
 
-Au-delà de ~10⁷ de zoom, le CPU prend le relais (perturbation + GMP).
-**Backend** : macOS Metal ; Linux Vulkan (prioritaire), puis OpenGL ;
-Windows DX12 / Vulkan.
+Le path perturbation GPU (f64) est vérifié par `gpu-suite` jusqu'à 1e8 ;
+au-delà du seuil GMP (~1e16) le CPU prend le relais (extension du range =
+TODO G9.4b). **Backend** : macOS Metal (sans SHADER_F64 → perturbation sur
+CPU) ; Linux Vulkan (prioritaire), puis OpenGL ; Windows DX12 / Vulkan.
 
 ## GUI (`FractallApp`)
 
@@ -540,13 +548,15 @@ cargo run --release --bin fractall-quality -- gpu-suite   # parité GPU↔CPU (G
 ```
 
 **Parité GPU↔CPU** (`gpu-suite` / `gpu-compare`, 2026-07-15) : rend la même
-vue via `GpuRenderer::render_dispatch` et le dispatcher CPU unique (Auto,
-juge), mêmes métriques/verdicts, rapports sous `quality-reports/gpu/`
-(`pert.*` = GPU, `gmp.*` = CPU). Presets `GPU_PRESETS` (échelle seahorse
-1e2→1e8). **Baseline f32 actuels : aucun PASS** (FAIL 1e2/1e3/1e8, WARN
-1e4-1e6) → l'auto-GPU (TODO G9.5) est bloqué tant qu'un kernel ne PASSe pas
-cette suite ; c'est le harnais d'acceptance du kernel deep G9.4. Les tests
-unitaires du bin quality tournent en CI.
+vue via `GpuRenderer::render_dispatch` et la juge contre le **GMP pur**
+(⚠️ PAS le CPU Auto : le f64-std diverge lui-même de ~6 % de la vérité à
+5000 iters sur bord chaotique), mêmes métriques/verdicts, rapports sous
+`quality-reports/gpu/` (`pert.*` = GPU, `gmp.*` = juge). Presets
+`GPU_PRESETS` (échelle seahorse 1e2→1e8). **État (kernel perturbation
+F3-strict f64 natif, 2026-07-15) : WARN p99=0 div ≈ 0.001 sur tout le range
+perturbation 1e4→1e8 (= niveau CPU-perturbation) ; FAIL 1e2/1e3 (shaders std
+f32, gap restant G9.5)**. C'est le harnais d'acceptance du kernel deep G9.4.
+Les tests unitaires du bin quality tournent en CI.
 
 **Sorties** dans `quality-reports/<preset>/` :
 - `pert.png` / `gmp.png` (metadata pour drag-and-drop fractall-gui).

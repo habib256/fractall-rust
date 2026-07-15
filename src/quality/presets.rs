@@ -270,13 +270,16 @@ pub fn names() -> Vec<&'static str> {
 }
 
 /// Échelle de zoom pour la **parité GPU↔CPU** (`gpu-suite`, verrou G9.4/9.5) :
-/// même centre seahorse à chaque décade du range GPU actuel (shader std f32
-/// jusqu'à ~1e5, perturbation f32 au-delà — seuil `GPU_PERTURBATION_THRESHOLD`
-/// 1e-5). Baseline mesurée 2026-07-15 (256², f32 actuels, juge CPU Auto) :
-/// FAIL massif à 1e2-1e3 (7-10 % px, bord chaotique amplifié par la mantisse
-/// f32), WARN 1e4-3e5 (p99=0, div 0.4-0.8 %), FAIL ≥ 1e6 (p99 15-100, path
-/// perturbation f32). L'auto-GPU (9.5) exige un kernel qui PASSE cette suite.
-/// Itérations 5000 : assez pour structurer le bord sans saturer le f32.
+/// même centre seahorse à chaque décade du range GPU (shader std f32 jusqu'à
+/// ~1e4, perturbation au-delà — seuil `GPU_PERTURBATION_THRESHOLD`). Juge =
+/// GMP PUR (cf. `compare_gpu` : le CPU Auto f64-std diverge lui-même de ~6 %
+/// de la vérité à 5000 iters sur bord chaotique — invalide comme juge).
+/// Baseline 2026-07-15 (256², kernel perturbation F3-strict **f64 natif**) :
+/// WARN sur TOUT le range perturbation 1e4→1e8 (p99=0, div 0.0007-0.0015,
+/// escape_disagree=0 — le niveau exact du CPU-perturbation vs GMP, bord
+/// épars) ; FAIL 1e2-1e3 (shaders std f32, mantisse 24 b, p99 215-578 —
+/// gap restant, cf. TODO G9.5). Itérations 5000 : assez pour structurer le
+/// bord sans saturer.
 pub const GPU_PRESETS: &[Preset] = &[
     Preset {
         name: "gpu-seahorse-1e2",
@@ -304,7 +307,7 @@ pub const GPU_PRESETS: &[Preset] = &[
     },
     Preset {
         name: "gpu-seahorse-1e4",
-        description: "Parité GPU↔CPU — seahorse zoom 1e4 (shader std f32, meilleure bande).",
+        description: "Parité GPU↔CPU — seahorse zoom 1e4 (début du path perturbation GPU, pixel<1e-5).",
         fractal_type: FractalType::Mandelbrot,
         center_x_hp: "-0.743643887037158",
         center_y_hp: "0.131825904205311",
@@ -316,7 +319,7 @@ pub const GPU_PRESETS: &[Preset] = &[
     },
     Preset {
         name: "gpu-seahorse-3e5",
-        description: "Parité GPU↔CPU — seahorse zoom 3e5 (limite du shader std f32).",
+        description: "Parité GPU↔CPU — seahorse zoom 3e5 (perturbation GPU).",
         fractal_type: FractalType::Mandelbrot,
         center_x_hp: "-0.743643887037158",
         center_y_hp: "0.131825904205311",
@@ -328,7 +331,7 @@ pub const GPU_PRESETS: &[Preset] = &[
     },
     Preset {
         name: "gpu-seahorse-1e6",
-        description: "Parité GPU↔CPU — seahorse zoom 1e6 (path perturbation GPU f32).",
+        description: "Parité GPU↔CPU — seahorse zoom 1e6 (perturbation GPU f64).",
         fractal_type: FractalType::Mandelbrot,
         center_x_hp: "-0.743643887037158",
         center_y_hp: "0.131825904205311",
@@ -340,7 +343,7 @@ pub const GPU_PRESETS: &[Preset] = &[
     },
     Preset {
         name: "gpu-seahorse-1e8",
-        description: "Parité GPU↔CPU — seahorse zoom 1e8 (perturbation GPU f32 profonde).",
+        description: "Parité GPU↔CPU — seahorse zoom 1e8 (perturbation GPU f64 profonde).",
         fractal_type: FractalType::Mandelbrot,
         center_x_hp: "-0.743643887037158",
         center_y_hp: "0.131825904205311",

@@ -92,7 +92,7 @@ enum Command {
         name: String,
     },
     /// Parité GPU↔CPU sur l'échelle de presets GPU (verrou G9.4/9.5).
-    /// Rapports sous <output-dir>/gpu/ ; "pert" = GPU, "gmp" = CPU juge (Auto).
+    /// Rapports sous <output-dir>/gpu/ ; "pert" = GPU, "gmp" = juge GMP pur.
     GpuSuite,
     /// Parité GPU↔CPU sur une scène personnalisée (mêmes options que compare).
     GpuCompare {

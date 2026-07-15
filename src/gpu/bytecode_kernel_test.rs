@@ -34,4 +34,23 @@ mod tests {
             result.err()
         );
     }
+
+    /// Idem pour le kernel perturbation F3-strict (f64 natif → capability
+    /// FLOAT64, mirror du device SHADER_F64).
+    #[test]
+    fn perturbation_wgsl_validates() {
+        let source = include_str!("perturbation.wgsl");
+        let module = naga::front::wgsl::parse_str(source)
+            .expect("perturbation.wgsl ne parse pas");
+        let mut validator = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::default() | naga::valid::Capabilities::FLOAT64,
+        );
+        let result = validator.validate(&module);
+        assert!(
+            result.is_ok(),
+            "perturbation.wgsl ne valide pas : {:?}",
+            result.err()
+        );
+    }
 }
