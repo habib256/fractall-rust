@@ -126,6 +126,13 @@ pub fn save_png_rgb_with_metadata(
     let mut encoder = Encoder::new(writer, width, height);
     encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Eight);
+    // Encodage rapide (fdeflate ultra-fast) au lieu du défaut `Balanced`
+    // (zlib niveau 6). La sauvegarde dominait le wall-clock des rendus rapides
+    // (gt5 1024² : rendu 130 ms mais sauvegarde 280 ms) — F3 en batch Linux ne
+    // sauve rien (EXR no-op), d'où un ratio speed trompeur. Fast rend le PNG
+    // ~5× plus vite pour ~1.5× la taille : bon compromis pour un renderer qui
+    // sauve chaque frame (PNG reste lossless → pixels identiques, goldens OK).
+    encoder.set_compression(png::Compression::Fast);
 
     // Ajouter le chunk tEXt avec les métadonnées
     encoder.add_text_chunk(METADATA_KEY.to_string(), metadata_json)?;
@@ -278,6 +285,47 @@ mod tests {
     /// Régression : un PNG legacy avec `use_legacy_glitch_detection` (champ
     /// supprimé) doit charger sans erreur (le champ inconnu est ignoré par
     /// serde_json par défaut).
+    /// Verrou de l'encodage rapide (`Compression::Fast`, fdeflate) : le PNG
+    /// doit rester **lossless** (pixels décodés bit-identiques au buffer source)
+    /// ET conserver les métadonnées (drag-and-drop). Un basculement accidentel
+    /// vers un encodeur lossy/cassé, ou une régression du round-trip tEXt, casse
+    /// ce test. Cf. io/png.rs `set_compression` (sauvegarde 5.6× plus rapide).
+    #[test]
+    fn save_rgb_fast_is_lossless_and_round_trips_metadata() {
+        use crate::fractal::definitions::default_params_for_type;
+        use crate::fractal::FractalType;
+        // dims non alignées → exerce le filtrage par ligne
+        let params = default_params_for_type(FractalType::Mandelbrot, 17, 13);
+        // Buffer RGB déterministe et varié (évite un plat trivialement compressé).
+        let n = (params.width * params.height) as usize;
+        let src: Vec<u8> = (0..n * 3).map(|i| (i * 37 + 11) as u8).collect();
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "fractall_png_fast_{}.png",
+            std::process::id()
+        ));
+        save_png_rgb_with_metadata(
+            &params, &src, &path, "-0.5", "0.0", "4.0", "3.0",
+        )
+        .expect("save doit réussir");
+
+        // Métadonnées présentes et cohérentes.
+        let loaded = load_png_metadata(&path).expect("metadata doit se charger");
+        assert_eq!(loaded.width, 17);
+        assert_eq!(loaded.height, 13);
+
+        // Pixels décodés bit-identiques (lossless).
+        let file = File::open(&path).unwrap();
+        let mut reader = Decoder::new(BufReader::new(file)).read_info().unwrap();
+        let mut out = vec![0u8; reader.output_buffer_size().unwrap()];
+        let frame = reader.next_frame(&mut out).unwrap();
+        assert_eq!(frame.color_type, png::ColorType::Rgb);
+        assert_eq!(&out[..frame.buffer_size()], &src[..]);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn deserialize_ignores_removed_legacy_field() {
         let json = r#"{

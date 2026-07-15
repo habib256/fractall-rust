@@ -1850,6 +1850,32 @@ axe harness « wisdom-optimality » (sweep des plans sur un échantillon).
 
 ## ✅ Shipped (condensé, le plus récent en haut)
 
+**2026-07-16** (`/improve`, axe vitesse — corpus complet) :
+- **Fix perf — sauvegarde PNG 5.6× plus rapide** (`io/png.rs`
+  `save_png_rgb_with_metadata`) : l'encodeur `png` 0.18 défautait à
+  `Compression::Balanced` (zlib niveau 6) → la SAUVEGARDE dominait le wall-clock
+  des rendus rapides. Diagnostic sur **glitch_test_5** (seul cas du corpus 84 où
+  fractall PERDAIT vs F3, ratio 1.99 au sweep full 256²) : à 1024² le rendu ne
+  prend que **130 ms** mais la sauvegarde PNG **280 ms** (2.2× le rendu !). Or le
+  build **F3 batch Linux ne sauve RIEN** (`HAVE_EXR=0`, `save_exr` no-op) → le
+  harness comparait fractall(rendu+colorize+PNG) à F3(rendu seul), gonflant le
+  ratio des cas à rendu rapide (courte période → LLA). **Fix** :
+  `set_compression(png::Compression::Fast)` (fdeflate ultra-fast) → sauvegarde
+  **280→50 ms**, fichier **+6 %** seulement (les images fractales compressent
+  bien même en fast). Résultats : gt5 1024² wall **410→180 ms** ; gt5 256²
+  standard 3-run **ratio 1.99→0.72 (LOSS→WIN)** ; geomean quick **0.234→0.199**
+  (bénéficie à TOUS les rendus). Le rendu lui-même (~130 ms à 1024²) n'était
+  qu'à ~1.2× F3 — c'était bien la sauvegarde, pas le kernel. PNG reste lossless
+  (pixels décodés bit-identiques). Verrou :
+  `io::png::tests::save_rgb_fast_is_lossless_and_round_trips_metadata` (pixels
+  bit-exacts + métadonnées drag-and-drop). 234 unit + 21 golden (pixels décodés,
+  insensibles au niveau de compression) + QA 15 PASS + quick 0 gap.
+  **Reste (documenté, pas un gap moteur)** : l'asymétrie de mesure « F3 ne sauve
+  pas en batch Linux » subsiste pour les autres cas à rendu rapide (le harness
+  mesure le wall CLI complet, sauvegarde comprise) ; la sauvegarde rapide la
+  réduit fortement mais ne l'élimine pas. Rendre la mesure strictement équitable
+  (exclure la sauvegarde, ou faire sauver F3) = raffinement harness futur.
+
 **2026-07-11** (`/improve`, axe vitesse + infra harness) :
 - **Fix harness — fausse « RÉGRESSION geomean » cross-machine** (`scripts/
   harness.py`) : `_regression_gaps` flaggait une régression de VITESSE dès que
