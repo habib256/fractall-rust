@@ -62,6 +62,9 @@ fn write_heatmap_png(path: &Path, m: &QualityMetrics) -> Result<(), Box<dyn std:
     let mut encoder = Encoder::new(writer, m.width, m.height);
     encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Eight);
+    // Encodage rapide (cohérent avec io/png.rs) : les rapports QA écrivent ~45
+    // PNG par suite ; le défaut zlib niveau 6 est inutilement lent ici.
+    encoder.set_compression(png::Compression::Fast);
     let mut png_writer = encoder.write_header()?;
 
     let mut rgb = Vec::with_capacity(m.heatmap.len() * 3);

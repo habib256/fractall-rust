@@ -1850,6 +1850,22 @@ axe harness « wisdom-optimality » (sweep des plans sur un échantillon).
 
 ## ✅ Shipped (condensé, le plus récent en haut)
 
+**2026-07-16b** (`/improve`, ré-vérification CORRECTION corpus complet) :
+- **Parité F3 corpus complet RE-VÉRIFIÉE clean post fix PNG** (`a68630e`) :
+  après le fix de sauvegarde (qui ne touche pas le rendu), sweep parité full
+  (compare_f3, EXR N0/NF, seuil gap 2 % rel_dsi). **64 cas confirmés < 2 %**
+  (pire `nr_fail` 1.96 %, puis lethal_weapon 0.53 %, dragon_detail 0.30 % —
+  tous bord-chaotique connu, 0 inside-mismatch structurel) → **0 régression de
+  correction**. Métriques calculées directement des EXR (`read_exr_iterations`
+  + `smooth_iter`) : le sweep full-tier à itérations natives + timeouts 600 s
+  (e52465 slow-safe ~661 s, super_dense/seahorse F3-timeout) est impraticable en
+  une passe — salvage EXR = même signal sans l'attente. Corpus parité-clean
+  confirmé au nouveau commit. Leçon harness : préférer un sous-ensemble ou un
+  cap d'itérations pour la parité full (éviter les cas 600 s connus).
+- **Cohérence encodage PNG rapide** (`quality/report.rs` `write_heatmap_png`) :
+  `set_compression(Fast)` sur les heatmaps de rapport QA (~45 PNG/suite),
+  aligné sur `io/png.rs`. Lossless inchangé, 234 unit + 21 golden + QA 15 PASS.
+
 **2026-07-16** (`/improve`, axe vitesse — corpus complet) :
 - **Fix perf — sauvegarde PNG 5.6× plus rapide** (`io/png.rs`
   `save_png_rgb_with_metadata`) : l'encodeur `png` 0.18 défautait à
