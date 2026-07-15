@@ -1715,9 +1715,23 @@ Jalons (chacun ≈ 1-2 itérations /improve, ordre suggéré) :
     (fractall gagne toujours 10/10 vs F3) — compromis correction>vitesse assumé.
     Verrous : goldens e10/e15/e20/e50/deep_e113/glitch_test_2_atom/cusp_m075
     régénérés (corrections, revus visuellement). 233 unit + 21 golden + QA 15/15
-    PASS. **Reste** : (1) porter le même fix au tier **exp** (FloatExp, mantisse
-    f64 aussi → 2⁻⁵³ ; encore à `bla_threshold`=2⁻²⁴ ; impact deep-zoom > 1e280 à
-    mesurer). (2) **Récupérer la vitesse** via BLA **second ordre** (terme C·δ²,
+    PASS. **Reste** : (1) ~~porter le même fix au tier **exp**~~ **❌ RÉFUTÉ
+    (2026-07-15, /improve)** : mesuré, le tier exp (FloatExp, `bla_exp`) N'a PAS
+    l'over-skip epsilon et le passer à 2⁻⁵³ est une **pure régression vitesse**.
+    Preuves : liiiines (zoom 3.16e321, seule scène exp GMP-tractable à 12.5 k
+    iters, `path=bytecode_exp` atom-tronqué) donne div 0.00415 **identique** de
+    ε=2⁻²⁴ à 2⁻⁵³ **à 1e-300** (BLA quasi-off) — l'over-skip n'apparaît qu'à
+    ε=1.0 (div 0.33) ; golden exp e1000 **pixel-identique** aux deux ε. Mais le
+    coût vitesse est réel : e401 256² 0.75→0.95 s (**+30 %**), e1000 0.66→0.73 s
+    (**+10 %**) pour ZÉRO gain de correction. **Pourquoi exp diffère de f64** :
+    aux zooms exp la réf est **tronquée atom-domain + cyclée** (période courte),
+    la BLA n'atteint donc pas les longs sauts qui stressent le rayon de validité
+    (contrairement aux spirales f64 e30/e50 à réf longue). Le résidu WARN de
+    liiiines (div 0.004, p99=1) = **plancher de la mantisse FloatExp (53 b)**,
+    PAS l'epsilon → ne se corrige qu'avec un tier exp à mantisse plus large
+    (softfloat/float128-exp façon F3, feature majeure hors périmètre). ⇒ laisser
+    `bla_exp` à `bla_threshold`=2⁻²⁴ (correct ET plus rapide). (2) **Récupérer la
+    vitesse f64** via BLA **second ordre** (terme C·δ²,
     exactement ce que fait le kernel GPU conforme, `bla.rs::c_new`) : garde le
     rayon 2⁻²⁴ large ET la précision — mais exige des dérivées secondes
     (hyper-dual) dans la mat2 unifiée. (3) réévaluer si des presets `use_dd_tier`
