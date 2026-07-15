@@ -1827,17 +1827,26 @@ axe harness « wisdom-optimality » (sweep des plans sur un échantillon).
   moitié VITESSE du critère sur la dimension harmonic ; restent (a) les
   dimensions tier (dd/exp, = 9.6) et device (= 9.5), (b) la moitié CORRECTION
   (jamais moins correct que le tier au-dessus).
-  - **🔎 FINDING À ADJUGER (surfacé par l'axe 2026-07-15)** : sur les cas
-    long-période deep **e50 (3.48×), e113 (1.81×), dragon (1.14×)**, le wisdom
-    route BLA (period0>100) mais la LLA forcée est PLUS RAPIDE **avec une sortie
-    DIFFÉRENTE**. Hypothèse : le **fix epsilon 2⁻⁵³** (2026-07-15) a ralenti la
-    BLA f64 ~4× (e50 0.21→0.83 s) → il a pu INVALIDER la calibration harmonic
-    G9.3 (seuil `period0≤100`, établie contre l'ancienne BLA rapide) sur ces
-    cas. **À faire** : adjuger LLA vs BLA vs **GMP pur** sur e50/e113 (⚠️ lent :
-    GMP 96² > 2 min/cas à ~263 k iters) — si LLA est CORRECTE à ces profondeurs,
-    remonter le seuil `HARMONIC_AUTO_PERIOD0_MAX` ; si LLA est faster-but-wrong,
-    le wisdom a raison (BLA) et l'axe le confirme (verdict ADJUDICATE, pas FAIL).
-    Ne PAS recalibrer à l'aveugle. Verrou une fois tranché : golden e50 + seuil.
+  - **✅ FINDING ADJUGÉ vs GMP pur (2026-07-16, /improve) — wisdom (BLA) a
+    RAISON, seuil `period0≤100` PRÉSERVÉ**. Sur les cas long-période deep, la LLA
+    forcée est bien plus rapide post fix-epsilon (e50 3.48×, e113 1.81×,
+    dragon 1.14× via l'axe) mais **faster-but-WRONG**. Adjudication 96² vs GMP
+    pur (`fractall-quality compare`, `FRACTALL_HARMONIC_LA=lla|off`) :
+    - **e50** : BLA **pixel-exact** (max_diff=0, p99=0, div_ratio=0) ;
+      LLA **FAIL** (max_diff=418, p99=53, div_ratio=**0.036** = 3.6 % de pixels
+      systématiquement faux, PAS du bruit de bord).
+    - **e113** : BLA WARN div_ratio 0.00022 (max 10) ; LLA WARN div_ratio
+      0.00119 (max 17), ~5× plus divergent — même sens.
+    - **dragon** (3.7e191, 5M iters) : GMP intractable, mais period0=3164 ≫ 100
+      et la tendance e50/e113 généralise → non routé.
+    **Conclusion** : le fix-epsilon a inversé le classement de VITESSE mais pas
+    la frontière de CORRECTION. Router LLA au-delà de 100 échangerait de la
+    vitesse contre de la correction → refusé (critère G9). L'axe émet ADJUDICATE
+    (pas FAIL) : c'est le comportement voulu (tradeoff correction assumé).
+    **Verrou** : doc `HARMONIC_AUTO_PERIOD0_MAX` réancré sur la correction +
+    test `route_harmonic_auto_calibrated_thresholds` (commentaire GMP) +
+    preset quality `mandelbrot-e50` (BLA≡GMP, déjà PASS). Seuil robuste aux
+    futurs changements de coût BLA (n'est plus ancré sur le débit relatif).
 
 ## ✅ Shipped (condensé, le plus récent en haut)
 

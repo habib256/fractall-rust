@@ -332,9 +332,22 @@ pub fn harmonic_candidate(params: &FractalParams) -> Option<HarmonicVariant> {
 /// (A/B pixels BLA vs LLA, 3 runs, 2026-07-15) : GAGNE pour period0 ≤ 78
 /// (flake p28 5.9×, test3 p28 5.7×, glitch_test_5 p7 5.8×, mitosis p24 3.7×,
 /// super_dense p9 **1.74× sur orbite 695 k** — la longueur d'orbite est HORS
-/// de cause, seul period0 discrimine), PERD dès period0 ≥ 112 (e50 +34 %,
-/// e113 p344 +13 %, dragon p3164 +59 %). Seuil 100 = milieu de la zone morte
+/// de cause, seul period0 discrimine). Seuil 100 = milieu de la zone morte
 /// mesurée [79, 111]. `period0 == 0` (pas de dip) = jamais routé.
+///
+/// **Le seuil est une frontière de CORRECTION, pas seulement de vitesse**
+/// (adjugé vs GMP pur, 2026-07-16, /improve). L'ancienne borne haute était
+/// posée sur un A/B de vitesse (e50 +34 %, e113 +13 %, dragon +59 % pour LLA) ;
+/// le **fix epsilon 2⁻⁵³** (2026-07-15) a ralenti la BLA f64 ~4× et INVERSÉ ce
+/// classement (LLA redevient plus rapide : e50 3.48×, e113 1.81×, dragon 1.14×
+/// via l'axe `wisdom-optimality`). Mais l'adjudication GMP tranche : à ces
+/// profondeurs long-période **la LLA est faster-but-WRONG**. À 96² vs GMP pur :
+/// e50 → BLA **pixel-exact** (max_diff=0, div_ratio=0) alors que LLA **FAIL**
+/// (max_diff=418, p99=53, div_ratio=**0.036** = 3.6 % de pixels systématiquement
+/// faux) ; e113 → BLA div_ratio 0.00022 vs LLA 0.00119 (~5× plus divergent).
+/// Router LLA au-delà de 100 échangerait donc de la vitesse contre de la
+/// **correction** — refusé par le critère G9. Le seuil reste robuste aux futurs
+/// changements de coût de la BLA (il n'est plus ancré sur son débit relatif).
 pub const HARMONIC_AUTO_PERIOD0_MAX: u32 = 100;
 
 pub fn route_harmonic_auto(period0: u32) -> bool {
@@ -539,15 +552,18 @@ mod tests {
     fn route_harmonic_auto_calibrated_thresholds() {
         // Bornes de la politique (calibration corpus 2026-07-15) : period0=0
         // (pas de dip) jamais routé ; gagnants mesurés ≤ 78 routés ; perdants
-        // mesurés ≥ 112 refusés ; seuil 100 au milieu de la zone morte.
+        // ≥ 112 refusés — frontière de CORRECTION adjugée vs GMP (2026-07-16) :
+        // au-delà, la LLA est faster-but-wrong (e50 LLA div_ratio 0.036 / FAIL
+        // vs BLA pixel-exact). NE PAS relever pour capter le speedup LLA post
+        // fix-epsilon : ce serait de la vitesse au prix de la correction (G9).
         assert!(!route_harmonic_auto(0));
         assert!(route_harmonic_auto(1));
         assert!(route_harmonic_auto(9)); // super_dense (orbite 695 k, 1.74×)
         assert!(route_harmonic_auto(78)); // dinosaur_fossils (1.2×)
         assert!(route_harmonic_auto(HARMONIC_AUTO_PERIOD0_MAX));
         assert!(!route_harmonic_auto(HARMONIC_AUTO_PERIOD0_MAX + 1));
-        assert!(!route_harmonic_auto(112)); // e50 (+34 %)
-        assert!(!route_harmonic_auto(3164)); // dragon (+59 %)
+        assert!(!route_harmonic_auto(112)); // e50 : LLA FAIL vs GMP (div 0.036)
+        assert!(!route_harmonic_auto(3164)); // dragon : period0 ≫ 100
     }
 
     #[test]
