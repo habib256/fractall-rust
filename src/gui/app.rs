@@ -19,6 +19,53 @@ use crate::gpu::GpuRenderer;
 /// Précision par défaut pour les calculs de coordonnées haute précision (en bits).
 const HP_PRECISION: u32 = 256;
 
+/// Snapshot d'une vue (centre + span en HP strings) + axialité, pour le warp GPU
+/// de la dernière frame (G10.1). Les strings préservent la précision au deep zoom
+/// (le warp calcule `(cx_tex - cx_live)/span_live`, un ratio O(1), en HP puis f64).
+#[derive(Clone)]
+struct ViewSnapshot {
+    cx: String,
+    cy: String,
+    sx: String,
+    sy: String,
+    /// Vrai si rotation=0 ET transform_k=None : la transformée frame→frame est
+    /// alors séparable (warp valide). Sinon on ne warpe pas (fallback affichage brut).
+    axis_aligned: bool,
+}
+
+/// Cœur (pur, testable) du warp GPU G10.1. À partir des vues HP texture/live,
+/// renvoie `(n_cx, v_cy, rx, ry)` : centre normalisé (u,v) où placer la texture
+/// dans la vue live + échelle (span_tex/span_live) en x/y. `None` si parse HP
+/// impossible, span live nul, non-fini, ou vues identiques (pas de warp utile).
+///
+/// Convention : `u = 0.5 + (c_re - centre_re)/span_re` croît vers la droite ;
+/// `v = 0.5 - (c_im - centre_im)/span_im` croît vers le bas (imag inversé écran).
+fn compute_warp_norm(
+    tex: &ViewSnapshot,
+    live: &ViewSnapshot,
+    prec: u32,
+) -> Option<(f64, f64, f64, f64)> {
+    let f = |s: &str| Float::parse(s).ok().map(|p| Float::with_val(prec, p));
+    let (cxt, cyt, sxt, syt) = (f(&tex.cx)?, f(&tex.cy)?, f(&tex.sx)?, f(&tex.sy)?);
+    let (cxl, cyl, sxl, syl) = (f(&live.cx)?, f(&live.cy)?, f(&live.sx)?, f(&live.sy)?);
+    if sxl.is_zero() || syl.is_zero() {
+        return None;
+    }
+    // Ratios O(1) : décalage (Δcentre/span) et échelle (span_tex/span_live).
+    let dx = (Float::with_val(prec, &cxt - &cxl) / &sxl).to_f64();
+    let dy = (Float::with_val(prec, &cyt - &cyl) / &syl).to_f64();
+    let rx = Float::with_val(prec, &sxt / &sxl).to_f64();
+    let ry = Float::with_val(prec, &syt / &syl).to_f64();
+    if ![dx, dy, rx, ry].iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    // Vues identiques → pas de warp (rendu terminé ou pas encore bougé).
+    if dx.abs() < 1e-9 && dy.abs() < 1e-9 && (rx - 1.0).abs() < 1e-9 && (ry - 1.0).abs() < 1e-9 {
+        return None;
+    }
+    Some((0.5 + dx, 0.5 - dy, rx, ry))
+}
+
 /// Colorise un buffer d'itérations en RGB.
 /// Cette fonction est appelée dans le thread de rendu ou dans l'UI pour re-coloriser avec la palette actuelle.
 fn colorize_buffer(
@@ -124,7 +171,14 @@ pub struct FractallApp {
     
     // Texture egui pour l'affichage
     texture: Option<TextureHandle>,
-    
+    /// Vue (centre/span HP) que représente la texture actuellement affichée.
+    /// Sert au warp GPU (G10.1) : pendant un rendu, la texture est encore l'ANCIENNE
+    /// vue ; on la transforme par (view_texture → view_live) pour un aperçu fluide.
+    texture_view: Option<ViewSnapshot>,
+    /// Vue du rendu en cours (posée à `start_render`), copiée dans `texture_view`
+    /// au chargement d'une texture de rendu (pas de recolorisation).
+    rendering_view: Option<ViewSnapshot>,
+
     // Cache des textures de prévisualisation des palettes
     palette_preview_textures: [Option<TextureHandle>; 27],
     
@@ -300,6 +354,8 @@ impl FractallApp {
             distances: Vec::new(),
             orbits: Vec::new(),
             texture: None,
+            texture_view: None,
+            rendering_view: None,
             palette_preview_textures: [
                 None, None, None, None, None, None, None, None, None,
                 None, None, None, None, None, None, None, None, None,
@@ -432,6 +488,48 @@ impl FractallApp {
             HP_PRECISION as i64,
             crate::fractal::perturbation::MAX_PERTURB_PRECISION_BITS as i64,
         ) as u32
+    }
+
+    /// Snapshot de la vue live courante (centre/span HP + axialité).
+    fn current_view_snapshot(&self) -> ViewSnapshot {
+        ViewSnapshot {
+            cx: self.center_x_hp.clone(),
+            cy: self.center_y_hp.clone(),
+            sx: self.span_x_hp.clone(),
+            sy: self.span_y_hp.clone(),
+            axis_aligned: self.params.rotation == 0.0 && self.params.transform_k.is_none(),
+        }
+    }
+
+    /// Warp GPU (G10.1) : rectangle écran où dessiner la texture (ANCIENNE vue) pour
+    /// qu'elle s'aligne sur la vue live courante pendant qu'un rendu calcule.
+    /// `None` = dessiner tel quel (vues identiques, non-axiales, ou parse HP impossible).
+    ///
+    /// Séparable (rotation=0) : une coordonnée `c` à la position normalisée
+    /// `u = 0.5 + (c - centre)/span` (v inversé pour l'imag). On place les bords de
+    /// la texture (centre_tex ± span_tex/2) dans la vue live. Ratios O(1) calculés
+    /// en HP puis f64 → exact à toute profondeur.
+    fn compute_warp_rect(&self, image_rect: egui::Rect) -> Option<egui::Rect> {
+        let tex = self.texture_view.as_ref()?;
+        let live = self.current_view_snapshot();
+        if !tex.axis_aligned || !live.axis_aligned {
+            return None;
+        }
+        let (n_cx, v_cy, rx, ry) = compute_warp_norm(tex, &live, self.hp_arith_precision())?;
+        let w = image_rect.width() as f64;
+        let h = image_rect.height() as f64;
+        let x0 = image_rect.min.x as f64;
+        let y0 = image_rect.min.y as f64;
+        Some(egui::Rect::from_min_max(
+            egui::pos2(
+                (x0 + (n_cx - rx * 0.5) * w) as f32,
+                (y0 + (v_cy - ry * 0.5) * h) as f32,
+            ),
+            egui::pos2(
+                (x0 + (n_cx + rx * 0.5) * w) as f32,
+                (y0 + (v_cy + ry * 0.5) * h) as f32,
+            ),
+        ))
     }
 
     /// Effectue un zoom en haute précision.
@@ -889,6 +987,10 @@ impl FractallApp {
         self.current_pass = 0;
         self.rendering = true;
         self.is_preview = true;
+        // G10.1 : mémoriser la vue de ce rendu ; elle deviendra `texture_view` au
+        // chargement de la 1re texture. Jusque-là, la texture affichée reste
+        // l'ancienne vue → le warp l'aligne sur la vue live.
+        self.rendering_view = Some(self.current_view_snapshot());
         self.render_start_time = Some(Instant::now());
 
         // Créer le channel de communication
@@ -1147,6 +1249,11 @@ impl FractallApp {
                 self.distances = tex.distances;
                 self.orbits = tex.orbits;
                 self.is_preview = tex.is_preview;
+                // G10.1 : la texture représente désormais la vue du rendu en cours.
+                // Le warp devient l'identité (view_texture == view_live).
+                if self.rendering_view.is_some() {
+                    self.texture_view = self.rendering_view.clone();
+                }
                 self.load_texture_from_buffer(ctx, &tex.display_buffer, tex.width, tex.height);
                 ctx.request_repaint();
                 return;
@@ -2526,14 +2633,29 @@ impl eframe::App for FractallApp {
                     let display_size = image_size * scale;
                     
                     // Gestion des interactions sur l'image
-                    // Désactiver la sélection de texte pour forcer le curseur à rester une flèche
-                    let response = ui.add(
-                        egui::Image::new(texture)
-                            .fit_to_exact_size(display_size)
-                            .sense(egui::Sense::click_and_drag())
-                    );
-                    let image_rect = response.rect;
-                    
+                    // Désactiver la sélection de texte pour forcer le curseur à rester une flèche.
+                    // On alloue le rect d'interaction et on peint la texture à la main (au lieu du
+                    // widget Image) pour pouvoir la WARPER (G10.1) pendant un rendu : la texture
+                    // affichée est encore l'ancienne vue, on la transforme vers la vue live.
+                    let (image_rect, response) =
+                        ui.allocate_exact_size(display_size, egui::Sense::click_and_drag());
+                    let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                    let warp = if self.rendering {
+                        self.compute_warp_rect(image_rect)
+                    } else {
+                        None
+                    };
+                    match warp {
+                        // Warp actif : le zoom-in fait déborder l'ancienne image → clip au rect.
+                        Some(r) => ui
+                            .painter()
+                            .with_clip_rect(image_rect)
+                            .image(texture.id(), r, uv, egui::Color32::WHITE),
+                        None => ui
+                            .painter()
+                            .image(texture.id(), image_rect, uv, egui::Color32::WHITE),
+                    };
+
                     // Forcer le curseur à être une flèche quand on survole l'image
                     // IMPORTANT: Toujours afficher une flèche (Default) et non un curseur de texte ou autre
                     if response.hovered() {
@@ -2932,5 +3054,82 @@ impl eframe::App for FractallApp {
         if self.rendering || self.hq_rendering {
             ctx.request_repaint();
         }
+    }
+}
+
+#[cfg(test)]
+mod warp_tests {
+    use super::{compute_warp_norm, ViewSnapshot};
+
+    fn v(cx: &str, cy: &str, sx: &str, sy: &str) -> ViewSnapshot {
+        ViewSnapshot {
+            cx: cx.to_string(),
+            cy: cy.to_string(),
+            sx: sx.to_string(),
+            sy: sy.to_string(),
+            axis_aligned: true,
+        }
+    }
+
+    #[test]
+    fn identity_view_no_warp() {
+        let a = v("0", "0", "4", "3");
+        assert!(compute_warp_norm(&a, &a, 256).is_none());
+    }
+
+    #[test]
+    fn zoom_in_2x_centered() {
+        // Texture span 4, live span 2 (zoom ×2), même centre → vieille image
+        // magnifiée ×2, centrée.
+        let tex = v("0", "0", "4", "4");
+        let live = v("0", "0", "2", "2");
+        let (n_cx, v_cy, rx, ry) = compute_warp_norm(&tex, &live, 256).unwrap();
+        assert!((n_cx - 0.5).abs() < 1e-9);
+        assert!((v_cy - 0.5).abs() < 1e-9);
+        assert!((rx - 2.0).abs() < 1e-9);
+        assert!((ry - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pan_right_shifts_texture_left() {
+        // Vue déplacée vers +réel d'un demi-span → l'ancien contenu va à GAUCHE.
+        let tex = v("0", "0", "4", "4");
+        let live = v("2", "0", "4", "4"); // cx_live = cx_tex + sx/2
+        let (n_cx, _v_cy, rx, _ry) = compute_warp_norm(&tex, &live, 256).unwrap();
+        assert!((n_cx - 0.0).abs() < 1e-9, "n_cx={n_cx}");
+        assert!((rx - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pan_up_shifts_texture_down() {
+        // Vue vers +imag (on regarde plus haut) → l'ancien contenu descend (v_cy>0.5).
+        let tex = v("0", "0", "4", "4");
+        let live = v("0", "2", "4", "4"); // cy_live = cy_tex + sy/2
+        let (_n_cx, v_cy, _rx, ry) = compute_warp_norm(&tex, &live, 256).unwrap();
+        assert!((v_cy - 1.0).abs() < 1e-9, "v_cy={v_cy}");
+        assert!((ry - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn deep_zoom_precision_needs_hp() {
+        // cx_tex=1.0, cx_live=1+1e-40, span=2e-40 → dx=-0.5, n_cx=0.0.
+        // En f64 pur, 1.0 et 1+1e-40 sont ÉGAUX (dx=0, faux). Le HP donne -0.5.
+        let tex = v("1.0", "0", "2e-40", "2e-40");
+        let live = v(
+            "1.0000000000000000000000000000000000000001",
+            "0",
+            "2e-40",
+            "2e-40",
+        );
+        let (n_cx, _v_cy, rx, _ry) = compute_warp_norm(&tex, &live, 512).unwrap();
+        assert!((n_cx - 0.0).abs() < 1e-6, "n_cx={n_cx} (HP requis, pas f64)");
+        assert!((rx - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn zero_span_live_is_none() {
+        let tex = v("0", "0", "4", "4");
+        let live = v("0", "0", "0", "4");
+        assert!(compute_warp_norm(&tex, &live, 256).is_none());
     }
 }

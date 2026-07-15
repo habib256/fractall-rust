@@ -1848,6 +1848,53 @@ axe harness « wisdom-optimality » (sweep des plans sur un échantillon).
     preset quality `mandelbrot-e50` (BLA≡GMP, déjà PASS). Seuil robuste aux
     futurs changements de coût BLA (n'est plus ancré sur le débit relatif).
 
+### G10 — Rendu GUI temps-réel : plan XaoS · `[P1 · navigation fluide — étude 2026-07-16]`
+
+> **Vision** : la navigation (pan/zoom) doit être *fluide* (ressenti 30-60 fps),
+> pas une reconstruction complète à chaque mouvement. Aujourd'hui chaque
+> changement de géométrie jette l'orbite référence (`app.rs:1601/1635/1656`
+> `orbit_cache=None`) ET recalcule tous les pixels depuis zéro ; **aucune
+> réutilisation inter-frame**. Référence : la technique d'**approximation
+> dynamique de XaoS** (réutilisation séparable colonnes/lignes) — que ni nous ni
+> F3 n'implémentons. F3 réutilise seulement l'orbite/BLA (`render.cc:238
+> reference_can_be_reused`), pas les pixels.
+
+**Fait habilitant (vérifié)** : `colorize_to_rgb` (`io/png.rs:23`) ne consomme
+que `iterations[idx]` (échappement) + `zs[idx]` (z à l'échappement), **absolus
+et indépendants de l'orbite référence** → un pixel calculé à la coordonnée `c`
+reste réutilisable pour le même `c` à la frame suivante, même en perturbation.
+Le matching doit se faire en **espace pixel relatif** (transformée frame→frame
+`x_old=a·x+b`, séparable si rotation=0), exact à toute profondeur sans HP dans
+la boucle.
+
+**Garde-fous** : fast-path gated sur `rotation=0 ∧ transform_k=None` (sinon
+fallback rendu complet — la séparabilité casse en rotation) ; réutilisation
+désactivée pour les modes à données par-pixel (`Distance*`, `OrbitTraps`,
+`Wings` — même exclusion que `escape_time.rs:68 build_reuse`).
+
+Jalons (ordre de ROI croissant en effort) :
+- [ ] **G10.1 — Warp GPU de la dernière frame** `[quick win, en cours 2026-07-16]` :
+  pendant qu'un rendu calcule, afficher la texture précédente **transformée par
+  le pan/zoom courant** (quad texturé egui, offset/scale UV dérivés de
+  `view_texture` vs `view_live` en HP). Donne le *ressenti* de fluidité XaoS
+  immédiatement, sans toucher au compute. Aucune régression moteur (pur
+  affichage). Snapshot de vue posé au chargement de texture.
+- [ ] **G10.2 — Réutilisation orbite référence inter-frame** (port F3
+  `reference_can_be_reused`) : cesser d'invalider `orbit_cache` inconditionnellement ;
+  le garder tant que (type identique ∧ précision mantisse suffisante ∧ centre dans
+  le rayon de validité). Pan deep-zoom quasi-gratuit (×5-50). **Meilleur ROI algo,
+  socle de G10.4.**
+- [ ] **G10.3 — Recolorisation sans clone 74 Mo** (`app.rs:1428`) : passer
+  `iterations/zs/distances/orbits` en `Arc<…>` partagé au thread de recolor au
+  lieu de 4 clones/changement de palette.
+- [ ] **G10.4 — Réutilisation pixels XaoS (colonnes/lignes)** : matching séparable
+  en espace pixel relatif, recopie des bandes réutilisables, recalcul des seules
+  bandes neuves (masque de calcul dans les `par_chunks_mut`), raffinement des
+  pixels approximés en idle. ×10-20 pixels calculés en pan/petit zoom. Gros
+  morceau.
+- [ ] **G10.5 — File de tuiles priorité-centre** : work-queue de tuiles ordonnée
+  curseur-d'abord au lieu du `par_chunks_mut` monolithique (`escape_time.rs:347`).
+
 ## ✅ Shipped (condensé, le plus récent en haut)
 
 **2026-07-16b** (`/improve`, ré-vérification CORRECTION corpus complet) :
