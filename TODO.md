@@ -1623,11 +1623,21 @@ Jalons (chacun ≈ 1-2 itérations /improve, ordre suggéré) :
   (227 unit + goldens + QA 15/15 PASS + quick 0 gap) ; `[WISDOM]` logue
   désormais `device=… variants=…`. Reste hors périmètre 9.1 : `effective_
   algorithm_mode` GUI (forme délibérée sans GMP, stats display).
-- [ ] **9.2 — Benchmarks machine persistés (F3 wisdom.cc-style)** :
-  micro-bench ns/iter par (device × tier) au premier run (ou `fractall-cli
-  --wisdom-bench`), persisté en TOML par machine (comme F3), consommé par le
-  plan pour départager les techniques viables. Sans ça le choix GPU/CPU et
-  harmonic/BLA reste des seuils devinés.
+- [x] **9.2 — Benchmarks machine persistés (F3 wisdom.cc-style)**
+  `[✅ 2026-07-15]` : `fractall-cli --wisdom-bench` (explicite, jamais
+  implicite au premier rendu — ~20 s) mesure le **débit effectif** (Σ iters /
+  wall, skips BLA/harmonic + orbite + rayon inclus) de chaque technique sur
+  des rendus RÉELS via le dispatcher unique : `cpu_std_f64` (vue défaut),
+  `cpu_perturb_{f64,exp,dd}` (frames corpus e50/e318 embarquées, tests
+  verrouillent frame→technique), `gpu_std_f32` (MÊME vue que cpu_std_f64 —
+  comparabilité device directe). Persisté `~/.config/fractall/wisdom.toml`
+  (override `FRACTALL_WISDOM_FILE`), module `fractal/wisdom_bench.rs`.
+  Consommé par `WisdomPlan.bench_iters_per_sec` (ligne `[WISDOM] bench=`,
+  fallback `-` sans fichier). Mesures i7-10700F : cpu_std 1.8e9, perturb_f64
+  1.04e11, exp 1.8e10, dd 2.2e8, **gpu_f32 5.0e9 = 2.7× cpu_std** → la
+  donnée d'arbitrage 9.5 existe. Raffinement possible à 9.5 : croître les
+  itérations (pas seulement la taille) pour atteindre la durée cible sur les
+  frames std (0.15-0.22 s au cap de taille).
 - [x] **9.3 — Routage harmonic par le wisdom** `[✅ 2026-07-15]` : mode
   `FRACTALL_HARMONIC_LA` tri-état (unset/`auto` → **Auto, nouveau défaut** ;
   `1|lla|mla` → forcé ; `0|off|bla` → kill switch). Décision Auto au build de

@@ -287,9 +287,14 @@ Source UNIQUE de la sélection **algorithme + tier + variantes** :
   1.74×). Per-pixel : routage sur la PRÉSENCE de la table dans l'entrée.
 
 `wisdom::plan(params)` / `plan_for(params, device)` renvoie un `WisdomPlan`
-inspectable (device + algorithme + tier + variantes + exposant/mantisse requis
-F3-style + précision GMP orbite) ; `FRACTALL_WISDOM=1` logue la ligne
-`[WISDOM]`. Modèle F3 (`wisdom.cc:240` /
+inspectable (device + algorithme + tier + variantes + **débit benché machine**
++ exposant/mantisse requis F3-style + précision GMP orbite) ; `FRACTALL_WISDOM=1`
+logue la ligne `[WISDOM]` (`bench=` = iters/s mesurés, `-` si pas de fichier
+wisdom). **Benchmarks machine (G9.2)** : `fractal/wisdom_bench.rs` +
+`fractall-cli --wisdom-bench` → `~/.config/fractall/wisdom.toml` (override
+`FRACTALL_WISDOM_FILE`) ; débit effectif par technique (cpu_std_f64,
+cpu_perturb_{f64,exp,dd}, gpu_std_f32) sur rendus réels, modèle F3
+`wisdom.cc:393`. Consommateur d'arbitrage device = jalon G9.5. Modèle F3 (`wisdom.cc:240` /
 `render.cc:219`) : un type de mantisse `M` / exposant `E` est viable si
 `req_exp+16 < 2^E/2` ET `req_prec < M` ; pour une frame **centrée**
 `req_prec ≈ log2(hypot(w,h))` (~8-13 b), donc **f64 (53 b) suffit toujours sur la
@@ -442,6 +447,8 @@ fractall-cli --type N --output FILE [OPTIONS]
   --multibrot-power F / --lyapunov-preset NAME
   --toml FILE             # charge real/imag/zoom/iterations/rotate
                           # format léger rust-fractal-core
+  --wisdom-bench          # bench machine (G9.2) : débits par technique →
+                          # ~/.config/fractall/wisdom.toml (--output non requis)
 ```
 
 ## GPU (wgpu)

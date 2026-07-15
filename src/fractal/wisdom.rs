@@ -130,6 +130,12 @@ pub struct WisdomPlan {
     pub tier: Option<NumberTier>,
     /// Variantes d'accélération actives (partie statique, cf. [`Variants`]).
     pub variants: Variants,
+    /// Débit effectif benché sur CETTE machine pour la technique du plan
+    /// (iters/s, `fractall-cli --wisdom-bench`, G9.2). `None` si non mesuré —
+    /// purement informatif aujourd'hui ; l'arbitrage device (G9.5) le
+    /// consommera pour départager les techniques VIABLES, modèle F3
+    /// `wisdom_lookup` (max vitesse).
+    pub bench_iters_per_sec: Option<f64>,
     /// `pixel_spacing` effectif en espace-c (HP-aware ; peut être dénormal).
     pub pixel_size: f64,
     /// `~log2(zoom)` = exposant binaire requis (magnitude). `None` si dégénéré.
@@ -366,6 +372,9 @@ pub fn plan_for(params: &FractalParams, device: Device) -> WisdomPlan {
         algorithm,
         tier,
         variants,
+        bench_iters_per_sec: crate::fractal::wisdom_bench::lookup_iters_per_sec(
+            device, algorithm, tier,
+        ),
         pixel_size: effective_pixel_size(params),
         required_exponent: log2_zoom(params),
         required_precision: required_precision_bits(params),
@@ -387,8 +396,12 @@ pub fn log_plan_if_enabled(params: &FractalParams) {
         (false, Some(HarmonicVariant::Mla)) => "harmonic_mla",
         (false, None) => "bla",
     };
+    let bench = p
+        .bench_iters_per_sec
+        .map(|s| format!("{:.2e}", s))
+        .unwrap_or_else(|| "-".into());
     eprintln!(
-        "[WISDOM] type={:?} device={:?} algo={:?} tier={} variants={} req_exp={} req_prec={}b tier_mantissa={}b ref_prec={}b pixel_size={:.3e}",
+        "[WISDOM] type={:?} device={:?} algo={:?} tier={} variants={} bench={bench} req_exp={} req_prec={}b tier_mantissa={}b ref_prec={}b pixel_size={:.3e}",
         params.fractal_type,
         p.device,
         p.algorithm,

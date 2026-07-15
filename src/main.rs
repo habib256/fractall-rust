@@ -206,9 +206,17 @@ struct Cli {
     #[arg(long)]
     bailout: Option<f64>,
 
-    /// Fichier de sortie PNG
+    /// Fichier de sortie PNG (requis, sauf avec --wisdom-bench)
     #[arg(long, value_name = "FICHIER")]
-    output: PathBuf,
+    output: Option<PathBuf>,
+
+    /// Benche les techniques de rendu (CPU std/perturbation f64-exp-dd + GPU
+    /// f32 si disponible) et persiste les débits mesurés (iters/s) dans le
+    /// fichier wisdom par machine (~/.config/fractall/wisdom.toml, override
+    /// FRACTALL_WISDOM_FILE). Consommé par le plan wisdom (ligne [WISDOM]
+    /// bench=…, arbitrage device à venir). Modèle Fraktaler-3 wisdom.cc.
+    #[arg(long, default_value_t = false)]
+    wisdom_bench: bool,
 
     /// Charge un fichier TOML de paramètres (format rust-fractal-core léger:
     /// real/imag/zoom/iterations[/rotate]). Les overrides CLI restent prioritaires.
@@ -292,8 +300,51 @@ fn load_toml_params(path: &std::path::Path) -> TomlParams {
     TomlParams { real, imag, zoom, iterations, rotate }
 }
 
+/// `--wisdom-bench` (G9.2) : mesure les débits effectifs par technique (CPU
+/// std/perturbation f64-exp-dd via le dispatcher unique ; GPU f32 via
+/// `render_dispatch` si un GPU est disponible) et persiste le fichier wisdom
+/// machine. Cf. `fractal/wisdom_bench.rs` (modèle F3 `wisdom.cc`).
+fn run_wisdom_bench() {
+    const TARGET_SECONDS: f64 = 1.5;
+    let cancel = AtomicBool::new(false);
+    let gpu = GpuRenderer::new();
+    let gpu_std = gpu.as_ref().map(|g| {
+        move |params: &fractal::FractalParams| {
+            g.render_dispatch(params, &cancel, None, None).map(|r| r.iterations)
+        }
+    });
+    let file = match &gpu_std {
+        Some(f) => fractal::wisdom_bench::run_bench(
+            Some(f as &dyn Fn(&fractal::FractalParams) -> Option<Vec<u32>>),
+            TARGET_SECONDS,
+        ),
+        None => {
+            eprintln!("[WISDOM-BENCH] GPU indisponible — bench CPU uniquement");
+            fractal::wisdom_bench::run_bench(None, TARGET_SECONDS)
+        }
+    };
+    match fractal::wisdom_bench::save(&file) {
+        Ok(path) => println!("Wisdom machine écrit : {}", path.display()),
+        Err(e) => {
+            eprintln!("Échec d'écriture du wisdom : {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
+
+    // Mode bench wisdom (G9.2) : mesure les débits par technique et persiste
+    // le fichier wisdom machine, puis sort. Pas de rendu --output.
+    if cli.wisdom_bench {
+        run_wisdom_bench();
+        return;
+    }
+    let Some(output_path) = cli.output.clone() else {
+        eprintln!("--output est requis (sauf avec --wisdom-bench)");
+        std::process::exit(2);
+    };
 
     // Si --toml est fourni sans --type, défaut Mandelbrot (le corpus toml/ ne
     // contient que des Mandelbrot deep zoom au format rust-fractal-core).
@@ -695,7 +746,7 @@ fn main() {
         save_png_rgb_with_metadata(
             &params,
             &avg,
-            &cli.output,
+            &output_path,
             &center_x_hp,
             &center_y_hp,
             &span_x_hp,
@@ -706,7 +757,7 @@ fn main() {
             &params,
             &iterations,
             &zs,
-            &cli.output,
+            &output_path,
             &center_x_hp,
             &center_y_hp,
             &span_x_hp,

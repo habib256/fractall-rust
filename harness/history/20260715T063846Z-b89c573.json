@@ -1,0 +1,430 @@
+{
+  "schema": 1,
+  "meta": {
+    "date_utc": "2026-07-15T06:38:46+00:00",
+    "stamp": "20260715T063846Z",
+    "git_sha": "b89c573",
+    "git_dirty": false,
+    "machine": {
+      "cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz",
+      "nproc": 16,
+      "os": "Linux 6.14.0-37-generic"
+    },
+    "tier": "quick",
+    "axes": [
+      "speed",
+      "parity",
+      "quality",
+      "fuzz",
+      "goldens"
+    ],
+    "width": 256,
+    "height": 256,
+    "quality_width": 96,
+    "quality_height": 96,
+    "runs": 1,
+    "f3_bin": "/home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux",
+    "mem_limit_mb": 34024,
+    "quarantined": [
+      "e52465"
+    ],
+    "fuzz_seed": 20260714
+  },
+  "speed": {
+    "status": "ok",
+    "cases": {
+      "test5": {
+        "fractall_s": 0.0102,
+        "f3_s": 0.0334,
+        "ratio": 0.3054,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "spiral": {
+        "fractall_s": 0.0362,
+        "f3_s": 0.1661,
+        "ratio": 0.2179,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "flake": {
+        "fractall_s": 0.0335,
+        "f3_s": 0.2158,
+        "ratio": 0.1552,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_2": {
+        "fractall_s": 0.0351,
+        "f3_s": 0.1657,
+        "ratio": 0.2118,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e50": {
+        "fractall_s": 0.1659,
+        "f3_s": 1.1177,
+        "ratio": 0.1484,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e113": {
+        "fractall_s": 0.0662,
+        "f3_s": 0.2658,
+        "ratio": 0.2491,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e401": {
+        "fractall_s": 0.5172,
+        "f3_s": 6.2768,
+        "ratio": 0.0824,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1000": {
+        "fractall_s": 0.4196,
+        "f3_s": 2.9705,
+        "ratio": 0.1413,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "floral_fantasy": {
+        "fractall_s": 0.0225,
+        "f3_s": 0.1656,
+        "ratio": 0.1359,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "dragon": {
+        "fractall_s": 1.6711,
+        "f3_s": 3.6239,
+        "ratio": 0.4611,
+        "status": "ok",
+        "f3_exr_ok": true
+      }
+    },
+    "geomean_ratio": 0.1893,
+    "worst_ratio": {
+      "case": "dragon",
+      "ratio": 0.4611
+    },
+    "wins": [
+      "test5",
+      "spiral",
+      "flake",
+      "glitch_test_2",
+      "e50",
+      "e113",
+      "e401",
+      "e1000",
+      "floral_fantasy",
+      "dragon"
+    ],
+    "timeouts": [],
+    "excluded_f3_degenerate": [],
+    "n_cases": 10,
+    "n_compared": 10
+  },
+  "parity": {
+    "status": "ok",
+    "cases": {
+      "dragon": {
+        "status": "ok",
+        "rel_dsi_pct": 0.1714,
+        "mean_abs_dsi": 8568.8423,
+        "inside_mismatch": 28,
+        "f3_degenerate": false,
+        "f3_secs_num": 3.5612,
+        "fr_secs_num": 1.6577
+      },
+      "e1000": {
+        "status": "ok",
+        "rel_dsi_pct": 0.001,
+        "mean_abs_dsi": 0.3236,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 2.9689,
+        "fr_secs_num": 0.4297
+      },
+      "e113": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0786,
+        "mean_abs_dsi": 27.8825,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.2397,
+        "fr_secs_num": 0.0528
+      },
+      "e401": {
+        "status": "ok",
+        "rel_dsi_pct": 0.004,
+        "mean_abs_dsi": 8.5156,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 6.3034,
+        "fr_secs_num": 0.5156
+      },
+      "e50": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0347,
+        "mean_abs_dsi": 91.2391,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 1.162,
+        "fr_secs_num": 0.165
+      },
+      "flake": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0434,
+        "mean_abs_dsi": 26.0319,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.17,
+        "fr_secs_num": 0.0319
+      },
+      "floral_fantasy": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0032,
+        "mean_abs_dsi": 0.3894,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.155,
+        "fr_secs_num": 0.0264
+      },
+      "glitch_test_2": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0079,
+        "mean_abs_dsi": 19.73,
+        "inside_mismatch": 12,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.121,
+        "fr_secs_num": 0.0284
+      },
+      "spiral": {
+        "status": "ok",
+        "rel_dsi_pct": 0.979,
+        "mean_abs_dsi": 9.7899,
+        "inside_mismatch": 16,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.1699,
+        "fr_secs_num": 0.0256
+      },
+      "test5": {
+        "status": "ok",
+        "rel_dsi_pct": 0.0,
+        "mean_abs_dsi": 0.0,
+        "inside_mismatch": 0,
+        "f3_degenerate": false,
+        "f3_secs_num": 0.0157,
+        "fr_secs_num": 0.0105
+      }
+    },
+    "n_ok": 10,
+    "n_pixel_equiv": 5,
+    "n_fail": 0,
+    "n_timeout": 0,
+    "n_f3_degenerate": 0
+  },
+  "quality": {
+    "status": "ok",
+    "n_pass": 15,
+    "n_warn": 0,
+    "n_fail": 0,
+    "fail_presets": [],
+    "warn_presets": [],
+    "presets": [
+      {
+        "name": "seahorse-valley",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 255.50741900000003,
+        "time_gmp_ms": 1039.4305180000001
+      },
+      {
+        "name": "mandelbrot-e13",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 25.224828000000002,
+        "time_gmp_ms": 332.05306099999996
+      },
+      {
+        "name": "mandelbrot-e17",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 3.938864,
+        "time_gmp_ms": 404.809116
+      },
+      {
+        "name": "misiurewicz-m32",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 86.401567,
+        "time_gmp_ms": 356.935721
+      },
+      {
+        "name": "julia-siegel-disk",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 1.0013450000000002,
+        "time_gmp_ms": 192.054534
+      },
+      {
+        "name": "burning-ship-antenna",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 1.1447429999999998,
+        "time_gmp_ms": 24.747761999999998
+      },
+      {
+        "name": "tricorn-spiral",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 0.727194,
+        "time_gmp_ms": 9.197531
+      },
+      {
+        "name": "celtic-fold-edge",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 20.900481,
+        "time_gmp_ms": 3208.363675
+      },
+      {
+        "name": "buffalo-fold-edge",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 24.242998,
+        "time_gmp_ms": 3647.958601
+      },
+      {
+        "name": "perpbs-escape-band",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 16.848175,
+        "time_gmp_ms": 2522.046953
+      },
+      {
+        "name": "mandelbrot-e18-minibrot",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 81.8265,
+        "time_gmp_ms": 366.573368
+      },
+      {
+        "name": "mandelbrot-e30",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 4503.396736,
+        "time_gmp_ms": 20220.649218
+      },
+      {
+        "name": "mandelbrot-e50",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 7391.672124000001,
+        "time_gmp_ms": 176491.1213
+      },
+      {
+        "name": "mandelbrot-e100",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 509.51637400000004,
+        "time_gmp_ms": 20831.110062
+      },
+      {
+        "name": "single-ref-glitch-interior",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 33.480015,
+        "time_gmp_ms": 1760.969783
+      }
+    ]
+  },
+  "fuzz": {
+    "status": "ok",
+    "seed": 20260714,
+    "n_probes": 3,
+    "n_pass": 3,
+    "n_warn": 0,
+    "n_fail": 0,
+    "cases": {
+      "fuzz-20260714-0-tricorn": {
+        "verdict": "PASS",
+        "type": "tricorn",
+        "center_x": "-0.5912971496582031",
+        "center_y": "-0.043022791544596366",
+        "zoom": "9.005324e+05",
+        "iterations": 2048
+      },
+      "fuzz-20260714-1-mandelbrot": {
+        "verdict": "PASS",
+        "type": "mandelbrot",
+        "center_x": "-0.6152286330858866",
+        "center_y": "0.40106525023778294",
+        "zoom": "6.023813e+07",
+        "iterations": 2048
+      },
+      "fuzz-20260714-2-tricorn": {
+        "verdict": "PASS",
+        "type": "tricorn",
+        "center_x": "0.25293623520216574",
+        "center_y": "-0.10817046263643233",
+        "zoom": "9.216840e+09",
+        "iterations": 2048
+      }
+    },
+    "fail_cases": [],
+    "warn_cases": []
+  },
+  "goldens": {
+    "passed": true,
+    "detail": ""
+  },
+  "beyond_f3": {
+    "speed_wins": [
+      "test5",
+      "spiral",
+      "flake",
+      "glitch_test_2",
+      "e50",
+      "e113",
+      "e401",
+      "e1000",
+      "floral_fantasy",
+      "dragon"
+    ],
+    "correctness_wins": []
+  },
+  "gaps": []
+}
