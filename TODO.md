@@ -1696,14 +1696,34 @@ Jalons (chacun ≈ 1-2 itérations /improve, ordre suggéré) :
     Ti, f64 1:64, comme anticipé). L'auto-GPU (9.5) ne doit PAS router le deep
     sur GeForce par vitesse ; la voie perf reste 2×f32 via passthrough SPIR-V
     décoré NoContraction, ou kernel exp-par-pixel f32.
-  - **📌 Découverte correction (piste 9.6/G-dd)** : sur mandelbrot-e30 (scène
-    ultra-sensible : le CPU bytecode_f64 FAIL div 0.034 vs GMP, harmonic ON ou
-    OFF — c'est pourquoi le preset CPU force `use_dd_tier`), le kernel GPU f64
-    + BLA **conforme** tient div 3e-4, ~100× plus proche de la vérité à f64
-    égal et rebasing identique. Suspect : agressivité des skips de la BLA mat2
-    unifiée CPU (rayons de validité / merge). À investiguer : si confirmé, une
-    partie des cas « dd requis » est récupérable en f64 pur (gros gain vitesse
-    + fiabilité du wisdom).
+  - **📌 Découverte correction — ✅ ÉLUCIDÉE + fix f64 livré (2026-07-15)** :
+    sur mandelbrot-e30 (scène ultra-sensible) le CPU bytecode_f64 FAIL div 0.034
+    vs GMP là où le kernel GPU f64 + BLA conforme tient div 3e-4. **Cause
+    isolée** (pas la « conformité » ni le merge) : l'**epsilon de validité BLA**.
+    F3 (`engine.cc:283`) hardcode `e = 1/2²⁴` avec un FIXME (« not enough in all
+    circumstances ») parce que ses coefficients BLA sont en mantisse `float`
+    (24 b). Nos tables mat2 sont en **f64 (53 b)** mais copiaient tel quel le
+    2⁻²⁴ (`bla_threshold`), d'où une erreur ~2⁻²⁵ par saut (terme δ² droppé,
+    borné par r=ε·|Z|) qui sature sur les scènes sensibles. **Fix** :
+    `F64_BLA_EPSILON = 2⁻⁵³` pour le tier f64 (`delta.rs::build_bla_entry`),
+    miroir fidèle de la convention F3 e=2^-mantissa_bits. Preuve (`fractall-
+    quality compare`, GMP pur) : e30 f64 div 0.036→**3e-4**, e15/e20 WARN
+    (max_diff 349/415) → **PASS pixel-exact GMP (max_diff=0)**, e50 f64 FAIL
+    div 0.051 p99=73 → WARN div 0.0013 p99=0. Ces vues rendaient **silencieusement
+    faux en prod Auto** (path f64, dd = opt-in). Coût : BLA moins agressive →
+    e50 256² 0.21→0.83 s (~4×), e113 0.05→0.11 s (~2×), geomean quick 0.192→0.282
+    (fractall gagne toujours 10/10 vs F3) — compromis correction>vitesse assumé.
+    Verrous : goldens e10/e15/e20/e50/deep_e113/glitch_test_2_atom/cusp_m075
+    régénérés (corrections, revus visuellement). 233 unit + 21 golden + QA 15/15
+    PASS. **Reste** : (1) porter le même fix au tier **exp** (FloatExp, mantisse
+    f64 aussi → 2⁻⁵³ ; encore à `bla_threshold`=2⁻²⁴ ; impact deep-zoom > 1e280 à
+    mesurer). (2) **Récupérer la vitesse** via BLA **second ordre** (terme C·δ²,
+    exactement ce que fait le kernel GPU conforme, `bla.rs::c_new`) : garde le
+    rayon 2⁻²⁴ large ET la précision — mais exige des dérivées secondes
+    (hyper-dual) dans la mat2 unifiée. (3) réévaluer si des presets `use_dd_tier`
+    (seahorse/misiurewicz/minibrot) redeviennent f64-viables (e30 f64 reste WARN,
+    pas PASS : le max_diff résiduel = plancher f64 intrinsèque → dd garde le
+    pixel-exact).
 - [ ] **9.5 — Auto-GPU** `[🔓 partiellement débloqué 2026-07-15 : le path
   perturbation GPU (≥1e4) est au niveau CPU ; restent les shaders std f32]` :
   le plan choisit le device par benchmark 9.2 + viabilité ; `--gpu`/`--no-gpu`

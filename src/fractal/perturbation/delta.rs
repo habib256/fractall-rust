@@ -153,13 +153,29 @@ fn build_bla_entry(
     orbit_len: usize,
     formula: &Formula,
 ) -> Option<Arc<BlaUnifiedCacheEntry>> {
-    // Utiliser `params.bla_threshold` (défaut aligné F3 : 1/2^24) — permet à
-    // `--bla-threshold` CLI de piloter le path bytecode.
+    // Epsilon de validité BLA = précision machine du **type de coefficient**.
+    // F3 (`engine.cc:283`) hardcode `e = 1/2²⁴` avec un FIXME explicite
+    // (« hardcoded 24 is not enough in all circumstances ») PARCE QUE ses
+    // coefficients BLA sont en mantisse `float` (24 b) : `e = 2^-(mantissa_bits)`.
+    // Nos tables mat2 sont en **f64 (53 b de mantisse)** → l'epsilon fidèle est
+    // `2⁻⁵³`, PAS le `bla_threshold` par défaut (2⁻²⁴, hérité tel quel du FIXME
+    // F3 mais calibré pour f32). Avec 2⁻²⁴ la BLA introduit une erreur relative
+    // ~2⁻²⁵ par saut accepté (le terme δ² droppé, borné par r = ε·|Z|) qui,
+    // accumulée sur les scènes ultra-sensibles (Lyapunov élevé), sature bien
+    // avant le plancher f64 : mandelbrot-e30 en f64 pur FAIL div 0.036 vs GMP,
+    // e15/e20 WARN (max_diff 349/415). À 2⁻⁵³ ces mêmes vues redeviennent
+    // **pixel-exactes GMP** (e15/e20 max_diff=0) et e30 tombe à div 3e-4 (=
+    // niveau du pas direct sans BLA / du kernel GPU f64). Coût : rayons plus
+    // petits → moins de skips longs (BLA moins agressive) mais correcte.
+    // NB : ne concerne QUE le tier f64 ; l'exp (FloatExp, mantisse f64 aussi)
+    // garde `bla_threshold` pour l'instant (cf. TODO G9 — même correctif à
+    // porter, à mesurer côté deep-zoom). Le dd a son propre 2⁻⁸⁰ (ci-dessous).
+    const F64_BLA_EPSILON: f64 = 1.0 / (1u64 << 53) as f64; // 2⁻⁵³ ≈ 1.11e-16
     let tables = build_bla_table_for_formula(
         formula,
         &ref_orbit.z_ref_f64,
         c_norm,
-        params.bla_threshold,
+        F64_BLA_EPSILON,
     )?;
     // Table BLA dd (tier dd Mandelbrot) : coefficients ~106 b depuis l'orbite dd.
     // **Epsilon = 2⁻⁸⁰** (calibré empiriquement 2026-07-15, ex-2⁻¹⁰⁶), PAS
