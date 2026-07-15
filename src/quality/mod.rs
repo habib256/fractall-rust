@@ -239,19 +239,23 @@ pub fn params_from_preset(preset: &Preset, opt: &ComparisonOptions) -> FractalPa
     // Tier double-double (~106 b) pour les points **ultra-sensibles** où la
     // mantisse f64 (53 b) sature — l'amplification de Lyapunov transforme le
     // 2⁻⁵² d'arrondi en écart d'itération vs GMP (cf. TODO G2). Équivalent du
-    // float128 de Fraktaler-3 (sélectionné par son wisdom). Concerne aussi bien
-    // les spirales profondes (e30/e50/e100) que des zooms modérés à très haute
-    // sensibilité (seahorse 1e8, Misiurewicz 1e12, minibrot 1e18) : la
-    // sensibilité — pas la profondeur — dicte le besoin. Les autres presets
-    // (e13/e17/julia/BS/tricorn) matchent la GMP en f64/ComplexExp.
+    // float128 de Fraktaler-3 (sélectionné par son wisdom). Concerne les
+    // spirales profondes (e30/e50/e100) et le seahorse 1e8 (edge à sensibilité
+    // extrême : f64 WARN div 0.0018 même après le fix epsilon BLA 2⁻⁵³, dd le
+    // rend pixel-exact). Les autres presets (e13/e17/julia/BS/tricorn) matchent
+    // la GMP en f64/ComplexExp.
+    //
+    // ⚠️ **misiurewicz-m32 (1e12) et mandelbrot-e18-minibrot (1e18) RETIRÉS de
+    // la liste dd (2026-07-15)** : depuis le fix de l'epsilon de validité BLA
+    // (2⁻²⁴ f32 → 2⁻⁵³ f64, cf. `delta::BLA_MANTISSA_EPSILON`), ils sont
+    // **pixel-exacts en f64 pur** vs GMP (max_diff=0 à 96²/128²/160²) — leur
+    // « besoin dd » venait de l'over-skip BLA, PAS d'un vrai plancher de
+    // mantisse. Les laisser en f64 fait que la QA vérifie le path que la
+    // **production utilise réellement** (dd = opt-in) → verrou anti-régression
+    // f64 sur ces scènes (complète les goldens e15/e20/e50).
     params.use_dd_tier = matches!(
         preset.name,
-        "mandelbrot-e30"
-            | "mandelbrot-e50"
-            | "mandelbrot-e100"
-            | "misiurewicz-m32"
-            | "seahorse-valley"
-            | "mandelbrot-e18-minibrot"
+        "mandelbrot-e30" | "mandelbrot-e50" | "mandelbrot-e100" | "seahorse-valley"
     );
 
     params

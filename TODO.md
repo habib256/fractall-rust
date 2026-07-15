@@ -1734,10 +1734,15 @@ Jalons (chacun ≈ 1-2 itérations /improve, ordre suggéré) :
     vitesse f64** via BLA **second ordre** (terme C·δ²,
     exactement ce que fait le kernel GPU conforme, `bla.rs::c_new`) : garde le
     rayon 2⁻²⁴ large ET la précision — mais exige des dérivées secondes
-    (hyper-dual) dans la mat2 unifiée. (3) réévaluer si des presets `use_dd_tier`
-    (seahorse/misiurewicz/minibrot) redeviennent f64-viables (e30 f64 reste WARN,
-    pas PASS : le max_diff résiduel = plancher f64 intrinsèque → dd garde le
-    pixel-exact).
+    (hyper-dual) dans la mat2 unifiée. (3) ✅ **FAIT (2026-07-15)** : réévalué les presets `use_dd_tier`. **misiurewicz-m32
+    (1e12) et mandelbrot-e18-minibrot (1e18) sont pixel-exacts en f64 pur**
+    depuis le fix epsilon (max_diff=0 vs GMP à 96²/128²/160²) → RETIRÉS de la
+    liste dd (`quality/mod.rs`) : la QA vérifie désormais le path f64 que la
+    prod utilise (dd = opt-in) = verrou anti-régression. **seahorse-valley
+    (1e8) et les spirales e30/e50/e100 restent dd** : leur edge/spirale
+    ultra-sensible garde un résidu f64 réel (seahorse f64 WARN div 0.0018 ;
+    e30 f64 WARN div 3e-4) que seul le dd rend pixel-exact — vrai plancher de
+    sensibilité, pas un artefact BLA.
 - [ ] **9.5 — Auto-GPU** `[🔓 partiellement débloqué 2026-07-15 : le path
   perturbation GPU (≥1e4) est au niveau CPU ; restent les shaders std f32]` :
   le plan choisit le device par benchmark 9.2 + viabilité ; `--gpu`/`--no-gpu`
