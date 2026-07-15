@@ -42,28 +42,40 @@ struct Case {
     name: &'static str,
     /// Arguments CLI à passer (sans `--output`, ajouté automatiquement).
     args: &'static [&'static str],
+    /// Variables d'environnement posées sur le process CLI (épingle un path
+    /// précis quand le défaut est un routage auto — ex. `FRACTALL_HARMONIC_LA=0`
+    /// pour garder un verrou sur le path BLA).
+    envs: &'static [(&'static str, &'static str)],
 }
+
+/// Cas nominal : aucun env, comportement par défaut du CLI.
+const NO_ENV: &[(&str, &str)] = &[];
 
 const CASES: &[Case] = &[
     Case {
         name: "mandelbrot_default",
         args: &["--type", "3", "--width", "160", "--height", "100", "--iterations", "300"],
+        envs: NO_ENV,
     },
     Case {
         name: "julia_default",
         args: &["--type", "4", "--width", "160", "--height", "100", "--iterations", "300"],
+        envs: NO_ENV,
     },
     Case {
         name: "burning_ship_default",
         args: &["--type", "13", "--width", "160", "--height", "100", "--iterations", "300"],
+        envs: NO_ENV,
     },
     Case {
         name: "tricorn_default",
         args: &["--type", "14", "--width", "160", "--height", "100", "--iterations", "300"],
+        envs: NO_ENV,
     },
     Case {
         name: "celtic_default",
         args: &["--type", "19", "--width", "160", "--height", "100", "--iterations", "300"],
+        envs: NO_ENV,
     },
     Case {
         name: "multibrot_pow3",
@@ -71,6 +83,7 @@ const CASES: &[Case] = &[
             "--type", "23", "--multibrot-power", "3",
             "--width", "160", "--height", "100", "--iterations", "300",
         ],
+        envs: NO_ENV,
     },
     Case {
         name: "mandelbrot_perturb_1e6",
@@ -80,6 +93,7 @@ const CASES: &[Case] = &[
             "--zoom", "1e6",
             "--width", "160", "--height", "100", "--iterations", "1500",
         ],
+        envs: NO_ENV,
     },
     Case {
         name: "burning_ship_perturb_1e3",
@@ -89,10 +103,12 @@ const CASES: &[Case] = &[
             "--zoom", "1e3",
             "--width", "160", "--height", "100", "--iterations", "1000",
         ],
+        envs: NO_ENV,
     },
     Case {
         name: "newton_default",
         args: &["--type", "6", "--width", "160", "--height", "100", "--iterations", "200"],
+        envs: NO_ENV,
     },
     // Deep zoom Mandelbrot près d'un minibrot — exerce intensivement la
     // perturbation + BLA + glitch detection. Le path actuel (legacy glitch
@@ -106,6 +122,7 @@ const CASES: &[Case] = &[
             "--zoom", "1e8",
             "--width", "160", "--height", "100", "--iterations", "3000",
         ],
+        envs: NO_ENV,
     },
     // --- Zooms intermédiaires (G6) : verrouillent le path perturbation par
     // défaut aux frontières 1e10 / 1e15 / 1e20 (chemin `bytecode_f64`, le f64
@@ -122,6 +139,7 @@ const CASES: &[Case] = &[
             "--zoom", "1e10",
             "--width", "160", "--height", "100", "--iterations", "4000",
         ],
+        envs: NO_ENV,
     },
     // 1e15 : centre e113 (180 digits HP), zoom sorti à 1e15 — spirale
     // structurée. Divergence vs GMP = bruit de bord dispersé (p99=0,
@@ -135,6 +153,7 @@ const CASES: &[Case] = &[
             "--zoom", "1e15",
             "--width", "160", "--height", "100", "--iterations", "6000",
         ],
+        envs: NO_ENV,
     },
     // 1e20 : même centre e113, zoom 1e20 — étoile multi-spirale symétrique.
     // Bruit de bord dispersé vs GMP (p99=0, div_ratio≈0.005).
@@ -147,6 +166,7 @@ const CASES: &[Case] = &[
             "--zoom", "1e20",
             "--width", "160", "--height", "100", "--iterations", "10000",
         ],
+        envs: NO_ENV,
     },
     // Deep zoom Mandelbrot 5e113 (cf. toml/e113.toml) — exerce le path GMP
     // reference + BLA en très haute précision. Plusieurs dizaines de secondes
@@ -160,6 +180,7 @@ const CASES: &[Case] = &[
             "--zoom", "5e113",
             "--width", "160", "--height", "100", "--iterations", "35494",
         ],
+        envs: NO_ENV,
     },
     // Deep escape-time 1e50 (toml/e50.toml) — verrouille le fix G2 rebase-at-end :
     // sans lui, la référence escape-time tronquée → fallback GMP / image uniforme.
@@ -167,11 +188,13 @@ const CASES: &[Case] = &[
     Case {
         name: "mandelbrot_e50",
         args: &["--toml", "toml/e50.toml", "--width", "160", "--height", "100"],
+        envs: NO_ENV,
     },
     // Deep escape-time 1e1000 (toml/e1000.toml) — idem, régime extrême.
     Case {
         name: "mandelbrot_e1000",
         args: &["--toml", "toml/e1000.toml", "--width", "160", "--height", "100"],
+        envs: NO_ENV,
     },
     // Mid-range 1.5e115 (toml/glitch_test_2.toml) — VERROU de la troncature
     // atom-domain MID-RANGE (2026-07-12, G2) : réf intérieure 250 k iters coupée
@@ -182,6 +205,22 @@ const CASES: &[Case] = &[
     Case {
         name: "mandelbrot_glitch_test_2_atom",
         args: &["--toml", "toml/glitch_test_2.toml", "--width", "160", "--height", "100"],
+        // ÉPINGLÉ sur BLA : depuis le routage harmonic auto (G9.3), ce cas
+        // (period0=35) routerait harmonic par défaut — or ce verrou protège le
+        // guard BLA `lands_on_ref_end`, qui doit rester couvert. Le path
+        // harmonic auto a SON verrou : `mandelbrot_glitch_test_2_harmonic`.
+        envs: &[("FRACTALL_HARMONIC_LA", "0")],
+    },
+    // MÊME vue, routage par défaut (G9.3) : period0=35 ≤ 100 → le wisdom route
+    // Harmonic LLA (`path=bytecode_f64_harmonic_lla`). Verrou du routage auto
+    // ET de l'évaluateur LA. Adjugé vs GMP pur (96², 2026-07-15) : harmonic
+    // WARN max_diff=11 div_ratio=0.00033 vs BLA max_diff=38 div_ratio=0.00043
+    // — le path routé est PLUS PROCHE de la vérité que BLA sur ce cas.
+    // Régression du routage (cas plus routé → pixels BLA) = cette golden casse.
+    Case {
+        name: "mandelbrot_glitch_test_2_harmonic",
+        args: &["--toml", "toml/glitch_test_2.toml", "--width", "160", "--height", "100"],
+        envs: NO_ENV,
     },
     // Deep INTÉRIEUR 1e1200 (toml/e1200.toml, 45 k iters) — VERROU de la troncature
     // atom-domain ON PAR DÉFAUT (2026-07-11). Structure en étoile (matche F3 à
@@ -191,6 +230,7 @@ const CASES: &[Case] = &[
     Case {
         name: "mandelbrot_e1200_interior",
         args: &["--toml", "toml/e1200.toml", "--width", "160", "--height", "160"],
+        envs: NO_ENV,
     },
     // Cusp -0.75, zoom 2.8e10 (image utilisateur) — verrouille le fix G3
     // `max_perturb_iterations` : régression = anneaux concentriques. Args
@@ -204,6 +244,7 @@ const CASES: &[Case] = &[
             "--zoom", "2.8172915379e10",
             "--width", "160", "--height", "100", "--iterations", "2500",
         ],
+        envs: NO_ENV,
     },
     // Deep périodique 1.55e85 (toml/floral_fantasy.toml) — verrouille le fix G3
     // tolérance period-detection : avant, un faux-positif (graze) déclenchait la
@@ -212,6 +253,7 @@ const CASES: &[Case] = &[
     Case {
         name: "mandelbrot_floral",
         args: &["--toml", "toml/floral_fantasy.toml", "--width", "160", "--height", "100"],
+        envs: NO_ENV,
     },
     // Deep 9.7e83 (toml/glitch_test_5.toml) — VERROU du fix « Brent OFF par
     // défaut ». La détection de période Brent firait un FAUX POSITIF ici →
@@ -221,6 +263,7 @@ const CASES: &[Case] = &[
     Case {
         name: "mandelbrot_glitch5",
         args: &["--toml", "toml/glitch_test_5.toml", "--width", "128", "--height", "128"],
+        envs: NO_ENV,
     },
 ];
 
@@ -254,6 +297,7 @@ fn render_case(case: &Case) -> PathBuf {
     let output = temp_output();
     let status = Command::new(cli_binary_path())
         .args(case.args)
+        .envs(case.envs.iter().copied())
         .arg("--output")
         .arg(&output)
         .status()

@@ -1628,10 +1628,28 @@ Jalons (chacun ≈ 1-2 itérations /improve, ordre suggéré) :
   --wisdom-bench`), persisté en TOML par machine (comme F3), consommé par le
   plan pour départager les techniques viables. Sans ça le choix GPU/CPU et
   harmonic/BLA reste des seuils devinés.
-- [ ] **9.3 — Routage harmonic par le wisdom** (premier consommateur de 9.1,
-  facile) : `period0`/`orbit_len` connus au build → router harmonic quand la
-  classe « orbite courte » est détectée (glitch_test_2 : 2.3×), BLA sinon.
-  Sort le prototype de l'env-gate, verrous = corpus + QA existants.
+- [x] **9.3 — Routage harmonic par le wisdom** `[✅ 2026-07-15]` : mode
+  `FRACTALL_HARMONIC_LA` tri-état (unset/`auto` → **Auto, nouveau défaut** ;
+  `1|lla|mla` → forcé ; `0|off|bla` → kill switch). Décision Auto au build de
+  l'entrée cache BLA : probe `detect_period0` (scan premier-dip O(period0),
+  réplique exacte de l'ouverture du build LLA, verrouillée par test) +
+  politique `wisdom::route_harmonic_auto(period0)` = route si `1 ≤ period0 ≤
+  100`. **Calibration corpus 256² (A/B pixels ×3)** : le discriminant est
+  period0 SEUL, PAS le ratio orbit/period0 (e50 ratio 773 PERD +34 %) ni la
+  longueur d'orbite (super_dense p9 orbite 695 k GAGNE 1.74×, −63 s). Gagnants
+  p7-78 : flake 5.9×, gt5 5.8×, test3 5.7×, gt3 5.3×, mitosis 3.7×, gt1 3.7×,
+  mitosis2 3×, gt2 2.2×, peanuts/all_seeing_eye 1.8×, leaded_glass 1.6×,
+  dinosaur_fossils (p78) 1.2× ; perdants p112+ : e50 +34 %, e113 +13 %,
+  dragon +59 % ; seuil 100 = milieu de la zone morte mesurée [79, 111].
+  Per-pixel : routage sur PRÉSENCE de la table dans l'entrée (le probe ne
+  tourne jamais par pixel) ; per-render : candidat `wisdom::harmonic_candidate`
+  (le prédicat compressed reste per-pixel-safe via `compression_active`
+  gate-first). Adjudication GMP pur (glitch_test_2 96²) : harmonic max_diff=11
+  div=0.00033 vs BLA max_diff=38 div=0.00043 — **le path routé est plus proche
+  de la vérité que BLA**. Verrous : golden `mandelbrot_glitch_test_2_harmonic`
+  (routage auto + évaluateur LA) ; golden `_atom` épinglé
+  `FRACTALL_HARMONIC_LA=0` (préserve le verrou du guard BLA lands_on_ref_end ;
+  runner golden étendu aux env par cas) ; tests seuils politique + probe==build.
 - [ ] **9.4 — GPU perturbation deep (kernel delta HDR wgsl)** : étendre le
   range GPU de ~1e7 → ~1e300 (f32 mantisse + exposant par pixel, table BLA en
   storage buffer, rebasing F3 dans le kernel). **Cible mesurable : ≥ 2× notre

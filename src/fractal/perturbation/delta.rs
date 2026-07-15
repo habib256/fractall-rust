@@ -236,29 +236,50 @@ fn build_bla_entry(
     } else {
         None
     };
-    // Table Harmonic LA (prototype G8.2, gate `FRACTALL_HARMONIC_LA` :
-    // 1/lla → LLA, mla → MLA). Construite ici (une fois par render, sous le
-    // lock global) quand le routage harmonique s'appliquera aux pixels —
-    // mêmes conditions que le dispatch (`harmonic_route_active`).
-    // Log `[HARMONIC]` une fois par table.
+    // Table Harmonic LA (G8.2 → routage wisdom G9.3). Construite ici (une fois
+    // par render, sous le lock global) quand harmonic est candidat ET que la
+    // décision de routage est prise : Forced (gate env legacy) → toujours ;
+    // **Auto (défaut)** → probe `detect_period0` + politique wisdom (classe
+    // « période courte », gagne 1.7-5.9× ; cf. `route_harmonic_auto`). La
+    // PRÉSENCE de la table dans l'entrée = le signal de routage per-pixel.
     let harmonic = if harmonic_route_active(params, ref_orbit) {
         use crate::fractal::bytecode::harmonic_mla as hla;
-        let variant = hla::harmonic_variant().unwrap_or(hla::HarmonicVariant::Lla);
-        let built = match variant {
-            hla::HarmonicVariant::Lla => hla::build_harmonic_lla_table(&ref_orbit.z_ref_f64),
-            hla::HarmonicVariant::Mla => hla::build_harmonic_mla_table(&ref_orbit.z_ref_f64),
+        let mode = hla::harmonic_mode();
+        let route = match mode {
+            hla::HarmonicMode::Forced(_) => true,
+            hla::HarmonicMode::Auto => crate::fractal::wisdom::route_harmonic_auto(
+                hla::detect_period0(&ref_orbit.z_ref_f64),
+            ),
+            hla::HarmonicMode::Off => false, // inatteignable (candidat None)
         };
-        built.map(|t| {
-            eprintln!(
-                "[HARMONIC] variant={:?} stages={} steps={} orbit_len={} period0={}",
-                variant,
-                t.stages.len(),
-                t.steps.len(),
-                ref_orbit.z_ref_f64.len(),
-                t.period0
-            );
-            Arc::new(t)
-        })
+        if route {
+            let variant = hla::harmonic_variant().unwrap_or(hla::HarmonicVariant::Lla);
+            let built = match variant {
+                hla::HarmonicVariant::Lla => hla::build_harmonic_lla_table(&ref_orbit.z_ref_f64),
+                hla::HarmonicVariant::Mla => hla::build_harmonic_mla_table(&ref_orbit.z_ref_f64),
+            };
+            built.map(|t| {
+                // Log une-fois-par-table : toujours en Forced (outil d'A/B),
+                // suivant FRACTALL_PERTURB_STATS en Auto (opt-out, comme les
+                // autres lignes perf).
+                if matches!(mode, hla::HarmonicMode::Forced(_))
+                    || crate::fractal::perturbation::perf_enabled()
+                {
+                    eprintln!(
+                        "[HARMONIC] mode={:?} variant={:?} stages={} steps={} orbit_len={} period0={}",
+                        mode,
+                        variant,
+                        t.stages.len(),
+                        t.steps.len(),
+                        ref_orbit.z_ref_f64.len(),
+                        t.period0
+                    );
+                }
+                Arc::new(t)
+            })
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -456,7 +477,7 @@ pub(crate) fn compressed_ref_route_active(
     params: &FractalParams,
     orbit: &ReferenceOrbit,
 ) -> bool {
-    crate::fractal::wisdom::variants(params).compression
+    crate::fractal::wisdom::compression_active(params)
         && orbit.compressed_f64.as_ref().is_some_and(|c| c.len >= 2)
         && orbit.cycle_period == 0
         && orbit.phase_offset == 0
@@ -469,19 +490,46 @@ pub(crate) fn compressed_ref_route_active(
 /// commun aux deux variantes) et le label perf (`mod.rs`,
 /// `path=bytecode_f64_harmonic_{lla,mla}`).
 ///
-/// Conditions statiques (gate env `FRACTALL_HARMONIC_LA`, Mandelbrot seed=0 —
-/// la table suppose `Z[0]=0`, orbite critique —, `FRACTALL_COMPRESS_REF`
-/// INACTIF avec avertissement une-fois si les deux gates sont posés, tier
-/// wisdom F64, pas de distance/interior/orbit_traps) : **`wisdom::variants`**
-/// (source unique, G9.1). S'y ajoutent les conditions dépendantes de l'orbite :
+/// Harmonic est-il CANDIDAT pour ce render ? Conditions statiques
+/// (`wisdom::harmonic_candidate` : mode ≠ Off, compression inactive, Mandelbrot
+/// seed=0, tier F64, flags purs) + conditions orbite :
 /// - `cycle_period == 0` (pas de wrap_periodic Brent) et `phase_offset == 0` ;
 /// - orbite ≥ 9 entrées (`referenceLength ≥ 8`, mirror Imagina `Prepare`) —
 ///   garantit que le build de table réussit quand le routage est actif.
-pub(crate) fn harmonic_route_active(params: &FractalParams, orbit: &ReferenceOrbit) -> bool {
-    crate::fractal::wisdom::variants(params).harmonic.is_some()
+///
+/// **PER-RENDER uniquement** (build de l'entrée cache) — depuis le mode Auto
+/// (G9.3) ce prédicat ne court-circuite plus sur un gate env : ne PAS l'appeler
+/// par pixel (le dispatch pixel route sur `entry.harmonic`). La décision FINALE
+/// en Auto ajoute le probe `period0` (cf. `build_bla_entry`).
+fn harmonic_route_active(params: &FractalParams, orbit: &ReferenceOrbit) -> bool {
+    crate::fractal::wisdom::harmonic_candidate(params).is_some()
         && orbit.cycle_period == 0
         && orbit.phase_offset == 0
         && orbit.z_ref_f64.len() >= 9
+}
+
+/// Le render courant a-t-il ROUTÉ harmonic ? (= une table Harmonic vit dans
+/// l'entrée cache BLA de CETTE orbite, et les flags de coloring du render
+/// restent compatibles). Consommé par le label `[FRACTALL] path=…` — reflète la
+/// décision RÉELLE prise au build (candidat + probe Auto), contrairement à
+/// `harmonic_route_active` qui n'est que le candidat.
+pub(crate) fn harmonic_entry_active(params: &FractalParams, orbit: &ReferenceOrbit) -> bool {
+    if params.enable_orbit_traps
+        || params.enable_distance_estimation
+        || params.enable_interior_detection
+    {
+        return false;
+    }
+    let (orbit_ptr, orbit_len) = orbit_identity(orbit);
+    GLOBAL_BLA
+        .lock()
+        .ok()
+        .and_then(|g| {
+            g.as_ref()
+                .filter(|e| e.matches(orbit_ptr, orbit_len, params))
+                .map(|e| e.harmonic.is_some())
+        })
+        .unwrap_or(false)
 }
 
 fn try_bytecode_unified_path(
@@ -647,13 +695,19 @@ fn try_bytecode_unified_path(
             );
         }
 
-        // ── Path f64 HARMONIC MLA (FRACTALL_HARMONIC_LA=1, prototype G8.2) ──
+        // ── Path f64 HARMONIC LA (routé par le wisdom, G9.3) ────────────────
         // Segments LA à longueur variable + descente d'étages (Imagina) au
-        // lieu de la BLA mip 2^k. Mutuellement exclusif avec le path
-        // compressé (le prédicat refuse quand FRACTALL_COMPRESS_REF est posé).
-        // La table vit dans l'entrée cache BLA (un build par render).
-        if harmonic_route_active(params, ref_orbit) {
-            if let Some(harmonic) = entry.harmonic.as_ref() {
+        // lieu de la BLA mip 2^k. La PRÉSENCE de la table dans l'entrée cache
+        // = la décision de routage prise au build (candidat wisdom + probe
+        // period0 en Auto) — per-pixel on ne re-vérifie que les flags de
+        // coloring, seuls params variables sans invalider l'entrée (le reste
+        // — type/seed/tier/compress/conditions orbite — est soit dans la clé
+        // du cache, soit constant process, soit encodé par ce code path f64).
+        if let Some(harmonic) = entry.harmonic.as_ref() {
+            if !params.enable_orbit_traps
+                && !params.enable_distance_estimation
+                && !params.enable_interior_detection
+            {
                 debug_assert!(delta_init.norm_sqr() == 0.0, "Mandelbrot ⇒ delta0 = 0");
                 return Some(
                     crate::fractal::bytecode::harmonic_mla::iterate_pixel_harmonic_mla(

@@ -276,9 +276,15 @@ Source UNIQUE de la sélection **algorithme + tier + variantes** :
   `pixel_size<1e-280` > f64), consommée par `bytecode_path_label` ET le dispatch
   d'exécution (`try_bytecode_unified_path`).
 - `wisdom::variants(params)` → `{compression, harmonic}` : partie STATIQUE des
-  prédicats de routage env-gated (`FRACTALL_COMPRESS_REF`,
-  `FRACTALL_HARMONIC_LA`) ; `delta.rs::{compressed_ref,harmonic}_route_active`
-  la composent avec les conditions orbite (cycle/phase/longueur).
+  prédicats de routage. Compression : opt-in `FRACTALL_COMPRESS_REF`
+  (`compression_active`, per-pixel-safe : gate d'abord). **Harmonic : routé
+  AUTO par défaut (G9.3)** — `FRACTALL_HARMONIC_LA` tri-état (unset/`auto` →
+  Auto ; `1|lla|mla` → forcé ; `0|off|bla` → kill switch) ; candidat
+  `harmonic_candidate` (per-render), décision finale au build de l'entrée
+  cache BLA : probe `detect_period0` + `route_harmonic_auto` (route si
+  `1 ≤ period0 ≤ 100`, calibré corpus — gagne 1.2-5.9× jusqu'à p78, perd dès
+  p112 ; la longueur d'orbite est hors de cause : super_dense p9/695 k gagne
+  1.74×). Per-pixel : routage sur la PRÉSENCE de la table dans l'entrée.
 
 `wisdom::plan(params)` / `plan_for(params, device)` renvoie un `WisdomPlan`
 inspectable (device + algorithme + tier + variantes + exposant/mantisse requis

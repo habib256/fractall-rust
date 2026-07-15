@@ -1934,10 +1934,10 @@ pub fn render_perturbation_with_cache(
         // décompresseur à waypoints.
         let path_label = if delta::compressed_ref_route_active(params, &cache.orbit) {
             "bytecode_f64_compressed"
-        } else if delta::harmonic_route_active(params, &cache.orbit) {
-            // Marqueur du path Harmonic LA (FRACTALL_HARMONIC_LA, G8.2) :
-            // le routage delta.rs a envoyé chaque pixel Mandelbrot f64 vers
-            // l'évaluateur à descente d'étages (variante = valeur du gate).
+        } else if delta::harmonic_entry_active(params, &cache.orbit) {
+            // Marqueur du path Harmonic LA (routé wisdom G9.3, forcé via
+            // FRACTALL_HARMONIC_LA) : reflète la décision RÉELLE (table
+            // construite dans l'entrée cache), pas le seul candidat.
             match crate::fractal::bytecode::harmonic_mla::harmonic_variant() {
                 Some(crate::fractal::bytecode::harmonic_mla::HarmonicVariant::Mla) => {
                     "bytecode_f64_harmonic_mla"

@@ -264,40 +264,82 @@ pub fn select_algorithm(params: &FractalParams, device: Device) -> Algorithm {
 /// conditions dépendantes de l'orbite (réf compressée construite,
 /// `cycle_period`, `phase_offset`, longueur) sont composées par-dessus dans
 /// `delta.rs`. Fast-path Mandelbrot f64 pur uniquement (cf. doc des prédicats).
-pub fn variants(params: &FractalParams) -> Variants {
-    let compress_gate = compress_enabled();
-    let harmonic_gate = harmonic_variant();
-    // ⚠️ Hot path : ce prédicat est appelé PAR PIXEL (via `try_bytecode_
-    // unified_path` → `{compressed_ref,harmonic}_route_active`). Sans gate
-    // posé (cas nominal), sortir AVANT le calcul d'éligibilité — `number_tier`
-    // recompile la formule et `effective_pixel_size` peut parser les spans HP,
-    // coût mesurable ×pixels (geomean quick 0.223→0.269 sans ce short-circuit).
-    if !compress_gate && harmonic_gate.is_none() {
-        return Variants::default();
-    }
-    if compress_gate && harmonic_gate.is_some() {
-        static WARNED: OnceLock<()> = OnceLock::new();
-        WARNED.get_or_init(|| {
-            eprintln!(
-                "[HARMONIC] FRACTALL_COMPRESS_REF actif — Harmonic MLA sauté \
-                 (la table et la queue directe lisent z_ref_f64 plein)"
-            );
-        });
-    }
-    let eligible = matches!(params.fractal_type, FractalType::Mandelbrot)
+/// Éligibilité commune des variantes fast-path : Mandelbrot f64 pur (pas de
+/// distance/interior/orbit_traps ; tier F64 couvre `use_bytecode_engine`,
+/// formule single-phase, `pixel_size > 0`). ⚠️ Coûteux (`number_tier`
+/// recompile la formule, `effective_pixel_size` peut parser les spans HP) —
+/// les prédicats PER-PIXEL doivent court-circuiter AVANT d'y arriver (leçon
+/// G9.1 : geomean quick 0.223→0.269 sans short-circuit).
+fn variant_eligible(params: &FractalParams) -> bool {
+    matches!(params.fractal_type, FractalType::Mandelbrot)
         && !params.enable_orbit_traps
         && !params.enable_distance_estimation
         && !params.enable_interior_detection
-        && number_tier(params) == Some(NumberTier::F64);
-    if !eligible {
-        return Variants::default();
+        && number_tier(params) == Some(NumberTier::F64)
+}
+
+/// La variante COMPRESSION est-elle candidate ? Prédicat PER-PIXEL-safe : le
+/// gate env (`FRACTALL_COMPRESS_REF`, off par défaut) court-circuite avant
+/// l'éligibilité coûteuse.
+pub fn compression_active(params: &FractalParams) -> bool {
+    compress_enabled() && variant_eligible(params)
+}
+
+/// La variante HARMONIC est-elle candidate, et laquelle ? `None` = BLA.
+/// **PER-RENDER uniquement** (build de l'entrée cache + label) : depuis le
+/// mode Auto par défaut (G9.3), ce prédicat ne court-circuite plus — le path
+/// per-pixel route sur la PRÉSENCE de la table dans l'entrée cache, pas sur ce
+/// prédicat. Conditions : mode ≠ Off, compression INACTIVE (la table et la
+/// queue directe lisent `z_ref_f64` PLEIN, que le strip compressé libère —
+/// avertissement une-fois si un gate FORCÉ entre en conflit), Mandelbrot
+/// seed=0 (la table suppose `Z[0]=0`, orbite critique), éligibilité commune.
+/// La décision FINALE Auto (probe `period0`) est prise au build de l'entrée.
+pub fn harmonic_candidate(params: &FractalParams) -> Option<HarmonicVariant> {
+    use crate::fractal::bytecode::harmonic_mla::HarmonicMode;
+    let mode = crate::fractal::bytecode::harmonic_mla::harmonic_mode();
+    if mode == HarmonicMode::Off {
+        return None;
     }
-    let harmonic = if !compress_gate && params.seed.re == 0.0 && params.seed.im == 0.0 {
-        harmonic_gate
-    } else {
-        None
-    };
-    Variants { compression: compress_gate, harmonic }
+    if compress_enabled() {
+        if matches!(mode, HarmonicMode::Forced(_)) {
+            static WARNED: OnceLock<()> = OnceLock::new();
+            WARNED.get_or_init(|| {
+                eprintln!(
+                    "[HARMONIC] FRACTALL_COMPRESS_REF actif — Harmonic MLA sauté \
+                     (la table et la queue directe lisent z_ref_f64 plein)"
+                );
+            });
+        }
+        return None;
+    }
+    if params.seed.re != 0.0 || params.seed.im != 0.0 {
+        return None;
+    }
+    if !variant_eligible(params) {
+        return None;
+    }
+    harmonic_variant()
+}
+
+/// Politique de routage AUTO harmonic (G9.3) : router quand la **période de
+/// l'atome dominant** de la référence est courte. Calibration corpus 256²
+/// (A/B pixels BLA vs LLA, 3 runs, 2026-07-15) : GAGNE pour period0 ≤ 78
+/// (flake p28 5.9×, test3 p28 5.7×, glitch_test_5 p7 5.8×, mitosis p24 3.7×,
+/// super_dense p9 **1.74× sur orbite 695 k** — la longueur d'orbite est HORS
+/// de cause, seul period0 discrimine), PERD dès period0 ≥ 112 (e50 +34 %,
+/// e113 p344 +13 %, dragon p3164 +59 %). Seuil 100 = milieu de la zone morte
+/// mesurée [79, 111]. `period0 == 0` (pas de dip) = jamais routé.
+pub const HARMONIC_AUTO_PERIOD0_MAX: u32 = 100;
+
+pub fn route_harmonic_auto(period0: u32) -> bool {
+    (1..=HARMONIC_AUTO_PERIOD0_MAX).contains(&period0)
+}
+
+pub fn variants(params: &FractalParams) -> Variants {
+    Variants {
+        compression: compression_active(params),
+        harmonic: harmonic_candidate(params),
+    }
 }
 
 /// Calcule le [`WisdomPlan`] complet pour une frame CPU (device par défaut des
@@ -458,12 +500,41 @@ mod tests {
     }
 
     #[test]
-    fn variants_inactive_without_env_gates() {
-        // Sans FRACTALL_COMPRESS_REF / FRACTALL_HARMONIC_LA, aucune variante —
-        // et le plan les rapporte à défaut (BLA mat2).
+    fn variants_default_compression_off_harmonic_auto_candidate() {
+        // Sans env : compression OFF (gate opt-in) ; harmonic CANDIDAT LLA
+        // (mode Auto par défaut, G9.3) sur une frame Mandelbrot f64 pure —
+        // la décision finale (probe period0) est prise au build de l'entrée
+        // cache, candidat ≠ routé.
         let p = frame(1e14);
-        assert_eq!(variants(&p), Variants::default());
-        assert_eq!(plan(&p).variants, Variants::default());
+        let v = variants(&p);
+        assert!(!v.compression);
+        assert_eq!(v.harmonic, Some(HarmonicVariant::Lla));
+        // Hors éligibilité (Julia = seed ≠ 0 attendu par la table) : aucun
+        // candidat même en Auto.
+        let mut julia = frame(1e14);
+        julia.fractal_type = FractalType::Julia;
+        julia.seed.re = -0.8;
+        julia.seed.im = 0.156;
+        assert_eq!(variants(&julia).harmonic, None);
+        // Flags de coloring impurs : pas de variante.
+        let mut traps = frame(1e14);
+        traps.enable_distance_estimation = true;
+        assert_eq!(variants(&traps), Variants::default());
+    }
+
+    #[test]
+    fn route_harmonic_auto_calibrated_thresholds() {
+        // Bornes de la politique (calibration corpus 2026-07-15) : period0=0
+        // (pas de dip) jamais routé ; gagnants mesurés ≤ 78 routés ; perdants
+        // mesurés ≥ 112 refusés ; seuil 100 au milieu de la zone morte.
+        assert!(!route_harmonic_auto(0));
+        assert!(route_harmonic_auto(1));
+        assert!(route_harmonic_auto(9)); // super_dense (orbite 695 k, 1.74×)
+        assert!(route_harmonic_auto(78)); // dinosaur_fossils (1.2×)
+        assert!(route_harmonic_auto(HARMONIC_AUTO_PERIOD0_MAX));
+        assert!(!route_harmonic_auto(HARMONIC_AUTO_PERIOD0_MAX + 1));
+        assert!(!route_harmonic_auto(112)); // e50 (+34 %)
+        assert!(!route_harmonic_auto(3164)); // dragon (+59 %)
     }
 
     #[test]

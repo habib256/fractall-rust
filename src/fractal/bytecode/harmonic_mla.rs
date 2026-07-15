@@ -220,21 +220,69 @@ pub enum HarmonicVariant {
     Lla,
 }
 
-/// Gate env `FRACTALL_HARMONIC_LA` : `1`/`true`/`lla` → LLA (défaut du
-/// prototype depuis le jalon LLA), `mla` → MLA (A/B), sinon inactif.
-pub fn harmonic_variant() -> Option<HarmonicVariant> {
-    static F: OnceLock<Option<HarmonicVariant>> = OnceLock::new();
+/// Mode de routage harmonic (G9.3) piloté par `FRACTALL_HARMONIC_LA`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HarmonicMode {
+    /// Jamais routé (kill switch : `0`/`off`/`false`/`bla`, ou valeur inconnue).
+    Off,
+    /// **Défaut (env non posé / `auto`)** : routé quand la classe « période
+    /// courte » est détectée au build (`detect_period0` +
+    /// `wisdom::route_harmonic_auto`), variante LLA (prod Imagina).
+    Auto,
+    /// Toujours routé (si éligible) : `1`/`true`/`lla` → LLA, `mla` → MLA (A/B).
+    Forced(HarmonicVariant),
+}
+
+/// Parse une-fois de `FRACTALL_HARMONIC_LA`. Depuis G9.3, l'absence de la
+/// variable = mode **Auto** (le prototype env-gated est devenu une technique
+/// routée par le wisdom) ; les anciennes valeurs de gate forcent la variante.
+pub fn harmonic_mode() -> HarmonicMode {
+    static F: OnceLock<HarmonicMode> = OnceLock::new();
     *F.get_or_init(|| {
         match std::env::var("FRACTALL_HARMONIC_LA")
             .unwrap_or_default()
             .to_ascii_lowercase()
             .as_str()
         {
-            "1" | "true" | "lla" => Some(HarmonicVariant::Lla),
-            "mla" => Some(HarmonicVariant::Mla),
-            _ => None,
+            "" | "auto" => HarmonicMode::Auto,
+            "1" | "true" | "lla" => HarmonicMode::Forced(HarmonicVariant::Lla),
+            "mla" => HarmonicMode::Forced(HarmonicVariant::Mla),
+            _ => HarmonicMode::Off,
         }
     })
+}
+
+/// Variante candidate du mode courant (`None` = harmonic coupé). Auto → LLA.
+pub fn harmonic_variant() -> Option<HarmonicVariant> {
+    match harmonic_mode() {
+        HarmonicMode::Off => None,
+        HarmonicMode::Auto => Some(HarmonicVariant::Lla),
+        HarmonicMode::Forced(v) => Some(v),
+    }
+}
+
+/// Probe du routage AUTO (G9.3) : période de l'atome dominant = longueur du
+/// premier segment de l'étage 0 (premier **dip** LLA), `0` si aucun dip (orbite
+/// non périodique à l'échelle LA, ou trop courte). O(period0) dans le cas
+/// routé — le scan s'arrête au premier dip ; O(orbite) sinon (une passe f64
+/// triviale devant le build BLA O(M)). Réplique EXACTE du scan d'ouverture de
+/// `create_la_from_orbit_lla` — égalité verrouillée par test unitaire.
+pub fn detect_period0(reference: &[Complex64]) -> u32 {
+    if reference.len() < 9 {
+        return 0;
+    }
+    let reference_length = reference.len() - 1;
+    let mut step = LaStep::new2(0, Complex64::new(0.0, 0.0), reference[1]);
+    let mut i = 2usize;
+    while i < reference_length {
+        let (new_step, dip) = step.step_dip(reference[i]);
+        if dip {
+            return i as u32;
+        }
+        step = new_step;
+        i += 1;
+    }
+    0
 }
 
 /// Construit la table depuis l'orbite brute f64. Mirror de `Prepare`
@@ -879,6 +927,18 @@ mod tests {
             out.push(Complex64::new(z.real().to_f64(), z.imag().to_f64()));
         }
         out
+    }
+
+    /// Le probe de routage AUTO (G9.3) doit être EXACTEMENT le scan
+    /// d'ouverture du build LLA : même period0 sur une vraie orbite, 0 sur
+    /// une orbite trop courte (< 9, jamais routée).
+    #[test]
+    fn detect_period0_matches_lla_build() {
+        let orbit = gmp_orbit(-1.7548776662466927, 0.0, 200);
+        let table = build_harmonic_lla_table(&orbit).expect("table LLA");
+        assert!(table.period0 > 0, "l'orbite airplane doit dipper");
+        assert_eq!(detect_period0(&orbit), table.period0);
+        assert_eq!(detect_period0(&orbit[..8]), 0, "orbite courte : probe 0");
     }
 
     /// (a) Build sur l'orbite du centre superstable période 3 (« airplane »,
