@@ -1788,6 +1788,26 @@ Jalons (chacun ≈ 1-2 itérations /improve, ordre suggéré) :
   écrit) : détecteur shadowing en observation puis escalade px→dd /
   frame→dd ; ferme la boucle « le wisdom ne sous-provisionne jamais »
   (contrairement au wisdom F3, cf. diag 3-voies : F3 float 24 b = 9391 px faux).
+- [ ] **9.7 — Le wisdom choisit aussi le TYPE de l'ORBITE référence**
+  `[⏸ faible ROI — documenté, pas prioritaire]` : aujourd'hui l'orbite est
+  **toujours en GMP**, clampée à **≥128 b** (`compute_perturbation_precision_
+  bits`, `mod.rs:718`) ; le tier `dd` (~106 b) ne sert que la boucle PIXEL, pas
+  l'orbite. La hiérarchie `wisdom` de F3 (double→long double→float128→floatexp→
+  softfloat) sélectionne aussi le type de calcul de l'orbite : dans la fenêtre
+  **mid-deep où la précision orbite requise est 53–113 b** (~zoom 1e13→1e30), un
+  `long double`/`float128`/`dd` **natif** éviterait l'overhead GMP-128. Étend le
+  BUT FINAL multi-technique (le wisdom orchestre TOUTES les techniques, orbite
+  comprise). **⚠️ ROI mesuré faible, raisons (analyse /improve 2026-07-15)** :
+  (1) **pas un déficit** — fractall bat DÉJÀ F3 sur tout le corpus (geomean quick
+  0.298, full 10/10 wins) *avec* GMP-always, alors que F3 utilise ce tier ;
+  (2) l'orbite domine rarement dans cette fenêtre (à ~50 k iters, GMP-128 ≈
+  25 ms, la boucle pixel domine) — le gain n'est sensible que si l'orbite est
+  LONGUE (millions d'iters) ET la précision tombe dans [53,113] b, tranche
+  étroite ; (3) **ZÉRO effet sur les ultra-deep** type e52465 (174 325 b requis
+  ≫ 113 b float128 → orbite intrinsèquement GMP/arbitraire, cf. slow-safe G8).
+  Bencher d'abord (tier orbite dd vs GMP-128 sur un cas mid-deep à orbite longue)
+  pour chiffrer le gain réel AVANT d'investir. À faire APRÈS 9.5/9.6 (plus fort
+  impact).
 
 **Critère d'excellence G9** : sur le corpus + presets QA, le plan choisi par
 le wisdom n'est JAMAIS battu > 10 % par un plan alternatif (vitesse), et
