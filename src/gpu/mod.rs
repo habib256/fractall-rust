@@ -555,6 +555,20 @@ impl GpuRenderer {
         if params.transform_matrix().is_some() {
             return None;
         }
+        // Transport span/offset en paires f32 hi/lo : sous le normal f32
+        // (~1.2e-38) le hi dénormalise et le mapping pixel→c perd sa mantisse.
+        // Au-delà (zoom ≳ 4e37, HP spans inclus : span f64 underflow → 0.0),
+        // fallback CPU. Étendre = passer span/offset en f64 (TODO G9.4 HDR).
+        const GPU_SPAN_F32_MIN: f64 = 1e-37;
+        if !(params.span_x.abs().min(params.span_y.abs()) >= GPU_SPAN_F32_MIN) {
+            if stats {
+                eprintln!(
+                    "[GPU PERTURB] fallback CPU: span sous le normal f32 (span_x={:.3e} span_y={:.3e} < {:.0e})",
+                    params.span_x, params.span_y, GPU_SPAN_F32_MIN,
+                );
+            }
+            return None;
+        }
 
         let mut orbit_params = params.clone();
         orbit_params.precision_bits = compute_perturbation_precision_bits(params);
@@ -668,14 +682,22 @@ impl GpuRenderer {
         let bla_buffer = &cached.bla_buffer;
         let meta_buffer = &cached.meta_buffer;
 
-        // Kernel F3-strict : `m ≤ n < iter_max` exige que la référence couvre
-        // iteration_max (`ref_len-1 ≥ iter_max`). Référence tronquée (centre
-        // escape-time, période détectée, atom-domain) → fallback CPU, qui gère
-        // wrap périodique / rebase-at-end / per-pixel GMP. L'ancien clamp
-        // `iter_max = min(iter_max, ref_len-1)` faussait les comptes
-        // d'itération (les pixels tardifs devenaient "intérieurs").
+        // Réf tronquée (G9.4b) : le kernel gère le wrap périodique
+        // (`cycle_period > 0`) et le rebase-at-end atom-domain
+        // (`atom_truncated`), mirror CPU `pixel_loop.rs`. Seule la troncature
+        // par ESCAPE (centre escape-time, ni cycle ni atom) reste un fallback
+        // CPU : ces pixels exigent la ré-itération per-pixel GMP que le GPU
+        // n'a pas. L'ancien clamp `iter_max = min(iter_max, ref_len-1)`
+        // faussait les comptes d'itération (pixels tardifs "intérieurs").
         let ref_len = ref_orbit.z_ref_f64.len() as u32;
-        if ref_len.saturating_sub(1) < params.iteration_max {
+        let ref_truncated = ref_len.saturating_sub(1) < params.iteration_max;
+        if ref_truncated && ref_orbit.cycle_period == 0 && !ref_orbit.atom_truncated {
+            if stats {
+                eprintln!(
+                    "[GPU PERTURB] fallback CPU: ref tronquée par escape (ref_len={} < iter_max={})",
+                    ref_len, params.iteration_max,
+                );
+            }
             return None;
         }
         let iter_max = params.iteration_max;
@@ -799,9 +821,9 @@ impl GpuRenderer {
                     ref_len,
                     series_order: params.series_order as u32,
                     series_threshold: params.series_threshold as f32,
-                    _pad0: 0,
-                    _pad1: 0,
-                    _pad2: 0,
+                    cycle_start: ref_orbit.cycle_start,
+                    cycle_period: ref_orbit.cycle_period,
+                    atom_truncated: ref_orbit.atom_truncated as u32,
                 }
             }),
             usage: wgpu::BufferUsages::UNIFORM,
@@ -1863,9 +1885,11 @@ struct PerturbParams {
     ref_len: u32,
     series_order: u32,
     series_threshold: f32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
+    /// Réf tronquée (G9.4b) : cycle Brent's + flag atom-domain, consommés par
+    /// le handling fin-de-référence du kernel (mirror CPU `pixel_loop.rs`).
+    cycle_start: u32,
+    cycle_period: u32,
+    atom_truncated: u32,
 }
 
 struct ReuseData<'a> {

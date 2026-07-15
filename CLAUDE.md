@@ -471,10 +471,16 @@ fractall-cli --type N --output FILE [OPTIONS]
 paths GPU (perturbation, shaders f32 dédiés) retombent sur le CPU quand
 `transform_matrix().is_some()` (garde-fou anti-sortie-non-tournée).
 
-Le path perturbation GPU (f64) est vérifié par `gpu-suite` jusqu'à 1e8 ;
-au-delà du seuil GMP (~1e16) le CPU prend le relais (extension du range =
-TODO G9.4b). **Backend** : macOS Metal (sans SHADER_F64 → perturbation sur
-CPU) ; Linux Vulkan (prioritaire), puis OpenGL ; Windows DX12 / Vulkan.
+Le path perturbation GPU (f64) est vérifié par `gpu-suite` jusqu'à **1e30**
+(G9.4b, 2026-07-15) : le kernel gère les réfs tronquées comme le CPU (wrap
+périodique + rebase-at-end atom-domain + guard BLA `lands_on_ref_end`) ; seule
+la réf tronquée par ESCAPE retombe en CPU (per-pixel GMP requis). Range borné
+à zoom ≲ 4e37 par le transport span f32 hi/lo (gate `GPU_SPAN_F32_MIN`). Perf
+e30 1024² : GPU ~2× plus lent que CPU f64 16t (GeForce f64 1:64) — l'intérêt
+du kernel deep est la CORRECTION (div 3e-4 là où le CPU f64 fait 0.034 sur
+scène ultra-sensible, cf. TODO 9.4/9.6), pas la vitesse. **Backend** : macOS
+Metal (sans SHADER_F64 → perturbation sur CPU) ; Linux Vulkan (prioritaire),
+puis OpenGL ; Windows DX12 / Vulkan.
 
 ## GUI (`FractallApp`)
 

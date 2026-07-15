@@ -29,9 +29,19 @@
 // l'échelle seahorse (le kernel legacy ne tenait WARN qu'en re-rendant les
 // pixels flagués en GMP côté CPU).
 //
-// Le caller Rust garantit `ref_len-1 >= iter_max` (sinon fallback CPU), donc
-// `m <= n < iter_max <= ref_len-1` — pas de rebase-at-end nécessaire.
-// Le tier HDR (exposant par pixel, deep zoom > ~1e290) = TODO G9.4.
+// Références TRONQUÉES (G9.4b) — mêmes trois cas que le CPU (`pixel_loop.rs`,
+// étape 3) quand `m+1 >= ref_len` :
+// - Orbite périodique détectée (`cycle_period > 0`, centre intérieur) :
+//   cycler `m` via modulo dans `[cycle_start, cycle_start+cycle_period)`.
+// - Réf atom-tronquée (`atom_truncated`) : rebase-at-end F3 (`hybrid.cc:301`)
+//   `δ := Z[end]+δ, m := 0` + guard BLA `lands_on_ref_end` (interdire au BLA
+//   d'atterrir SUR la dernière entrée, sinon le pas direct part du graze et
+//   le rebase absorbe δ en f64 → image uniforme, cf. G2 mid-range atom).
+// - Sinon (réf tronquée par escape) : le HOST garde le fallback CPU (gate
+//   `render_perturbation_with_cache`) — ces pixels exigent le per-pixel GMP.
+// Le tier HDR (exposant par pixel, deep zoom > ~1e290) = TODO G9.4 ; le
+// transport span/offset en paires f32 hi/lo borne déjà le range à ~1e34
+// (gate host `GPU_SPAN_F32_MIN`).
 
 struct Params {
     // Offset centre-vue − centre-référence (center − cref) et span, en paires
@@ -55,9 +65,11 @@ struct Params {
     ref_len: u32,
     series_order: u32,
     series_threshold: f32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
+    // Réf tronquée (G9.4b) : cycle Brent's [cycle_start, cycle_start+cycle_period)
+    // (0 = pas de cycle) + flag atom_truncated (rebase-at-end F3).
+    cycle_start: u32,
+    cycle_period: u32,
+    atom_truncated: u32,
 };
 
 struct PixelOut {
@@ -201,6 +213,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 if (new_n > params.iter_max || new_m >= params.ref_len) {
                     continue;
                 }
+                // Réf atom-tronquée : interdire au BLA d'atterrir SUR la
+                // dernière entrée (graze) — arrivée en fin de réf par pas
+                // direct uniquement, pour rebaser AVANT le pas de graze
+                // (mirror CPU `lands_on_ref_end`, ordre F3 hybrid.cc:295-308).
+                if (params.atom_truncated != 0u && new_m + 1u >= params.ref_len) {
+                    continue;
+                }
                 // δ' = A·δ (+ B·dc pour Mandelbrot) (+ C·δ² série ordre 2)
                 var cand = cmul(node.a, delta);
                 if (!is_julia) {
@@ -259,11 +278,30 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             return;
         }
 
-        // Étape 3 : rebase F3 strict — |Z[m]+δ|² < |δ|² → δ := Z[m]+δ, m := 0.
-        let z_curr = zref_at(m) + delta;
-        if (norm_sqr(z_curr) < norm_sqr(delta)) {
-            delta = z_curr;
-            m = 0u;
+        // Étape 3 : fin de référence (réf tronquée, mirror CPU pixel_loop.rs) ;
+        // sinon rebase F3 strict — |Z[m]+δ|² < |δ|² → δ := Z[m]+δ, m := 0.
+        if (m + 1u >= params.ref_len) {
+            if (params.cycle_period > 0u && m >= params.cycle_start) {
+                // Orbite périodique (centre intérieur) : cycler m via modulo.
+                m = params.cycle_start + (m - params.cycle_start) % params.cycle_period;
+            } else if (params.atom_truncated != 0u) {
+                // Rebase-at-end F3 (`hybrid.cc:301`) : δ := Z[end]+δ, m := 0.
+                delta = zref_at(m) + delta;
+                m = 0u;
+            } else {
+                // Réf tronquée par escape : normalement gaté côté host
+                // (fallback CPU). Défensif : sortir avec l'état courant,
+                // flag ≠ 0 pour les stats.
+                write_pixel(idx, n, zref_at(m) + delta);
+                out_pixels[idx].flags = 1u;
+                return;
+            }
+        } else {
+            let z_curr = zref_at(m) + delta;
+            if (norm_sqr(z_curr) < norm_sqr(delta)) {
+                delta = z_curr;
+                m = 0u;
+            }
         }
     }
 

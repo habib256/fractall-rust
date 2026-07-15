@@ -353,4 +353,34 @@ pub const GPU_PRESETS: &[Preset] = &[
         julia_seed: None,
         precision_bits: None,
     },
+    // --- Range deep (G9.4b) : au-delà de l'ancien plafond vérifié 1e8. ---
+    Preset {
+        name: "gpu-mandelbrot-e13",
+        description: "Parité GPU — zoom 1e13 (perturbation f64, réf pleine, coords mandelbrot-e13).",
+        fractal_type: FractalType::Mandelbrot,
+        center_x_hp: "-1.7499537683537087",
+        center_y_hp: "0.0",
+        zoom: "1e13",
+        iterations: 16384,
+        multibrot_power: None,
+        julia_seed: None,
+        precision_bits: None,
+    },
+    // Verrou rebase-at-end kernel (G9.4b) : réf ATOM-TRONQUÉE (11177 iters ≪
+    // iter_max) — exerce le wrap fin-de-référence F3 (`hybrid.cc:301`) + guard
+    // BLA `lands_on_ref_end` portés en WGSL. ⚠️ Scène ultra-sensible (le CPU
+    // f64 lui-même FAIL div 0.034 ici, cf. use_dd_tier du preset CPU homonyme) ;
+    // le kernel GPU (BLA conforme) tient WARN div ~3e-4. Juge GMP ~3 min à 256².
+    Preset {
+        name: "gpu-mandelbrot-e30-truncated-ref",
+        description: "Parité GPU — zoom 1e30, réf atom-tronquée (rebase-at-end kernel, coords mandelbrot-e30).",
+        fractal_type: FractalType::Mandelbrot,
+        center_x_hp: "-0.0494700290631040937516922267273536301187457124882248793181049402326421947726869034279915499747594190000000000000000000",
+        center_y_hp: "-0.6747875758446753640113920531305976563347707068224034806979997947909941983454845111514208499540310299999999999999999880",
+        zoom: "1e30",
+        iterations: 131072,
+        multibrot_power: None,
+        julia_seed: None,
+        precision_bits: Some(256),
+    },
 ];

@@ -1680,12 +1680,30 @@ Jalons (chacun ≈ 1-2 itérations /improve, ordre suggéré) :
     primitive isolée passe. Garde runtime `×u(=1)` : défait en boucle aussi.
     Diagnostic reproductible : `cargo run --release --bin df64_gpu_probe`
     (sonde exactitude two_sum/fma/split + boucle perturbation par adaptateur).
-  - Restant 9.4 : (a) **perf** — mesurer 1e30 1024² vs CPU 16t (cible ≥2×,
-    barre FS-GPU 0.6 s ; le f64 NVIDIA est 1:64 — probablement insuffisant →
-    2×f32 via passthrough SPIR-V décoré NoContraction, ou kernel exp-par-pixel
-    f32) ; (b) **range** — le kernel f64 couvre ~1e290 d'exposant, étendre le
-    seuil d'éligibilité GPU au-delà de ~1e8 une fois la perf mesurée ;
-    (c) presets gpu-suite deep (1e30+) au moment de (b).
+  - **Étape 2 livrée 2026-07-15 (G9.4b) : réfs tronquées + range 1e8 → ~4e37** :
+    le kernel gère la fin de référence comme le CPU (`pixel_loop.rs` étape 3) —
+    wrap périodique (`cycle_start/cycle_period` Brent's en uniform), rebase-at-end
+    atom-domain (`hybrid.cc:301`) + guard BLA `lands_on_ref_end` en WGSL ; le
+    gate host ne retombe en CPU que pour les réfs tronquées par ESCAPE
+    (per-pixel GMP requis, hors GPU). Range borné par le transport span/offset
+    en paires f32 hi/lo : gate `GPU_SPAN_F32_MIN = 1e-37` (zoom ≲ 4e37, HP spans
+    couverts par l'underflow f64 → 0) ; au-delà = tier HDR (exposant par pixel).
+    Verrous gpu-suite : `gpu-mandelbrot-e13` (WARN max_diff=2 div 3e-5) +
+    `gpu-mandelbrot-e30-truncated-ref` (WARN p99=0 div 7.6e-4) ; range 1e4→1e8
+    inchangé (div 0.0007-0.0015).
+  - **(a) perf MESURÉE 2026-07-15** : e30 1024² 131k iters (avg 25k/px) —
+    kernel GPU 3.85 s vs CPU f64 16t 1.86 s → **GPU ~2× plus lent** (RTX 4060
+    Ti, f64 1:64, comme anticipé). L'auto-GPU (9.5) ne doit PAS router le deep
+    sur GeForce par vitesse ; la voie perf reste 2×f32 via passthrough SPIR-V
+    décoré NoContraction, ou kernel exp-par-pixel f32.
+  - **📌 Découverte correction (piste 9.6/G-dd)** : sur mandelbrot-e30 (scène
+    ultra-sensible : le CPU bytecode_f64 FAIL div 0.034 vs GMP, harmonic ON ou
+    OFF — c'est pourquoi le preset CPU force `use_dd_tier`), le kernel GPU f64
+    + BLA **conforme** tient div 3e-4, ~100× plus proche de la vérité à f64
+    égal et rebasing identique. Suspect : agressivité des skips de la BLA mat2
+    unifiée CPU (rayons de validité / merge). À investiguer : si confirmé, une
+    partie des cas « dd requis » est récupérable en f64 pur (gros gain vitesse
+    + fiabilité du wisdom).
 - [ ] **9.5 — Auto-GPU** `[🔓 partiellement débloqué 2026-07-15 : le path
   perturbation GPU (≥1e4) est au niveau CPU ; restent les shaders std f32]` :
   le plan choisit le device par benchmark 9.2 + viabilité ; `--gpu`/`--no-gpu`
