@@ -284,6 +284,29 @@ comparable entre cas) :
   - Reste orthogonal pour la PERF (pas la mémoire) de ces cas intérieurs :
     period-aware reference (G2, cf. plus bas, 4 sessions brûlées — bloqué sur le
     critère atom-domain F3 exact).
+  - **✅ REGISTRE `slow-safe` — déconflation timeout≠crash (2026-07-15, /improve)** :
+    le sweep FULL vitesse (84 cas) ne laissait qu'UN gap : `e52465`
+    quarantiné, étiqueté « crash/OOM connu » severité-2 robustesse. **Mesuré**
+    (256², cap 20 GB) : e52465 (zoom 1e52465, 2.88 M iters) **rend correctement
+    exit 0 en 661.7 s, pic RSS 237 MB** (path=bytecode_exp, orbite GMP tronquée
+    atom-domain à 639 k pas × 174 325 b, single-thread = 660 s ; F3 aussi hors
+    budget). **Ce n'est ni un crash ni un OOM** — juste hors budget TEMPS des
+    sweeps. Cause du faux gap : `run_case_measured` renvoie `peak_rss_kb=None`
+    sur timeout (le `time -v` est tué avec le process) → preflight ne peut pas
+    distinguer lent-safe d'un runaway, donc conflatait `timeout` avec les
+    crashes (ligne préflight `crashed = st in (…"timeout")`) ET le gap generator
+    étiquetait tout quarantiné « crash/OOM ». Or `HARD_CRASH_OUTCOMES` EXCLUT
+    déjà `timeout` — l'incohérence était interne. **Fix** : registre
+    `harness/slow-safe.json` (miroir de `f3-degenerate.json`), attesté PAR
+    L'OPÉRATEUR après mesure (exit 0 + pic RSS < cap) ; `score`/`preflight` le
+    skippent SANS gap robustesse (`slow_safe` a `ratio=None`, exclu des agrégats
+    comme f3-degenerate), affiché à part dans le scorecard ; sous-commande
+    `harness.py slow-safe {list,add,remove}` (`add` retire de la quarantaine).
+    e52465 reclassé quarantaine→slow-safe. **La mécanique OOM/crash est
+    INCHANGÉE** (crash/OOM/RSS-haute → quarantaine severité-2 comme avant ;
+    seule une branche skip attestée est ajoutée avant le run). Résultat : sweep
+    full vitesse = **0 gap** (geomean quick 0.298, 10/10 wins ; e52465 correct
+    hors enveloppe excellence perf ≤1e1000).
 - **⚠️ Trou d'invariant garde-fou RÉPARÉ (2026-07-07)** : `quarantine.json` est
   versionné → il peut **dériver** (revert/reset/checkout git) et *dé-quarantainer
   silencieusement* un cas qui a fait tomber la machine. Cas réel : **e22522**

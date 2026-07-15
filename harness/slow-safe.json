@@ -1,0 +1,6 @@
+{
+  "e52465": {
+    "added_utc": "2026-07-15T17:01:24+00:00",
+    "note": "zoom 1e52465, 2.88M iters : orbite référence GMP tronquée atom-domain à 639k pas × 174325 bits ≈ 660s single-thread. MESURÉ 2026-07-15 : exit 0, wall 661.7s, pic RSS 237MB (memory-safe), path=bytecode_exp. F3 aussi hors budget (timeout). Hors enveloppe excellence perf (≤1e1000)."
+  }
+}

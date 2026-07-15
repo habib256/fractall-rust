@@ -1,0 +1,825 @@
+{
+  "schema": 1,
+  "meta": {
+    "date_utc": "2026-07-15T15:52:23+00:00",
+    "stamp": "20260715T155223Z",
+    "git_sha": "9ea57f0",
+    "git_dirty": true,
+    "machine": {
+      "cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz",
+      "nproc": 16,
+      "os": "Linux 6.14.0-37-generic"
+    },
+    "tier": "full",
+    "axes": [
+      "speed"
+    ],
+    "width": 256,
+    "height": 256,
+    "quality_width": 256,
+    "quality_height": 256,
+    "runs": 1,
+    "f3_bin": "/home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux",
+    "mem_limit_mb": 34024,
+    "quarantined": [
+      "e52465"
+    ]
+  },
+  "speed": {
+    "status": "ok",
+    "cases": {
+      "11_dimensions": {
+        "fractall_s": 0.3214,
+        "f3_s": 0.8672,
+        "ratio": 0.3706,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "adventurous_forest": {
+        "fractall_s": 0.2722,
+        "f3_s": 0.5166,
+        "ratio": 0.5269,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "all_seeing_eye": {
+        "fractall_s": 0.0339,
+        "f3_s": 0.1663,
+        "ratio": 0.2038,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "dinosaur_fossils": {
+        "fractall_s": 0.1162,
+        "f3_s": 0.417,
+        "ratio": 0.2787,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "dragon": {
+        "fractall_s": 2.3252,
+        "f3_s": 4.226,
+        "ratio": 0.5502,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "dragon_detail": {
+        "fractall_s": 2.2253,
+        "f3_s": 4.4737,
+        "ratio": 0.4974,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1000": {
+        "fractall_s": 0.6229,
+        "f3_s": 3.5721,
+        "ratio": 0.1744,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1016": {
+        "fractall_s": 1.2736,
+        "f3_s": 8.581,
+        "ratio": 0.1484,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1086": {
+        "fractall_s": 1.8701,
+        "f3_s": 15.0941,
+        "ratio": 0.1239,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1121": {
+        "fractall_s": 0.668,
+        "f3_s": 2.7706,
+        "ratio": 0.2411,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e113": {
+        "fractall_s": 0.174,
+        "f3_s": 0.3162,
+        "ratio": 0.5503,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1200": {
+        "fractall_s": 0.6692,
+        "f3_s": 3.3722,
+        "ratio": 0.1984,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1298": {
+        "fractall_s": 2.423,
+        "f3_s": 17.2463,
+        "ratio": 0.1405,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e22522": {
+        "fractall_s": 60.8308,
+        "f3_s": 63.5313,
+        "ratio": 0.9575,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e227": {
+        "fractall_s": 1.2236,
+        "f3_s": 2.0192,
+        "ratio": 0.606,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e318": {
+        "fractall_s": 0.5718,
+        "f3_s": 16.8025,
+        "ratio": 0.034,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e401": {
+        "fractall_s": 0.7203,
+        "f3_s": 7.581,
+        "ratio": 0.095,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e50": {
+        "fractall_s": 0.869,
+        "f3_s": 1.4685,
+        "ratio": 0.5918,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e52465": {
+        "fractall_s": null,
+        "f3_s": null,
+        "ratio": null,
+        "status": "quarantined",
+        "f3_exr_ok": false
+      },
+      "e533": {
+        "fractall_s": 1.0203,
+        "f3_s": 12.0865,
+        "ratio": 0.0844,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e634": {
+        "fractall_s": 1.6736,
+        "f3_s": 27.1625,
+        "ratio": 0.0616,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e8000": {
+        "fractall_s": 3.6785,
+        "f3_s": 5.8853,
+        "ratio": 0.625,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e890": {
+        "fractall_s": 1.0197,
+        "f3_s": 6.7305,
+        "ratio": 0.1515,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "evolution_trees": {
+        "fractall_s": 1.3232,
+        "f3_s": 2.2702,
+        "ratio": 0.5829,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "flake": {
+        "fractall_s": 0.0664,
+        "f3_s": 0.2165,
+        "ratio": 0.3067,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "floral_fantasy": {
+        "fractall_s": 0.0404,
+        "f3_s": 0.2166,
+        "ratio": 0.1865,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_1": {
+        "fractall_s": 0.0686,
+        "f3_s": 0.4692,
+        "ratio": 0.1462,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_2": {
+        "fractall_s": 0.066,
+        "f3_s": 0.1664,
+        "ratio": 0.3966,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_3": {
+        "fractall_s": 0.0667,
+        "f3_s": 0.3664,
+        "ratio": 0.182,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_4": {
+        "fractall_s": 0.0372,
+        "f3_s": 0.2162,
+        "ratio": 0.1721,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_5": {
+        "fractall_s": 0.0363,
+        "f3_s": 0.0182,
+        "ratio": 1.9945,
+        "status": "ok",
+        "f3_exr_ok": true,
+        "f3_degenerate": true
+      },
+      "glitch_test_6": {
+        "fractall_s": 0.1182,
+        "f3_s": 0.2662,
+        "ratio": 0.444,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_7": {
+        "fractall_s": 2.1702,
+        "f3_s": 5.1793,
+        "ratio": 0.419,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "golden_spider": {
+        "fractall_s": 0.4213,
+        "f3_s": 1.1682,
+        "ratio": 0.3606,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "hard": {
+        "fractall_s": 1.4247,
+        "f3_s": 28.2194,
+        "ratio": 0.0505,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "heaven": {
+        "fractall_s": 0.1171,
+        "f3_s": 0.3164,
+        "ratio": 0.3701,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "infinity": {
+        "fractall_s": 2.7754,
+        "f3_s": 34.4318,
+        "ratio": 0.0806,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "integral_of_ex2": {
+        "fractall_s": 0.2712,
+        "f3_s": 0.5668,
+        "ratio": 0.4785,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "layers": {
+        "fractall_s": 2.8805,
+        "f3_s": 2.9223,
+        "ratio": 0.9857,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "leaded_glass": {
+        "fractall_s": 0.1673,
+        "f3_s": 1.6698,
+        "ratio": 0.1002,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "lethal_weapon": {
+        "fractall_s": 13.5719,
+        "f3_s": 35.1828,
+        "ratio": 0.3858,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "liiiines": {
+        "fractall_s": 0.218,
+        "f3_s": 6.0264,
+        "ratio": 0.0362,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "line": {
+        "fractall_s": 0.0365,
+        "f3_s": 0.1161,
+        "ratio": 0.3144,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "long": {
+        "fractall_s": 1.2255,
+        "f3_s": 11.8366,
+        "ratio": 0.1035,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "lya": {
+        "fractall_s": 0.3676,
+        "f3_s": 0.5676,
+        "ratio": 0.6476,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "magic": {
+        "fractall_s": 0.5196,
+        "f3_s": 1.0179,
+        "ratio": 0.5105,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "mitosis": {
+        "fractall_s": 0.0664,
+        "f3_s": 0.2164,
+        "ratio": 0.3068,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "mitosis2": {
+        "fractall_s": 0.0664,
+        "f3_s": 0.2167,
+        "ratio": 0.3064,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "nr_fail": {
+        "fractall_s": 0.1678,
+        "f3_s": 1.4686,
+        "ratio": 0.1143,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "olbaid1": {
+        "fractall_s": 1.8779,
+        "f3_s": 14.9433,
+        "ratio": 0.1257,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "olbaid2": {
+        "fractall_s": 1.2766,
+        "f3_s": 10.6862,
+        "ratio": 0.1195,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "olbaid3": {
+        "fractall_s": 2.3766,
+        "f3_s": 23.8124,
+        "ratio": 0.0998,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "olbaid4": {
+        "fractall_s": 4.3815,
+        "f3_s": 49.4671,
+        "ratio": 0.0886,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "olbaid5": {
+        "fractall_s": 4.3785,
+        "f3_s": 14.2413,
+        "ratio": 0.3075,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "opus": {
+        "fractall_s": 1.5769,
+        "f3_s": 14.8926,
+        "ratio": 0.1059,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "opus2": {
+        "fractall_s": 83.8397,
+        "f3_s": 420.1625,
+        "ratio": 0.1995,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "orion": {
+        "fractall_s": 18.0163,
+        "f3_s": 289.7376,
+        "ratio": 0.0622,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "peanuts": {
+        "fractall_s": 0.0661,
+        "f3_s": 0.2662,
+        "ratio": 0.2483,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "rug": {
+        "fractall_s": 0.2667,
+        "f3_s": 0.7672,
+        "ratio": 0.3476,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "safari": {
+        "fractall_s": 0.6695,
+        "f3_s": 18.7997,
+        "ratio": 0.0356,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "seahorse": {
+        "fractall_s": 140.4028,
+        "f3_s": null,
+        "ratio": null,
+        "status": "f3_aborted",
+        "f3_exr_ok": false
+      },
+      "spiral": {
+        "fractall_s": 0.0496,
+        "f3_s": 0.216,
+        "ratio": 0.2296,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "ssssss": {
+        "fractall_s": 0.9681,
+        "f3_s": 12.0914,
+        "ratio": 0.0801,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "super_dense": {
+        "fractall_s": 98.3753,
+        "f3_s": null,
+        "ratio": null,
+        "status": "f3_timeout",
+        "f3_exr_ok": false
+      },
+      "test": {
+        "fractall_s": 0.0344,
+        "f3_s": 0.1155,
+        "ratio": 0.2978,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "test2": {
+        "fractall_s": 0.0376,
+        "f3_s": 0.1157,
+        "ratio": 0.325,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "test3": {
+        "fractall_s": 0.0666,
+        "f3_s": 0.2658,
+        "ratio": 0.2506,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "test4": {
+        "fractall_s": 0.0174,
+        "f3_s": 0.0657,
+        "ratio": 0.2648,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "test5": {
+        "fractall_s": 0.0191,
+        "f3_s": 0.0334,
+        "ratio": 0.5719,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "test6": {
+        "fractall_s": 0.0179,
+        "f3_s": 0.0338,
+        "ratio": 0.5296,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "the_complexity_of_a_line": {
+        "fractall_s": 0.92,
+        "f3_s": 8.13,
+        "ratio": 0.1132,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "threads_colour": {
+        "fractall_s": 1.1234,
+        "f3_s": 16.0457,
+        "ratio": 0.07,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "tick_tock": {
+        "fractall_s": 0.2163,
+        "f3_s": 0.4662,
+        "ratio": 0.464,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "triangle": {
+        "fractall_s": 19.9653,
+        "f3_s": 95.1551,
+        "ratio": 0.2098,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "uranium": {
+        "fractall_s": 0.5233,
+        "f3_s": 1.6181,
+        "ratio": 0.3234,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "verstoppertje": {
+        "fractall_s": 1.4745,
+        "f3_s": 3.1749,
+        "ratio": 0.4644,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "virus": {
+        "fractall_s": 0.1677,
+        "f3_s": 0.3671,
+        "ratio": 0.4568,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "wfs": {
+        "fractall_s": 4.1743,
+        "f3_s": 16.495,
+        "ratio": 0.2531,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "wfs2": {
+        "fractall_s": 4.9305,
+        "f3_s": 17.2476,
+        "ratio": 0.2859,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "wfs4": {
+        "fractall_s": 5.2289,
+        "f3_s": 15.8932,
+        "ratio": 0.329,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "wfs_extended": {
+        "fractall_s": 10.7378,
+        "f3_s": 22.5109,
+        "ratio": 0.477,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "wfs_mb": {
+        "fractall_s": 6.1308,
+        "f3_s": 15.8953,
+        "ratio": 0.3857,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "windmill": {
+        "fractall_s": 0.2198,
+        "f3_s": 0.6165,
+        "ratio": 0.3565,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "x": {
+        "fractall_s": 0.1169,
+        "f3_s": 0.216,
+        "ratio": 0.5412,
+        "status": "ok",
+        "f3_exr_ok": true
+      }
+    },
+    "geomean_ratio": 0.233,
+    "worst_ratio": {
+      "case": "layers",
+      "ratio": 0.9857
+    },
+    "wins": [
+      "11_dimensions",
+      "adventurous_forest",
+      "all_seeing_eye",
+      "dinosaur_fossils",
+      "dragon",
+      "dragon_detail",
+      "e1000",
+      "e1016",
+      "e1086",
+      "e1121",
+      "e113",
+      "e1200",
+      "e1298",
+      "e22522",
+      "e227",
+      "e318",
+      "e401",
+      "e50",
+      "e533",
+      "e634",
+      "e8000",
+      "e890",
+      "evolution_trees",
+      "flake",
+      "floral_fantasy",
+      "glitch_test_1",
+      "glitch_test_2",
+      "glitch_test_3",
+      "glitch_test_4",
+      "glitch_test_6",
+      "glitch_test_7",
+      "golden_spider",
+      "hard",
+      "heaven",
+      "infinity",
+      "integral_of_ex2",
+      "layers",
+      "leaded_glass",
+      "lethal_weapon",
+      "liiiines",
+      "line",
+      "long",
+      "lya",
+      "magic",
+      "mitosis",
+      "mitosis2",
+      "nr_fail",
+      "olbaid1",
+      "olbaid2",
+      "olbaid3",
+      "olbaid4",
+      "olbaid5",
+      "opus",
+      "opus2",
+      "orion",
+      "peanuts",
+      "rug",
+      "safari",
+      "spiral",
+      "ssssss",
+      "test",
+      "test2",
+      "test3",
+      "test4",
+      "test5",
+      "test6",
+      "the_complexity_of_a_line",
+      "threads_colour",
+      "tick_tock",
+      "triangle",
+      "uranium",
+      "verstoppertje",
+      "virus",
+      "wfs",
+      "wfs2",
+      "wfs4",
+      "wfs_extended",
+      "wfs_mb",
+      "windmill",
+      "x"
+    ],
+    "timeouts": [
+      "super_dense"
+    ],
+    "excluded_f3_degenerate": [
+      "glitch_test_5"
+    ],
+    "n_cases": 84,
+    "n_compared": 80
+  },
+  "parity": {
+    "status": "skipped"
+  },
+  "quality": {
+    "status": "skipped"
+  },
+  "fuzz": {
+    "status": "skipped"
+  },
+  "goldens": {
+    "status": "skipped"
+  },
+  "beyond_f3": {
+    "speed_wins": [
+      "11_dimensions",
+      "adventurous_forest",
+      "all_seeing_eye",
+      "dinosaur_fossils",
+      "dragon",
+      "dragon_detail",
+      "e1000",
+      "e1016",
+      "e1086",
+      "e1121",
+      "e113",
+      "e1200",
+      "e1298",
+      "e22522",
+      "e227",
+      "e318",
+      "e401",
+      "e50",
+      "e533",
+      "e634",
+      "e8000",
+      "e890",
+      "evolution_trees",
+      "flake",
+      "floral_fantasy",
+      "glitch_test_1",
+      "glitch_test_2",
+      "glitch_test_3",
+      "glitch_test_4",
+      "glitch_test_6",
+      "glitch_test_7",
+      "golden_spider",
+      "hard",
+      "heaven",
+      "infinity",
+      "integral_of_ex2",
+      "layers",
+      "leaded_glass",
+      "lethal_weapon",
+      "liiiines",
+      "line",
+      "long",
+      "lya",
+      "magic",
+      "mitosis",
+      "mitosis2",
+      "nr_fail",
+      "olbaid1",
+      "olbaid2",
+      "olbaid3",
+      "olbaid4",
+      "olbaid5",
+      "opus",
+      "opus2",
+      "orion",
+      "peanuts",
+      "rug",
+      "safari",
+      "spiral",
+      "ssssss",
+      "test",
+      "test2",
+      "test3",
+      "test4",
+      "test5",
+      "test6",
+      "the_complexity_of_a_line",
+      "threads_colour",
+      "tick_tock",
+      "triangle",
+      "uranium",
+      "verstoppertje",
+      "virus",
+      "wfs",
+      "wfs2",
+      "wfs4",
+      "wfs_extended",
+      "wfs_mb",
+      "windmill",
+      "x"
+    ],
+    "correctness_wins": []
+  },
+  "gaps": [
+    {
+      "axis": "speed",
+      "case": "e52465",
+      "metric": "status",
+      "value": "quarantined",
+      "baseline_value": null,
+      "severity": 2,
+      "note": "cas en QUARANTAINE — crash/OOM connu, voir harness/crash-journal.jsonl"
+    }
+  ]
+}

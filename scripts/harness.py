@@ -76,6 +76,17 @@ RESOLVED = HARNESS_DIR / "resolved.json"
 # rendu correct à un fast-path faux n'a pas de sens. Auto-entretenu : un run
 # parité qui re-classe le cas `ok` le retire.
 F3_DEGENERATE = HARNESS_DIR / "f3-degenerate.json"
+# Cas CORRECTS et memory-safe mais dont le rendu dépasse le budget TEMPS des
+# sweeps (deep-zoom extrême : l'orbite référence GMP single-thread domine —
+# ex. e52465 zoom 1e52465, orbite 639k pas × 174kbit ≈ 660s, pic RSS 237MB,
+# exit 0 ; F3 aussi hors budget). ATTESTÉ PAR L'OPÉRATEUR (mesure : rendu
+# complet exit 0 + pic RSS < cap), PAS auto-détecté — un timeout ne rapporte
+# pas de RSS (cf. run_case_measured → peak_rss_kb=None), donc preflight ne peut
+# distinguer « lent-mais-sûr » d'un runaway. But : NE PAS conflater lent-safe
+# avec crash/OOM. Ces cas sont skippés des sweeps time-bounded (comme la
+# quarantaine) MAIS ne produisent PAS de faux gap robustesse-2 (ils rendent
+# juste ; hors enveloppe d'excellence perf ≤1e1000). Miroir de F3_DEGENERATE.
+SLOW_SAFE = HARNESS_DIR / "slow-safe.json"
 
 # Issues du journal qui prouvent qu'un cas a fait tomber la machine ou a été tué
 # sous cap : la quarantaine DOIT les couvrir. On EXCLUT `interrupted` (Ctrl-C
@@ -193,6 +204,21 @@ def load_f3_degenerate() -> dict:
         return d if isinstance(d, dict) else {}
     except Exception:
         return {}
+
+
+def load_slow_safe() -> dict:
+    if not SLOW_SAFE.exists():
+        return {}
+    try:
+        d = json.loads(SLOW_SAFE.read_text())
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_slow_safe(d: dict) -> None:
+    HARNESS_DIR.mkdir(parents=True, exist_ok=True)
+    SLOW_SAFE.write_text(json.dumps(d, indent=2, ensure_ascii=False) + "\n")
 
 
 def update_f3_degenerate(parity_cases: dict) -> None:
@@ -506,12 +532,14 @@ def timed_runs(cmd: list[str], env: dict, timeout: float, runs: int,
 
 def axis_speed(cases: list[str], width: int, height: int, runs: int,
                timeout: float, f3_bin: Path | None,
-               mem_limit_mb: int = 0, quarantined: set | None = None) -> dict:
+               mem_limit_mb: int = 0, quarantined: set | None = None,
+               slow_safe: set | None = None) -> dict:
     outdir = BENCH / "speed"
     outdir.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix="harness_speed_"))
     results: dict[str, dict] = {}
     quarantined = quarantined or set()
+    slow_safe = slow_safe or set()
     fr_env = os.environ.copy()
     fr_env["FRACTALL_NO_AUTO_ADJUST"] = "1"
     fr_env["FRACTALL_NO_PERIOD"] = "1"
@@ -525,6 +553,14 @@ def axis_speed(cases: list[str], width: int, height: int, runs: int,
                 entry["status"] = "quarantined"
                 results[name] = entry
                 print("⊘ QUARANTAINE (skip — voir quarantine.json)")
+                continue
+            if name in slow_safe:
+                # correct + memory-safe mais hors budget temps → skip SANS gap
+                # robustesse (ratio None, exclu des agrégats comme f3_degenerate).
+                entry["status"] = "slow_safe"
+                results[name] = entry
+                print("⊘ SLOW-SAFE (skip — correct mais hors budget, "
+                      "voir slow-safe.json)")
                 continue
             if not toml_path.exists():
                 entry["status"] = "missing_toml"
@@ -632,6 +668,8 @@ def axis_speed(cases: list[str], width: int, height: int, runs: int,
         "wins": wins,
         "timeouts": timeouts,
         "excluded_f3_degenerate": excluded_degen,
+        "excluded_slow_safe": sorted(
+            n for n, e in results.items() if e["status"] == "slow_safe"),
         "n_cases": len(cases),
         "n_compared": len(ratios),
     }
@@ -1117,6 +1155,10 @@ def build_scorecard_md(card: dict, base: dict | None) -> str:
             names = ", ".join(
                 f"{n} ({_fmt(s['cases'][n].get('ratio'))})" for n in excl)
             L.append(f"| exclus (F3-dégénéré, ratio sans objet) | {names} | |")
+        slow = s.get("excluded_slow_safe") or []
+        if slow:
+            L.append(f"| exclus (slow-safe, correct hors budget temps) | "
+                     f"{', '.join(slow)} | |")
         L.append("")
 
     # Parity
@@ -1257,12 +1299,16 @@ def cmd_score(args) -> None:
                     else args.mem_limit_mb if args.mem_limit_mb is not None
                     else default_mem_limit_mb())
     quarantined = set() if args.no_quarantine else set(load_quarantine())
+    slow_safe = set(load_slow_safe())
     if mem_limit_mb:
         print(f"→ cap mémoire/process : {mem_limit_mb} MB "
               f"(RLIMIT_AS ; --no-mem-limit pour désactiver)")
     if quarantined:
         print(f"→ quarantaine active ({len(quarantined)}) : "
               f"{', '.join(sorted(quarantined))}")
+    if slow_safe:
+        print(f"→ slow-safe (skip, correct hors budget temps) ({len(slow_safe)}) : "
+              f"{', '.join(sorted(slow_safe))}")
 
     if not args.no_rebuild:
         print("→ cargo build --release", flush=True)
@@ -1291,6 +1337,7 @@ def cmd_score(args) -> None:
             "f3_bin": str(f3_bin) if f3_bin else None,
             "mem_limit_mb": mem_limit_mb,
             "quarantined": sorted(quarantined),
+            "slow_safe": sorted(slow_safe),
         },
         "speed": {"status": "skipped"},
         "parity": {"status": "skipped"},
@@ -1307,7 +1354,7 @@ def cmd_score(args) -> None:
         print("\n== SPEED ==")
         card["speed"] = axis_speed(cases, width, height, runs, timeout, f3_bin,
                                    mem_limit_mb=mem_limit_mb,
-                                   quarantined=quarantined)
+                                   quarantined=quarantined, slow_safe=slow_safe)
     if "parity" in axes:
         print("\n== PARITY ==")
         card["parity"] = axis_parity(cases, width, height, timeout, f3_bin,
@@ -1472,9 +1519,17 @@ def cmd_preflight(args) -> None:
     print(f"→ preflight {len(cases)} cas · {width}×{height} · "
           f"timeout={timeout}s · cap={mem_limit_mb or 'off'}MB · "
           f"flag>{flag_mb or '—'}MB")
+    slow_safe = set(load_slow_safe())
     rows: list[dict] = []
     for i, name in enumerate(cases, 1):
         print(f"  [{i:>3}/{len(cases)}] {name:28s}", end=" ", flush=True)
+        if name in slow_safe:
+            # correct + memory-safe attesté, hors budget temps → ne pas le
+            # rejouer (il timeout → re-quarantaine à tort). Skip explicite.
+            rows.append({"name": name, "status": "slow_safe",
+                         "secs": None, "peak_rss_kb": None})
+            print("slow_safe   (skip — voir slow-safe.json)")
+            continue
         r = run_case_measured(name, width, height, timeout, mem_limit_mb)
         r["name"] = name
         rows.append(r)
@@ -1539,6 +1594,13 @@ def cmd_quarantine(args) -> None:
                   f"re-quarantainé sauf nouvel incident) :")
             for name, ts in sorted(res.items()):
                 print(f"  - {name}  (résolu {ts})")
+        ss = load_slow_safe()
+        if ss:
+            print(f"\n{len(ss)} cas slow-safe (correct + memory-safe, hors "
+                  f"budget temps — skip sweeps, PAS un gap) :")
+            for name, info in sorted(ss.items()):
+                print(f"  - {name}  ({info.get('added_utc', '?')}) "
+                      f": {info.get('note', '')}")
     elif action == "add":
         if not args.case:
             sys.exit("quarantine add <case> [--reason ...]")
@@ -1552,6 +1614,44 @@ def cmd_quarantine(args) -> None:
     elif action == "clear":
         save_quarantine({})
         print("Quarantaine vidée.")
+
+
+def cmd_slow_safe(args) -> None:
+    """Registre slow-safe : cas CORRECTS et memory-safe mais hors budget temps
+    des sweeps (deep-zoom extrême). Attesté par l'opérateur APRÈS mesure (rendu
+    complet exit 0 + pic RSS < cap) — cf. SLOW_SAFE. `add` retire aussi le cas
+    de la quarantaine (un cas prouvé sûr n'est plus un crash-danger)."""
+    action = args.action
+    d = load_slow_safe()
+    if action == "list":
+        if not d:
+            print("Registre slow-safe vide.")
+            return
+        print(f"{len(d)} cas slow-safe :")
+        for name, info in sorted(d.items()):
+            print(f"  - {name}  ({info.get('added_utc', '?')}) "
+                  f": {info.get('note', '')}")
+    elif action == "add":
+        if not args.case:
+            sys.exit("slow-safe add <case> [--note ...]")
+        d[args.case] = {"added_utc": _now_iso(),
+                        "note": args.note or "correct + memory-safe, hors "
+                                             "budget temps sweep"}
+        save_slow_safe(d)
+        # un cas prouvé sûr sort de la quarantaine crash/OOM (déconflation)
+        if remove_quarantine(args.case):
+            print(f"+ {args.case} slow-safe ; retiré de la quarantaine")
+        else:
+            print(f"+ {args.case} slow-safe")
+    elif action == "remove":
+        if not args.case:
+            sys.exit("slow-safe remove <case>")
+        if args.case in d:
+            del d[args.case]
+            save_slow_safe(d)
+            print(f"- retiré : {args.case}")
+        else:
+            print(f"? absent : {args.case}")
 
 
 def cmd_journal(_args) -> None:
@@ -1682,6 +1782,14 @@ def main() -> None:
     qs.add_argument("case", nargs="?", default=None)
     qs.add_argument("--reason", default=None)
     qs.set_defaults(func=cmd_quarantine)
+
+    ss = sub.add_parser("slow-safe",
+                        help="Gère les cas corrects+memory-safe hors budget "
+                             "temps (skip sweeps, PAS un gap crash/OOM).")
+    ss.add_argument("action", choices=["list", "add", "remove"])
+    ss.add_argument("case", nargs="?", default=None)
+    ss.add_argument("--note", default=None)
+    ss.set_defaults(func=cmd_slow_safe)
 
     js = sub.add_parser("journal",
                         help="Affiche le journal des incidents (crashes/OOM).")
