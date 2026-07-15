@@ -6,10 +6,11 @@ mod fractal;
 mod color;
 mod render;
 mod io;
+mod gpu;
 mod quality;
 
 use fractal::FractalType;
-use quality::{apply_zoom, compare, params_from_preset, ComparisonOptions};
+use quality::{apply_zoom, compare, compare_gpu, params_from_preset, ComparisonOptions};
 use quality::metrics::Thresholds;
 use quality::presets;
 use quality::report::{write_report, write_suite_summary, write_suite_summary_json, print_summary_line, ReportInputs};
@@ -90,6 +91,52 @@ enum Command {
         #[arg(long, default_value = "custom")]
         name: String,
     },
+    /// Parité GPU↔CPU sur l'échelle de presets GPU (verrou G9.4/9.5).
+    /// Rapports sous <output-dir>/gpu/ ; "pert" = GPU, "gmp" = CPU juge (Auto).
+    GpuSuite,
+    /// Parité GPU↔CPU sur une scène personnalisée (mêmes options que compare).
+    GpuCompare {
+        /// Type de fractale (id entier ; GPU : Mandelbrot/Julia/BurningShip)
+        #[arg(long = "type")]
+        fractal_type: u8,
+        #[arg(long)]
+        center_x_hp: String,
+        #[arg(long)]
+        center_y_hp: String,
+        #[arg(long)]
+        zoom: String,
+        #[arg(long)]
+        julia_re: Option<f64>,
+        #[arg(long)]
+        julia_im: Option<f64>,
+        /// Nom de sortie (dossier sous output-dir/gpu). Défaut "gpu-custom".
+        #[arg(long, default_value = "gpu-custom")]
+        name: String,
+    },
+}
+
+/// Closure de rendu GPU pour `compare_gpu` : dispatch unifié (std f32 ou
+/// perturbation f32 selon zoom/type), `None` si config non supportée.
+fn gpu_render_closure(
+    renderer: &gpu::GpuRenderer,
+) -> impl Fn(&fractal::FractalParams) -> Option<(Vec<u32>, Vec<num_complex::Complex64>)> + '_ {
+    move |params| {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        renderer
+            .render_dispatch(params, &cancel, None, None)
+            .map(|r| (r.iterations, r.zs))
+    }
+}
+
+/// Initialise le GPU ou sort avec un message clair (code 2 = indisponible).
+fn gpu_renderer_or_exit() -> gpu::GpuRenderer {
+    match gpu::GpuRenderer::new() {
+        Some(r) => r,
+        None => {
+            eprintln!("GPU indisponible (wgpu n'a trouvé aucun adaptateur) — gpu-compare/gpu-suite impossibles");
+            std::process::exit(2);
+        }
+    }
 }
 
 fn main() {
@@ -235,6 +282,98 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("Erreur compare: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Command::GpuSuite => {
+            let renderer = gpu_renderer_or_exit();
+            let render_gpu = gpu_render_closure(&renderer);
+            let gpu_dir = cli.output_dir.join("gpu");
+            let mut rows: Vec<(String, quality::metrics::QualityMetrics)> = Vec::new();
+            for preset in presets::GPU_PRESETS {
+                println!("\n=== {} ===", preset.name);
+                println!("{}", preset.description);
+                let params = params_from_preset(preset, &opt);
+                match compare_gpu(&params, &opt, &render_gpu) {
+                    Ok(out) => {
+                        print_summary_line(preset.name, &out.metrics);
+                        let inputs = ReportInputs {
+                            preset_name: preset.name,
+                            params: &out.params,
+                            pert_iters: &out.pert_iters,
+                            pert_zs: &out.pert_zs,
+                            gmp_iters: &out.gmp_iters,
+                            gmp_zs: &out.gmp_zs,
+                            metrics: &out.metrics,
+                        };
+                        if let Err(e) = write_report(&gpu_dir, &inputs) {
+                            eprintln!("Erreur écriture rapport: {e}");
+                        }
+                        rows.push((preset.name.to_string(), out.metrics));
+                    }
+                    Err(e) => {
+                        eprintln!("Erreur gpu-compare {}: {e}", preset.name);
+                    }
+                }
+            }
+            if let Err(e) = write_suite_summary(&gpu_dir, &rows) {
+                eprintln!("Erreur écriture summary: {e}");
+            }
+            if let Err(e) = write_suite_summary_json(&gpu_dir, &rows, &opt.thresholds) {
+                eprintln!("Erreur écriture summary JSON: {e}");
+            }
+            println!("\nGPU suite summary: {}/suite-summary.md", gpu_dir.display());
+        }
+        Command::GpuCompare { fractal_type, center_x_hp, center_y_hp, zoom, julia_re, julia_im, name } => {
+            let renderer = gpu_renderer_or_exit();
+            let render_gpu = gpu_render_closure(&renderer);
+            let ft = FractalType::from_id(fractal_type).unwrap_or_else(|| {
+                eprintln!("Type invalide: {}", fractal_type);
+                std::process::exit(1);
+            });
+            let mut params = fractal::default_params_for_type(ft, opt.width, opt.height);
+            params.center_x_hp = Some(center_x_hp.clone());
+            params.center_y_hp = Some(center_y_hp.clone());
+            if let Ok(v) = center_x_hp.parse::<f64>() {
+                params.center_x = v;
+            }
+            if let Ok(v) = center_y_hp.parse::<f64>() {
+                params.center_y = v;
+            }
+            apply_zoom(&mut params, &zoom);
+            if let Some(iters) = opt.max_iterations {
+                params.iteration_max = iters;
+            }
+            if ft == FractalType::Julia {
+                let re = julia_re.unwrap_or_else(|| {
+                    eprintln!("--julia-re requis pour Julia");
+                    std::process::exit(1);
+                });
+                let im = julia_im.unwrap_or(0.0);
+                params.seed = num_complex::Complex64::new(re, im);
+            }
+            let gpu_dir = cli.output_dir.join("gpu");
+            match compare_gpu(&params, &opt, &render_gpu) {
+                Ok(out) => {
+                    print_summary_line(&name, &out.metrics);
+                    let inputs = ReportInputs {
+                        preset_name: &name,
+                        params: &out.params,
+                        pert_iters: &out.pert_iters,
+                        pert_zs: &out.pert_zs,
+                        gmp_iters: &out.gmp_iters,
+                        gmp_zs: &out.gmp_zs,
+                        metrics: &out.metrics,
+                    };
+                    if let Err(e) = write_report(&gpu_dir, &inputs) {
+                        eprintln!("Erreur écriture rapport: {e}");
+                        std::process::exit(1);
+                    }
+                    println!("Rapport: {}/{}/report.md", gpu_dir.display(), name);
+                }
+                Err(e) => {
+                    eprintln!("Erreur gpu-compare: {e}");
                     std::process::exit(1);
                 }
             }

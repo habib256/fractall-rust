@@ -133,6 +133,69 @@ pub fn compare(params: &FractalParams, opt: &ComparisonOptions) -> Result<Compar
     })
 }
 
+/// Compare le rendu **GPU** (dispatch unifié `GpuRenderer::render_dispatch`,
+/// injecté par le binaire via closure — ce module ne dépend pas de `gpu/`) au
+/// **CPU juge** (dispatcher unique, mode Auto = ce qu'un utilisateur obtient
+/// sans GPU ; f64 exact aux zooms shallow, perturbation au-delà). Verrou de
+/// parité device du jalon G9.4/9.5 : l'auto-GPU exige que le kernel passe ce
+/// gate aux seuils standard — mesure 2026-07-15 : les shaders f32 actuels
+/// FAILent partout sauf la bande 1e4-3e5 (WARN), cf. TODO G9.5.
+///
+/// Réutilise `ComparisonOutput` : champs `pert_*` = GPU, `gmp_*` = CPU juge
+/// (mêmes rapports/heatmaps ; `pert.png` = image GPU, `gmp.png` = image CPU).
+pub fn compare_gpu(
+    params: &FractalParams,
+    opt: &ComparisonOptions,
+    render_gpu: &dyn Fn(&FractalParams) -> Option<(Vec<u32>, Vec<Complex64>)>,
+) -> Result<ComparisonOutput, String> {
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    println!(
+        "[quality] rendering GPU: {}x{} type={:?} iter_max={}",
+        params.width, params.height, params.fractal_type, params.iteration_max,
+    );
+    let t0 = Instant::now();
+    let (gpu_iters, gpu_zs) = render_gpu(params)
+        .ok_or_else(|| "rendu GPU indisponible (pas de GPU, ou type/config non supporté)".to_string())?;
+    let gpu_time_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    println!("[quality] GPU done in {:.0} ms", gpu_time_ms);
+
+    let mut cpu_params = params.clone();
+    cpu_params.algorithm_mode = AlgorithmMode::Auto;
+    println!(
+        "[quality] rendering CPU judge (dispatcher unique, Auto): {}x{}",
+        cpu_params.width, cpu_params.height,
+    );
+    let t1 = Instant::now();
+    let (cpu_iters, cpu_zs, _, _) =
+        render_escape_time_cancellable_with_reuse(&cpu_params, &cancel, None, &mut None)
+            .ok_or_else(|| "CPU judge render cancelled or failed".to_string())?;
+    let cpu_time_ms = t1.elapsed().as_secs_f64() * 1000.0;
+    println!("[quality] CPU judge done in {:.0} ms", cpu_time_ms);
+
+    let m = metrics::compute(
+        params.width,
+        params.height,
+        params.iteration_max,
+        &gpu_iters,
+        &gpu_zs,
+        &cpu_iters,
+        &cpu_zs,
+        gpu_time_ms,
+        cpu_time_ms,
+        opt.thresholds,
+    );
+
+    Ok(ComparisonOutput {
+        params: params.clone(),
+        pert_iters: gpu_iters,
+        pert_zs: gpu_zs,
+        gmp_iters: cpu_iters,
+        gmp_zs: cpu_zs,
+        metrics: m,
+    })
+}
+
 /// Build a FractalParams for a preset by merging preset fields onto default_params_for_type.
 pub fn params_from_preset(preset: &Preset, opt: &ComparisonOptions) -> FractalParams {
     let mut params = crate::fractal::default_params_for_type(

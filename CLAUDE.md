@@ -536,7 +536,17 @@ cargo run --release --bin fractall-quality -- preset seahorse-valley
 cargo run --release --bin fractall-quality -- suite --width 256 --height 256
 cargo run --release --bin fractall-quality -- compare --type 3 \
     --center-x-hp "-0.7436..." --center-y-hp "0.1318..." --zoom 1e10
+cargo run --release --bin fractall-quality -- gpu-suite   # parité GPU↔CPU (G9.5)
 ```
+
+**Parité GPU↔CPU** (`gpu-suite` / `gpu-compare`, 2026-07-15) : rend la même
+vue via `GpuRenderer::render_dispatch` et le dispatcher CPU unique (Auto,
+juge), mêmes métriques/verdicts, rapports sous `quality-reports/gpu/`
+(`pert.*` = GPU, `gmp.*` = CPU). Presets `GPU_PRESETS` (échelle seahorse
+1e2→1e8). **Baseline f32 actuels : aucun PASS** (FAIL 1e2/1e3/1e8, WARN
+1e4-1e6) → l'auto-GPU (TODO G9.5) est bloqué tant qu'un kernel ne PASSe pas
+cette suite ; c'est le harnais d'acceptance du kernel deep G9.4. Les tests
+unitaires du bin quality tournent en CI.
 
 **Sorties** dans `quality-reports/<preset>/` :
 - `pert.png` / `gmp.png` (metadata pour drag-and-drop fractall-gui).

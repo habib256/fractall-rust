@@ -1663,12 +1663,26 @@ Jalons (chacun ≈ 1-2 itérations /improve, ordre suggéré) :
 - [ ] **9.4 — GPU perturbation deep (kernel delta HDR wgsl)** : étendre le
   range GPU de ~1e7 → ~1e300 (f32 mantisse + exposant par pixel, table BLA en
   storage buffer, rebasing F3 dans le kernel). **Cible mesurable : ≥ 2× notre
-  CPU 16t sur mid-deep (barre FS-GPU : 0.6 s à 1e30 1024², cf. G8.2)**.
+  CPU 16t sur mid-deep (barre FS-GPU : 0.6 s à 1e30 1024², cf. G8.2)** ET
+  **`fractall-quality gpu-suite` PASS** (harnais d'acceptance livré 2026-07-15,
+  cf. 9.5) — la perf sans la parité ne suffit pas.
   Fallback CPU inchangé quand le GPU est non viable (exposant, features).
-- [ ] **9.5 — Auto-GPU** : le plan choisit le device par benchmark 9.2 +
-  viabilité (zoom range du kernel, features supportées) ; `--gpu`/`--no-gpu`
-  deviennent des overrides. Parité pixel GPU↔CPU verrouillée par presets QA
-  dédiés (le juge GMP reste CPU).
+- [ ] **9.5 — Auto-GPU** `[🔒 BLOQUÉ par la précision des kernels — verrou
+  livré 2026-07-15]` : le plan choisit le device par benchmark 9.2 + viabilité ;
+  `--gpu`/`--no-gpu` deviennent des overrides. **Mesure 2026-07-15 (probe EXR
+  256² + `gpu-suite`, juge CPU Auto)** : les shaders f32 ACTUELS échouent au
+  standard de correction du projet sur TOUT le range — FAIL 1e2-1e3 (7-10 %
+  px diff>1, p99 215-578 : bord chaotique, la mantisse f32 diverge du f64
+  après ~20 iters), WARN 1e4-1e6 (p99 0-1, div 0.3-0.9 %), FAIL ≥ 1e8
+  (perturbation f32, p99 87). « Jamais moins correct que le tier au-dessus »
+  (critère G9) ⇒ **le wisdom NE DOIT PAS router le GPU f32** ; router par
+  vitesse seule troquerait la correction (leçon F3 : float 24 b = 9391 px
+  faux). Auto-GPU se débloque quand un kernel (9.4 HDR, ou f64-emul 2×f32)
+  PASSe `gpu-suite`. Verrou livré : `fractall-quality gpu-compare/gpu-suite`
+  (juge = dispatcher CPU unique en Auto, rapports `quality-reports/gpu/`,
+  presets `GPU_PRESETS` échelle seahorse 1e2→1e8, baseline versionnée dans la
+  doc du preset) + tests unitaires quality en CI (gap CI comblé : le bin
+  fractall-quality n'était jamais testé).
 - [ ] **9.6 — Fiabilité → escalade de tier** (= G-dd auto-dispatch, plan déjà
   écrit) : détecteur shadowing en observation puis escalade px→dd /
   frame→dd ; ferme la boucle « le wisdom ne sous-provisionne jamais »

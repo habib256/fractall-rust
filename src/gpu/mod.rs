@@ -30,6 +30,8 @@ pub struct GpuDispatchResult {
     #[allow(dead_code)]
     pub orbit_cache: Option<Arc<ReferenceOrbitCache>>,
     /// `true` si le path perturbation a été utilisé (sinon shader f32 standard).
+    /// Lu par le CLI/GUI (affichage du mode) ; pas par fractall-quality.
+    #[allow(dead_code)]
     pub used_perturbation: bool,
 }
 
@@ -451,6 +453,8 @@ impl GpuRenderer {
         self.render_burning_ship_f32(params, cancel)
     }
 
+    /// Lu par le CLI/GUI (affichage) ; pas par fractall-quality.
+    #[allow(dead_code)]
     pub fn precision_label(&self) -> &'static str {
         // Toujours utiliser f32 en mode GPU
         "f32"

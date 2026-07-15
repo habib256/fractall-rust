@@ -9,6 +9,9 @@ pub mod vectorial;
 pub mod buddhabrot;
 pub mod perturbation;
 pub mod wisdom;
+// Consommé par le bin fractall-cli (--wisdom-bench) + wisdom::plan_for ;
+// dead-code dans les bins qui ne benchent pas (gui/quality).
+#[allow(dead_code)]
 pub mod wisdom_bench;
 pub mod orbit_traps;
 

@@ -228,6 +228,39 @@ pub const PRESETS: &[Preset] = &[
     },
 ];
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Les presets GPU doivent rester dans le domaine du dispatch GPU actuel
+    /// (types M/J/BS de `render_dispatch`) et nommés distinctement des presets
+    /// CPU (préfixe `gpu-`, unicité globale) — le rapport les écrit sous
+    /// `<output-dir>/gpu/` mais le summary les référence par nom.
+    #[test]
+    fn gpu_presets_well_formed() {
+        let mut seen = std::collections::HashSet::new();
+        for p in GPU_PRESETS {
+            assert!(p.name.starts_with("gpu-"), "{} doit être préfixé gpu-", p.name);
+            assert!(seen.insert(p.name), "nom dupliqué : {}", p.name);
+            assert!(
+                matches!(
+                    p.fractal_type,
+                    FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
+                ),
+                "{} : type {:?} hors du dispatch GPU",
+                p.name,
+                p.fractal_type
+            );
+            assert!(p.zoom.parse::<f64>().is_ok(), "{} : zoom invalide", p.name);
+        }
+        assert!(!GPU_PRESETS.is_empty());
+        // Pas de collision avec les presets CPU.
+        for p in PRESETS {
+            assert!(!seen.contains(p.name), "collision CPU/GPU : {}", p.name);
+        }
+    }
+}
+
 pub fn find(name: &str) -> Option<&'static Preset> {
     PRESETS.iter().find(|p| p.name == name)
 }
@@ -235,3 +268,86 @@ pub fn find(name: &str) -> Option<&'static Preset> {
 pub fn names() -> Vec<&'static str> {
     PRESETS.iter().map(|p| p.name).collect()
 }
+
+/// Échelle de zoom pour la **parité GPU↔CPU** (`gpu-suite`, verrou G9.4/9.5) :
+/// même centre seahorse à chaque décade du range GPU actuel (shader std f32
+/// jusqu'à ~1e5, perturbation f32 au-delà — seuil `GPU_PERTURBATION_THRESHOLD`
+/// 1e-5). Baseline mesurée 2026-07-15 (256², f32 actuels, juge CPU Auto) :
+/// FAIL massif à 1e2-1e3 (7-10 % px, bord chaotique amplifié par la mantisse
+/// f32), WARN 1e4-3e5 (p99=0, div 0.4-0.8 %), FAIL ≥ 1e6 (p99 15-100, path
+/// perturbation f32). L'auto-GPU (9.5) exige un kernel qui PASSE cette suite.
+/// Itérations 5000 : assez pour structurer le bord sans saturer le f32.
+pub const GPU_PRESETS: &[Preset] = &[
+    Preset {
+        name: "gpu-seahorse-1e2",
+        description: "Parité GPU↔CPU — seahorse zoom 1e2 (shader std f32, bord chaotique).",
+        fractal_type: FractalType::Mandelbrot,
+        center_x_hp: "-0.743643887037158",
+        center_y_hp: "0.131825904205311",
+        zoom: "1e2",
+        iterations: 5000,
+        multibrot_power: None,
+        julia_seed: None,
+        precision_bits: None,
+    },
+    Preset {
+        name: "gpu-seahorse-1e3",
+        description: "Parité GPU↔CPU — seahorse zoom 1e3 (shader std f32).",
+        fractal_type: FractalType::Mandelbrot,
+        center_x_hp: "-0.743643887037158",
+        center_y_hp: "0.131825904205311",
+        zoom: "1e3",
+        iterations: 5000,
+        multibrot_power: None,
+        julia_seed: None,
+        precision_bits: None,
+    },
+    Preset {
+        name: "gpu-seahorse-1e4",
+        description: "Parité GPU↔CPU — seahorse zoom 1e4 (shader std f32, meilleure bande).",
+        fractal_type: FractalType::Mandelbrot,
+        center_x_hp: "-0.743643887037158",
+        center_y_hp: "0.131825904205311",
+        zoom: "1e4",
+        iterations: 5000,
+        multibrot_power: None,
+        julia_seed: None,
+        precision_bits: None,
+    },
+    Preset {
+        name: "gpu-seahorse-3e5",
+        description: "Parité GPU↔CPU — seahorse zoom 3e5 (limite du shader std f32).",
+        fractal_type: FractalType::Mandelbrot,
+        center_x_hp: "-0.743643887037158",
+        center_y_hp: "0.131825904205311",
+        zoom: "3e5",
+        iterations: 5000,
+        multibrot_power: None,
+        julia_seed: None,
+        precision_bits: None,
+    },
+    Preset {
+        name: "gpu-seahorse-1e6",
+        description: "Parité GPU↔CPU — seahorse zoom 1e6 (path perturbation GPU f32).",
+        fractal_type: FractalType::Mandelbrot,
+        center_x_hp: "-0.743643887037158",
+        center_y_hp: "0.131825904205311",
+        zoom: "1e6",
+        iterations: 5000,
+        multibrot_power: None,
+        julia_seed: None,
+        precision_bits: None,
+    },
+    Preset {
+        name: "gpu-seahorse-1e8",
+        description: "Parité GPU↔CPU — seahorse zoom 1e8 (perturbation GPU f32 profonde).",
+        fractal_type: FractalType::Mandelbrot,
+        center_x_hp: "-0.743643887037158",
+        center_y_hp: "0.131825904205311",
+        zoom: "1e8",
+        iterations: 5000,
+        multibrot_power: None,
+        julia_seed: None,
+        precision_bits: None,
+    },
+];
