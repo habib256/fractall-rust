@@ -1927,6 +1927,30 @@ Jalons (ordre de ROI croissant en effort) :
   (diagnostic `xaos_pan_speedup_diagnostic`, `--ignored`). Verrous : 11 unit
   xaos dont roundtrips pan-entier == rendu frais pixel-exact sur les paths f64
   ET perturbation ; 246+255+253 unit + 21 golden + QA 15 verts.
+- [x] **G10.4b — XaoS zoom : injectivité + refine union + molette** `[✅ 2026-07-16]` :
+  le zoom-in dupliquait des colonnes source jusqu'à couvrir 100 % de la cible
+  (zoom ×2 aligné = « écho pur » : AUCUN pixel frais, image exacte seulement
+  après idle 400 ms + refine total → clic-zoom plus lent et plus flou
+  qu'avant G10.4). Fixes : (1) **matching injectif** par axe (une source → au
+  plus une cible, la mieux alignée) — ≥ (1−a)·n colonnes fraîches garanties
+  en zoom-in, no-op pan/zoom-out (pan ×39 préservé) ; (2) **refine union**
+  (`build_refine_map`, `XaosMap::keep_union`) : conserve tout pixel dont un
+  axe est ENTIÈREMENT exact (`col_exact`/`row_exact` dans la frame — piège :
+  une ligne copiée « alignée » n'est PAS exacte si l'axe colonne est décalé,
+  verrou `union_refine_rejects_aligned_but_shifted_frame`) et ne recalcule
+  que les approximations → cycle zoom ×2 écho+refine = **107 %** d'un rendu
+  frais, image visible à ~0.8× (mesure `xaos_zoom_cycle_diagnostic` : refine
+  ×3.6, 75 % conservés) ; (3) refine/label `≈XaoS` gated sur l'erreur réelle
+  (> ε) — plus de refine après copies exactes ; plus de label parasite sur
+  les passes GPU (map non consommé) ; (4) une passe écho-pur ne remplace plus
+  la frame source (dégradait la source en copies de copies pendant les zooms
+  enchaînés qui annulent les rendus) ; (5) **zoom molette ancré au curseur**
+  (`zoom_anchored_hp`, C′ = C + (r−0.5)·S·(1−1/f), HP ; ≈×1.2/cran) —
+  documenté dans CLAUDE.md mais jamais implémenté ; c'est le chemin de zoom
+  continu que l'écho XaoS sert le mieux. Boucles pixel unifiées sur
+  `XaosMap::source_index`. Verrous : 17 unit xaos dont roundtrip
+  `zoom_then_exact_refine_matches_fresh_render` (écho ×2 → refine union ==
+  frais pixel-exact) ; 251+260 unit + 21 golden verts.
 - [ ] **G10.5 — File de tuiles priorité-centre** : work-queue de tuiles ordonnée
   curseur-d'abord au lieu du `par_chunks_mut` monolithique (`escape_time.rs:347`).
 

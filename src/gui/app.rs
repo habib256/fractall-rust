@@ -593,6 +593,44 @@ impl FractallApp {
         self.sync_hp_to_params();
     }
     
+    /// Zoom ANCRÉ en haute précision : le point à la position relative
+    /// (`ratio_x`, `ratio_y`) reste FIXE à l'écran (zoom molette), au lieu
+    /// d'être re-centré comme `zoom_hp`. `zoom_factor` > 1 = zoom in.
+    /// Géométrie : C' = C + (r − 0.5)·S·(1 − 1/f), S' = S/f.
+    fn zoom_anchored_hp(&mut self, ratio_x: f64, ratio_y: f64, zoom_factor: f64) {
+        let prec = self.hp_arith_precision();
+
+        let center_x = Float::parse(&self.center_x_hp)
+            .map(|p| Float::with_val(prec, p))
+            .unwrap_or_else(|_| Float::with_val(prec, self.params.center_x));
+        let center_y = Float::parse(&self.center_y_hp)
+            .map(|p| Float::with_val(prec, p))
+            .unwrap_or_else(|_| Float::with_val(prec, self.params.center_y));
+        let span_x = Float::parse(&self.span_x_hp)
+            .map(|p| Float::with_val(prec, p))
+            .unwrap_or_else(|_| Float::with_val(prec, self.params.span_x));
+        let span_y = Float::parse(&self.span_y_hp)
+            .map(|p| Float::with_val(prec, p))
+            .unwrap_or_else(|_| Float::with_val(prec, self.params.span_y));
+
+        let k = 1.0 - 1.0 / zoom_factor;
+        let offset_x = Float::with_val(prec, (ratio_x - 0.5) * k) * &span_x;
+        let offset_y = Float::with_val(prec, (ratio_y - 0.5) * k) * &span_y;
+        let new_center_x = center_x + offset_x;
+        let new_center_y = center_y + offset_y;
+
+        let target_aspect = self.params.width as f64 / self.params.height as f64;
+        let new_span_y = span_y / Float::with_val(prec, zoom_factor);
+        let new_span_x = Float::with_val(prec, target_aspect) * &new_span_y;
+
+        self.center_x_hp = new_center_x.to_string_radix(10, None);
+        self.center_y_hp = new_center_y.to_string_radix(10, None);
+        self.span_x_hp = new_span_x.to_string_radix(10, None);
+        self.span_y_hp = new_span_y.to_string_radix(10, None);
+
+        self.sync_hp_to_params();
+    }
+
     /// Effectue un zoom rectangulaire en haute précision.
     fn zoom_rect_hp(&mut self, xr1: f64, yr1: f64, xr2: f64, yr2: f64) {
         let prec = self.hp_arith_precision();
@@ -1068,10 +1106,13 @@ impl FractallApp {
         self.aa_progress = if aa_samples > 1 { Some((0, aa_samples)) } else { None };
 
         // G10.4 : frame source pour la réutilisation pixels inter-frame.
-        // Désactivée pour le raffinement (recalcul exact) et en mode AA
-        // multi-sample (les échantillons doivent être exacts). Le clone est un
-        // bump d'Arc (buffers partagés avec l'état de l'app).
-        let xaos_source = if refine || aa_samples > 1 {
+        // Désactivée en mode AA multi-sample (les échantillons doivent être
+        // exacts). Le clone est un bump d'Arc (buffers partagés avec l'état de
+        // l'app). Le raffinement UTILISE la frame mais à tolérance EXACTE :
+        // il conserve les pixels dont la position est déjà vraie (calculés
+        // frais ou copiés alignés) et ne recalcule que les approximations —
+        // au lieu de refaire 100 % du travail de la passe finale.
+        let xaos_source = if aa_samples > 1 {
             None
         } else {
             self.xaos_frame.clone()
@@ -1104,10 +1145,17 @@ impl FractallApp {
 
                 // G10.4 : mapping colonnes/lignes frame précédente → cette
                 // passe (gates + fingerprint + transformée HP validés dans
-                // build_map ; None si rien de réutilisable).
-                let xaos_map = xaos_source
-                    .as_ref()
-                    .and_then(|src| xaos::build_map(src, &pass_params));
+                // build_map ; None si rien de réutilisable). Le raffinement
+                // utilise le map UNION : il conserve tout pixel déjà exact
+                // (axe frais ou frame exacte) et ne recalcule que les
+                // approximations de la passe écho.
+                let xaos_map = xaos_source.as_ref().and_then(|src| {
+                    if refine {
+                        xaos::build_refine_map(src, &pass_params)
+                    } else {
+                        xaos::build_map(src, &pass_params)
+                    }
+                });
 
                 // Rendre cette passe (réutiliser la passe précédente si possible)
                 let reuse = previous_pass.as_ref().map(|(iter, zs, w, h)| {
@@ -1193,22 +1241,51 @@ impl FractallApp {
 
                         // G10.4 : frame source XaoS pour les rendus suivants
                         // (positions vraies héritées du mapping si des pixels
-                        // ont été copiés, zéro sinon). Passes GPU exclues.
-                        let xaos_reused = xaos_map
-                            .as_ref()
-                            .map(|m| m.reused_cols * m.reused_rows)
-                            .unwrap_or(0);
-                        if xaos_reused > 0 {
-                            // Indicateur : la frame contient des pixels copiés
+                        // ont été copiés, zéro sinon). Passes GPU exclues (le
+                        // map n'y est PAS consommé : ni label ni refine).
+                        // `approx` = des pixels copiés dévient réellement de
+                        // la grille → label ≈ + raffinement idle ; les copies
+                        // exactes (pan entier, refine ε) n'en déclenchent pas.
+                        let xaos_approx = match (&xaos_map, from_gpu) {
+                            (Some(m), false) => {
+                                m.any_reuse()
+                                    && m.max_abs_err() > xaos::XAOS_EXACT_TOLERANCE_PX
+                            }
+                            _ => false,
+                        };
+                        if xaos_approx {
+                            // Indicateur : la frame contient des pixels approximés
                             // (le raffinement idle l'effacera au rendu exact).
                             precision_label.push_str(" ≈XaoS");
                         }
-                        let xaos_frame = if from_gpu {
+                        // Une passe écho-pur (100 % copiée) n'apporte aucune
+                        // information : garder la frame source existante au
+                        // lieu de la dégrader en copie de copie (zooms/pans
+                        // enchaînés qui annulent les rendus en cours).
+                        let pure_copy = xaos_map
+                            .as_ref()
+                            .is_some_and(|m| m.is_pure_copy(pass_width as usize, pass_height as usize));
+                        let xaos_frame = if from_gpu || pure_copy {
                             None
                         } else {
-                            let (col_err, row_err) = match &xaos_map {
-                                Some(m) => (m.col_err.clone(), m.row_err.clone()),
-                                None => (vec![0.0; pass_width as usize], vec![0.0; pass_height as usize]),
+                            let (w, h) = (pass_width as usize, pass_height as usize);
+                            let (col_err, row_err, col_exact, row_exact) = match &xaos_map {
+                                Some(m) => {
+                                    // Axe ENTIÈREMENT exact : calculé frais
+                                    // (non matché) — ou frame sans aucune
+                                    // approximation (refine, pan entier).
+                                    let all_exact = m.max_abs_err()
+                                        <= xaos::XAOS_EXACT_TOLERANCE_PX;
+                                    (
+                                        m.col_err.clone(),
+                                        m.row_err.clone(),
+                                        m.src_col.iter().map(|&s| all_exact || s < 0).collect(),
+                                        m.src_row.iter().map(|&s| all_exact || s < 0).collect(),
+                                    )
+                                }
+                                None => {
+                                    (vec![0.0; w], vec![0.0; h], vec![true; w], vec![true; h])
+                                }
                             };
                             Some(XaosSourceFrame {
                                 iterations: Arc::clone(&iterations),
@@ -1221,6 +1298,8 @@ impl FractallApp {
                                 sy: view_sy.clone(),
                                 col_err: Arc::new(col_err),
                                 row_err: Arc::new(row_err),
+                                col_exact: Arc::new(col_exact),
+                                row_exact: Arc::new(row_exact),
                                 fingerprint: render_fingerprint.clone(),
                             })
                         };
@@ -1249,7 +1328,7 @@ impl FractallApp {
                             height: pass_height,
                             colored_buffer,
                             xaos_frame,
-                            xaos_reused,
+                            xaos_approx,
                         });
                         
                         // Délai pour laisser l'UI afficher cette passe avant de continuer
@@ -1395,16 +1474,18 @@ impl FractallApp {
                 height,
                 colored_buffer: _, // ignoré : on re-colorise avec la palette actuelle (params)
                 xaos_frame,
-                xaos_reused,
+                xaos_approx,
             } => {
                 // G10.4 : mémoriser la frame source pour la réutilisation
-                // pixels inter-frame (Arc partagés, pas de memcpy). Si la
-                // passe a copié des pixels (approximés ≤ 0.5 px), programmer
-                // le raffinement exact à l'idle.
+                // pixels inter-frame (Arc partagés, pas de memcpy). None =
+                // passe GPU ou écho pur → garder la source existante. Si la
+                // passe a copié des pixels APPROXIMÉS (erreur réelle > ε),
+                // programmer le raffinement exact à l'idle — les copies
+                // exactes (pan entier, refine) n'en redéclenchent pas.
                 if let Some(frame) = xaos_frame {
                     self.xaos_frame = Some(frame);
-                    self.xaos_refine_pending = xaos_reused > 0;
                 }
+                self.xaos_refine_pending = xaos_approx;
                 // Déléguer upscale + colorize à un thread pour ne pas bloquer l'UI (évite "ne répond pas")
                 let tx = match &self.texture_ready_sender {
                     Some(t) => t.clone(),
@@ -2821,6 +2902,29 @@ impl eframe::App for FractallApp {
                     // Détecter le début d'une sélection rectangulaire (drag avec bouton gauche)
                     // Désactivé en mode Julia preview
                     let julia_mode = self.selected_type.has_julia_variant() && self.julia_preview_enabled;
+
+                    // Molette : zoom continu ANCRÉ au curseur (le point sous le
+                    // curseur reste fixe). Les petits incréments maximisent la
+                    // réutilisation XaoS inter-frame (écho immédiat, raffinement
+                    // exact à l'idle) — c'est le chemin de zoom fluide.
+                    if !julia_mode && response.hovered() && !self.selecting {
+                        let scroll_y = ctx.input(|i| i.smooth_scroll_delta.y);
+                        if scroll_y.abs() > 0.5 {
+                            if let Some(pos) = ctx.pointer_hover_pos() {
+                                if image_rect.contains(pos) {
+                                    let local = pos - image_rect.min;
+                                    let rx = (local.x / image_rect.width()) as f64;
+                                    let ry = (local.y / image_rect.height()) as f64;
+                                    // ≈ ×1.2 par cran (50 px), borné (trackpads rapides).
+                                    let factor =
+                                        1.2f64.powf((scroll_y as f64 / 50.0).clamp(-3.0, 3.0));
+                                    self.zoom_anchored_hp(rx, ry, factor);
+                                    self.start_render();
+                                }
+                            }
+                        }
+                    }
+
                     if !julia_mode {
                         ctx.input(|i| {
                             // Vérifier si le bouton gauche est pressé et si on est dans la zone de l'image

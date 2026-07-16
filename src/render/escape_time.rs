@@ -382,11 +382,9 @@ fn render_escape_time_f64_cancellable_with_reuse(
                 .zip(dist_row.iter_mut())
                 .enumerate()
             {
-                // G10.4 : copie inter-frame XaoS (bande colonne ET ligne matchées).
+                // G10.4 : copie inter-frame XaoS (écho produit ou refine union).
                 if let Some(x) = xaos {
-                    let (sc, sr) = (x.src_col[i], x.src_row[j]);
-                    if sc >= 0 && sr >= 0 {
-                        let sidx = sr as usize * x.src_width + sc as usize;
+                    if let Some(sidx) = x.source_index(i, j) {
                         if let Some(&it) = x.iterations.get(sidx) {
                             *iter = it;
                             *z = x.zs[sidx];
@@ -553,11 +551,9 @@ fn render_escape_time_gmp_cancellable_with_reuse(
             let mut dy = span_y.clone();
             dy *= &y_ratio;
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
-                // G10.4 : copie inter-frame XaoS (bande colonne ET ligne matchées).
+                // G10.4 : copie inter-frame XaoS (écho produit ou refine union).
                 if let Some(x) = xaos {
-                    let (sc, sr) = (x.src_col[i], x.src_row[j]);
-                    if sc >= 0 && sr >= 0 {
-                        let sidx = sr as usize * x.src_width + sc as usize;
+                    if let Some(sidx) = x.source_index(i, j) {
                         if let Some(&it) = x.iterations.get(sidx) {
                             *iter = it;
                             *z = x.zs[sidx];

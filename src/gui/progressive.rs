@@ -32,12 +32,15 @@ pub enum RenderMessage {
         #[allow(dead_code)]
         colored_buffer: Vec<u8>,
         /// G10.4 : frame source XaoS prête à stocker (None pour les passes GPU
-        /// — leur précision f32 ne doit pas contaminer un rendu CPU futur).
+        /// — leur précision f32 ne doit pas contaminer un rendu CPU futur —
+        /// et pour les passes écho-pur, qui n'apportent aucune information
+        /// nouvelle : la source existante est conservée).
         xaos_frame: Option<XaosSourceFrame>,
-        /// G10.4 : nombre de colonnes×lignes COPIÉES depuis la frame
-        /// précédente (0 = rendu exact). >0 sur la passe finale → programmer
-        /// le raffinement idle.
-        xaos_reused: usize,
+        /// G10.4 : la passe a copié des pixels dont la position dévie
+        /// réellement de la grille (> ε). true sur la passe finale →
+        /// programmer le raffinement idle ; false pour les copies exactes
+        /// (pan entier, refine) et les passes GPU (map non consommé).
+        xaos_approx: bool,
     },
     /// Mise à jour incrémentale de l'anti-aliasing multi-sample : moyenne RGB
     /// courante après `sample`/`total` échantillons jitterés. Le buffer est

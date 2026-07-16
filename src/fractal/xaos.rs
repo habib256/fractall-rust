@@ -19,6 +19,18 @@
 //! de s'accumuler. Le raffinement idle (GUI) recalcule ensuite exactement et
 //! remet les erreurs à zéro.
 //!
+//! Zoom-in (matching INJECTIF) : une colonne/ligne source ne sert qu'UN index
+//! cible (le mieux aligné). Sans cela, un zoom-in de facteur ≤ 2 duplique des
+//! colonnes jusqu'à couvrir 100 % de la cible sans calculer UN SEUL pixel
+//! frais (écho pur qui ne fait que retarder l'image exacte, cf. clic-zoom ×2
+//! centré). L'injectivité garantit ≥ (1−a)·n indices frais par axe en zoom-in
+//! et est un no-op en pan (mapping bijectif) comme en zoom-out / passes
+//! preview (espacement source > 1). Le raffinement idle passe une tolérance
+//! EXACTE (`XAOS_EXACT_TOLERANCE_PX`) : seuls les pixels dont la position est
+//! déjà vraie (calculés frais ou copiés alignés) sont conservés, les
+//! approximations sont recalculées — le refine ne refait pas le travail que la
+//! passe finale vient de faire.
+//!
 //! Garde-fous (cf. TODO G10) : fast-path gated sur `rotation == 0 ∧
 //! transform_k == None` (la séparabilité casse en rotation), désactivé pour les
 //! modes à données par-pixel (`Distance*`, `OrbitTraps`, `Wings` — même
@@ -36,6 +48,12 @@ use crate::fractal::{FractalParams, OutColoringMode};
 /// tout décalage sous-pixel (pan fluide, zoom molette ≈ écho nearest-neighbor
 /// immédiat) ; le raffinement idle rend l'image exacte dès la pause.
 pub const XAOS_TOLERANCE_PX: f64 = 0.5;
+
+/// Tolérance "exacte" (raffinement idle) : ne matche que les colonnes/lignes
+/// dont la position vraie coïncide avec la grille cible au bruit f64 près
+/// (copies alignées pixel-entier, pixels calculés frais). Bien au-dessus du
+/// bruit des ratios HP→f64 (~1e-14 px), bien en dessous de tout décalage réel.
+pub const XAOS_EXACT_TOLERANCE_PX: f64 = 1e-9;
 
 /// Précision HP pour les ratios de la transformée frame→frame (mêmes ordres de
 /// grandeur que le warp G10.1 : des ratios O(1), 256 b couvrent tout zoom
@@ -61,6 +79,13 @@ pub struct XaosSourceFrame {
     /// 0.0 = pixel calculé exactement sur la grille.
     pub col_err: Arc<Vec<f64>>,
     pub row_err: Arc<Vec<f64>>,
+    /// Vrai si TOUS les pixels de la colonne/ligne sont exacts (colonne
+    /// calculée fraîche lors d'une passe écho, ou frame sans aucune
+    /// approximation). ⚠️ Plus fort que `col_err ≈ 0` : une colonne COPIÉE
+    /// alignée (err≈0) peut contenir des pixels décalés par l'AUTRE axe.
+    /// Consommé par `build_refine_map` (sémantique union).
+    pub col_exact: Arc<Vec<bool>>,
+    pub row_exact: Arc<Vec<bool>>,
     /// Fingerprint des paramètres non-géométriques (cf. `params_fingerprint`).
     pub fingerprint: String,
 }
@@ -76,6 +101,14 @@ pub struct XaosMap {
     pub src_col: Vec<i32>,
     /// Index de ligne source par ligne cible (-1 = calculer).
     pub src_row: Vec<i32>,
+    /// Sémantique UNION (mode raffinement, `build_refine_map`) : un pixel est
+    /// copié si sa colonne OU sa ligne est saine, à l'index IDENTITÉ
+    /// (invariant : posé uniquement quand la transformée frame→cible est
+    /// l'identité — même vue, mêmes dims — et `src_col[x] ∈ {x, -1}`,
+    /// `src_row[y] ∈ {y, -1}`). Un pixel de la frame est exact dès qu'un de
+    /// ses axes est sain : calculé frais (axe non matché à l'écho) ou copié
+    /// aligné. false = sémantique produit classique (colonne ET ligne).
+    pub keep_union: bool,
     /// Positions vraies de la frame PRODUITE (px cible, 0.0 pour les colonnes/
     /// lignes calculées) — à stocker avec la frame résultat.
     pub col_err: Vec<f64>,
@@ -86,17 +119,67 @@ pub struct XaosMap {
 }
 
 impl XaosMap {
-    /// Fraction de pixels copiés (produit des fractions par axe).
+    /// Fraction de pixels copiés (produit des fractions par axe, ou union en
+    /// mode raffinement).
     pub fn reused_fraction(&self, width: usize, height: usize) -> f64 {
         if width == 0 || height == 0 {
             return 0.0;
         }
-        (self.reused_cols as f64 / width as f64) * (self.reused_rows as f64 / height as f64)
+        let fc = self.reused_cols as f64 / width as f64;
+        let fr = self.reused_rows as f64 / height as f64;
+        if self.keep_union {
+            1.0 - (1.0 - fc) * (1.0 - fr)
+        } else {
+            fc * fr
+        }
     }
 
     /// Vrai si au moins un pixel sera copié.
     pub fn any_reuse(&self) -> bool {
-        self.reused_cols > 0 && self.reused_rows > 0
+        if self.keep_union {
+            self.reused_cols > 0 || self.reused_rows > 0
+        } else {
+            self.reused_cols > 0 && self.reused_rows > 0
+        }
+    }
+
+    /// Vrai si le mapping copie TOUTE la cible (aucun pixel frais). Une passe
+    /// écho-pur n'apporte aucune information nouvelle : sa frame ne doit pas
+    /// remplacer la source existante (sinon les zooms enchaînés dégradent la
+    /// source en copies de copies).
+    pub fn is_pure_copy(&self, width: usize, height: usize) -> bool {
+        if self.keep_union {
+            self.reused_cols == width || self.reused_rows == height
+        } else {
+            self.reused_cols == width && self.reused_rows == height
+        }
+    }
+
+    /// Décision de copie pour le pixel (i, j) : `Some(index source)` si le
+    /// pixel doit être copié depuis la frame source, `None` s'il est à
+    /// calculer. Point d'entrée UNIQUE des 4 boucles pixel (f64 / GMP /
+    /// perturbation / perturbation-GMP) — encapsule la sémantique produit
+    /// (écho) vs union-identité (raffinement).
+    #[inline(always)]
+    pub fn source_index(&self, i: usize, j: usize) -> Option<usize> {
+        let (sc, sr) = (self.src_col[i], self.src_row[j]);
+        if self.keep_union {
+            // Invariant build_refine_map : axes identité → l'index source du
+            // pixel est (i, j) dès qu'un axe est sain.
+            (sc >= 0 || sr >= 0).then(|| j * self.src_width + i)
+        } else {
+            (sc >= 0 && sr >= 0).then(|| sr as usize * self.src_width + sc as usize)
+        }
+    }
+
+    /// Erreur positionnelle max (px cible) parmi les colonnes/lignes copiées.
+    /// ≤ `XAOS_EXACT_TOLERANCE_PX` ⇒ les copies sont exactes (pas de
+    /// raffinement nécessaire, pas de label ≈).
+    pub fn max_abs_err(&self) -> f64 {
+        self.col_err
+            .iter()
+            .chain(self.row_err.iter())
+            .fold(0.0f64, |m, e| m.max(e.abs()))
     }
 }
 
@@ -188,7 +271,9 @@ fn axis_transform(
 /// Matching d'UN axe : pour chaque index cible x, cherche la colonne/ligne
 /// source dont la position VRAIE (`k + err_old[k]`, px source) est la plus
 /// proche de la position nominale mappée `p = a·(x+0.5) + B`. Match si la
-/// distance, convertie en px CIBLE (`/a`), est ≤ `tol`.
+/// distance, convertie en px CIBLE (`/a`), est ≤ `tol` — puis INJECTIVITÉ :
+/// chaque source ne sert que l'index cible le mieux aligné (cf. doc module :
+/// garantit du travail frais en zoom-in, no-op en pan/zoom-out).
 ///
 /// Retourne (src, err_new, reused) : `src[x] = -1` si à calculer, sinon l'index
 /// source ; `err_new[x]` = position vraie − nominale en px cible (0.0 si
@@ -203,12 +288,13 @@ pub fn build_axis_map(
 ) -> (Vec<i32>, Vec<f64>, usize) {
     let mut src = vec![-1i32; n_new];
     let mut err_new = vec![0.0f64; n_new];
-    let mut reused = 0usize;
     if n_old == 0 || !(a > 0.0) || !a.is_finite() || !b.is_finite() {
-        return (src, err_new, reused);
+        return (src, err_new, 0);
     }
     let get_err = |k: usize| err_old.get(k).copied().unwrap_or(0.0);
-    for x in 0..n_new {
+    // Passe 1 : meilleur candidat (d_target signé, k) par index cible.
+    let mut cand: Vec<Option<(f64, usize)>> = vec![None; n_new];
+    for (x, c) in cand.iter_mut().enumerate() {
         let p = a * (x as f64 + 0.5) + b;
         // Les positions vraies dévient de ≤ tol de la grille source : examiner
         // round(p) et ses deux voisins suffit (positions quasi-monotones).
@@ -227,8 +313,29 @@ pub fn build_axis_map(
         if let Some((d, k)) = best {
             let d_target = d / a; // px cible
             if d_target.abs() <= tol {
-                src[x] = k as i32;
-                err_new[x] = d_target;
+                *c = Some((d_target, k));
+            }
+        }
+    }
+    // Passe 2 : injectivité — pour chaque source k, ne garder que le candidat
+    // cible le mieux aligné. En zoom-in (a < 1) c'est ce qui force ≥ (1−a)·n
+    // indices à être recalculés (fin de l'écho pur) ; en pan/zoom-out le
+    // mapping est déjà injectif et rien ne change.
+    let mut best_target = vec![-1i64; n_old];
+    for (x, c) in cand.iter().enumerate() {
+        if let Some((d, k)) = c {
+            let cur = best_target[*k];
+            if cur < 0 || d.abs() < cand[cur as usize].expect("candidat retenu").0.abs() {
+                best_target[*k] = x as i64;
+            }
+        }
+    }
+    let mut reused = 0usize;
+    for (x, c) in cand.iter().enumerate() {
+        if let Some((d, k)) = c {
+            if best_target[*k] == x as i64 {
+                src[x] = *k as i32;
+                err_new[x] = *d;
                 reused += 1;
             }
         }
@@ -240,6 +347,18 @@ pub fn build_axis_map(
 /// fast-path n'est pas applicable (gates, fingerprint, transformée dégénérée)
 /// ou si aucun pixel n'est réutilisable.
 pub fn build_map(src: &XaosSourceFrame, params: &FractalParams) -> Option<XaosMap> {
+    build_map_with_tolerance(src, params, XAOS_TOLERANCE_PX)
+}
+
+/// Variante à tolérance explicite. Le rendu interactif passe
+/// `XAOS_TOLERANCE_PX` (0.5 px, écho fluide) ; le raffinement idle passe
+/// `XAOS_EXACT_TOLERANCE_PX` — il ne conserve que les pixels dont la position
+/// est déjà exacte et recalcule uniquement les approximations.
+pub fn build_map_with_tolerance(
+    src: &XaosSourceFrame,
+    params: &FractalParams,
+    tol: f64,
+) -> Option<XaosMap> {
     if !params_allow_pixel_reuse(params) {
         return None;
     }
@@ -259,7 +378,7 @@ pub fn build_map(src: &XaosSourceFrame, params: &FractalParams) -> Option<XaosMa
         ax,
         bx,
         &src.col_err,
-        XAOS_TOLERANCE_PX,
+        tol,
     );
     let (src_row, row_err, reused_rows) = build_axis_map(
         params.height as usize,
@@ -267,7 +386,7 @@ pub fn build_map(src: &XaosSourceFrame, params: &FractalParams) -> Option<XaosMa
         ay,
         by,
         &src.row_err,
-        XAOS_TOLERANCE_PX,
+        tol,
     );
     let map = XaosMap {
         iterations: Arc::clone(&src.iterations),
@@ -275,8 +394,84 @@ pub fn build_map(src: &XaosSourceFrame, params: &FractalParams) -> Option<XaosMa
         src_width: src.width as usize,
         src_col,
         src_row,
+        keep_union: false,
         col_err,
         row_err,
+        reused_cols,
+        reused_rows,
+    };
+    if !map.any_reuse() {
+        return None;
+    }
+    Some(map)
+}
+
+/// Mapping de RAFFINEMENT : recalcule uniquement les pixels approximés de la
+/// frame (colonne ET ligne déviant de la grille), conserve tout pixel dont un
+/// axe est sain (calculé frais à l'écho, ou copié aligné) — sémantique UNION à
+/// index identité. C'est ce qui ramène le cycle zoom écho+refine à ~100 % du
+/// coût d'un rendu frais (le refine ne refait pas le travail de la passe
+/// écho). Exige la transformée identité (même vue, mêmes dims) ; sinon,
+/// fallback sur le matching produit à tolérance exacte (toujours correct).
+pub fn build_refine_map(src: &XaosSourceFrame, params: &FractalParams) -> Option<XaosMap> {
+    if !params_allow_pixel_reuse(params) {
+        return None;
+    }
+    let expected = src.width as usize * src.height as usize;
+    if expected == 0 || src.iterations.len() != expected || src.zs.len() != expected {
+        return None;
+    }
+    if src.col_exact.len() != src.width as usize || src.row_exact.len() != src.height as usize {
+        return None;
+    }
+    if src.fingerprint != params_fingerprint(params) {
+        return None;
+    }
+    let identity = src.width == params.width && src.height == params.height && {
+        let (cx, cy, sx, sy) = view_strings(params);
+        // Transformée identité : a = 1 et B = −0.5 (p = a·(x+0.5) + B = x).
+        let id = |c_old: &str, s_old: &str, c_new: &str, s_new: &str, n: u32| {
+            axis_transform(c_old, s_old, c_new, s_new, n, n)
+                .is_some_and(|(a, b)| (a - 1.0).abs() <= 1e-12 && (b + 0.5).abs() <= 1e-9)
+        };
+        id(&src.cx, &src.sx, &cx, &sx, src.width) && id(&src.cy, &src.sy, &cy, &sy, src.height)
+    };
+    if !identity {
+        // Vue ou dims différentes (ex : frame source plus ancienne après une
+        // passe écho-pur non stockée) : matching produit exact classique.
+        return build_map_with_tolerance(src, params, XAOS_EXACT_TOLERANCE_PX);
+    }
+    // Union sur les axes ENTIÈREMENT exacts uniquement (`col_exact`) : un axe
+    // simplement aligné (err≈0) ne suffit pas — ses pixels peuvent être
+    // décalés par l'autre axe (ex : pan horizontal fractionnaire, lignes
+    // alignées mais tout approximé).
+    let axis = |exact: &[bool]| -> (Vec<i32>, usize) {
+        let mut kept = 0usize;
+        let v = exact
+            .iter()
+            .enumerate()
+            .map(|(k, &e)| {
+                if e {
+                    kept += 1;
+                    k as i32
+                } else {
+                    -1
+                }
+            })
+            .collect();
+        (v, kept)
+    };
+    let (src_col, reused_cols) = axis(&src.col_exact);
+    let (src_row, reused_rows) = axis(&src.row_exact);
+    let map = XaosMap {
+        iterations: Arc::clone(&src.iterations),
+        zs: Arc::clone(&src.zs),
+        src_width: src.width as usize,
+        src_col,
+        src_row,
+        keep_union: true,
+        col_err: vec![0.0; params.width as usize],
+        row_err: vec![0.0; params.height as usize],
         reused_cols,
         reused_rows,
     };
@@ -306,8 +501,21 @@ mod tests {
             sy,
             col_err: Arc::new(vec![0.0; params.width as usize]),
             row_err: Arc::new(vec![0.0; params.height as usize]),
+            col_exact: Arc::new(vec![true; params.width as usize]),
+            row_exact: Arc::new(vec![true; params.height as usize]),
             fingerprint: params_fingerprint(params),
         }
+    }
+
+    /// Reconstruit les flags `col_exact`/`row_exact` d'une frame produite par
+    /// une passe écho (même règle que la GUI : axe frais, ou map sans
+    /// approximation).
+    fn exact_flags_from_map(map: &XaosMap) -> (Vec<bool>, Vec<bool>) {
+        let all_exact = map.max_abs_err() <= XAOS_EXACT_TOLERANCE_PX;
+        (
+            map.src_col.iter().map(|&s| all_exact || s < 0).collect(),
+            map.src_row.iter().map(|&s| all_exact || s < 0).collect(),
+        )
     }
 
     fn base_params(w: u32, h: u32) -> FractalParams {
@@ -402,7 +610,7 @@ mod tests {
     }
 
     #[test]
-    fn zoom_in_2x_maps_center_half() {
+    fn zoom_in_2x_maps_center_half_injectively() {
         let p = base_params(64, 64);
         let mut zoomed = p.clone();
         zoomed.span_x = p.span_x / 2.0;
@@ -410,11 +618,100 @@ mod tests {
         let src = frame_for(&p, vec![1; 64 * 64]);
         let map = build_map(&src, &zoomed).expect("map");
         // a = 0.5 : la cible couvre les colonnes source 16..48. Positions
-        // mappées quart-entières (15.75, 16.25, …) → distance 0.25 old px
-        // = 0.5 px cible = tol → tout matche (écho nearest-neighbor).
-        assert_eq!(map.reused_cols, 64);
+        // mappées quart-entières (15.75, 16.25, …) → chaque source est à
+        // 0.5 px cible de DEUX cibles ; l'injectivité n'en garde qu'une →
+        // 32 colonnes copiées (écho), 32 recalculées (travail frais garanti,
+        // fin du zoom "écho pur" qui ne calculait rien).
+        assert_eq!(map.reused_cols, 32);
+        assert_eq!(map.reused_rows, 32);
         assert_eq!(map.src_col[0], 16);
-        assert_eq!(map.src_col[63], 47);
+        // Aucune colonne source dupliquée.
+        let mut seen = std::collections::HashSet::new();
+        for &k in &map.src_col {
+            if k >= 0 {
+                assert!(seen.insert(k), "colonne source {k} dupliquée");
+            }
+        }
+        // Les copies restent dans la fenêtre source du zoom ×2 (16..48).
+        for &k in map.src_col.iter().filter(|&&k| k >= 0) {
+            assert!((16..48).contains(&k), "source hors fenêtre : {k}");
+        }
+    }
+
+    #[test]
+    fn zoom_in_leaves_fresh_work_proportional_to_factor() {
+        // Pour tout facteur de zoom-in, l'injectivité garantit ≥ (1−a)·n
+        // colonnes fraîches par axe — un zoom ne peut plus être un écho pur.
+        for factor in [2.0, 1.5, 1.25, 1.1] {
+            let p = base_params(64, 64);
+            let mut z = p.clone();
+            z.span_x = p.span_x / factor;
+            z.span_y = p.span_y / factor;
+            let src = frame_for(&p, vec![1; 64 * 64]);
+            let map = build_map(&src, &z).expect("map");
+            let a = 1.0 / factor;
+            let max_reused = (a * 64.0).ceil() as usize;
+            assert!(
+                map.reused_cols <= max_reused,
+                "×{factor} : {} colonnes copiées > plafond injectif {max_reused}",
+                map.reused_cols
+            );
+            assert!(!map.is_pure_copy(64, 64), "×{factor} : écho pur interdit");
+            assert!(map.any_reuse(), "×{factor} : l'écho doit copier quelque chose");
+        }
+    }
+
+    #[test]
+    fn union_refine_rejects_aligned_but_shifted_frame() {
+        // Pan horizontal fractionnaire : toutes les colonnes copiées à −0.3 px,
+        // toutes les lignes ALIGNÉES (err 0) — mais chaque pixel est décalé.
+        // Le refine union ne doit RIEN conserver (une ligne alignée n'est pas
+        // une ligne exacte : ses pixels sont décalés par l'axe colonne).
+        let p = base_params(64, 64);
+        let mut moved = p.clone();
+        moved.center_x = p.center_x + 0.3 * p.span_x / 64.0;
+        let src = frame_for(&p, vec![1; 64 * 64]);
+        let echo = build_map(&src, &moved).expect("écho");
+        assert_eq!(echo.reused_cols, 64, "pan 0.3 px : tout copié");
+        // Frame résultat du pan : positions vraies −0.3, aucun axe frais.
+        let mut frame_b = frame_for(&moved, vec![1; 64 * 64]);
+        frame_b.col_err = Arc::new(echo.col_err.clone());
+        frame_b.row_err = Arc::new(echo.row_err.clone());
+        let (ce, re) = exact_flags_from_map(&echo);
+        assert!(ce.iter().all(|&e| !e), "aucune colonne fraîche");
+        assert!(re.iter().all(|&e| !e), "lignes alignées mais PAS exactes");
+        frame_b.col_exact = Arc::new(ce);
+        frame_b.row_exact = Arc::new(re);
+        assert!(
+            build_refine_map(&frame_b, &moved).is_none(),
+            "tout est approximé : le refine doit tout recalculer"
+        );
+    }
+
+    #[test]
+    fn exact_tolerance_map_keeps_only_true_positions() {
+        // Frame mi-exacte (colonnes paires err 0, impaires approximées 0.4 px) :
+        // le map identité à tolérance exacte (celui du raffinement idle) ne
+        // copie que les colonnes vraies et recalcule les approximations.
+        let p = base_params(64, 64);
+        let mut src = frame_for(&p, vec![1; 64 * 64]);
+        let mut col_err = vec![0.0; 64];
+        for e in col_err.iter_mut().skip(1).step_by(2) {
+            *e = 0.4;
+        }
+        src.col_err = Arc::new(col_err);
+        let map =
+            build_map_with_tolerance(&src, &p, XAOS_EXACT_TOLERANCE_PX).expect("map refine");
+        assert_eq!(map.reused_rows, 64, "lignes exactes toutes conservées");
+        assert_eq!(map.reused_cols, 32);
+        for x in 0..64usize {
+            if x % 2 == 0 {
+                assert_eq!(map.src_col[x], x as i32, "colonne exacte conservée");
+            } else {
+                assert_eq!(map.src_col[x], -1, "colonne approximée recalculée");
+            }
+        }
+        assert!(map.max_abs_err() <= XAOS_EXACT_TOLERANCE_PX);
     }
 
     #[test]
@@ -504,19 +801,9 @@ mod tests {
             moved.center_y += 3.0 * moved.span_y / moved.height as f64;
         }
 
-        let src = XaosSourceFrame {
-            iterations: Arc::new(it_a),
-            zs: Arc::new(zs_a),
-            width: params.width,
-            height: params.height,
-            cx: view_strings(&params).0,
-            cy: view_strings(&params).1,
-            sx: view_strings(&params).2,
-            sy: view_strings(&params).3,
-            col_err: Arc::new(vec![0.0; params.width as usize]),
-            row_err: Arc::new(vec![0.0; params.height as usize]),
-            fingerprint: params_fingerprint(&params),
-        };
+        let mut src = frame_for(&params, vec![0; (params.width * params.height) as usize]);
+        src.iterations = Arc::new(it_a);
+        src.zs = Arc::new(zs_a);
         let map = build_map(&src, &moved).expect("map");
         assert!(map.any_reuse(), "pan entier doit réutiliser des bandes");
         assert_eq!(map.reused_cols, params.width as usize - 8);
@@ -568,6 +855,82 @@ mod tests {
         assert_integer_pan_roundtrip(p);
     }
 
+    /// Bout-en-bout ZOOM : rendu A → zoom-in ×2 avec le mapping XaoS (écho
+    /// injectif : copies approximées + colonnes fraîches) → raffinement à
+    /// tolérance exacte → pixel-identique au rendu frais de la vue zoomée.
+    /// Verrouille le cycle interactif complet du zoom (écho → refine).
+    #[test]
+    fn zoom_then_exact_refine_matches_fresh_render() {
+        use std::sync::atomic::AtomicBool;
+        use crate::render::render_escape_time_cancellable_with_reuse as render;
+
+        let mut p = base_params(64, 48);
+        p.center_x = -0.6;
+        p.center_y = 0.3;
+        p.span_x = 0.5;
+        p.span_y = 0.375;
+        p.iteration_max = 300;
+        p.use_bytecode_engine = true;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (it_a, zs_a, _, _) = render(&p, &cancel, None, &mut None, None).expect("A");
+
+        // Zoom ×2 centré : cas historiquement dégénéré (100 % d'écho, 0 pixel
+        // frais avant l'injectivité).
+        let mut z = p.clone();
+        z.span_x = p.span_x / 2.0;
+        z.span_y = p.span_y / 2.0;
+
+        let mut src = frame_for(&p, vec![0; 64 * 48]);
+        src.iterations = Arc::new(it_a);
+        src.zs = Arc::new(zs_a);
+        let map = build_map(&src, &z).expect("map écho");
+        let total = 64usize * 48;
+        let copied = map.reused_cols * map.reused_rows;
+        assert!(copied > 0, "l'écho zoom doit copier des pixels");
+        assert!(
+            !map.is_pure_copy(64, 48),
+            "le zoom doit laisser du travail frais (injectivité)"
+        );
+        assert!(copied < total);
+        let (it_b, zs_b, _, _) =
+            render(&z, &cancel, None, &mut None, Some(&map)).expect("B écho");
+
+        // Frame B avec ses erreurs héritées → map de raffinement UNION :
+        // conserve tout pixel dont un axe est frais (calculé à l'écho),
+        // recalcule uniquement les copies approximées.
+        let mut src_b = frame_for(&z, vec![0; 64 * 48]);
+        src_b.iterations = Arc::new(it_b);
+        src_b.zs = Arc::new(zs_b);
+        src_b.col_err = Arc::new(map.col_err.clone());
+        src_b.row_err = Arc::new(map.row_err.clone());
+        let (ce, re) = exact_flags_from_map(&map);
+        src_b.col_exact = Arc::new(ce);
+        src_b.row_exact = Arc::new(re);
+        let refine_map = build_refine_map(&src_b, &z).expect("map refine");
+        assert!(refine_map.keep_union, "refine identité ⇒ sémantique union");
+        assert!(refine_map.max_abs_err() <= XAOS_EXACT_TOLERANCE_PX);
+        assert!(refine_map.any_reuse(), "le refine doit garder les pixels frais de B");
+        // L'union garde STRICTEMENT plus que le produit : tout pixel calculé
+        // frais à l'écho (colonne OU ligne fraîche) est conservé.
+        let kept = refine_map.reused_fraction(64, 48);
+        let echo_fresh = 1.0 - map.reused_fraction(64, 48);
+        assert!(
+            kept >= echo_fresh - 1e-9,
+            "union ({kept:.3}) doit couvrir au moins les pixels frais de l'écho ({echo_fresh:.3})"
+        );
+
+        let (it_c, zs_c, _, _) =
+            render(&z, &cancel, None, &mut None, Some(&refine_map)).expect("C refine");
+        let (it_f, zs_f, _, _) = render(&z, &cancel, None, &mut None, None).expect("frais");
+        assert_eq!(it_c, it_f, "refine ε == rendu frais (itérations)");
+        let zdiff = zs_c
+            .iter()
+            .zip(&zs_f)
+            .filter(|(a, b)| (*a - *b).norm() > 1e-12)
+            .count();
+        assert_eq!(zdiff, 0, "refine ε == rendu frais (zs)");
+    }
+
     /// Diagnostic perf (non-CI) : gain wall-clock d'un pan 8 px avec XaoS vs
     /// rendu complet. `cargo test --release --bin fractall-cli xaos_pan_speedup -- --ignored --nocapture`
     #[test]
@@ -591,17 +954,9 @@ mod tests {
         let mut moved = p.clone();
         moved.center_x += 8.0 * p.span_x / p.width as f64;
         moved.center_y += 3.0 * p.span_y / p.height as f64;
-        let (cx, cy, sx, sy) = view_strings(&p);
-        let src = XaosSourceFrame {
-            iterations: Arc::new(it_a),
-            zs: Arc::new(zs_a),
-            width: p.width,
-            height: p.height,
-            cx, cy, sx, sy,
-            col_err: Arc::new(vec![0.0; p.width as usize]),
-            row_err: Arc::new(vec![0.0; p.height as usize]),
-            fingerprint: params_fingerprint(&p),
-        };
+        let mut src = frame_for(&p, vec![0; (p.width * p.height) as usize]);
+        src.iterations = Arc::new(it_a);
+        src.zs = Arc::new(zs_a);
         let t1 = Instant::now();
         let map = build_map(&src, &moved).expect("map");
         let t_map = t1.elapsed();
@@ -615,6 +970,74 @@ mod tests {
             t_full, t_xaos, t_map,
             100.0 * reused_px / total_px,
             t_full.as_secs_f64() / t_xaos.as_secs_f64().max(1e-9),
+        );
+    }
+
+    /// Diagnostic perf (non-CI) : cycle zoom ×2 complet — passe écho (copies
+    /// injectives + colonnes fraîches) puis raffinement ε partiel — vs rendu
+    /// frais. `cargo test --release --bin fractall-cli xaos_zoom_cycle_diagnostic -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn xaos_zoom_cycle_diagnostic() {
+        use std::sync::atomic::AtomicBool;
+        use std::time::Instant;
+        use crate::render::render_escape_time_cancellable_with_reuse as render;
+
+        let mut p = base_params(1024, 768);
+        p.center_x = -0.743643135;
+        p.center_y = 0.131825963;
+        p.span_x = 2e-7;
+        p.span_y = 1.5e-7;
+        p.iteration_max = 20000;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (it_a, zs_a, _, _) = render(&p, &cancel, None, &mut None, None).expect("A");
+
+        let mut z = p.clone();
+        z.span_x = p.span_x / 2.0;
+        z.span_y = p.span_y / 2.0;
+        let t0 = Instant::now();
+        let (it_f, _, _, _) = render(&z, &cancel, None, &mut None, None).expect("frais");
+        let t_full = t0.elapsed();
+
+        let (cx, cy, sx, sy) = view_strings(&p);
+        let mut src = frame_for(&p, vec![0; 1024 * 768]);
+        src.iterations = Arc::new(it_a);
+        src.zs = Arc::new(zs_a);
+        src.cx = cx;
+        src.cy = cy;
+        src.sx = sx;
+        src.sy = sy;
+        let map = build_map(&src, &z).expect("map écho");
+        let copied = map.reused_cols * map.reused_rows;
+        let t1 = Instant::now();
+        let (it_b, zs_b, _, _) = render(&z, &cancel, None, &mut None, Some(&map)).expect("B");
+        let t_echo = t1.elapsed();
+
+        let mut src_b = frame_for(&z, vec![0; 1024 * 768]);
+        src_b.iterations = Arc::new(it_b);
+        src_b.zs = Arc::new(zs_b);
+        src_b.col_err = Arc::new(map.col_err.clone());
+        src_b.row_err = Arc::new(map.row_err.clone());
+        let (ce, re) = exact_flags_from_map(&map);
+        src_b.col_exact = Arc::new(ce);
+        src_b.row_exact = Arc::new(re);
+        let refine_map = build_refine_map(&src_b, &z).expect("map refine");
+        let kept = (refine_map.reused_fraction(1024, 768) * 1024.0 * 768.0) as usize;
+        let t2 = Instant::now();
+        let (it_c, _, _, _) =
+            render(&z, &cancel, None, &mut None, Some(&refine_map)).expect("C");
+        let t_refine = t2.elapsed();
+        assert_eq!(it_c, it_f, "cycle écho+refine == rendu frais");
+
+        let total = 1024.0 * 768.0;
+        println!(
+            "zoom ×2 : frais={t_full:?} | écho={t_echo:?} (copiés {:.1}%) | refine={t_refine:?} \
+             (conservés {:.1}%) — écho ×{:.1}, refine ×{:.1}, cycle total {:.0}% d'un frais",
+            100.0 * copied as f64 / total,
+            100.0 * kept as f64 / total,
+            t_full.as_secs_f64() / t_echo.as_secs_f64().max(1e-9),
+            t_full.as_secs_f64() / t_refine.as_secs_f64().max(1e-9),
+            100.0 * (t_echo.as_secs_f64() + t_refine.as_secs_f64()) / t_full.as_secs_f64(),
         );
     }
 

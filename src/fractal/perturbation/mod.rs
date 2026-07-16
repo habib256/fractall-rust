@@ -1289,13 +1289,11 @@ pub fn render_perturbation_with_cache(
                 let pixel_idx = chunk_start + local_idx;
                 let i = pixel_idx % width;
                 let j = pixel_idx / width;
-                // G10.4 : copie inter-frame XaoS (bande colonne ET ligne
-                // matchées). Les pixels copiés sont absolus (iterations + z à
+                // G10.4 : copie inter-frame XaoS (écho produit ou refine
+                // union). Les pixels copiés sont absolus (iterations + z à
                 // l'échappement) : valides quelle que soit l'orbite référence.
                 if let Some(x) = xaos {
-                    let (sc, sr) = (x.src_col[i], x.src_row[j]);
-                    if sc >= 0 && sr >= 0 {
-                        let sidx = sr as usize * x.src_width + sc as usize;
+                    if let Some(sidx) = x.source_index(i, j) {
                         if let Some(&it) = x.iterations.get(sidx) {
                             *iter = it;
                             *z = x.zs[sidx];
@@ -2087,11 +2085,9 @@ fn render_perturbation_gmp_path(
             }
 
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
-                // G10.4 : copie inter-frame XaoS (bande colonne ET ligne matchées).
+                // G10.4 : copie inter-frame XaoS (écho produit ou refine union).
                 if let Some(x) = xaos {
-                    let (sc, sr) = (x.src_col[i], x.src_row[j]);
-                    if sc >= 0 && sr >= 0 {
-                        let sidx = sr as usize * x.src_width + sc as usize;
+                    if let Some(sidx) = x.source_index(i, j) {
                         if let Some(&it) = x.iterations.get(sidx) {
                             *iter = it;
                             *z = x.zs[sidx];

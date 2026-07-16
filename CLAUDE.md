@@ -119,7 +119,7 @@ src/
 | image | 0.25 | PNG support |
 | num-complex | 0.4 | Arithmétique complexe |
 | rayon | 1.11 | Parallélisme multi-thread |
-| eframe / egui | 0.29 | GUI (wrapper egui, backend wgpu) |
+| eframe / egui | 0.34 | GUI (wrapper egui, backend wgpu) |
 | wgpu | 22.1 | GPU (Vulkan/Metal/DX12) |
 | pollster | 0.3 | Runtime async GPU |
 | bytemuck | 1.15 | Sérialisation buffers GPU |
@@ -509,15 +509,29 @@ puis OpenGL ; Windows DX12 / Vulkan.
 - Recolorisation asynchrone (versioning pour ignorer les résultats obsolètes).
 - Cache orbite + BLA entre re-rendus.
 - **Réutilisation pixels inter-frame XaoS** (G10.4, `fractal/xaos.rs`) : en
-  pan/petit zoom sans rotation, les colonnes/lignes de la frame précédente
+  pan/zoom sans rotation, les colonnes/lignes de la frame précédente
   matchées à ≤ 0.5 px (positions vraies trackées `col_err`/`row_err`, aucune
   dérive cumulée) sont copiées au lieu d'être recalculées (~×40 en pan) ;
   param `xaos: Option<&XaosMap>` du dispatcher unique (CLI/quality/HQ/AA =
-  `None`). Raffinement exact silencieux à l'idle (400 ms, label `≈XaoS`).
-  Frame source stockée par passe CPU uniquement (jamais GPU f32) ;
-  compatibilité = fingerprint JSON des params non-géométriques.
+  `None`). **Zoom (2026-07-16)** : matching INJECTIF par axe (une colonne
+  source → au plus une cible) — garantit ≥ (1−a)·n colonnes fraîches par axe
+  en zoom-in (fin de l'« écho pur » du zoom ×2 aligné qui ne calculait RIEN
+  et retardait l'image exacte), no-op en pan/zoom-out/previews. Raffinement
+  exact silencieux à l'idle (400 ms, label `≈XaoS`, déclenché seulement si
+  erreur réelle > ε) via `build_refine_map` : map UNION identité
+  (`keep_union`) qui conserve tout pixel dont un axe est ENTIÈREMENT exact
+  (`col_exact`/`row_exact` — ≠ « aligné » : une ligne copiée alignée peut
+  être décalée par l'axe colonne, cf. pan horizontal) et ne recalcule que
+  les approximations → cycle zoom ×2 écho+refine ≈ 107 % d'un rendu frais
+  (image visible à ~0.8×, vs 148 % en refine total et ~200 % pré-injectivité).
+  Frame source stockée par passe CPU uniquement (jamais GPU f32, jamais une
+  passe écho-pur — aucune information nouvelle, dégraderait la source en
+  copies de copies). Compatibilité = fingerprint JSON des params
+  non-géométriques. Boucles pixel : point d'entrée unique
+  `XaosMap::source_index(i, j)` (sémantique produit vs union). Diagnostics :
+  `xaos_pan_speedup_diagnostic`, `xaos_zoom_cycle_diagnostic` (`--ignored`).
 - Coordonnées HP synchronisées vers `FractalParams`. ⚠️ L'arithmétique HP des
-  zooms (`zoom_hp`/`zoom_rect_hp`/`zoom_out_hp`) utilise `hp_arith_precision()`
+  zooms (`zoom_hp`/`zoom_anchored_hp`/`zoom_rect_hp`/`zoom_out_hp`) utilise `hp_arith_precision()`
   (≈ `-log2(span)+96` bits, **dynamique**), PAS le `HP_PRECISION` fixe (256 b) :
   sinon le centre est arrondi au zoom (à 1e235 il faut ~783 b) → vue fausse →
   **image uniforme** après zoom. Les sync HP↔f64 gardent 256 b (f64 = 53 b).
@@ -541,7 +555,7 @@ puis OpenGL ; Windows DX12 / Vulkan.
 | - | Zoom arrière (×1.5) |
 | 0 | Reset vue (ignoré si focus sur champ itérations) |
 | Enter | Valider champ itérations |
-| Molette | Zoom in/out |
+| Molette | Zoom in/out continu ANCRÉ au curseur (`zoom_anchored_hp`, ≈×1.2/cran) |
 | Clic gauche + drag | Sélection rectangle zoom |
 | Clic droit | Zoom arrière |
 | Clic milieu + drag | Pan |
