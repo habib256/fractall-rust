@@ -42,6 +42,15 @@ pub enum RenderMessage {
         /// (pan entier, refine) et les passes GPU (map non consommé).
         xaos_approx: bool,
     },
+    /// G10.5 : progression intra-passe de la file de tuiles priorité-centre.
+    /// `display_buffer` = passe précédente colorisée (base) recouverte des
+    /// tuiles déjà calculées (le point d'intérêt arrive en premier). Envoyé
+    /// throttlé (~100 ms) par le sink depuis les workers ; affiché tel quel.
+    TileProgress {
+        display_buffer: Vec<u8>,
+        width: u32,
+        height: u32,
+    },
     /// Mise à jour incrémentale de l'anti-aliasing multi-sample : moyenne RGB
     /// courante après `sample`/`total` échantillons jitterés. Le buffer est
     /// déjà colorisé (la moyenne se fait en espace RGB) et affiché tel quel —

@@ -250,6 +250,9 @@ pub struct FractallApp {
     xaos_refine_pending: bool,
     /// Fin du dernier rendu (référence du délai idle de raffinement).
     last_render_finished: Option<Instant>,
+    /// G10.5 : dernière position du curseur au-dessus de l'image, normalisée
+    /// [0,1]² — point de priorité de la file de tuiles (centre si None).
+    hover_norm: Option<(f32, f32)>,
 
     // Fenêtre de rendu haute résolution
     show_render_dialog: bool,
@@ -413,6 +416,7 @@ impl FractallApp {
             orbit_cache: None,
             xaos_frame: None,
             xaos_refine_pending: false,
+            hover_norm: None,
             last_render_finished: None,
             show_render_dialog: false,
             render_resolution_preset: RenderResolutionPreset::Res4K,
@@ -925,6 +929,7 @@ impl FractallApp {
                     reuse,
                     &mut None,
                     None, // HQ = sortie exacte, pas de réutilisation XaoS
+                    None, // ni streaming tuiles (thread dédié, résultat final seul)
                 );
 
                 match result {
@@ -1118,9 +1123,19 @@ impl FractallApp {
             self.xaos_frame.clone()
         };
 
+        // G10.5 : point de priorité de la file de tuiles (dernier survol
+        // curseur, sinon centre) — le zoom molette ancre le curseur, donc la
+        // zone d'intérêt est calculée en premier à chaque cran.
+        let tile_priority: (f64, f64) = self
+            .hover_norm
+            .map(|(x, y)| (x as f64, y as f64))
+            .unwrap_or((0.5, 0.5));
+
         // Spawner le thread de rendu progressif
         let handle = thread::spawn(move || {
             let mut previous_pass: Option<(Arc<Vec<u32>>, Arc<Vec<Complex64>>, u32, u32)> = None;
+            // G10.5 : dernière passe colorisée (base du streaming tuiles).
+            let mut last_colored: Option<(Vec<u8>, u32, u32)> = None;
             let mut current_orbit_cache = orbit_cache;
             // G10.4 : vue + fingerprint de CE rendu (identiques pour toutes
             // les passes — seules les dims changent, neutralisées).
@@ -1172,6 +1187,76 @@ impl FractallApp {
                     }
                 }
 
+                // G10.5 : streaming intra-passe de la file de tuiles — base =
+                // dernière passe colorisée (upscalée aux dims de cette passe),
+                // recouverte des tuiles au fil de leur complétion (le point
+                // d'intérêt arrive en premier), envoi throttlé ~100 ms. Gates :
+                // raffinement silencieux exclu ; OrbitTraps/Wings exclus (la
+                // colorisation par tuile n'a pas les orbites) ; pas de base
+                // (1re passe) → pas de streaming (le warp G10.1 affiche déjà
+                // l'ancienne frame, mieux qu'un fond noir).
+                let sink_state = if refine
+                    || matches!(
+                        params.out_coloring_mode,
+                        crate::fractal::OutColoringMode::OrbitTraps
+                            | crate::fractal::OutColoringMode::Wings
+                    ) {
+                    None
+                } else {
+                    last_colored.as_ref().map(|(rgb, w, h)| {
+                        let base = if (*w, *h) == (pass_width, pass_height) {
+                            rgb.clone()
+                        } else {
+                            crate::gui::progressive::upscale_rgb_nearest(
+                                rgb,
+                                *w,
+                                *h,
+                                pass_width,
+                                pass_height,
+                            )
+                        };
+                        std::sync::Mutex::new((base, Instant::now(), sender.clone()))
+                    })
+                };
+                let sink_params = pass_params.clone();
+                let sink_closure = sink_state.as_ref().map(|state| {
+                    move |u: crate::render::tiles::TileUpdate| {
+                        // Colorisation par tuile (per-pixel, mêmes fonctions que
+                        // les passes) hors verrou, puis blit + envoi sous verrou.
+                        let tile_rgb = colorize_buffer(
+                            &u.iterations,
+                            &u.zs,
+                            &u.distances,
+                            &[],
+                            &sink_params,
+                            u.w as u32,
+                            u.h as u32,
+                        );
+                        let mut guard = state.lock().unwrap();
+                        let (base, last_sent, tx) = &mut *guard;
+                        for row in 0..u.h {
+                            let dst = ((u.y0 + row) * pass_width as usize + u.x0) * 3;
+                            let src = row * u.w * 3;
+                            base[dst..dst + u.w * 3]
+                                .copy_from_slice(&tile_rgb[src..src + u.w * 3]);
+                        }
+                        if last_sent.elapsed() >= Duration::from_millis(100) {
+                            *last_sent = Instant::now();
+                            let _ = tx.send(RenderMessage::TileProgress {
+                                display_buffer: base.clone(),
+                                width: pass_width,
+                                height: pass_height,
+                            });
+                        }
+                    }
+                });
+                let tile_opts = Some(crate::render::tiles::TileOpts {
+                    priority: tile_priority,
+                    sink: sink_closure
+                        .as_ref()
+                        .map(|c| c as &(dyn Fn(crate::render::tiles::TileUpdate) + Sync)),
+                });
+
                 // Rendre cette passe (réutiliser la passe précédente si possible)
                 let reuse = previous_pass.as_ref().map(|(iter, zs, w, h)| {
                     (iter.as_slice(), zs.as_slice(), *w, *h)
@@ -1213,6 +1298,7 @@ impl FractallApp {
                             reuse,
                             &mut cache,
                             xaos_map.as_ref(),
+                            tile_opts.as_ref(),
                         );
                         current_orbit_cache = cache;
                         r.map(|(iterations, zs, orbits, distances)| {
@@ -1233,6 +1319,7 @@ impl FractallApp {
                         reuse,
                         &mut cache,
                         xaos_map.as_ref(),
+                        tile_opts.as_ref(),
                     );
                     current_orbit_cache = cache;
                     r.map(|(iterations, zs, orbits, distances)| {
@@ -1329,6 +1416,8 @@ impl FractallApp {
                             pass_width,
                             pass_height,
                         );
+                        // G10.5 : base du streaming tuiles de la passe suivante.
+                        last_colored = Some((colored_buffer.clone(), pass_width, pass_height));
 
                         let _ = sender.send(RenderMessage::PassComplete {
                             pass_index: pass_index as u8,
@@ -1384,7 +1473,7 @@ impl FractallApp {
                     // Même dispatcher unifié que le CLI (cache d'orbite réutilisé
                     // entre samples, même centre).
                     let mut cache = current_orbit_cache.take();
-                    let rendered = render_escape_time_cancellable_with_reuse(&p, &cancel, None, &mut cache, None)
+                    let rendered = render_escape_time_cancellable_with_reuse(&p, &cancel, None, &mut cache, None, None)
                         .map(|(it, zz, orb, dist)| (it, zz, dist, orb));
                     current_orbit_cache = cache;
                     let Some((it, zz, dist, orb)) = rendered else { break };
@@ -1562,6 +1651,21 @@ impl FractallApp {
                         precision_label,
                     });
                 });
+                ctx.request_repaint();
+            }
+
+            RenderMessage::TileProgress {
+                display_buffer,
+                width,
+                height,
+            } => {
+                // G10.5 : progression intra-passe (tuiles priorité-curseur sur
+                // la base de la passe précédente). Le buffer est aligné sur la
+                // vue du rendu en cours → le warp G10.1 devient l'identité.
+                if self.rendering_view.is_some() {
+                    self.texture_view = self.rendering_view.clone();
+                }
+                self.load_texture_from_buffer(ctx, &display_buffer, width, height);
                 ctx.request_repaint();
             }
 
@@ -1834,7 +1938,7 @@ impl FractallApp {
                 return;
             }
 
-            let result = render_escape_time_cancellable_with_reuse(&params, &cancel, None, &mut None, None);
+            let result = render_escape_time_cancellable_with_reuse(&params, &cancel, None, &mut None, None, None);
 
             if cancel.load(Ordering::Relaxed) {
                 return;
@@ -2891,6 +2995,18 @@ impl eframe::App for FractallApp {
                     // IMPORTANT: Toujours afficher une flèche (Default) et non un curseur de texte ou autre
                     if response.hovered() {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
+
+                        // G10.5 : mémoriser la position normalisée du curseur —
+                        // point de priorité de la file de tuiles au prochain rendu.
+                        if let Some(pos) = ui.ctx().pointer_hover_pos() {
+                            if image_rect.contains(pos) {
+                                let local = pos - image_rect.min;
+                                self.hover_norm = Some((
+                                    local.x / image_rect.width(),
+                                    local.y / image_rect.height(),
+                                ));
+                            }
+                        }
 
                         // Track mouse position for Julia preview (on Mandelbrot-like types)
                         if self.selected_type.has_julia_variant()

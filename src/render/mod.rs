@@ -1,4 +1,5 @@
 pub mod escape_time;
+pub mod tiles;
 
 #[allow(unused_imports)]
 pub use escape_time::render_escape_time;

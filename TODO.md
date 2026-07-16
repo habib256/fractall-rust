@@ -1960,8 +1960,36 @@ Jalons (ordre de ROI croissant en effort) :
   toujours. Verrous : 18 unit xaos dont roundtrip
   `zoom_then_exact_refine_matches_fresh_render` (écho ×2 → refine union ==
   frais pixel-exact) ; 252+261+259 unit + 21 golden verts.
-- [ ] **G10.5 — File de tuiles priorité-centre** : work-queue de tuiles ordonnée
-  curseur-d'abord au lieu du `par_chunks_mut` monolithique (`escape_time.rs:347`).
+- [x] **G10.5 — File de tuiles priorité-centre** `[✅ 2026-07-16]` :
+  `render/tiles.rs` — les 4 boucles pixel CPU (f64, GMP, perturbation,
+  perturbation-GMP) passent du `par_chunks_mut` monolithique à une work-queue
+  de tuiles (16/32/64 px, ≥ 8 tuiles/thread) ordonnée par distance au point de
+  priorité (curseur GUI via `hover_norm`, centre sinon). Deux propriétés que
+  rayon seul ne donne pas : (1) **ordre d'exécution réel** — file atomique
+  `fetch_add` sur l'ordre trié (le split binaire rayon disperse les fronts sur
+  toute l'image) ; (2) **streaming intra-passe** — `TileOpts { priority, sink }`
+  threadé dans le dispatcher unique, le sink GUI colorise chaque tuile, la
+  blitte sur la passe précédente colorisée (base upscalée) et envoie un
+  `RenderMessage::TileProgress` throttlé 100 ms → la zone sous le curseur
+  devient nette EN PREMIER pendant la passe (zoom molette ancré = la zone
+  d'intérêt d'abord, à chaque cran). Sûreté sans `unsafe` : buffers découpés
+  en amont en segments de lignes disjoints par tuile (`TileGrid::split`,
+  chaîne `split_at_mut`) distribués par `Mutex<Option<S>>` pris une fois.
+  CLI/quality/HQ/AA/refine passent `None` (priorité centre, pas de sink) —
+  l'ordre ne change pas les valeurs : verrous
+  `tiled_render_identical_across_priorities` (bit-exact coin vs centre vs
+  None), `tile_sink_covers_every_pixel_once_with_final_values`, + 4 unit
+  tiles.rs (couverture/disjonction/ordre/cancel) ; 21 goldens pixel-exacts
+  inchangés, QA e13/e30 PASS + seahorse WARN (baseline), quick 0 gap
+  (geomean 0.218, bruit mono-run). Cancel : poll par tuile (exécuteur) + par
+  ligne de tuile (paths GMP/perturbation, pixels lourds) + re-check final
+  (un cancel intra-tuile en fin de file ne doit pas retourner un buffer
+  troué). Gates streaming : refine silencieux, OrbitTraps/Wings (pas
+  d'orbites par tuile), 1re passe (pas de base — le warp G10.1 affiche déjà
+  mieux), GPU (dispatcher non appelé). Diagnostic
+  `tile_priority_first_paint_diagnostic` (`--ignored`) : zone prioritaire
+  (r = 25 % diag autour du coin) complète à ~1 % du wall-clock total
+  @768×576/20k iters.
 
 ## ✅ Shipped (condensé, le plus récent en haut)
 

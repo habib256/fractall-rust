@@ -911,7 +911,7 @@ pub fn render_perturbation_cancellable_with_reuse(
     cancel: &Arc<AtomicBool>,
     reuse: Option<(&[u32], &[Complex64], u32, u32)>,
 ) -> Option<(Vec<u32>, Vec<Complex64>, Vec<f64>)> {
-    let (result, _cache) = render_perturbation_with_cache(params, cancel, reuse, None, None)?;
+    let (result, _cache) = render_perturbation_with_cache(params, cancel, reuse, None, None, None)?;
     Some(result)
 }
 
@@ -1004,6 +1004,7 @@ pub fn render_perturbation_with_cache(
     reuse: Option<(&[u32], &[Complex64], u32, u32)>,
     orbit_cache: Option<&Arc<ReferenceOrbitCache>>,
     xaos: Option<&crate::fractal::xaos::XaosMap>,
+    tiles: Option<&crate::render::tiles::TileOpts>,
 ) -> Option<((Vec<u32>, Vec<Complex64>, Vec<f64>), Arc<ReferenceOrbitCache>)> {
     // Garde-fou (miroir du dispatcher, pour les appels directs) : mapping XaoS
     // ignoré si ses dimensions ne correspondent pas aux params (indexation
@@ -1113,7 +1114,7 @@ pub fn render_perturbation_with_cache(
         let prec_gmp = compute_perturbation_precision_bits(params);
         let t_gmp_pixels_start = Instant::now();
         let result = render_perturbation_gmp_path(
-            params, cancel, reuse_for_pixels, xaos, &cache, iterations, zs, distances,
+            params, cancel, reuse_for_pixels, xaos, tiles, &cache, iterations, zs, distances,
             Arc::clone(&progress), t_all_start,
         );
         let t_gmp_pixels = t_gmp_pixels_start.elapsed();
@@ -1258,170 +1259,196 @@ pub fn render_perturbation_with_cache(
     let cache_ref = Arc::clone(&cache);
 
     let t_pixels_start = Instant::now();
-    // Finer chunk granularity to improve rayon work-stealing. Whole rows
-    // (width pixels) caused load imbalance when a row straddles fast-escaping
-    // exterior pixels and slow interior/glitched ones. Target ~16 chunks per
-    // thread so stragglers are redistributed, with a floor of 64 pixels to
-    // avoid per-chunk overhead dominating on small images.
-    let num_threads = rayon::current_num_threads().max(1);
-    let chunk_size = {
-        let target = pixel_count / (num_threads * 16).max(1);
-        target.max(64).min(width.saturating_mul(4).max(64))
-    };
-    let chunks_done = Arc::new(AtomicU32::new(0));
-    let total_chunks = ((pixel_count + chunk_size - 1) / chunk_size).max(1) as u32;
-    // Rayon ne garantit pas que `enumerate()` sur ce parallèle suit l'ordre des
-    // pixels dans le tampon : dériver l'index du début de tranche depuis l'adresse.
-    let iterations_base_addr = iterations.as_ptr() as usize;
-    iterations
-        .par_chunks_mut(chunk_size)
-        .zip(zs.par_chunks_mut(chunk_size))
-        .zip(distances.par_chunks_mut(chunk_size))
-        .for_each(|((iter_chunk, z_chunk), dist_chunk)| {
+    // G10.5 : file de tuiles priorité-centre (remplace le chunking linéaire).
+    // La granularité {64,32,16} de TileGrid vise ≥ 8 tuiles/thread — même
+    // objectif d'équilibrage que l'ancien chunking (les lignes entières
+    // créaient un déséquilibre extérieur-rapide / intérieur-lent), plus
+    // l'ordre curseur-d'abord et le streaming intra-passe (sink GUI).
+    let tile_priority = tiles.map(|t| t.priority).unwrap_or((0.5, 0.5));
+    let tile_sink = tiles.and_then(|t| t.sink);
+    let grid = crate::render::tiles::TileGrid::new(width, height, tile_priority);
+    let tiles_done = Arc::new(AtomicU32::new(0));
+    let total_tiles = grid.order.len().max(1) as u32;
+    let it_grid = grid.split(&mut iterations);
+    let zs_grid = grid.split(&mut zs);
+    let dist_grid = grid.split(&mut distances);
+    let slots: Vec<_> = it_grid
+        .into_iter()
+        .zip(zs_grid)
+        .zip(dist_grid)
+        .map(|((it, z), di)| std::sync::Mutex::new(Some((it, z, di))))
+        .collect();
+    let completed = crate::render::tiles::run_prioritized(
+        &grid.order,
+        &slots,
+        cancel.as_ref(),
+        &|tile_id, tile_bufs| {
+            let (mut it_rows, mut z_rows, mut dist_rows) = tile_bufs;
             let reuse_row = reuse.as_ref();
-            let chunk_start = (iter_chunk.as_ptr() as usize - iterations_base_addr)
-                / std::mem::size_of::<u32>();
-            // Cooperative cancel: poll once per chunk rather than per row.
-            if cancel.load(Ordering::Relaxed) {
-                cancelled.store(true, Ordering::Relaxed);
-                return;
-            }
-            if cancelled.load(Ordering::Relaxed) {
-                return;
-            }
-
-            for (local_idx, ((iter, z), dist)) in iter_chunk.iter_mut().zip(z_chunk.iter_mut()).zip(dist_chunk.iter_mut()).enumerate() {
-                let pixel_idx = chunk_start + local_idx;
-                let i = pixel_idx % width;
-                let j = pixel_idx / width;
-                // G10.4 : copie inter-frame XaoS (écho produit ou refine
-                // union). Les pixels copiés sont absolus (iterations + z à
-                // l'échappement) : valides quelle que soit l'orbite référence.
-                if let Some(x) = xaos {
-                    if let Some(sidx) = x.source_index(i, j) {
-                        if let Some(&it) = x.iterations.get(sidx) {
-                            *iter = it;
-                            *z = x.zs[sidx];
-                            continue;
+            let (x0, y0, tw, th) = grid.rect(tile_id);
+            for dj in 0..th {
+                // Les pixels perturbation sont lourds en deep zoom : poll
+                // d'annulation par ligne de tuile (en plus du poll par tuile
+                // de l'exécuteur).
+                if cancel.load(Ordering::Relaxed) {
+                    cancelled.store(true, Ordering::Relaxed);
+                    return;
+                }
+                let j = y0 + dj;
+                for di in 0..tw {
+                    let i = x0 + di;
+                    let iter = &mut it_rows[dj][di];
+                    let z = &mut z_rows[dj][di];
+                    let dist = &mut dist_rows[dj][di];
+                    // G10.4 : copie inter-frame XaoS (écho produit ou refine
+                    // union). Les pixels copiés sont absolus (iterations + z à
+                    // l'échappement) : valides quelle que soit l'orbite référence.
+                    if let Some(x) = xaos {
+                        if let Some(sidx) = x.source_index(i, j) {
+                            if let Some(&it) = x.iterations.get(sidx) {
+                                *iter = it;
+                                *z = x.zs[sidx];
+                                continue;
+                            }
                         }
                     }
-                }
-                let dc_im = dc_im_fexp[j];
-                if let Some(reuse) = reuse_row {
-                    let ratio = reuse.ratio as usize;
-                    if j % ratio == 0 && i % ratio == 0 {
-                        let src_x = i / ratio;
-                        let src_y = j / ratio;
-                        let src_idx = (src_y * reuse.width as usize + src_x) as usize;
-                        if src_idx < reuse.iterations.len() {
-                            *iter = reuse.iterations[src_idx];
-                            *z = reuse.zs[src_idx];
-                            continue;
+                    let dc_im = dc_im_fexp[j];
+                    if let Some(reuse) = reuse_row {
+                        let ratio = reuse.ratio as usize;
+                        if j % ratio == 0 && i % ratio == 0 {
+                            let src_x = i / ratio;
+                            let src_y = j / ratio;
+                            let src_idx = (src_y * reuse.width as usize + src_x) as usize;
+                            if src_idx < reuse.iterations.len() {
+                                *iter = reuse.iterations[src_idx];
+                                *z = reuse.zs[src_idx];
+                                continue;
+                            }
                         }
                     }
-                }
 
-                // dc précalculé (inclut l'offset sous-pixel AA per-frame
-                // `params.aa_subpixel_offset`, replié dans le précalcul plus haut).
-                let dc = ComplexExp {
-                    re: dc_re_fexp[i],
-                    im: dc_im,
-                };
+                    // dc précalculé (inclut l'offset sous-pixel AA per-frame
+                    // `params.aa_subpixel_offset`, replié dans le précalcul plus haut).
+                    let dc = ComplexExp {
+                        re: dc_re_fexp[i],
+                        im: dc_im,
+                    };
 
-                // Rotation : dc' = K * dc (aligné F3 hybrid.cc:265).
-                // Cas dominant rot=None : no-op. Sinon, mélange re/im en restant
-                // sur FloatExp pour préserver l'exposant étendu en deep zoom.
-                let dc = match rot {
-                    Some((a, b, c, d)) => ComplexExp {
-                        re: dc.re * a + dc.im * b,
-                        im: dc.re * c + dc.im * d,
-                    },
-                    None => dc,
-                };
+                    // Rotation : dc' = K * dc (aligné F3 hybrid.cc:265).
+                    // Cas dominant rot=None : no-op. Sinon, mélange re/im en restant
+                    // sur FloatExp pour préserver l'exposant étendu en deep zoom.
+                    let dc = match rot {
+                        Some((a, b, c, d)) => ComplexExp {
+                            re: dc.re * a + dc.im * b,
+                            im: dc.re * c + dc.im * d,
+                        },
+                        None => dc,
+                    };
 
-                // Initialisation du delta selon le type de fractale:
-                // - Mandelbrot: z_0 = 0, donc delta0 = 0, et c = dc dans la formule
-                // - Julia: z_0 = c (le point C du pixel), donc delta0 = dc, et pas de terme c
-                let (delta0, dc_term) = if params.fractal_type == FractalType::Julia {
-                    // Julia: delta initial = dc (car z_0 = C + c pour Julia)
-                    (dc, ComplexExp::zero())
-                } else {
-                    // Mandelbrot: delta initial = 0 (car z_0 = 0), terme c = dc
-                    (ComplexExp::zero(), dc)
-                };
+                    // Initialisation du delta selon le type de fractale:
+                    // - Mandelbrot: z_0 = 0, donc delta0 = 0, et c = dc dans la formule
+                    // - Julia: z_0 = c (le point C du pixel), donc delta0 = dc, et pas de terme c
+                    let (delta0, dc_term) = if params.fractal_type == FractalType::Julia {
+                        // Julia: delta initial = dc (car z_0 = C + c pour Julia)
+                        (dc, ComplexExp::zero())
+                    } else {
+                        // Mandelbrot: delta initial = 0 (car z_0 = 0), terme c = dc
+                        (ComplexExp::zero(), dc)
+                    };
 
-                // Hybrid BLA: use the appropriate reference for the current phase
-                // For a hybrid loop with multiple phases, you need multiple references, one starting at
-                // each phase in the loop. Rebasing switches to the reference for the current phase.
-                // You need one BLA table per reference.
-                // Tier dd : `dc` du pixel en ~106 b (Mandelbrot, précompute plus
-                // haut). `None` → le dispatch retombe sur le dc ComplexExp 53 b.
-                let dc_dd = if build_dc_dd {
-                    Some(crate::fractal::perturbation::dd::ComplexDDExp {
-                        re: dc_re_dd[i],
-                        im: dc_im_dd[j],
-                    })
-                } else {
-                    None
-                };
-                let result = if let Some(ref hybrid) = cache_ref.hybrid_refs {
-                    iterate_pixel_hybrid_bla(
-                        params,
-                        hybrid,
-                        cache_ref.series_table.as_ref(),
-                        delta0,
-                        dc_term,
-                    )
-                } else {
-                    iterate_pixel_with_dd(
-                        params,
-                        &cache_ref.orbit,
-                        &cache_ref.bla_table,
-                        cache_ref.series_table.as_ref(),
-                        delta0,
-                        dc_term,
-                        dc_dd,
-                        None,
-                        None,
-                    )
-                };
+                    // Hybrid BLA: use the appropriate reference for the current phase
+                    // For a hybrid loop with multiple phases, you need multiple references, one starting at
+                    // each phase in the loop. Rebasing switches to the reference for the current phase.
+                    // You need one BLA table per reference.
+                    // Tier dd : `dc` du pixel en ~106 b (Mandelbrot, précompute plus
+                    // haut). `None` → le dispatch retombe sur le dc ComplexExp 53 b.
+                    let dc_dd = if build_dc_dd {
+                        Some(crate::fractal::perturbation::dd::ComplexDDExp {
+                            re: dc_re_dd[i],
+                            im: dc_im_dd[j],
+                        })
+                    } else {
+                        None
+                    };
+                    let result = if let Some(ref hybrid) = cache_ref.hybrid_refs {
+                        iterate_pixel_hybrid_bla(
+                            params,
+                            hybrid,
+                            cache_ref.series_table.as_ref(),
+                            delta0,
+                            dc_term,
+                        )
+                    } else {
+                        iterate_pixel_with_dd(
+                            params,
+                            &cache_ref.orbit,
+                            &cache_ref.bla_table,
+                            cache_ref.series_table.as_ref(),
+                            delta0,
+                            dc_term,
+                            dc_dd,
+                            None,
+                            None,
+                        )
+                    };
                 
-                // Use distance estimation and interior detection results
-                // Encode is_interior in z.im sign: negative = interior point
-                // Encode distance in z.re when available (for distance-based coloring)
-                let mut z_value = result.z_final;
+                    // Use distance estimation and interior detection results
+                    // Encode is_interior in z.im sign: negative = interior point
+                    // Encode distance in z.re when available (for distance-based coloring)
+                    let mut z_value = result.z_final;
                 
-                if result.is_interior {
-                    // Interior point: encode flag in z.im sign (negative = interior)
-                    // This allows color_for_pixel to detect and color interior points black
-                    z_value = Complex64::new(z_value.re, -z_value.im.abs());
-                } else if result.distance.is_finite() && result.distance != f64::INFINITY && result.distance > 0.0 {
-                    // Distance estimation available: can be used for distance field coloring
-                    // For now, we keep z as-is to preserve smooth_iteration calculation
-                    // Distance can be accessed via result.distance if needed in the future
-                    // Optionally encode distance in z.re for special distance-based coloring modes
-                    // z_value = Complex64::new(result.distance, z_value.im);
-                }
+                    if result.is_interior {
+                        // Interior point: encode flag in z.im sign (negative = interior)
+                        // This allows color_for_pixel to detect and color interior points black
+                        z_value = Complex64::new(z_value.re, -z_value.im.abs());
+                    } else if result.distance.is_finite() && result.distance != f64::INFINITY && result.distance > 0.0 {
+                        // Distance estimation available: can be used for distance field coloring
+                        // For now, we keep z as-is to preserve smooth_iteration calculation
+                        // Distance can be accessed via result.distance if needed in the future
+                        // Optionally encode distance in z.re for special distance-based coloring modes
+                        // z_value = Complex64::new(result.distance, z_value.im);
+                    }
                 
-                *iter = result.iteration;
-                *z = z_value;
-                *dist = result.distance;
+                    *iter = result.iteration;
+                    *z = z_value;
+                    *dist = result.distance;
 
-                // Fast-path petites images: corriger seulement les vrais glitches (pas "suspect")
-                if small_image {
-                    if result.glitched {
+                    // Fast-path petites images: corriger seulement les vrais glitches (pas "suspect")
+                    if small_image {
+                        if result.glitched {
+                            glitch_mask[j * width + i].store(true, Ordering::Relaxed);
+                        }
+                    } else if result.glitched || result.suspect {
                         glitch_mask[j * width + i].store(true, Ordering::Relaxed);
                     }
-                } else if result.glitched || result.suspect {
-                    glitch_mask[j * width + i].store(true, Ordering::Relaxed);
                 }
             }
-            // Progression Tile[%] : une unité de parallélisme = un chunk (pas une ligne).
-            let done = chunks_done.fetch_add(1, Ordering::Relaxed) + 1;
+            // G10.5 : streaming intra-passe — tuile terminée livrée au sink
+            // (copies locales ; les buffers de sortie restent la vérité).
+            if let Some(sink) = tile_sink {
+                sink(crate::render::tiles::TileUpdate {
+                    x0,
+                    y0,
+                    w: tw,
+                    h: th,
+                    iterations: crate::render::tiles::collect_rows(&it_rows),
+                    zs: crate::render::tiles::collect_rows(&z_rows),
+                    distances: crate::render::tiles::collect_rows(&dist_rows),
+                });
+            }
+            // Progression Tile[%] : une unité de parallélisme = une tuile.
+            let done = tiles_done.fetch_add(1, Ordering::Relaxed) + 1;
             progress
                 .tile
-                .store((done * 100 / total_chunks).min(100), Ordering::Relaxed);
-        });
+                .store((done * 100 / total_tiles).min(100), Ordering::Relaxed);
+        },
+    );
+    drop(slots);
+    // Re-check : un cancel observé DANS une tuile (early-return par ligne)
+    // peut ne pas être vu par l'exécuteur si la file était déjà vide.
+    if !completed || cancel.load(Ordering::Relaxed) {
+        cancelled.store(true, Ordering::Relaxed);
+    }
     let t_pixels = t_pixels_start.elapsed();
 
     if cancelled.load(Ordering::Relaxed) {
@@ -2018,6 +2045,7 @@ fn render_perturbation_gmp_path(
     cancel: &Arc<AtomicBool>,
     reuse: Option<(&[u32], &[Complex64], u32, u32)>,
     xaos: Option<&crate::fractal::xaos::XaosMap>,
+    tiles: Option<&crate::render::tiles::TileOpts>,
     cache: &Arc<ReferenceOrbitCache>,
     mut iterations: Vec<u32>,
     mut zs: Vec<Complex64>,
@@ -2073,70 +2101,102 @@ fn render_perturbation_gmp_path(
     // Pre-compute shared GMP constants for dc computation
     let dc_ctx = DcGmpContext::new(params, prec);
 
-    let rows_done = Arc::new(AtomicU32::new(0));
-    let total_rows_f = height.max(1) as u32;
-    iterations
-        .par_chunks_mut(width)
-        .zip(zs.par_chunks_mut(width))
-        .enumerate()
-        .for_each(|(j, (iter_row, z_row))| {
+    // G10.5 : file de tuiles priorité-centre. Pixels GMP très lourds → poll
+    // d'annulation par ligne de tuile.
+    let tile_priority = tiles.map(|t| t.priority).unwrap_or((0.5, 0.5));
+    let tile_sink = tiles.and_then(|t| t.sink);
+    let grid = crate::render::tiles::TileGrid::new(width, height, tile_priority);
+    let tiles_done = Arc::new(AtomicU32::new(0));
+    let total_tiles = grid.order.len().max(1) as u32;
+    let it_grid = grid.split(&mut iterations);
+    let zs_grid = grid.split(&mut zs);
+    let slots: Vec<_> = it_grid
+        .into_iter()
+        .zip(zs_grid)
+        .map(|(it, z)| std::sync::Mutex::new(Some((it, z))))
+        .collect();
+    let completed = crate::render::tiles::run_prioritized(
+        &grid.order,
+        &slots,
+        cancel.as_ref(),
+        &|tile_id, tile_bufs| {
+            let (mut it_rows, mut z_rows) = tile_bufs;
             let reuse_row = reuse_data.as_ref();
-            if j % 16 == 0 && cancel.load(Ordering::Relaxed) {
-                cancelled.store(true, Ordering::Relaxed);
-                return;
-            }
-            if cancelled.load(Ordering::Relaxed) {
-                return;
-            }
-
-            for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
-                // G10.4 : copie inter-frame XaoS (écho produit ou refine union).
-                if let Some(x) = xaos {
-                    if let Some(sidx) = x.source_index(i, j) {
-                        if let Some(&it) = x.iterations.get(sidx) {
-                            *iter = it;
-                            *z = x.zs[sidx];
-                            continue;
+            let (x0, y0, tw, th) = grid.rect(tile_id);
+            for dj in 0..th {
+                if cancel.load(Ordering::Relaxed) {
+                    cancelled.store(true, Ordering::Relaxed);
+                    return;
+                }
+                let j = y0 + dj;
+                for di in 0..tw {
+                    let i = x0 + di;
+                    let iter = &mut it_rows[dj][di];
+                    let z = &mut z_rows[dj][di];
+                    // G10.4 : copie inter-frame XaoS (écho produit ou refine union).
+                    if let Some(x) = xaos {
+                        if let Some(sidx) = x.source_index(i, j) {
+                            if let Some(&it) = x.iterations.get(sidx) {
+                                *iter = it;
+                                *z = x.zs[sidx];
+                                continue;
+                            }
                         }
                     }
-                }
-                if let Some(reuse) = reuse_row {
-                    let ratio = reuse.ratio as usize;
-                    if j % ratio == 0 && i % ratio == 0 {
-                        let src_x = i / ratio;
-                        let src_y = j / ratio;
-                        let src_idx = (src_y * reuse.width as usize + src_x) as usize;
-                        if src_idx < reuse.iterations.len() {
-                            *iter = reuse.iterations[src_idx];
-                            *z = reuse.zs[src_idx];
-                            continue;
+                    if let Some(reuse) = reuse_row {
+                        let ratio = reuse.ratio as usize;
+                        if j % ratio == 0 && i % ratio == 0 {
+                            let src_x = i / ratio;
+                            let src_y = j / ratio;
+                            let src_idx = src_y * reuse.width as usize + src_x;
+                            if src_idx < reuse.iterations.len() {
+                                *iter = reuse.iterations[src_idx];
+                                *z = reuse.zs[src_idx];
+                                continue;
+                            }
                         }
                     }
-                }
 
-                // Compute dc in GMP precision
-                let dc_gmp = dc_ctx.compute_dc(i, j);
+                    // Compute dc in GMP precision
+                    let dc_gmp = dc_ctx.compute_dc(i, j);
 
-                // Iterate pixel with full GMP precision
-                let result = iterate_pixel_gmp(
-                    params,
-                    &cache_ref.orbit,
-                    &dc_gmp,
-                    prec,
-                );
+                    // Iterate pixel with full GMP precision
+                    let result = iterate_pixel_gmp(
+                        params,
+                        &cache_ref.orbit,
+                        &dc_gmp,
+                        prec,
+                    );
 
-                *iter = result.iteration;
-                *z = result.z_final;
+                    *iter = result.iteration;
+                    *z = result.z_final;
 
-                // Mark glitched or suspect pixels for correction
-                if result.glitched || result.suspect || !result.z_final.re.is_finite() || !result.z_final.im.is_finite() {
-                    let idx = j * width + i;
-                    glitch_mask[idx].store(true, Ordering::Relaxed);
+                    // Mark glitched or suspect pixels for correction
+                    if result.glitched || result.suspect || !result.z_final.re.is_finite() || !result.z_final.im.is_finite() {
+                        let idx = j * width + i;
+                        glitch_mask[idx].store(true, Ordering::Relaxed);
+                    }
                 }
             }
-            let done = rows_done.fetch_add(1, Ordering::Relaxed) + 1;
-            progress.tile.store((done * 100 / total_rows_f).min(100), Ordering::Relaxed);
-        });
+            if let Some(sink) = tile_sink {
+                sink(crate::render::tiles::TileUpdate {
+                    x0,
+                    y0,
+                    w: tw,
+                    h: th,
+                    iterations: crate::render::tiles::collect_rows(&it_rows),
+                    zs: crate::render::tiles::collect_rows(&z_rows),
+                    distances: Vec::new(),
+                });
+            }
+            let done = tiles_done.fetch_add(1, Ordering::Relaxed) + 1;
+            progress.tile.store((done * 100 / total_tiles).min(100), Ordering::Relaxed);
+        },
+    );
+    drop(slots);
+    if !completed || cancel.load(Ordering::Relaxed) {
+        cancelled.store(true, Ordering::Relaxed);
+    }
     let t_pixels = t_pixels_start.elapsed();
 
     if cancelled.load(Ordering::Relaxed) {
@@ -2227,7 +2287,7 @@ mod tests {
         big.iteration_max = 400;
         let cancel = Arc::new(AtomicBool::new(false));
         let (_r, cache_big) =
-            render_perturbation_with_cache(&big, &cancel, None, None, None).expect("render big");
+            render_perturbation_with_cache(&big, &cancel, None, None, None, None).expect("render big");
 
         // Vue CONTENUE : zoom-in ×2 (span 1.5) + pan (0.3, 0.1).
         // x: |0.3|+0.75=1.05 ≤ 1.5 ; y: |0.1|+0.75=0.85 ≤ 1.5 → sous-ensemble.
@@ -2244,7 +2304,7 @@ mod tests {
 
         // Rendu avec réutilisation off-center (offset dc = view.center - big.center).
         let (res_reuse, cache_after) =
-            render_perturbation_with_cache(&view, &cancel, None, Some(&cache_big), None).expect("reuse");
+            render_perturbation_with_cache(&view, &cancel, None, Some(&cache_big), None, None).expect("reuse");
         // Preuve de RÉUTILISATION : la référence est restée en A (-0.5), pas
         // recalculée au centre de la vue (-0.2).
         assert_eq!(
@@ -2254,7 +2314,7 @@ mod tests {
 
         // Rendu FRAIS : référence recalculée au centre de la vue.
         let (res_fresh, _c) =
-            render_perturbation_with_cache(&view, &cancel, None, None, None).expect("fresh");
+            render_perturbation_with_cache(&view, &cancel, None, None, None, None).expect("fresh");
 
         // Correctness : même vue → même c par pixel → même compte d'itération
         // (à ~±1 iter de bord près sur quelques pixels dus au path delta f64).
@@ -2310,17 +2370,17 @@ mod tests {
         let mut span = 1.0_f64;
         while span > final_span {
             let p = make(span);
-            let (_r, c) = render_perturbation_with_cache(&p, &cancel, None, cache.as_ref(), None)
+            let (_r, c) = render_perturbation_with_cache(&p, &cancel, None, cache.as_ref(), None, None)
                 .expect("zoom step");
             cache = Some(c);
             span /= 2.0;
         }
         let p_final = make(final_span);
         let (res_reuse, _c1) =
-            render_perturbation_with_cache(&p_final, &cancel, None, cache.as_ref(), None)
+            render_perturbation_with_cache(&p_final, &cancel, None, cache.as_ref(), None, None)
                 .expect("final reuse");
         let (res_fresh, _c2) =
-            render_perturbation_with_cache(&p_final, &cancel, None, None, None).expect("final fresh");
+            render_perturbation_with_cache(&p_final, &cancel, None, None, None, None).expect("final fresh");
 
         let (it_reuse, _z1, _d1) = res_reuse;
         let (it_fresh, _z2, _d2) = res_fresh;

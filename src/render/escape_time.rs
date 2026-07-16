@@ -2,7 +2,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use num_complex::Complex64;
-use rayon::prelude::*;
 use rug::Float;
 
 use crate::fractal::{FractalParams, FractalResult, FractalType, OutColoringMode, PlaneTransform};
@@ -24,6 +23,7 @@ use crate::fractal::perturbation::{
     render_perturbation_with_cache, ReferenceOrbitCache,
 };
 use crate::fractal::xaos::XaosMap;
+use crate::render::tiles::{self, TileGrid, TileOpts, TileUpdate};
 
 /// Calcule la matrice d'itérations et la matrice des valeurs finales de z
 /// pour une fractale escape-time (ou algorithme spécial).
@@ -48,6 +48,7 @@ pub fn render_escape_time(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
         &Arc::new(AtomicBool::new(false)),
         None,
         &mut orbit_cache,
+        None,
         None,
     )
     .map(|(i, z, _orbits, _distances)| (i, z))
@@ -107,7 +108,7 @@ pub fn render_escape_time_cancellable(
     cancel: &Arc<AtomicBool>,
 ) -> Option<(Vec<u32>, Vec<Complex64>)> {
     let mut orbit_cache: Option<Arc<ReferenceOrbitCache>> = None;
-    render_escape_time_cancellable_with_reuse(params, cancel, None, &mut orbit_cache, None)
+    render_escape_time_cancellable_with_reuse(params, cancel, None, &mut orbit_cache, None, None)
         .map(|(i, z, _o, _d)| (i, z))
 }
 
@@ -136,12 +137,18 @@ pub type EscapeTimeResult = (
 /// précédente réutilisables) — les pixels mappés sont copiés au lieu d'être
 /// calculés. Construit par la GUI via `fractal::xaos::build_map` (gates +
 /// fingerprint validés là-bas) ; CLI/quality passent `None`.
+///
+/// `tiles` (G10.5) : options de la file de tuiles priorité-centre (point de
+/// priorité normalisé + sink de streaming intra-passe). `None` (CLI/quality)
+/// ⇒ priorité centre, pas de streaming — mêmes pixels dans tous les cas
+/// (l'ordre d'exécution ne change pas les valeurs calculées).
 pub fn render_escape_time_cancellable_with_reuse(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
     reuse: Option<(&[u32], &[Complex64], u32, u32)>,
     orbit_cache: &mut Option<Arc<ReferenceOrbitCache>>,
     xaos: Option<&XaosMap>,
+    tiles: Option<&TileOpts>,
 ) -> Option<EscapeTimeResult> {
     // Garde-fou : un mapping construit pour d'autres dimensions serait indexé
     // hors bornes par les boucles pixel → on l'ignore (rendu complet).
@@ -160,8 +167,14 @@ pub fn render_escape_time_cancellable_with_reuse(
     // Path perturbation unifié : passe par `render_perturbation_with_cache` (le
     // même coeur que le CLI et la GUI), en threadant le cache d'orbite.
     let mut run_perturbation = |reuse: Option<(&[u32], &[Complex64], u32, u32)>| {
-        let (res, cache) =
-            render_perturbation_with_cache(params, cancel, reuse, orbit_cache.as_ref(), xaos)?;
+        let (res, cache) = render_perturbation_with_cache(
+            params,
+            cancel,
+            reuse,
+            orbit_cache.as_ref(),
+            xaos,
+            tiles,
+        )?;
         *orbit_cache = Some(cache);
         Some((res.0, res.1, Vec::new(), res.2))
     };
@@ -252,20 +265,24 @@ pub fn render_escape_time_cancellable_with_reuse(
             }
             wisdom::Algorithm::ReferenceGmp => {
                 let reuse = build_reuse(params, reuse);
-                return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse, xaos);
+                return render_escape_time_gmp_cancellable_with_reuse(
+                    params, cancel, reuse, xaos, tiles,
+                );
             }
             wisdom::Algorithm::StandardF64 => {
                 let reuse = build_reuse(params, reuse);
-                return render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse, xaos);
+                return render_escape_time_f64_cancellable_with_reuse(
+                    params, cancel, reuse, xaos, tiles,
+                );
             }
         }
     }
 
     let reuse = build_reuse(params, reuse);
     if params.use_gmp {
-        return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse, xaos);
+        return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse, xaos, tiles);
     }
-    render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse, xaos)
+    render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse, xaos, tiles)
 }
 
 /// Calcule le niveau de zoom à partir des paramètres.
@@ -337,7 +354,7 @@ fn render_escape_time_f64_cancellable(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
 ) -> Option<EscapeTimeResult> {
-    render_escape_time_f64_cancellable_with_reuse(params, cancel, None, None)
+    render_escape_time_f64_cancellable_with_reuse(params, cancel, None, None, None)
 }
 
 fn render_escape_time_f64_cancellable_with_reuse(
@@ -345,6 +362,7 @@ fn render_escape_time_f64_cancellable_with_reuse(
     cancel: &Arc<AtomicBool>,
     reuse: Option<ReuseData<'_>>,
     xaos: Option<&XaosMap>,
+    tiles: Option<&TileOpts>,
 ) -> Option<EscapeTimeResult> {
     let width = params.width as usize;
     let height = params.height as usize;
@@ -358,7 +376,6 @@ fn render_escape_time_f64_cancellable_with_reuse(
         return Some((iterations, zs, orbits, distances));
     }
 
-    let cancelled = AtomicBool::new(false);
     let need_orbits = params.enable_orbit_traps;
     let need_distances = params.enable_distance_estimation;
     // Pré-calcul de la matrice de rotation (None si rotation == 0 → no-op).
@@ -366,31 +383,39 @@ fn render_escape_time_f64_cancellable_with_reuse(
     // Offset sous-pixel AA per-frame (unités de pixel, [0,0] hors AA).
     let [aa_dx, aa_dy] = params.aa_subpixel_offset;
 
-    iterations
-        .par_chunks_mut(width)
-        .zip(zs.par_chunks_mut(width))
-        .zip(orbits.par_chunks_mut(width))
-        .zip(distances.par_chunks_mut(width))
-        .enumerate()
-        .for_each(|(j, (((iter_row, z_row), orbit_row), dist_row))| {
-            let reuse_row = reuse.as_ref();
-            if j % 16 == 0 && cancel.load(Ordering::Relaxed) {
-                cancelled.store(true, Ordering::Relaxed);
-                return;
-            }
-            if cancelled.load(Ordering::Relaxed) {
-                return;
-            }
+    // G10.5 : file de tuiles priorité-centre (curseur en GUI). Les buffers
+    // sont découpés en segments disjoints par tuile ; l'ordre d'exécution ne
+    // change pas les valeurs (pixels indépendants).
+    let priority = tiles.map(|t| t.priority).unwrap_or((0.5, 0.5));
+    let sink = tiles.and_then(|t| t.sink);
+    let grid = TileGrid::new(width, height, priority);
+    let it_g = grid.split(&mut iterations);
+    let zs_g = grid.split(&mut zs);
+    let orb_g = grid.split(&mut orbits);
+    let dist_g = grid.split(&mut distances);
+    let slots: Vec<_> = it_g
+        .into_iter()
+        .zip(zs_g)
+        .zip(orb_g)
+        .zip(dist_g)
+        .map(|(((it, z), orb), di)| std::sync::Mutex::new(Some((it, z, orb, di))))
+        .collect();
 
+    let completed = tiles::run_prioritized(&grid.order, &slots, cancel.as_ref(), &|id, tile_bufs| {
+        let (mut it_rows, mut z_rows, mut orb_rows, mut dist_rows) = tile_bufs;
+        let (x0, y0, tw, th) = grid.rect(id);
+        for dj in 0..th {
+            let j = y0 + dj;
             let y_ratio = (j as f64 + 0.5 + aa_dy) / params.height as f64;
             let dy = (y_ratio - 0.5) * params.span_y;
-            for (i, (((iter, z), orbit_cell), dist_cell)) in iter_row
-                .iter_mut()
-                .zip(z_row.iter_mut())
-                .zip(orbit_row.iter_mut())
-                .zip(dist_row.iter_mut())
-                .enumerate()
-            {
+            let iter_row = &mut it_rows[dj];
+            let z_row = &mut z_rows[dj];
+            let orbit_row = &mut orb_rows[dj];
+            let dist_row = &mut dist_rows[dj];
+            for di in 0..tw {
+                let i = x0 + di;
+                let iter = &mut iter_row[di];
+                let z = &mut z_row[di];
                 // G10.4 : copie inter-frame XaoS (écho produit ou refine union).
                 if let Some(x) = xaos {
                     if let Some(sidx) = x.source_index(i, j) {
@@ -401,12 +426,12 @@ fn render_escape_time_f64_cancellable_with_reuse(
                         }
                     }
                 }
-                if let Some(reuse) = reuse_row {
+                if let Some(reuse) = reuse.as_ref() {
                     let ratio = reuse.ratio as usize;
                     if j % ratio == 0 && i % ratio == 0 {
                         let src_x = i / ratio;
                         let src_y = j / ratio;
-                        let src_idx = (src_y * reuse.width as usize + src_x) as usize;
+                        let src_idx = src_y * reuse.width as usize + src_x;
                         if src_idx < reuse.iterations.len() {
                             *iter = reuse.iterations[src_idx];
                             *z = reuse.zs[src_idx];
@@ -431,15 +456,32 @@ fn render_escape_time_f64_cancellable_with_reuse(
                 *iter = iteration;
                 *z = z_final;
                 if need_orbits {
-                    *orbit_cell = orbit;
+                    orbit_row[di] = orbit;
                 }
                 if need_distances {
-                    *dist_cell = distance.unwrap_or(f64::INFINITY);
+                    dist_row[di] = distance.unwrap_or(f64::INFINITY);
                 }
             }
-        });
+        }
+        if let Some(sink) = sink {
+            sink(TileUpdate {
+                x0,
+                y0,
+                w: tw,
+                h: th,
+                iterations: tiles::collect_rows(&it_rows),
+                zs: tiles::collect_rows(&z_rows),
+                distances: if need_distances {
+                    tiles::collect_rows(&dist_rows)
+                } else {
+                    Vec::new()
+                },
+            });
+        }
+    });
+    drop(slots);
 
-    if cancelled.load(Ordering::Relaxed) {
+    if !completed {
         None
     } else {
         Some((iterations, zs, orbits, distances))
@@ -451,7 +493,7 @@ fn render_escape_time_gmp_cancellable(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
 ) -> Option<EscapeTimeResult> {
-    render_escape_time_gmp_cancellable_with_reuse(params, cancel, None, None)
+    render_escape_time_gmp_cancellable_with_reuse(params, cancel, None, None, None)
 }
 
 fn render_escape_time_gmp_cancellable_with_reuse(
@@ -459,6 +501,7 @@ fn render_escape_time_gmp_cancellable_with_reuse(
     cancel: &Arc<AtomicBool>,
     reuse: Option<ReuseData<'_>>,
     xaos: Option<&XaosMap>,
+    tiles: Option<&TileOpts>,
 ) -> Option<EscapeTimeResult> {
     let width = params.width as usize;
     let height = params.height as usize;
@@ -531,24 +574,28 @@ fn render_escape_time_gmp_cancellable_with_reuse(
     // Offset sous-pixel AA per-frame (unités de pixel, [0,0] hors AA).
     let [aa_dx, aa_dy] = params.aa_subpixel_offset;
 
-    let cancelled = AtomicBool::new(false);
+    // G10.5 : file de tuiles priorité-centre. Les pixels GMP sont lourds
+    // (100 µs–ms) → poll d'annulation par ligne de tuile en plus du poll par
+    // tuile de l'exécuteur.
+    let priority = tiles.map(|t| t.priority).unwrap_or((0.5, 0.5));
+    let sink = tiles.and_then(|t| t.sink);
+    let grid = TileGrid::new(width, height, priority);
+    let it_g = grid.split(&mut iterations);
+    let zs_g = grid.split(&mut zs);
+    let slots: Vec<_> = it_g
+        .into_iter()
+        .zip(zs_g)
+        .map(|(it, z)| std::sync::Mutex::new(Some((it, z))))
+        .collect();
 
-    iterations
-        .par_chunks_mut(width)
-        .zip(zs.par_chunks_mut(width))
-        .enumerate()
-        .for_each(|(j, (iter_row, z_row))| {
-            let reuse_row = reuse.as_ref();
-            if j % 8 == 0 {
-                if cancel.load(Ordering::Relaxed) {
-                    cancelled.store(true, Ordering::Relaxed);
-                    return;
-                }
-            }
-            if cancelled.load(Ordering::Relaxed) {
+    let completed = tiles::run_prioritized(&grid.order, &slots, cancel.as_ref(), &|id, tile_bufs| {
+        let (mut it_rows, mut z_rows) = tile_bufs;
+        let (x0, y0, tw, th) = grid.rect(id);
+        for dj in 0..th {
+            if cancel.load(Ordering::Relaxed) {
                 return;
             }
-
+            let j = y0 + dj;
             let mut j_f = Float::with_val(prec, j as u32);
             j_f += &half;
             if aa_dy != 0.0 {
@@ -559,7 +606,12 @@ fn render_escape_time_gmp_cancellable_with_reuse(
             y_ratio -= &half;
             let mut dy = span_y.clone();
             dy *= &y_ratio;
-            for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
+            let iter_row = &mut it_rows[dj];
+            let z_row = &mut z_rows[dj];
+            for di in 0..tw {
+                let i = x0 + di;
+                let iter = &mut iter_row[di];
+                let z = &mut z_row[di];
                 // G10.4 : copie inter-frame XaoS (écho produit ou refine union).
                 if let Some(x) = xaos {
                     if let Some(sidx) = x.source_index(i, j) {
@@ -570,12 +622,12 @@ fn render_escape_time_gmp_cancellable_with_reuse(
                         }
                     }
                 }
-                if let Some(reuse) = reuse_row {
+                if let Some(reuse) = reuse.as_ref() {
                     let ratio = reuse.ratio as usize;
                     if j % ratio == 0 && i % ratio == 0 {
                         let src_x = i / ratio;
                         let src_y = j / ratio;
-                        let src_idx = (src_y * reuse.width as usize + src_x) as usize;
+                        let src_idx = src_y * reuse.width as usize + src_x;
                         if src_idx < reuse.iterations.len() {
                             *iter = reuse.iterations[src_idx];
                             *z = reuse.zs[src_idx];
@@ -616,11 +668,147 @@ fn render_escape_time_gmp_cancellable_with_reuse(
                 *iter = iter_val;
                 *z = complex_to_complex64(&z_final);
             }
-        });
+        }
+        if let Some(sink) = sink {
+            sink(TileUpdate {
+                x0,
+                y0,
+                w: tw,
+                h: th,
+                iterations: tiles::collect_rows(&it_rows),
+                zs: tiles::collect_rows(&z_rows),
+                distances: Vec::new(),
+            });
+        }
+    });
+    drop(slots);
 
-    if cancelled.load(Ordering::Relaxed) {
+    // Re-check : un cancel observé DANS une tuile (early-return par ligne)
+    // peut ne pas être vu par l'exécuteur si la file était déjà vide.
+    if !completed || cancel.load(Ordering::Relaxed) {
         None
     } else {
         Some((iterations, zs, vec![None; n], vec![]))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fractal::default_params_for_type;
+
+    fn small_mandelbrot(width: u32, height: u32) -> FractalParams {
+        let mut p = default_params_for_type(FractalType::Mandelbrot, width, height);
+        p.iteration_max = 200;
+        // Vue au bord du set : mélange intérieur/extérieur (tuiles hétérogènes).
+        p.center_x = -0.7435;
+        p.center_y = 0.1314;
+        p.span_x = 0.05;
+        p.span_y = 0.05 * height as f64 / width as f64;
+        p
+    }
+
+    fn render_with_tiles(
+        params: &FractalParams,
+        tiles: Option<&TileOpts>,
+    ) -> EscapeTimeResult {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut cache: Option<Arc<ReferenceOrbitCache>> = None;
+        render_escape_time_cancellable_with_reuse(params, &cancel, None, &mut cache, None, tiles)
+            .expect("rendu non annulé")
+    }
+
+    /// G10.5 : l'ordre des tuiles ne change pas les pixels — un rendu avec
+    /// priorité coin == priorité centre == sans opts, bit-exact. Dimensions
+    /// non multiples de la tuile pour couvrir les bords.
+    #[test]
+    fn tiled_render_identical_across_priorities() {
+        let params = small_mandelbrot(97, 61);
+        let base = render_with_tiles(&params, None);
+        for prio in [(0.0, 0.0), (1.0, 1.0), (0.13, 0.87)] {
+            let opts = TileOpts {
+                priority: prio,
+                sink: None,
+            };
+            let r = render_with_tiles(&params, Some(&opts));
+            assert_eq!(base.0, r.0, "iterations divergent (priorité {prio:?})");
+            assert_eq!(base.1, r.1, "zs divergent (priorité {prio:?})");
+        }
+    }
+
+    /// G10.5 : le sink reçoit chaque pixel exactement une fois, avec les mêmes
+    /// valeurs que le buffer final.
+    #[test]
+    fn tile_sink_covers_every_pixel_once_with_final_values() {
+        let params = small_mandelbrot(97, 61);
+        let n = (params.width * params.height) as usize;
+        let collected: std::sync::Mutex<Vec<TileUpdate>> = std::sync::Mutex::new(Vec::new());
+        let sink = |u: TileUpdate| {
+            collected.lock().unwrap().push(u);
+        };
+        let opts = TileOpts {
+            priority: (0.5, 0.5),
+            sink: Some(&sink),
+        };
+        let (iters, zs, _, _) = render_with_tiles(&params, Some(&opts));
+
+        let mut seen = vec![0u8; n];
+        let w = params.width as usize;
+        for u in collected.lock().unwrap().iter() {
+            assert_eq!(u.iterations.len(), u.w * u.h);
+            assert_eq!(u.zs.len(), u.w * u.h);
+            for dj in 0..u.h {
+                for di in 0..u.w {
+                    let idx = (u.y0 + dj) * w + u.x0 + di;
+                    seen[idx] += 1;
+                    assert_eq!(u.iterations[dj * u.w + di], iters[idx]);
+                    assert_eq!(u.zs[dj * u.w + di], zs[idx]);
+                }
+            }
+        }
+        assert!(seen.iter().all(|&c| c == 1), "couverture sink non exacte");
+    }
+    /// G10.5 — diagnostic (non-CI) : la zone prioritaire (quart d'image autour
+    /// du point) est complète bien avant la fin du rendu. Mesure le ratio
+    /// t(zone prioritaire)/t(total) avec priorité coin haut-gauche.
+    /// `cargo test --release --bin fractall-cli tile_priority_first_paint_diagnostic -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn tile_priority_first_paint_diagnostic() {
+        let mut params = small_mandelbrot(768, 576);
+        params.iteration_max = 20_000;
+        let t0 = std::time::Instant::now();
+        let events: std::sync::Mutex<Vec<(f64, usize, usize)>> = std::sync::Mutex::new(Vec::new());
+        let sink = |u: TileUpdate| {
+            events
+                .lock()
+                .unwrap()
+                .push((t0.elapsed().as_secs_f64(), u.x0 + u.w / 2, u.y0 + u.h / 2));
+        };
+        let prio = (0.0f64, 0.0f64);
+        let opts = TileOpts {
+            priority: prio,
+            sink: Some(&sink),
+        };
+        let _ = render_with_tiles(&params, Some(&opts));
+        let total = t0.elapsed().as_secs_f64();
+        let (w, h) = (params.width as f64, params.height as f64);
+        let radius = 0.25 * w.hypot(h);
+        let t_zone = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, cx, cy)| {
+                let dx = *cx as f64 - prio.0 * w;
+                let dy = *cy as f64 - prio.1 * h;
+                (dx * dx + dy * dy).sqrt() <= radius
+            })
+            .map(|(t, _, _)| *t)
+            .fold(0.0f64, f64::max);
+        println!(
+            "[G10.5] zone prioritaire (r={radius:.0}px autour du coin) complète à {t_zone:.3}s / total {total:.3}s = {:.0}%",
+            100.0 * t_zone / total
+        );
+        assert!(t_zone <= total);
     }
 }

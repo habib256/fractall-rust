@@ -99,7 +99,9 @@ src/
 │       ├── delta.rs        # iterate_pixel{,_gmp}
 │       ├── series.rs       # Taylor series approximation
 │       └── glitch.rs       # Clustering Pauldelbrot (legacy)
-├── render/escape_time.rs # dispatcher should_use_perturbation/_gmp
+├── render/
+│   ├── escape_time.rs    # dispatcher unique CLI↔GUI (sélection algo)
+│   └── tiles.rs          # G10.5 file de tuiles priorité-centre + sink streaming
 ├── gpu/                  # wgpu Vulkan/Metal/DX12
 │   ├── mod.rs              # GpuRenderer + pipeline bytecode
 │   ├── *_f32.wgsl          # paths legacy par type
@@ -172,8 +174,10 @@ Chunk `tEXt` clé `fractall-params` = JSON sérialisé de `FractalParams`
 
 **Le CLI et la GUI DOIVENT suivre exactement le même chemin de rendu CPU.**
 Il existe **un seul dispatcher** : `render_escape_time_cancellable_with_reuse(
-params, cancel, reuse, orbit_cache)`. Toute la sélection type→algorithme
-(perturbation / GMP / f64 / spéciaux) et l'appel des renderers vivent là.
+params, cancel, reuse, orbit_cache, xaos, tiles)`. Toute la sélection
+type→algorithme (perturbation / GMP / f64 / spéciaux) et l'appel des renderers
+vivent là. `xaos` (G10.4) et `tiles` (G10.5) sont les options GUI de
+réutilisation inter-frame et de scheduling par tuiles — `None` partout ailleurs.
 
 - **CLI** (`main.rs`) → `render_escape_time(params)` = thin wrapper sur le
   dispatcher (no cancel, no reuse, `&mut None` cache).
@@ -538,6 +542,19 @@ puis OpenGL ; Windows DX12 / Vulkan.
   contenu, en plus net — supprime le pompage flou preview→full en
   navigation) ; la passe finale tourne toujours. Diagnostics :
   `xaos_pan_speedup_diagnostic`, `xaos_zoom_cycle_diagnostic` (`--ignored`).
+- **File de tuiles priorité-centre** (G10.5, `render/tiles.rs`) : les 4
+  boucles pixel CPU (f64/GMP/perturbation/perturbation-GMP) tournent sur une
+  work-queue de tuiles (16/32/64 px, ≥ 8/thread) ordonnée par distance au
+  curseur (`hover_norm`, centre sinon) — file atomique `fetch_add` (l'ordre
+  rayon natif disperse les fronts). Param `tiles: Option<&TileOpts>` du
+  dispatcher unique (CLI/quality/HQ/AA/refine = `None` ; l'ordre ne change
+  AUCUN pixel, verrou `tiled_render_identical_across_priorities`). Streaming
+  intra-passe GUI : le sink colorise chaque tuile, la blitte sur la passe
+  précédente colorisée et envoie `TileProgress` throttlé 100 ms → la zone
+  sous le curseur devient nette en premier. Sans `unsafe` : segments de
+  lignes disjoints par tuile (`TileGrid::split`). Gates sink : refine
+  silencieux, OrbitTraps/Wings, 1re passe (pas de base). Cancel : poll par
+  tuile + par ligne (GMP/perturbation) + re-check final anti-buffer-troué.
 - Coordonnées HP synchronisées vers `FractalParams`. ⚠️ L'arithmétique HP des
   zooms (`zoom_hp`/`zoom_anchored_hp`/`zoom_rect_hp`/`zoom_out_hp`) utilise `hp_arith_precision()`
   (≈ `-log2(span)+96` bits, **dynamique**), PAS le `HP_PRECISION` fixe (256 b) :
