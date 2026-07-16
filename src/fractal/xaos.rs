@@ -931,6 +931,63 @@ mod tests {
         assert_eq!(zdiff, 0, "refine ε == rendu frais (zs)");
     }
 
+    /// INVARIANT G10.4b : écho XaoS et reuse basse-résolution inter-passes
+    /// sont mutuellement exclusifs. Le reuse copie des pixels dont le centre
+    /// est décalé de (ratio−1)/2 px — s'il fuyait dans les colonnes/lignes
+    /// FRAÎCHES d'un rendu avec map, la frame mentirait (col_exact = true sur
+    /// des pixels approximés) et le refine union garderait ces pixels faux.
+    /// On rend avec un buffer reuse EMPOISONNÉ : aucune valeur ne doit fuiter.
+    #[test]
+    fn echo_pass_ignores_coarse_pass_reuse() {
+        use std::sync::atomic::AtomicBool;
+        use crate::render::render_escape_time_cancellable_with_reuse as render;
+
+        let mut p = base_params(64, 48);
+        p.center_x = -0.6;
+        p.center_y = 0.3;
+        p.span_x = 0.5;
+        p.span_y = 0.375;
+        p.iteration_max = 300;
+        p.use_bytecode_engine = true;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (it_a, zs_a, _, _) = render(&p, &cancel, None, &mut None, None).expect("A");
+
+        let mut z = p.clone();
+        z.span_x = p.span_x / 2.0;
+        z.span_y = p.span_y / 2.0;
+        let mut src = frame_for(&p, vec![0; 64 * 48]);
+        src.iterations = Arc::new(it_a);
+        src.zs = Arc::new(zs_a);
+        let map = build_map(&src, &z).expect("map écho");
+
+        // Reuse 32×24 empoisonné (valeurs impossibles) — comme une passe 1/2.
+        let poison_it = vec![u32::MAX; 32 * 24];
+        let poison_zs = vec![Complex64::new(1e300, -1e300); 32 * 24];
+        let poisoned = Some((poison_it.as_slice(), poison_zs.as_slice(), 32u32, 24u32));
+
+        let (it_poison, zs_poison, _, _) =
+            render(&z, &cancel, poisoned, &mut None, Some(&map)).expect("écho+poison");
+        assert!(
+            !it_poison.iter().any(|&it| it == u32::MAX),
+            "le reuse basse-résolution a fuité dans un rendu avec map XaoS"
+        );
+        let (it_clean, zs_clean, _, _) =
+            render(&z, &cancel, None, &mut None, Some(&map)).expect("écho seul");
+        assert_eq!(it_poison, it_clean, "écho+reuse == écho seul (itérations)");
+        assert_eq!(
+            zs_poison.iter().zip(&zs_clean).filter(|(a, b)| a != b).count(),
+            0,
+            "écho+reuse == écho seul (zs)"
+        );
+        // Sans map, le reuse reste actif (comportement progressif inchangé).
+        let (it_no_map, _, _, _) =
+            render(&z, &cancel, poisoned, &mut None, None).expect("reuse seul");
+        assert!(
+            it_no_map.iter().any(|&it| it == u32::MAX),
+            "sans map XaoS le reuse doit rester actif (grille alignée copiée)"
+        );
+    }
+
     /// Diagnostic perf (non-CI) : gain wall-clock d'un pan 8 px avec XaoS vs
     /// rendu complet. `cargo test --release --bin fractall-cli xaos_pan_speedup -- --ignored --nocapture`
     #[test]

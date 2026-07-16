@@ -528,7 +528,15 @@ puis OpenGL ; Windows DX12 / Vulkan.
   passe écho-pur — aucune information nouvelle, dégraderait la source en
   copies de copies). Compatibilité = fingerprint JSON des params
   non-géométriques. Boucles pixel : point d'entrée unique
-  `XaosMap::source_index(i, j)` (sémantique produit vs union). Diagnostics :
+  `XaosMap::source_index(i, j)` (sémantique produit vs union).
+  ⚠️ **Invariant : écho XaoS et reuse basse-résolution inter-passes sont
+  mutuellement EXCLUSIFS** (dispatcher + `render_perturbation_with_cache`) :
+  le `reuse` copie des centres décalés de (ratio−1)/2 px, ce qui
+  contaminerait les axes que le map déclare FRAIS/exacts, consommés par le
+  refine union (verrou `echo_pass_ignores_coarse_pass_reuse`). Les passes
+  intermédiaires écho-pur sont SAUTÉES (le warp G10.1 affiche déjà le même
+  contenu, en plus net — supprime le pompage flou preview→full en
+  navigation) ; la passe finale tourne toujours. Diagnostics :
   `xaos_pan_speedup_diagnostic`, `xaos_zoom_cycle_diagnostic` (`--ignored`).
 - Coordonnées HP synchronisées vers `FractalParams`. ⚠️ L'arithmétique HP des
   zooms (`zoom_hp`/`zoom_anchored_hp`/`zoom_rect_hp`/`zoom_out_hp`) utilise `hp_arith_precision()`

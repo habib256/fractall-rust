@@ -1011,6 +1011,11 @@ pub fn render_perturbation_with_cache(
     let xaos = xaos.filter(|m| {
         m.src_col.len() == params.width as usize && m.src_row.len() == params.height as usize
     });
+    // INVARIANT G10.4b (miroir du dispatcher) : écho XaoS ⊃ pas de reuse
+    // basse-résolution — les pixels frais du map doivent être réellement
+    // calculés (le reuse copie des centres décalés de (ratio−1)/2 px, ce qui
+    // contaminerait les axes déclarés exacts, consommés par le refine union).
+    let reuse = if xaos.is_some() { None } else { reuse };
     // Fix G3 (anneaux concentriques) : `max_perturb_iterations` / `max_bla_steps`
     // ne doivent JAMAIS plafonner sous `iteration_max`. Comme `iters_ptb ≤ n <
     // iteration_max`, un cap < iteration_max tronque les pixels qui ont besoin de

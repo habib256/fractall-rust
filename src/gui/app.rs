@@ -1157,6 +1157,21 @@ impl FractallApp {
                     }
                 });
 
+                // G10.4b : une passe intermédiaire écho-pur (100 % copiée)
+                // n'apporte RIEN de plus que le warp G10.1 déjà affiché (même
+                // contenu, en moins net) — la sauter supprime le « pompage »
+                // flou preview→full pendant la navigation et fait démarrer le
+                // travail frais plus tôt. La passe FINALE tourne toujours
+                // (matérialise les buffers, programme le raffinement).
+                let is_final_pass = pass_index + 1 == config.passes.len();
+                if !is_final_pass {
+                    if let Some(m) = &xaos_map {
+                        if m.is_pure_copy(pass_width as usize, pass_height as usize) {
+                            continue;
+                        }
+                    }
+                }
+
                 // Rendre cette passe (réutiliser la passe précédente si possible)
                 let reuse = previous_pass.as_ref().map(|(iter, zs, w, h)| {
                     (iter.as_slice(), zs.as_slice(), *w, *h)

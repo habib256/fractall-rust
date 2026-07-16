@@ -148,6 +148,15 @@ pub fn render_escape_time_cancellable_with_reuse(
     let xaos = xaos.filter(|m| {
         m.src_col.len() == params.width as usize && m.src_row.len() == params.height as usize
     });
+    // INVARIANT G10.4b : écho XaoS et réutilisation basse-résolution inter-passes
+    // sont mutuellement EXCLUSIFS. Le `reuse` copie le pixel grossier dont le
+    // centre est décalé de (ratio−1)/2 px cible ((i/r + 0.5)/(n/r) ≠ (i+0.5)/n) —
+    // une approximation acceptable pour accélérer une passe, mais qui
+    // contaminerait les colonnes/lignes que le map XaoS déclare FRAÎCHES
+    // (col_err = 0, col_exact = true). Le raffinement union fait confiance à
+    // ces axes : les pixels frais doivent être réellement calculés. L'écho
+    // remplit déjà le rôle d'accélérateur quand un map est présent.
+    let reuse = if xaos.is_some() { None } else { reuse };
     // Path perturbation unifié : passe par `render_perturbation_with_cache` (le
     // même coeur que le CLI et la GUI), en threadant le cache d'orbite.
     let mut run_perturbation = |reuse: Option<(&[u32], &[Complex64], u32, u32)>| {

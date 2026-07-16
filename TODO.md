@@ -1948,9 +1948,18 @@ Jalons (ordre de ROI croissant en effort) :
   (`zoom_anchored_hp`, C′ = C + (r−0.5)·S·(1−1/f), HP ; ≈×1.2/cran) —
   documenté dans CLAUDE.md mais jamais implémenté ; c'est le chemin de zoom
   continu que l'écho XaoS sert le mieux. Boucles pixel unifiées sur
-  `XaosMap::source_index`. Verrous : 17 unit xaos dont roundtrip
+  `XaosMap::source_index`. **Suite (même jour)** : (6) invariant **écho XaoS ⊃
+  pas de reuse basse-résolution** (dispatcher + perturbation) — le reuse copie
+  des centres décalés de (ratio−1)/2 px qui contaminaient les colonnes/lignes
+  déclarées FRAÎCHES du map (le refine union leur fait confiance → l'image
+  « exacte » gardait des pixels jusqu'à 1.5 px à côté) ; verrou poison
+  `echo_pass_ignores_coarse_pass_reuse` (sans map, le reuse reste actif) ;
+  (7) les passes intermédiaires écho-pur sont SAUTÉES (contenu ⊂ warp G10.1
+  affiché, en plus flou — supprime le pompage preview→full à chaque cran de
+  molette, le travail frais démarre plus tôt) ; la passe finale tourne
+  toujours. Verrous : 18 unit xaos dont roundtrip
   `zoom_then_exact_refine_matches_fresh_render` (écho ×2 → refine union ==
-  frais pixel-exact) ; 251+260 unit + 21 golden verts.
+  frais pixel-exact) ; 252+261+259 unit + 21 golden verts.
 - [ ] **G10.5 — File de tuiles priorité-centre** : work-queue de tuiles ordonnée
   curseur-d'abord au lieu du `par_chunks_mut` monolithique (`escape_time.rs:347`).
 
