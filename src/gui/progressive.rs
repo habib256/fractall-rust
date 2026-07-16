@@ -9,6 +9,7 @@ use num_complex::Complex64;
 
 use crate::fractal::perturbation::ReferenceOrbitCache;
 use crate::fractal::orbit_traps::OrbitData;
+use crate::fractal::xaos::XaosSourceFrame;
 
 /// Message envoyé du thread de rendu vers le GUI.
 pub enum RenderMessage {
@@ -18,8 +19,10 @@ pub enum RenderMessage {
         scale_divisor: u8,
         effective_mode: crate::fractal::AlgorithmMode,
         precision_label: String,
-        iterations: Vec<u32>,
-        zs: Vec<Complex64>,
+        /// Buffers bruts en Arc (G10.3/G10.4) : partagés sans memcpy entre la
+        /// frame source XaoS, la passe suivante et la colorisation.
+        iterations: Arc<Vec<u32>>,
+        zs: Arc<Vec<Complex64>>,
         distances: Vec<f64>,
         /// Données d'orbite pour Orbit Traps / Wings (vide si non calculé)
         orbits: Vec<Option<OrbitData>>,
@@ -28,6 +31,13 @@ pub enum RenderMessage {
         /// Buffer RGBA pré-colorisé (évite de bloquer le thread UI)
         #[allow(dead_code)]
         colored_buffer: Vec<u8>,
+        /// G10.4 : frame source XaoS prête à stocker (None pour les passes GPU
+        /// — leur précision f32 ne doit pas contaminer un rendu CPU futur).
+        xaos_frame: Option<XaosSourceFrame>,
+        /// G10.4 : nombre de colonnes×lignes COPIÉES depuis la frame
+        /// précédente (0 = rendu exact). >0 sur la passe finale → programmer
+        /// le raffinement idle.
+        xaos_reused: usize,
     },
     /// Mise à jour incrémentale de l'anti-aliasing multi-sample : moyenne RGB
     /// courante après `sample`/`total` échantillons jitterés. Le buffer est

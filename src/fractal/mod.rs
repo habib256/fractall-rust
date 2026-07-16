@@ -9,6 +9,10 @@ pub mod vectorial;
 pub mod buddhabrot;
 pub mod perturbation;
 pub mod wisdom;
+// G10.4 : réutilisation pixels inter-frame XaoS. Consommé par la GUI (build du
+// mapping) et les boucles pixel CPU ; dead-code partiel dans les autres bins.
+#[allow(dead_code)]
+pub mod xaos;
 // Consommé par le bin fractall-cli (--wisdom-bench) + wisdom::plan_for ;
 // dead-code dans les bins qui ne benchent pas (gui/quality).
 #[allow(dead_code)]

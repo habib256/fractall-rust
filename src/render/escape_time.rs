@@ -23,6 +23,7 @@ use crate::fractal::buddhabrot::{
 use crate::fractal::perturbation::{
     render_perturbation_with_cache, ReferenceOrbitCache,
 };
+use crate::fractal::xaos::XaosMap;
 
 /// Calcule la matrice d'itérations et la matrice des valeurs finales de z
 /// pour une fractale escape-time (ou algorithme spécial).
@@ -47,6 +48,7 @@ pub fn render_escape_time(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
         &Arc::new(AtomicBool::new(false)),
         None,
         &mut orbit_cache,
+        None,
     )
     .map(|(i, z, _orbits, _distances)| (i, z))
     .unwrap_or_else(|| (Vec::new(), Vec::new()))
@@ -105,7 +107,7 @@ pub fn render_escape_time_cancellable(
     cancel: &Arc<AtomicBool>,
 ) -> Option<(Vec<u32>, Vec<Complex64>)> {
     let mut orbit_cache: Option<Arc<ReferenceOrbitCache>> = None;
-    render_escape_time_cancellable_with_reuse(params, cancel, None, &mut orbit_cache)
+    render_escape_time_cancellable_with_reuse(params, cancel, None, &mut orbit_cache, None)
         .map(|(i, z, _o, _d)| (i, z))
 }
 
@@ -129,17 +131,28 @@ pub type EscapeTimeResult = (
 /// `orbit_cache` est un in/out : en entrée l'orbite référence réutilisable (passe
 /// précédente / re-pan), en sortie l'orbite mise à jour (renseignée uniquement
 /// par le path perturbation). Le CLI passe `&mut None` (rendu unique).
+///
+/// `xaos` (G10.4) : mapping inter-frame optionnel (colonnes/lignes de la frame
+/// précédente réutilisables) — les pixels mappés sont copiés au lieu d'être
+/// calculés. Construit par la GUI via `fractal::xaos::build_map` (gates +
+/// fingerprint validés là-bas) ; CLI/quality passent `None`.
 pub fn render_escape_time_cancellable_with_reuse(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
     reuse: Option<(&[u32], &[Complex64], u32, u32)>,
     orbit_cache: &mut Option<Arc<ReferenceOrbitCache>>,
+    xaos: Option<&XaosMap>,
 ) -> Option<EscapeTimeResult> {
+    // Garde-fou : un mapping construit pour d'autres dimensions serait indexé
+    // hors bornes par les boucles pixel → on l'ignore (rendu complet).
+    let xaos = xaos.filter(|m| {
+        m.src_col.len() == params.width as usize && m.src_row.len() == params.height as usize
+    });
     // Path perturbation unifié : passe par `render_perturbation_with_cache` (le
     // même coeur que le CLI et la GUI), en threadant le cache d'orbite.
     let mut run_perturbation = |reuse: Option<(&[u32], &[Complex64], u32, u32)>| {
         let (res, cache) =
-            render_perturbation_with_cache(params, cancel, reuse, orbit_cache.as_ref())?;
+            render_perturbation_with_cache(params, cancel, reuse, orbit_cache.as_ref(), xaos)?;
         *orbit_cache = Some(cache);
         Some((res.0, res.1, Vec::new(), res.2))
     };
@@ -230,20 +243,20 @@ pub fn render_escape_time_cancellable_with_reuse(
             }
             wisdom::Algorithm::ReferenceGmp => {
                 let reuse = build_reuse(params, reuse);
-                return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse);
+                return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse, xaos);
             }
             wisdom::Algorithm::StandardF64 => {
                 let reuse = build_reuse(params, reuse);
-                return render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse);
+                return render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse, xaos);
             }
         }
     }
 
     let reuse = build_reuse(params, reuse);
     if params.use_gmp {
-        return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse);
+        return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse, xaos);
     }
-    render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse)
+    render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse, xaos)
 }
 
 /// Calcule le niveau de zoom à partir des paramètres.
@@ -315,13 +328,14 @@ fn render_escape_time_f64_cancellable(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
 ) -> Option<EscapeTimeResult> {
-    render_escape_time_f64_cancellable_with_reuse(params, cancel, None)
+    render_escape_time_f64_cancellable_with_reuse(params, cancel, None, None)
 }
 
 fn render_escape_time_f64_cancellable_with_reuse(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
     reuse: Option<ReuseData<'_>>,
+    xaos: Option<&XaosMap>,
 ) -> Option<EscapeTimeResult> {
     let width = params.width as usize;
     let height = params.height as usize;
@@ -368,6 +382,18 @@ fn render_escape_time_f64_cancellable_with_reuse(
                 .zip(dist_row.iter_mut())
                 .enumerate()
             {
+                // G10.4 : copie inter-frame XaoS (bande colonne ET ligne matchées).
+                if let Some(x) = xaos {
+                    let (sc, sr) = (x.src_col[i], x.src_row[j]);
+                    if sc >= 0 && sr >= 0 {
+                        let sidx = sr as usize * x.src_width + sc as usize;
+                        if let Some(&it) = x.iterations.get(sidx) {
+                            *iter = it;
+                            *z = x.zs[sidx];
+                            continue;
+                        }
+                    }
+                }
                 if let Some(reuse) = reuse_row {
                     let ratio = reuse.ratio as usize;
                     if j % ratio == 0 && i % ratio == 0 {
@@ -418,13 +444,14 @@ fn render_escape_time_gmp_cancellable(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
 ) -> Option<EscapeTimeResult> {
-    render_escape_time_gmp_cancellable_with_reuse(params, cancel, None)
+    render_escape_time_gmp_cancellable_with_reuse(params, cancel, None, None)
 }
 
 fn render_escape_time_gmp_cancellable_with_reuse(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
     reuse: Option<ReuseData<'_>>,
+    xaos: Option<&XaosMap>,
 ) -> Option<EscapeTimeResult> {
     let width = params.width as usize;
     let height = params.height as usize;
@@ -526,6 +553,18 @@ fn render_escape_time_gmp_cancellable_with_reuse(
             let mut dy = span_y.clone();
             dy *= &y_ratio;
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
+                // G10.4 : copie inter-frame XaoS (bande colonne ET ligne matchées).
+                if let Some(x) = xaos {
+                    let (sc, sr) = (x.src_col[i], x.src_row[j]);
+                    if sc >= 0 && sr >= 0 {
+                        let sidx = sr as usize * x.src_width + sc as usize;
+                        if let Some(&it) = x.iterations.get(sidx) {
+                            *iter = it;
+                            *z = x.zs[sidx];
+                            continue;
+                        }
+                    }
+                }
                 if let Some(reuse) = reuse_row {
                     let ratio = reuse.ratio as usize;
                     if j % ratio == 0 && i % ratio == 0 {

@@ -1902,11 +1902,31 @@ Jalons (ordre de ROI croissant en effort) :
   UI** → plus de jank pendant un drag du slider palette. `Arc::make_mut` (COW) pour
   la normalisation de taille d'`orbits`. Deref coercion → tous les sites de lecture
   (`&[T]`) inchangés. GUI-only (moteur intact) : 244 gui + 235 cli tests verts.
-- [ ] **G10.4 — Réutilisation pixels XaoS (colonnes/lignes)** : matching séparable
-  en espace pixel relatif, recopie des bandes réutilisables, recalcul des seules
-  bandes neuves (masque de calcul dans les `par_chunks_mut`), raffinement des
-  pixels approximés en idle. ×10-20 pixels calculés en pan/petit zoom. Gros
-  morceau.
+- [x] **G10.4 — Réutilisation pixels XaoS (colonnes/lignes)** `[✅ 2026-07-16]` :
+  `fractal/xaos.rs` — matching séparable en espace pixel relatif : transformée
+  `x_old = a·(x+0.5)+B` par axe, dérivée de deux ratios O(1) calculés UNE fois
+  en HP (`Δcentre/span`, `span_new/span_old`, même math que le warp G10.1) —
+  exact à toute profondeur, aucun HP dans la boucle. **Anti-dérive** : chaque
+  frame stocke `col_err`/`row_err` (position VRAIE des données par axe) ; le
+  matching compare la grille nominale aux positions vraies (`k + err[k]`),
+  tolérance 0.5 px → l'erreur ne s'accumule JAMAIS sur les pans enchaînés
+  (vérité préservée à travers les copies, cf. test
+  `chained_fractional_pans_do_not_accumulate_error`). Compatibilité vérifiée
+  par **fingerprint JSON** des params non-géométriques (robuste aux champs
+  futurs) + gates rotation=0/transform_k=None/find_nucleus=false/modes
+  per-pixel/AA. Consommé par les 4 boucles pixel CPU (f64/GMP/perturbation/
+  perturbation-GMP) via un param `xaos: Option<&XaosMap>` du dispatcher unique
+  (CLI/quality/HQ/AA/Julia-preview passent `None` → goldens pixel-exacts
+  inchangés). GUI : frame source stockée à chaque PassComplete **CPU** (les
+  passes GPU f32 sont exclues), buffers en `Arc` bout-en-bout (PassComplete +
+  TextureReadyMessage, supprime aussi le clone `previous_pass` par passe) ;
+  **raffinement idle** : si la passe finale a copié des pixels, re-rendu exact
+  silencieux (passe unique, XaoS off, label `≈XaoS` effacé) après 400 ms sans
+  interaction. Mesure : pan 8 px @1024×768/20k iters seahorse → **98.8 % de
+  pixels copiés, ×42.6 wall-clock** (17.5 s → 0.41 s), map build 108 µs
+  (diagnostic `xaos_pan_speedup_diagnostic`, `--ignored`). Verrous : 11 unit
+  xaos dont roundtrips pan-entier == rendu frais pixel-exact sur les paths f64
+  ET perturbation ; 246+255+253 unit + 21 golden + QA 15 verts.
 - [ ] **G10.5 — File de tuiles priorité-centre** : work-queue de tuiles ordonnée
   curseur-d'abord au lieu du `par_chunks_mut` monolithique (`escape_time.rs:347`).
 

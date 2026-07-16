@@ -11,6 +11,7 @@ use rug::Float;
 use crate::color::{color_for_pixel_with_lut, color_for_nebulabrot_pixel, color_for_buddhabrot_pixel, generate_palette_preview, PaletteLut};
 use crate::fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalParams, FractalType, LyapunovPreset, OutColoringMode, PlaneTransform};
 use crate::fractal::perturbation::ReferenceOrbitCache;
+use crate::fractal::xaos::{self, XaosSourceFrame};
 use crate::render::render_escape_time_cancellable_with_reuse;
 use crate::gui::texture::rgb_image_to_color_image;
 use crate::gui::progressive::{ProgressiveConfig, RenderMessage, upscale_nearest};
@@ -239,6 +240,17 @@ pub struct FractallApp {
     // Cache for orbit/BLA to accelerate deep zoom re-renders
     orbit_cache: Option<Arc<ReferenceOrbitCache>>,
 
+    // G10.4 : réutilisation pixels inter-frame XaoS.
+    /// Frame source (buffers bruts Arc de la dernière passe CPU complétée +
+    /// vue HP + positions vraies par axe). Mise à jour à chaque PassComplete
+    /// CPU ; les passes GPU ne la remplacent pas (précision f32).
+    xaos_frame: Option<XaosSourceFrame>,
+    /// La dernière passe finale a copié des pixels (approximés ≤ 0.5 px) →
+    /// un rendu de raffinement exact est programmé à l'idle (~400 ms).
+    xaos_refine_pending: bool,
+    /// Fin du dernier rendu (référence du délai idle de raffinement).
+    last_render_finished: Option<Instant>,
+
     // Fenêtre de rendu haute résolution
     show_render_dialog: bool,
     render_resolution_preset: RenderResolutionPreset,
@@ -302,8 +314,9 @@ struct TextureReadyMessage {
     display_buffer: Vec<u8>,
     width: u32,
     height: u32,
-    iterations: Vec<u32>,
-    zs: Vec<Complex64>,
+    // Arc (G10.3/G10.4) : assignés tels quels à l'état de l'app (pas de memcpy).
+    iterations: Arc<Vec<u32>>,
+    zs: Arc<Vec<Complex64>>,
     distances: Vec<f64>,
     orbits: Vec<Option<crate::fractal::orbit_traps::OrbitData>>,
     is_preview: bool,
@@ -398,6 +411,9 @@ impl FractallApp {
             window_height: height,
             pending_resize: None,
             orbit_cache: None,
+            xaos_frame: None,
+            xaos_refine_pending: false,
+            last_render_finished: None,
             show_render_dialog: false,
             render_resolution_preset: RenderResolutionPreset::Res4K,
             hq_rendering: false,
@@ -870,6 +886,7 @@ impl FractallApp {
                     &cancel,
                     reuse,
                     &mut None,
+                    None, // HQ = sortie exacte, pas de réutilisation XaoS
                 );
 
                 match result {
@@ -924,6 +941,17 @@ impl FractallApp {
 
     /// Lance le rendu progressif de la fractale dans un thread séparé.
     fn start_render(&mut self) {
+        self.start_render_with(false);
+    }
+
+    /// G10.4 : rendu de raffinement idle — passe unique pleine résolution,
+    /// réutilisation XaoS désactivée (recalcul exact des pixels approximés),
+    /// remplacement silencieux de l'image (une seule PassComplete, à la fin).
+    fn start_render_refine(&mut self) {
+        self.start_render_with(true);
+    }
+
+    fn start_render_with(&mut self, refine: bool) {
         // Annuler tout rendu en cours
         if self.rendering {
             self.render_cancel.store(true, Ordering::Relaxed);
@@ -977,13 +1005,21 @@ impl FractallApp {
                     crate::fractal::wisdom::Device::Cpu
                 },
             ) == crate::fractal::wisdom::Algorithm::Perturbation;
-        let config = ProgressiveConfig::for_params_with_intermediate(
-            self.params.width,
-            self.params.height,
-            self.params.use_gmp,
-            allow_intermediate,
-            will_use_perturbation,
-        );
+        let config = if refine {
+            ProgressiveConfig::single_pass()
+        } else {
+            ProgressiveConfig::for_params_with_intermediate(
+                self.params.width,
+                self.params.height,
+                self.params.use_gmp,
+                allow_intermediate,
+                will_use_perturbation,
+            )
+        };
+
+        // G10.4 : un nouveau rendu remplace tout raffinement programmé (le
+        // flag sera re-posé à la passe finale si elle copie des pixels).
+        self.xaos_refine_pending = false;
 
         self.total_passes = config.passes.len() as u8;
         self.current_pass = 0;
@@ -1031,10 +1067,24 @@ impl FractallApp {
         let aa_jitter_scale = 1.0f64;
         self.aa_progress = if aa_samples > 1 { Some((0, aa_samples)) } else { None };
 
+        // G10.4 : frame source pour la réutilisation pixels inter-frame.
+        // Désactivée pour le raffinement (recalcul exact) et en mode AA
+        // multi-sample (les échantillons doivent être exacts). Le clone est un
+        // bump d'Arc (buffers partagés avec l'état de l'app).
+        let xaos_source = if refine || aa_samples > 1 {
+            None
+        } else {
+            self.xaos_frame.clone()
+        };
+
         // Spawner le thread de rendu progressif
         let handle = thread::spawn(move || {
-            let mut previous_pass: Option<(Vec<u32>, Vec<Complex64>, u32, u32)> = None;
+            let mut previous_pass: Option<(Arc<Vec<u32>>, Arc<Vec<Complex64>>, u32, u32)> = None;
             let mut current_orbit_cache = orbit_cache;
+            // G10.4 : vue + fingerprint de CE rendu (identiques pour toutes
+            // les passes — seules les dims changent, neutralisées).
+            let (view_cx, view_cy, view_sx, view_sy) = xaos::view_strings(&params);
+            let render_fingerprint = xaos::params_fingerprint(&params);
 
             for (pass_index, &scale_divisor) in config.passes.iter().enumerate() {
                 // Vérifier l'annulation
@@ -1051,6 +1101,13 @@ impl FractallApp {
                 let mut pass_params = params.clone();
                 pass_params.width = pass_width;
                 pass_params.height = pass_height;
+
+                // G10.4 : mapping colonnes/lignes frame précédente → cette
+                // passe (gates + fingerprint + transformée HP validés dans
+                // build_map ; None si rien de réutilisable).
+                let xaos_map = xaos_source
+                    .as_ref()
+                    .and_then(|src| xaos::build_map(src, &pass_params));
 
                 // Rendre cette passe (réutiliser la passe précédente si possible)
                 let reuse = previous_pass.as_ref().map(|(iter, zs, w, h)| {
@@ -1080,6 +1137,7 @@ impl FractallApp {
                             (r.iterations, r.zs, Vec::new(), vec![None; n]),
                             effective_mode,
                             format!("GPU {}", gpu.precision_label()),
+                            true, // from_gpu : ne pas stocker comme frame source XaoS
                         ))
                     } else {
                         // GPU ne peut pas rendre cette config → fallback CPU via le
@@ -1091,12 +1149,13 @@ impl FractallApp {
                             &cancel,
                             reuse,
                             &mut cache,
+                            xaos_map.as_ref(),
                         );
                         current_orbit_cache = cache;
                         r.map(|(iterations, zs, orbits, distances)| {
                             let effective_mode = effective_cpu_mode(&pass_params);
                             let precision_label = cpu_precision_label(&pass_params, effective_mode);
-                            ((iterations, zs, distances, orbits), effective_mode, precision_label)
+                            ((iterations, zs, distances, orbits), effective_mode, precision_label, false)
                         })
                     }
                 } else {
@@ -1110,23 +1169,61 @@ impl FractallApp {
                         &cancel,
                         reuse,
                         &mut cache,
+                        xaos_map.as_ref(),
                     );
                     current_orbit_cache = cache;
                     r.map(|(iterations, zs, orbits, distances)| {
                         let effective_mode = effective_cpu_mode(&pass_params);
                         let precision_label = cpu_precision_label(&pass_params, effective_mode);
-                        ((iterations, zs, distances, orbits), effective_mode, precision_label)
+                        ((iterations, zs, distances, orbits), effective_mode, precision_label, false)
                     })
                 };
 
                 match result {
-                    Some(((iterations, zs, distances, orbits), effective_mode, precision_label)) => {
-                        // Garder une copie pour la passe suivante afin d'éviter le recalcul
+                    Some(((iterations, zs, distances, orbits), effective_mode, mut precision_label, from_gpu)) => {
+                        // Buffers bruts en Arc : partagés (sans memcpy) entre la
+                        // passe suivante, la frame source XaoS et l'état de l'app.
+                        let iterations = Arc::new(iterations);
+                        let zs = Arc::new(zs);
                         if pass_index + 1 < config.passes.len() {
-                            previous_pass = Some((iterations.clone(), zs.clone(), pass_width, pass_height));
+                            previous_pass = Some((Arc::clone(&iterations), Arc::clone(&zs), pass_width, pass_height));
                         } else {
                             previous_pass = None;
                         }
+
+                        // G10.4 : frame source XaoS pour les rendus suivants
+                        // (positions vraies héritées du mapping si des pixels
+                        // ont été copiés, zéro sinon). Passes GPU exclues.
+                        let xaos_reused = xaos_map
+                            .as_ref()
+                            .map(|m| m.reused_cols * m.reused_rows)
+                            .unwrap_or(0);
+                        if xaos_reused > 0 {
+                            // Indicateur : la frame contient des pixels copiés
+                            // (le raffinement idle l'effacera au rendu exact).
+                            precision_label.push_str(" ≈XaoS");
+                        }
+                        let xaos_frame = if from_gpu {
+                            None
+                        } else {
+                            let (col_err, row_err) = match &xaos_map {
+                                Some(m) => (m.col_err.clone(), m.row_err.clone()),
+                                None => (vec![0.0; pass_width as usize], vec![0.0; pass_height as usize]),
+                            };
+                            Some(XaosSourceFrame {
+                                iterations: Arc::clone(&iterations),
+                                zs: Arc::clone(&zs),
+                                width: pass_width,
+                                height: pass_height,
+                                cx: view_cx.clone(),
+                                cy: view_cy.clone(),
+                                sx: view_sx.clone(),
+                                sy: view_sy.clone(),
+                                col_err: Arc::new(col_err),
+                                row_err: Arc::new(row_err),
+                                fingerprint: render_fingerprint.clone(),
+                            })
+                        };
 
                         // Coloriser dans le thread de rendu pour éviter de bloquer l'UI
                         let colored_buffer = colorize_buffer(
@@ -1151,6 +1248,8 @@ impl FractallApp {
                             width: pass_width,
                             height: pass_height,
                             colored_buffer,
+                            xaos_frame,
+                            xaos_reused,
                         });
                         
                         // Délai pour laisser l'UI afficher cette passe avant de continuer
@@ -1191,7 +1290,7 @@ impl FractallApp {
                     // Même dispatcher unifié que le CLI (cache d'orbite réutilisé
                     // entre samples, même centre).
                     let mut cache = current_orbit_cache.take();
-                    let rendered = render_escape_time_cancellable_with_reuse(&p, &cancel, None, &mut cache)
+                    let rendered = render_escape_time_cancellable_with_reuse(&p, &cancel, None, &mut cache, None)
                         .map(|(it, zz, orb, dist)| (it, zz, dist, orb));
                     current_orbit_cache = cache;
                     let Some((it, zz, dist, orb)) = rendered else { break };
@@ -1246,8 +1345,8 @@ impl FractallApp {
                     AlgorithmMode::Perturbation => "Perturbation".to_string(),
                     _ => "Standard".to_string(),
                 });
-                self.iterations = Arc::new(tex.iterations);
-                self.zs = Arc::new(tex.zs);
+                self.iterations = tex.iterations;
+                self.zs = tex.zs;
                 self.distances = Arc::new(tex.distances);
                 self.orbits = Arc::new(tex.orbits);
                 self.is_preview = tex.is_preview;
@@ -1295,7 +1394,17 @@ impl FractallApp {
                 width,
                 height,
                 colored_buffer: _, // ignoré : on re-colorise avec la palette actuelle (params)
+                xaos_frame,
+                xaos_reused,
             } => {
+                // G10.4 : mémoriser la frame source pour la réutilisation
+                // pixels inter-frame (Arc partagés, pas de memcpy). Si la
+                // passe a copié des pixels (approximés ≤ 0.5 px), programmer
+                // le raffinement exact à l'idle.
+                if let Some(frame) = xaos_frame {
+                    self.xaos_frame = Some(frame);
+                    self.xaos_refine_pending = xaos_reused > 0;
+                }
                 // Déléguer upscale + colorize à un thread pour ne pas bloquer l'UI (évite "ne répond pas")
                 let tx = match &self.texture_ready_sender {
                     Some(t) => t.clone(),
@@ -1315,8 +1424,8 @@ impl FractallApp {
                             total_height,
                         );
                         (
-                            upscaled_iter,
-                            upscaled_zs,
+                            Arc::new(upscaled_iter),
+                            Arc::new(upscaled_zs),
                             Vec::new(),
                             Vec::new(),
                             total_width,
@@ -1398,8 +1507,8 @@ impl FractallApp {
                             AlgorithmMode::Perturbation => "Perturbation".to_string(),
                             _ => "Standard".to_string(),
                         });
-                        self.iterations = Arc::new(tex.iterations);
-                        self.zs = Arc::new(tex.zs);
+                        self.iterations = tex.iterations;
+                        self.zs = tex.zs;
                         self.distances = Arc::new(tex.distances);
                         self.orbits = Arc::new(tex.orbits);
                         self.is_preview = tex.is_preview;
@@ -1422,6 +1531,8 @@ impl FractallApp {
                 if let Some(start) = self.render_start_time.take() {
                     self.last_render_time = Some(start.elapsed().as_secs_f64());
                 }
+                // G10.4 : point de départ du délai idle avant raffinement.
+                self.last_render_finished = Some(Instant::now());
 
                 // Gérer le redimensionnement en attente
                 if let Some((w, h)) = self.pending_resize.take() {
@@ -1627,7 +1738,7 @@ impl FractallApp {
                 return;
             }
 
-            let result = render_escape_time_cancellable_with_reuse(&params, &cancel, None, &mut None);
+            let result = render_escape_time_cancellable_with_reuse(&params, &cancel, None, &mut None, None);
 
             if cancel.load(Ordering::Relaxed) {
                 return;
@@ -1882,6 +1993,25 @@ impl eframe::App for FractallApp {
 
         // Vérifier si le rendu est terminé
         self.check_render_complete(ctx);
+
+        // G10.4 : raffinement idle — la dernière frame contient des pixels
+        // copiés (approximés ≤ 0.5 px) ; après ~400 ms sans nouveau rendu,
+        // relancer un rendu exact (passe unique, XaoS off) qui remplace
+        // silencieusement l'image. Toute interaction (pan/zoom) le supplante.
+        if self.xaos_refine_pending && !self.rendering && !self.hq_rendering {
+            const XAOS_REFINE_IDLE: Duration = Duration::from_millis(400);
+            let idle_for = self
+                .last_render_finished
+                .map(|t| t.elapsed())
+                .unwrap_or(Duration::ZERO);
+            if idle_for >= XAOS_REFINE_IDLE {
+                self.xaos_refine_pending = false;
+                self.start_render_refine();
+            } else {
+                // S'assurer qu'update() retourne après le délai même sans input.
+                ctx.request_repaint_after(XAOS_REFINE_IDLE - idle_for);
+            }
+        }
 
         // Vérifier si la preview Julia est terminée
         self.check_julia_preview_complete(ctx);

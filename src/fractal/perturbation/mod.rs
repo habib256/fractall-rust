@@ -911,7 +911,7 @@ pub fn render_perturbation_cancellable_with_reuse(
     cancel: &Arc<AtomicBool>,
     reuse: Option<(&[u32], &[Complex64], u32, u32)>,
 ) -> Option<(Vec<u32>, Vec<Complex64>, Vec<f64>)> {
-    let (result, _cache) = render_perturbation_with_cache(params, cancel, reuse, None)?;
+    let (result, _cache) = render_perturbation_with_cache(params, cancel, reuse, None, None)?;
     Some(result)
 }
 
@@ -1003,7 +1003,14 @@ pub fn render_perturbation_with_cache(
     cancel: &Arc<AtomicBool>,
     reuse: Option<(&[u32], &[Complex64], u32, u32)>,
     orbit_cache: Option<&Arc<ReferenceOrbitCache>>,
+    xaos: Option<&crate::fractal::xaos::XaosMap>,
 ) -> Option<((Vec<u32>, Vec<Complex64>, Vec<f64>), Arc<ReferenceOrbitCache>)> {
+    // Garde-fou (miroir du dispatcher, pour les appels directs) : mapping XaoS
+    // ignoré si ses dimensions ne correspondent pas aux params (indexation
+    // hors bornes sinon).
+    let xaos = xaos.filter(|m| {
+        m.src_col.len() == params.width as usize && m.src_row.len() == params.height as usize
+    });
     // Fix G3 (anneaux concentriques) : `max_perturb_iterations` / `max_bla_steps`
     // ne doivent JAMAIS plafonner sous `iteration_max`. Comme `iters_ptb ≤ n <
     // iteration_max`, un cap < iteration_max tronque les pixels qui ont besoin de
@@ -1101,7 +1108,7 @@ pub fn render_perturbation_with_cache(
         let prec_gmp = compute_perturbation_precision_bits(params);
         let t_gmp_pixels_start = Instant::now();
         let result = render_perturbation_gmp_path(
-            params, cancel, reuse_for_pixels, &cache, iterations, zs, distances,
+            params, cancel, reuse_for_pixels, xaos, &cache, iterations, zs, distances,
             Arc::clone(&progress), t_all_start,
         );
         let t_gmp_pixels = t_gmp_pixels_start.elapsed();
@@ -1282,6 +1289,20 @@ pub fn render_perturbation_with_cache(
                 let pixel_idx = chunk_start + local_idx;
                 let i = pixel_idx % width;
                 let j = pixel_idx / width;
+                // G10.4 : copie inter-frame XaoS (bande colonne ET ligne
+                // matchées). Les pixels copiés sont absolus (iterations + z à
+                // l'échappement) : valides quelle que soit l'orbite référence.
+                if let Some(x) = xaos {
+                    let (sc, sr) = (x.src_col[i], x.src_row[j]);
+                    if sc >= 0 && sr >= 0 {
+                        let sidx = sr as usize * x.src_width + sc as usize;
+                        if let Some(&it) = x.iterations.get(sidx) {
+                            *iter = it;
+                            *z = x.zs[sidx];
+                            continue;
+                        }
+                    }
+                }
                 let dc_im = dc_im_fexp[j];
                 if let Some(reuse) = reuse_row {
                     let ratio = reuse.ratio as usize;
@@ -1993,6 +2014,7 @@ fn render_perturbation_gmp_path(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
     reuse: Option<(&[u32], &[Complex64], u32, u32)>,
+    xaos: Option<&crate::fractal::xaos::XaosMap>,
     cache: &Arc<ReferenceOrbitCache>,
     mut iterations: Vec<u32>,
     mut zs: Vec<Complex64>,
@@ -2065,6 +2087,18 @@ fn render_perturbation_gmp_path(
             }
 
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
+                // G10.4 : copie inter-frame XaoS (bande colonne ET ligne matchées).
+                if let Some(x) = xaos {
+                    let (sc, sr) = (x.src_col[i], x.src_row[j]);
+                    if sc >= 0 && sr >= 0 {
+                        let sidx = sr as usize * x.src_width + sc as usize;
+                        if let Some(&it) = x.iterations.get(sidx) {
+                            *iter = it;
+                            *z = x.zs[sidx];
+                            continue;
+                        }
+                    }
+                }
                 if let Some(reuse) = reuse_row {
                     let ratio = reuse.ratio as usize;
                     if j % ratio == 0 && i % ratio == 0 {
@@ -2192,7 +2226,7 @@ mod tests {
         big.iteration_max = 400;
         let cancel = Arc::new(AtomicBool::new(false));
         let (_r, cache_big) =
-            render_perturbation_with_cache(&big, &cancel, None, None).expect("render big");
+            render_perturbation_with_cache(&big, &cancel, None, None, None).expect("render big");
 
         // Vue CONTENUE : zoom-in ×2 (span 1.5) + pan (0.3, 0.1).
         // x: |0.3|+0.75=1.05 ≤ 1.5 ; y: |0.1|+0.75=0.85 ≤ 1.5 → sous-ensemble.
@@ -2209,7 +2243,7 @@ mod tests {
 
         // Rendu avec réutilisation off-center (offset dc = view.center - big.center).
         let (res_reuse, cache_after) =
-            render_perturbation_with_cache(&view, &cancel, None, Some(&cache_big)).expect("reuse");
+            render_perturbation_with_cache(&view, &cancel, None, Some(&cache_big), None).expect("reuse");
         // Preuve de RÉUTILISATION : la référence est restée en A (-0.5), pas
         // recalculée au centre de la vue (-0.2).
         assert_eq!(
@@ -2219,7 +2253,7 @@ mod tests {
 
         // Rendu FRAIS : référence recalculée au centre de la vue.
         let (res_fresh, _c) =
-            render_perturbation_with_cache(&view, &cancel, None, None).expect("fresh");
+            render_perturbation_with_cache(&view, &cancel, None, None, None).expect("fresh");
 
         // Correctness : même vue → même c par pixel → même compte d'itération
         // (à ~±1 iter de bord près sur quelques pixels dus au path delta f64).

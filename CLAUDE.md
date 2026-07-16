@@ -72,6 +72,7 @@ src/
 │   ├── definitions.rs   # constantes par type + LyapunovPreset
 │   ├── iterations.rs    # escape-time f64 + dispatch bytecode unifié
 │   ├── jitter.rs        # AA per-frame : radical_inverse + triangle (port F3)
+│   ├── xaos.rs          # G10.4 réutilisation pixels inter-frame (XaoS)
 │   ├── gmp.rs           # précision arbitraire (rug / mpc)
 │   ├── lyapunov.rs      # Lyapunov exponent
 │   ├── buddhabrot.rs    # Buddhabrot / Nebulabrot / Anti-Buddhabrot
@@ -498,6 +499,14 @@ puis OpenGL ; Windows DX12 / Vulkan.
 - Rendu progressif multi-passes (preview → full).
 - Recolorisation asynchrone (versioning pour ignorer les résultats obsolètes).
 - Cache orbite + BLA entre re-rendus.
+- **Réutilisation pixels inter-frame XaoS** (G10.4, `fractal/xaos.rs`) : en
+  pan/petit zoom sans rotation, les colonnes/lignes de la frame précédente
+  matchées à ≤ 0.5 px (positions vraies trackées `col_err`/`row_err`, aucune
+  dérive cumulée) sont copiées au lieu d'être recalculées (~×40 en pan) ;
+  param `xaos: Option<&XaosMap>` du dispatcher unique (CLI/quality/HQ/AA =
+  `None`). Raffinement exact silencieux à l'idle (400 ms, label `≈XaoS`).
+  Frame source stockée par passe CPU uniquement (jamais GPU f32) ;
+  compatibilité = fingerprint JSON des params non-géométriques.
 - Coordonnées HP synchronisées vers `FractalParams`. ⚠️ L'arithmétique HP des
   zooms (`zoom_hp`/`zoom_rect_hp`/`zoom_out_hp`) utilise `hp_arith_precision()`
   (≈ `-log2(span)+96` bits, **dynamique**), PAS le `HP_PRECISION` fixe (256 b) :
