@@ -541,9 +541,64 @@ pub struct ReferenceOrbitCache {
 }
 
 impl ReferenceOrbitCache {
+    /// La troncature atom-domain de la référence dépend de l'**échelle de vue** :
+    /// le critère `|Z|² < s²·|dZ|²` (orbit.rs, `atom_radius_sqr = span_vue²`)
+    /// coupe TÔT à grand span et TARD à petit span. Conséquence : la longueur
+    /// (et l'existence même) de la troncature d'une référence est baked à son
+    /// span de construction. Réutiliser une référence bâtie à un span PLUS GRAND
+    /// (zoom-in depuis une vue moins profonde) dans le **régime atom-domain**
+    /// (`pixel_size < ATOM_PERIOD_PIXEL_SIZE_THRESHOLD`) donne une référence
+    /// dont la troncature ne correspond pas à celle qu'un build frais produirait
+    /// — soit trop longue (itérée explicitement AU-DELÀ de l'atome à précision
+    /// finie près d'un point périodique sensible → valeurs imprécises), soit
+    /// non tronquée du tout → **bruit sel-et-poivre** sur une fraction des
+    /// pixels (bug zones d'erreur 2026-07-16, ~1.7 % de divergence vs frais).
+    ///
+    /// Vrai ⇒ NE PAS réutiliser (rebuild à la bonne échelle). Hors régime
+    /// atom-domain (vues peu profondes), les références escape/pleine-longueur
+    /// sont scale-indépendantes (le centre s'évade / itère pareil quel que soit
+    /// le zoom) → réutilisation autorisée. La réutilisation à échelle ≈ égale
+    /// (pan à profondeur fixe, le gain interactif principal) reste permise.
+    fn atom_regime_scale_mismatch(&self, params: &FractalParams) -> bool {
+        // Régime atom-domain de la NOUVELLE vue (même prédicat qu'au build,
+        // orbit.rs `atom_period_enabled`). Hors régime : pas de dépendance
+        // d'échelle → réutilisation sûre.
+        if super::effective_pixel_size(params) >= super::delta::ATOM_PERIOD_PIXEL_SIZE_THRESHOLD {
+            return false;
+        }
+        let prec = 256u32;
+        let parse = |s: &str| Float::parse(s).ok().map(|p| Float::with_val(prec, p));
+        let hp = |hp_opt: &Option<String>, fallback: f64| match hp_opt {
+            Some(s) => parse(s),
+            None => Some(Float::with_val(prec, fallback)),
+        };
+        let (Some(sx_old), Some(sy_old)) = (parse(&self.view_span_x), parse(&self.view_span_y))
+        else {
+            return true; // spans illisibles → conservateur : rebuild
+        };
+        let (Some(sx_new), Some(sy_new)) =
+            (hp(&params.span_x_hp, params.span_x), hp(&params.span_y_hp, params.span_y))
+        else {
+            return true;
+        };
+        // Incompatible si l'échelle diffère de plus de ±1/16 (l'un ou l'autre
+        // axe). Zoom-in : troncature trop courte/absente. Zoom-out : troncature
+        // d'une échelle plus profonde (référence itérée au-delà de l'atome de la
+        // vue actuelle). Pan (span identique) → aucun mismatch → réutilisation
+        // conservée (gain interactif principal à profondeur fixe).
+        let up = Float::with_val(prec, 17) / 16; // ×17/16
+        let down = Float::with_val(prec, 15) / 16; // ×15/16
+        let mismatch = |old: &Float, new: &Float| -> bool {
+            let hi = Float::with_val(prec, new * &up);
+            let lo = Float::with_val(prec, new * &down);
+            *old > hi || *old < lo
+        };
+        mismatch(&sx_old, &sx_new) || mismatch(&sy_old, &sy_new)
+    }
+
     /// Check if the cache is valid for the given parameters.
     /// The cache is valid if: same center (GMP precision), same type, precision >= required, iteration_max >= required.
-    /// 
+    ///
     /// IMPORTANT: Compare la précision calculée (via compute_perturbation_precision_bits)
     /// avec la précision stockée dans le cache (qui est aussi la précision calculée, pas le preset).
     pub fn is_valid_for(&self, params: &FractalParams) -> bool {
@@ -554,6 +609,11 @@ impl ReferenceOrbitCache {
         // même le path compressé d'un nouveau rendu doit rebâtir son entrée
         // BLA depuis le tableau plein. Invalide → recompute.
         if self.orbit.z_ref_f64.is_empty() {
+            return false;
+        }
+        // Référence bâtie à une échelle incompatible avec le régime atom-domain
+        // de la vue → troncature stale (cf. atom_regime_scale_mismatch).
+        if self.atom_regime_scale_mismatch(params) {
             return false;
         }
         // Compute center in GMP precision for exact comparison
@@ -676,6 +736,11 @@ impl ReferenceOrbitCache {
             return false;
         }
         if self.orbit.z_ref_f64.is_empty() {
+            return false;
+        }
+        // Idem is_valid_for : une référence atom-tronquée ne descend pas sous son
+        // échelle de troncature (can_subset_reuse cible justement le zoom-in).
+        if self.atom_regime_scale_mismatch(params) {
             return false;
         }
         use crate::fractal::perturbation::compute_perturbation_precision_bits;

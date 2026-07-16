@@ -2268,6 +2268,69 @@ mod tests {
         );
     }
 
+    /// Régression (bug « zones d'erreur » 2026-07-16, centre d'image 1
+    /// -1.3719…, -0.0860…) : un zoom CONTINU qui thread le cache d'orbite de
+    /// frame en frame (comme la GUI post-G10.2, qui ne jette plus `orbit_cache`
+    /// au zoom) doit produire la frame profonde finale PIXEL-EXACTE vs un rendu
+    /// FRAIS (`cache=None`). Avant le fix, une référence bâtie hors régime
+    /// atom-domain (span large) était réutilisée jusqu'à 4e25 (précision
+    /// suffisante ⇒ jamais invalidée) : sa troncature ne correspondait pas à
+    /// celle d'un build frais → ~1.7 % de pixels faux (bruit sel-et-poivre).
+    /// Le fix (`atom_regime_scale_mismatch`) rebuild quand l'échelle change dans
+    /// le régime atom-domain. Verrou : divergence EXACTEMENT nulle.
+    #[test]
+    fn continuous_zoom_cache_reuse_matches_fresh() {
+        use super::{render_perturbation_with_cache, ReferenceOrbitCache};
+        let cx = "-1.371894034497786177276218629447827355152810566065208011938331009089941256128969";
+        let cy = "-8.596946447921205325727880816022532777086452667518370092652771867971556457154214e-2";
+        let final_span = 9.462012871361855867690684674541606291146700322899874668115416663170852644098815e-26_f64;
+        let (w, h) = (128u32, 96u32);
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        let make = |span_x: f64| -> FractalParams {
+            let mut p = default_params_for_type(FractalType::Mandelbrot, w, h);
+            p.algorithm_mode = AlgorithmMode::Perturbation;
+            p.iteration_max = 2500;
+            p.center_x = -1.3718940344977861;
+            p.center_y = -0.08596946447921205;
+            p.center_x_hp = Some(cx.to_string());
+            p.center_y_hp = Some(cy.to_string());
+            let span_y = span_x * h as f64 / w as f64;
+            p.span_x = span_x;
+            p.span_y = span_y;
+            p.span_x_hp = Some(format!("{span_x:.17e}"));
+            p.span_y_hp = Some(format!("{span_y:.17e}"));
+            p
+        };
+
+        // Zoom continu ×2 depuis span 1.0 (régime peu profond, réf non-atom)
+        // jusqu'au span final (régime atom-domain profond), cache threadé.
+        let mut cache: Option<Arc<ReferenceOrbitCache>> = None;
+        let mut span = 1.0_f64;
+        while span > final_span {
+            let p = make(span);
+            let (_r, c) = render_perturbation_with_cache(&p, &cancel, None, cache.as_ref(), None)
+                .expect("zoom step");
+            cache = Some(c);
+            span /= 2.0;
+        }
+        let p_final = make(final_span);
+        let (res_reuse, _c1) =
+            render_perturbation_with_cache(&p_final, &cancel, None, cache.as_ref(), None)
+                .expect("final reuse");
+        let (res_fresh, _c2) =
+            render_perturbation_with_cache(&p_final, &cancel, None, None, None).expect("final fresh");
+
+        let (it_reuse, _z1, _d1) = res_reuse;
+        let (it_fresh, _z2, _d2) = res_fresh;
+        let ndiff = it_reuse.iter().zip(&it_fresh).filter(|(a, b)| a != b).count();
+        assert_eq!(
+            ndiff, 0,
+            "zoom continu (cache réutilisé) diverge du rendu frais : {ndiff}/{} px",
+            it_reuse.len()
+        );
+    }
+
     #[test]
     fn dbg_effective_spans_extreme_zoom() {
         use super::effective_spans_fexp;

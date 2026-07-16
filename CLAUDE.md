@@ -312,7 +312,16 @@ clamp `[128, 65536]`. Cf. `compute_perturbation_precision_bits()` ; le champ
 utilisateur `precision_bits` sert de plancher.
 
 **Cache** (`ReferenceOrbitCache`) : orbite + BLA réutilisées si même
-centre / type / précision.
+centre / type / précision. ⚠️ **Régime atom-domain** (`is_valid_for` +
+`can_subset_reuse` → `atom_regime_scale_mismatch`) : la troncature atom-domain
+de la référence dépend de l'ÉCHELLE de vue (`atom_radius_sqr = span_vue²`), donc
+une référence est baked à son span de construction. En zoom profond
+(`pixel_size < 1e-13`) une référence bâtie à une échelle différente (±1/16) est
+INVALIDÉE (rebuild) — sinon sa troncature ne correspond pas à un build frais →
+bruit sel-et-poivre (~1.7 % px) sur le rendu inter-frame (bug corrigé 2026-07-16 ;
+le pan à profondeur fixe garde span constant → réutilisation préservée). N'affecte
+que la réutilisation GUI multi-frame ; les rendus single-shot (CLI/quality/harness,
+`cache=None`) ne consultent jamais ces prédicats.
 
 ## Paramètres perturbation
 
