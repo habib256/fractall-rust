@@ -1895,9 +1895,13 @@ Jalons (ordre de ROI croissant en effort) :
   moteur décide). Verrou : `subset_reuse_offcenter_matches_fresh_and_reuses`
   (rendu réutilisé == rendu frais à ≤1 % px + preuve que la réf n'a pas été
   rebuild). 235 unit + 21 golden + QA 15 PASS + quick 0 gap. Socle de G10.4.
-- [ ] **G10.3 — Recolorisation sans clone 74 Mo** (`app.rs:1428`) : passer
-  `iterations/zs/distances/orbits` en `Arc<…>` partagé au thread de recolor au
-  lieu de 4 clones/changement de palette.
+- [x] **G10.3 — Recolorisation sans clone 74 Mo** `[✅ 2026-07-16]` : les 4
+  buffers bruts (`iterations/zs/distances/orbits`) sont passés en `Arc<Vec<…>>`.
+  La recolorisation (changement palette/color_repeat) clone désormais un **Arc
+  (bump de refcount, ~gratuit)** au lieu de ~74 Mo (@1080p) memcpy **sur le thread
+  UI** → plus de jank pendant un drag du slider palette. `Arc::make_mut` (COW) pour
+  la normalisation de taille d'`orbits`. Deref coercion → tous les sites de lecture
+  (`&[T]`) inchangés. GUI-only (moteur intact) : 244 gui + 235 cli tests verts.
 - [ ] **G10.4 — Réutilisation pixels XaoS (colonnes/lignes)** : matching séparable
   en espace pixel relatif, recopie des bandes réutilisables, recalcul des seules
   bandes neuves (masque de calcul dans les `par_chunks_mut`), raffinement des

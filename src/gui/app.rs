@@ -164,11 +164,13 @@ fn cpu_precision_label(params: &FractalParams, mode: AlgorithmMode) -> String {
 pub struct FractallApp {
     // État fractale
     params: FractalParams,
-    iterations: Vec<u32>,
-    zs: Vec<Complex64>,
-    distances: Vec<f64>,
-    orbits: Vec<Option<crate::fractal::orbit_traps::OrbitData>>,
-    
+    // G10.3 : buffers bruts partagés via Arc → la recolorisation (thread) clone
+    // un Arc (quasi-gratuit) au lieu de ~74 Mo sur le thread UI par tick de palette.
+    iterations: Arc<Vec<u32>>,
+    zs: Arc<Vec<Complex64>>,
+    distances: Arc<Vec<f64>>,
+    orbits: Arc<Vec<Option<crate::fractal::orbit_traps::OrbitData>>>,
+
     // Texture egui pour l'affichage
     texture: Option<TextureHandle>,
     /// Vue (centre/span HP) que représente la texture actuellement affichée.
@@ -349,10 +351,10 @@ impl FractallApp {
 
         Self {
             params: params.clone(),
-            iterations: Vec::new(),
-            zs: Vec::new(),
-            distances: Vec::new(),
-            orbits: Vec::new(),
+            iterations: Arc::new(Vec::new()),
+            zs: Arc::new(Vec::new()),
+            distances: Arc::new(Vec::new()),
+            orbits: Arc::new(Vec::new()),
             texture: None,
             texture_view: None,
             rendering_view: None,
@@ -1244,10 +1246,10 @@ impl FractallApp {
                     AlgorithmMode::Perturbation => "Perturbation".to_string(),
                     _ => "Standard".to_string(),
                 });
-                self.iterations = tex.iterations;
-                self.zs = tex.zs;
-                self.distances = tex.distances;
-                self.orbits = tex.orbits;
+                self.iterations = Arc::new(tex.iterations);
+                self.zs = Arc::new(tex.zs);
+                self.distances = Arc::new(tex.distances);
+                self.orbits = Arc::new(tex.orbits);
                 self.is_preview = tex.is_preview;
                 // G10.1 : la texture représente désormais la vue du rendu en cours.
                 // Le warp devient l'identité (view_texture == view_live).
@@ -1396,10 +1398,10 @@ impl FractallApp {
                             AlgorithmMode::Perturbation => "Perturbation".to_string(),
                             _ => "Standard".to_string(),
                         });
-                        self.iterations = tex.iterations;
-                        self.zs = tex.zs;
-                        self.distances = tex.distances;
-                        self.orbits = tex.orbits;
+                        self.iterations = Arc::new(tex.iterations);
+                        self.zs = Arc::new(tex.zs);
+                        self.distances = Arc::new(tex.distances);
+                        self.orbits = Arc::new(tex.orbits);
                         self.is_preview = tex.is_preview;
                         self.load_texture_from_buffer(ctx, &tex.display_buffer, tex.width, tex.height);
                         ctx.request_repaint();
@@ -1489,9 +1491,9 @@ impl FractallApp {
         self.params.height = new_height;
         // Synchroniser les chaînes HP pour éviter un saut au prochain zoom profond
         self.sync_params_to_hp();
-        self.iterations.clear();
-        self.zs.clear();
-        self.orbits.clear();
+        self.iterations = Arc::new(Vec::new());
+        self.zs = Arc::new(Vec::new());
+        self.orbits = Arc::new(Vec::new());
         self.texture = None;
         self.start_render();
     }
@@ -1523,19 +1525,19 @@ impl FractallApp {
             return;
         }
 
-        // S'assurer que orbits a la même taille que iterations/zs
+        // S'assurer que orbits a la même taille que iterations/zs.
+        // `make_mut` : copy-on-write si un thread de recolor précédent tient encore
+        // l'Arc (rare) ; sinon mutation en place.
         let target_len = self.iterations.len();
-        if self.orbits.len() < target_len {
-            self.orbits.resize(target_len, None);
-        } else if self.orbits.len() > target_len {
-            self.orbits.truncate(target_len);
+        if self.orbits.len() != target_len {
+            Arc::make_mut(&mut self.orbits).resize(target_len, None);
         }
 
-        // Cloner les données pour le thread de colorisation
-        let iterations = self.iterations.clone();
-        let zs = self.zs.clone();
-        let distances = self.distances.clone();
-        let orbits = self.orbits.clone();
+        // Cloner les Arc (bump de refcount, ~gratuit) pour le thread de colorisation.
+        let iterations = Arc::clone(&self.iterations);
+        let zs = Arc::clone(&self.zs);
+        let distances = Arc::clone(&self.distances);
+        let orbits = Arc::clone(&self.orbits);
         let mut params = self.params.clone();
         // Mettre à jour les params avec les valeurs actuelles de l'UI
         params.color_mode = self.palette_index;
