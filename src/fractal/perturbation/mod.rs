@@ -1058,6 +1058,7 @@ pub fn render_perturbation_with_cache(
         Some(cancel.as_ref()),
         orbit_cache,
         Some(&progress.r#ref),
+        true, // G10.2 : chemin CPU FloatExp → réutilisation off-center autorisée (offset dc propagé plus bas)
     )?;
     let t_orbit = t_orbit_start.elapsed();
     // Ref + BLA + series complétés en bloc dans compute_reference_orbit_cached.
@@ -1157,11 +1158,36 @@ pub fn render_perturbation_with_cache(
     // dx/dy sont précalculés sans rotation ; K (rot) est appliqué par pixel dans
     // la boucle (mélange re/im) — cf. plus bas.
     let rot = params.transform_matrix();
+    // G10.2 : offset dc = centre_vue − centre_référence. La boucle calcule
+    // `c = cref + dc` ; pour que `c` soit la coordonnée réelle du pixel il faut
+    // `dc = grille + (centre_vue − cref)`. NUL quand la référence est centrée
+    // (exact-reuse / rebuild, tous les chemins actuels) ; non-nul UNIQUEMENT en
+    // réutilisation subset off-center (G10.2), qui est gated sans rotation → on
+    // peut l'ajouter à la grille pré-rotation (séparable) sans risque.
+    let (off_re_fexp, off_im_fexp) = {
+        let prec = cache.precision_bits.max(256);
+        let pf = |s: &str| Float::parse(s).ok().map(|p| Float::with_val(prec, p));
+        let cx = match &params.center_x_hp {
+            Some(s) => pf(s),
+            None => Some(Float::with_val(prec, params.center_x)),
+        };
+        let cy = match &params.center_y_hp {
+            Some(s) => pf(s),
+            None => Some(Float::with_val(prec, params.center_y)),
+        };
+        match (cx, cy, pf(&cache.center_x_gmp), pf(&cache.center_y_gmp)) {
+            (Some(cx), Some(cy), Some(rx), Some(ry)) => (
+                FloatExp::from_gmp(&Float::with_val(prec, &cx - &rx)),
+                FloatExp::from_gmp(&Float::with_val(prec, &cy - &ry)),
+            ),
+            _ => (FloatExp::from_f64(0.0), FloatExp::from_f64(0.0)),
+        }
+    };
     let dc_re_fexp: Vec<FloatExp> = (0..width)
-        .map(|i| x_range_fexp * ((i as f64 + 0.5 + aa_dx) * inv_width - 0.5))
+        .map(|i| x_range_fexp * ((i as f64 + 0.5 + aa_dx) * inv_width - 0.5) + off_re_fexp)
         .collect();
     let dc_im_fexp: Vec<FloatExp> = (0..height)
-        .map(|j| y_range_fexp * ((j as f64 + 0.5 + aa_dy) * inv_height - 0.5))
+        .map(|j| y_range_fexp * ((j as f64 + 0.5 + aa_dy) * inv_height - 0.5) + off_im_fexp)
         .collect();
 
     // Tier dd : précompute `dc` en double-double (~106 b) quand le tier est
@@ -2142,6 +2168,71 @@ mod tests {
     use num_complex::Complex64;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+
+    /// G10.2 : la réutilisation OFF-CENTER d'une référence pour une vue CONTENUE
+    /// dans son empreinte produit exactement le même rendu qu'une référence
+    /// fraîche (même `c = cref + dc` pour chaque pixel), et réutilise bien (pas
+    /// de rebuild). Verrou du chemin offset≠0 (les goldens ne testent que offset=0).
+    #[test]
+    fn subset_reuse_offcenter_matches_fresh_and_reuses() {
+        use super::render_perturbation_with_cache;
+        // Vue « large » : référence centrée en A=(-0.5, 0), empreinte 3×3.
+        // -0.5 est dans la cardioïde → orbite bornée (référence pleine longueur).
+        let mut big = default_params_for_type(FractalType::Mandelbrot, 64, 64);
+        big.algorithm_mode = AlgorithmMode::Perturbation; // force le path même en shallow
+        big.center_x = -0.5;
+        big.center_y = 0.0;
+        big.center_x_hp = None;
+        big.center_y_hp = None;
+        big.span_x = 3.0;
+        big.span_y = 3.0;
+        big.span_x_hp = None;
+        big.span_y_hp = None;
+        big.precision_bits = 256;
+        big.iteration_max = 400;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (_r, cache_big) =
+            render_perturbation_with_cache(&big, &cancel, None, None).expect("render big");
+
+        // Vue CONTENUE : zoom-in ×2 (span 1.5) + pan (0.3, 0.1).
+        // x: |0.3|+0.75=1.05 ≤ 1.5 ; y: |0.1|+0.75=0.85 ≤ 1.5 → sous-ensemble.
+        let mut view = big.clone();
+        view.center_x = -0.2;
+        view.center_y = 0.1;
+        view.span_x = 1.5;
+        view.span_y = 1.5;
+
+        assert!(
+            cache_big.can_subset_reuse(&view),
+            "la vue devrait être contenue dans l'empreinte de la référence"
+        );
+
+        // Rendu avec réutilisation off-center (offset dc = view.center - big.center).
+        let (res_reuse, cache_after) =
+            render_perturbation_with_cache(&view, &cancel, None, Some(&cache_big)).expect("reuse");
+        // Preuve de RÉUTILISATION : la référence est restée en A (-0.5), pas
+        // recalculée au centre de la vue (-0.2).
+        assert_eq!(
+            cache_after.center_x_gmp, cache_big.center_x_gmp,
+            "doit réutiliser la référence off-center, pas rebuild"
+        );
+
+        // Rendu FRAIS : référence recalculée au centre de la vue.
+        let (res_fresh, _c) =
+            render_perturbation_with_cache(&view, &cancel, None, None).expect("fresh");
+
+        // Correctness : même vue → même c par pixel → même compte d'itération
+        // (à ~±1 iter de bord près sur quelques pixels dus au path delta f64).
+        let (it_reuse, _z1, _d1) = res_reuse;
+        let (it_fresh, _z2, _d2) = res_fresh;
+        assert_eq!(it_reuse.len(), it_fresh.len());
+        let ndiff = it_reuse.iter().zip(&it_fresh).filter(|(a, b)| a != b).count();
+        let total = it_reuse.len();
+        assert!(
+            ndiff * 100 <= total, // ≤ 1 % de pixels de bord tolérés
+            "subset-reuse diverge du rendu frais : {ndiff}/{total} px"
+        );
+    }
 
     #[test]
     fn dbg_effective_spans_extreme_zoom() {

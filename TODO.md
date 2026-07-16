@@ -1879,11 +1879,22 @@ Jalons (ordre de ROI croissant en effort) :
   `view_texture` vs `view_live` en HP). Donne le *ressenti* de fluidité XaoS
   immédiatement, sans toucher au compute. Aucune régression moteur (pur
   affichage). Snapshot de vue posé au chargement de texture.
-- [ ] **G10.2 — Réutilisation orbite référence inter-frame** (port F3
-  `reference_can_be_reused`) : cesser d'invalider `orbit_cache` inconditionnellement ;
-  le garder tant que (type identique ∧ précision mantisse suffisante ∧ centre dans
-  le rayon de validité). Pan deep-zoom quasi-gratuit (×5-50). **Meilleur ROI algo,
-  socle de G10.4.**
+- [x] **G10.2 — Réutilisation orbite référence inter-frame** `[✅ 2026-07-16]` :
+  réutilisation OFF-CENTER prouvée correcte **par construction** — la référence
+  cachée rend une nouvelle vue **contenue dans son empreinte** (`|Δcentre| +
+  span_new/2 ≤ span_old/2`, `ReferenceOrbitCache::can_subset_reuse`) car chaque
+  pixel a un `dc` que la référence a DÉJÀ rendu correctement (sous-ensemble).
+  Couvre zoom-in + pan contenu (le cas interactif) ; zoom-out/grand pan → rebuild.
+  La boucle calcule déjà `c = cref + dc` (`pixel_loop.rs:97`) ; il a suffi
+  d'ajouter l'offset `(centre_vue − cref)` à la grille dc FloatExp séparable
+  (`mod.rs`, nul quand centrée → **goldens pixel-exacts inchangés**). **Opt-in
+  CPU-only** : `compute_reference_orbit_cached(..., allow_subset_reuse)` — seul le
+  chemin CPU FloatExp passe `true` ; **GPU/dd/legacy/tests passent `false`**
+  (exact-center, aucune régression). Exclusions : nucleus, rotation, dd.
+  GUI : `zoom_at_point`/`zoom_to_rectangle` ne jettent plus `orbit_cache` (le
+  moteur décide). Verrou : `subset_reuse_offcenter_matches_fresh_and_reuses`
+  (rendu réutilisé == rendu frais à ≤1 % px + preuve que la réf n'a pas été
+  rebuild). 235 unit + 21 golden + QA 15 PASS + quick 0 gap. Socle de G10.4.
 - [ ] **G10.3 — Recolorisation sans clone 74 Mo** (`app.rs:1428`) : passer
   `iterations/zs/distances/orbits` en `Arc<…>` partagé au thread de recolor au
   lieu de 4 clones/changement de palette.

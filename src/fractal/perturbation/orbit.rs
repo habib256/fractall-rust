@@ -531,6 +531,13 @@ pub struct ReferenceOrbitCache {
     pub bla_threshold: f64,
     /// BLA validity scale used when building the table
     pub bla_validity_scale: f64,
+    /// Span (HP string) de la vue pour laquelle la référence a été construite.
+    /// = empreinte dc que la référence a DÉJÀ rendue correctement ([-span/2, span/2]).
+    /// Sert à la réutilisation inter-frame off-center (G10.2, `can_subset_reuse`) :
+    /// une nouvelle vue CONTENUE dans cette empreinte est rendue par la même
+    /// référence sans nouvelle imprécision (sous-ensemble de pixels déjà validés).
+    pub view_span_x: String,
+    pub view_span_y: String,
 }
 
 impl ReferenceOrbitCache {
@@ -632,7 +639,97 @@ impl ReferenceOrbitCache {
             bla_threshold: params.bla_threshold,
             bla_validity_scale: params.bla_validity_scale,
             hybrid_refs,
+            view_span_x: params
+                .span_x_hp
+                .clone()
+                .unwrap_or_else(|| params.span_x.to_string()),
+            view_span_y: params
+                .span_y_hp
+                .clone()
+                .unwrap_or_else(|| params.span_y.to_string()),
         }
+    }
+
+    /// Réutilisation inter-frame off-center (G10.2). Vrai si la référence cachée
+    /// peut rendre `params` **sans nouvelle imprécision** : mêmes type/seed/BLA/
+    /// précision/itérations que [`is_valid_for`], MAIS au lieu du centre EXACT on
+    /// exige que la nouvelle vue soit **contenue dans l'empreinte** déjà rendue :
+    /// `|Δcentre| + span_new/2 ≤ span_old/2` sur chaque axe. Chaque pixel a alors
+    /// un `dc` que la référence a déjà rendu correctement (sous-ensemble) → correct
+    /// par construction. Couvre zoom-in + petit pan ; zoom-out/grand pan → `false`
+    /// (rebuild). `None`-safe, opt-in CPU-only (dd/GPU/legacy restent exact-center).
+    ///
+    /// ⚠️ Exclut le tier dd (`use_dd_tier`) : l'offset dc ne serait pas propagé à
+    /// la grille dd (hors périmètre) → rebuild exact pour dd.
+    pub fn can_subset_reuse(&self, params: &FractalParams) -> bool {
+        if params.use_dd_tier {
+            return false;
+        }
+        // Nucleus déplace le centre de la référence (orbit_params ≠ params) : hors
+        // périmètre de l'offset simple → rebuild exact.
+        if params.find_nucleus {
+            return false;
+        }
+        // Rotation/transform : l'offset dc est ajouté à la grille PRÉ-rotation
+        // (séparable). Sous rotation l'empreinte n'est plus axis-aligned → rebuild.
+        if params.transform_matrix().is_some() {
+            return false;
+        }
+        if self.orbit.z_ref_f64.is_empty() {
+            return false;
+        }
+        use crate::fractal::perturbation::compute_perturbation_precision_bits;
+        let required_prec = compute_perturbation_precision_bits(params);
+        let gmp_ok = !self.orbit.z_ref_gmp.is_empty()
+            || (super::uses_bytecode_path(params)
+                && !super::should_use_full_gmp_perturbation(params));
+        // Mêmes invariants « non-géométriques » que is_valid_for.
+        if !(self.fractal_type == params.fractal_type
+            && gmp_ok
+            && self.precision_bits >= required_prec
+            && self.iteration_max >= params.iteration_max
+            && (self.seed_re - params.seed.re).abs() < 1e-15
+            && (self.seed_im - params.seed.im).abs() < 1e-15
+            && (self.bla_threshold - params.bla_threshold).abs() < 1e-20
+            && (self.bla_validity_scale - params.bla_validity_scale).abs() < 1e-10)
+        {
+            return false;
+        }
+        // Condition géométrique de sous-ensemble, en HP.
+        let prec = required_prec.max(self.precision_bits).max(256);
+        let parse = |s: &str| Float::parse(s).ok().map(|p| Float::with_val(prec, p));
+        let hp = |hp_opt: &Option<String>, fallback: f64| -> Option<Float> {
+            match hp_opt {
+                Some(s) => parse(s),
+                None => Some(Float::with_val(prec, fallback)),
+            }
+        };
+        let (Some(cx_ref), Some(cy_ref)) = (parse(&self.center_x_gmp), parse(&self.center_y_gmp))
+        else {
+            return false;
+        };
+        let (Some(sx_old), Some(sy_old)) = (parse(&self.view_span_x), parse(&self.view_span_y))
+        else {
+            return false;
+        };
+        let (Some(cx_new), Some(cy_new)) =
+            (hp(&params.center_x_hp, params.center_x), hp(&params.center_y_hp, params.center_y))
+        else {
+            return false;
+        };
+        let (Some(sx_new), Some(sy_new)) =
+            (hp(&params.span_x_hp, params.span_x), hp(&params.span_y_hp, params.span_y))
+        else {
+            return false;
+        };
+        // |Δcentre| + span_new/2 ≤ span_old/2 sur chaque axe (spans supposés > 0).
+        let check = |c_new: &Float, c_ref: &Float, s_new: &Float, s_old: &Float| -> bool {
+            let d = Float::with_val(prec, c_new - c_ref).abs();
+            let lhs = Float::with_val(prec, &d + &(Float::with_val(prec, s_new) / 2));
+            let rhs = Float::with_val(prec, s_old) / 2;
+            lhs <= rhs
+        };
+        check(&cx_new, &cx_ref, &sx_new, &sx_old) && check(&cy_new, &cy_ref, &sy_new, &sy_old)
     }
 }
 
@@ -762,16 +859,25 @@ pub fn compute_reference_orbit_cached(
     // e52465 ~174k b × 2.87M iters ≈ 46 min au plancher GMP) affichent
     // `Ref[0%]` du début à la fin — indistinguable d'un hang.
     ref_progress: Option<&std::sync::atomic::AtomicU32>,
+    // G10.2 : autorise la réutilisation inter-frame OFF-CENTER (nouvelle vue
+    // contenue dans l'empreinte de la référence cachée). Opt-in : seul le chemin
+    // de rendu CPU FloatExp le passe `true` (il propage l'offset dc = centre−cref).
+    // GPU/legacy/tests passent `false` → exact-center uniquement (offset toujours 0).
+    allow_subset_reuse: bool,
 ) -> Option<Arc<ReferenceOrbitCache>> {
     let perf = crate::fractal::perturbation::perf_enabled();
     let t_all = Instant::now();
 
     // Check if cache is valid
     if let Some(cached) = cache {
-        if cached.is_valid_for(params) {
+        if cached.is_valid_for(params)
+            || (allow_subset_reuse && cached.can_subset_reuse(params))
+        {
             if perf {
+                let subset = !cached.is_valid_for(params);
                 eprintln!(
-                    "[PERTURB PERF] reference_cache=hit prec={} iters={} type={:?} total={:.3}s",
+                    "[PERTURB PERF] reference_cache=hit{} prec={} iters={} type={:?} total={:.3}s",
+                    if subset { "(subset)" } else { "" },
                     cached.precision_bits,
                     cached.iteration_max,
                     cached.fractal_type,
@@ -2163,7 +2269,7 @@ mod conformal_bla_skip_tests {
         params.center_x = 2.0; // hors du set → évasion immédiate
         params.center_y = 2.0;
         params.iteration_max = 2_000_000; // > seuil 1 M
-        let cache = compute_reference_orbit_cached(&params, None, None, None)
+        let cache = compute_reference_orbit_cached(&params, None, None, None, false)
             .expect("orbite référence");
         assert_eq!(
             cache.bla_table.num_levels(),
@@ -2181,7 +2287,7 @@ mod conformal_bla_skip_tests {
         params.center_x = -0.5; // intérieur cardioïde → orbite bornée
         params.center_y = 0.0;
         params.iteration_max = 20_000; // < seuil 1 M
-        let cache = compute_reference_orbit_cached(&params, None, None, None)
+        let cache = compute_reference_orbit_cached(&params, None, None, None, false)
             .expect("orbite référence");
         assert!(
             cache.bla_table.num_levels() > 0,

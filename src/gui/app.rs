@@ -1703,10 +1703,13 @@ impl FractallApp {
         
         // Utiliser le zoom haute précision
         self.zoom_hp(ratio_x, ratio_y, factor);
-        
-        // Invalider le cache d'orbite car le centre a changé
-        self.orbit_cache = None;
-        
+
+        // G10.2 : NE PAS invalider le cache d'orbite sur un zoom. Le moteur décide
+        // (`can_subset_reuse`) : si la nouvelle vue est contenue dans l'empreinte de
+        // la référence, il la réutilise off-center (rendu quasi-gratuit) ; sinon il
+        // rebuild. Correct par construction (sous-ensemble de pixels déjà rendus).
+        // GPU : passe `allow_subset_reuse=false` → rebuild exact (pas de régression).
+
         self.start_render();
     }
     
@@ -1737,10 +1740,10 @@ impl FractallApp {
         
         // Utiliser le zoom rectangulaire haute précision
         self.zoom_rect_hp(xr1, yr1, xr2, yr2);
-        
-        // Invalider le cache d'orbite car le centre a changé
-        self.orbit_cache = None;
-        
+
+        // G10.2 : cache d'orbite conservé (réutilisation subset off-center si la
+        // vue est contenue ; rebuild sinon — décidé par le moteur). Cf. zoom_at_point.
+
         self.start_render();
     }
     
