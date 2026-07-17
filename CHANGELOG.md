@@ -21,11 +21,15 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
 - **G9.5 bench GPU** : `--wisdom-bench` mesure aussi la clé `gpu_perturb_f64`
   (`src/fractal/wisdom_bench.rs`) → `~/.config/fractall/wisdom.toml`, consommée par
   l'arbitrage device.
-- **G4 jalon 1** : `compile_hybrid_formula(&[FractalType], power)`
-  (`src/fractal/bytecode/compile.rs`) compile une formule bytecode MULTI-PHASE
-  (une phase par type, cyclées). Compilation prête + testée ; le câblage render
-  (`params.hybrid_phases`) est le jalon 2 (pas encore fait). L'infra multi-phase
-  (orbite référence + pixel loop) existait déjà.
+- **G4 hybrides multi-phase (jalons 1-2)** : les fractales HYBRIDES rendent —
+  CLI **`--phases mandelbrot,burning_ship`** (types escape-time itérés
+  cycliquement). `params.hybrid_phases` + `formula_for_params` +
+  `compile_hybrid_formula` (`src/fractal/bytecode/`). Rendu par le path f64
+  standard (`iterate_bytecode_f64` cycle les phases) ; `select_algorithm` force
+  `StandardF64` et `render_dispatch` renvoie `None` pour un hybride (perturbation/
+  GPU multi-phase = jalon 3). `[M,M]` pixel-exact == Mandelbrot (invariant testé),
+  `[M,BS]` = hybride genuine. Verrous : unit test + golden
+  `mandelbrot_hybrid_burningship`. CPU f64 (shallow-mid) uniquement.
 
 ### Corrigé
 - **Perturbation réf-intérieure >512²** : un 2e bloc de résolution glitch récursive

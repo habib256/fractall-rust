@@ -53,6 +53,30 @@ pub enum FractalType {
 }
 
 impl FractalType {
+    /// Parse un nom de type pour `--phases` (hybrides G4). Seuls les types
+    /// escape-time représentables en bytecode peuvent être une phase — les
+    /// autres renvoient `None`. Insensible à la casse ; `_`/`-`/espaces ignorés.
+    pub fn from_hybrid_name(s: &str) -> Option<Self> {
+        let k: String = s
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(|c| c.to_lowercase())
+            .collect();
+        Some(match k.as_str() {
+            "mandelbrot" | "mandel" | "m" => FractalType::Mandelbrot,
+            "julia" | "j" => FractalType::Julia,
+            "burningship" | "ship" | "bs" => FractalType::BurningShip,
+            "tricorn" | "mandelbar" => FractalType::Tricorn,
+            "celtic" => FractalType::Celtic,
+            "buffalo" => FractalType::Buffalo,
+            "perpendicularburningship" | "perpbs" | "pbs" => {
+                FractalType::PerpendicularBurningShip
+            }
+            "multibrot" | "mb" => FractalType::Multibrot,
+            _ => return None,
+        })
+    }
+
     /// Convertit un identifiant numérique (comme dans la version C) en enum.
     pub fn from_id(id: u8) -> Option<Self> {
         match id {
@@ -999,6 +1023,18 @@ pub struct FractalParams {
     /// Défaut `None` : utiliser `rotation` (degrés) seul.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transform_k: Option<[f64; 4]>,
+
+    /// **Hybride multi-phase (G4)** : liste de types escape-time itérés
+    /// CYCLIQUEMENT (`phases[n % len]`), ex. `[Mandelbrot, BurningShip]` =
+    /// Mandel-Ship alternant. Quand `Some` (non vide), la formule bytecode est
+    /// `compile_hybrid_formula(phases, multibrot_power)` au lieu de
+    /// `compile_formula(fractal_type)` — `fractal_type` sert alors seulement la
+    /// convention d'appel (Mandelbrot-like : δ₀=0, dc=pixel). Chaque type doit
+    /// être représentable en bytecode (sinon fallback au path dédié). CPU
+    /// uniquement (le GPU multi-phase n'est pas implémenté → force CPU).
+    /// `None` = mono-formule classique.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hybrid_phases: Option<Vec<FractalType>>,
 }
 
 // Helpers pour `#[serde(default = "...")]`. Permettent de charger des PNG

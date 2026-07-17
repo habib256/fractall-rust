@@ -1,6 +1,6 @@
 use num_complex::Complex64;
 
-use crate::fractal::bytecode::{compile_formula, iterate_bytecode_f64, Formula};
+use crate::fractal::bytecode::{formula_for_params, iterate_bytecode_f64, Formula};
 use crate::fractal::{FractalParams, FractalResult, FractalType};
 use crate::fractal::orbit_traps::OrbitData;
 
@@ -16,16 +16,15 @@ use crate::fractal::orbit_traps::OrbitData;
 /// path legacy (cf. delta.rs::try_bytecode_unified_path).
 #[inline]
 fn can_use_bytecode(params: &FractalParams) -> bool {
-    params.use_bytecode_engine
-        && compile_formula(params.fractal_type, params.multibrot_power).is_some()
+    params.use_bytecode_engine && formula_for_params(params).is_some()
 }
 
 /// Dispatch interpréteur : (z₀, c) selon convention Mandelbrot/Julia.
 /// Construit aussi un OrbitData si orbit_traps est demandé.
 #[inline]
 fn iterate_via_bytecode(params: &FractalParams, z_pixel: Complex64) -> FractalResult {
-    let formula = compile_formula(params.fractal_type, params.multibrot_power)
-        .expect("can_use_bytecode garantit que compile_formula renvoie Some");
+    let formula = formula_for_params(params)
+        .expect("can_use_bytecode garantit que formula_for_params renvoie Some");
     let (z0, c) = if Formula::is_julia_for(params.fractal_type) {
         (z_pixel, params.seed)
     } else {
@@ -59,7 +58,10 @@ fn iterate_via_bytecode(params: &FractalParams, z_pixel: Complex64) -> FractalRe
         let mut stored_dz = dz;
         let mut iter = 0u32;
         let bailout_sqr = params.bailout * params.bailout;
-        let phase = &formula.phases[0]; // mono-phase
+        // G4 : phase cyclée par itération (`iter` = nb de phases complétées, Add
+        // dernier op de chaque phase). n_phases=1 ⇒ toujours phases[0] (identique
+        // à l'ancien comportement mono-phase, goldens inchangés).
+        let n_phases = formula.phases.len();
         let mut orbit_data = if needs_orbit {
             let mut od = OrbitData::new(params.orbit_trap_type);
             od.add_point(z, 0);
@@ -72,6 +74,7 @@ fn iterate_via_bytecode(params: &FractalParams, z_pixel: Complex64) -> FractalRe
             if z.norm_sqr() >= bailout_sqr {
                 break;
             }
+            let phase = &formula.phases[iter as usize % n_phases];
             for op in &phase.ops {
                 use crate::fractal::bytecode::Op;
                 match op {

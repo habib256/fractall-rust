@@ -488,6 +488,17 @@ impl GpuRenderer {
         orbit_cache: Option<&Arc<ReferenceOrbitCache>>,
     ) -> Option<GpuDispatchResult> {
         use crate::fractal::wisdom;
+        // G4 jalon 2 : le GPU ne cycle pas les phases (shaders/kernel mono-
+        // formule) → aucun path GPU pour un hybride. `None` → fallback CPU
+        // (f64 standard, seul path multi-phase). Empêche `--gpu`/GUI de rendre
+        // un hybride en base-type faux.
+        if params
+            .hybrid_phases
+            .as_ref()
+            .is_some_and(|p| !p.is_empty())
+        {
+            return None;
+        }
         // Sélection wisdom (source unique, G9.1) — device Gpu : seuil
         // d'activation perturbation f32 (~1e5) au lieu du seuil CPU (~1e12).
         let use_perturbation = wisdom::select_algorithm(params, wisdom::Device::Gpu)

@@ -275,6 +275,23 @@ const CASES: &[Case] = &[
     // ROUGIT (à ≤512² le bug était INVISIBLE — c'est précisément le trou de
     // couverture que ce cas comble). ⚠️ Lent (~14 s, escalade dd) : seul cas
     // >512², assumé pour couvrir la classe de bug réf-intérieure.
+    // VERROU G4 jalon 2 — hybride multi-phase RENDU. `--phases mandelbrot,
+    // burning_ship` (Mandel-Ship alternant) via le path f64 standard (seul à
+    // cycler les phases). Image genuine (≠ Mandelbrot ET ≠ Burning Ship, vérifié
+    // 4440/2974 px). Rougit si le câblage hybride (formula_for_params, cyclage
+    // iterate_bytecode_f64) ou le routage StandardF64 régresse. L'invariant
+    // [M,M]==M est verrouillé séparément par le unit test
+    // `hybrid_MM_iterates_identically_to_single_M`.
+    Case {
+        name: "mandelbrot_hybrid_burningship",
+        args: &[
+            "--phases", "mandelbrot,burning_ship",
+            "--width", "160", "--height", "100",
+            "--center-x=-0.4", "--center-y=-0.35", "--zoom=1.2",
+            "--iterations", "400",
+        ],
+        envs: NO_ENV,
+    },
     Case {
         name: "mandelbrot_interior_ref_640",
         args: &[

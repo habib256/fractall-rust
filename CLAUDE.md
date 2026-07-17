@@ -83,7 +83,7 @@ src/
 │   ├── orbit_traps.rs   # Point, Line, Cross, Circle
 │   ├── bytecode/        # Moteur unifié Fraktaler-3 (P3.1, défaut)
 │   │   ├── mod.rs          # Op, Phase, Formula
-│   │   ├── compile.rs      # compile_formula(type, power) + compile_hybrid_formula (G4 j1)
+│   │   ├── compile.rs      # compile_formula + compile_hybrid_formula + formula_for_params (G4)
 │   │   ├── interp.rs       # iterate_bytecode_f64
 │   │   ├── interp_gmp.rs   # interpréteur GMP pour orbite référence
 │   │   ├── delta_form.rs   # DeltaState f64 + DeltaStateExp ComplexExp
@@ -289,13 +289,20 @@ sensibilité** (l'échelle wisdom est livrée, cf. §Wisdom ci-dessous) et
 pixel→c (CPU + GPU bytecode) ; `Op::Rot` reste un opcode CPU dormant, utile
 seulement pour une rotation *par phase* (TODO G4).
 
-### Hybrides multi-phase (G4 jalon 1, `bytecode/compile.rs`)
+### Hybrides multi-phase (G4 jalon 1-2, `bytecode/compile.rs`)
 
-`compile_hybrid_formula(&[FractalType], power)` compile une formule bytecode
-MULTI-PHASE (une phase par type, cyclées). **Compilation prête + testée** ;
-le câblage render (`params.hybrid_phases`) est le jalon 2 (pas encore fait).
-L'infra multi-phase (`GmpInterpState` cycle les phases, reference orbit +
-pixel loop multi-phase) préexistait.
+Chaîner des formules par phase, itérées cycliquement (`phases[n % len]`). CLI
+**`--phases mandelbrot,burning_ship`** → `params.hybrid_phases:
+Option<Vec<FractalType>>`. `formula_for_params(params)` = source UNIQUE de la
+formule (hybride via `compile_hybrid_formula` si `hybrid_phases`, sinon
+`compile_formula`). **Rendu par le path f64 standard** (`iterate_bytecode_f64`
+cycle déjà les phases) : `select_algorithm` **force `StandardF64`** pour un
+hybride (la perturbation rejette phases>1, le GMP par-pixel est z²+c hardcodé),
+`render_dispatch` renvoie `None` (GPU ne cycle pas → fallback CPU). Verrous :
+`[M,M] == Mandelbrot` pixel-exact (unit test) + golden
+`mandelbrot_hybrid_burningship`. **Reste (jalon 3)** : hybrides DEEP
+(perturbation multi-phase + BLA par phase), nucleus phase-aware, éditeur GUI.
+`fractal_type` sert la convention d'appel (Mandelbrot-like : δ₀=0, dc=pixel).
 
 ### Wisdom auto-dispatch (`fractal/wisdom.rs`, 2026-07-12 · G9.1 2026-07-15)
 

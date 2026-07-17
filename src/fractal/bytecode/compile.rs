@@ -17,6 +17,21 @@ pub fn compile_formula(ft: FractalType, multibrot_power: f64) -> Option<Formula>
     phase_ops_for_type(ft, multibrot_power).map(|ops| Formula::single(Phase::new(ops)))
 }
 
+/// Formule bytecode EFFECTIVE d'un rendu (G4 jalon 2) : si
+/// `params.hybrid_phases` est `Some` (non vide) → hybride multi-phase
+/// ([`compile_hybrid_formula`]) ; sinon la mono-formule du type
+/// ([`compile_formula`]). Source UNIQUE consommée par tous les callsites du
+/// render (orbite référence, pixel loop, f64 standard, gates `.is_some()`) →
+/// une frame hybride itère la même formule partout.
+pub fn formula_for_params(params: &crate::fractal::FractalParams) -> Option<Formula> {
+    match &params.hybrid_phases {
+        Some(phases) if !phases.is_empty() => {
+            compile_hybrid_formula(phases, params.multibrot_power)
+        }
+        _ => compile_formula(params.fractal_type, params.multibrot_power),
+    }
+}
+
 /// Compile une formule **HYBRIDE multi-phase** (G4) : une phase par entrée de
 /// `phase_types`, itérées CYCLIQUEMENT (`phases[n % len]`, cf. `Formula::hybrid`
 /// et `GmpInterpState::step`). Chaque phase réutilise EXACTEMENT le bytecode du
@@ -28,10 +43,6 @@ pub fn compile_formula(ft: FractalType, multibrot_power: f64) -> Option<Formula>
 /// `None` si `phase_types` est vide ou si un type n'est pas représentable en
 /// bytecode (Newton, Magnet, …). `multibrot_power` s'applique aux phases
 /// Multibrot. Réf : `docs/fraktaler-3-analysis.md` §2 (chaînage de phases).
-// G4 jalon 1 : brique de compilation (testée) ; le câblage render
-// (`params.hybrid_phases` → reference orbit + pixel-loop, déjà multi-phase-ready)
-// est le jalon SUIVANT — d'où `allow(dead_code)` en attendant le consommateur.
-#[allow(dead_code)]
 pub fn compile_hybrid_formula(
     phase_types: &[FractalType],
     multibrot_power: f64,
@@ -213,6 +224,27 @@ mod tests {
         let f = compile_hybrid_formula(&[FractalType::Mandelbrot, FractalType::Multibrot], 3.0)
             .unwrap();
         assert_eq!(f.phases[1].ops, compile_power(3));
+    }
+
+    #[test]
+    fn hybrid_MM_iterates_identically_to_single_M() {
+        // Invariant : [Mandelbrot, Mandelbrot] (2 phases identiques z²+c) doit
+        // itérer EXACTEMENT comme le Mandelbrot mono-phase (même trajectoire,
+        // même compte d'itérations, même z final).
+        use super::super::iterate_bytecode_f64;
+        use num_complex::Complex64;
+        let m = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
+        let mm =
+            compile_hybrid_formula(&[FractalType::Mandelbrot, FractalType::Mandelbrot], 2.0)
+                .unwrap();
+        for &(re, im) in &[(-0.5, 0.5), (0.3, 0.0), (-1.0, 0.1), (0.28, 0.53), (-0.75, 0.0)] {
+            let c = Complex64::new(re, im);
+            let z0 = Complex64::new(0.0, 0.0);
+            let rm = iterate_bytecode_f64(&m, z0, c, 500, 25.0);
+            let rmm = iterate_bytecode_f64(&mm, z0, c, 500, 25.0);
+            assert_eq!(rm.iteration, rmm.iteration, "iter mismatch c={c:?}");
+            assert!((rm.z - rmm.z).norm() < 1e-12, "z mismatch c={c:?}");
+        }
     }
 
     #[test]

@@ -33,9 +33,10 @@ pixel-exact + quality 15/15 PASS.
 - **GUI temps-réel (G10)** : réutilisation orbite (G10.2), recolorisation
   sans clone (G10.3), pixels XaoS colonnes/lignes (G10.4/b), file de tuiles
   priorité-centre + streaming (G10.5), warp GPU molette (G10.1, signe Y corrigé).
-- **Hybrides (G4 jalon 1)** : `compile_hybrid_formula(&[FractalType], power)`
-  (`bytecode/compile.rs:35`) compile une formule bytecode multi-phase (1 phase/type,
-  cyclées). Infra multi-phase (GmpInterpState, orbit, pixel loop) déjà en place.
+- **Hybrides (G4 jalon 1-2)** : les hybrides multi-phase **RENDENT** (CLI
+  `--phases mandelbrot,burning_ship`) via le path f64 standard. `hybrid_phases` +
+  `formula_for_params` + `compile_hybrid_formula`. [M,M]==Mandelbrot pixel-exact.
+  Reste (jalon 3) : hybrides DEEP (perturbation multi-phase) + nucleus + GUI.
 - **Durcissements** : gate `!bytecode_path` sur le 2e bloc glitch récursif
   (`mod.rs:1634`, supprimait ~3.4 % structure spurious à >512²) ; golden
   `mandelbrot_interior_ref_640` (seul cas >512², exerce l'escalade dd).
@@ -1388,9 +1389,21 @@ le câblage params/render, + la BLA par phase + le nucleus phase-aware + l'UI.
   Compose une phase par type escape-time (réutilise le bytecode existant, aucune
   nouvelle sémantique) : `[Mandelbrot, BurningShip]` = Mandel-Ship alternant,
   `[M,M,BS]` = 2×M puis 1×BS. `None` si vide/type non-bytecode/power non-entière.
-  5 tests. `#[allow(dead_code)]` en attendant le consommateur (jalon 2). **Reste
-  jalon 2 : câbler `params.hybrid_phases` → les ~9 callsites `compile_formula`
-  (orbit/delta/iterations/gpu/wisdom) + vérifier un hybride == GMP.**
+  6 tests (dont `hybrid_MM_iterates_identically_to_single_M`).
+- [x] **✅ Jalon 2 — les hybrides RENDENT `[2026-07-17]`** :
+  `params.hybrid_phases: Option<Vec<FractalType>>` + `formula_for_params(params)`
+  (source unique : hybride si `hybrid_phases`, sinon mono-formule). CLI
+  **`--phases mandelbrot,burning_ship`** (+ `FractalType::from_hybrid_name`). Le
+  path **f64 standard** (`iterate_bytecode_f64` cycle DÉJÀ les phases ;
+  `iterate_via_bytecode` tracking-path cyclé aussi) rend les hybrides ;
+  `select_algorithm` **force StandardF64** pour les hybrides (perturbation
+  rejette phases>1, GMP par-pixel = z²+c hardcodé) ; `render_dispatch` renvoie
+  `None` (GPU ne cycle pas → fallback CPU). Vérifié : **[M,M] pixel-exact ==
+  Mandelbrot** (invariant), [M,BS] genuine (≠ M ET ≠ BS, 4440/2974 px). Verrous :
+  unit test [M,M]==M + golden `mandelbrot_hybrid_burningship`. Single-phase
+  INCHANGÉ (`phases[iter % 1]` = phases[0], 24 goldens verts). **Reste jalon 3 :
+  hybrides DEEP (perturbation multi-phase + BLA par phase) + nucleus phase-aware
+  + éditeur GUI.**
 - [ ] **BLA multi-phase native** : `Vec<BlaTableUnified>` (une par phase) au lieu
   d'une seule ; `iterate_pixel_unified_*` switche de BLA au changement de phase
   (F3 `engine.cc:287-295`, `bla.cc::hybrid_blas`). Tests d'invariance hybride

@@ -28,7 +28,7 @@ pub mod pixel_loop_exp;
 mod tests;
 
 pub use bla_dual::build_bla_table_for_formula;
-pub use compile::compile_formula;
+pub use compile::{compile_formula, compile_hybrid_formula, formula_for_params};
 pub use interp::iterate_bytecode_f64;
 pub use interp_gmp::GmpInterpState;
 

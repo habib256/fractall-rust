@@ -36,6 +36,13 @@ struct Cli {
     #[arg(long = "type")]
     fractal_type: Option<u8>,
 
+    /// Hybride multi-phase (G4) : types escape-time séparés par virgule, itérés
+    /// cycliquement. Ex. `--phases mandelbrot,burning_ship` (Mandel-Ship
+    /// alternant), `--phases mandelbrot,mandelbrot,burning_ship` (2×M puis BS).
+    /// CPU f64 uniquement (shallow-mid). Ignore --type pour la formule.
+    #[arg(long)]
+    phases: Option<String>,
+
     /// Largeur de l'image de sortie en pixels
     #[arg(long, default_value_t = 1920)]
     width: u32,
@@ -360,6 +367,9 @@ fn main() {
     let fractal_type_id = match (cli.fractal_type, &cli.toml) {
         (Some(id), _) => id,
         (None, Some(_)) => 3,
+        // --phases (hybride G4) implique la convention Mandelbrot (δ₀=0, dc=pixel)
+        // → type 3 par défaut si --type/--toml absents.
+        (None, None) if cli.phases.is_some() => 3,
         (None, None) => {
             eprintln!("--type est requis (ou utilisez --toml <FICHIER> pour le format rust-fractal-core)");
             std::process::exit(2);
@@ -378,6 +388,23 @@ fn main() {
 
     // Paramètres par défaut pour ce type.
     let mut params = default_params_for_type(fractal_type, cli.width, cli.height);
+
+    // Hybride multi-phase (G4) : --phases type1,type2,… → hybrid_phases.
+    if let Some(ref spec) = cli.phases {
+        let mut phases = Vec::new();
+        for name in spec.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            match FractalType::from_hybrid_name(name) {
+                Some(ft) => phases.push(ft),
+                None => {
+                    eprintln!("--phases : type inconnu '{name}'");
+                    std::process::exit(2);
+                }
+            }
+        }
+        if !phases.is_empty() {
+            params.hybrid_phases = Some(phases);
+        }
+    }
 
     // Applique d'abord les paramètres TOML (les overrides CLI explicites
     // restent prioritaires car traités après).
