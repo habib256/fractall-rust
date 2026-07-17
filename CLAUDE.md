@@ -354,8 +354,13 @@ radius scaling σ₁(K)** (2026-07-17, débloqué par le K non-conforme du 5f) :
 `transform_sigma1()` (types.rs, snap exact 1.0 si K conforme) × le rayon
 `c_norm` BLA (`delta.rs::bla_c_norm`, + `c_norm_fexp` exp) — un K skewé
 étire la grille δc, sans σ₁ `max|δc|` est sous-estimé → rayon de merge
-sur-permissif (over-skip). No-op bit-identique hors K skewé. **Reste
-(jalon 5g)** : fast-path inline multi-phase (micro-perf).
+sur-permissif (over-skip). No-op bit-identique hors K skewé. **Jalon 5g —
+fast-path inline multi-phase** (2026-07-18) : boucles multi-phase f64/exp —
+phases [Sqr, Add] steppées inline `δ' = 2·Z·δ + δ² + dc` (bitmask, bit-
+identique à DeltaState{,Exp}), cache réf de phase (rechargé au rebase
+seulement), tête-de-boucle chaînée + `z_land` dans la garde (mirror
+single-phase). e50 [M,M] 256² : boucle pixel 2.3× (2.26→0.98 s),
+pixel-identique partout ([M,M] e50/e1000, [M,BS] e13).
 `fractal_type` sert la convention d'appel (Mandelbrot-like : δ₀=0, dc=pixel).
 
 ### Wisdom auto-dispatch (`fractal/wisdom.rs`, 2026-07-12 · G9.1 2026-07-15)

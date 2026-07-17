@@ -48,10 +48,9 @@ pixel-exact + quality 15/15 PASS.
   `mandelbrot_interior_ref_640` (seul cas >512², exerce l'escalade dd).
 
 **RESTE :**
-- **G4** : SOLDÉ jusqu'au jalon 5f + σ₁(K) (2026-07-17). Reste optionnel :
-  jalon 5g fast-path inline multi-phase (micro-perf, [M,M] e50 0.38 s vs
-  [M] 0.135 s — 2× orbite inhérent aux N réfs) ; `Op::Rot` per-phase (si
-  parseur `[[formula]] rotate` F3 un jour).
+- **G4** : SOLDÉ jusqu'au jalon 5g (2026-07-18, fast-path inline multi-phase :
+  [M,M] e50 boucle pixel 2.3×, pixel-identique). Reste optionnel : `Op::Rot`
+  per-phase (si parseur `[[formula]] rotate` F3 un jour).
 - **G6** : durcir/étendre le corpus golden.
 - **G9.6** : fiabilité → escalade tier auto (px→dd/frame→dd) — marginal.
 
@@ -1531,7 +1530,18 @@ le câblage params/render, + la BLA par phase + le nucleus phase-aware + l'UI.
   vérifié indépendamment), K **non-conforme** (K01=0.680 ≠ −K10=−0.362 — la
   raison d'être du mat2) ; render-level : `[M,M] --find-nucleus` @minibrot
   1e18 = période 445, K/size identiques, image PIXEL-IDENTIQUE à `[M]`.
-  **Reste (jalon 5g+)** : fast-path Mandelbrot inline multi-phase (micro-perf).
+  **✅ Jalon 5g `[2026-07-18]` — fast-path Mandelbrot inline multi-phase** :
+  dans les boucles multi-phase f64 + exp, les phases [Sqr, Add] steppent
+  inline `δ' = 2·Z·δ + δ² + dc` (bitmask par formule, mêmes opérandes/ordre
+  que DeltaState{,Exp} → bit-identique) au lieu de l'interpréteur ; + cache
+  de la réf de phase courante (slice/len/atom rechargés au rebase seulement),
+  cache tête-de-boucle chaîné (mirror single-phase) et `node.z_land` dans la
+  garde anti-over-skip (bit-copie de l'orbite de phase, plus d'accès tableau).
+  Mesuré e50 [M,M] 256² : boucle pixel **2.26 → 0.98 s (2.3×)**, total
+  2.43 → 1.12 s (vs [M] 0.78 s — 2× orbite inhérent aux N réfs) ; e1000 exp
+  ~4 % (FloatExp domine). **Pixel-identique** old-vs-new : [M,M] e50, [M,M]
+  e1000, [M,BS] e13, [M] e50 single (0 px) ; verrous e50/e1000/[M,M]@3e10 +
+  grille GMP-cyclant + 25 goldens verts, harness quick 0 gap.
 - [x] **✅ Jalon 4 — hybrides DEEP-EXP (ComplexExp, > 1e280) `[2026-07-17]`** :
   `iterate_pixel_unified_exp_multi_phase` (`pixel_loop_exp.rs`) — mirror du
   multi-phase f64 en `DeltaStateExp` (FloatExp survit à l'underflow f64 du delta),

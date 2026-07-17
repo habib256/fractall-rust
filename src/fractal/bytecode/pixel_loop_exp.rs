@@ -782,6 +782,16 @@ pub fn iterate_pixel_unified_exp_multi_phase(
     };
     // BLA par phase (jalon 5b) : active seulement avec une table par phase.
     let use_bla = tables.len() == n_phases;
+    // Fast-path Mandelbrot inline (jalon 5g, mirror f64) : bitmask des phases
+    // [Sqr, Add] steppées sans DeltaStateExp (mêmes opérandes/ordre → bit-
+    // identique). > 64 phases → interpréteur générique partout.
+    let mb_mask: u64 = if n_phases <= 64 {
+        formula.phases.iter().enumerate().fold(0u64, |acc, (i, ph)| {
+            if phase_is_mandelbrot(ph) { acc | (1u64 << i) } else { acc }
+        })
+    } else {
+        0
+    };
     let mut delta = delta_initial;
     let mut n = 0u32;
     let mut m = 0u32;
@@ -791,11 +801,17 @@ pub fn iterate_pixel_unified_exp_multi_phase(
     let mut iters_ptb = 0u32;
     const REDUCE_INTERVAL: u32 = 250;
 
+    // Cache de la réf de phase COURANTE (jalon 5g) : `phase` ne change qu'au
+    // rebase → slice/longueur/flag rechargés là uniquement.
+    let mut zr: &[Complex64] = &refs(phase).z_ref_f64;
+    let mut ref_len_cur = zr.len();
+    let mut atom_truncated_cur = refs(phase).atom_truncated;
+
     while n < iteration_max
         && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
         && (max_bla_steps == 0 || bla_steps < max_bla_steps)
     {
-        let z_m = refs(phase).z_ref_f64[m as usize];
+        let z_m = zr[m as usize];
         let delta_approx = delta.to_complex64_approx();
         let z_abs = z_m + delta_approx;
         if z_abs.norm_sqr() >= bailout_sqr {
@@ -812,13 +828,12 @@ pub fn iterate_pixel_unified_exp_multi_phase(
         // (mirror du bloc exp générique single-phase : coefs f64, δ ComplexExp).
         // n et m avancent du même l → invariant (phase+m) ≡ n préservé.
         if use_bla {
-            let ref_len_cur = refs(phase).z_ref_f64.len();
             let delta_norm_sqr_fexp = delta.norm_sqr_fexp();
             if let Some(node) = tables[phase].lookup_fexp(m as usize, delta_norm_sqr_fexp) {
                 let new_n = n.saturating_add(node.l);
                 let new_m = m.saturating_add(node.l);
                 let lands_on_ref_end =
-                    refs(phase).atom_truncated && (new_m as usize) + 1 >= ref_len_cur;
+                    atom_truncated_cur && (new_m as usize) + 1 >= ref_len_cur;
                 if new_n <= iteration_max
                     && (new_m as usize) < ref_len_cur
                     && !lands_on_ref_end
@@ -830,9 +845,10 @@ pub fn iterate_pixel_unified_exp_multi_phase(
                     let new_im = (a.m10 * delta.re) + (a.m11 * delta.im)
                         + (b.m10 * dc.re) + (b.m11 * dc.im);
                     let cand = ComplexExp { re: new_re, im: new_im };
+                    // `node.z_land` = bit-copie de `refs(phase)[new_m]`
+                    // (rempli au build cyclé) : pas d'accès tableau.
                     let overshoots_escape = node.l >= 2 && {
-                        let z_end = refs(phase).z_ref_f64[new_m as usize]
-                            + cand.to_complex64_approx();
+                        let z_end = node.z_land + cand.to_complex64_approx();
                         z_end.norm_sqr() >= bailout_sqr
                     };
                     if !overshoots_escape {
@@ -856,21 +872,28 @@ pub fn iterate_pixel_unified_exp_multi_phase(
         }
 
         // Pas perturbation : phase courante = phases[n % n_phases].
-        let ph = &formula.phases[(n as usize) % n_phases];
-        let mut state = DeltaStateExp::new(z_m, delta);
-        state.step(ph, c_ref, dc);
-        delta = state.delta;
+        let ph_idx = (n as usize) % n_phases;
+        if (mb_mask >> (ph_idx & 63)) & 1 != 0 {
+            // Fast-path Mandelbrot (jalon 5g) : δ' = 2·Z·δ + δ² + dc, mêmes
+            // opérandes/ordre que DeltaStateExp [Sqr → Add] → bit-identique.
+            let delta_sq = delta.mul(delta);
+            let two_z = z_m * 2.0;
+            let two_z_delta = delta.mul_complex64(two_z);
+            delta = two_z_delta.add(delta_sq).add(dc);
+        } else {
+            let mut state = DeltaStateExp::new(z_m, delta);
+            state.step(&formula.phases[ph_idx], c_ref, dc);
+            delta = state.delta;
+        }
         n += 1;
         m += 1;
         iters_ptb += 1;
 
-        let ref_len_cur = refs(phase).z_ref_f64.len();
         let delta_approx = delta.to_complex64_approx();
         if !delta_approx.re.is_finite() || !delta_approx.im.is_finite() {
             return UnifiedPixelResultExp {
                 iteration: n,
-                z_final: refs(phase).z_ref_f64[(m as usize).min(ref_len_cur - 1)]
-                    + delta_approx,
+                z_final: zr[(m as usize).min(ref_len_cur - 1)] + delta_approx,
                 rebase_count,
                 bla_steps,
                 ref_exhausted: false,
@@ -887,7 +910,7 @@ pub fn iterate_pixel_unified_exp_multi_phase(
         // seulement ; la màj de phase utilise le `m` VRAI pour l'invariant).
         let end_of_ref = (m as usize) + 1 >= ref_len_cur;
         let m_read = (m as usize).min(ref_len_cur - 1);
-        let z_m_new = refs(phase).z_ref_f64[m_read];
+        let z_m_new = zr[m_read];
         let z_curr_re = FloatExp::from_f64(z_m_new.re) + delta.re;
         let z_curr_im = FloatExp::from_f64(z_m_new.im) + delta.im;
         let z_curr_norm_sqr_fexp = z_curr_re.sqr() + z_curr_im.sqr();
@@ -897,15 +920,20 @@ pub fn iterate_pixel_unified_exp_multi_phase(
             phase = (phase + m as usize) % n_phases;
             m = 0;
             rebase_count += 1;
+            // `phase` a changé : recharger la réf de phase (froid — au plus
+            // 1×/rebase).
+            let r = refs(phase);
+            zr = &r.z_ref_f64;
+            ref_len_cur = zr.len();
+            atom_truncated_cur = r.atom_truncated;
         }
     }
 
-    let ref_len_cur = refs(phase).z_ref_f64.len();
     let final_m = (m as usize).min(ref_len_cur - 1);
     let delta_approx = delta.to_complex64_approx();
     UnifiedPixelResultExp {
         iteration: n,
-        z_final: refs(phase).z_ref_f64[final_m] + delta_approx,
+        z_final: zr[final_m] + delta_approx,
         rebase_count,
         bla_steps,
         ref_exhausted: false,

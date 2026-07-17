@@ -244,6 +244,21 @@ pub fn iterate_pixel_unified_multi_phase(
     };
     // BLA par phase (jalon 5b) : active seulement avec une table par phase.
     let use_bla = tables.len() == n_phases;
+    // Fast-path Mandelbrot inline (jalon 5g) : bitmask des phases [Sqr, Add],
+    // steppées `δ' = 2·Z·δ + δ² + dc` sans DeltaState ni dispatch opcode
+    // (mêmes opérandes/ordre que DeltaState Sqr+Add → bit-identique). Bitmask
+    // (pas de Vec : la fonction est appelée PAR PIXEL) ; > 64 phases → tout
+    // passe par l'interpréteur générique.
+    let mb_mask: u64 = if n_phases <= 64 {
+        formula.phases.iter().enumerate().fold(0u64, |acc, (i, ph)| {
+            let is_mb = ph.ops.len() == 2
+                && matches!(ph.ops[0], super::Op::Sqr)
+                && matches!(ph.ops[1], super::Op::Add);
+            if is_mb { acc | (1u64 << i) } else { acc }
+        })
+    } else {
+        0
+    };
     let mut delta = delta_initial;
     let mut n = 0u32;
     let mut m = 0u32;
@@ -252,13 +267,25 @@ pub fn iterate_pixel_unified_multi_phase(
     let mut bla_steps = 0u32;
     let mut iters_ptb = 0u32;
 
+    // Cache de la réf de phase COURANTE (jalon 5g) : `phase` ne change qu'au
+    // rebase → slice/longueur/flag rechargés là uniquement (remplace le
+    // `refs(phase).z_ref_f64[…]` multi-indirection à chaque itération). Cache
+    // tête-de-boucle chaîné (mirror du fast-path single-phase, mêmes opérandes
+    // f64 → bit-identique) : en tête, `z_m == Z[m]` et les normes sont celles
+    // de l'état courant.
+    let mut zr: &[Complex64] = &refs(phase).z_ref_f64;
+    let mut ref_len_cur = zr.len();
+    let mut atom_truncated_cur = refs(phase).atom_truncated;
+    let mut z_m = zr[m as usize];
+    let mut z_abs = z_m + delta;
+    let mut z_abs_norm_sqr = z_abs.norm_sqr();
+    let mut delta_norm_sqr = delta.norm_sqr();
+
     while n < iteration_max
         && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
         && (max_bla_steps == 0 || bla_steps < max_bla_steps)
     {
-        let z_m = refs(phase).z_ref_f64[m as usize];
-        let z_abs = z_m + delta;
-        if z_abs.norm_sqr() >= bailout_sqr {
+        if z_abs_norm_sqr >= bailout_sqr {
             return UnifiedPixelResult {
                 iteration: n,
                 z_final: z_abs,
@@ -277,12 +304,11 @@ pub fn iterate_pixel_unified_multi_phase(
         // phase. Mêmes gardes que le single-phase : bornes, lands_on_ref_end
         // (inerte, atom gaté off hybride — symétrie), anti-over-skip endpoint.
         if use_bla {
-            let ref_len_cur = refs(phase).z_ref_f64.len();
-            if let Some(node) = tables[phase].lookup(m as usize, delta.norm_sqr()) {
+            if let Some(node) = tables[phase].lookup(m as usize, delta_norm_sqr) {
                 let new_n = n.saturating_add(node.l);
                 let new_m = m.saturating_add(node.l);
                 let lands_on_ref_end =
-                    refs(phase).atom_truncated && (new_m as usize) + 1 >= ref_len_cur;
+                    atom_truncated_cur && (new_m as usize) + 1 >= ref_len_cur;
                 if new_n <= iteration_max
                     && (new_m as usize) < ref_len_cur
                     && !lands_on_ref_end
@@ -298,10 +324,13 @@ pub fn iterate_pixel_unified_multi_phase(
                         b.m10 * dc.re + b.m11 * dc.im,
                     );
                     let cand = Complex64::new(a_re + b_re, a_im + b_im);
-                    let overshoots_escape = node.l >= 2 && {
-                        let z_end = refs(phase).z_ref_f64[new_m as usize] + cand;
-                        z_end.norm_sqr() >= bailout_sqr
-                    };
+                    // `node.z_land` = bit-copie de `refs(phase)[new_m]`
+                    // (rempli au build cyclé) : pas d'accès tableau, et le
+                    // z_end sert de cache de tête si le saut est accepté.
+                    let z_new_m = node.z_land;
+                    let z_end = z_new_m + cand;
+                    let z_end_norm_sqr = z_end.norm_sqr();
+                    let overshoots_escape = node.l >= 2 && z_end_norm_sqr >= bailout_sqr;
                     if !overshoots_escape {
                         delta = cand;
                         n = new_n;
@@ -310,9 +339,7 @@ pub fn iterate_pixel_unified_multi_phase(
                         if !delta.re.is_finite() || !delta.im.is_finite() {
                             return UnifiedPixelResult {
                                 iteration: n,
-                                z_final: refs(phase).z_ref_f64
-                                    [(m as usize).min(ref_len_cur - 1)]
-                                    + delta,
+                                z_final: z_end,
                                 rebase_count,
                                 bla_steps,
                                 orbit: None,
@@ -329,6 +356,10 @@ pub fn iterate_pixel_unified_multi_phase(
                         // bout de réf reste sûr : un saut qui dépasserait est
                         // REJETÉ par les bornes ci-dessus → pas direct → rebase
                         // au bas de boucle (avec màj de phase).
+                        z_m = z_new_m;
+                        z_abs = z_end;
+                        z_abs_norm_sqr = z_end_norm_sqr;
+                        delta_norm_sqr = delta.norm_sqr();
                         continue;
                     }
                 }
@@ -337,19 +368,27 @@ pub fn iterate_pixel_unified_multi_phase(
 
         // Pas perturbation : phase courante = phases[n % n_phases] — cohérent
         // avec le pas de référence grâce à l'invariant (phase + m) ≡ n.
-        let ph = &formula.phases[(n as usize) % n_phases];
-        let mut state = super::delta_form::DeltaState::new(z_m, delta);
-        state.step(ph, c_ref, dc);
-        delta = state.delta;
+        let ph_idx = (n as usize) % n_phases;
+        if (mb_mask >> (ph_idx & 63)) & 1 != 0 {
+            // Fast-path Mandelbrot (jalon 5g) : δ' = 2·Z·δ + δ² + dc, mêmes
+            // opérandes/ordre que DeltaState [Sqr → Add] → bit-identique.
+            let two_zm = z_m * 2.0;
+            delta = two_zm * delta + delta * delta + dc;
+        } else {
+            let mut state = super::delta_form::DeltaState::new(z_m, delta);
+            state.step(&formula.phases[ph_idx], c_ref, dc);
+            delta = state.delta;
+        }
         n += 1;
         m += 1;
         iters_ptb += 1;
 
-        let ref_len_cur = refs(phase).z_ref_f64.len();
+        let m_read = (m as usize).min(ref_len_cur - 1);
+        let z_after = zr[m_read];
         if !delta.re.is_finite() || !delta.im.is_finite() {
             return UnifiedPixelResult {
                 iteration: n,
-                z_final: refs(phase).z_ref_f64[(m as usize).min(ref_len_cur - 1)] + delta,
+                z_final: z_after + delta,
                 rebase_count,
                 bla_steps,
                 orbit: None,
@@ -365,22 +404,36 @@ pub fn iterate_pixel_unified_multi_phase(
         // pour les hybrides (cycle_period=0) et `iterate_pixel_gmp` est z²+c
         // hardcodé (ne cycle pas) — le rebase-at-end F3 couvre les réfs
         // tronquées par escape (chaque réf de phase repart de Z[0]=0).
-        let m_read = (m as usize).min(ref_len_cur - 1);
-        let z_m_new = refs(phase).z_ref_f64[m_read];
-        let z_curr = z_m_new + delta;
+        let z_curr = z_after + delta;
+        let z_curr_norm_sqr = z_curr.norm_sqr();
+        delta_norm_sqr = delta.norm_sqr();
         let end_of_ref = (m as usize) + 1 >= ref_len_cur;
-        if end_of_ref || z_curr.norm_sqr() < delta.norm_sqr() {
+        if end_of_ref || z_curr_norm_sqr < delta_norm_sqr {
             delta = z_curr;
             phase = (phase + m as usize) % n_phases;
             m = 0;
             rebase_count += 1;
+            // `phase` a changé : recharger la réf de phase (froid — au plus
+            // 1×/rebase) + recalculer le cache de tête.
+            let r = refs(phase);
+            zr = &r.z_ref_f64;
+            ref_len_cur = zr.len();
+            atom_truncated_cur = r.atom_truncated;
+            z_m = zr[0];
+            z_abs = z_m + delta;
+            z_abs_norm_sqr = z_abs.norm_sqr();
+            delta_norm_sqr = delta.norm_sqr();
+        } else {
+            // Pas de rebase : la tête suivante lit exactement z_curr.
+            z_m = z_after;
+            z_abs = z_curr;
+            z_abs_norm_sqr = z_curr_norm_sqr;
         }
     }
-    let ref_len_cur = refs(phase).z_ref_f64.len();
     let final_m = (m as usize).min(ref_len_cur - 1);
     UnifiedPixelResult {
         iteration: n,
-        z_final: refs(phase).z_ref_f64[final_m] + delta,
+        z_final: zr[final_m] + delta,
         rebase_count,
         bla_steps,
                 orbit: None,
