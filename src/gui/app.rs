@@ -39,8 +39,12 @@ struct ViewSnapshot {
 /// dans la vue live + échelle (span_tex/span_live) en x/y. `None` si parse HP
 /// impossible, span live nul, non-fini, ou vues identiques (pas de warp utile).
 ///
-/// Convention : `u = 0.5 + (c_re - centre_re)/span_re` croît vers la droite ;
-/// `v = 0.5 - (c_im - centre_im)/span_im` croît vers le bas (imag inversé écran).
+/// Convention : le renderer mappe `j → c_im = centre + ((j+0.5)/h − 0.5)·span`
+/// (NON inversé : ligne 0 = haut d'écran = imag le plus PETIT, l'imag croît vers
+/// le bas — même convention que l'écho XaoS). Donc x ET y sont symétriques :
+/// `u = 0.5 + (c_re − centre_re)/span_re` (droite) et
+/// `v = 0.5 + (c_im − centre_im)/span_im` (bas). Un `-dy` briserait cette
+/// symétrie et mal-placerait le warp verticalement sur un zoom ancré hors-centre.
 fn compute_warp_norm(
     tex: &ViewSnapshot,
     live: &ViewSnapshot,
@@ -64,7 +68,7 @@ fn compute_warp_norm(
     if dx.abs() < 1e-9 && dy.abs() < 1e-9 && (rx - 1.0).abs() < 1e-9 && (ry - 1.0).abs() < 1e-9 {
         return None;
     }
-    Some((0.5 + dx, 0.5 - dy, rx, ry))
+    Some((0.5 + dx, 0.5 + dy, rx, ry))
 }
 
 /// Colorise un buffer d'itérations en RGB.
@@ -3471,12 +3475,16 @@ mod warp_tests {
     }
 
     #[test]
-    fn pan_up_shifts_texture_down() {
-        // Vue vers +imag (on regarde plus haut) → l'ancien contenu descend (v_cy>0.5).
+    fn pan_toward_higher_imag_shifts_texture_up() {
+        // Symétrique de `pan_right_shifts_texture_left` : la vue se déplace vers
+        // +imag (écran vers le BAS, imag croissant non-inversé) → l'ancien
+        // contenu (imag plus petit) remonte vers le HAUT (v_cy < 0.5, ici 0.0).
+        // Un `v_cy = 0.5 - dy` donnerait 1.0 (contenu en bas) = bug d'ancrage
+        // vertical du warp sur zoom molette hors-centre.
         let tex = v("0", "0", "4", "4");
         let live = v("0", "2", "4", "4"); // cy_live = cy_tex + sy/2
         let (_n_cx, v_cy, _rx, ry) = compute_warp_norm(&tex, &live, 256).unwrap();
-        assert!((v_cy - 1.0).abs() < 1e-9, "v_cy={v_cy}");
+        assert!((v_cy - 0.0).abs() < 1e-9, "v_cy={v_cy}");
         assert!((ry - 1.0).abs() < 1e-9);
     }
 
