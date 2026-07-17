@@ -21,6 +21,12 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
 - **G9.5 bench GPU** : `--wisdom-bench` mesure aussi la clé `gpu_perturb_f64`
   (`src/fractal/wisdom_bench.rs`) → `~/.config/fractall/wisdom.toml`, consommée par
   l'arbitrage device.
+- **G4 jalon 5f — nucleus phase-aware** : port F3 `hybrid_period`/`center`/
+  `size` pour formules hybrides via un interpréteur GMP dual-mat2 (Jacobien
+  ∂z/∂c matriciel par opcode — les abs cassent la conformité). `--find-nucleus`
+  marche sur les hybrides : [M,M]@minibrot 1e18 pixel-identique à [M] (période
+  445, K/size identiques) ; [M,BS] genuine → satellite période 123, Newton
+  convergé, K non-conforme.
 - **G4 jalon 5e — parité hybride vs F3 natif** : light-toml `phases = "…"`
   (loader CLI `--toml` + `compare_f3.py` → blocs `[[formula]]` F3). Cas corpus
   `hybrid_mbs_smooth_e8` (f64-std, Δmean 0.0026) et `hybrid_mbs_smooth_e13`

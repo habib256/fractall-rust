@@ -343,7 +343,14 @@ corpus `hybrid_mbs_smooth_e8` (f64-std, Δmean 0.0026) et `hybrid_mbs_smooth_
 e13` (**perturbation multi-phase : Δ = 0.0000 PIXEL-IDENTIQUE à F3**) — juge
 externe du stack G4. ⚠️ Les zones speckle hybrides BS-famille sont
 non-comparables cross-engine (chaos, structure macro identique — classe G3).
-**Reste (jalon 5f+)** : nucleus phase-aware + fast-path inline multi-phase.
+**Jalon 5f — nucleus PHASE-AWARE** : `nucleus.rs::GmpDualMat2` (Jacobien mat2
+GMP par opcode) + `find_{period_atom_domain,nucleus}_formula`,
+`newton_refine_center_formula`, `hybrid_size_mat2_formula` — routés par
+`orbit.rs` pour les hybrides, z²+c historique sinon (bit-identique). ⚠️ size :
+récurrence d/dC avec +I à l'Add (sémantique z²+c validée, PAS la lettre F3
+dC=0). Vérifié : [M,M]==z²+c exact ; [M,BS] genuine → satellite p=123, K
+non-conforme ; `--find-nucleus` [M,M]@1e18 pixel-identique à [M]. **Reste
+(jalon 5g)** : fast-path inline multi-phase (micro-perf).
 `fractal_type` sert la convention d'appel (Mandelbrot-like : δ₀=0, dc=pixel).
 
 ### Wisdom auto-dispatch (`fractal/wisdom.rs`, 2026-07-12 · G9.1 2026-07-15)

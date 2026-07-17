@@ -1507,9 +1507,28 @@ le câblage params/render, + la BLA par phase + le nucleus phase-aware + l'UI.
   Le stack G4 entier (réfs par phase + BLA cyclée + rebasing + atom mat2) a son
   juge externe. Coordonnées par zoom-hunt smoothness-guided (voisinage 5×5 le
   moins varié). Les cas rejoignent le corpus full automatiquement (tier quick =
-  liste fixe, inchangée). **Reste (jalon 5f+)** : nucleus phase-aware
-  (période/centre/size par phase, `engine.cc:118-218`) + fast-path Mandelbrot
-  inline multi-phase.
+  liste fixe, inchangée).
+- [x] **✅ Jalon 5f — nucleus PHASE-AWARE `[2026-07-17]`** : port F3
+  `hybrid_period`/`hybrid_center`/`hybrid_size` pour une `Formula` arbitraire.
+  Cœur : **interpréteur GMP dual-mat2** (`nucleus.rs::GmpDualMat2` — valeur +
+  Jacobien ∂(zx,zy)/∂seed en mat2 de GMP Floats, chain rule par opcode :
+  Sqr/Mul/Rot = M(w)·J, AbsX/AbsY = négation de ligne conditionnelle, Add =
+  +I en mode d/dC). Trois étages : `find_period_atom_domain_formula` (critère
+  mat2 `|adj(J)·z|² < s²·det(J)²`, full-GMP comme la variante z²+c — F3 fait
+  la détection en perturbation floatexp, plus rapide mais dépendante des réfs ;
+  à porter si la perf bloque), `newton_refine_center_formula` (Newton 2D,
+  solve J·Δ=−z), `hybrid_size_mat2_formula` (b += inv(J), degré = moyenne géo
+  des degrés de phase ; ⚠️ récurrence **d/dC avec +I à l'Add** — la lettre F3
+  met dC=0 mais notre variante z²+c validée corpus P1.6.b inclut le +I, et
+  [M,M] doit lui être identique — vérifié : ratio size 0.258 avec d/dZ pur,
+  1.0 exact avec d/dC). Routage `orbit.rs` : hybride → variantes formule,
+  single-phase → z²+c historique (bit-identique). Vérifié : **[M,M] ==
+  z²+c** (période/centre/size/K, unit) ; **genuine [M,BS]** : satellite période
+  123 trouvé, Newton convergé 12 pas vers un point PÉRIODIQUE (|z_123| ≈ 0
+  vérifié indépendamment), K **non-conforme** (K01=0.680 ≠ −K10=−0.362 — la
+  raison d'être du mat2) ; render-level : `[M,M] --find-nucleus` @minibrot
+  1e18 = période 445, K/size identiques, image PIXEL-IDENTIQUE à `[M]`.
+  **Reste (jalon 5g+)** : fast-path Mandelbrot inline multi-phase (micro-perf).
 - [x] **✅ Jalon 4 — hybrides DEEP-EXP (ComplexExp, > 1e280) `[2026-07-17]`** :
   `iterate_pixel_unified_exp_multi_phase` (`pixel_loop_exp.rs`) — mirror du
   multi-phase f64 en `DeltaStateExp` (FloatExp survit à l'underflow f64 du delta),

@@ -619,6 +619,468 @@ fn floatexp_sqrt(value: FloatExp) -> FloatExp {
     }
 }
 
+// ─── G4 jalon 5f : nucleus PHASE-AWARE (formules hybrides) ───────────────────
+// Port F3 `hybrid_period`/`hybrid_center`/`hybrid_size` pour une `Formula`
+// bytecode arbitraire (phases cycliques, ops non-conformes abs/neg). Le
+// Jacobien J = ∂(zx,zy)/∂(cx,cy) est un **mat2 de GMP Floats** — les abs
+// cassent la conformité, le dz complexe des variantes z²+c ne suffit plus.
+// Les variantes historiques restent le path single-phase Mandelbrot
+// (bit-identiques, goldens). Différences vs F3 : la détection de période
+// itère en FULL GMP (comme notre `find_period_atom_domain`) au lieu de la
+// perturbation floatexp F3 — plus lent mais exact et sans dépendance aux
+// références ; critère identique (K=I) : `|J⁻¹·z| < s` ⟺
+// `|adj(J)·z|² < s²·det(J)²` (sans inversion).
+
+use crate::fractal::bytecode::{Formula, Op, Phase};
+
+/// État valeur + Jacobien mat2 GMP pour itérer une formule avec dérivées.
+/// `j` (row-major `[j00, j01, j10, j11]`) est ∂(zx,zy)/∂(seed) : seed = c
+/// (mode période/Newton, `add_j=true` → `Op::Add` fait J += I) ou seed = z₀
+/// (mode size, `add_j=false` → J₀ = I, c constant).
+struct GmpDualMat2 {
+    zx: Float,
+    zy: Float,
+    j: [Float; 4],
+    /// Copies `Op::Store` (consommées par `Op::Mul`).
+    sx: Float,
+    sy: Float,
+    sj: [Float; 4],
+    prec: u32,
+}
+
+impl GmpDualMat2 {
+    fn new(prec: u32, zx: Float, zy: Float, j: [Float; 4]) -> Self {
+        Self {
+            sx: zx.clone(),
+            sy: zy.clone(),
+            sj: j.clone(),
+            zx,
+            zy,
+            j,
+            prec,
+        }
+    }
+
+    /// `M(w)·J` où `M(w) = [[wx, −wy],[wy, wx]]` (matrice de multiplication
+    /// complexe par w) — brique de la chain rule pour Sqr/Mul/Rot.
+    fn cmul_mat(prec: u32, wx: &Float, wy: &Float, j: &[Float; 4]) -> [Float; 4] {
+        let m = |a: &Float, b: &Float, c: &Float, d: &Float| -> Float {
+            let t1 = Float::with_val(prec, a * b);
+            let t2 = Float::with_val(prec, c * d);
+            t1 - t2
+        };
+        let p = |a: &Float, b: &Float, c: &Float, d: &Float| -> Float {
+            let t1 = Float::with_val(prec, a * b);
+            let t2 = Float::with_val(prec, c * d);
+            t1 + t2
+        };
+        [
+            m(wx, &j[0], wy, &j[2]), // j00' = wx·j00 − wy·j10
+            m(wx, &j[1], wy, &j[3]),
+            p(wy, &j[0], wx, &j[2]), // j10' = wy·j00 + wx·j10
+            p(wy, &j[1], wx, &j[3]),
+        ]
+    }
+
+    /// Applique toutes les ops d'une phase (une itération), avec chain rule.
+    fn step_phase(&mut self, phase: &Phase, cx: &Float, cy: &Float, add_j: bool) {
+        let prec = self.prec;
+        for op in &phase.ops {
+            match op {
+                Op::Sqr => {
+                    // J' = M(2z)·J puis z' = z² (valeurs PRÉ-step).
+                    let two_zx = Float::with_val(prec, &self.zx * 2u32);
+                    let two_zy = Float::with_val(prec, &self.zy * 2u32);
+                    self.j = Self::cmul_mat(prec, &two_zx, &two_zy, &self.j);
+                    let x2 = Float::with_val(prec, &self.zx * &self.zx);
+                    let y2 = Float::with_val(prec, &self.zy * &self.zy);
+                    let xy = Float::with_val(prec, &self.zx * &self.zy);
+                    self.zx = x2 - y2;
+                    self.zy = Float::with_val(prec, &xy * 2u32);
+                }
+                Op::Mul => {
+                    // z' = z·s : J' = M(s)·J + M(z)·Js (valeurs PRÉ-step).
+                    let ja = Self::cmul_mat(prec, &self.sx, &self.sy, &self.j);
+                    let jb = Self::cmul_mat(prec, &self.zx, &self.zy, &self.sj);
+                    for k in 0..4 {
+                        self.j[k] = Float::with_val(prec, &ja[k] + &jb[k]);
+                    }
+                    let ac = Float::with_val(prec, &self.zx * &self.sx);
+                    let bd = Float::with_val(prec, &self.zy * &self.sy);
+                    let ad = Float::with_val(prec, &self.zx * &self.sy);
+                    let bc = Float::with_val(prec, &self.zy * &self.sx);
+                    self.zx = ac - bd;
+                    self.zy = ad + bc;
+                }
+                Op::Store => {
+                    self.sx.assign(&self.zx);
+                    self.sy.assign(&self.zy);
+                    for k in 0..4 {
+                        self.sj[k].assign(&self.j[k]);
+                    }
+                }
+                Op::AbsX => {
+                    if self.zx.is_sign_negative() {
+                        self.zx = -self.zx.clone();
+                        self.j[0] = -self.j[0].clone();
+                        self.j[1] = -self.j[1].clone();
+                    }
+                }
+                Op::AbsY => {
+                    if self.zy.is_sign_negative() {
+                        self.zy = -self.zy.clone();
+                        self.j[2] = -self.j[2].clone();
+                        self.j[3] = -self.j[3].clone();
+                    }
+                }
+                Op::NegX => {
+                    self.zx = -self.zx.clone();
+                    self.j[0] = -self.j[0].clone();
+                    self.j[1] = -self.j[1].clone();
+                }
+                Op::NegY => {
+                    self.zy = -self.zy.clone();
+                    self.j[2] = -self.j[2].clone();
+                    self.j[3] = -self.j[3].clone();
+                }
+                Op::Add => {
+                    self.zx += cx;
+                    self.zy += cy;
+                    if add_j {
+                        self.j[0] += 1u32;
+                        self.j[3] += 1u32;
+                    }
+                }
+                Op::Rot { cos_theta, sin_theta } => {
+                    let rx = Float::with_val(prec, *cos_theta);
+                    let ry = Float::with_val(prec, *sin_theta);
+                    self.j = Self::cmul_mat(prec, &rx, &ry, &self.j);
+                    let ac = Float::with_val(prec, &self.zx * &rx);
+                    let bd = Float::with_val(prec, &self.zy * &ry);
+                    let ad = Float::with_val(prec, &self.zx * &ry);
+                    let bc = Float::with_val(prec, &self.zy * &rx);
+                    self.zx = ac - bd;
+                    self.zy = ad + bc;
+                }
+            }
+        }
+    }
+
+    fn norm_sqr(&self) -> Float {
+        let x2 = Float::with_val(self.prec, &self.zx * &self.zx);
+        let y2 = Float::with_val(self.prec, &self.zy * &self.zy);
+        x2 + y2
+    }
+
+    fn det_j(&self) -> Float {
+        let a = Float::with_val(self.prec, &self.j[0] * &self.j[3]);
+        let b = Float::with_val(self.prec, &self.j[1] * &self.j[2]);
+        a - b
+    }
+}
+
+/// Degré d'une phase (F3 `param.cc:948` : sqr → ×2, mul → + stored, store →
+/// snapshot). Mandelbrot/BS/Tricorn/… = 2 ; Multibrot n = n.
+fn phase_degree(phase: &Phase) -> f64 {
+    let mut q: f64 = 1.0;
+    let mut sq: f64 = 1.0;
+    for op in &phase.ops {
+        match op {
+            Op::Sqr => q *= 2.0,
+            Op::Store => sq = q,
+            Op::Mul => q += sq,
+            _ => {}
+        }
+    }
+    q.max(1.0)
+}
+
+/// Période atom-domain pour une formule hybride (mode d/dC, mat2).
+/// Critère F3 (K=I) : `|adj(J)·z|² < s²·det(J)²`.
+pub fn find_period_atom_domain_formula(
+    formula: &Formula,
+    cx: &Float,
+    cy: &Float,
+    max_iter: u32,
+    s: &Float,
+    prec: u32,
+) -> Option<u32> {
+    let n_phases = formula.phases.len().max(1);
+    let bailout_sqr = Float::with_val(prec, 1e120);
+    let s_sqr = Float::with_val(prec, s * s);
+    let zero = Float::with_val(prec, 0);
+    let mut st = GmpDualMat2::new(
+        prec,
+        zero.clone(),
+        zero.clone(),
+        [zero.clone(), zero.clone(), zero.clone(), zero.clone()],
+    );
+
+    for n in 1..=max_iter {
+        let ph = &formula.phases[((n - 1) as usize) % n_phases];
+        st.step_phase(ph, cx, cy, true);
+
+        let z_norm = st.norm_sqr();
+        if z_norm > bailout_sqr {
+            return None;
+        }
+        // adj(J)·z = (j11·zx − j01·zy, −j10·zx + j00·zy)
+        let vx = {
+            let a = Float::with_val(prec, &st.j[3] * &st.zx);
+            let b = Float::with_val(prec, &st.j[1] * &st.zy);
+            a - b
+        };
+        let vy = {
+            let a = Float::with_val(prec, &st.j[0] * &st.zy);
+            let b = Float::with_val(prec, &st.j[2] * &st.zx);
+            a - b
+        };
+        let lhs = {
+            let a = Float::with_val(prec, &vx * &vx);
+            let b = Float::with_val(prec, &vy * &vy);
+            a + b
+        };
+        let det = st.det_j();
+        let rhs = {
+            let d2 = Float::with_val(prec, &det * &det);
+            Float::with_val(prec, &s_sqr * &d2)
+        };
+        if lhs < rhs {
+            return Some(n);
+        }
+    }
+    None
+}
+
+/// Newton 2D vers `z_period(c) = 0` pour une formule hybride (F3
+/// `hybrid_center` : solve J·Δ = −z par itération, mat2 GMP).
+pub fn newton_refine_center_formula(
+    formula: &Formula,
+    cx_in: &Float,
+    cy_in: &Float,
+    period: u32,
+    prec: u32,
+    max_steps: u32,
+) -> NucleusResult {
+    let n_phases = formula.phases.len().max(1);
+    let mut cx = cx_in.clone();
+    let mut cy = cy_in.clone();
+
+    let exp_target: i32 = 16i32.saturating_sub(2i32.saturating_mul(prec as i32));
+    let mut epsilon_sqr = Float::with_val(prec, 1.0);
+    if exp_target >= 0 {
+        epsilon_sqr <<= exp_target as u32;
+    } else {
+        epsilon_sqr >>= (-exp_target) as u32;
+    }
+
+    let mut best_z_norm_sqr: Option<Float> = None;
+    let mut best_cx = cx.clone();
+    let mut best_cy = cy.clone();
+    let mut converged = false;
+    let mut steps_done = 0;
+
+    for step in 0..max_steps {
+        let zero = Float::with_val(prec, 0);
+        let mut st = GmpDualMat2::new(
+            prec,
+            zero.clone(),
+            zero.clone(),
+            [zero.clone(), zero.clone(), zero.clone(), zero.clone()],
+        );
+        for i in 0..period {
+            let ph = &formula.phases[(i as usize) % n_phases];
+            st.step_phase(ph, &cx, &cy, true);
+        }
+        // Best-seen sur |z_period|² (mirror variante z²+c).
+        let z_norm = st.norm_sqr();
+        let improved = match &best_z_norm_sqr {
+            None => true,
+            Some(b) => z_norm < *b,
+        };
+        if improved {
+            best_z_norm_sqr = Some(z_norm.clone());
+            best_cx.assign(&cx);
+            best_cy.assign(&cy);
+        }
+        // Newton : Δ = −J⁻¹·z ⇒ u = −(j11·x − j01·y)/det ; v = −(−j10·x + j00·y)/det.
+        let det = st.det_j();
+        if det == 0 {
+            break;
+        }
+        let u = {
+            let a = Float::with_val(prec, &st.j[3] * &st.zx);
+            let b = Float::with_val(prec, &st.j[1] * &st.zy);
+            let num = a - b;
+            -(num / &det)
+        };
+        let v = {
+            let a = Float::with_val(prec, &st.j[0] * &st.zy);
+            let b = Float::with_val(prec, &st.j[2] * &st.zx);
+            let num = a - b;
+            -(num / &det)
+        };
+        cx += &u;
+        cy += &v;
+        steps_done = step + 1;
+        let delta = {
+            let a = Float::with_val(prec, &u * &u);
+            let b = Float::with_val(prec, &v * &v);
+            a + b
+        };
+        if delta < epsilon_sqr {
+            converged = true;
+            // Le dernier pas améliore par construction (delta sous epsilon).
+            best_cx.assign(&cx);
+            best_cy.assign(&cy);
+            break;
+        }
+    }
+
+    NucleusResult {
+        center_x: best_cx,
+        center_y: best_cy,
+        period,
+        newton_steps: steps_done,
+        converged,
+    }
+}
+
+/// Size + matrice K pour un nucleus de formule hybride (port F3 `hybrid_size`,
+/// aligné sur la SÉMANTIQUE VALIDÉE de `hybrid_size_mat2` z²+c : J₀ = I et
+/// récurrence d/dC (`Op::Add` fait J += I — la lettre F3 met dC=0, mais notre
+/// variante z²+c historique, validée corpus P1.6.b sur les minibrots
+/// non-axis-aligned, inclut le +I ; [M,M] doit lui être identique) ; degré =
+/// moyenne géométrique des degrés de phase ; `b += inv(l)` par pas ;
+/// `s = 1/(λ^d·β)` ; `K = inv(transp(b))/β`.
+pub fn hybrid_size_mat2_formula(
+    formula: &Formula,
+    cx: &Float,
+    cy: &Float,
+    period: u32,
+    prec: u32,
+) -> Option<HybridSize> {
+    if period == 0 {
+        return None;
+    }
+    let n_phases = formula.phases.len().max(1);
+    let one = Float::with_val(prec, 1);
+    let zero = Float::with_val(prec, 0);
+    // Z₀ = C, J₀ = I (d/dZ).
+    let mut st = GmpDualMat2::new(
+        prec,
+        cx.clone(),
+        cy.clone(),
+        [one.clone(), zero.clone(), zero.clone(), one.clone()],
+    );
+    // b = I ; log-degré accumulé (phase 0 comprise, F3 init log_degree = log(deg[0])).
+    let mut b = [one.clone(), zero.clone(), zero.clone(), one];
+    let mut log_degree = phase_degree(&formula.phases[0]).ln();
+    let bailout_sqr = Float::with_val(prec, 1e120);
+
+    for jstep in 1..period {
+        let ph = &formula.phases[(jstep as usize) % n_phases];
+        st.step_phase(ph, cx, cy, true);
+        log_degree += phase_degree(ph).ln();
+        if st.norm_sqr() > bailout_sqr {
+            return None;
+        }
+        // b += inv(l) où l = J courant.
+        let det = st.det_j();
+        if det == 0 {
+            return None;
+        }
+        // inv(l) = adj(l)/det = [[j11, −j01],[−j10, j00]]/det
+        let inv = [
+            Float::with_val(prec, &st.j[3] / &det),
+            Float::with_val(prec, -Float::with_val(prec, &st.j[1] / &det)),
+            Float::with_val(prec, -Float::with_val(prec, &st.j[2] / &det)),
+            Float::with_val(prec, &st.j[0] / &det),
+        ];
+        for k in 0..4 {
+            b[k] += &inv[k];
+        }
+    }
+
+    let degree = (log_degree / period as f64).exp().max(1.0 + 1e-9);
+    let d = degree / (degree - 1.0);
+
+    // λ = √|det l| ; β = √|det b| — en FloatExp (les dets débordent f64).
+    let gmp_to_fexp = |f: &Float| -> FloatExp {
+        let (m, e) = f.to_f64_exp();
+        FloatExp::new(m, e)
+    };
+    let det_l = st.det_j();
+    let det_b = {
+        let a = Float::with_val(prec, &b[0] * &b[3]);
+        let bb = Float::with_val(prec, &b[1] * &b[2]);
+        a - bb
+    };
+    let det_l_fexp = {
+        let mut v = gmp_to_fexp(&det_l);
+        if v.mantissa < 0.0 {
+            v.mantissa = -v.mantissa;
+        }
+        v
+    };
+    let det_b_fexp = {
+        let mut v = gmp_to_fexp(&det_b);
+        if v.mantissa < 0.0 {
+            v.mantissa = -v.mantissa;
+        }
+        v
+    };
+    if det_l_fexp.mantissa == 0.0 || det_b_fexp.mantissa == 0.0 {
+        return None;
+    }
+    let lambda = floatexp_sqrt(det_l_fexp);
+    let beta = floatexp_sqrt(det_b_fexp);
+    // llb = exp(log(λ)·d)·β ; size = 1/llb. log(λ) via mantisse+exposant.
+    let log_lambda = lambda.mantissa.ln() + (lambda.exponent as f64) * std::f64::consts::LN_2;
+    let log_llb = log_lambda * d + beta.mantissa.ln() + (beta.exponent as f64) * std::f64::consts::LN_2;
+    // size = exp(−log_llb) → FloatExp via base 2.
+    let log2_size = -log_llb / std::f64::consts::LN_2;
+    let e = log2_size.floor();
+    let size = FloatExp::new(2.0_f64.powf(log2_size - e), e as i32);
+
+    // K = inv(transp(b))/β. transp(b) = [b0, b2, b1, b3] ;
+    // inv = adj/det ; adj(transp) = [[b3, −b1],[−b2, b0]]... en f64 via ratios
+    // normalisés par β (les b peuvent déborder f64 → normaliser par det_b).
+    let beta_f = beta;
+    let k = {
+        // inv(transp(b)) = adj(transp(b))/det(transp(b)) ; det(transp) = det_b.
+        // adj(transp(b)) row-major = [b[3], -b[2], -b[1], b[0]].
+        let db = det_b;
+        let el = |num: &Float, neg: bool| -> f64 {
+            let r = Float::with_val(prec, num / &db);
+            let r_fexp = gmp_to_fexp(&r);
+            // divisé ensuite par β : (r/β) en FloatExp → f64
+            let scaled = FloatExp::new(r_fexp.mantissa, r_fexp.exponent)
+                .div(beta_f);
+            let v = scaled.to_f64();
+            if neg { -v } else { v }
+        };
+        [el(&b[3], false), el(&b[2], true), el(&b[1], true), el(&b[0], false)]
+    };
+
+    Some(HybridSize { size, k })
+}
+
+/// Pipeline complet phase-aware : période atom-domain (mat2) → Newton →
+/// (size/K au caller). Mirror de `find_nucleus`.
+pub fn find_nucleus_formula(
+    formula: &Formula,
+    cx: &Float,
+    cy: &Float,
+    max_iter: u32,
+    s: &Float,
+    prec: u32,
+) -> Option<NucleusResult> {
+    let period = find_period_atom_domain_formula(formula, cx, cy, max_iter, s, prec)?;
+    let result = newton_refine_center_formula(formula, cx, cy, period, prec, 64);
+    Some(result)
+}
+
 /// Helper : centre complexe → (Float, Float).
 #[allow(dead_code)]
 pub fn complex_to_xy(c: &Complex, prec: u32) -> (Float, Float) {
@@ -631,6 +1093,125 @@ pub fn complex_to_xy(c: &Complex, prec: u32) -> (Float, Float) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Jalon 5f — verrou [M,M]** : la formule hybride [Mandelbrot,
+    /// Mandelbrot] via l'interpréteur mat2 DOIT trouver la même période et le
+    /// même centre (à epsilon près) que le path z²+c historique sur un
+    /// satellite connu.
+    #[test]
+    fn formula_mm_nucleus_matches_z2c() {
+        use crate::fractal::bytecode::compile_hybrid_formula;
+        use crate::fractal::FractalType;
+        let prec = 128u32;
+        let cx = Float::with_val(prec, -1.7548);
+        let cy = Float::with_val(prec, 0.0002);
+        let s = Float::with_val(prec, 1e-3);
+
+        let p_z2c = find_period_atom_domain(&cx, &cy, 1000, &s, prec)
+            .expect("période z²+c");
+        let f = compile_hybrid_formula(
+            &[FractalType::Mandelbrot, FractalType::Mandelbrot],
+            2.0,
+        )
+        .expect("formule [M,M]");
+        let p_mm = find_period_atom_domain_formula(&f, &cx, &cy, 1000, &s, prec)
+            .expect("période [M,M]");
+        assert_eq!(p_mm, p_z2c, "période mat2 ≠ z²+c");
+
+        let r_z2c = newton_refine_center(&cx, &cy, p_z2c, prec, 64);
+        let r_mm = newton_refine_center_formula(&f, &cx, &cy, p_mm, prec, 64);
+        let dx = Float::with_val(prec, &r_mm.center_x - &r_z2c.center_x)
+            .abs()
+            .to_f64();
+        let dy = Float::with_val(prec, &r_mm.center_y - &r_z2c.center_y)
+            .abs()
+            .to_f64();
+        assert!(dx < 1e-20 && dy < 1e-20, "centres divergent : dx={dx:e} dy={dy:e}");
+
+        // Size/K : mêmes valeurs (J conforme ⇒ mat2 ≡ complexe).
+        let s_z2c = hybrid_size_mat2(&r_z2c.center_x, &r_z2c.center_y, p_z2c, prec)
+            .expect("size z²+c");
+        let s_mm = hybrid_size_mat2_formula(&f, &r_mm.center_x, &r_mm.center_y, p_mm, prec)
+            .expect("size [M,M]");
+        let ratio = s_mm.size.div(s_z2c.size).to_f64();
+        assert!(
+            (ratio - 1.0).abs() < 1e-6,
+            "size mat2/z²+c = {ratio} (attendu 1)"
+        );
+        for k in 0..4 {
+            assert!(
+                (s_mm.k[k] - s_z2c.k[k]).abs() < 1e-6,
+                "K[{k}] : {} vs {}",
+                s_mm.k[k],
+                s_z2c.k[k]
+            );
+        }
+    }
+
+    /// **Jalon 5f — nucleus GENUINE [M,BS]** : le blob lisse du set hybride
+    /// (trouvé au jalon 5e, ~(-0.4744, -0.6327), taille ~1e-6) est un
+    /// mini-set du hybride. Le pipeline formule doit trouver sa période,
+    /// converger vers un centre proche, et donner une taille plausible.
+    #[test]
+    fn formula_mbs_nucleus_finds_blob() {
+        use crate::fractal::bytecode::compile_hybrid_formula;
+        use crate::fractal::FractalType;
+        let prec = 192u32;
+        // Point PRÈS du blob (pas son centre exact) — le finder doit s'y caler.
+        let cx = Float::with_val(prec, -0.474404979221344);
+        let cy = Float::with_val(prec, -0.6327382500546773);
+        let s = Float::with_val(prec, 2e-6);
+        let f = compile_hybrid_formula(
+            &[FractalType::Mandelbrot, FractalType::BurningShip],
+            2.0,
+        )
+        .expect("formule [M,BS]");
+        let period = find_period_atom_domain_formula(&f, &cx, &cy, 20000, &s, prec)
+            .expect("période blob [M,BS]");
+        assert!(period > 0);
+        let r = newton_refine_center_formula(&f, &cx, &cy, period, prec, 64);
+        // Le centre raffiné doit rester dans le voisinage du blob (~qq 1e-6).
+        let dx = Float::with_val(prec, &r.center_x - &cx).abs().to_f64();
+        let dy = Float::with_val(prec, &r.center_y - &cy).abs().to_f64();
+        assert!(
+            dx < 1e-4 && dy < 1e-4,
+            "centre parti trop loin : dx={dx:e} dy={dy:e} (period={period})"
+        );
+        // Vérité indépendante : le centre trouvé est PÉRIODIQUE — itérer la
+        // formule period fois depuis 0 en GMP pur (interp valeur seule) doit
+        // revenir ~0 (|z_period| ≪ taille du blob).
+        let zero = Float::with_val(prec, 0);
+        let mut st = GmpDualMat2::new(
+            prec,
+            zero.clone(),
+            zero.clone(),
+            [zero.clone(), zero.clone(), zero.clone(), zero.clone()],
+        );
+        for i in 0..period {
+            let ph = &f.phases[(i as usize) % f.phases.len()];
+            st.step_phase(ph, &r.center_x, &r.center_y, true);
+        }
+        let z_end = st.norm_sqr().to_f64().sqrt();
+        assert!(
+            z_end < 1e-9,
+            "|z_period({period})| = {z_end:e} au centre raffiné (attendu ~0)"
+        );
+        // Size finie positive (la sonde au BORD du blob peut converger vers un
+        // satellite bien plus petit que le blob lui-même — correct : le
+        // voisinage d'un bord contient des minibrots arbitrairement petits).
+        let hs = hybrid_size_mat2_formula(&f, &r.center_x, &r.center_y, period, prec)
+            .expect("size [M,BS]");
+        let sz = hs.size.to_f64();
+        assert!(
+            sz.is_finite() && sz > 0.0 && sz < 1e-2,
+            "size {sz:e} non plausible"
+        );
+        assert!(hs.k.iter().all(|v| v.is_finite()), "K non finie : {:?}", hs.k);
+        eprintln!(
+            "[MBS-NUCLEUS] period={period} newton_steps={} converged={} size={sz:e} K={:?}",
+            r.newton_steps, r.converged, hs.k
+        );
+    }
 
     #[test]
     fn nucleus_main_cardioid_seed_converges_to_zero() {

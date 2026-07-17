@@ -1035,9 +1035,28 @@ pub fn compute_reference_orbit_cached(
             f
         };
         let t_nucleus = Instant::now();
-        if let Some(result) = crate::fractal::perturbation::nucleus::find_nucleus(
-            &cx, &cy, adjusted_params.iteration_max, &s_gmp, prec,
-        ) {
+        // G4 jalon 5f : nucleus PHASE-AWARE — un hybride (fractal_type ==
+        // Mandelbrot + hybrid_phases) route vers les variantes formule
+        // (Jacobien mat2 GMP par opcode, cf. nucleus.rs GmpDualMat2) ; le
+        // single-phase garde le path z²+c historique (bit-identique).
+        let nucleus_hybrid_formula: Option<Formula> = if adjusted_params
+            .hybrid_phases
+            .as_ref()
+            .is_some_and(|p| !p.is_empty())
+        {
+            crate::fractal::bytecode::formula_for_params(&adjusted_params)
+        } else {
+            None
+        };
+        let nucleus_result = match nucleus_hybrid_formula.as_ref() {
+            Some(f) => crate::fractal::perturbation::nucleus::find_nucleus_formula(
+                f, &cx, &cy, adjusted_params.iteration_max, &s_gmp, prec,
+            ),
+            None => crate::fractal::perturbation::nucleus::find_nucleus(
+                &cx, &cy, adjusted_params.iteration_max, &s_gmp, prec,
+            ),
+        };
+        if let Some(result) = nucleus_result {
             if perf {
                 eprintln!(
                     "[NUCLEUS] found period={} after {} Newton steps in {:.3}s — re-centering",
@@ -1057,12 +1076,22 @@ pub fn compute_reference_orbit_cached(
             // de K aligne le frame de rendu sur celui du minibrot, sinon les
             // pixels échantillonnent à travers les branches voisines.
             let t_size = Instant::now();
-            match crate::fractal::perturbation::nucleus::hybrid_size_mat2(
-                &result.center_x,
-                &result.center_y,
-                result.period,
-                prec,
-            ) {
+            let size_result = match nucleus_hybrid_formula.as_ref() {
+                Some(f) => crate::fractal::perturbation::nucleus::hybrid_size_mat2_formula(
+                    f,
+                    &result.center_x,
+                    &result.center_y,
+                    result.period,
+                    prec,
+                ),
+                None => crate::fractal::perturbation::nucleus::hybrid_size_mat2(
+                    &result.center_x,
+                    &result.center_y,
+                    result.period,
+                    prec,
+                ),
+            };
+            match size_result {
                 Some(hs) => {
                     // F3 remplace `transform.rotate` par la matrice K (cf.
                     // engine.cc:208-212). On suit cette sémantique : la
