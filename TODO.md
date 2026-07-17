@@ -8,6 +8,47 @@
 > 15 modes de coloring, 7 plane transforms, fractales non-escape-time, GUI
 > interactive, drag-drop PNG). Voir [§Ne pas régresser](#-ne-pas-régresser).
 
+---
+
+## 🧭 État actuel (2026-07-17) — lire ceci en premier
+
+**Moteur : 0 gap mesuré.** harness quick + standard-speed + wisdom-optimality
+verts, bat F3 partout (geomean speed ~0.18, 25/25 wins). 271 unit CLI + 24 golden
+pixel-exact + quality 15/15 PASS.
+
+**FAIT :**
+- **Correction (G1-G3)** : parité F3 sur le corpus (84 cas), 0 régression, validée
+  jusqu'à zoom **1e1200**. Période Brent OFF par défaut (opt-in `FRACTALL_PERIOD=1`).
+- **Perf deep-zoom (G2)** : **rebase-at-end F3** → plus de fallback GMP par-pixel
+  (e50 544→1.6 s, e1000 742→0.5 s, dragon ~6 h→6.5 s à 256²). Escalade **tier dd**
+  quand `glitch_ratio > 0.30` (Mandelbrot bytecode) au lieu du full-GMP per-pixel
+  (~4-8× plus rapide, pixel-exact GMP ; `perturbation/mod.rs:1777`).
+- **Wisdom (G9.1-G9.5)** : plan unique {device, algo, tier, variantes} +
+  benchmarks machine (`--wisdom-bench` → `~/.config/fractall/wisdom.toml`).
+  **Auto-device G9.5** : `wisdom::select_device(params, gpu_available)`
+  (`wisdom.rs:294`) arbitre CPU/GPU par débit benché SOUS garde-fou correction
+  (GPU routé uniquement dans la plage deep both-perturbation ~1e12–4e37, JAMAIS
+  sur shaders std f32 24 b). CLI `--gpu`/`--no-gpu` = overrides, sinon Auto ;
+  GUI menu « Tech: 🔄 Auto ». Sur GPU grand public (f64 1:64) l'auto reste CPU.
+- **GUI temps-réel (G10)** : réutilisation orbite (G10.2), recolorisation
+  sans clone (G10.3), pixels XaoS colonnes/lignes (G10.4/b), file de tuiles
+  priorité-centre + streaming (G10.5), warp GPU molette (G10.1, signe Y corrigé).
+- **Hybrides (G4 jalon 1)** : `compile_hybrid_formula(&[FractalType], power)`
+  (`bytecode/compile.rs:35`) compile une formule bytecode multi-phase (1 phase/type,
+  cyclées). Infra multi-phase (GmpInterpState, orbit, pixel loop) déjà en place.
+- **Durcissements** : gate `!bytecode_path` sur le 2e bloc glitch récursif
+  (`mod.rs:1634`, supprimait ~3.4 % structure spurious à >512²) ; golden
+  `mandelbrot_interior_ref_640` (seul cas >512², exerce l'escalade dd).
+
+**RESTE :**
+- **G4 jalon 2** : câbler `params.hybrid_phases` → les ~9 callsites `compile_formula`
+  (orbit/delta/iterations/gpu/wisdom) + vérifier hybride == GMP ; puis BLA
+  par phase + nucleus phase-aware + UI.
+- **G6** : durcir/étendre le corpus golden.
+- **G9.6** : fiabilité → escalade tier auto (px→dd/frame→dd) — marginal.
+
+---
+
 **État (2026-05-21)** — Socle solide :
 - Moteur **bytecode unifié** (8 opcodes) sur CPU + GPU : un seul pixel-loop
   couvre Mandelbrot/Julia/BurningShip/Tricorn/Celtic/Buffalo/PerpBS/Multibrot

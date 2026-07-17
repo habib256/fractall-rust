@@ -20,14 +20,17 @@ Prérequis natifs : GMP / MPFR / MPC (pour `rug`).
 
 ## Tests
 
-- **Unit tests** : `cargo test --release --bin fractall-cli` (~178 tests).
+- **Unit tests** : `cargo test --release --bin fractall-cli` (~271 tests).
   Couvre `perturbation/{bla,delta,series,nonconformal,distance,interior,
   glitch,orbit,types,nucleus,mod}`, `jitter` (AA), `lyapunov`, `progressive`,
-  et tout le `bytecode/` (`compile`, `interp{,_gmp}`, `bla_dual`, `delta_form`,
+  `wisdom` (select_algorithm/device, plan), et tout le `bytecode/` (`compile`
+  + `compile_hybrid_formula`, `interp{,_gmp}`, `bla_dual`, `delta_form`,
   `pixel_loop{,_exp}`).
-- **Golden image tests** (`tests/golden_images.rs`) : 21 cas pixel-exact —
-  paths f64 standard, perturbation, deep zoom GMP, types non-bytecode, zooms
-  intermédiaires (1e10/1e15/1e20, path perturbation par défaut), atom-domain.
+- **Golden image tests** (`tests/golden_images.rs`) : 24 cas pixel-exact
+  (goldens forcent `--no-gpu` pour déterminisme cross-machine) — paths f64
+  standard, perturbation, deep zoom GMP, types non-bytecode, zooms
+  intermédiaires (1e10/1e15/1e20, path perturbation par défaut), atom-domain,
+  et `mandelbrot_interior_ref_640` (SEUL cas >512², exerce l'escalade dd).
   - Lancer : `cargo test --release --test golden_images`
   - Régénérer : `FRACTALL_UPDATE_GOLDENS=1 cargo test --release --test
     golden_images`. **Toujours** vérifier visuellement les nouveaux PNG.
@@ -80,7 +83,7 @@ src/
 │   ├── orbit_traps.rs   # Point, Line, Cross, Circle
 │   ├── bytecode/        # Moteur unifié Fraktaler-3 (P3.1, défaut)
 │   │   ├── mod.rs          # Op, Phase, Formula
-│   │   ├── compile.rs      # compile_formula(type, multibrot_power)
+│   │   ├── compile.rs      # compile_formula(type, power) + compile_hybrid_formula (G4 j1)
 │   │   ├── interp.rs       # iterate_bytecode_f64
 │   │   ├── interp_gmp.rs   # interpréteur GMP pour orbite référence
 │   │   ├── delta_form.rs   # DeltaState f64 + DeltaStateExp ComplexExp
@@ -201,6 +204,17 @@ référence, et renvoie `None` quand le GPU ne peut pas → le caller fait le
 fallback CPU via le dispatcher unique. **Ne plus dupliquer ce choix dans
 `main.rs`/`gui/app.rs`.**
 
+**Auto-device (G9.5)** : `wisdom::select_device(params, gpu_available) ->
+Device` (`fractal/wisdom.rs`) arbitre CPU/GPU par débit benché machine
+(`fractall-cli --wisdom-bench` → `~/.config/fractall/wisdom.toml`, clés dont
+`gpu_perturb_f64`) SOUS garde-fou correction : GPU routé UNIQUEMENT dans la
+plage deep both-perturbation (les deux devices font de la perturbation, ~1e12
+à 4e37) ; JAMAIS sur les shaders std f32 (24 b = faux). Arbitrage final
+`arbitrate_device` : GPU si `gpu_thr > cpu_thr · GPU_SPEED_MARGIN` (les deux
+benchés). Sur GPU grand public (f64 1:64) l'auto reste CPU. Consommé par
+`main.rs` (`use_gpu`), `gui/app.rs` (menu « Tech: 🔄 Auto »), CLI overrides
+`--gpu`/`--no-gpu`. Goldens forcent `--no-gpu`.
+
 ```
 AlgorithmMode::Auto :
   - Spéciaux : VonKoch/Dragon → vectoriel ; Buddha* → densité ;
@@ -230,6 +244,13 @@ Si `params.use_bytecode_engine` ET `compile_formula(type, power)` réussit :
   par-pixel — c'est ce qui a débloqué la perf deep-zoom (e50 544→1.6 s, e1000
   742→0.5 s, dragon ~6 h→6.5 s à 256², cf. TODO G2). ⚠️ Lire `z_ref[m]` avec `m`
   clampé à `ref_len-1` (après un pas, `m` peut valoir `ref_len`).
+  **Fallback correction** (Mandelbrot bytecode, `perturbation/mod.rs`) : quand
+  `glitch_ratio > GLITCH_FALLBACK_THRESHOLD` (0.30), on **escalade au tier dd**
+  (`[DD-ESCALATION]`, re-render pixel-exact GMP ~4-8× plus rapide) au lieu du
+  backstop full-GMP per-pixel. Les blocs de résolution glitch récursive
+  (neighbor-pass, secondary-refs, réf-intérieure `l.1623`) sont tous gatés
+  `!bytecode_path` : sans le gate, la 2e passe réf-intérieure supprimait le
+  fallback GMP à >512² → ~3.4 % de structure spurious.
 - **GPU** : `gpu/mod.rs::try_render_bytecode` → `bytecode_kernel.wgsl`.
 
 Fallback legacy si : type non compilable, `--no-bytecode`, ou GMP deep zoom
@@ -267,6 +288,14 @@ sensibilité** (l'échelle wisdom est livrée, cf. §Wisdom ci-dessous) et
 **nucleus phase-aware** pour les hybrides. La rotation de vue est gérée au
 pixel→c (CPU + GPU bytecode) ; `Op::Rot` reste un opcode CPU dormant, utile
 seulement pour une rotation *par phase* (TODO G4).
+
+### Hybrides multi-phase (G4 jalon 1, `bytecode/compile.rs`)
+
+`compile_hybrid_formula(&[FractalType], power)` compile une formule bytecode
+MULTI-PHASE (une phase par type, cyclées). **Compilation prête + testée** ;
+le câblage render (`params.hybrid_phases`) est le jalon 2 (pas encore fait).
+L'infra multi-phase (`GmpInterpState` cycle les phases, reference orbit +
+pixel loop multi-phase) préexistait.
 
 ### Wisdom auto-dispatch (`fractal/wisdom.rs`, 2026-07-12 · G9.1 2026-07-15)
 
@@ -307,7 +336,7 @@ mantisse** — l'escalade f64→exp se fait sur l'**exposant** (profondeur), jam
 la mantisse (vérifié : à 1e300, `req_exp=1003` mais `req_prec=8`). Le tier **dd
 (~106 b)** reste opt-in (`--dd-tier`) : son besoin vient d'une sensibilité pixel
 non captée par un détecteur cheap fiable (proxy `cbits` réfuté, cf. TODO G3).
-Seuils calibrés **préservés** (208 unit + 21 golden pixel-exact + sweep-lock).
+Seuils calibrés **préservés** (271 unit + 24 golden pixel-exact + sweep-lock).
 
 ### Précision GMP perturbation
 
@@ -345,7 +374,7 @@ que la réutilisation GUI multi-frame ; les rendus single-shot (CLI/quality/harn
 | `find_nucleus` | nucleus Mandelbrot avant orbit | false |
 | `jitter_scale` | amplitude AA sous-pixel (px) | 0.0 |
 | `aa_subpixel_offset` | offset AA transitoire (`#[serde(skip)]`, posé par la boucle multi-sample) | `[0,0]` |
-| `rotation` | rad CCW, mat2(cos,-sin,sin,cos) | 0.0 |
+| `rotation` | degrés CCW, mat2(cos,-sin,sin,cos) | 0.0 |
 
 ⚠️ **`max_perturb_iterations` / `max_bla_steps` : clampés à `≥ iteration_max`**
 dans `render_perturbation_with_cache` (chemin commun). Comme `iters_ptb ≤ n <
@@ -452,7 +481,7 @@ fractall-cli --type N --output FILE [OPTIONS]
   --aa-samples N          # AA multi-sample jitteré (1 = off), CPU only
   --jitter-scale F        # amplitude jitter sous-pixel (px, défaut 1.0)
   --plane N (0-6)
-  --rotation RAD          # F3-style mat2 rotation (CPU + GPU bytecode)
+  --rotation DEG          # F3-style mat2 rotation, degrés CCW (CPU + GPU bytecode)
   --find-nucleus          # Mandelbrot nucleus refine (atom-domain)
   --dd-tier               # tier double-double ~106b (spirales deep sensibles)
   --no-bytecode           # désactive bytecode (debug)

@@ -26,7 +26,9 @@ Fractall is a high-performance fractal explorer written in Rust, featuring GPU r
 
 ### GPU-Accelerated Rendering
 - Powered by **wgpu** (Vulkan, Metal, DX12)
+- **Automatic CPU/GPU device selection** (G9.5): by default Fractall picks the faster device per view from machine benchmarks, and only ever routes to the GPU where correctness is guaranteed (the deep perturbation range where both devices use f64 perturbation). Force it either way with `--gpu` / `--no-gpu`. On consumer GPUs with slow f64 (typically 1:64), the auto choice stays on the CPU.
 - f32 shaders on GPU — automatic CPU fallback past ~10⁷ zoom or for types without a dedicated shader
+- Native-f64 perturbation kernel (requires `SHADER_F64`; not available on Metal → CPU fallback) verified against GMP up to ~10³⁰
 - Unified bytecode kernel extends GPU coverage to Tricorn / Celtic / Buffalo / Perp. Burning Ship / Multibrot without writing per-type shaders
 - Plane rotation applied at pixel→c on the GPU bytecode path (parity with the CPU and Fraktaler-3)
 - Progressive rendering: instant previews, full quality follows
@@ -152,14 +154,23 @@ Anti-aliasing
 
 Algorithm
     --algorithm <MODE>      auto | f64 | perturbation | gmp
+    --gmp                   Force high-precision (GMP/rug) computation
     --precision-bits <N>    GMP precision floor [default: 256]
     --bailout <F>           Escape radius |z| ≥ bailout [default: 25, F3-aligned;
                             per-type for special semantics]
     --plane <N>             Plane transform 0-6 (mu, 1/mu, lambda, …)
-    --rotation <RAD>        F3-style mat2(cos,-sin,sin,cos) plane rotation
+    --rotation <DEG>        F3-style plane rotation in degrees (CCW)
     --find-nucleus          Snap Mandelbrot center to exact minibrot nucleus
                             (Newton + atom-domain period detection)
+    --dd-tier               Double-double (~106-bit) perturbation tier for
+                            ultra-sensitive deep-zoom Mandelbrot spirals where
+                            f64 (53-bit) saturates. Slower (~10×); Mandelbrot
+                            escape-time only.
     --no-bytecode           Disable the unified bytecode engine (debug only)
+
+Device (auto-selected by default, see GPU section)
+    --gpu                   Force GPU (override wisdom auto-selection)
+    --no-gpu                Force CPU (override wisdom auto-selection)
 
 Perturbation tuning
     --bla-threshold <F>
@@ -170,7 +181,6 @@ Advanced features
     --enable-distance-estimation
     --enable-interior-detection
     --interior-threshold <F>  [default: 0.001]
-    --gpu                     Use GPU (Metal/Vulkan/DX12) when available
 
 Type-specific
     --multibrot-power <F>     Power for Multibrot [default: 2.5]
@@ -182,8 +192,16 @@ Batch loader
                               from a lightweight rust-fractal-core TOML
                               (auto-routes to Mandelbrot if --type omitted)
 
-Output
-    --output <FILE>           Output PNG (embeds JSON metadata)
+Output & diagnostics
+    --output <FILE>           Output PNG (embeds JSON metadata). Required
+                              except with --wisdom-bench
+    --export-iterations <F.exr>  Also export raw iterations as a Fraktaler-3
+                              style EXR (channels N0 = iter, NF = smooth
+                              fraction) for apples-to-apples comparison
+    --wisdom-bench            Benchmark the render techniques on this machine
+                              and persist per-technique throughput to
+                              ~/.config/fractall/wisdom.toml (feeds the auto
+                              device/tier selection). No --output needed
 ```
 
 ### Examples
@@ -211,8 +229,11 @@ fractall-cli --type 4 --center-x=-0.8 --center-y=0.156 --output julia.png
 # Lyapunov fractal (Zircon City preset)
 fractall-cli --type 17 --lyapunov-preset zircon-city --output lyapunov.png
 
-# GPU-accelerated deep zoom Mandelbrot
+# Force the GPU (device is auto-selected by default — see the GPU section)
 fractall-cli --type 3 --gpu --zoom 5e6 --iterations 2000 --output gpu_deep.png
+
+# Benchmark this machine so the auto device/tier selection is calibrated
+fractall-cli --wisdom-bench
 ```
 
 ## Technical Highlights
