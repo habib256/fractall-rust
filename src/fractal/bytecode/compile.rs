@@ -14,47 +14,66 @@ use crate::fractal::FractalType;
 /// (la décomposition en `Sqr`+`Mul` ne supporte que les puissances entières).
 /// Pour les puissances non-entières, retourne `None` (le path `powf` reste actif).
 pub fn compile_formula(ft: FractalType, multibrot_power: f64) -> Option<Formula> {
+    phase_ops_for_type(ft, multibrot_power).map(|ops| Formula::single(Phase::new(ops)))
+}
+
+/// Compile une formule **HYBRIDE multi-phase** (G4) : une phase par entrée de
+/// `phase_types`, itérées CYCLIQUEMENT (`phases[n % len]`, cf. `Formula::hybrid`
+/// et `GmpInterpState::step`). Chaque phase réutilise EXACTEMENT le bytecode du
+/// type escape-time correspondant ([`phase_ops_for_type`]) → composition pure,
+/// aucune nouvelle sémantique d'opcode. Ex. `[Mandelbrot, BurningShip]` alterne
+/// `z²+c` et `(|x|+i|y|)²+c` à chaque itération (le « Mandel-Ship » de F3) ;
+/// répéter un type (`[M, M, BS]`) donne « 2× Mandelbrot puis 1× Burning Ship ».
+///
+/// `None` si `phase_types` est vide ou si un type n'est pas représentable en
+/// bytecode (Newton, Magnet, …). `multibrot_power` s'applique aux phases
+/// Multibrot. Réf : `docs/fraktaler-3-analysis.md` §2 (chaînage de phases).
+// G4 jalon 1 : brique de compilation (testée) ; le câblage render
+// (`params.hybrid_phases` → reference orbit + pixel-loop, déjà multi-phase-ready)
+// est le jalon SUIVANT — d'où `allow(dead_code)` en attendant le consommateur.
+#[allow(dead_code)]
+pub fn compile_hybrid_formula(
+    phase_types: &[FractalType],
+    multibrot_power: f64,
+) -> Option<Formula> {
+    if phase_types.is_empty() {
+        return None;
+    }
+    let phases: Option<Vec<Phase>> = phase_types
+        .iter()
+        .map(|&ft| phase_ops_for_type(ft, multibrot_power).map(Phase::new))
+        .collect();
+    phases.map(Formula::hybrid)
+}
+
+/// Bytecode d'UNE phase pour un type escape-time (partie réutilisable de
+/// [`compile_formula`] et [`compile_hybrid_formula`]). `None` = type non
+/// représentable en bytecode 8-opcodes. **Behavior-preserving** : les mêmes
+/// séquences d'ops qu'avant (verrouillées par les goldens par-type).
+fn phase_ops_for_type(ft: FractalType, multibrot_power: f64) -> Option<Vec<Op>> {
     use FractalType::*;
     match ft {
         // Mandelbrot et Julia : même bytecode, seule la convention d'appel diffère.
-        Mandelbrot | Julia => Some(Formula::single(Phase::new(vec![Op::Sqr, Op::Add]))),
+        Mandelbrot | Julia => Some(vec![Op::Sqr, Op::Add]),
 
         // Burning Ship : (|x| + i|y|)² + c
-        BurningShip | BurningShipJulia => Some(Formula::single(Phase::new(vec![
-            Op::AbsX,
-            Op::AbsY,
-            Op::Sqr,
-            Op::Add,
-        ]))),
+        BurningShip | BurningShipJulia => Some(vec![Op::AbsX, Op::AbsY, Op::Sqr, Op::Add]),
 
         // Tricorn (Mandelbar) : conj(z)² + c = (negy then sqr)
-        Tricorn | TricornJulia => Some(Formula::single(Phase::new(vec![
-            Op::NegY,
-            Op::Sqr,
-            Op::Add,
-        ]))),
+        Tricorn | TricornJulia => Some(vec![Op::NegY, Op::Sqr, Op::Add]),
 
         // Celtic : |Re(z²)| + i·Im(z²) + c (l'abs vient APRÈS le carré, sur la partie réelle)
-        Celtic | CelticJulia => Some(Formula::single(Phase::new(vec![
-            Op::Sqr,
-            Op::AbsX,
-            Op::Add,
-        ]))),
+        Celtic | CelticJulia => Some(vec![Op::Sqr, Op::AbsX, Op::Add]),
 
         // Buffalo : |Re(z²)| + i·|Im(z²)| + c
-        Buffalo | BuffaloJulia => Some(Formula::single(Phase::new(vec![
-            Op::Sqr,
-            Op::AbsX,
-            Op::AbsY,
-            Op::Add,
-        ]))),
+        Buffalo | BuffaloJulia => Some(vec![Op::Sqr, Op::AbsX, Op::AbsY, Op::Add]),
 
         // Perpendicular Burning Ship : (x - i|y|)² + c
         // Ordre d'opérations : on rend y positif (AbsY), puis on le négocie (NegY),
         // puis on élève au carré, puis on ajoute c.
-        PerpendicularBurningShip | PerpendicularBurningShipJulia => Some(Formula::single(
-            Phase::new(vec![Op::AbsY, Op::NegY, Op::Sqr, Op::Add]),
-        )),
+        PerpendicularBurningShip | PerpendicularBurningShipJulia => {
+            Some(vec![Op::AbsY, Op::NegY, Op::Sqr, Op::Add])
+        }
 
         // Multibrot : z^N + c pour N entier ≥ 2 via décomposition binaire.
         Multibrot | MultibrotJulia => {
@@ -63,8 +82,7 @@ pub fn compile_formula(ft: FractalType, multibrot_power: f64) -> Option<Formula>
             if !is_integer || n_round < 2.0 {
                 return None;
             }
-            let n = n_round as u32;
-            Some(Formula::single(Phase::new(compile_power(n))))
+            Some(compile_power(n_round as u32))
         }
 
         // Hors scope bytecode 8-opcodes : Alpha Mandelbrot (besoin de z² + (z²+c)²),
@@ -150,6 +168,66 @@ mod tests {
         let f = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
         assert_eq!(f.phases.len(), 1);
         assert_eq!(f.phases[0].ops, vec![Op::Sqr, Op::Add]);
+    }
+
+    // ── G4 : compilation hybride multi-phase ───────────────────────────────
+    #[test]
+    fn hybrid_two_phases_mandel_ship() {
+        // [Mandelbrot, BurningShip] = 2 phases, chacune le bytecode de son type.
+        let f =
+            compile_hybrid_formula(&[FractalType::Mandelbrot, FractalType::BurningShip], 2.0)
+                .unwrap();
+        assert_eq!(f.phases.len(), 2);
+        assert_eq!(f.phases[0].ops, vec![Op::Sqr, Op::Add]);
+        assert_eq!(f.phases[1].ops, vec![Op::AbsX, Op::AbsY, Op::Sqr, Op::Add]);
+    }
+
+    #[test]
+    fn hybrid_single_type_equals_compile_formula() {
+        // [Mandelbrot] hybride ≡ compile_formula(Mandelbrot) (une seule phase).
+        let h = compile_hybrid_formula(&[FractalType::Mandelbrot], 2.0).unwrap();
+        let s = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
+        assert_eq!(h.phases.len(), 1);
+        assert_eq!(h.phases[0].ops, s.phases[0].ops);
+    }
+
+    #[test]
+    fn hybrid_repeated_type_repeats_phase() {
+        // [M, M, BS] = « 2× Mandelbrot puis 1× Burning Ship » (répétition = comptage).
+        let f = compile_hybrid_formula(
+            &[
+                FractalType::Mandelbrot,
+                FractalType::Mandelbrot,
+                FractalType::BurningShip,
+            ],
+            2.0,
+        )
+        .unwrap();
+        assert_eq!(f.phases.len(), 3);
+        assert_eq!(f.phases[0].ops, f.phases[1].ops); // deux Mandelbrot identiques
+        assert_ne!(f.phases[1].ops, f.phases[2].ops); // ≠ Burning Ship
+    }
+
+    #[test]
+    fn hybrid_multibrot_phase_honours_power() {
+        let f = compile_hybrid_formula(&[FractalType::Mandelbrot, FractalType::Multibrot], 3.0)
+            .unwrap();
+        assert_eq!(f.phases[1].ops, compile_power(3));
+    }
+
+    #[test]
+    fn hybrid_empty_or_unrepresentable_is_none() {
+        assert!(compile_hybrid_formula(&[], 2.0).is_none());
+        // Newton n'est pas représentable en bytecode → toute la formule None.
+        assert!(compile_hybrid_formula(
+            &[FractalType::Mandelbrot, FractalType::Newton],
+            2.0
+        )
+        .is_none());
+        // Multibrot puissance non-entière dans une phase → None.
+        assert!(
+            compile_hybrid_formula(&[FractalType::Multibrot], 2.5).is_none()
+        );
     }
 
     #[test]

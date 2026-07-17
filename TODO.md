@@ -1334,7 +1334,22 @@ Chaîner des formules par phase (Mandelbrot ⊕ Burning Ship ⊕ …) — featur
 absente de Kalles Fraktaler, partielle dans F3. L'infra `Formula::hybrid(vec)`
 existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
 
+**État infra (audit 2026-07-17)** : l'interpréteur GMP (`GmpInterpState::step`)
+cycle DÉJÀ les phases ; `compute_reference_orbit` itère via cet interpréteur
+(donc multi-phase-ready) ; `iterate_pixel_unified_multi_phase` (pixel loop f64,
+pas directs SANS BLA) existe. Il manquait un moyen de COMPILER un hybride, +
+le câblage params/render, + la BLA par phase + le nucleus phase-aware + l'UI.
+
 **Done when** :
+- [x] **✅ Jalon 1 — compilation hybride `[2026-07-17]`** :
+  `compile_hybrid_formula(&[FractalType], power)` (refactor behavior-preserving de
+  `compile_formula` via `phase_ops_for_type` — goldens par-type inchangés).
+  Compose une phase par type escape-time (réutilise le bytecode existant, aucune
+  nouvelle sémantique) : `[Mandelbrot, BurningShip]` = Mandel-Ship alternant,
+  `[M,M,BS]` = 2×M puis 1×BS. `None` si vide/type non-bytecode/power non-entière.
+  5 tests. `#[allow(dead_code)]` en attendant le consommateur (jalon 2). **Reste
+  jalon 2 : câbler `params.hybrid_phases` → les ~9 callsites `compile_formula`
+  (orbit/delta/iterations/gpu/wisdom) + vérifier un hybride == GMP.**
 - [ ] **BLA multi-phase native** : `Vec<BlaTableUnified>` (une par phase) au lieu
   d'une seule ; `iterate_pixel_unified_*` switche de BLA au changement de phase
   (F3 `engine.cc:287-295`, `bla.cc::hybrid_blas`). Tests d'invariance hybride
