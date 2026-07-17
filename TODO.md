@@ -1833,10 +1833,20 @@ Jalons (chacun ≈ 1-2 itérations /improve, ordre suggéré) :
     Perturbation)`) ; **pas encore mesurée** → sur cette machine l'arbitrage
     retombe sur CPU (correct : GPU grand public f64 1:64 = plus lent ; GPU f32 =
     faux). 6 unit tests (no-gpu / shallow-f32-gate / deep-extreme / no-bench /
-    marge). 263 unit + 21 golden verts. **Restes** : (a) **mesurer**
-    `GpuPerturbF64` dans `run_bench`/`--wisdom-bench` (rendu via
-    `render_dispatch`) ; (b) **câbler** `select_device` dans le dispatcher CPU/
-    GPU + GUI (`--gpu`/`--no-gpu` = overrides), verrou `gpu-suite`.
+    marge). 263 unit + 21 golden verts.
+  - [x] **✅ Étape 2 (a) — mesure GPU-perturb dans `--wisdom-bench` `[2026-07-17]`** :
+    `run_bench` benche désormais **les deux** clés GPU avec la MÊME closure
+    `render_dispatch` (auto std/perturb par zoom) — `gpu_std_f32` (vue shallow)
+    ET `gpu_perturb_f64` (vue e30, DANS la plage kernel ≲ 4e37 ; e50 serait
+    hors-plage → None). `measure_gpu` renvoie None si le GPU ne rend pas la vue
+    (Metal sans SHADER_F64 → pas d'entrée → arbitrage CPU). **Mesuré RTX 4060 Ti**
+    : `gpu_perturb_f64 = 2.13e9` iters/s vs `cpu_perturb_f64 = 1.62e10` (**GPU
+    ~7.6× plus LENT**, f64 1:64) → `select_device` route **CPU** sur données
+    RÉELLES (robuste au bruit de bench : GPU perd même au cpu-bas). `gpu_std_f32`
+    (4.48e9, rapide) correctement IGNORÉ (garde-fou correction). Tests
+    `for_plan(Gpu,Perturbation)` + frame GPU-perturb (perturbation ∧ pixel≥1e-37).
+    266 unit + 21 golden verts. **Reste (b)** : câbler `select_device` au
+    dispatcher CPU/GPU + GUI (`--gpu`/`--no-gpu` = overrides), verrou `gpu-suite`.
 - [ ] **9.6 — Fiabilité → escalade de tier** (= G-dd auto-dispatch, plan déjà
   écrit) : détecteur shadowing en observation puis escalade px→dd /
   frame→dd ; ferme la boucle « le wisdom ne sous-provisionne jamais »

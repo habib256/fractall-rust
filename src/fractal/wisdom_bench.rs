@@ -213,13 +213,12 @@ fn bench_frame(key: BenchKey, size: u32) -> FractalParams {
             p.algorithm_mode = AlgorithmMode::Auto;
             p
         }
-        // GPU-perturb : même vue deep e50 que le CPU-perturb f64 → débits
-        // directement comparables pour l'arbitrage device (G9.5). Frame
-        // seulement — la MESURE GPU-perturb (rendu via `render_dispatch`) est le
-        // jalon suivant ; aujourd'hui `measure_cpu` ne benche pas cette clé.
-        BenchKey::CpuPerturbF64 | BenchKey::GpuPerturbF64 => {
-            deep_frame(E50_RE, E50_IM, "4e-50", 263_010, size)
-        }
+        BenchKey::CpuPerturbF64 => deep_frame(E50_RE, E50_IM, "4e-50", 263_010, size),
+        // GPU-perturb : vue deep e30 (mêmes coords e50 « dézoomées », comme le
+        // preset mandelbrot-e30) — DANS la plage du kernel GPU (zoom ≲ 4e37 vs
+        // e50 hors-plage). Débit f64-perturbation comparable à `CpuPerturbF64`
+        // (rate ≈ constante machine, frame-indépendante au 1er ordre).
+        BenchKey::GpuPerturbF64 => deep_frame(E50_RE, E50_IM, "4e-30", 40_000, size),
         BenchKey::CpuPerturbExp => deep_frame(E318_RE, E318_IM, "1e-318", 212_138, size),
         BenchKey::CpuPerturbDd => {
             let mut p = deep_frame(E50_RE, E50_IM, "4e-50", 263_010, size);
@@ -271,7 +270,7 @@ fn measure_cpu(key: BenchKey, target_seconds: f64) -> Option<BenchEntry> {
 /// GPU fourni par le caller (le CLI construit le `GpuRenderer` et passe une
 /// closure — ce module ne dépend pas de `gpu/`). Retourne le fichier persisté.
 pub fn run_bench(
-    gpu_std: Option<&dyn Fn(&FractalParams) -> Option<Vec<u32>>>,
+    gpu_render: Option<&dyn Fn(&FractalParams) -> Option<Vec<u32>>>,
     target_seconds: f64,
 ) -> WisdomBenchFile {
     let mut file = WisdomBenchFile {
@@ -294,39 +293,57 @@ pub fn run_bench(
             file.bench.push(entry);
         }
     }
-    if let Some(render) = gpu_std {
-        let key = BenchKey::GpuStdF32;
-        eprintln!("[WISDOM-BENCH] {} …", key.as_str());
-        let mut size = 256u32;
-        let mut best: Option<BenchEntry> = None;
-        loop {
-            let params = bench_frame(key, size);
-            let t = Instant::now();
-            let Some(iters) = render(&params) else { break };
-            let seconds = t.elapsed().as_secs_f64();
-            let total: u64 = iters.iter().map(|&i| i as u64).sum();
-            best = Some(BenchEntry {
-                key: key.as_str().to_string(),
-                iters_per_sec: total as f64 / seconds.max(1e-9),
-                width: size,
-                height: size,
-                seconds,
-                measured_unix: unix_now(),
-            });
-            if seconds >= target_seconds || size >= 2048 {
-                break;
+    // GPU : le même `render` (= `render_dispatch`, auto std/perturbation par
+    // zoom) sert les DEUX clés — la frame décide. GpuStdF32 (vue shallow →
+    // shader f32) et GpuPerturbF64 (vue e30 → kernel f64). Le rendu renvoie
+    // `None` si le GPU ne peut pas la clé (ex. Metal sans SHADER_F64 pour la
+    // perturbation) → pas d'entrée → arbitrage conservateur (CPU).
+    if let Some(render) = gpu_render {
+        for key in [BenchKey::GpuStdF32, BenchKey::GpuPerturbF64] {
+            eprintln!("[WISDOM-BENCH] {} …", key.as_str());
+            if let Some(entry) = measure_gpu(key, render, target_seconds) {
+                eprintln!(
+                    "[WISDOM-BENCH] {} : {:.3e} iters/s ({}x{}, {:.2}s)",
+                    key.as_str(), entry.iters_per_sec, entry.width, entry.height, entry.seconds
+                );
+                file.bench.push(entry);
+            } else {
+                eprintln!("[WISDOM-BENCH] {} : indisponible (GPU ne peut pas cette vue)", key.as_str());
             }
-            size *= 2;
-        }
-        if let Some(entry) = best {
-            eprintln!(
-                "[WISDOM-BENCH] {} : {:.3e} iters/s ({}x{}, {:.2}s)",
-                key.as_str(), entry.iters_per_sec, entry.width, entry.height, entry.seconds
-            );
-            file.bench.push(entry);
         }
     }
     file
+}
+
+/// Mesure une technique GPU via la closure `render` (= `render_dispatch`),
+/// taille doublée jusqu'à `target_seconds`. `None` si le GPU ne rend pas cette
+/// vue (closure renvoie `None`).
+fn measure_gpu(
+    key: BenchKey,
+    render: &dyn Fn(&FractalParams) -> Option<Vec<u32>>,
+    target_seconds: f64,
+) -> Option<BenchEntry> {
+    let mut size = 256u32;
+    let mut best: Option<BenchEntry> = None;
+    loop {
+        let params = bench_frame(key, size);
+        let t = Instant::now();
+        let iters = render(&params)?;
+        let seconds = t.elapsed().as_secs_f64();
+        let total: u64 = iters.iter().map(|&i| i as u64).sum();
+        best = Some(BenchEntry {
+            key: key.as_str().to_string(),
+            iters_per_sec: total as f64 / seconds.max(1e-9),
+            width: size,
+            height: size,
+            seconds,
+            measured_unix: unix_now(),
+        });
+        if seconds >= target_seconds || size >= 2048 {
+            return best;
+        }
+        size *= 2;
+    }
 }
 
 /// Écrit le fichier wisdom (répertoires créés). Erreur = message, pas de panic.
@@ -395,6 +412,10 @@ mod tests {
             BenchKey::for_plan(Device::Gpu, Algorithm::StandardF64, None),
             Some(BenchKey::GpuStdF32)
         );
+        assert_eq!(
+            BenchKey::for_plan(Device::Gpu, Algorithm::Perturbation, None),
+            Some(BenchKey::GpuPerturbF64)
+        );
         assert_eq!(BenchKey::for_plan(Device::Cpu, Algorithm::ReferenceGmp, None), None);
         // Chaînes stables (clé TOML) : round-trip.
         for k in BenchKey::ALL {
@@ -417,5 +438,11 @@ mod tests {
         assert_eq!(wisdom::number_tier(&f), Some(NumberTier::Exp));
         let f = bench_frame(BenchKey::CpuPerturbDd, 128);
         assert_eq!(wisdom::number_tier(&f), Some(NumberTier::Dd));
+        // GPU-perturb : vue perturbation ET dans la plage du kernel GPU
+        // (pixel_size ≥ 1e-37) — sinon le rendu GPU renverrait None et la clé ne
+        // serait jamais benchée. e50 (hors-plage) casserait ce contrat.
+        let f = bench_frame(BenchKey::GpuPerturbF64, 128);
+        assert_eq!(wisdom::select_algorithm(&f, Device::Gpu), Algorithm::Perturbation);
+        assert!(crate::fractal::perturbation::effective_pixel_size(&f) >= 1e-37);
     }
 }

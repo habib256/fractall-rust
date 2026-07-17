@@ -308,12 +308,15 @@ fn run_wisdom_bench() {
     const TARGET_SECONDS: f64 = 1.5;
     let cancel = AtomicBool::new(false);
     let gpu = GpuRenderer::new();
-    let gpu_std = gpu.as_ref().map(|g| {
+    // Une seule closure GPU générale (`render_dispatch` auto-dispatche std vs
+    // perturbation selon le zoom de la frame) → `run_bench` s'en sert pour
+    // gpu_std_f32 (vue shallow) ET gpu_perturb_f64 (vue e30), G9.5.
+    let gpu_render = gpu.as_ref().map(|g| {
         move |params: &fractal::FractalParams| {
             g.render_dispatch(params, &cancel, None, None).map(|r| r.iterations)
         }
     });
-    let file = match &gpu_std {
+    let file = match &gpu_render {
         Some(f) => fractal::wisdom_bench::run_bench(
             Some(f as &dyn Fn(&fractal::FractalParams) -> Option<Vec<u32>>),
             TARGET_SECONDS,
