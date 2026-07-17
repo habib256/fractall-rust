@@ -1016,8 +1016,9 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
     orbites). Goldens 🟢 pixel-exact + 187 unit + quality 11 PASS + parité inchangés.
     Reste : le pixel loop deep-zoom lui-même (memory-bound, cf. IMPASSE #2) — dragon
     pixels ~4,3 s, levier = layout cache-friendly `z_ref_f64` / stride BLA.
-- [ ] **Re-sweep corpus complet avec le fix** : confirmer que les 36 ex-perf
-  cas rendent ET matchent F3 (probable vu e1000 pixel-identique + e113 == GMP).
+- [x] **✅ Re-sweep corpus complet avec le fix `[2026-07-14]`** : sweep full
+  post-escalade (cf. G8.2) — **80/80 wins, geomean 0.193, plus aucun perdant** ;
+  les ex-perf rendent et matchent (seul e52465 quarantainé, adjugé plancher-GMP).
 - **Acceptation : ✅ ATTEINTE** — e50 **1.57 s**, e1000 **0.53 s**, dragon
   **6.46 s** à 256² (cible <180 s, marge 30–340×). L'objectif RECALIBRÉ
   (e50/e1000 <180 s ; dragon relatif à F3) est **dépassé** : l'absolu d'origine
@@ -2204,7 +2205,8 @@ désactivée pour les modes à données par-pixel (`Distance*`, `OrbitTraps`,
 `Wings` — même exclusion que `escape_time.rs:68 build_reuse`).
 
 Jalons (ordre de ROI croissant en effort) :
-- [ ] **G10.1 — Warp GPU de la dernière frame** `[quick win, en cours 2026-07-16]` :
+- [x] **G10.1 — Warp GPU de la dernière frame** `[✅ 2026-07-16, c8edf51 +
+  fix signe Y ae611c8]` :
   pendant qu'un rendu calcule, afficher la texture précédente **transformée par
   le pan/zoom courant** (quad texturé egui, offset/scale UV dérivés de
   `view_texture` vs `view_live` en HP). Donne le *ressenti* de fluidité XaoS
