@@ -25,11 +25,12 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
   CLI **`--phases mandelbrot,burning_ship`** (types escape-time itérés
   cycliquement). `params.hybrid_phases` + `formula_for_params` +
   `compile_hybrid_formula` (`src/fractal/bytecode/`). Rendu par le path f64
-  standard (`iterate_bytecode_f64` cycle les phases) ; `select_algorithm` force
-  `StandardF64` et `render_dispatch` renvoie `None` pour un hybride (perturbation/
-  GPU multi-phase = jalon 3). `[M,M]` pixel-exact == Mandelbrot (invariant testé),
-  `[M,BS]` = hybride genuine. Verrous : unit test + golden
-  `mandelbrot_hybrid_burningship`. CPU f64 (shallow-mid) uniquement.
+  standard, **et en perturbation deep (jalon 3)** dans la bande f64-perturbation
+  (~zoom 1e10–1e13, `iterate_pixel_unified_multi_phase`, sans BLA). `[M,M]`
+  pixel-exact == Mandelbrot (invariants testés : f64-std + deep-perturbation),
+  `[M,BS]` = hybride genuine. `render_dispatch` renvoie `None` (GPU ne cycle
+  pas). Verrous : 2 unit/render-level tests + golden `mandelbrot_hybrid_
+  burningship`. Deep > 1e13 (exp multi-phase) = jalon 4.
 
 ### Corrigé
 - **Perturbation réf-intérieure >512²** : un 2e bloc de résolution glitch récursive

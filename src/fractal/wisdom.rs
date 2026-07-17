@@ -236,16 +236,25 @@ pub fn perturbation_family(t: FractalType) -> bool {
 /// Les types spéciaux (densité, vectoriel, Lyapunov…) ne passent pas par ici.
 pub fn select_algorithm(params: &FractalParams, device: Device) -> Algorithm {
     use crate::fractal::types::AlgorithmMode;
-    // G4 jalon 2 : les hybrides multi-phase ne sont supportés QUE par le path
-    // f64 standard (`iterate_bytecode_f64` cycle les phases). Ni la perturbation
-    // (`try_bytecode_unified_path` rejette phases>1) ni le GMP par-pixel
-    // (`iterate_point_mpc` = z²+c hardcodé) ne cyclent → force StandardF64.
-    // Correct à zoom shallow-mid ; deep hybride (précision perturbation) = jalon 3.
+    // G4 hybrides multi-phase. Perturbation multi-phase = f64 pas-directs SANS
+    // BLA (`iterate_pixel_unified_multi_phase`, jalon 3) → viable UNIQUEMENT dans
+    // la bande f64-perturbation (`pixel ∈ [exp_threshold, perturb_threshold]`,
+    // ~zoom 1e12–1e13). Hors bande : StandardF64 (`iterate_bytecode_f64` cycle
+    // aussi les phases) — correct shallow-mid, précision-limité en deep exp
+    // (jalon 4 = exp multi-phase). Le GMP par-pixel (`iterate_point_mpc`) ne
+    // cycle pas → jamais routé pour un hybride.
     if params
         .hybrid_phases
         .as_ref()
         .is_some_and(|p| !p.is_empty())
     {
+        let px = effective_pixel_size(params);
+        if params.algorithm_mode != crate::fractal::types::AlgorithmMode::StandardF64
+            && should_use_perturbation(params, false)
+            && !wants_exp(px)
+        {
+            return Algorithm::Perturbation;
+        }
         return Algorithm::StandardF64;
     }
     // Perturbation viable : famille escape-time supportée + plan Mu (le delta

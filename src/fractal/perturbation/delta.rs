@@ -557,11 +557,14 @@ fn try_bytecode_unified_path(
 ) -> Option<DeltaResult> {
     // Le path bytecode supporte désormais distance/interior/orbit_traps
     // en perturbation via ddelta tracking (cf. UnifiedOptions).
-    let formula = compile_formula(params.fractal_type, params.multibrot_power)?;
-    if formula.phases.len() != 1 {
-        // Multi-phase pas encore supporté.
-        return None;
-    }
+    let formula = crate::fractal::bytecode::formula_for_params(params)?;
+    // G4 jalon 3 : hybrides multi-phase en perturbation. La boucle multi-phase
+    // (`iterate_pixel_unified_multi_phase`) est f64 pas-directs SANS BLA + rebase
+    // → couvre le range f64 (pixel ≥ ~1e-13, zoom ≲ 1e13). En deep exp/dd
+    // (pixel < 1e-13) elle sous-déborde → non supporté ici (fallback
+    // StandardF64/GMP par le caller). Routage : gate dd/exp sur single-phase,
+    // route le f64-branch multi-phase vers `iterate_pixel_unified_full`.
+    let multi_phase = formula.phases.len() > 1;
     // Dispatch selon pixel_size (cf. l'explication AUTORITATIVE au-dessus de
     // `PIXEL_SIZE_EXP_THRESHOLD`, delta.rs:89) :
     // - pixel_size >= 1e-13 : path f64 (Complex64, rapide ~6 ns/iter).
@@ -614,7 +617,7 @@ fn try_bytecode_unified_path(
         // Équivalent du float128 de F3. Indépendant de use_exp_path : le dd loop
         // fonctionne à tout zoom (la référence dd et le dc dd sont construits sans
         // gating de zoom), donc couvre aussi le range f64 (< 1e13, ex. seahorse).
-        if crate::fractal::wisdom::dd_requested(params) && ref_orbit.has_dd() {
+        if !multi_phase && crate::fractal::wisdom::dd_requested(params) && ref_orbit.has_dd() {
             use crate::fractal::perturbation::dd::ComplexDDExp;
             // `dc` en dd : préfère le dc dd fourni par la boucle de rendu
             // (spans HP → 106 b) ; sinon convertit le ComplexExp (53 b).
@@ -645,7 +648,7 @@ fn try_bytecode_unified_path(
             });
         }
 
-        if use_exp_path {
+        if use_exp_path && !multi_phase {
             // Path ComplexExp pour deep zoom > 1e13.
             let (c_for_add, dc_for_add_exp) = if is_julia {
                 (
@@ -688,6 +691,31 @@ fn try_bytecode_unified_path(
         // Path f64 standard (rapide).
         let delta_init = delta0.to_complex64_approx();
         let dc_approx = dc.to_complex64_approx();
+
+        // ── Path f64 HYBRIDE multi-phase (G4 jalon 3) ───────────────────────
+        // Boucle multi-phase (cycle `phases[n % len]`, pas directs f64 + rebase,
+        // SANS BLA — la BLA est bâtie pour UNE phase). Deep exp/dd non couvert
+        // (gate ci-dessus) → si on arrive ici en use_exp_path, sous-débordement
+        // f64 probable ⇒ None (fallback StandardF64/GMP, le multi-phase deep = jalon 4).
+        if multi_phase {
+            if use_exp_path {
+                return None;
+            }
+            return Some(crate::fractal::bytecode::pixel_loop::iterate_pixel_unified_full(
+                ref_orbit,
+                bla,
+                &formula,
+                c_ref,
+                dc_approx,
+                delta_init,
+                params.iteration_max,
+                params.bailout,
+                crate::fractal::bytecode::pixel_loop::UnifiedOptions {
+                    is_julia,
+                    ..Default::default()
+                },
+            ));
+        }
 
         // ── Path f64 COMPRESSÉ (FRACTALL_COMPRESS_REF=1, G8.2 phase 2) ─────
         // Réf lue via le décompresseur à waypoints (Imagina PTWithCompression)

@@ -36,7 +36,8 @@ pixel-exact + quality 15/15 PASS.
 - **Hybrides (G4 jalon 1-2)** : les hybrides multi-phase **RENDENT** (CLI
   `--phases mandelbrot,burning_ship`) via le path f64 standard. `hybrid_phases` +
   `formula_for_params` + `compile_hybrid_formula`. [M,M]==Mandelbrot pixel-exact.
-  Reste (jalon 3) : hybrides DEEP (perturbation multi-phase) + nucleus + GUI.
+  Deep OK en perturbation f64 (jalon 3, ~1e10–1e13). Reste (jalon 4) : exp
+  multi-phase (>1e13) + BLA par phase + nucleus phase-aware + éditeur GUI.
 - **Durcissements** : gate `!bytecode_path` sur le 2e bloc glitch récursif
   (`mod.rs:1634`, supprimait ~3.4 % structure spurious à >512²) ; golden
   `mandelbrot_interior_ref_640` (seul cas >512², exerce l'escalade dd).
@@ -1401,9 +1402,20 @@ le câblage params/render, + la BLA par phase + le nucleus phase-aware + l'UI.
   `None` (GPU ne cycle pas → fallback CPU). Vérifié : **[M,M] pixel-exact ==
   Mandelbrot** (invariant), [M,BS] genuine (≠ M ET ≠ BS, 4440/2974 px). Verrous :
   unit test [M,M]==M + golden `mandelbrot_hybrid_burningship`. Single-phase
-  INCHANGÉ (`phases[iter % 1]` = phases[0], 24 goldens verts). **Reste jalon 3 :
-  hybrides DEEP (perturbation multi-phase + BLA par phase) + nucleus phase-aware
-  + éditeur GUI.**
+  INCHANGÉ (`phases[iter % 1]` = phases[0], 24 goldens verts).
+- [x] **✅ Jalon 3 — hybrides DEEP en perturbation (f64) `[2026-07-17]`** :
+  `try_bytecode_unified_path` (`delta.rs`) route le multi-phase vers
+  `iterate_pixel_unified_full` (→ `iterate_pixel_unified_multi_phase`, pas
+  directs f64 + rebasing, SANS BLA) ; dd/exp gatés single-phase (multi-phase
+  deep exp = jalon 4). `select_algorithm` route un hybride vers Perturbation
+  dans la bande f64-perturbation (`pixel ∈ [exp_threshold, perturb_threshold]`,
+  ~zoom 1e10–1e13 selon largeur), StandardF64 sinon. Orbite référence itérée
+  avec la formule hybride (`orbit.rs` → `formula_for_params`, GmpInterpState
+  cycle). **Vérifié : [M,M] @3e10 PIXEL-EXACT == Mandelbrot perturbation**
+  (verrou render-level `hybrid_mm_equals_mandelbrot_deep_perturbation`, sans
+  GMP externe — le GMP par-pixel ne cycle pas). Single-phase INCHANGÉ (tout
+  gaté `multi_phase`). **Reste jalon 4 : exp multi-phase (deep > 1e13) + BLA
+  par phase (perf) + nucleus phase-aware + éditeur GUI.**
 - [ ] **BLA multi-phase native** : `Vec<BlaTableUnified>` (une par phase) au lieu
   d'une seule ; `iterate_pixel_unified_*` switche de BLA au changement de phase
   (F3 `engine.cc:287-295`, `bla.cc::hybrid_blas`). Tests d'invariance hybride

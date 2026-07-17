@@ -435,3 +435,45 @@ fn golden_image_corpus() {
         );
     }
 }
+
+/// VERROU G4 jalon 3 — hybride multi-phase en PERTURBATION. À un zoom deep dans
+/// la bande f64-perturbation (~3e10, `path=bytecode_f64` via
+/// `iterate_pixel_unified_multi_phase`), l'hybride `[Mandelbrot, Mandelbrot]`
+/// (2 phases identiques z²+c) DOIT rendre PIXEL-EXACT comme le Mandelbrot
+/// mono-phase perturbation. Prouve que le cyclage de phases + le rebasing du
+/// path perturbation multi-phase sont corrects, SANS ground truth GMP externe
+/// (le GMP par-pixel ne cycle pas les phases). Rougit si le routage multi-phase
+/// (delta.rs) ou `select_algorithm` (bande hybride) régresse.
+#[test]
+fn hybrid_mm_equals_mandelbrot_deep_perturbation() {
+    let common: &[&str] = &[
+        "--width", "200", "--height", "150",
+        "--center-x-hp=-0.743643887037158704752191506114774",
+        "--center-y-hp=0.131825904205311970493132056385139",
+        "--zoom=3e10", "--iterations", "3000", "--no-gpu",
+    ];
+    let render = |extra: &[&str]| -> (u32, u32, Vec<u8>) {
+        let out = temp_output();
+        let status = Command::new(cli_binary_path())
+            .args(common)
+            .args(extra)
+            .arg("--output")
+            .arg(&out)
+            .status()
+            .expect("CLI launch");
+        assert!(status.success(), "render échoué pour {extra:?}");
+        let px = read_pixels(&out);
+        let _ = std::fs::remove_file(&out);
+        px
+    };
+    // Plain Mandelbrot (type 3, perturbation mono-phase + BLA).
+    let m = render(&["--type", "3"]);
+    // Hybride [M,M] (perturbation MULTI-phase, sans BLA).
+    let mm = render(&["--phases", "mandelbrot,mandelbrot"]);
+    assert_eq!((m.0, m.1), (mm.0, mm.1), "dims");
+    let diff = m.2.iter().zip(&mm.2).filter(|(a, b)| a != b).count();
+    assert_eq!(
+        diff, 0,
+        "[M,M] deep (perturbation multi-phase) doit être pixel-exact == Mandelbrot ; {diff} octets diffèrent"
+    );
+}

@@ -1583,8 +1583,10 @@ pub fn compute_reference_orbit_with_progress(
     // per-type dans la boucle d'itération par un interpréteur unifié. La
     // constante `c` ajoutée par Op::Add est `seed` pour les variantes Julia,
     // `cref` sinon (cf. F3 `hybrid_reference`).
+    // G4 : orbite référence itérée avec la formule EFFECTIVE (hybride si
+    // `hybrid_phases` → GmpInterpState cycle les phases, cf. l.1856).
     let bytecode_formula: Option<Formula> = if params.use_bytecode_engine {
-        compile_formula(params.fractal_type, params.multibrot_power)
+        crate::fractal::bytecode::formula_for_params(params)
     } else {
         None
     };

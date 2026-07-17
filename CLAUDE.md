@@ -297,11 +297,18 @@ Option<Vec<FractalType>>`. `formula_for_params(params)` = source UNIQUE de la
 formule (hybride via `compile_hybrid_formula` si `hybrid_phases`, sinon
 `compile_formula`). **Rendu par le path f64 standard** (`iterate_bytecode_f64`
 cycle déjà les phases) : `select_algorithm` **force `StandardF64`** pour un
-hybride (la perturbation rejette phases>1, le GMP par-pixel est z²+c hardcodé),
-`render_dispatch` renvoie `None` (GPU ne cycle pas → fallback CPU). Verrous :
-`[M,M] == Mandelbrot` pixel-exact (unit test) + golden
-`mandelbrot_hybrid_burningship`. **Reste (jalon 3)** : hybrides DEEP
-(perturbation multi-phase + BLA par phase), nucleus phase-aware, éditeur GUI.
+hybride, le GMP par-pixel `iterate_point_mpc` étant z²+c hardcodé (ne cycle
+pas). `render_dispatch` renvoie `None` (GPU ne cycle pas → fallback CPU).
+**Deep (jalon 3)** : dans la bande f64-perturbation (`pixel ∈
+[exp_threshold, perturb_threshold]`, ~zoom 1e10–1e13) `select_algorithm` route
+l'hybride vers **Perturbation** ; `delta.rs::try_bytecode_unified_path` route
+le multi-phase vers `iterate_pixel_unified_multi_phase` (pas directs f64 +
+rebasing, SANS BLA ; dd/exp gatés single-phase). Orbite référence itérée avec
+la formule hybride (`orbit.rs` → `formula_for_params`). Verrous : `[M,M] ==
+Mandelbrot` pixel-exact — unit test (f64-std) + render-level deep-perturbation
+(`hybrid_mm_equals_mandelbrot_deep_perturbation`) — + golden
+`mandelbrot_hybrid_burningship`. **Reste (jalon 4)** : exp multi-phase
+(deep > 1e13) + BLA par phase (perf) + nucleus phase-aware + éditeur GUI.
 `fractal_type` sert la convention d'appel (Mandelbrot-like : δ₀=0, dc=pixel).
 
 ### Wisdom auto-dispatch (`fractal/wisdom.rs`, 2026-07-12 · G9.1 2026-07-15)
