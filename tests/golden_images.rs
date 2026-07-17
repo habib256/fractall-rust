@@ -265,6 +265,26 @@ const CASES: &[Case] = &[
         args: &["--toml", "toml/glitch_test_5.toml", "--width", "128", "--height", "128"],
         envs: NO_ENV,
     },
+    // VERROU >512² (durcissement couverture 2026-07-17). SEUL golden au-dessus
+    // du seuil `small_image` (max_dim > 512) → exerce le path de correction
+    // perturbation qui n'est JAMAIS testé à ≤256² : à cette résolution la réf
+    // intérieure frôlant zéro (centre -0.5622-0.6428i, zoom 2.66e10) flagge
+    // 36 % de pixels → escalade tier dd (glitch_ratio > 0.30). Vérifié
+    // pixel-exact vs GMP à la génération. Si le gate `!bytecode_path` du 2ᵉ bloc
+    // secondary-refs (mod.rs ~1642) régresse, ou l'escalade dd casse, ce golden
+    // ROUGIT (à ≤512² le bug était INVISIBLE — c'est précisément le trou de
+    // couverture que ce cas comble). ⚠️ Lent (~14 s, escalade dd) : seul cas
+    // >512², assumé pour couvrir la classe de bug réf-intérieure.
+    Case {
+        name: "mandelbrot_interior_ref_640",
+        args: &[
+            "--type", "3", "--width", "640", "--height", "438",
+            "--center-x-hp=-0.5622000453758329685166664054580872759302643586355318252834150515100478622742054",
+            "--center-y-hp=-0.6428513501859345446359399567738260824595364535984125281199143802544005459298801",
+            "--zoom=2.6556311116408318e10", "--iterations", "2500",
+        ],
+        envs: NO_ENV,
+    },
 ];
 
 fn cli_binary_path() -> PathBuf {

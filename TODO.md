@@ -1383,6 +1383,29 @@ existe déjà ; il manque la BLA par phase, le nucleus phase-aware, et l'UI/CLI.
 
 ### G6 — Robustesse & infra qualité · `[P1]`
 
+- [x] **✅ Durcissement couverture >512² `[2026-07-17]`** — le path de correction
+  perturbation ne tourne qu'à `max_dim > 512` (`!small_image`) mais n'était
+  JAMAIS testé au-dessus de 256² (le bug réf-intérieure y a vécu invisible).
+  **Audit complet des gates `small_image`** :
+  - `mod.rs:1417/1421` (flag `suspect` en grande image) : **no-op pour le
+    bytecode** (`suspect` toujours `false` sur ce path) → sain.
+  - `mod.rs:1479` (neighbor pass CPU) : gaté `!bytecode_path` → sauté → sain.
+  - `mod.rs:1514/1634` (secondary-refs CPU) : gatés `!bytecode_path` (le 1634
+    corrigé cette session) → sains.
+  - `orbit.rs:1231` (build série) : path LEGACY seul (le bytecode lit la BLA,
+    pas la série) → hors périmètre bytecode.
+  - **`gpu/mod.rs:1031` (neighbor pass GPU) : PAS gaté sur le path F3 — mais
+    VÉRIFIÉ BÉNIN** : GPU seahorse-1e8 @640² == GMP **pixel-exact (0 diff)** ;
+    le neighbor pass + correction GMP AMÉLIORE la précision (corrige les px
+    plancher-f64), il ne les casse pas. Laissé tel quel.
+  → **Aucun nouveau bug latent >512² ; les paths sont robustes.** Verrou :
+  golden `mandelbrot_interior_ref_640` (640×438, SEUL cas >512², exerce
+  l'escalade dd, pixel-exact GMP à la génération) — rougit si le gate
+  `!bytecode_path` ou l'escalade dd régresse. ⚠️ Coût ~14 s (escalade dd) —
+  assumé pour combler le trou. NB : une passe systématique quality @>512² vs
+  GMP est impraticable (GMP par-pixel ~13 min/preset à 640²) → le golden cible
+  la classe de bug connue.
+
 **Done when** :
 - [x] **Golden : verrouiller les fixes deep-zoom** (2026-05-21) — ajout de
   `mandelbrot_e50` (1e50, rebase-at-end G2), `mandelbrot_e1000` (1e1000),
