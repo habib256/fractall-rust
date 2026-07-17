@@ -1035,6 +1035,19 @@ pub struct FractalParams {
     /// `None` = mono-formule classique.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hybrid_phases: Option<Vec<FractalType>>,
+
+    /// **Formule opcodes F3 (G4 `Op::Rot` per-phase)** : chaîne d'opcodes au
+    /// format Fraktaler-3 (`[[formula]] opcodes = "…"`), phases séparées par
+    /// `add`, ex. `"sqr rot{15} add absx absy sqr add"`. Mots reconnus :
+    /// `add sqr mul store absx absy negx negy rot{DEG}` (cf. F3
+    /// `param.cc::parse_opcodess`). Quand `Some` (non vide), PRIORITAIRE sur
+    /// `hybrid_phases` : la formule bytecode est
+    /// `parse_opcodes_formula(opcodes)` — seule voie qui ÉMET `Op::Rot`.
+    /// `fractal_type` sert la convention d'appel (Mandelbrot-like). Routage =
+    /// identique aux hybrides (cf. [`FractalParams::is_hybrid_formula`]) même
+    /// mono-phase : la formule n'est pas z²+c-garantie.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hybrid_opcodes: Option<String>,
 }
 
 // Helpers pour `#[serde(default = "...")]`. Permettent de charger des PNG
@@ -1062,6 +1075,21 @@ fn default_perturb_cap() -> u32 { 1024 }
 fn default_interior_threshold() -> f64 { 0.001 }
 
 impl FractalParams {
+    /// Formule GÉNÉRIQUE active : hybride multi-phase (`hybrid_phases`) OU
+    /// formule opcodes F3 (`hybrid_opcodes`). Prédicat UNIQUE pour tous les
+    /// gates « pas z²+c hardcodé » (fast-path dd, atom-domain z²+c, Brent,
+    /// harmonic, GMP per-pixel `iterate_point_mpc`, GPU, série Taylor…) :
+    /// une formule opcodes MÊME mono-phase peut contenir rot/abs/neg — aucun
+    /// chemin spécialisé Mandelbrot ne doit s'y appliquer.
+    #[inline]
+    pub fn is_hybrid_formula(&self) -> bool {
+        self.hybrid_phases.as_ref().is_some_and(|p| !p.is_empty())
+            || self
+                .hybrid_opcodes
+                .as_ref()
+                .is_some_and(|s| !s.trim().is_empty())
+    }
+
     /// Borne minimale X (calculée à la demande).
     /// Conservée pour compatibilité, mais le code utilise maintenant center+span directement.
     #[inline]

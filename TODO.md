@@ -48,9 +48,10 @@ pixel-exact + quality 15/15 PASS.
   `mandelbrot_interior_ref_640` (seul cas >512², exerce l'escalade dd).
 
 **RESTE :**
-- **G4** : SOLDÉ jusqu'au jalon 5g (2026-07-18, fast-path inline multi-phase :
-  [M,M] e50 boucle pixel 2.3×, pixel-identique). Reste optionnel : `Op::Rot`
-  per-phase (si parseur `[[formula]] rotate` F3 un jour).
+- **G4 : SOLDÉ INTÉGRALEMENT (2026-07-18)** — jalon 5g (fast-path inline
+  multi-phase, [M,M] e50 boucle pixel 2.3× pixel-identique) + `Op::Rot`
+  per-phase câblé (parseur opcodes F3 `--opcodes`/`[[formula]]`, verrou GMP
+  160/160 + juge F3 natif).
 - **G6** : durcir/étendre le corpus golden.
 - **G9.6** : fiabilité → escalade tier auto (px→dd/frame→dd) — marginal.
 
@@ -1575,9 +1576,28 @@ le câblage params/render, + la BLA par phase + le nucleus phase-aware + l'UI.
     Non fait (rien ne le motive mesurablement) : validité anisotrope
     `|K⁻¹δ| < r` — σ₁ est la borne conservative, F3 ne fait ni l'un ni l'autre.
 - [x] **✅ CLI/GUI** — fait aux **jalons 2 (CLI `--phases`) et 5c (éditeur GUI)**.
-- [ ] (Optionnel) **`Op::Rot` per-phase** : l'opcode existe (CPU, dual + BLA)
-  mais n'est jamais émis ; le câbler seulement si un parseur `[[formula]] rotate`
-  des TOML F3 en a besoin (≠ rotation de vue, déjà gérée au pixel→c).
+- [x] **✅ `Op::Rot` per-phase CÂBLÉ `[2026-07-18]`** : parseur
+  `parse_opcodes_formula` (compile.rs, format F3 `param.cc::parse_opcodess` —
+  mots `add sqr mul store absx absy negx negy rot{DEG}`, chaque `add` termine
+  une phase, `need_store` mirroré, cos/sin **f32** parité F3 vérifiée
+  bit-identique vs g++). Nouveau champ `params.hybrid_opcodes`
+  (PNG-roundtrip), PRIORITAIRE sur `hybrid_phases` dans `formula_for_params` ;
+  prédicat UNIQUE `FractalParams::is_hybrid_formula()` posé sur TOUS les gates
+  z²+c (wisdom, GPU, série, dd, atom, Brent, harmonic, cache orbite +
+  discriminant `hybrid_opcodes`). Entrées : CLI `--opcodes "sqr rot{30} add"`,
+  TOML blocs `[[formula]]` F3 natifs (structurés abs/neg/power + `opcodes`),
+  clé légère top-level `opcodes` (consommée par compare_f3.py, qui émet un
+  bloc [[formula]] par phase). Rien à faire dans le moteur : Op::Rot était
+  déjà couvert par interp f64/GMP, delta-form f64/exp, BLA dual, nucleus
+  GmpDualMat2. Verrous : parseur (5 unit) + grille GMP-cyclant
+  `opcodes_rot_perturbation_matches_gmp_per_pixel` (rot30 single **160/160
+  exact** + rot30⊕BS genuine **160/160 exact**, centres zoom-huntés à vraie
+  structure, garde anti-vacuité par spread — qui a révélé et durci le contrôle
+  [M,M] historique, passé à 2000 iters) + juge F3 NATIF
+  `hybrid_rot_smooth_e10/e13` (f64-std + perturbation : inside_mismatch=0,
+  Δmean 0.033/0.053 = bruit F3 tier float, adjugé : grille GMP exacte sur le
+  MÊME centre, coefficients rot bit-identiques). `[[formula]] rotate` (champ
+  transform F3) reste distinct : c'est la rotation de vue, déjà `--rotation`.
 
 ### G5 — Architecture & nettoyage · `[P1 · maintenabilité]`
 

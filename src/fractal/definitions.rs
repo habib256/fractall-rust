@@ -84,6 +84,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         rotation: 0.0,
         transform_k: None,
         hybrid_phases: None,
+        hybrid_opcodes: None,
     };
 
     match fractal_type {

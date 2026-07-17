@@ -116,6 +116,9 @@ class LightToml:
     rotate: float | None
     # G4 jalon 5e : séquence de phases hybride ("mandelbrot,burning_ship").
     phases: str | None = None
+    # G4 Op::Rot : formule opcodes F3 ("sqr rot{30} add absx absy sqr add"),
+    # prioritaire sur phases — un bloc [[formula]] émis par phase (split add).
+    opcodes: str | None = None
 
 
 def parse_light_toml(path: Path) -> LightToml:
@@ -123,6 +126,7 @@ def parse_light_toml(path: Path) -> LightToml:
     iters = None
     rotate = None
     phases = None
+    opcodes = None
     for line in path.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -143,9 +147,11 @@ def parse_light_toml(path: Path) -> LightToml:
             except ValueError: pass
         elif k == "phases":
             phases = v
+        elif k == "opcodes":
+            opcodes = v
     if real is None or imag is None or zoom is None:
         raise ValueError(f"TOML {path} sans champ real/imag/zoom")
-    return LightToml(real, imag, zoom, iters, rotate, phases)
+    return LightToml(real, imag, zoom, iters, rotate, phases, opcodes)
 
 
 def write_f3_wrapper(
@@ -181,9 +187,23 @@ def write_f3_wrapper(
     )
     if src.rotate is not None and src.rotate != 0.0:
         text += f"transform.rotate = {src.rotate}\n"
+    # G4 Op::Rot : formule opcodes verbatim — un bloc [[formula]] par phase
+    # (chaque `add` termine une phase, convention F3 parse_opcodess).
+    if src.opcodes:
+        phase_words: list[str] = []
+        cur: list[str] = []
+        for word in src.opcodes.split():
+            cur.append(word)
+            if word == "add":
+                phase_words.append(" ".join(cur))
+                cur = []
+        if cur:
+            raise ValueError(f"opcodes: mots orphelins après le dernier add: {cur}")
+        for ops in phase_words:
+            text += f'\n[[formula]]\nopcodes = "{ops}"\n'
     # G4 jalon 5e : hybrides multi-phase — un bloc [[formula]] par phase,
     # opcodes alignés sur bytecode/compile.rs (F3 param.cc op_string).
-    if src.phases:
+    elif src.phases:
         F3_OPCODES = {
             "mandelbrot": "sqr add", "m": "sqr add", "mandel": "sqr add",
             "burning_ship": "absx absy sqr add", "burningship": "absx absy sqr add",

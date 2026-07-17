@@ -24,11 +24,104 @@ pub fn compile_formula(ft: FractalType, multibrot_power: f64) -> Option<Formula>
 /// render (orbite référence, pixel loop, f64 standard, gates `.is_some()`) →
 /// une frame hybride itère la même formule partout.
 pub fn formula_for_params(params: &crate::fractal::FractalParams) -> Option<Formula> {
+    // Formule opcodes F3 (G4 Op::Rot) : PRIORITAIRE — seule voie qui émet
+    // Op::Rot. `hybrid_opcodes` vide/blanc = absent (mirror is_hybrid_formula).
+    if let Some(text) = params
+        .hybrid_opcodes
+        .as_ref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        return parse_opcodes_formula(text);
+    }
     match &params.hybrid_phases {
         Some(phases) if !phases.is_empty() => {
             compile_hybrid_formula(phases, params.multibrot_power)
         }
         _ => compile_formula(params.fractal_type, params.multibrot_power),
+    }
+}
+
+/// Parse une chaîne d'opcodes au format Fraktaler-3 (`[[formula]]
+/// opcodes = "…"`, cf. F3 `param.cc::parse_opcodess`) en [`Formula`].
+///
+/// Mots reconnus : `add sqr mul store absx absy negx negy rot{DEG}` —
+/// chaque `add` TERMINE une phase (z := z + c), les phases s'itèrent
+/// cycliquement. `rot{θ}` (degrés) émet [`Op::Rot`] avec cos/sin calculés
+/// **en f32** (parité F3 : `opcode.u.rot.{x,y}` sont des `float`,
+/// `param.cc:1060-1066`).
+///
+/// Mirror du `need_store` de F3 (`param.cc::compile_formula`) : si une phase
+/// contient `mul` avant tout `store` explicite, un `store` est préfixé
+/// (sémantique z^n : le Store capture le z d'entrée de phase).
+///
+/// `None` si : mot inconnu, degrés non parsables, mots orphelins après le
+/// dernier `add` (phase non terminée), ou aucune phase.
+pub fn parse_opcodes_formula(text: &str) -> Option<Formula> {
+    let mut phases: Vec<Phase> = Vec::new();
+    let mut current: Vec<Op> = Vec::new();
+    for word in text.split_whitespace() {
+        let op = if let Some(deg_str) =
+            word.strip_prefix("rot{").and_then(|w| w.strip_suffix('}'))
+        {
+            let degrees: f32 = deg_str.parse().ok()?;
+            let radians = degrees * std::f32::consts::PI / 180.0;
+            Op::Rot {
+                cos_theta: radians.cos() as f64,
+                sin_theta: radians.sin() as f64,
+            }
+        } else {
+            match word {
+                "add" => Op::Add,
+                "sqr" => Op::Sqr,
+                "mul" => Op::Mul,
+                "store" => Op::Store,
+                "absx" => Op::AbsX,
+                "absy" => Op::AbsY,
+                "negx" => Op::NegX,
+                "negy" => Op::NegY,
+                _ => return None,
+            }
+        };
+        let ends_phase = matches!(op, Op::Add);
+        current.push(op);
+        if ends_phase {
+            let ops = ensure_store_prefix(std::mem::take(&mut current));
+            phases.push(Phase::new(ops));
+        }
+    }
+    if !current.is_empty() || phases.is_empty() {
+        return None;
+    }
+    Some(if phases.len() == 1 {
+        Formula::single(phases.pop().expect("len == 1"))
+    } else {
+        Formula::hybrid(phases)
+    })
+}
+
+/// `need_store` F3 (`param.cc::compile_formula`) : un `mul` rencontré avant
+/// tout `store` explicite multiplie par le Store initial (= z d'entrée de
+/// phase) → préfixer `store`. Sans lui, notre `Op::Mul` lirait un
+/// `stored_z`/`stored_delta` obsolètes (état du constructeur DeltaState).
+fn ensure_store_prefix(ops: Vec<Op>) -> Vec<Op> {
+    let mut need_store = false;
+    for op in &ops {
+        match op {
+            Op::Mul => {
+                need_store = true;
+                break;
+            }
+            Op::Store => break,
+            _ => {}
+        }
+    }
+    if need_store {
+        let mut with_store = Vec::with_capacity(ops.len() + 1);
+        with_store.push(Op::Store);
+        with_store.extend(ops);
+        with_store
+    } else {
+        ops
     }
 }
 
@@ -140,6 +233,67 @@ mod tests {
     #[test]
     fn power_2_is_sqr_add() {
         assert_eq!(compile_power(2), vec![Op::Sqr, Op::Add]);
+    }
+
+    // — parse_opcodes_formula (G4 Op::Rot) —
+
+    #[test]
+    fn parse_opcodes_mandelbrot_matches_compile() {
+        let parsed = parse_opcodes_formula("sqr add").unwrap();
+        let compiled = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
+        assert_eq!(parsed.phases.len(), 1);
+        assert_eq!(parsed.phases[0].ops, compiled.phases[0].ops);
+    }
+
+    #[test]
+    fn parse_opcodes_hybrid_mbs_matches_compile() {
+        let parsed = parse_opcodes_formula("sqr add absx absy sqr add").unwrap();
+        let compiled = compile_hybrid_formula(
+            &[FractalType::Mandelbrot, FractalType::BurningShip],
+            2.0,
+        )
+        .unwrap();
+        assert_eq!(parsed.phases.len(), 2);
+        assert_eq!(parsed.phases[0].ops, compiled.phases[0].ops);
+        assert_eq!(parsed.phases[1].ops, compiled.phases[1].ops);
+    }
+
+    #[test]
+    fn parse_opcodes_need_store_prefix_matches_power3() {
+        // F3 need_store : `mul` avant tout `store` explicite → store préfixé.
+        let parsed = parse_opcodes_formula("sqr mul add").unwrap();
+        assert_eq!(parsed.phases[0].ops, compile_power(3)); // Store Sqr Mul Add
+        // Store explicite : pas de double préfixe.
+        let explicit = parse_opcodes_formula("store sqr mul add").unwrap();
+        assert_eq!(explicit.phases[0].ops, compile_power(3));
+    }
+
+    #[test]
+    fn parse_opcodes_rot_f32_coefficients() {
+        let f = parse_opcodes_formula("sqr rot{30} add").unwrap();
+        assert_eq!(f.phases.len(), 1);
+        let Op::Rot { cos_theta, sin_theta } = f.phases[0].ops[1] else {
+            panic!("attendu Op::Rot, ops = {:?}", f.phases[0].ops);
+        };
+        // Parité F3 : cos/sin calculés en f32 (opcode.u.rot.{x,y} float).
+        let rad = 30.0f32 * std::f32::consts::PI / 180.0;
+        assert_eq!(cos_theta, rad.cos() as f64);
+        assert_eq!(sin_theta, rad.sin() as f64);
+        // rot{0} = identité exacte.
+        let f0 = parse_opcodes_formula("sqr rot{0} add").unwrap();
+        let Op::Rot { cos_theta: c0, sin_theta: s0 } = f0.phases[0].ops[1] else {
+            panic!("attendu Op::Rot");
+        };
+        assert_eq!((c0, s0), (1.0, 0.0));
+    }
+
+    #[test]
+    fn parse_opcodes_rejects_invalid() {
+        assert!(parse_opcodes_formula("").is_none()); // aucune phase
+        assert!(parse_opcodes_formula("sqr").is_none()); // pas de add final
+        assert!(parse_opcodes_formula("sqr add sqr").is_none()); // orphelins
+        assert!(parse_opcodes_formula("foo add").is_none()); // mot inconnu
+        assert!(parse_opcodes_formula("rot{abc} add").is_none()); // degrés KO
     }
 
     #[test]

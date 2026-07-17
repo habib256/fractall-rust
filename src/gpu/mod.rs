@@ -492,11 +492,7 @@ impl GpuRenderer {
         // formule) → aucun path GPU pour un hybride. `None` → fallback CPU
         // (f64 standard, seul path multi-phase). Empêche `--gpu`/GUI de rendre
         // un hybride en base-type faux.
-        if params
-            .hybrid_phases
-            .as_ref()
-            .is_some_and(|p| !p.is_empty())
-        {
+        if params.is_hybrid_formula() {
             return None;
         }
         // Sélection wisdom (source unique, G9.1) — device Gpu : seuil

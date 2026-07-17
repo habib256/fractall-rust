@@ -244,11 +244,7 @@ pub fn select_algorithm(params: &FractalParams, device: Device) -> Algorithm {
     // `try_bytecode_unified_path` (`wants_exp`). Hors zone perturbation :
     // StandardF64 (`iterate_bytecode_f64` cycle aussi les phases). Le GMP
     // par-pixel (`iterate_point_mpc`) ne cycle pas → jamais routé pour un hybride.
-    if params
-        .hybrid_phases
-        .as_ref()
-        .is_some_and(|p| !p.is_empty())
-    {
+    if params.is_hybrid_formula() {
         if params.algorithm_mode != crate::fractal::types::AlgorithmMode::StandardF64
             && should_use_perturbation(params, false)
         {
@@ -417,7 +413,7 @@ pub fn harmonic_candidate(params: &FractalParams) -> Option<HarmonicVariant> {
     // G4 : jamais candidat pour un hybride multi-phase — la table LLA/MLA est
     // dérivée de z²+c (dips de l'orbite z²+c), et le path pixel multi-phase ne
     // la consulte de toute façon pas. Évite un build O(M) inutile par render.
-    if params.hybrid_phases.as_ref().is_some_and(|p| !p.is_empty()) {
+    if params.is_hybrid_formula() {
         return None;
     }
     if !variant_eligible(params) {

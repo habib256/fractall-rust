@@ -1,0 +1,9 @@
+# G4 Op::Rot — formule opcodes F3 avec rotation per-phase, zoom 3e10 (path
+# f64-std, sous le seuil perturbation ~1e13). Centre trouvé par zoom-hunt
+# (442 couleurs à 800 iters, bord quick-escape lisse). Juge la sémantique
+# rot{θ} (ordre des ops, coefficients cos/sin f32) vs F3 natif.
+real = "-0.530231463251894682062709821991976701834255771"
+imag = "-0.891369642680984335400552917639371990525318402"
+zoom = "3e10"
+iterations = 800
+opcodes = "sqr rot{30} add"

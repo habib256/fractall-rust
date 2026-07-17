@@ -553,6 +553,9 @@ pub struct ReferenceOrbitCache {
     /// réutilisée pour un [M] au même centre (même `fractal_type` Mandelbrot,
     /// formules différentes) → image fausse (GUI inter-frame uniquement).
     pub hybrid_phases: Option<Vec<FractalType>>,
+    /// G4 Op::Rot : formule opcodes F3 pour laquelle la référence a été
+    /// itérée — même rôle discriminant que `hybrid_phases`.
+    pub hybrid_opcodes: Option<String>,
 }
 
 impl ReferenceOrbitCache {
@@ -674,6 +677,7 @@ impl ReferenceOrbitCache {
 
         self.fractal_type == params.fractal_type
             && self.hybrid_phases == params.hybrid_phases
+            && self.hybrid_opcodes == params.hybrid_opcodes
             && gmp_ok
             && self.center_x_gmp == cx_str
             && self.center_y_gmp == cy_str
@@ -724,6 +728,7 @@ impl ReferenceOrbitCache {
                 .clone()
                 .unwrap_or_else(|| params.span_y.to_string()),
             hybrid_phases: params.hybrid_phases.clone(),
+            hybrid_opcodes: params.hybrid_opcodes.clone(),
         }
     }
 
@@ -1040,9 +1045,7 @@ pub fn compute_reference_orbit_cached(
         // (Jacobien mat2 GMP par opcode, cf. nucleus.rs GmpDualMat2) ; le
         // single-phase garde le path z²+c historique (bit-identique).
         let nucleus_hybrid_formula: Option<Formula> = if adjusted_params
-            .hybrid_phases
-            .as_ref()
-            .is_some_and(|p| !p.is_empty())
+            .is_hybrid_formula()
         {
             crate::fractal::bytecode::formula_for_params(&adjusted_params)
         } else {
@@ -1279,10 +1282,7 @@ pub fn compute_reference_orbit_cached(
         // hybride (coefficients faux pour [M,BS] ; et pour [M,M] son seul
         // usage — l'heuristique auto-adjust — misfire : skip 32 % → doublement
         // ×4 de iteration_max, re-rendus parasites, cf. e50 96²).
-        let series_is_hybrid = adjusted_params
-            .hybrid_phases
-            .as_ref()
-            .is_some_and(|p| !p.is_empty());
+        let series_is_hybrid = adjusted_params.is_hybrid_formula();
         let should_build_series = !disable_series
             && !series_is_hybrid
             && (force_series
@@ -1594,10 +1594,7 @@ fn compute_reference_orbit_phase(
     // z²+c (fast-path dd, atom-domain dZdC=2·Z·dz+1, compresseur fantôme,
     // Brent) doit être gaté OFF. Sans ce gate, le fast-path dd (~1e13–1e19)
     // bâtissait une référence z²+c pour un [M,BS] → image garbage.
-    let is_hybrid = params
-        .hybrid_phases
-        .as_ref()
-        .is_some_and(|p| !p.is_empty());
+    let is_hybrid = params.is_hybrid_formula();
     let dd_eligible = !force_dense_gmp
         && !is_hybrid
         && dd_type_ok

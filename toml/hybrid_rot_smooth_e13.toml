@@ -1,0 +1,9 @@
+# G4 Op::Rot — même formule rot{30}, zoom 2.19e13 : path PERTURBATION
+# single-phase generic (BLA dual + delta-form Rot) chez fractall. Centre
+# prolongé par zoom-hunt depuis le cas e10 (209 couleurs à 3000 iters).
+# Juge le stack perturbation+Rot vs F3 natif.
+real = "-0.53023146323002682655287900351918292039849902660128"
+imag = "-0.89136964266186567970782315083553111261036641297394"
+zoom = "2.187e13"
+iterations = 3000
+opcodes = "sqr rot{30} add"

@@ -1194,11 +1194,12 @@ mod tests {
     fn grid_vs_gmp_cycling(
         label: &str,
         phases: Option<Vec<FractalType>>,
+        opcodes: Option<&str>,
         cx: &str,
         cy: &str,
         zoom: f64,
         iter_max: u32,
-    ) -> (u32, u32, u32, u32, i64) {
+    ) -> (u32, u32, u32, u32, i64, u32) {
         use crate::fractal::bytecode::formula_for_params;
         use rug::{Assign, Complex as GmpComplex};
 
@@ -1217,6 +1218,7 @@ mod tests {
         params.iteration_max = iter_max;
         params.algorithm_mode = AlgorithmMode::Perturbation;
         params.hybrid_phases = phases;
+        params.hybrid_opcodes = opcodes.map(str::to_string);
 
         let (orbit, _, _) = compute_reference_orbit(&params, None, false)
             .expect("compute_reference_orbit failed");
@@ -1250,6 +1252,7 @@ mod tests {
 
         let (mut total, mut exact, mut off_by_1, mut worse) = (0u32, 0u32, 0u32, 0u32);
         let mut max_diff = 0i64;
+        let (mut gmp_min, mut gmp_max) = (u32::MAX, 0u32);
         for gj in 0..10 {
             for gi in 0..16 {
                 let dx = ((gi as f64 + 0.5) / 16.0 - 0.5) * span_x;
@@ -1291,6 +1294,8 @@ mod tests {
                     n += 1;
                 }
 
+                gmp_min = gmp_min.min(n_gmp);
+                gmp_max = gmp_max.max(n_gmp);
                 let diff = (res.iteration as i64 - n_gmp as i64).abs();
                 total += 1;
                 if diff == 0 {
@@ -1304,9 +1309,9 @@ mod tests {
             }
         }
         eprintln!(
-            "[GRID-GMP {label}] total={total} exact={exact} off1={off_by_1} worse={worse} max_diff={max_diff}"
+            "[GRID-GMP {label}] total={total} exact={exact} off1={off_by_1} worse={worse} max_diff={max_diff} gmp_iters={gmp_min}..{gmp_max}"
         );
-        (total, exact, off_by_1, worse, max_diff)
+        (total, exact, off_by_1, worse, max_diff, gmp_max - gmp_min)
     }
 
     /// **G4 jalon 5 — verrou GMP des hybrides genuine en perturbation.**
@@ -1322,23 +1327,30 @@ mod tests {
     #[test]
     fn multi_phase_perturbation_matches_gmp_per_pixel() {
         // Contrôle : [M,M] au bord seahorse — multi-phase mécanique, chaos M.
-        let (t_mm, e_mm, o_mm, _w_mm, _m_mm) = grid_vs_gmp_cycling(
+        // iter_max 2000 : à 800 la vue seahorse @3e10 est TOUT intérieur
+        // (800..800) → le verrou passait à vide (découvert en posant la garde
+        // anti-vacuité, 2026-07-18). À 2000 la majorité escape (~1220 avg).
+        let (t_mm, e_mm, o_mm, _w_mm, _m_mm, s_mm) = grid_vs_gmp_cycling(
             "MM@3e10",
             Some(vec![FractalType::Mandelbrot, FractalType::Mandelbrot]),
+            None,
             "-0.743643887037158704752191506114774",
             "0.131825904205311970493132056385139",
             3e10,
-            800,
+            2000,
         );
+        assert!(s_mm >= 10, "grille [M,M] dégénérée (spread={s_mm})");
         // Hybride genuine : [M,BS] (bord hirsute BS-famille).
-        let (t_bs, e_bs, o_bs, _w_bs, _m_bs) = grid_vs_gmp_cycling(
+        let (t_bs, e_bs, o_bs, _w_bs, _m_bs, s_bs) = grid_vs_gmp_cycling(
             "MBS@3e10",
             Some(vec![FractalType::Mandelbrot, FractalType::BurningShip]),
+            None,
             "-0.4744047619051931",
             "-0.6327380952385265",
             3e10,
             800,
         );
+        assert!(s_bs >= 10, "grille [M,BS] dégénérée (spread={s_bs})");
         // [M,M] : dynamique M douce → quasi-exactitude exigée.
         assert!(
             (e_mm + o_mm) as f64 >= t_mm as f64 * 0.97,
@@ -1358,6 +1370,62 @@ mod tests {
         );
     }
 
+    /// **G4 Op::Rot — verrou GMP des formules opcodes avec rotation.**
+    ///
+    /// Une formule `rot{θ}` n'a AUCUN équivalent `hybrid_phases` : le seul
+    /// ground truth est le GMP par-pixel cyclant (GmpInterpState gère Op::Rot).
+    /// Deux contrôles au même protocole que le verrou multi-phase :
+    /// - single-phase `sqr rot{30} add` (z' = R·z² + c, CONFORME — dynamique
+    ///   douce type M) au bord seahorse → quasi-exactitude exigée ;
+    /// - genuine 2-phases `sqr rot{30} add absx absy sqr add` (rot-Mandel ⊕
+    ///   BS, non-conforme via les plis abs) → majorité exacte (résidu =
+    ///   plancher chaos f64, classe hirsute G3).
+    #[test]
+    fn opcodes_rot_perturbation_matches_gmp_per_pixel() {
+        // Centres trouvés par zoom-hunt (2026-07-18) : vues à VRAIE structure
+        // (442 / 361 couleurs à 3e10, escapes < 800 iters) — indispensable, la
+        // garde anti-vacuité ci-dessous a montré qu'un centre arbitraire donne
+        // une grille uniforme qui valide à vide.
+        let (t_r, e_r, o_r, _w_r, _m_r, s_r) = grid_vs_gmp_cycling(
+            "ROT30@3e10",
+            None,
+            Some("sqr rot{30} add"),
+            "-0.530231463251894682062709821991976701834255771",
+            "-0.891369642680984335400552917639371990525318402",
+            3e10,
+            800,
+        );
+        // Genuine 2-phases rot⊕BS (aucune conjugaison possible : plis abs).
+        let (t_rb, e_rb, o_rb, _w_rb, _m_rb, s_rb) = grid_vs_gmp_cycling(
+            "ROT30+BS@3e10",
+            None,
+            Some("sqr rot{30} add absx absy sqr add"),
+            "0.318374239329688913564690459907790553408524326",
+            "-1.39581666762444131506360484710213194042097119",
+            3e10,
+            800,
+        );
+        // Anti-vacuité : une grille où tous les points GMP escapent au même
+        // iter (vue uniforme) validerait à vide — exiger un vrai spread.
+        assert!(s_r >= 10, "grille rot30 dégénérée (spread={s_r})");
+        assert!(s_rb >= 10, "grille rot30+BS dégénérée (spread={s_rb})");
+        // rot conforme (dynamique M douce) : quasi-exactitude exigée.
+        assert!(
+            (e_r + o_r) as f64 >= t_r as f64 * 0.97,
+            "rot30 vs GMP cyclant : exact+off1={}/{}",
+            e_r + o_r,
+            t_r
+        );
+        // rot⊕BS : plis abs → majorité exacte (résidu = plancher chaos f64).
+        assert!(
+            e_rb as f64 >= t_rb as f64 * 0.50,
+            "rot30+BS vs GMP cyclant : exact={}/{} off1={}",
+            e_rb,
+            t_rb,
+            o_rb
+        );
+    }
+
     /// Diagnostic (--ignored) : hybride GENUINE deep [M,BS] @ 1e30 vs GMP
     /// cyclant — valide end-to-end le stack G4 complet (réfs par phase
     /// atom-tronquées MAT2 non-conformes + tables BLA cyclées + tracking de
@@ -1366,9 +1434,10 @@ mod tests {
     #[test]
     #[ignore]
     fn multi_phase_deep_e30_genuine_diagnostic() {
-        let (t, e, o1, w, m) = grid_vs_gmp_cycling(
+        let (t, e, o1, w, m, _s) = grid_vs_gmp_cycling(
             "MBS@1e30",
             Some(vec![FractalType::Mandelbrot, FractalType::BurningShip]),
+            None,
             "-0.47440476190400262380952380952382565777042389143502987280953675508499145507812500",
             "-0.63273809523733602380952380952382565777042389143502987280953675508499145507812500",
             1e30,

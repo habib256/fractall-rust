@@ -360,7 +360,19 @@ phases [Sqr, Add] steppées inline `δ' = 2·Z·δ + δ² + dc` (bitmask, bit-
 identique à DeltaState{,Exp}), cache réf de phase (rechargé au rebase
 seulement), tête-de-boucle chaînée + `z_land` dans la garde (mirror
 single-phase). e50 [M,M] 256² : boucle pixel 2.3× (2.26→0.98 s),
-pixel-identique partout ([M,M] e50/e1000, [M,BS] e13).
+pixel-identique partout ([M,M] e50/e1000, [M,BS] e13). **Op::Rot per-phase**
+(2026-07-18) : `parse_opcodes_formula` (compile.rs) parse le format opcodes
+F3 (`add sqr mul store absx absy negx negy rot{DEG}`, `add` termine une
+phase, need_store mirroré, cos/sin **f32** parité F3) → champ
+`params.hybrid_opcodes` (prioritaire sur `hybrid_phases`, PNG-roundtrip).
+Entrées : CLI `--opcodes "sqr rot{30} add"`, blocs `[[formula]]` F3 natifs
+dans les TOML (structurés abs/neg/power + `opcodes`), clé légère `opcodes`
+(compare_f3.py). ⚠️ Prédicat UNIQUE `params.is_hybrid_formula()` (types.rs)
+= hybride OU opcodes — TOUT gate z²+c hardcodé doit l'utiliser (une formule
+opcodes MÊME mono-phase n'est pas z²+c). Verrous : grille GMP-cyclant rot30
+160/160 exact (+ garde anti-vacuité spread) + juge F3 natif
+`hybrid_rot_smooth_e10/e13` (résidu Δmean 0.03-0.05 = bruit F3 tier float,
+adjugé GMP).
 `fractal_type` sert la convention d'appel (Mandelbrot-like : δ₀=0, dc=pixel).
 
 ### Wisdom auto-dispatch (`fractal/wisdom.rs`, 2026-07-12 · G9.1 2026-07-15)
@@ -556,8 +568,11 @@ fractall-cli --type N --output FILE [OPTIONS]
                           #   GPU seulement plage deep both-perturbation)
   --enable-distance-estimation / --enable-interior-detection
   --multibrot-power F / --lyapunov-preset NAME
-  --toml FILE             # charge real/imag/zoom/iterations/rotate
+  --toml FILE             # charge real/imag/zoom/iterations/rotate/phases/
+                          # opcodes + blocs [[formula]] F3 natifs
                           # format léger rust-fractal-core
+  --opcodes "SQR ADD…"    # formule opcodes F3 (rot{DEG} incl.), prioritaire
+                          # sur --phases ; ex. "sqr rot{30} add"
   --wisdom-bench          # bench machine (G9.2) : débits par technique →
                           # ~/.config/fractall/wisdom.toml (--output non requis)
 ```

@@ -43,6 +43,14 @@ struct Cli {
     #[arg(long)]
     phases: Option<String>,
 
+    /// Formule opcodes au format Fraktaler-3 (G4 Op::Rot per-phase) : mots
+    /// `add sqr mul store absx absy negx negy rot{DEG}`, chaque `add` termine
+    /// une phase. Ex. `--opcodes "sqr rot{15} add"` (Mandelbrot roté
+    /// in-formula), `--opcodes "sqr add absx absy sqr add"` (Mandel-Ship).
+    /// Prioritaire sur --phases/--type pour la formule. CPU uniquement.
+    #[arg(long)]
+    opcodes: Option<String>,
+
     /// Largeur de l'image de sortie en pixels
     #[arg(long, default_value_t = 1920)]
     width: u32,
@@ -257,6 +265,12 @@ struct TomlParams {
     /// (`"mandelbrot,burning_ship"`). Consommé par le harness (cas de parité
     /// hybride vs F3 natif — compare_f3.py émet les blocs `[[formula]]`).
     phases: Option<String>,
+    /// G4 Op::Rot : formule opcodes agrégée depuis les blocs `[[formula]]`
+    /// F3 natifs du TOML (structurés abs/neg/power compilés en mots, blocs
+    /// `opcodes = "…"` repris tels quels), OU clé légère top-level
+    /// `opcodes = "…"` (format `--opcodes`, consommée par compare_f3.py).
+    /// `None` si aucun des deux.
+    formula_opcodes: Option<String>,
 }
 
 fn load_toml_params(path: &std::path::Path) -> TomlParams {
@@ -315,7 +329,49 @@ fn load_toml_params(path: &std::path::Path) -> TomlParams {
         .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
     let phases = take_str("phases");
 
-    TomlParams { real, imag, zoom, iterations, rotate, phases }
+    // Blocs `[[formula]]` F3 natifs (G4 Op::Rot) : chaque bloc = une phase.
+    // Champ `opcodes` prioritaire (seule syntaxe portant rot{θ}) ; sinon
+    // compilation des champs structurés abs_x/abs_y/neg_x/neg_y/power dans
+    // l'ordre F3 (`param.cc::compile_formula`) — le `store` du besoin mul est
+    // ajouté au parse (`ensure_store_prefix`), pas ici.
+    let formula_opcodes = table.get("formula").and_then(|v| v.as_array()).map(|blocks| {
+        let mut phases_words: Vec<String> = Vec::new();
+        for block in blocks {
+            let Some(b) = block.as_table() else { continue };
+            if let Some(ops) = b.get("opcodes").and_then(|v| v.as_str()) {
+                let mut w = ops.trim().to_string();
+                if !w.ends_with("add") {
+                    w.push_str(" add");
+                }
+                phases_words.push(w);
+                continue;
+            }
+            let flag = |k: &str| b.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+            let mut words: Vec<String> = Vec::new();
+            if flag("abs_x") { words.push("absx".into()); }
+            if flag("abs_y") { words.push("absy".into()); }
+            if flag("neg_x") { words.push("negx".into()); }
+            if flag("neg_y") { words.push("negy".into()); }
+            let power = b.get("power").and_then(|v| v.as_integer()).unwrap_or(2).max(2) as u32;
+            let highest_bit = 31 - power.leading_zeros();
+            if power != (1u32 << highest_bit) {
+                words.push("store".into());
+            }
+            for bit in (0..highest_bit).rev() {
+                words.push("sqr".into());
+                if (power >> bit) & 1 == 1 {
+                    words.push("mul".into());
+                }
+            }
+            words.push("add".into());
+            phases_words.push(words.join(" "));
+        }
+        phases_words.join(" ")
+    }).filter(|s| !s.trim().is_empty())
+    // Clé légère top-level `opcodes` (mirror --opcodes) si pas de [[formula]].
+    .or_else(|| take_str("opcodes").filter(|s| !s.trim().is_empty()));
+
+    TomlParams { real, imag, zoom, iterations, rotate, phases, formula_opcodes }
 }
 
 /// `--wisdom-bench` (G9.2) : mesure les débits effectifs par technique (CPU
@@ -411,6 +467,16 @@ fn main() {
         }
     }
 
+    // Formule opcodes F3 (G4 Op::Rot) : --opcodes prioritaire sur --phases
+    // pour la formule (précédence dans formula_for_params). Validation tôt.
+    if let Some(ref ops) = cli.opcodes {
+        if crate::fractal::bytecode::parse_opcodes_formula(ops).is_none() {
+            eprintln!("--opcodes : formule invalide '{ops}' (mots: add sqr mul store absx absy negx negy rot{{DEG}} ; chaque phase finit par add)");
+            std::process::exit(2);
+        }
+        params.hybrid_opcodes = Some(ops.clone());
+    }
+
     // Applique d'abord les paramètres TOML (les overrides CLI explicites
     // restent prioritaires car traités après).
     if let Some(ref toml_path) = cli.toml {
@@ -465,6 +531,22 @@ fn main() {
                 if !phases.is_empty() {
                     params.hybrid_phases = Some(phases);
                 }
+            }
+        }
+
+        // Blocs [[formula]] F3 natifs (G4 Op::Rot) — un --opcodes CLI
+        // explicite reste prioritaire.
+        if cli.opcodes.is_none() {
+            if let Some(ref ops) = t.formula_opcodes {
+                if crate::fractal::bytecode::parse_opcodes_formula(ops).is_none() {
+                    eprintln!(
+                        "TOML {}: [[formula]] opcodes invalides '{}'",
+                        toml_path.display(),
+                        ops
+                    );
+                    std::process::exit(2);
+                }
+                params.hybrid_opcodes = Some(ops.clone());
             }
         }
 
