@@ -226,6 +226,34 @@ pub const PRESETS: &[Preset] = &[
         julia_seed: None,
         precision_bits: None,
     },
+    // Verrou « référence INTÉRIEURE → fausses évasions f64 perturbation »
+    // (bug trouvé + CORRIGÉ 2026-07-17 via screenshot GUI). Centre
+    // (-0.5622, -0.6428), zoom ~2.66e10 : l'orbite de référence frôle zéro
+    // (min|Z|²≈1.5e-11) sans s'évader (intérieure) → annulation f64 au rebase
+    // → le path perturbation flagge 36 % de pixels glitchés. **Cause du bug** :
+    // le 2ᵉ bloc de résolution glitch récursive (`mod.rs`) n'était PAS gaté
+    // `!bytecode_path` (contrairement à son frère l.1534) → à >512² il
+    // re-rendait les pixels via l'`iterate_pixel` LEGACY (réf secondaire, même
+    // imprécision f64), les dé-flaggait, faisait tomber le glitch_ratio sous
+    // 0.30 et SUPPRIMAIT le fallback full-GMP → 15048 px (3.44 %) de structure
+    // spurious à 800×547. PASS à ≤512² (bloc sauté, small_image). **Fix** : gate
+    // `!bytecode_path` → glitch_ratio reste 0.365 > 0.30 → fallback GMP → 0 px
+    // spurious (vérifié 640² == GMP pixel-exact). ⚠️ Ne se REPRODUIT qu'à
+    // >512² ; à la résolution suite (256²) le preset PASSE (small_image saute le
+    // bloc, avant comme après). Diagnostic 3-voies : f64-std OK, dd PARFAIT,
+    // GPU PARFAIT. Le comment de garde dans `mod.rs` (l.~1642) est le vrai verrou.
+    Preset {
+        name: "mandelbrot-interior-ref",
+        description: "Mandelbrot 2.66e10, interior reference near zero — perturbation glitch-correction gate fix (>512px only; suite runs 256², passes).",
+        fractal_type: FractalType::Mandelbrot,
+        center_x_hp: "-0.5622000453758329685166664054580872759302643586355318252834150515100478622742054",
+        center_y_hp: "-0.6428513501859345446359399567738260824595364535984125281199143802544005459298801",
+        zoom: "2.6556311116408318e10",
+        iterations: 2500,
+        multibrot_power: None,
+        julia_seed: None,
+        precision_bits: None,
+    },
 ];
 
 #[cfg(test)]

@@ -983,6 +983,31 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
 
 ### G3 — Élucider les divergences ouvertes · `[P0 · correction]`
 
+- [x] **✅ Réf INTÉRIEURE frôlant zéro → structure spurious à >512² — RÉSOLU
+  (2026-07-17)**. Trouvé via screenshot GUI (centre -0.5622-0.6428i, zoom
+  ~2.66e10). La réf ne s'évade pas (intérieure) et **frôle zéro**
+  (min|Z|²≈1.5e-11) → annulation f64 au rebase → 36 % de pixels flaggés glitch.
+  **Cause** : le 2ᵉ bloc de résolution glitch récursive (`mod.rs` ~l.1642)
+  n'était PAS gaté `!bytecode_path` (contrairement à son frère l.1534) → à
+  **>512² uniquement** (`!small_image`) il re-rendait les pixels flaggés via
+  l'`iterate_pixel` LEGACY (réf secondaire, MÊME imprécision f64), les
+  dé-flaggait (`glitch_mask=false`), faisait tomber le glitch_ratio sous
+  `GLITCH_FALLBACK_THRESHOLD` (0.30) et **supprimait le fallback full-GMP** →
+  **15048 px (3.44 %) de structure spurious** à 800×547 (PASS à ≤512²). **Fix**
+  (1 ligne) : gate `&& !bytecode_path` → glitch_ratio reste 0.365 > 0.30 →
+  fallback GMP → **640² == GMP pixel-exact (0 spurious)**. Diagnostic 3-voies :
+  f64-standard OK (65 flips), dd-tier PARFAIT, **GPU perturbation PARFAIT (20 px)**
+  → le screenshot GPU de l'utilisateur était en fait CORRECT ; seul le CPU f64
+  perturbation était faux. Verrous : preset `mandelbrot-interior-ref` (coords +
+  comment ; ⚠️ ne reproduit qu'à >512², suite 256² PASS) + comment de garde
+  `mod.rs`. 258 unit + 21 golden + QA 256² sans régression. **Reste** : le
+  fallback full-GMP est LENT (~2 min à 800²) sur ce cas pathologique rare (GUI =
+  GPU, non concerné) — un fallback **dd** (≈25× plus rapide que GMP) est
+  l'optimisation perf naturelle (G9.6, nécessite le câblage orbite dd).
+  ⚠️ **NB méthodo** : l'hypothèse initiale « plancher de précision f64 exigeant
+  dd auto-dispatch » était FAUSSE — le fallback GMP existant suffisait, il était
+  juste court-circuité par un bloc de correction legacy mal gaté.
+
 - [x] **✅ CPU perturbation : anneaux concentriques près du cusp -0.75 — RÉSOLU
   (2026-05-21)**. Centre ≈ (-0.749996, -0.004086), zoom ≈ 2.8e10, 2500 iter.
   **Vraie cause** : `max_perturb_iterations` (cap des pas DIRECTS) défaut **1024**

@@ -1619,7 +1619,19 @@ pub fn render_perturbation_with_cache(
         // 1. Delta-based reference: uses existing orbit + delta offset (faster than full recompute)
         // 2. Recursive: after resolving one level, remaining glitches are re-resolved
         // 3. Selects optimal reference pixel (smallest |z| norm in each group)
-        if !small_image && params.max_secondary_refs > 0 {
+        //
+        // ⚠️ `!bytecode_path` (miroir du bloc secondary-refs ci-dessus, l.1534) :
+        // sur le path bytecode/F3 les pixels flaggés sont des ref_exhausted /
+        // fausses évasions de PRÉCISION (réf INTÉRIEURE frôlant zéro → annulation
+        // f64 au rebase), PAS des glitches Pauldelbrot. Les re-rendre via le
+        // `iterate_pixel` LEGACY (référence secondaire) leur donne une valeur
+        // TOUJOURS fausse (même imprécision f64) mais NON-flaggée → un-flag
+        // (glitch_mask=false) qui les retire du set ET fait tomber le glitch_ratio
+        // sous `GLITCH_FALLBACK_THRESHOLD` (0.30) → le fallback full-GMP ne se
+        // déclenche plus. C'était la cause du bug « réf intérieure » : PASS à
+        // ≤512² (bloc sauté, small_image) mais 3.4 % de structure spurious à
+        // 800×547 (bloc actif). Gate → le ratio reste haut → fallback GMP → correct.
+        if !small_image && params.max_secondary_refs > 0 && !bytecode_path {
             let max_resolution_rounds = 3; // Limit recursion depth to avoid infinite loops
             for _round in 0..max_resolution_rounds {
                 let remaining_glitches: usize = glitch_mask.iter().filter(|v| **v).count();
