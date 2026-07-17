@@ -142,6 +142,20 @@ impl BlaUnifiedCacheEntry {
     }
 }
 
+/// Rayon de validité BLA = max |δc| sur l'image (F3 `engine.cc:282` :
+/// `c = pixel_spacing · pixel_precision` ≈ diagonale image en espace-c),
+/// et NON `|cref|`. pixel_spacing = 4/zoom/height (HP-aware via
+/// `effective_pixel_size`). Facteur **σ₁(K)** (G4, ex-P1.6.b-bis) : quand la
+/// transform pixel→c est non-conforme (K skewé produit par le nucleus finder
+/// hybride, jalon 5f), la grille de δc est étirée d'un facteur σ₁ ≥ 1 — sans
+/// lui, max |δc| est sous-estimé → rayons de merge sur-permissifs → over-skip
+/// BLA. σ₁ = 1 (rotation pure / pas de transform) → no-op bit-identique.
+fn bla_c_norm(params: &FractalParams) -> f64 {
+    let pixel_spacing = crate::fractal::perturbation::effective_pixel_size(params);
+    let diag_px = ((params.width as f64).powi(2) + (params.height as f64).powi(2)).sqrt();
+    pixel_spacing * diag_px * params.transform_sigma1()
+}
+
 /// Construit l'entrée cache BLA (table unifiée + éventuelle table dd) pour ce
 /// render. Coûteux (O(M) en taille d'orbite) — appelé UNE fois par render, sous
 /// le lock global (cf. `get_or_build_bla_entry`).
@@ -256,7 +270,9 @@ fn build_bla_entry(
             let diag_px = ((params.width as f64).powi(2)
                 + (params.height as f64).powi(2))
             .sqrt();
-            px * diag_px
+            // Même facteur σ₁(K) que `bla_c_norm` (grille δc étirée par un
+            // K skewé — no-op à 1.0 pour rotation pure).
+            px * (diag_px * params.transform_sigma1())
         };
         Some(
             formula
@@ -425,11 +441,7 @@ pub fn prewarm_bla_entry(params: &FractalParams, ref_orbit: &ReferenceOrbit) {
         return;
     }
     // c_norm identique à `try_bytecode_unified_path` (rayon de validité BLA).
-    let c_norm = {
-        let diag_px =
-            ((params.width as f64).powi(2) + (params.height as f64).powi(2)).sqrt();
-        pixel_size * diag_px
-    };
+    let c_norm = bla_c_norm(params);
     let _ = get_or_build_bla_entry(params, ref_orbit, c_norm, &formula);
 }
 
@@ -615,17 +627,10 @@ fn try_bytecode_unified_path(
     let use_exp_path = crate::fractal::wisdom::wants_exp(pixel_size);
 
     // Table BLA du render : construite UNE fois, partagée entre workers via Arc
-    // (cf. `get_or_build_bla_entry`). Rayon de validité = max |δc| sur l'image
-    // (F3 `engine.cc:282` : `c = pixel_spacing · pixel_precision` ≈ diagonale
-    // image en espace-c), et NON `|cref|`. pixel_spacing = 4/zoom/height
-    // (HP-aware via effective_pixel_size).
+    // (cf. `get_or_build_bla_entry`). Rayon de validité : cf. `bla_c_norm`
+    // (max |δc| sur l'image × σ₁(K), et NON `|cref|`).
     let c_ref = ref_orbit.cref;
-    let c_norm = {
-        let pixel_spacing = crate::fractal::perturbation::effective_pixel_size(params);
-        let diag_px =
-            ((params.width as f64).powi(2) + (params.height as f64).powi(2)).sqrt();
-        pixel_spacing * diag_px
-    };
+    let c_norm = bla_c_norm(params);
 
     let entry = get_or_build_bla_entry(params, ref_orbit, c_norm, &formula)?;
     let bla = &entry.tables[0];
@@ -3153,6 +3158,25 @@ mod tests {
         let smooth_p3 = compute_smooth_iteration(10, z, 2.0, 3.0);
         // Higher power should give different smooth values
         assert!((smooth_p2 - smooth_p3).abs() > 0.01);
+    }
+
+    // Verrou G4 σ₁(K) : le rayon de validité BLA (max |δc| image) est étiré
+    // par un K non-conforme. Sans transform / rotation pure → INCHANGÉ
+    // (σ₁ = 1.0 exact, bit-identique aux goldens rotated) ; K skewé det=1 →
+    // × σ₁ (sinon rayons sur-permissifs → over-skip).
+    #[test]
+    fn bla_c_norm_scales_with_sigma1_of_skewed_k() {
+        let mut params = default_params_for_type(FractalType::Mandelbrot, 64, 64);
+        params.span_x = 4e-5;
+        params.span_y = 4e-5;
+        let base = super::bla_c_norm(&params);
+        assert!(base > 0.0);
+        // Rotation pure : σ₁ = 1 exact → c_norm bit-identique.
+        params.rotation = 33.0;
+        assert_eq!(super::bla_c_norm(&params), base);
+        // K skewé diag(2, 1/2) : c_norm exactement doublé.
+        params.transform_k = Some([2.0, 0.0, 0.0, 0.5]);
+        assert_eq!(super::bla_c_norm(&params), base * 2.0);
     }
 
     // Verrou perf (2026-07-11) : la table BLA FloatExp (`bla_exp`) n'est LUE que

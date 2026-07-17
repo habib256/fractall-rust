@@ -40,16 +40,18 @@ pixel-exact + quality 15/15 PASS.
   ComplexExp (jalon 4, > 1e280, vérifié `[M,M]==M` @ **1e1000**). **Jalon 5a :
   les hybrides GENUINE ([M,BS]) deep sont CORRECTS** — réfs par phase (port F3)
   + tracking `(phase+m)≡n (mod N)` + gates `!is_hybrid` sur tous les chemins
-  z²+c hardcodés ; verrou grille vs GMP-cyclant ([M,M] 160/160). Reste
-  (jalon 5b+) : BLA par phase (perf) + nucleus phase-aware + éditeur GUI.
+  z²+c hardcodés ; verrou grille vs GMP-cyclant ([M,M] 160/160). Jalons
+  5b-5f : BLA par phase (6.7×), éditeur GUI, atom-domain mat2, parité F3
+  NATIF (Δ=0 @e13), nucleus phase-aware, + BLA radius scaling σ₁(K).
 - **Durcissements** : gate `!bytecode_path` sur le 2e bloc glitch récursif
   (`mod.rs:1634`, supprimait ~3.4 % structure spurious à >512²) ; golden
   `mandelbrot_interior_ref_640` (seul cas >512², exerce l'escalade dd).
 
 **RESTE :**
-- **G4 jalon 2** : câbler `params.hybrid_phases` → les ~9 callsites `compile_formula`
-  (orbit/delta/iterations/gpu/wisdom) + vérifier hybride == GMP ; puis BLA
-  par phase + nucleus phase-aware + UI.
+- **G4** : SOLDÉ jusqu'au jalon 5f + σ₁(K) (2026-07-17). Reste optionnel :
+  jalon 5g fast-path inline multi-phase (micro-perf, [M,M] e50 0.38 s vs
+  [M] 0.135 s — 2× orbite inhérent aux N réfs) ; `Op::Rot` per-phase (si
+  parseur `[[formula]] rotate` F3 un jour).
 - **G6** : durcir/étendre le corpus golden.
 - **G9.6** : fiabilité → escalade tier auto (px→dd/frame→dd) — marginal.
 
@@ -1541,22 +1543,27 @@ le câblage params/render, + la BLA par phase + le nucleus phase-aware + l'UI.
   `hybrid_mm_equals_mandelbrot_deep_exp_e1000`, garde-fou anti-tuile-uniforme).
   Single-phase INCHANGÉ (fast path Mandelbrot exp non touché ; 269 unit + golden
   verts). **Reste jalon 5 : BLA par phase (perf) + nucleus phase-aware + éditeur GUI.**
-- [ ] **BLA multi-phase native** : `Vec<BlaTableUnified>` (une par phase) au lieu
-  d'une seule ; `iterate_pixel_unified_*` switche de BLA au changement de phase
-  (F3 `engine.cc:287-295`, `bla.cc::hybrid_blas`). Tests d'invariance hybride
-  Mandelbrot⊕BurningShip.
-- [ ] **Nucleus finder phase-aware** : étendre `nucleus.rs` au-delà de
-  Mandelbrot (Burning Ship, Tricorn, Multibrot entier — dérivées dual-numbers
-  par opcode, ~70 % en place via `bla_dual`) ; période/centre/size par phase
-  (`engine.cc:118-218`).
-  - [ ] **BLA radius scaling σ₁(K)** (rapatrié de l'ex-P1.6.b-bis) : dès qu'un K
-    *skewé* (non-conforme) est produit ici, scaler le merge `c` par σ₁(K) (plus
-    grande valeur singulière ; det=1 ⇒ σ₁=1/σ₂≥1) dans `delta.rs`/`bla.rs`, ou
-    validité anisotrope `|K⁻¹δ| < r`. **No-op tant que K reste conforme** (le
-    seul K produit aujourd'hui est `R(θ)`, σ₁=1 ; F3 lui-même ne scale pas son
-    BLA par K) → testable seulement avec un K skewé réel, donc lié à ce goal.
-- [ ] **CLI/GUI** : `--phases mandelbrot,burning_ship,…` + éditeur de séquence
-  GUI.
+- [x] **✅ BLA multi-phase native** — fait au **jalon 5b** (`build_cycled`, une
+  table par phase, lookup `tables[phase]`).
+- [x] **✅ Nucleus finder phase-aware** — fait au **jalon 5f** (`GmpDualMat2` +
+  variantes `*_formula`, couvre toute formule bytecode donc BS/Tricorn/…
+  en phase d'un hybride ; les types single-phase non-Mandelbrot restent
+  sans `--find-nucleus` : le flag est gaté Mandelbrot, à ouvrir si demandé).
+  - [x] **✅ BLA radius scaling σ₁(K) `[2026-07-17]`** (ex-P1.6.b-bis, débloqué
+    par le K non-conforme du jalon 5f) : `FractalParams::transform_sigma1()`
+    (plus grande valeur singulière de `transform_matrix()`, snap exact à 1.0
+    pour K conforme) × le rayon `c_norm` BLA — centralisé `delta.rs::
+    bla_c_norm` (prewarm + build f64/dd + `c_norm_fexp` exp). Sans lui, un K
+    skewé (σ₁≈1.43 sur le blob [M,BS] p=304, K_norm=[0.230,1.238;0.676,-0.707])
+    étire la grille δc → `max |δc|` sous-estimé → rayons de merge
+    sur-permissifs → over-skip. **No-op bit-identique** hors K skewé (σ₁=1
+    exact ; 275 unit + 24 goldens verts, quality 15/15). Verrous :
+    `transform_sigma1_*` (types.rs) + `bla_c_norm_scales_with_sigma1_of_skewed_k`.
+    Smoke end-to-end : [M,BS] `--find-nucleus` @1e15 → nucleus p=304, K
+    non-conforme, rendu perturbation multi-phase propre (0 glitch/fallback).
+    Non fait (rien ne le motive mesurablement) : validité anisotrope
+    `|K⁻¹δ| < r` — σ₁ est la borne conservative, F3 ne fait ni l'un ni l'autre.
+- [x] **✅ CLI/GUI** — fait aux **jalons 2 (CLI `--phases`) et 5c (éditeur GUI)**.
 - [ ] (Optionnel) **`Op::Rot` per-phase** : l'opcode existe (CPU, dual + BLA)
   mais n'est jamais émis ; le câbler seulement si un parseur `[[formula]] rotate`
   des TOML F3 en a besoin (≠ rotation de vue, déjà gérée au pixel→c).

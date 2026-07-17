@@ -349,7 +349,12 @@ GMP par opcode) + `find_{period_atom_domain,nucleus}_formula`,
 `orbit.rs` pour les hybrides, z²+c historique sinon (bit-identique). ⚠️ size :
 récurrence d/dC avec +I à l'Add (sémantique z²+c validée, PAS la lettre F3
 dC=0). Vérifié : [M,M]==z²+c exact ; [M,BS] genuine → satellite p=123, K
-non-conforme ; `--find-nucleus` [M,M]@1e18 pixel-identique à [M]. **Reste
+non-conforme ; `--find-nucleus` [M,M]@1e18 pixel-identique à [M]. **BLA
+radius scaling σ₁(K)** (2026-07-17, débloqué par le K non-conforme du 5f) :
+`transform_sigma1()` (types.rs, snap exact 1.0 si K conforme) × le rayon
+`c_norm` BLA (`delta.rs::bla_c_norm`, + `c_norm_fexp` exp) — un K skewé
+étire la grille δc, sans σ₁ `max|δc|` est sous-estimé → rayon de merge
+sur-permissif (over-skip). No-op bit-identique hors K skewé. **Reste
 (jalon 5g)** : fast-path inline multi-phase (micro-perf).
 `fractal_type` sert la convention d'appel (Mandelbrot-like : δ₀=0, dc=pixel).
 

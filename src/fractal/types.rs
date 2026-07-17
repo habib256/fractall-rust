@@ -1152,6 +1152,33 @@ impl FractalParams {
         }
         self.rotation_matrix()
     }
+
+    /// Plus grande valeur singulière σ₁ de la matrice pixel→c effective
+    /// (`transform_matrix()`), 1.0 si aucune transform.
+    ///
+    /// Sert à borner `max |δc|` sur l'image pour le rayon de validité BLA :
+    /// un K *skewé* (non-conforme, produit par le nucleus finder hybride)
+    /// étire la grille de δc d'un facteur σ₁ ≥ 1 (K normalisée det=1 ⇒
+    /// σ₁ = 1/σ₂ ≥ 1) — sans ce facteur le rayon BLA est sur-permissif
+    /// (over-skip). Pour un K conforme (rotation pure), σ₁ = 1 : on snappe
+    /// à 1.0 sous tolérance pour garantir le no-op bit-identique du chemin
+    /// rotation existant.
+    #[inline]
+    pub fn transform_sigma1(&self) -> f64 {
+        let Some((m00, m01, m10, m11)) = self.transform_matrix() else {
+            return 1.0;
+        };
+        // σ₁² = (S + √(S² − 4·det²)) / 2 avec S = ‖M‖_F².
+        let s = m00 * m00 + m01 * m01 + m10 * m10 + m11 * m11;
+        let det = m00 * m11 - m01 * m10;
+        let disc = (s * s - 4.0 * det * det).max(0.0);
+        let sigma1 = ((s + disc.sqrt()) / 2.0).sqrt();
+        if !sigma1.is_finite() || (sigma1 - 1.0).abs() < 1e-9 {
+            1.0
+        } else {
+            sigma1
+        }
+    }
 }
 
 /// Résultat du calcul d'un point de fractale.
@@ -1231,5 +1258,45 @@ mod transform_tests {
         let theta = 30f64.to_radians();
         let (s, c) = theta.sin_cos();
         assert!(mat_close(m, (c, -s, s, c), 1e-12));
+    }
+
+    /// σ₁ = 1.0 EXACTEMENT (pas ≈) sans transform et pour toute rotation
+    /// pure : garantit le no-op bit-identique du c_norm BLA sur les chemins
+    /// rotation/identité existants (goldens rotated).
+    #[test]
+    fn transform_sigma1_is_exactly_one_for_conformal() {
+        let mut p = default_params_for_type(FractalType::Mandelbrot, 100, 100);
+        assert_eq!(p.transform_sigma1(), 1.0);
+        for deg in [30.0, 45.0, 90.0, 123.456] {
+            p.rotation = deg;
+            assert_eq!(p.transform_sigma1(), 1.0, "rotation {deg}°");
+        }
+        // K conforme det=1 (rotation stockée en matrice, cas nucleus [M,M]).
+        p.transform_k = Some([0.6, -0.8, 0.8, 0.6]);
+        assert_eq!(p.transform_sigma1(), 1.0);
+    }
+
+    /// σ₁ d'un K skewé det=1 (cas nucleus hybride genuine) : pour
+    /// diag(s, 1/s), σ₁ = s ; pour un skew général, σ₁ ≥ 1 et cohérent avec
+    /// la définition (max ‖Kv‖ sur ‖v‖=1).
+    #[test]
+    fn transform_sigma1_of_skewed_k() {
+        let mut p = default_params_for_type(FractalType::Mandelbrot, 100, 100);
+        p.transform_k = Some([1.5, 0.0, 0.0, 1.0 / 1.5]);
+        assert!((p.transform_sigma1() - 1.5).abs() < 1e-12);
+        // Shear [1 1; 0 1] : σ₁ = (1+√5)/2 (nombre d'or).
+        p.transform_k = Some([1.0, 1.0, 0.0, 1.0]);
+        let golden = (1.0 + 5f64.sqrt()) / 2.0;
+        assert!((p.transform_sigma1() - golden).abs() < 1e-12);
+        // K non-conforme du jalon 5f ([M,BS] satellite p=123), normalisé
+        // det=1 comme le stocke `orbit.rs` (k_normalized) : colonnes
+        // orthogonales de normes s et 1/s → σ₁ = norme de la grande colonne.
+        let raw = [0.362f64, 0.680, -0.362, 0.680];
+        let det = (raw[0] * raw[3] - raw[1] * raw[2]).abs().sqrt();
+        p.transform_k = Some([raw[0] / det, raw[1] / det, raw[2] / det, raw[3] / det]);
+        let s1 = p.transform_sigma1();
+        assert!(s1 > 1.3, "K skewé det=1 doit avoir σ₁ > 1, got {s1}");
+        let col_y = 2f64.sqrt() * (0.680 / det);
+        assert!((s1 - col_y).abs() < 1e-12, "σ₁={s1} vs ‖col_y‖={col_y}");
     }
 }
