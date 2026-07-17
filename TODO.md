@@ -1468,11 +1468,35 @@ le câblage params/render, + la BLA par phase + le nucleus phase-aware + l'UI.
   config production (tables cyclées) inchangée ([M,M] 160/160) ; déterminisme
   run-to-run 0 px. Résidu [M,M] vs [M] à e50 : 5-6 px épars = troncatures de
   réf différentes ([M] atom-tronquée, refs hybrides pleines — l'atom-domain
-  z²+c est gaté) + epsilon BLA, plancher bruit. **Reste (jalon 5c+)** :
-  atom-domain GÉNÉRIQUE pour hybrides (dZdC mat2 par formule via dual-numbers
-  — débloquerait des réfs courtes = tables cache-chaudes, cf. gap [M] 0.13 s
-  vs [M,M] 0.50 s à e50) + nucleus phase-aware + éditeur GUI de séquence +
-  cas harness hybrides (parité vs F3 native).
+  z²+c est gaté) + epsilon BLA, plancher bruit (résolu au jalon 5d).
+- [x] **✅ Jalon 5c — éditeur GUI de séquence hybride `[2026-07-17]`** : menu
+  Type → « Hybride (séquence) » (➕/⌫/🗑/Appliquer ≥2 phases/Désactiver),
+  label « Hybride: M⊕BS », `apply_hybrid_sequence()` (reset convention
+  Mandelbrot + `hybrid_phases` + `start_render`), drag-and-drop PNG restaure.
+- [x] **✅ Jalon 5d — atom-domain GÉNÉRIQUE hybrides (mat2) `[2026-07-17]`** :
+  port F3 `hybrid_reference` (`hybrid.cc:81-98` — dZdC **mat2** bas-précision,
+  critère `|inv(radius·dZdC)·Z| < 1`). Récurrence par phase entière via les
+  Jacobiens dual-numbers de la BLA : `J' = A_i·J + I` (`build_bla_single_step` ;
+  B = I car `Op::Add` — seul op impliquant c — est TERMINAL dans toutes nos
+  phases, cf. `from_single` b=IDENTITY), J en 4×FloatExp (croît ~λⁱ), critère
+  sans inversion `|adj(J)·Z|² < r²·det(J)²`. Pour J conforme ([M,M]) ≡ critère
+  complexe — vérifié NUMÉRIQUEMENT : les réfs [M,M] e50 tronquent au MÊME index
+  que [M] single (86615/192865) ⟹ **[M,M] e50 == [M] à 0 px** (le résidu 6 px
+  du jalon 5b venait du mismatch de troncature). Perf e50 96² : 0.50 → 0.38 s
+  ([M] single 0.135 s — reste 2× orbite + loop générique sans fast-path inline).
+  Verrou : `hybrid_mm_equals_mandelbrot_deep_f64_e50` (render-level, couvre
+  d'un coup 5a réfs/tracking + 5b BLA cyclées/prewarm + 5d atom mat2) ; grille
+  GMP-cyclant et e1000 inchangés. **Genuine deep validé end-to-end** :
+  [M,BS] @ 1e30 (coordonnée zoom-hunt HP, 567 couleurs, diagnostic `--ignored`
+  `multi_phase_deep_e30_genuine_diagnostic`) — réfs de phase tronquées à des
+  index DIFFÉRENTS (533/496, attendu : séquences de phases différentes),
+  grille vs GMP-cyclant 27/160 exact à 30k iters = **plancher chaos hirsute**
+  (PROUVÉ hors de cause pour l'atom : résultat IDENTIQUE 27/160 avec
+  `FRACTALL_ATOM_PERIOD=0`, cohérent avec la croissance chaos 4→85 % entre
+  300 et 2000 iters mesurée à 3e10). **Reste (jalon 5e+)** : nucleus
+  phase-aware (période/centre/size par phase, `engine.cc:118-218`) + cas
+  harness hybrides (parité vs F3 native) + fast-path Mandelbrot inline
+  multi-phase.
 - [x] **✅ Jalon 4 — hybrides DEEP-EXP (ComplexExp, > 1e280) `[2026-07-17]`** :
   `iterate_pixel_unified_exp_multi_phase` (`pixel_loop_exp.rs`) — mirror du
   multi-phase f64 en `DeltaStateExp` (FloatExp survit à l'underflow f64 du delta),

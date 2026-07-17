@@ -61,6 +61,11 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
   (`compute_warp_norm` : `0.5 + dy`, `src/gui/app.rs`).
 
 ### Performance
+- **G4 jalon 5d — atom-domain générique hybrides (mat2)** : troncature des
+  réfs hybrides (port F3 `hybrid_reference` : dZdC mat2, critère
+  `|inv(r·J)·Z| < 1` calculé sans inversion) via `J' = A_i·J + I` (Jacobiens
+  dual-numbers par phase, FloatExp). [M,M] e50 tronque au même index que [M]
+  ⟹ **pixel-exact == [M] (0 px, verrou e50)** et 0.50 → 0.38 s.
 - **G4 jalon 5b — BLA par phase pour les hybrides deep** (port F3
   `hybrid_blas`) : `BlaTableUnified::build_cycled` (le pas i de la table de
   phase p utilise `phases[(p+i) % N]`, bâtie sur `refs[p]`) + saut

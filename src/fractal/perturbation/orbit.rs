@@ -1814,12 +1814,29 @@ fn compute_reference_orbit_phase(
         && super::delta::atom_hp_enabled()
         && super::effective_pixel_size(params)
             < super::delta::ATOM_PERIOD_PIXEL_SIZE_THRESHOLD;
+    // G4 jalon 5d : troncature atom-domain GÉNÉRIQUE pour les hybrides (port F3
+    // `hybrid_reference`, `hybrid.cc:81-98` : dZdC est un **mat2** bas-précision,
+    // critère `|inv(radius·dZdC)·Z| < 1`). Récurrence par phase entière via les
+    // Jacobiens dual-numbers déjà validés par la BLA : `J' = A_i·J + I`
+    // (`build_bla_single_step` donne A = ∂phase/∂z ; B = I car `Op::Add` — seul
+    // op impliquant c — est TERMINAL dans toutes nos phases, cf.
+    // `BlaMultiStep::from_single` b=IDENTITY). J en FloatExp (croît ~λⁱ, dépasse
+    // f64 en deep). Sans troncature, les réfs hybrides restent pleines (~192 k à
+    // e50) → tables BLA cache-froides ≫ le single-phase atom-tronqué ([M] 0.13 s
+    // vs [M,M] 0.50 s, cf. jalon 5b). Même gate de régime que le path complexe.
+    let atom_period_mat2_enabled = is_hybrid
+        && bytecode_formula.is_some()
+        && super::delta::atom_hp_enabled()
+        && super::effective_pixel_size(params)
+            < super::delta::ATOM_PERIOD_PIXEL_SIZE_THRESHOLD;
     let atom_radius_sqr = {
         let (adx, ady) = super::effective_spans_fexp(params);
         let r = if adx.partial_cmp(&ady) == Some(std::cmp::Ordering::Greater) { adx } else { ady };
         r.sqr()
     };
     let mut atom_dz = ComplexExp::zero();
+    // J = dZ/dC mat2 row-major [j00, j01, j10, j11] en FloatExp (J₀ = 0).
+    let mut atom_j = [FloatExp::zero(), FloatExp::zero(), FloatExp::zero(), FloatExp::zero()];
     let mut atom_truncated = false;
 
     // Compression d'orbite (G8.2, Imagina PTWithCompression) : fantôme f64 en
@@ -1998,6 +2015,44 @@ fn compute_reference_orbit_phase(
                     // ici (garder Z_{i+1} en dernier) ; cycle_period=0 → la boucle
                     // pixel cycle par rebase-at-end (F3 hybrid.cc:301, tolère la
                     // troncation, delta compense).
+                    atom_truncated = true;
+                    break;
+                }
+            }
+        }
+
+        // Atom-domain HYBRIDE (jalon 5d) : J_{i+1} = A_i·J_i + I (A_i =
+        // Jacobien dual-numbers de la phase du pas i sur Z_i), critère F3 mat2
+        // `|inv(r·J)·Z|² < 1` ⟺ `|adj(J)·Z|² < r²·det(J)²` (tout en FloatExp,
+        // adj/det évitent l'inversion explicite). Pour un J conforme
+        // (Mandelbrot pur), det J = |j|² et |adj(J)Z| = |j||Z| ⟹ critère ≡
+        // `|Z|² < r²·|j|²` du path complexe ci-dessus.
+        if atom_period_mat2_enabled {
+            let n = z_ref.len();
+            let zi_f64 = z_ref_f64[n - 2]; // Z_i (f64 suffit : |Z| = O(1))
+            let formula_ref = bytecode_formula.as_ref().unwrap();
+            let np = formula_ref.phases.len();
+            let ph = &formula_ref.phases[(phase_start + i as usize) % np];
+            let lin = crate::fractal::bytecode::bla_dual::build_bla_single_step(
+                zi_f64.re, zi_f64.im, ph, 0.0,
+            );
+            let a = lin.a;
+            let fe = FloatExp::from_f64;
+            let j = atom_j;
+            atom_j = [
+                j[0] * a.m00 + j[2] * a.m01 + fe(1.0),
+                j[1] * a.m00 + j[3] * a.m01,
+                j[0] * a.m10 + j[2] * a.m11,
+                j[1] * a.m10 + j[3] * a.m11 + fe(1.0),
+            ];
+            if i > 0 {
+                let z1 = z_ref[n - 1]; // Z_{i+1} (ComplexExp)
+                let det = atom_j[0] * atom_j[3] - atom_j[1] * atom_j[2];
+                let vx = atom_j[3] * z1.re - atom_j[1] * z1.im;
+                let vy = atom_j[0] * z1.im - atom_j[2] * z1.re;
+                let lhs = vx.sqr() + vy.sqr();
+                let rhs = atom_radius_sqr * det.sqr();
+                if lhs.partial_cmp(&rhs) == Some(std::cmp::Ordering::Less) {
                     atom_truncated = true;
                     break;
                 }

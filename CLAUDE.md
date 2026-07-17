@@ -331,10 +331,14 @@ par phase, sinon pas directs), n/m avancent ensemble → invariant préservé,
 pas de rebase-check post-saut. Série Taylor gatée `!is_hybrid` (z²+c + son
 auto-adjust misfirait). ⚠️ `prewarm_bla_entry` DOIT couvrir le multi-phase
 (sinon build N-tables sous le lock global = tout le temps pixel). Mesuré
-[M,M] e50 96² : 3.34 → 0.50 s (6.7×) ; e1000 exp ≈ parité single. **Reste
-(jalon 5c+)** : atom-domain générique hybrides (dZdC mat2 — réfs courtes =
-tables cache-chaudes) + nucleus phase-aware + éditeur GUI + cas harness
-hybrides.
+[M,M] e50 96² : 3.34 → 0.50 s (6.7×) ; e1000 exp ≈ parité single. **Jalon 5d —
+atom-domain GÉNÉRIQUE hybrides (mat2, port F3 `hybrid_reference`)** :
+troncature des réfs hybrides via `J' = A_i·J + I` (Jacobiens dual-numbers,
+B = I car Add terminal), J en FloatExp, critère `|adj(J)·Z|² < r²·det(J)²`
+(≡ critère complexe pour J conforme — [M,M] tronque au MÊME index que [M] ⟹
+**[M,M] e50 == [M] à 0 px**, verrou `hybrid_mm_equals_mandelbrot_deep_f64_
+e50`). Perf e50 : 0.50 → 0.38 s. **Reste (jalon 5e+)** : nucleus phase-aware +
+cas harness hybrides + fast-path inline multi-phase.
 `fractal_type` sert la convention d'appel (Mandelbrot-like : δ₀=0, dc=pixel).
 
 ### Wisdom auto-dispatch (`fractal/wisdom.rs`, 2026-07-12 · G9.1 2026-07-15)

@@ -520,3 +520,45 @@ fn hybrid_mm_equals_mandelbrot_deep_exp_e1000() {
         "[M,M] deep-exp (perturbation multi-phase ComplexExp) doit etre pixel-exact == Mandelbrot ; {diff} octets different"
     );
 }
+
+/// **G4 jalon 5d (atom-domain hybride + BLA par phase, tier f64)** : a e50
+/// (263k iters, tier f64, BLA massive, refs atom-tronquees par le critere
+/// mat2), l'hybride `[M,M]` DOIT rendre PIXEL-EXACT comme le Mandelbrot
+/// mono-phase. Avant 5d les troncatures differaient ([M] atom complexe,
+/// [M,M] refs pleines) -> 6 px de bruit de rebase ; le critere mat2 (J
+/// conforme => identique au critere complexe) retablit l'exactitude.
+/// Couvre d'un coup : refs par phase + tracking (5a), tables BLA cyclees +
+/// prewarm (5b), troncature atom mat2 (5d).
+#[test]
+fn hybrid_mm_equals_mandelbrot_deep_f64_e50() {
+    let common: &[&str] = &[
+        "--width", "96", "--height", "96",
+        "--center-x-hp=-0.0494700290631040937516922267273536301187457124882248793181049402326421947726869034279915499747594190000000000000000000",
+        "--center-y-hp=-0.6747875758446753640113920531305976563347707068224034806979997947909941983454845111514208499540310299999999999999999880",
+        "--zoom=1e50", "--iterations", "263010", "--no-gpu",
+    ];
+    let render = |extra: &[&str]| -> (u32, u32, Vec<u8>) {
+        let out = temp_output();
+        let status = Command::new(cli_binary_path())
+            .args(common)
+            .args(extra)
+            .arg("--output")
+            .arg(&out)
+            .status()
+            .expect("CLI launch");
+        assert!(status.success(), "render echoue pour {extra:?}");
+        let px = read_pixels(&out);
+        let _ = std::fs::remove_file(&out);
+        px
+    };
+    let m = render(&["--type", "3"]);
+    let mm = render(&["--phases", "mandelbrot,mandelbrot"]);
+    assert_eq!((m.0, m.1), (mm.0, mm.1), "dims");
+    let reds: std::collections::HashSet<u8> = m.2.iter().step_by(3).copied().collect();
+    assert!(reds.len() > 1, "tuile uniforme -- invariant trivial");
+    let diff = m.2.iter().zip(&mm.2).filter(|(a, b)| a != b).count();
+    assert_eq!(
+        diff, 0,
+        "[M,M] e50 (BLA par phase + atom mat2) doit etre pixel-exact == Mandelbrot ; {diff} octets different"
+    );
+}

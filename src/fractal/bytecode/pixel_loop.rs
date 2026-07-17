@@ -1305,6 +1305,25 @@ mod tests {
         );
     }
 
+    /// Diagnostic (--ignored) : hybride GENUINE deep [M,BS] @ 1e30 vs GMP
+    /// cyclant — valide end-to-end le stack G4 complet (réfs par phase
+    /// atom-tronquées MAT2 non-conformes + tables BLA cyclées + tracking de
+    /// phase). Coordonnée trouvée par zoom-hunt HP (structure réelle, 567
+    /// couleurs). ~30 s (GMP 30k iters × 160 points).
+    #[test]
+    #[ignore]
+    fn multi_phase_deep_e30_genuine_diagnostic() {
+        let (t, e, o1, w, m) = grid_vs_gmp_cycling(
+            "MBS@1e30",
+            Some(vec![FractalType::Mandelbrot, FractalType::BurningShip]),
+            "-0.47440476190400262380952380952382565777042389143502987280953675508499145507812500",
+            "-0.63273809523733602380952380952382565777042389143502987280953675508499145507812500",
+            1e30,
+            30000,
+        );
+        eprintln!("[E30-GENUINE] total={t} exact={e} off1={o1} worse={w} max={m}");
+    }
+
     /// Diagnostic (--ignored) : stabilité du ground truth GMP sur la grille
     /// [M,BS] — itère chaque point à 256 ET 512 bits et compte les désaccords
     /// ENTRE LES DEUX VÉRITÉS. Des points truth-instables = scène au-delà de la
