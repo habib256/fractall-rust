@@ -45,17 +45,28 @@ pub enum BenchKey {
     /// CPU perturbation tier double-double (deep e50, `--dd-tier`).
     CpuPerturbDd,
     /// GPU shader f32 standard (même vue que [`BenchKey::CpuStdF64`] —
-    /// directement comparable pour l'arbitrage device G9.5).
+    /// directement comparable pour l'arbitrage device G9.5). ⚠️ **f32 = 24 b
+    /// de mantisse → FAUX sur les fractales escape-time** (leçon F3 : 9391 px
+    /// faux) : l'arbitrage device N'utilise JAMAIS ce débit (le GPU n'est
+    /// correct que via le kernel perturbation f64, cf. [`GpuPerturbF64`]).
     GpuStdF32,
+    /// GPU kernel perturbation f64 natif (`perturbation.wgsl`, SHADER_F64,
+    /// G9.4). Le SEUL path GPU correct pour la plage perturbation (≥ ~1e5) —
+    /// c'est le débit consommé par l'arbitrage device G9.5
+    /// (`wisdom::select_device`). Absent du wisdom.toml tant que
+    /// `--wisdom-bench` ne le mesure pas → l'arbitrage retombe conservativement
+    /// sur le CPU (jalon suivant : mesure GPU-perturb dans `run_bench`).
+    GpuPerturbF64,
 }
 
 impl BenchKey {
-    pub const ALL: [BenchKey; 5] = [
+    pub const ALL: [BenchKey; 6] = [
         BenchKey::CpuStdF64,
         BenchKey::CpuPerturbF64,
         BenchKey::CpuPerturbExp,
         BenchKey::CpuPerturbDd,
         BenchKey::GpuStdF32,
+        BenchKey::GpuPerturbF64,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -65,6 +76,7 @@ impl BenchKey {
             BenchKey::CpuPerturbExp => "cpu_perturb_exp",
             BenchKey::CpuPerturbDd => "cpu_perturb_dd",
             BenchKey::GpuStdF32 => "gpu_std_f32",
+            BenchKey::GpuPerturbF64 => "gpu_perturb_f64",
         }
     }
 
@@ -88,6 +100,9 @@ impl BenchKey {
                 None => None,
             },
             (Device::Gpu, Algorithm::StandardF64) => Some(BenchKey::GpuStdF32),
+            // GPU perturbation = kernel f64 natif (pas de tier CPU-style : la
+            // hiérarchie exp/dd est propre au CPU). Clé unique.
+            (Device::Gpu, Algorithm::Perturbation) => Some(BenchKey::GpuPerturbF64),
             _ => None,
         }
     }
@@ -198,7 +213,13 @@ fn bench_frame(key: BenchKey, size: u32) -> FractalParams {
             p.algorithm_mode = AlgorithmMode::Auto;
             p
         }
-        BenchKey::CpuPerturbF64 => deep_frame(E50_RE, E50_IM, "4e-50", 263_010, size),
+        // GPU-perturb : même vue deep e50 que le CPU-perturb f64 → débits
+        // directement comparables pour l'arbitrage device (G9.5). Frame
+        // seulement — la MESURE GPU-perturb (rendu via `render_dispatch`) est le
+        // jalon suivant ; aujourd'hui `measure_cpu` ne benche pas cette clé.
+        BenchKey::CpuPerturbF64 | BenchKey::GpuPerturbF64 => {
+            deep_frame(E50_RE, E50_IM, "4e-50", 263_010, size)
+        }
         BenchKey::CpuPerturbExp => deep_frame(E318_RE, E318_IM, "1e-318", 212_138, size),
         BenchKey::CpuPerturbDd => {
             let mut p = deep_frame(E50_RE, E50_IM, "4e-50", 263_010, size);

@@ -265,6 +265,73 @@ pub fn select_algorithm(params: &FractalParams, device: Device) -> Algorithm {
     }
 }
 
+/// Gain de débit minimal pour préférer le GPU au CPU : marge anti-bruit +
+/// amortissement du coût fixe (upload orbite/BLA, dispatch, readback). Le GPU
+/// doit être FRANCHEMENT plus rapide, pas à égalité.
+const GPU_SPEED_MARGIN: f64 = 1.25;
+
+/// Plancher de `pixel_size` où le transport span hi/lo f32 du kernel GPU tient
+/// (miroir de `gpu/mod.rs::GPU_SPAN_F32_MIN`). En deça (deep extrême), le kernel
+/// GPU est incapable → CPU.
+const GPU_SPAN_F32_MIN: f64 = 1e-37;
+
+/// **Auto-sélection du device (G9.5)** — CPU ou GPU par ARBITRAGE de débit
+/// benché sur CETTE machine, sous contrainte STRICTE de correction.
+///
+/// Le GPU n'est **correct** que dans la plage perturbation, via le kernel f64
+/// natif (`perturbation.wgsl`, SHADER_F64). En dessous du seuil perturbation
+/// GPU (`should_use_perturbation(gpu)` faux), le GPU tomberait sur les shaders
+/// **std f32** (mantisse 24 b → faux sur les fractales escape-time, leçon F3) :
+/// l'auto ne l'y route **JAMAIS** (l'utilisateur garde `--gpu` comme override).
+/// Au-delà de la plage de transport f32 hi/lo (`pixel_size < 1e-37`) le kernel
+/// est incapable → CPU. Sinon on compare le débit benché du kernel GPU-perturb
+/// au débit de la technique CPU choisie ; GPU seulement s'il gagne d'au moins
+/// [`GPU_SPEED_MARGIN`] (sur GPU grand public f64 1:64 il perd → CPU ; sur GPU
+/// pro f64 rapide il gagne → GPU). Sans bench GPU-perturb → conservateur (CPU).
+///
+/// `gpu_available` = GPU initialisé ET path requis supporté (SHADER_F64). Les
+/// overrides `--gpu`/`--no-gpu` sont appliqués par le caller AUTOUR de l'auto.
+pub fn select_device(params: &FractalParams, gpu_available: bool) -> Device {
+    if !gpu_available {
+        return Device::Cpu;
+    }
+    // Correction : le GPU n'est viable que quand il rendrait en PERTURBATION
+    // (kernel f64). Sinon (std f32) → faux → CPU.
+    if select_algorithm(params, Device::Gpu) != Algorithm::Perturbation {
+        return Device::Cpu;
+    }
+    // Plage de transport f32 hi/lo du span (au-delà, GPU incapable).
+    if effective_pixel_size(params) < GPU_SPAN_F32_MIN {
+        return Device::Cpu;
+    }
+    // Arbitrage débit : kernel GPU-perturb vs technique CPU choisie pour la frame.
+    let cpu_algo = select_algorithm(params, Device::Cpu);
+    let cpu_tier = if cpu_algo == Algorithm::Perturbation {
+        number_tier(params)
+    } else {
+        None
+    };
+    let cpu_bench =
+        crate::fractal::wisdom_bench::lookup_iters_per_sec(Device::Cpu, cpu_algo, cpu_tier);
+    let gpu_bench = crate::fractal::wisdom_bench::lookup_iters_per_sec(
+        Device::Gpu,
+        Algorithm::Perturbation,
+        None,
+    );
+    arbitrate_device(gpu_bench, cpu_bench)
+}
+
+/// Cœur pur de l'arbitrage débit (testable). GPU choisi seulement si son débit
+/// benché dépasse celui du CPU d'au moins [`GPU_SPEED_MARGIN`]. Toute absence de
+/// mesure (GPU non benché, technique CPU non benchée) → CPU (conservateur : on
+/// ne route jamais le GPU sans PREUVE qu'il est plus rapide).
+fn arbitrate_device(gpu_iters_per_sec: Option<f64>, cpu_iters_per_sec: Option<f64>) -> Device {
+    match (gpu_iters_per_sec, cpu_iters_per_sec) {
+        (Some(g), Some(c)) if c > 0.0 && g > c * GPU_SPEED_MARGIN => Device::Gpu,
+        _ => Device::Cpu,
+    }
+}
+
 /// Variantes d'accélération actives pour cette frame — partie **statique** des
 /// prédicats de routage (gates env + type + tier + flags de coloring). Les
 /// conditions dépendantes de l'orbite (réf compressée construite,
@@ -511,6 +578,50 @@ mod tests {
         assert_eq!(plan_for(&p, Device::Gpu).device, Device::Gpu);
         // Le tier/variantes ne s'appliquent qu'au path perturbation CPU.
         assert_eq!(plan_for(&p, Device::Gpu).tier, None);
+    }
+
+    #[test]
+    fn select_device_no_gpu_is_cpu() {
+        // GPU indisponible → toujours CPU, quel que soit le zoom.
+        assert_eq!(select_device(&frame(1e8), false), Device::Cpu);
+        assert_eq!(select_device(&frame(1e30), false), Device::Cpu);
+    }
+
+    #[test]
+    fn select_device_shallow_never_gpu_f32() {
+        // Zoom faible (< seuil perturbation GPU 1e5) : le GPU tomberait sur les
+        // shaders std f32 (24 b, FAUX) → l'auto ne route JAMAIS le GPU, même
+        // disponible. Verrou du garde-fou correction G9.5.
+        let p = frame(1e2);
+        assert_eq!(select_algorithm(&p, Device::Gpu), Algorithm::StandardF64);
+        assert_eq!(select_device(&p, true), Device::Cpu);
+    }
+
+    #[test]
+    fn select_device_deep_extreme_beyond_f32_transport_is_cpu() {
+        // Au-delà de la plage de transport span f32 (pixel_size < 1e-37) le
+        // kernel GPU est incapable → CPU même si perturbation.
+        let p = frame(1e40); // pixel_size ~ 4e-40 < 1e-37
+        assert_eq!(select_device(&p, true), Device::Cpu);
+    }
+
+    #[test]
+    fn select_device_perturbation_without_gpu_bench_is_cpu() {
+        // Plage perturbation GPU-viable (1e8) MAIS pas de bench GPU-perturb sur
+        // la machine de test (wisdom.toml absent/sans clé) → conservateur : CPU.
+        // (Le wiring dispatch + la mesure GPU-perturb sont les jalons suivants.)
+        assert_eq!(select_device(&frame(1e8), true), Device::Cpu);
+    }
+
+    #[test]
+    fn arbitrate_device_routes_gpu_only_when_clearly_faster() {
+        // Cœur pur de l'arbitrage : GPU choisi seulement au-delà de la marge.
+        assert_eq!(arbitrate_device(Some(3.0e11), Some(1.0e11)), Device::Gpu); // 3× → GPU
+        assert_eq!(arbitrate_device(Some(1.1e11), Some(1.0e11)), Device::Cpu); // +10% < marge
+        assert_eq!(arbitrate_device(Some(5.0e10), Some(1.0e11)), Device::Cpu); // GPU plus lent
+        assert_eq!(arbitrate_device(None, Some(1.0e11)), Device::Cpu); // GPU non benché
+        assert_eq!(arbitrate_device(Some(1.0e11), None), Device::Cpu); // CPU non benché
+        assert_eq!(arbitrate_device(None, None), Device::Cpu);
     }
 
     #[test]

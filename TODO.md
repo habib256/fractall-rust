@@ -1820,6 +1820,23 @@ Jalons (chacun ≈ 1-2 itérations /improve, ordre suggéré) :
   ou router la perturbation f64 aussi en shallow (δ grand + rebasing, à
   mesurer), ou tier std f64→GPU interdit. Arbitrage device par vitesse benchée
   (9.2) une fois la perf 9.4 mesurée.
+  - [x] **✅ Étape 1 — logique d'arbitrage device (`wisdom::select_device`)
+    `[2026-07-17]`** : fonction PURE (non encore consommée par le dispatch =
+    zéro régression rendu) qui choisit CPU/GPU par arbitrage de débit benché
+    SOUS contrainte de correction. **Garde-fou f32** : le GPU n'est routé QUE
+    quand il rendrait en perturbation (kernel f64) ; en dessous du seuil
+    (`select_algorithm(_, Gpu) != Perturbation` → std f32, faux) → **jamais
+    GPU**. Plage transport f32 hi/lo bornée (`pixel_size ≥ 1e-37`). `arbitrate_
+    device(gpu_bench, cpu_bench)` : GPU seulement s'il gagne d'au moins
+    `GPU_SPEED_MARGIN=1.25`, CPU si l'un des deux n'est pas benché (conservateur).
+    Clé bench `GpuPerturbF64` ajoutée (`wisdom_bench`, `for_plan(Gpu,
+    Perturbation)`) ; **pas encore mesurée** → sur cette machine l'arbitrage
+    retombe sur CPU (correct : GPU grand public f64 1:64 = plus lent ; GPU f32 =
+    faux). 6 unit tests (no-gpu / shallow-f32-gate / deep-extreme / no-bench /
+    marge). 263 unit + 21 golden verts. **Restes** : (a) **mesurer**
+    `GpuPerturbF64` dans `run_bench`/`--wisdom-bench` (rendu via
+    `render_dispatch`) ; (b) **câbler** `select_device` dans le dispatcher CPU/
+    GPU + GUI (`--gpu`/`--no-gpu` = overrides), verrou `gpu-suite`.
 - [ ] **9.6 — Fiabilité → escalade de tier** (= G-dd auto-dispatch, plan déjà
   écrit) : détecteur shadowing en observation puis escalade px→dd /
   frame→dd ; ferme la boucle « le wisdom ne sous-provisionne jamais »

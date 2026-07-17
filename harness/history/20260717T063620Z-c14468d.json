@@ -1,0 +1,289 @@
+{
+  "schema": 1,
+  "meta": {
+    "date_utc": "2026-07-17T06:36:20+00:00",
+    "stamp": "20260717T063620Z",
+    "git_sha": "c14468d",
+    "git_dirty": false,
+    "machine": {
+      "cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz",
+      "nproc": 16,
+      "os": "Linux 6.14.0-37-generic"
+    },
+    "tier": "standard",
+    "axes": [
+      "speed"
+    ],
+    "width": 256,
+    "height": 256,
+    "quality_width": 256,
+    "quality_height": 256,
+    "runs": 3,
+    "f3_bin": "/home/gistarcade/src/fractall-rust/fraktaler-3-3.1/fraktaler-3-3.1.linux",
+    "mem_limit_mb": 0,
+    "quarantined": [],
+    "slow_safe": [
+      "e52465"
+    ]
+  },
+  "speed": {
+    "status": "ok",
+    "cases": {
+      "test5": {
+        "fractall_s": 0.0085,
+        "f3_s": 0.0156,
+        "ratio": 0.5449,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "spiral": {
+        "fractall_s": 0.019,
+        "f3_s": 0.1639,
+        "ratio": 0.1159,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "flake": {
+        "fractall_s": 0.0156,
+        "f3_s": 0.2141,
+        "ratio": 0.0729,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_2": {
+        "fractall_s": 0.0165,
+        "f3_s": 0.164,
+        "ratio": 0.1006,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e50": {
+        "fractall_s": 0.6155,
+        "f3_s": 1.1656,
+        "ratio": 0.5281,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e113": {
+        "fractall_s": 0.1146,
+        "f3_s": 0.2641,
+        "ratio": 0.4339,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e401": {
+        "fractall_s": 0.5662,
+        "f3_s": 6.6258,
+        "ratio": 0.0855,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1000": {
+        "fractall_s": 0.5177,
+        "f3_s": 3.2189,
+        "ratio": 0.1608,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "floral_fantasy": {
+        "fractall_s": 0.019,
+        "f3_s": 0.1639,
+        "ratio": 0.1159,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "dragon": {
+        "fractall_s": 2.0685,
+        "f3_s": 3.8706,
+        "ratio": 0.5344,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e318": {
+        "fractall_s": 0.4687,
+        "f3_s": 16.3425,
+        "ratio": 0.0287,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1121": {
+        "fractall_s": 0.566,
+        "f3_s": 2.618,
+        "ratio": 0.2162,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "e1200": {
+        "fractall_s": 0.6164,
+        "f3_s": 3.1188,
+        "ratio": 0.1976,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_3": {
+        "fractall_s": 0.0317,
+        "f3_s": 0.3643,
+        "ratio": 0.087,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "glitch_test_4": {
+        "fractall_s": 0.016,
+        "f3_s": 0.1639,
+        "ratio": 0.0976,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "heaven": {
+        "fractall_s": 0.1153,
+        "f3_s": 0.2641,
+        "ratio": 0.4366,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "integral_of_ex2": {
+        "fractall_s": 0.215,
+        "f3_s": 0.5144,
+        "ratio": 0.418,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "windmill": {
+        "fractall_s": 0.1665,
+        "f3_s": 0.4144,
+        "ratio": 0.4018,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "mitosis": {
+        "fractall_s": 0.0316,
+        "f3_s": 0.1639,
+        "ratio": 0.1928,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "golden_spider": {
+        "fractall_s": 0.365,
+        "f3_s": 1.0153,
+        "ratio": 0.3595,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "leaded_glass": {
+        "fractall_s": 0.116,
+        "f3_s": 1.4662,
+        "ratio": 0.0791,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "magic": {
+        "fractall_s": 0.4162,
+        "f3_s": 0.9152,
+        "ratio": 0.4548,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "tick_tock": {
+        "fractall_s": 0.1658,
+        "f3_s": 0.4144,
+        "ratio": 0.4001,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "virus": {
+        "fractall_s": 0.114,
+        "f3_s": 0.2641,
+        "ratio": 0.4317,
+        "status": "ok",
+        "f3_exr_ok": true
+      },
+      "x": {
+        "fractall_s": 0.0641,
+        "f3_s": 0.164,
+        "ratio": 0.3909,
+        "status": "ok",
+        "f3_exr_ok": true
+      }
+    },
+    "geomean_ratio": 0.2102,
+    "worst_ratio": {
+      "case": "test5",
+      "ratio": 0.5449
+    },
+    "wins": [
+      "test5",
+      "spiral",
+      "flake",
+      "glitch_test_2",
+      "e50",
+      "e113",
+      "e401",
+      "e1000",
+      "floral_fantasy",
+      "dragon",
+      "e318",
+      "e1121",
+      "e1200",
+      "glitch_test_3",
+      "glitch_test_4",
+      "heaven",
+      "integral_of_ex2",
+      "windmill",
+      "mitosis",
+      "golden_spider",
+      "leaded_glass",
+      "magic",
+      "tick_tock",
+      "virus",
+      "x"
+    ],
+    "timeouts": [],
+    "excluded_f3_degenerate": [],
+    "excluded_slow_safe": [],
+    "n_cases": 25,
+    "n_compared": 25
+  },
+  "parity": {
+    "status": "skipped"
+  },
+  "quality": {
+    "status": "skipped"
+  },
+  "fuzz": {
+    "status": "skipped"
+  },
+  "goldens": {
+    "status": "skipped"
+  },
+  "beyond_f3": {
+    "speed_wins": [
+      "test5",
+      "spiral",
+      "flake",
+      "glitch_test_2",
+      "e50",
+      "e113",
+      "e401",
+      "e1000",
+      "floral_fantasy",
+      "dragon",
+      "e318",
+      "e1121",
+      "e1200",
+      "glitch_test_3",
+      "glitch_test_4",
+      "heaven",
+      "integral_of_ex2",
+      "windmill",
+      "mitosis",
+      "golden_spider",
+      "leaded_glass",
+      "magic",
+      "tick_tock",
+      "virus",
+      "x"
+    ],
+    "correctness_wins": []
+  },
+  "gaps": []
+}
