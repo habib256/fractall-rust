@@ -324,23 +324,22 @@ fn measure_gpu(
     target_seconds: f64,
 ) -> Option<BenchEntry> {
     let mut size = 256u32;
-    let mut best: Option<BenchEntry> = None;
     loop {
         let params = bench_frame(key, size);
         let t = Instant::now();
         let iters = render(&params)?;
         let seconds = t.elapsed().as_secs_f64();
         let total: u64 = iters.iter().map(|&i| i as u64).sum();
-        best = Some(BenchEntry {
+        let entry = BenchEntry {
             key: key.as_str().to_string(),
             iters_per_sec: total as f64 / seconds.max(1e-9),
             width: size,
             height: size,
             seconds,
             measured_unix: unix_now(),
-        });
+        };
         if seconds >= target_seconds || size >= 2048 {
-            return best;
+            return Some(entry);
         }
         size *= 2;
     }

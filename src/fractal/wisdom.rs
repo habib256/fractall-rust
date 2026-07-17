@@ -304,15 +304,21 @@ pub fn select_device(params: &FractalParams, gpu_available: bool) -> Device {
     if effective_pixel_size(params) < GPU_SPAN_F32_MIN {
         return Device::Cpu;
     }
-    // Arbitrage débit : kernel GPU-perturb vs technique CPU choisie pour la frame.
+    // Comparaison APPLES-TO-APPLES uniquement : on n'arbitre que si le CPU
+    // aussi rendrait en PERTURBATION (même algorithme des deux côtés → débits
+    // comparables). Là où le CPU utilise std-f64 (zoom ~1e5–1e12), comparer son
+    // débit std au débit GPU-perturb serait invalide (algorithmes différents) ET
+    // le CPU-std y est déjà rapide+correct → on reste CPU. L'auto-GPU se limite
+    // donc à la plage deep both-perturbation (zoom 1e12 … 4e37).
     let cpu_algo = select_algorithm(params, Device::Cpu);
-    let cpu_tier = if cpu_algo == Algorithm::Perturbation {
-        number_tier(params)
-    } else {
-        None
-    };
-    let cpu_bench =
-        crate::fractal::wisdom_bench::lookup_iters_per_sec(Device::Cpu, cpu_algo, cpu_tier);
+    if cpu_algo != Algorithm::Perturbation {
+        return Device::Cpu;
+    }
+    let cpu_bench = crate::fractal::wisdom_bench::lookup_iters_per_sec(
+        Device::Cpu,
+        Algorithm::Perturbation,
+        number_tier(params),
+    );
     let gpu_bench = crate::fractal::wisdom_bench::lookup_iters_per_sec(
         Device::Gpu,
         Algorithm::Perturbation,
@@ -606,10 +612,13 @@ mod tests {
     }
 
     #[test]
-    fn select_device_perturbation_without_gpu_bench_is_cpu() {
-        // Plage perturbation GPU-viable (1e8) MAIS pas de bench GPU-perturb sur
-        // la machine de test (wisdom.toml absent/sans clé) → conservateur : CPU.
-        // (Le wiring dispatch + la mesure GPU-perturb sont les jalons suivants.)
+    fn select_device_cpu_std_range_is_cpu_deterministic() {
+        // Zoom ~1e5–1e12 : le GPU rendrait en perturbation (viable) MAIS le CPU
+        // en std-f64 → comparaison inter-algorithmes invalide → l'auto reste CPU
+        // (le CPU-std y est rapide+correct). DÉTERMINISTE : retourne avant tout
+        // lookup du wisdom.toml machine (donc indépendant de la machine de test).
+        assert_eq!(select_algorithm(&frame(1e8), Device::Cpu), Algorithm::StandardF64);
+        assert_eq!(select_algorithm(&frame(1e8), Device::Gpu), Algorithm::Perturbation);
         assert_eq!(select_device(&frame(1e8), true), Device::Cpu);
     }
 

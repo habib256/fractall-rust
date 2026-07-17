@@ -145,9 +145,15 @@ struct Cli {
     #[arg(long, default_value_t = 0.001)]
     interior_threshold: f64,
 
-    /// Utiliser le GPU pour le rendu (wgpu: Metal/Vulkan/DX12)
+    /// Forcer le GPU (override de l'auto-sélection wisdom G9.5). Sans
+    /// `--gpu`/`--no-gpu`, le device est choisi automatiquement par benchmark
+    /// machine + viabilité correction (`wisdom::select_device`).
     #[arg(long)]
     gpu: bool,
+
+    /// Forcer le CPU (override de l'auto-sélection wisdom G9.5).
+    #[arg(long)]
+    no_gpu: bool,
 
     /// [DEPRECATED] Le moteur bytecode est activé par défaut depuis P3.1
     /// Session E. Ce flag ne sert qu'à rétro-compatibilité et passer
@@ -578,11 +584,24 @@ fn main() {
     // Anti-aliasing multi-sample (per-frame jitter). jitter_scale est
     // enregistré dans les métadonnées ; l'offset sous-pixel de chaque sample
     // est appliqué dans la boucle d'accumulation plus bas. AA CPU uniquement.
+    // Device effectif (G9.5) : overrides `--gpu`/`--no-gpu`, sinon auto par le
+    // wisdom (benchmark machine + garde-fou correction : GPU seulement dans la
+    // plage perturbation f64, jamais sur les shaders std f32). `gpu_available`
+    // optimiste (true) — le bench arbitre sans créer le GPU ; si l'auto choisit
+    // GPU mais que `GpuRenderer::new()` échoue, fallback CPU en aval.
+    let use_gpu = if cli.no_gpu {
+        false
+    } else if cli.gpu {
+        true
+    } else {
+        fractal::wisdom::select_device(&params, true) == fractal::wisdom::Device::Gpu
+    };
+
     let aa_samples = cli.aa_samples.max(1);
     let aa_jitter_scale = cli.jitter_scale.unwrap_or(1.0);
     if aa_samples > 1 {
         params.jitter_scale = aa_jitter_scale;
-        if cli.gpu {
+        if use_gpu {
             eprintln!(
                 "[AA] --aa-samples {aa_samples} ignoré en mode --gpu (anti-aliasing CPU uniquement)"
             );
@@ -645,7 +664,7 @@ fn main() {
     let start_time = std::time::Instant::now();
     let cancel = Arc::new(AtomicBool::new(false));
 
-    let (iterations, zs) = if cli.gpu {
+    let (iterations, zs) = if use_gpu {
         match GpuRenderer::new() {
             Some(gpu) => {
                 println!("GPU initialisé ({})", gpu.precision_label());
@@ -721,7 +740,7 @@ fn main() {
     let center_y_hp = params.center_y_hp.clone().unwrap_or_else(|| params.center_y.to_string());
     let span_x_hp = params.span_x_hp.clone().unwrap_or_else(|| params.span_x.to_string());
     let span_y_hp = params.span_y_hp.clone().unwrap_or_else(|| params.span_y.to_string());
-    let png_result = if aa_samples > 1 && !cli.gpu {
+    let png_result = if aa_samples > 1 && !use_gpu {
         // Anti-aliasing multi-sample (per-frame jitter) : sample 0 = le rendu de
         // base déjà calculé (offset (0,0)), samples 1..N re-rendus avec un offset
         // sous-pixel low-discrepancy, puis moyenne en espace RGB.

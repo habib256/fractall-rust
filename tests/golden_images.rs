@@ -297,6 +297,13 @@ fn render_case(case: &Case) -> PathBuf {
     let output = temp_output();
     let status = Command::new(cli_binary_path())
         .args(case.args)
+        // Déterminisme cross-machine (G9.5) : les goldens sont pixel-exacts et
+        // valident le path CPU. `--no-gpu` force le CPU quelle que soit
+        // l'auto-sélection device du wisdom (qui, sur une machine à GPU f64
+        // rapide, pourrait router une frame deep-perturbation vers le GPU →
+        // sortie ≠ bit-à-bit du CPU). Sans ça les goldens seraient
+        // machine-dépendants.
+        .arg("--no-gpu")
         .envs(case.envs.iter().copied())
         .arg("--output")
         .arg(&output)

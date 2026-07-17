@@ -456,7 +456,9 @@ fractall-cli --type N --output FILE [OPTIONS]
   --find-nucleus          # Mandelbrot nucleus refine (atom-domain)
   --dd-tier               # tier double-double ~106b (spirales deep sensibles)
   --no-bytecode           # désactive bytecode (debug)
-  --gpu                   # GPU wgpu Metal/Vulkan/DX12
+  --gpu / --no-gpu        # override device ; sinon AUTO (wisdom::select_device,
+                          #   G9.5 : benchmark machine + garde-fou correction —
+                          #   GPU seulement plage deep both-perturbation)
   --enable-distance-estimation / --enable-interior-detection
   --multibrot-power F / --lyapunov-preset NAME
   --toml FILE             # charge real/imag/zoom/iterations/rotate

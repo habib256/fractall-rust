@@ -1845,8 +1845,22 @@ Jalons (chacun ≈ 1-2 itérations /improve, ordre suggéré) :
     RÉELLES (robuste au bruit de bench : GPU perd même au cpu-bas). `gpu_std_f32`
     (4.48e9, rapide) correctement IGNORÉ (garde-fou correction). Tests
     `for_plan(Gpu,Perturbation)` + frame GPU-perturb (perturbation ∧ pixel≥1e-37).
-    266 unit + 21 golden verts. **Reste (b)** : câbler `select_device` au
-    dispatcher CPU/GPU + GUI (`--gpu`/`--no-gpu` = overrides), verrou `gpu-suite`.
+    266 unit + 21 golden verts.
+  - [x] **✅ Étape 2 (b) — câblage CLI `[2026-07-17]`** : `main.rs` calcule
+    `use_gpu` = override `--gpu`/**nouveau `--no-gpu`**, sinon **auto**
+    `select_device(params, true) == Gpu`. **Raffinement crucial** : l'arbitrage
+    ne compare QUE si le CPU aussi rendrait en perturbation (apples-to-apples) —
+    là où le CPU utilise std-f64 (zoom ~1e5–1e12) on reste CPU (comparer std-f64
+    vs GPU-perturb serait invalide ; le CPU-std y est déjà rapide+correct). Donc
+    l'auto-GPU se limite à la plage deep both-perturbation (1e12…4e37). **Sur
+    cette machine : auto ≡ CPU partout** (GPU-perturb 7.6× plus lent) → vérifié
+    `auto == --no-gpu` BIT-À-BIT ; `--gpu` force toujours le GPU. **Déterminisme
+    cross-machine** : les goldens forcent `--no-gpu` (sur un GPU f64 rapide une
+    frame deep-perturb pourrait router GPU ≠ CPU bit-à-bit). Le tier quality
+    passe par le dispatcher CPU direct (non concerné) ; le harness mesure l'auto
+    (= CPU ici). 263 unit + 21 golden + harness quick (0 gap) verts. **Reste** :
+    auto dans la GUI (le toggle `use_gpu` → tri-état Auto/CPU/GPU) — faible
+    priorité, le toggle EST déjà l'override manuel.
 - [ ] **9.6 — Fiabilité → escalade de tier** (= G-dd auto-dispatch, plan déjà
   écrit) : détecteur shadowing en observation puis escalade px→dd /
   frame→dd ; ferme la boucle « le wisdom ne sous-provisionne jamais »
