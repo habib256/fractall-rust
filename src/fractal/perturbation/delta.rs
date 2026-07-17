@@ -171,12 +171,35 @@ fn build_bla_entry(
     // garde `bla_threshold` pour l'instant (cf. TODO G9 — même correctif à
     // porter, à mesurer côté deep-zoom). Le dd a son propre 2⁻⁸⁰ (ci-dessous).
     const F64_BLA_EPSILON: f64 = 1.0 / (1u64 << 53) as f64; // 2⁻⁵³ ≈ 1.11e-16
-    let tables = build_bla_table_for_formula(
-        formula,
-        &ref_orbit.z_ref_f64,
-        c_norm,
-        F64_BLA_EPSILON,
-    )?;
+    // G4 jalon 5b : pour un hybride multi-phase, `tables[p]` est bâtie CYCLÉE
+    // sur la réf de phase p (F3 `hybrid_blas` : `blasR2calc(Z[phase], opss, …,
+    // phase)`) — le single-step à l'index i utilise `phases[(p+i) % N]`, la
+    // même séquence que l'itération de `refs[p]`. Consommées par
+    // `iterate_pixel_unified{,_exp}_multi_phase` (`tables[phase].lookup`).
+    let n_phases = formula.phases.len();
+    let tables = if n_phases > 1 {
+        if ref_orbit.hybrid_phase_refs.len() + 1 != n_phases {
+            return None; // réfs par phase manquantes (défensif, cf. jalon 5a)
+        }
+        (0..n_phases)
+            .map(|p| {
+                let orbit_p = if p == 0 {
+                    ref_orbit
+                } else {
+                    &ref_orbit.hybrid_phase_refs[p - 1]
+                };
+                crate::fractal::bytecode::bla_dual::BlaTableUnified::build_cycled(
+                    &orbit_p.z_ref_f64,
+                    formula,
+                    p,
+                    c_norm,
+                    F64_BLA_EPSILON,
+                )
+            })
+            .collect()
+    } else {
+        build_bla_table_for_formula(formula, &ref_orbit.z_ref_f64, c_norm, F64_BLA_EPSILON)?
+    };
     // Table BLA dd (tier dd Mandelbrot) : coefficients ~106 b depuis l'orbite dd.
     // **Epsilon = 2⁻⁸⁰** (calibré empiriquement 2026-07-15, ex-2⁻¹⁰⁶), PAS
     // `bla_threshold` (2⁻²⁴, tuné f32) : avec 2⁻²⁴ la BLA introduirait une
@@ -387,9 +410,15 @@ pub fn prewarm_bla_entry(params: &FractalParams, ref_orbit: &ReferenceOrbit) {
     if !params.use_bytecode_engine {
         return;
     }
-    let formula = match compile_formula(params.fractal_type, params.multibrot_power) {
-        Some(f) if f.phases.len() == 1 => f,
-        _ => return,
+    // G4 jalon 5b : la formule EFFECTIVE (hybride incluse) — le prewarm doit
+    // couvrir le multi-phase, sinon les tables cyclées PAR PHASE (N × orbite
+    // pleine, cf. build_bla_entry) se construisent sous le lock global pendant
+    // la phase pixel, workers parqués → build SERIAL = ~tout le temps pixel
+    // ([M,M] e50 96² : pixels 3.3 s ≈ le build ; prewarmé, le build est
+    // parallèle et hors du chemin critique).
+    let formula = match crate::fractal::bytecode::formula_for_params(params) {
+        Some(f) => f,
+        None => return,
     };
     let pixel_size = crate::fractal::perturbation::effective_pixel_size(params);
     if !(pixel_size > 0.0) {
@@ -706,12 +735,16 @@ fn try_bytecode_unified_path(
             if ref_orbit.hybrid_phase_refs.len() + 1 != formula.phases.len() {
                 return None;
             }
+            // Jalon 5b : appel DIRECT des boucles multi-phase avec les tables
+            // BLA PAR PHASE de l'entrée (`entry.tables[p]` = cyclée sur
+            // refs[p], cf. build_bla_entry). Le dispatch générique
+            // (`iterate_pixel_unified_full`/`_exp`) passe `&[]` (sans BLA)
+            // pour les callers sans tables par phase.
             if use_exp_path {
-                let bla_exp = entry.bla_exp.as_ref().map(|v| &v[0]);
-                let res_exp = iterate_pixel_unified_exp(
+                let res_exp = crate::fractal::bytecode::pixel_loop_exp::
+                    iterate_pixel_unified_exp_multi_phase(
                     ref_orbit,
-                    bla,
-                    bla_exp,
+                    &entry.tables,
                     &formula,
                     c_ref,
                     *dc,
@@ -732,20 +765,19 @@ fn try_bytecode_unified_path(
                     ref_exhausted: res_exp.ref_exhausted,
                 });
             }
-            return Some(crate::fractal::bytecode::pixel_loop::iterate_pixel_unified_full(
+            let res = crate::fractal::bytecode::pixel_loop::iterate_pixel_unified_multi_phase(
                 ref_orbit,
-                bla,
+                &entry.tables,
                 &formula,
                 c_ref,
                 dc_approx,
                 delta_init,
                 params.iteration_max,
                 params.bailout,
-                crate::fractal::bytecode::pixel_loop::UnifiedOptions {
-                    is_julia,
-                    ..Default::default()
-                },
-            ));
+                params.max_perturb_iterations,
+                params.max_bla_steps,
+            );
+            return Some(res);
         }
 
         // ── Path f64 COMPRESSÉ (FRACTALL_COMPRESS_REF=1, G8.2 phase 2) ─────

@@ -1240,7 +1240,16 @@ pub fn compute_reference_orbit_cached(
         let series_dead_for_atom = orbit.atom_truncated
             && crate::fractal::perturbation::delta::bytecode_path_label(&adjusted_params)
                 .is_some();
+        // G4 jalon 5b : la série Taylor est z²+c hardcodée → JAMAIS pour un
+        // hybride (coefficients faux pour [M,BS] ; et pour [M,M] son seul
+        // usage — l'heuristique auto-adjust — misfire : skip 32 % → doublement
+        // ×4 de iteration_max, re-rendus parasites, cf. e50 96²).
+        let series_is_hybrid = adjusted_params
+            .hybrid_phases
+            .as_ref()
+            .is_some_and(|p| !p.is_empty());
         let should_build_series = !disable_series
+            && !series_is_hybrid
             && (force_series
                 || (series_will_be_used
                     && !series_dead_for_atom

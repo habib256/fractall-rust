@@ -420,6 +420,49 @@ impl BlaTableUnified {
         c_norm: f64,
         epsilon: f64,
     ) -> Self {
+        Self::build_with(ref_orbit, c_norm, |i| {
+            let z = ref_orbit[i];
+            BlaMultiStep::from_single(
+                build_bla_single_step(z.re, z.im, phase, epsilon),
+                ref_orbit[i + 1],
+            )
+        })
+    }
+
+    /// G4 jalon 5b : table BLA pour la référence de phase `phase_start` d'un
+    /// hybride multi-phase (port F3 `blasR2calc(Z[phase], opss, …, phase)`,
+    /// `bla.cc` via `hybrid_blas`). Le single-step à l'index `i` utilise
+    /// `phases[(phase_start + i) % N]` — la MÊME séquence que l'itération de
+    /// `refs[phase_start]`. Les merges (composition affine) sont
+    /// phase-agnostiques. Pendant un saut BLA, `n` et `m` avancent du même `l`
+    /// → l'invariant `(phase + m) ≡ n (mod N)` du pixel loop est préservé sans
+    /// changement de phase (F3 same).
+    pub fn build_cycled(
+        ref_orbit: &[num_complex::Complex64],
+        formula: &super::Formula,
+        phase_start: usize,
+        c_norm: f64,
+        epsilon: f64,
+    ) -> Self {
+        let n_phases = formula.phases.len().max(1);
+        Self::build_with(ref_orbit, c_norm, |i| {
+            let z = ref_orbit[i];
+            let ph = &formula.phases[(phase_start + i) % n_phases];
+            BlaMultiStep::from_single(
+                build_bla_single_step(z.re, z.im, ph, epsilon),
+                ref_orbit[i + 1],
+            )
+        })
+    }
+
+    /// Cœur du build (level-1 streaming + merges), paramétré par le single-step
+    /// `single(i)` (mono-phase : phase fixe ; hybride : phase cyclée par
+    /// index). Bit-identique à l'ancien `build` en mono-phase.
+    fn build_with(
+        ref_orbit: &[num_complex::Complex64],
+        c_norm: f64,
+        single: impl Fn(usize) -> BlaMultiStep + Sync,
+    ) -> Self {
         let m = ref_orbit.len().saturating_sub(1);
         if m == 0 {
             return Self { levels: Vec::new() };
@@ -439,13 +482,6 @@ impl BlaTableUnified {
         // Single-step level-0 par index d'orbite (jamais matérialisé en entier).
         // `z_land` = Z[i+1] (atterrissage : le pas couvre [i, i+1) ; i ≤ m-1
         // donc i+1 ≤ m < ref_orbit.len(), toujours en bornes).
-        let single = |i: usize| -> BlaMultiStep {
-            let z = ref_orbit[i];
-            BlaMultiStep::from_single(
-                build_bla_single_step(z.re, z.im, phase, epsilon),
-                ref_orbit[i + 1],
-            )
-        };
 
         // Level 1 construit en STREAMING : chaque nœud fusionne 2 single-steps
         // adjacents SANS stocker le niveau 0 (m nœuds = le plus gros). Comme

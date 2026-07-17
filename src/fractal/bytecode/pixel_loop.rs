@@ -177,16 +177,16 @@ pub fn iterate_pixel_unified_full(
             options,
         );
     }
-    // Multi-phase : cycle de phases. Pour l'instant on partage la même BLA
-    // table (mono-orbit) et c_ref pour toutes les phases ; ça suppose que
-    // l'orbite référence a été itérée avec une formule cyclant les phases.
-    // Une vraie implémentation hybride F3 a un Vec<ReferenceOrbit> et un
-    // Vec<BlaTableUnified> (une par phase). À implémenter quand on aura
-    // une vraie formule multi-phase dans compile_formula (actuellement
-    // mono-phase seulement).
+    // Multi-phase : cycle de phases via les réfs par phase de l'orbite
+    // (`hybrid_phase_refs`, jalon 5a). PAS de BLA à ce niveau (`&[]`) : la
+    // table `bla` reçue est mono-phase, inapplicable au mélange — le path
+    // production (delta.rs) appelle DIRECTEMENT
+    // `iterate_pixel_unified_multi_phase` avec les tables CYCLÉES par phase
+    // (jalon 5b, `entry.tables`).
+    let _ = bla;
     iterate_pixel_unified_multi_phase(
         ref_orbit,
-        bla,
+        &[],
         formula,
         c_ref,
         dc,
@@ -194,15 +194,20 @@ pub fn iterate_pixel_unified_full(
         iteration_max,
         bailout,
         options.max_perturb_iterations,
+        options.max_bla_steps,
     )
 }
 
 /// Multi-phase mono-orbit. Conservé pour Vec<Phase> ; cycle l'index de
 /// phase à chaque itération via le compteur n (pas via la position dans
 /// la formule, pour rester cohérent quand un BLA step saute `l` itérations).
-fn iterate_pixel_unified_multi_phase(
+/// Boucle perturbation multi-phase (hybrides G4). `tables` = BLA PAR PHASE
+/// (jalon 5b, F3 `hybrid_blas` : `tables[p]` bâtie CYCLÉE sur `refs[p]`) —
+/// la BLA n'est active que si `tables.len() == n_phases` (les callers sans
+/// tables par phase passent `&[]` → pas directs purs, comportement jalon 5a).
+pub fn iterate_pixel_unified_multi_phase(
     ref_orbit: &ReferenceOrbit,
-    bla: &BlaTableUnified,
+    tables: &[BlaTableUnified],
     formula: &Formula,
     c_ref: Complex64,
     dc: Complex64,
@@ -210,6 +215,7 @@ fn iterate_pixel_unified_multi_phase(
     iteration_max: u32,
     bailout: f64,
     max_perturb_iterations: u32,
+    max_bla_steps: u32,
 ) -> UnifiedPixelResult {
     let bailout_sqr = bailout * bailout;
     let ref_len = ref_orbit.z_ref_f64.len();
@@ -236,16 +242,19 @@ fn iterate_pixel_unified_multi_phase(
     let refs = |p: usize| -> &ReferenceOrbit {
         if p == 0 { ref_orbit } else { &ref_orbit.hybrid_phase_refs[p - 1] }
     };
+    // BLA par phase (jalon 5b) : active seulement avec une table par phase.
+    let use_bla = tables.len() == n_phases;
     let mut delta = delta_initial;
     let mut n = 0u32;
     let mut m = 0u32;
     let mut phase: usize = 0;
     let mut rebase_count = 0u32;
-    let bla_steps = 0u32;
+    let mut bla_steps = 0u32;
     let mut iters_ptb = 0u32;
 
     while n < iteration_max
         && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
+        && (max_bla_steps == 0 || bla_steps < max_bla_steps)
     {
         let z_m = refs(phase).z_ref_f64[m as usize];
         let z_abs = z_m + delta;
@@ -261,10 +270,70 @@ fn iterate_pixel_unified_multi_phase(
             ref_exhausted: false,
             };
         }
-        // En multi-phase, on n'utilise pas la BLA pour simplifier
-        // (la BLA construite l'a été pour une phase précise, pas applicable
-        // au mélange). Une vraie BLA multi-phase est un travail séparé.
-        let _ = bla;
+
+        // Saut BLA (jalon 5b, F3 `hybrid.cc:310-321`) : table de la phase
+        // COURANTE (`tables[phase]` bâtie cyclée sur `refs[phase]`). n et m
+        // avancent du même l → invariant (phase+m) ≡ n préservé sans màj de
+        // phase. Mêmes gardes que le single-phase : bornes, lands_on_ref_end
+        // (inerte, atom gaté off hybride — symétrie), anti-over-skip endpoint.
+        if use_bla {
+            let ref_len_cur = refs(phase).z_ref_f64.len();
+            if let Some(node) = tables[phase].lookup(m as usize, delta.norm_sqr()) {
+                let new_n = n.saturating_add(node.l);
+                let new_m = m.saturating_add(node.l);
+                let lands_on_ref_end =
+                    refs(phase).atom_truncated && (new_m as usize) + 1 >= ref_len_cur;
+                if new_n <= iteration_max
+                    && (new_m as usize) < ref_len_cur
+                    && !lands_on_ref_end
+                {
+                    let a = node.a;
+                    let b = node.b;
+                    let (a_re, a_im) = (
+                        a.m00 * delta.re + a.m01 * delta.im,
+                        a.m10 * delta.re + a.m11 * delta.im,
+                    );
+                    let (b_re, b_im) = (
+                        b.m00 * dc.re + b.m01 * dc.im,
+                        b.m10 * dc.re + b.m11 * dc.im,
+                    );
+                    let cand = Complex64::new(a_re + b_re, a_im + b_im);
+                    let overshoots_escape = node.l >= 2 && {
+                        let z_end = refs(phase).z_ref_f64[new_m as usize] + cand;
+                        z_end.norm_sqr() >= bailout_sqr
+                    };
+                    if !overshoots_escape {
+                        delta = cand;
+                        n = new_n;
+                        m = new_m;
+                        bla_steps += 1;
+                        if !delta.re.is_finite() || !delta.im.is_finite() {
+                            return UnifiedPixelResult {
+                                iteration: n,
+                                z_final: refs(phase).z_ref_f64
+                                    [(m as usize).min(ref_len_cur - 1)]
+                                    + delta,
+                                rebase_count,
+                                bla_steps,
+                                orbit: None,
+                                distance: None,
+                                is_interior: false,
+                                ref_exhausted: false,
+                            };
+                        }
+                        // PAS de rebase-check post-saut : mirror du single-phase
+                        // (le check ne tourne qu'après un pas DIRECT). Un rebase
+                        // mid-chaîne casse la rampe géométrique des skips
+                        // (l : 8→16→…→2^k) : mesuré 70 k rebases → l moyen 270
+                        // au lieu de ~milliers → ~20× de lookups en trop. Le
+                        // bout de réf reste sûr : un saut qui dépasserait est
+                        // REJETÉ par les bornes ci-dessus → pas direct → rebase
+                        // au bas de boucle (avec màj de phase).
+                        continue;
+                    }
+                }
+            }
+        }
 
         // Pas perturbation : phase courante = phases[n % n_phases] — cohérent
         // avec le pas de référence grâce à l'invariant (phase + m) ≡ n.
@@ -1105,9 +1174,23 @@ mod tests {
             "réfs par phase manquantes"
         );
         let c_norm = (orbit.cref.re * orbit.cref.re + orbit.cref.im * orbit.cref.im).sqrt();
-        let tables = build_bla_table_for_formula(&formula, &orbit.z_ref_f64, c_norm, 6e-8)
-            .expect("BLA table build");
-        let bla = &tables[0];
+        // Configuration PRODUCTION (jalon 5b) : tables BLA cyclées PAR PHASE
+        // (mirror build_bla_entry, epsilon 2⁻⁵³) + appel direct de la boucle
+        // multi-phase — la grille exerce le path BLA réel, pas le fallback &[].
+        const F64_BLA_EPSILON: f64 = 1.0 / (1u64 << 53) as f64;
+        let n_phases = formula.phases.len();
+        let phase_tables: Vec<BlaTableUnified> = (0..n_phases)
+            .map(|p| {
+                let orbit_p = if p == 0 { &orbit } else { &orbit.hybrid_phase_refs[p - 1] };
+                BlaTableUnified::build_cycled(
+                    &orbit_p.z_ref_f64,
+                    &formula,
+                    p,
+                    c_norm,
+                    F64_BLA_EPSILON,
+                )
+            })
+            .collect();
 
         let prec = crate::fractal::perturbation::compute_perturbation_precision_bits(&params);
         let bailout_sqr = params.bailout * params.bailout;
@@ -1120,16 +1203,17 @@ mod tests {
                 let dy = ((gj as f64 + 0.5) / 10.0 - 0.5) * span_y;
                 let dc = Complex64::new(dx, dy);
 
-                let res = iterate_pixel_unified_full(
+                let res = iterate_pixel_unified_multi_phase(
                     &orbit,
-                    bla,
+                    &phase_tables,
                     &formula,
                     orbit.cref,
                     dc,
                     Complex64::new(0.0, 0.0),
                     iter_max,
                     params.bailout,
-                    UnifiedOptions::default(),
+                    0,
+                    0,
                 );
 
                 let mut c_px = GmpComplex::with_val(prec, (dx, dy));

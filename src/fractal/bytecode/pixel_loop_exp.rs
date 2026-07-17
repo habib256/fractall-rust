@@ -98,6 +98,7 @@ pub fn iterate_pixel_unified_exp(
     if formula.phases.len() > 1 {
         return iterate_pixel_unified_exp_multi_phase(
             ref_orbit,
+            &[],
             formula,
             c_ref,
             dc,
@@ -105,6 +106,7 @@ pub fn iterate_pixel_unified_exp(
             iteration_max,
             bailout,
             max_perturb_iterations,
+            max_bla_steps,
         );
     }
     let phase = &formula.phases[0];
@@ -746,8 +748,9 @@ fn iterate_pixel_unified_exp_generic(
 /// exp single-phase, on rebase inconditionnellement au bout de la référence
 /// (F3 `hybrid.cc:301`), jamais de fallback GMP par-pixel.
 #[allow(clippy::too_many_arguments)]
-fn iterate_pixel_unified_exp_multi_phase(
+pub fn iterate_pixel_unified_exp_multi_phase(
     ref_orbit: &ReferenceOrbit,
+    tables: &[BlaTableUnified],
     formula: &Formula,
     c_ref: Complex64,
     dc: ComplexExp,
@@ -755,6 +758,7 @@ fn iterate_pixel_unified_exp_multi_phase(
     iteration_max: u32,
     bailout: f64,
     max_perturb_iterations: u32,
+    max_bla_steps: u32,
 ) -> UnifiedPixelResultExp {
     let bailout_sqr = bailout * bailout;
     let ref_len = ref_orbit.z_ref_f64.len();
@@ -776,16 +780,20 @@ fn iterate_pixel_unified_exp_multi_phase(
     let refs = |p: usize| -> &ReferenceOrbit {
         if p == 0 { ref_orbit } else { &ref_orbit.hybrid_phase_refs[p - 1] }
     };
+    // BLA par phase (jalon 5b) : active seulement avec une table par phase.
+    let use_bla = tables.len() == n_phases;
     let mut delta = delta_initial;
     let mut n = 0u32;
     let mut m = 0u32;
     let mut phase: usize = 0;
     let mut rebase_count = 0u32;
+    let mut bla_steps = 0u32;
     let mut iters_ptb = 0u32;
     const REDUCE_INTERVAL: u32 = 250;
 
     while n < iteration_max
         && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
+        && (max_bla_steps == 0 || bla_steps < max_bla_steps)
     {
         let z_m = refs(phase).z_ref_f64[m as usize];
         let delta_approx = delta.to_complex64_approx();
@@ -795,12 +803,59 @@ fn iterate_pixel_unified_exp_multi_phase(
                 iteration: n,
                 z_final: z_abs,
                 rebase_count,
-                bla_steps: 0,
+                bla_steps,
                 ref_exhausted: false,
             };
         }
 
-        // Pas perturbation : phase courante = phases[n % n_phases] (pas de BLA).
+        // Saut BLA (jalon 5b) : table de la phase COURANTE, lookup FloatExp
+        // (mirror du bloc exp générique single-phase : coefs f64, δ ComplexExp).
+        // n et m avancent du même l → invariant (phase+m) ≡ n préservé.
+        if use_bla {
+            let ref_len_cur = refs(phase).z_ref_f64.len();
+            let delta_norm_sqr_fexp = delta.norm_sqr_fexp();
+            if let Some(node) = tables[phase].lookup_fexp(m as usize, delta_norm_sqr_fexp) {
+                let new_n = n.saturating_add(node.l);
+                let new_m = m.saturating_add(node.l);
+                let lands_on_ref_end =
+                    refs(phase).atom_truncated && (new_m as usize) + 1 >= ref_len_cur;
+                if new_n <= iteration_max
+                    && (new_m as usize) < ref_len_cur
+                    && !lands_on_ref_end
+                {
+                    let a = node.a;
+                    let b = node.b;
+                    let new_re = (a.m00 * delta.re) + (a.m01 * delta.im)
+                        + (b.m00 * dc.re) + (b.m01 * dc.im);
+                    let new_im = (a.m10 * delta.re) + (a.m11 * delta.im)
+                        + (b.m10 * dc.re) + (b.m11 * dc.im);
+                    let cand = ComplexExp { re: new_re, im: new_im };
+                    let overshoots_escape = node.l >= 2 && {
+                        let z_end = refs(phase).z_ref_f64[new_m as usize]
+                            + cand.to_complex64_approx();
+                        z_end.norm_sqr() >= bailout_sqr
+                    };
+                    if !overshoots_escape {
+                        delta = cand;
+                        n = new_n;
+                        m = new_m;
+                        bla_steps += 1;
+                        if n % REDUCE_INTERVAL == 0 {
+                            delta.reduce();
+                        }
+                        // PAS de rebase-check post-saut : mirror du single-phase
+                        // et du loop f64 multi-phase (check après pas DIRECT
+                        // seulement — un rebase mid-chaîne casse la rampe
+                        // géométrique des skips). Bout de réf sûr : saut
+                        // dépassant rejeté par les bornes → pas direct → rebase
+                        // au bas de boucle (avec màj de phase).
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Pas perturbation : phase courante = phases[n % n_phases].
         let ph = &formula.phases[(n as usize) % n_phases];
         let mut state = DeltaStateExp::new(z_m, delta);
         state.step(ph, c_ref, dc);
@@ -817,7 +872,7 @@ fn iterate_pixel_unified_exp_multi_phase(
                 z_final: refs(phase).z_ref_f64[(m as usize).min(ref_len_cur - 1)]
                     + delta_approx,
                 rebase_count,
-                bla_steps: 0,
+                bla_steps,
                 ref_exhausted: false,
             };
         }
@@ -852,7 +907,7 @@ fn iterate_pixel_unified_exp_multi_phase(
         iteration: n,
         z_final: refs(phase).z_ref_f64[final_m] + delta_approx,
         rebase_count,
-        bla_steps: 0,
+        bla_steps,
         ref_exhausted: false,
     }
 }
