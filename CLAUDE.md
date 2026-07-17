@@ -323,9 +323,18 @@ désaccord entre 300 et 2000 iters) ni `iterate_point_mpc` (z²+c). Verrous :
 1e1000 — + grille GMP-cyclant (`multi_phase_perturbation_matches_gmp_per_pixel` :
 [M,M] 160/160 exact, [M,BS] majorité exacte, résidu = plancher bruit f64 sur
 plis abs, 69/88 dépendant de la réf — diagnostics `--ignored` truth-stability
-et ref-sensitivity) + golden `mandelbrot_hybrid_burningship`. **Reste (jalon
-5b+)** : BLA par phase (perf, `bla[phase].lookup` sur `refs[p]` avec pas
-`phases[(p+m) % N]`) + nucleus phase-aware + éditeur GUI de séquence.
+et ref-sensitivity) + golden `mandelbrot_hybrid_burningship`. **Jalon 5b — BLA PAR PHASE (perf,
+port F3 `hybrid_blas`)** : `BlaTableUnified::build_cycled(refs[p], formula, p,
+…)` (pas i = `phases[(p+i) % N]`, merges phase-agnostiques) ; boucles
+multi-phase : saut `tables[phase].lookup{,_fexp}` (BLA active ssi une table
+par phase, sinon pas directs), n/m avancent ensemble → invariant préservé,
+pas de rebase-check post-saut. Série Taylor gatée `!is_hybrid` (z²+c + son
+auto-adjust misfirait). ⚠️ `prewarm_bla_entry` DOIT couvrir le multi-phase
+(sinon build N-tables sous le lock global = tout le temps pixel). Mesuré
+[M,M] e50 96² : 3.34 → 0.50 s (6.7×) ; e1000 exp ≈ parité single. **Reste
+(jalon 5c+)** : atom-domain générique hybrides (dZdC mat2 — réfs courtes =
+tables cache-chaudes) + nucleus phase-aware + éditeur GUI + cas harness
+hybrides.
 `fractal_type` sert la convention d'appel (Mandelbrot-like : δ₀=0, dc=pixel).
 
 ### Wisdom auto-dispatch (`fractal/wisdom.rs`, 2026-07-12 · G9.1 2026-07-15)
@@ -564,6 +573,13 @@ puis OpenGL ; Windows DX12 / Vulkan.
 - Racine : Mandelbrot, Barnsley Mandelbrot, Magnet Mandelbrot, Burning
   Ship, Perp. Burning Ship, Tricorn, Celtic, Buffalo, Multibrot, Alpha
   Mandelbrot, Mandelbrot Sin.
+- **Hybride (séquence)** (G4 jalon 5c) : éditeur de séquence multi-phase —
+  ➕ par type (M/BS/Tricorn/Celtic/Buffalo/PerpBS/Multibrot), ⌫/🗑,
+  « Appliquer » (≥ 2 phases) → `apply_hybrid_sequence()` (reset params
+  convention Mandelbrot + `hybrid_phases` + `start_render`, GPU off). Le label
+  du menu affiche « Hybride: M⊕BS » quand actif ; choisir un type normal
+  désactive (default_params → `hybrid_phases: None`). Drag-and-drop d'un PNG
+  hybride restaure la séquence via les métadonnées.
 - **Julia all** (dossier) : toutes les variantes Julia.
 - Mandelbulb, Julia Sin, Newton, Phoenix, Pickover Stalks, Nova après séparateur.
 - **Densité** : Buddhabrot, Nebulabrot, Anti-Buddhabrot.

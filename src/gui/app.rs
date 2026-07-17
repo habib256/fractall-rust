@@ -195,6 +195,9 @@ pub struct FractallApp {
     color_repeat: u32,
     out_coloring_mode: OutColoringMode,
     selected_lyapunov_preset: LyapunovPreset,
+    /// G4 jalon 5c : buffer d'édition de la séquence de phases hybride
+    /// (menu Type → « Hybride »). Appliqué → `params.hybrid_phases`.
+    hybrid_seq: Vec<FractalType>,
     gpu_renderer: Option<Arc<GpuRenderer>>,
     /// N'a pas encore tenté de créer le GPU (init différée après ouverture de la fenêtre)
     gpu_init_attempted: bool,
@@ -388,6 +391,7 @@ impl FractallApp {
             color_repeat: 40,
             out_coloring_mode: OutColoringMode::Smooth,
             selected_lyapunov_preset: LyapunovPreset::default(),
+            hybrid_seq: Vec::new(),
             gpu_renderer,
             gpu_init_attempted,
             use_gpu: use_gpu_default,
@@ -2120,6 +2124,62 @@ impl FractallApp {
     /// Change le type de fractale.
     /// Réinitialise toujours la position au domaine par défaut (zoom, centre, etc.).
     /// Si on reselectionne le même type, recharge quand même les defaults.
+    /// Nom court d'une phase pour l'affichage de la séquence hybride (menu +
+    /// label). Mirror des alias CLI `FractalType::from_hybrid_name`.
+    fn hybrid_short_name(t: FractalType) -> &'static str {
+        match t {
+            FractalType::Mandelbrot => "M",
+            FractalType::Julia => "J",
+            FractalType::BurningShip => "BS",
+            FractalType::Tricorn => "Tri",
+            FractalType::Celtic => "Cel",
+            FractalType::Buffalo => "Buf",
+            FractalType::PerpendicularBurningShip => "PBS",
+            FractalType::Multibrot => "Mu",
+            _ => "?",
+        }
+    }
+
+    fn hybrid_seq_label(seq: &[FractalType]) -> String {
+        seq.iter()
+            .map(|t| Self::hybrid_short_name(*t))
+            .collect::<Vec<_>>()
+            .join("⊕")
+    }
+
+    /// G4 jalon 5c : applique la séquence hybride éditée (menu Type →
+    /// « Hybride »). Même reset que `change_fractal_type` (les hybrides
+    /// portent la convention Mandelbrot : type 3, δ₀=0, dc=pixel) + pose
+    /// `params.hybrid_phases`. Le rendu suit le chemin unique CLI↔GUI
+    /// (`formula_for_params` → f64-std ou perturbation multi-phase).
+    fn apply_hybrid_sequence(&mut self) {
+        if self.hybrid_seq.len() < 2 {
+            return;
+        }
+        self.selected_type = FractalType::Mandelbrot;
+        let width = self.params.width;
+        let height = self.params.height;
+        let mut new_params = default_params_for_type(FractalType::Mandelbrot, width, height);
+        new_params.use_gmp = self.params.use_gmp;
+        new_params.precision_bits = self.params.precision_bits;
+        new_params.color_mode = self.params.color_mode;
+        new_params.color_repeat = self.params.color_repeat;
+        new_params.algorithm_mode = AlgorithmMode::Auto;
+        new_params.bla_threshold = self.params.bla_threshold;
+        new_params.glitch_tolerance = self.params.glitch_tolerance;
+        new_params.hybrid_phases = Some(self.hybrid_seq.clone());
+        self.params = new_params;
+        self.color_repeat = self.params.color_repeat;
+        self.iteration_input = self.params.iteration_max.to_string();
+        self.sync_params_to_hp();
+        self.use_gpu = false; // GPU ne cycle pas les phases (render_dispatch → None)
+        self.orbit_cache = None;
+        self.julia_preview_texture = None;
+        self.julia_preview_last_seed = None;
+        self.julia_preview_cancel.store(true, Ordering::Relaxed);
+        self.start_render();
+    }
+
     fn change_fractal_type(&mut self, new_type: FractalType) {
         self.selected_type = new_type;
         let width = self.params.width;
@@ -2406,7 +2466,11 @@ impl eframe::App for FractallApp {
                         _ => self.selected_type.name(),
                     };
 
-                    let type_menu_label = if current_category == current_label {
+                    let type_menu_label = if let Some(seq) =
+                        self.params.hybrid_phases.as_ref().filter(|s| !s.is_empty())
+                    {
+                        format!("▼ Hybride: {}", Self::hybrid_seq_label(seq))
+                    } else if current_category == current_label {
                         format!("▼ {}", current_label)
                     } else {
                         format!("▼ {}: {}", current_category, current_label)
@@ -2467,6 +2531,60 @@ impl eframe::App for FractallApp {
                                 }
                             }
                         }
+
+                        // G4 jalon 5c : éditeur de séquence hybride multi-phase
+                        // (phases itérées cycliquement, CLI `--phases`).
+                        ui.menu_button("Hybride (séquence)", |ui| {
+                            let seq_label = if self.hybrid_seq.is_empty() {
+                                "—".to_string()
+                            } else {
+                                Self::hybrid_seq_label(&self.hybrid_seq)
+                            };
+                            ui.label(format!("Séquence : {seq_label}"));
+                            ui.separator();
+                            let eligible: [(FractalType, &str); 7] = [
+                                (FractalType::Mandelbrot, "Mandelbrot"),
+                                (FractalType::BurningShip, "Burning Ship"),
+                                (FractalType::Tricorn, "Tricorn"),
+                                (FractalType::Celtic, "Celtic"),
+                                (FractalType::Buffalo, "Buffalo"),
+                                (FractalType::PerpendicularBurningShip, "Perp. Burning Ship"),
+                                (FractalType::Multibrot, "Multibrot"),
+                            ];
+                            for (t, name) in eligible.iter() {
+                                if ui.button(format!("➕ {name}")).clicked() {
+                                    self.hybrid_seq.push(*t);
+                                }
+                            }
+                            ui.separator();
+                            ui.horizontal(|ui| {
+                                if ui.button("⌫ Dernier").clicked() {
+                                    self.hybrid_seq.pop();
+                                }
+                                if ui.button("🗑 Vider").clicked() {
+                                    self.hybrid_seq.clear();
+                                }
+                            });
+                            ui.separator();
+                            let can_apply = self.hybrid_seq.len() >= 2;
+                            if ui
+                                .add_enabled(can_apply, egui::Button::new("▶ Appliquer (rendu)"))
+                                .clicked()
+                            {
+                                self.apply_hybrid_sequence();
+                                ui.close_menu();
+                            }
+                            if !can_apply {
+                                ui.small("≥ 2 phases requises");
+                            }
+                            if self.params.hybrid_phases.is_some()
+                                && ui.button("✖ Désactiver (Mandelbrot)").clicked()
+                            {
+                                self.hybrid_seq.clear();
+                                self.change_fractal_type(FractalType::Mandelbrot);
+                                ui.close_menu();
+                            }
+                        });
 
                         // Dossier Julia all juste après Alpha Mandelbrot
                         ui.menu_button("Julia all", |ui| {

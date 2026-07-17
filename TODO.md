@@ -1444,9 +1444,35 @@ le câblage params/render, + la BLA par phase + le nucleus phase-aware + l'UI.
   systématique ; classe hirsute BS-famille, cf. G3). Verrous :
   `multi_phase_perturbation_matches_gmp_per_pixel` (grille GMP-cyclant) + 2
   diagnostics `--ignored` (truth-stability, ref-sensitivity) + verrous [M,M]
-  jalons 3-4 inchangés. **Reste jalon 5b : BLA par phase (perf)** —
-  `bla[phase].lookup(m, δ²)` sur `refs[p]`, pas m = `phases[(p+m) % N]`
-  (`build_cycled`), merges phase-agnostiques.
+  jalons 3-4 inchangés.
+- [x] **✅ Jalon 5b — BLA PAR PHASE (perf hybrides deep) `[2026-07-17]`** : port
+  F3 `hybrid_blas` (`bla.cc` via `blasR2calc(Z[phase], opss, …, phase)`).
+  `BlaTableUnified::build_cycled(refs[p], formula, p, …)` — le single-step à
+  l'index i utilise `phases[(p+i) % N]` (même séquence que l'itération de
+  `refs[p]`), merges phase-agnostiques (`build_with` factorisé, mono-phase
+  bit-identique). Les boucles multi-phase f64/exp prennent `tables:
+  &[BlaTableUnified]` (BLA active ssi `tables.len() == n_phases` ; anciens
+  callers `&[]` = pas directs) : saut `tables[phase].lookup{,_fexp}(m, δ²)`,
+  n et m avancent du même l → invariant `(phase+m) ≡ n` préservé SANS màj de
+  phase (F3 same) ; PAS de rebase-check post-saut (mirror single-phase — un
+  rebase mid-chaîne casserait la rampe géométrique des skips). DEUX chemins
+  z²+c supplémentaires gatés `!is_hybrid` : **table série Taylor** (coefficients
+  faux pour un hybride genuine ; son heuristique AUTO-ADJUST misfirait sur
+  [M,M] — skip 32 % → iteration_max ×4 + re-rendus parasites) et rien d'autre.
+  **Perf : le prewarm couvre le multi-phase** (`prewarm_bla_entry` passait par
+  `compile_formula` + gate `phases==1` → l'entrée hybride, N tables × orbite
+  pleine, se construisait sous le lock global workers parqués = ~TOUT le temps
+  pixel). Mesuré [M,M] e50 96²/263k iters : **total 3.34 → 0.50 s (6.7×),
+  pixels 3.15 → 0.30 s** ; e1000 (exp) pixels 0.049 s ≈ [M] single 0.042 s.
+  Verrous : [M,M]==[M] e1000 pixel-exact AVEC BLA ; grille GMP-cyclant en
+  config production (tables cyclées) inchangée ([M,M] 160/160) ; déterminisme
+  run-to-run 0 px. Résidu [M,M] vs [M] à e50 : 5-6 px épars = troncatures de
+  réf différentes ([M] atom-tronquée, refs hybrides pleines — l'atom-domain
+  z²+c est gaté) + epsilon BLA, plancher bruit. **Reste (jalon 5c+)** :
+  atom-domain GÉNÉRIQUE pour hybrides (dZdC mat2 par formule via dual-numbers
+  — débloquerait des réfs courtes = tables cache-chaudes, cf. gap [M] 0.13 s
+  vs [M,M] 0.50 s à e50) + nucleus phase-aware + éditeur GUI de séquence +
+  cas harness hybrides (parité vs F3 native).
 - [x] **✅ Jalon 4 — hybrides DEEP-EXP (ComplexExp, > 1e280) `[2026-07-17]`** :
   `iterate_pixel_unified_exp_multi_phase` (`pixel_loop_exp.rs`) — mirror du
   multi-phase f64 en `DeltaStateExp` (FloatExp survit à l'underflow f64 du delta),

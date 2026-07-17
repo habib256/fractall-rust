@@ -21,6 +21,9 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
 - **G9.5 bench GPU** : `--wisdom-bench` mesure aussi la clé `gpu_perturb_f64`
   (`src/fractal/wisdom_bench.rs`) → `~/.config/fractall/wisdom.toml`, consommée par
   l'arbitrage device.
+- **G4 jalon 5c — éditeur GUI de séquence hybride** : menu Type → « Hybride
+  (séquence) » (composer ➕/⌫/🗑, Appliquer ≥ 2 phases, Désactiver) ; label
+  « Hybride: M⊕BS » quand actif ; drag-and-drop PNG restaure la séquence.
 - **G4 hybrides multi-phase (jalons 1-4)** : les fractales HYBRIDES rendent —
   CLI **`--phases mandelbrot,burning_ship`** (types escape-time itérés
   cycliquement). `params.hybrid_phases` + `formula_for_params` +
@@ -58,6 +61,16 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
   (`compute_warp_norm` : `0.5 + dy`, `src/gui/app.rs`).
 
 ### Performance
+- **G4 jalon 5b — BLA par phase pour les hybrides deep** (port F3
+  `hybrid_blas`) : `BlaTableUnified::build_cycled` (le pas i de la table de
+  phase p utilise `phases[(p+i) % N]`, bâtie sur `refs[p]`) + saut
+  `tables[phase].lookup{,_fexp}` dans les boucles multi-phase f64/exp.
+  `prewarm_bla_entry` couvre désormais le multi-phase (sinon le build N-tables
+  se faisait sous le lock global = tout le temps pixel) ; série Taylor gatée
+  `!is_hybrid` (z²+c — son heuristique auto-adjust misfirait : iteration_max
+  ×4 parasites). **[M,M] e50 96²/263k iters : 3.34 → 0.50 s (6.7×), pixels
+  3.15 → 0.30 s** ; e1000 (exp) ≈ parité single-phase. [M,M]==[M] e1000
+  pixel-exact avec BLA ; déterminisme 0 px.
 - **Fallback dd réf-intérieure** : quand `glitch_ratio > 0.30` (Mandelbrot
   bytecode), escalade au tier dd (~106 b) au lieu du full-GMP per-pixel — ~4-8×
   plus rapide, pixel-exact GMP (`GLITCH_FALLBACK_THRESHOLD`, `perturbation/mod.rs`).
