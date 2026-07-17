@@ -1802,8 +1802,9 @@ Jalons (chacun ≈ 1-2 itérations /improve, ordre suggéré) :
     ultra-sensible garde un résidu f64 réel (seahorse f64 WARN div 0.0018 ;
     e30 f64 WARN div 3e-4) que seul le dd rend pixel-exact — vrai plancher de
     sensibilité, pas un artefact BLA.
-- [ ] **9.5 — Auto-GPU** `[🔓 partiellement débloqué 2026-07-15 : le path
-  perturbation GPU (≥1e4) est au niveau CPU ; restent les shaders std f32]` :
+- [x] **9.5 — Auto-GPU** `[✅ FONCTIONNELLEMENT COMPLET 2026-07-17 — device
+  auto-arbitré CLI+GUI par benchmark + garde-fou correction ; overrides
+  --gpu/--no-gpu (CLI) + menu CPU/GPU (GUI)]` :
   le plan choisit le device par benchmark 9.2 + viabilité ; `--gpu`/`--no-gpu`
   deviennent des overrides. Verrou : `fractall-quality gpu-compare/gpu-suite`
   (presets `GPU_PRESETS` seahorse 1e2→1e8, rapports `quality-reports/gpu/`) +
@@ -1858,9 +1859,17 @@ Jalons (chacun ≈ 1-2 itérations /improve, ordre suggéré) :
     cross-machine** : les goldens forcent `--no-gpu` (sur un GPU f64 rapide une
     frame deep-perturb pourrait router GPU ≠ CPU bit-à-bit). Le tier quality
     passe par le dispatcher CPU direct (non concerné) ; le harness mesure l'auto
-    (= CPU ici). 263 unit + 21 golden + harness quick (0 gap) verts. **Reste** :
-    auto dans la GUI (le toggle `use_gpu` → tri-état Auto/CPU/GPU) — faible
-    priorité, le toggle EST déjà l'override manuel.
+    (= CPU ici). 263 unit + 21 golden + harness quick (0 gap) verts.
+  - [x] **✅ Étape 2 (c) — câblage GUI `[2026-07-17]`** : le menu « Tech: » a déjà
+    la structure idéale — **🔄 Auto** (algorithm_mode=Auto) vs sous-menus
+    explicites CPU/GPU. Wiring : quand `algorithm_mode == Auto`, le device est
+    AUSSI auto (`select_device(params, gpu_disponible)`, même décision que le
+    CLI) ; une sélection explicite CPU/GPU reste un override manuel
+    (`self.use_gpu`). Sur cette machine : Auto → CPU (défaut GUI inchangé) ; sur
+    un GPU f64 rapide, une frame deep-perturbation en mode Auto basculerait GPU.
+    272 gui + 263 cli + 21 golden verts. **G9.5 FONCTIONNELLEMENT COMPLET** :
+    le device est auto-arbitré (CLI + GUI) par benchmark machine + garde-fou
+    correction, `--gpu`/`--no-gpu` (CLI) et le menu CPU/GPU (GUI) = overrides.
 - [ ] **9.6 — Fiabilité → escalade de tier** (= G-dd auto-dispatch, plan déjà
   écrit) : détecteur shadowing en observation puis escalade px→dd /
   frame→dd ; ferme la boucle « le wisdom ne sous-provisionne jamais »

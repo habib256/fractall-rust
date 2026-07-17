@@ -1037,7 +1037,17 @@ impl FractallApp {
                 | FractalType::AntiBuddhabrot
                 | FractalType::Lyapunov
         );
-        let use_gpu = self.use_gpu
+        // Device (G9.5) : en mode « 🔄 Auto » (algorithm_mode == Auto), le wisdom
+        // arbitre CPU/GPU (benchmark machine + garde-fou correction — même
+        // décision que le CLI). Une sélection EXPLICITE du menu CPU/GPU
+        // (algorithm_mode ≠ Auto) est un override manuel via `self.use_gpu`.
+        let device_want_gpu = if self.params.algorithm_mode == AlgorithmMode::Auto {
+            crate::fractal::wisdom::select_device(&self.params, self.gpu_renderer.is_some())
+                == crate::fractal::wisdom::Device::Gpu
+        } else {
+            self.use_gpu
+        };
+        let use_gpu = device_want_gpu
             && self.gpu_renderer.is_some()
             && matches!(
                 self.params.fractal_type,
