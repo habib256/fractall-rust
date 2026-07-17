@@ -292,6 +292,29 @@ const CASES: &[Case] = &[
         ],
         envs: NO_ENV,
     },
+    // VERROU G4 5f + σ₁(K) (G6, 2026-07-17) — hybride GENUINE deep avec
+    // nucleus PHASE-AWARE. `--phases mandelbrot,burning_ship --find-nucleus`
+    // @5e28, sonde = centre raffiné du satellite p=304 (imprimé par le log
+    // [NUCLEUS] à 1e15). Exerce d'un coup : find_nucleus_formula (GmpDualMat2,
+    // période/Newton/size mat2), K NON-CONFORME appliqué au pixel→c
+    // (K_norm=[0.230,1.238;0.676,-0.707], σ₁≈1.43), BLA multi-phase cyclée
+    // avec c_norm × σ₁(K), réfs par phase, atom-domain mat2, intérieur
+    // (max_iter) + bande d'évasion chaotique. Image : mini-set noir en
+    // aiguille (forme genuine des hybrides à plis abs) sur speckle — revu
+    // visuellement, déterminisme run-to-run vérifié (0 px). Rougit si le
+    // nucleus formule, la normalisation det=1 de K, transform_sigma1 ou le
+    // stack BLA multi-phase change.
+    Case {
+        name: "hybrid_mbs_nucleus_5e28",
+        args: &[
+            "--phases", "mandelbrot,burning_ship", "--find-nucleus",
+            "--center-x-hp=-0.47440497922134294393257782108631901088365424440068",
+            "--center-y-hp=-0.63273825005467603656355404952516412508248012347974",
+            "--zoom", "5e28",
+            "--width", "160", "--height", "100", "--iterations", "20000",
+        ],
+        envs: NO_ENV,
+    },
     Case {
         name: "mandelbrot_interior_ref_640",
         args: &[

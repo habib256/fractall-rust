@@ -1058,9 +1058,15 @@ pub fn compute_reference_orbit_cached(
         };
         if let Some(result) = nucleus_result {
             if perf {
+                // Centre raffiné imprimé à ~50 chiffres : reproductibilité
+                // (re-sonder le même nucleus à un zoom plus profond, F3-style).
                 eprintln!(
-                    "[NUCLEUS] found period={} after {} Newton steps in {:.3}s — re-centering",
-                    result.period, result.newton_steps, t_nucleus.elapsed().as_secs_f64(),
+                    "[NUCLEUS] found period={} after {} Newton steps in {:.3}s — re-centering to ({}, {})",
+                    result.period,
+                    result.newton_steps,
+                    t_nucleus.elapsed().as_secs_f64(),
+                    result.center_x.to_string_radix(10, Some(50)),
+                    result.center_y.to_string_radix(10, Some(50)),
                 );
             }
             // Réécrit center_x_hp / center_y_hp et f64. La résolution exacte
