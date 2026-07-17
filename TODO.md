@@ -1007,6 +1007,17 @@ uniforme qui a motivé le gate `ref_truncated` (cf. e113).
   ⚠️ **NB méthodo** : l'hypothèse initiale « plancher de précision f64 exigeant
   dd auto-dispatch » était FAUSSE — le fallback GMP existant suffisait, il était
   juste court-circuité par un bloc de correction legacy mal gaté.
+  - [x] **✅ Fallback dd (perf) — FAIT (2026-07-17)**. Le fallback full-GMP
+    (`iterate_point_mpc`, ~1 µs/iter) sur ce régime (glitch_ratio > 0.30,
+    Mandelbrot bytecode) est remplacé par une **escalade tier dd** : re-rendu de
+    la frame avec `use_dd_tier=true` (récursion 1 niveau, garde `!use_dd_tier`).
+    Le pixel loop dd NE flagge PAS ces pixels (`glitched_initial=0`) → il rend
+    proprement sans re-déclencher le fallback → **pixel-exact GMP** (vérifié 640²
+    == GMP, 0 spurious) en **~14 s** (640²) vs full-GMP ~60-120 s+ (≈4-8×). Le
+    full-GMP reste le **backstop** si dd échoue/flagge encore (`delta.rs`). ⚠️ Ne
+    se déclenche qu'à **>512²** (à ≤256² le glitch_ratio reste < 0.30 → correction
+    per-pixel, cas non touché → suite quality/goldens inchangés). Verrou = comment
+    `mod.rs` (même limite de résolution que le gate ci-dessus).
 
 - [x] **✅ CPU perturbation : anneaux concentriques près du cusp -0.75 — RÉSOLU
   (2026-05-21)**. Centre ≈ (-0.749996, -0.004086), zoom ≈ 2.8e10, 2500 iter.

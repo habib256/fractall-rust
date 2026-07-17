@@ -1788,6 +1788,36 @@ pub fn render_perturbation_with_cache(
         let allow_full_gmp_fallback = true;
 
         if allow_full_gmp_fallback && glitch_ratio > GLITCH_FALLBACK_THRESHOLD {
+            // Escalade tier **dd** (perf) AVANT le fallback full-GMP. Le régime
+            // qui déclenche ce fallback (réf INTÉRIEURE frôlant zéro → annulation
+            // f64 au rebase → ~36 % de pixels ref_exhausted flaggés) est
+            // exactement celui que le tier dd (~106 b) résout : le pixel loop dd
+            // NE flagge PAS ces pixels (`glitched_initial=0`, mesuré) → il rend
+            // toute la frame proprement, pixel-exact GMP (vérifié 800²), sans
+            // re-déclencher ce fallback. Coût ~25× moindre que `iterate_point_mpc`
+            // (full GMP per-pixel, ~1 µs/iter) qui suit. Mandelbrot bytecode
+            // seulement (tier dd) ; garde `!use_dd_tier` = pas de récursion (si
+            // le rendu dd flaggait quand même >30 %, la ré-entrée retomberait sur
+            // le full-GMP ci-dessous = backstop). `tiles=None` : la frame dd est
+            // blittée en entier par l'appelant (pas de double-stream du sink).
+            if bytecode_path
+                && !params.use_dd_tier
+                && matches!(params.fractal_type, FractalType::Mandelbrot)
+            {
+                let mut dd_params = params.clone();
+                dd_params.use_dd_tier = true;
+                if let Some(dd_result) =
+                    render_perturbation_with_cache(&dd_params, cancel, None, None, None, None)
+                {
+                    if perf {
+                        eprintln!(
+                            "[DD-ESCALATION] glitch_ratio={:.3} > {:.2} → re-render tier dd (backstop full-GMP évité)",
+                            glitch_ratio, GLITCH_FALLBACK_THRESHOLD
+                        );
+                    }
+                    return Some(dd_result);
+                }
+            }
             // Trop de glitches: recalculer tous les pixels en GMP
             let gmp_params = MpcParams::from_params(&orbit_params);
             let prec = compute_perturbation_precision_bits(params);
