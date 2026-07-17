@@ -699,6 +699,13 @@ fn try_bytecode_unified_path(
         // `c_ref`/`dc` que le path f64 (pas seed/zero) — c'est ce qui a été
         // vérifié pixel-exact `[M,M]==[M]` en f64 ; l'exp mirror la même boucle.
         if multi_phase {
+            // G4 jalon 5 : les boucles multi-phase exigent les références PAR
+            // PHASE (`hybrid_phase_refs`, construites par compute_reference_orbit
+            // pour tout hybride). Garde défensive — inatteignable en pratique
+            // (même build), mais un manque = désync phase/référence garantie.
+            if ref_orbit.hybrid_phase_refs.len() + 1 != formula.phases.len() {
+                return None;
+            }
             if use_exp_path {
                 let bla_exp = entry.bla_exp.as_ref().map(|v| &v[0]);
                 let res_exp = iterate_pixel_unified_exp(

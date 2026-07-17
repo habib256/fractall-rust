@@ -306,13 +306,26 @@ perturbation`) `select_algorithm` route l'hybride vers **Perturbation** ;
 phase` en **f64** (jalon 3, zoom ~1e13–1e280) ou `iterate_pixel_unified_exp_
 multi_phase` en **ComplexExp** (jalon 4, deep > 1e280, `wants_exp`) ; le tier
 f64/exp est choisi par pixel (`wants_exp`), le dd reste gaté single-phase.
-Orbite référence itérée avec la formule hybride (`orbit.rs` →
-`formula_for_params`). Verrous : `[M,M] == Mandelbrot` pixel-exact — unit test
-(f64-std) + render-level deep-perturbation (`hybrid_mm_equals_mandelbrot_deep_
-perturbation`, ~3e10) + deep-exp (`hybrid_mm_equals_mandelbrot_deep_exp_e1000`,
-zoom 1e1000, tier exp) — + golden `mandelbrot_hybrid_burningship`. **Reste
-(jalon 5)** : BLA par phase (perf) + nucleus phase-aware + éditeur GUI de
-séquence.
+**Jalon 5a — références PAR PHASE (correction, port F3 `hybrid_references`)** :
+un hybride genuine ([M,BS]) exige N orbites référence (la réf `p` itère
+`phases[(p+i) % N]`, `orbit.rs::compute_reference_orbit_phase` →
+`ReferenceOrbit.hybrid_phase_refs`) + tracking de phase dans les boucles
+(invariant F3 `(phase + m) ≡ n (mod N)`, rebase ⇒ `phase := (phase+m) % N ;
+m := 0`, `hybrid.cc:266-341`). Sans ça, tout rebase avec `n % N ≠ 0`
+désynchronise pas pixel/référence → image garbage (prouvé : [M,BS] @3e10
+uniforme). ⚠️ Un hybride porte `fractal_type == Mandelbrot` : TOUT chemin z²+c
+hardcodé est gaté `!is_hybrid` (fast-path dd de l'orbite, atom-domain
+`dZdC=2·Z·dz+1`, compresseur fantôme, Brent, `harmonic_candidate`) ; le cache
+d'orbite discrimine `hybrid_phases` (`is_valid_for`). Le GROUND TRUTH hybride =
+GMP par-pixel CYCLANT (`GmpInterpState`), PAS le f64-std (chaos : 4→85 % de
+désaccord entre 300 et 2000 iters) ni `iterate_point_mpc` (z²+c). Verrous :
+`[M,M] == Mandelbrot` pixel-exact — unit (f64-std) + render-level ~3e10 + exp
+1e1000 — + grille GMP-cyclant (`multi_phase_perturbation_matches_gmp_per_pixel` :
+[M,M] 160/160 exact, [M,BS] majorité exacte, résidu = plancher bruit f64 sur
+plis abs, 69/88 dépendant de la réf — diagnostics `--ignored` truth-stability
+et ref-sensitivity) + golden `mandelbrot_hybrid_burningship`. **Reste (jalon
+5b+)** : BLA par phase (perf, `bla[phase].lookup` sur `refs[p]` avec pas
+`phases[(p+m) % N]`) + nucleus phase-aware + éditeur GUI de séquence.
 `fractal_type` sert la convention d'appel (Mandelbrot-like : δ₀=0, dc=pixel).
 
 ### Wisdom auto-dispatch (`fractal/wisdom.rs`, 2026-07-12 · G9.1 2026-07-15)

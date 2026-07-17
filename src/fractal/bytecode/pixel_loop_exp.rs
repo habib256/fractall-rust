@@ -768,18 +768,26 @@ fn iterate_pixel_unified_exp_multi_phase(
         };
     }
     let n_phases = formula.phases.len();
+    // G4 jalon 5 : références PAR PHASE + tracking de phase (F3
+    // `hybrid_references` + `hybrid.cc:266-341`), mirror du loop f64.
+    // Invariant : `(phase + m) ≡ n (mod N)` ; chaque rebase (norme OU bout de
+    // réf) fait `phase := (phase + m) % N` AVANT `m := 0`. Pas de wrap_periodic
+    // (Brent gaté OFF pour les hybrides) ni d'exhaustion GMP (z²+c hardcodé).
+    let refs = |p: usize| -> &ReferenceOrbit {
+        if p == 0 { ref_orbit } else { &ref_orbit.hybrid_phase_refs[p - 1] }
+    };
     let mut delta = delta_initial;
     let mut n = 0u32;
     let mut m = 0u32;
+    let mut phase: usize = 0;
     let mut rebase_count = 0u32;
     let mut iters_ptb = 0u32;
-    let ref_exhausted_flag = false;
     const REDUCE_INTERVAL: u32 = 250;
 
     while n < iteration_max
         && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
     {
-        let z_m = ref_orbit.z_ref_f64[m as usize];
+        let z_m = refs(phase).z_ref_f64[m as usize];
         let delta_approx = delta.to_complex64_approx();
         let z_abs = z_m + delta_approx;
         if z_abs.norm_sqr() >= bailout_sqr {
@@ -793,19 +801,20 @@ fn iterate_pixel_unified_exp_multi_phase(
         }
 
         // Pas perturbation : phase courante = phases[n % n_phases] (pas de BLA).
-        let phase = &formula.phases[(n as usize) % n_phases];
+        let ph = &formula.phases[(n as usize) % n_phases];
         let mut state = DeltaStateExp::new(z_m, delta);
-        state.step(phase, c_ref, dc);
+        state.step(ph, c_ref, dc);
         delta = state.delta;
         n += 1;
         m += 1;
         iters_ptb += 1;
 
+        let ref_len_cur = refs(phase).z_ref_f64.len();
         let delta_approx = delta.to_complex64_approx();
         if !delta_approx.re.is_finite() || !delta_approx.im.is_finite() {
             return UnifiedPixelResultExp {
                 iteration: n,
-                z_final: ref_orbit.z_ref_f64[m.min((ref_len - 1) as u32) as usize]
+                z_final: refs(phase).z_ref_f64[(m as usize).min(ref_len_cur - 1)]
                     + delta_approx,
                 rebase_count,
                 bla_steps: 0,
@@ -818,38 +827,33 @@ fn iterate_pixel_unified_exp_multi_phase(
         }
 
         // Rebase F3 (`hybrid.cc:296-307`) : `|Z[m]+δ|² < |δ|²` OU bout de réf ⇒
-        // z := Z[m]+δ, m := 0. Orbites périodiques : wrap_periodic (cycle m).
-        // ⚠️ `m` peut valoir `ref_len` après le pas → clamp anti-OOB.
-        let end_of_ref = (m as usize) + 1 >= ref_len;
-        let m_read = (m as usize).min(ref_len - 1);
-        let z_m_new = ref_orbit.z_ref_f64[m_read];
+        // δ := Z[m]+δ ; phase := (phase+m) % N ; m := 0.
+        // ⚠️ `m` peut valoir `ref_len` après le pas → clamp anti-OOB (lecture
+        // seulement ; la màj de phase utilise le `m` VRAI pour l'invariant).
+        let end_of_ref = (m as usize) + 1 >= ref_len_cur;
+        let m_read = (m as usize).min(ref_len_cur - 1);
+        let z_m_new = refs(phase).z_ref_f64[m_read];
         let z_curr_re = FloatExp::from_f64(z_m_new.re) + delta.re;
         let z_curr_im = FloatExp::from_f64(z_m_new.im) + delta.im;
         let z_curr_norm_sqr_fexp = z_curr_re.sqr() + z_curr_im.sqr();
         let delta_norm_sqr_fexp = delta.norm_sqr_fexp();
-        if end_of_ref {
-            if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
-                m = m_wrapped;
-            } else {
-                delta = ComplexExp { re: z_curr_re, im: z_curr_im };
-                m = 0;
-                rebase_count += 1;
-            }
-        } else if z_curr_norm_sqr_fexp < delta_norm_sqr_fexp {
+        if end_of_ref || z_curr_norm_sqr_fexp < delta_norm_sqr_fexp {
             delta = ComplexExp { re: z_curr_re, im: z_curr_im };
+            phase = (phase + m as usize) % n_phases;
             m = 0;
             rebase_count += 1;
         }
     }
 
-    let final_m = m.min((ref_len - 1) as u32);
+    let ref_len_cur = refs(phase).z_ref_f64.len();
+    let final_m = (m as usize).min(ref_len_cur - 1);
     let delta_approx = delta.to_complex64_approx();
     UnifiedPixelResultExp {
         iteration: n,
-        z_final: ref_orbit.z_ref_f64[final_m as usize] + delta_approx,
+        z_final: refs(phase).z_ref_f64[final_m] + delta_approx,
         rebase_count,
         bla_steps: 0,
-        ref_exhausted: ref_exhausted_flag,
+        ref_exhausted: false,
     }
 }
 

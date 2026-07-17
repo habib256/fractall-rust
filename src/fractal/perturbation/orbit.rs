@@ -314,6 +314,15 @@ pub struct ReferenceOrbit {
     /// réf via cette structure et `z_ref_f64`/`z_ref` peuvent être LIBÉRÉS
     /// (cf. `mod.rs::strip_orbit_arrays_for_compress`). `None` sinon.
     pub compressed_f64: Option<super::compress::CompressedReference>,
+    /// G4 jalon 5 : références PAR PHASE pour les hybrides multi-phase (port F3
+    /// `hybrid_references`, `hybrid.cc:64-99,192`). `hybrid_phase_refs[p-1]` =
+    /// orbite itérée avec `phases[(p+i) % N]` (p ∈ 1..N) ; la primaire (`self`)
+    /// est la phase 0. Consommées par les boucles multi-phase (`pixel_loop{,_exp}`)
+    /// dont le rebase F3 fait `phase := (phase + m) % N` — sans elles, tout rebase
+    /// avec `n % N ≠ 0` désynchronise pas pixel (`phases[n % N]`) et référence
+    /// (`phases[m % N]`) → garbage (prouvé : [M,BS] @3e10 = 1 couleur uniforme).
+    /// Vide pour les rendus single-phase.
+    pub hybrid_phase_refs: Vec<ReferenceOrbit>,
 }
 
 impl ReferenceOrbit {
@@ -502,6 +511,7 @@ impl ReferenceOrbit {
             z_ref_dd: Vec::new(),
             atom_truncated: false,
             compressed_f64: None,
+            hybrid_phase_refs: Vec::new(),
         })
     }
 
@@ -538,6 +548,11 @@ pub struct ReferenceOrbitCache {
     /// référence sans nouvelle imprécision (sous-ensemble de pixels déjà validés).
     pub view_span_x: String,
     pub view_span_y: String,
+    /// G4 : séquence de phases hybride pour laquelle la référence a été itérée.
+    /// Discriminant de réutilisation — sans lui, une orbite [M,BS] serait
+    /// réutilisée pour un [M] au même centre (même `fractal_type` Mandelbrot,
+    /// formules différentes) → image fausse (GUI inter-frame uniquement).
+    pub hybrid_phases: Option<Vec<FractalType>>,
 }
 
 impl ReferenceOrbitCache {
@@ -658,6 +673,7 @@ impl ReferenceOrbitCache {
                 && !super::should_use_full_gmp_perturbation(params));
 
         self.fractal_type == params.fractal_type
+            && self.hybrid_phases == params.hybrid_phases
             && gmp_ok
             && self.center_x_gmp == cx_str
             && self.center_y_gmp == cy_str
@@ -707,6 +723,7 @@ impl ReferenceOrbitCache {
                 .span_y_hp
                 .clone()
                 .unwrap_or_else(|| params.span_y.to_string()),
+            hybrid_phases: params.hybrid_phases.clone(),
         }
     }
 
@@ -882,6 +899,7 @@ fn build_hybrid_bla_references(
                 // Phases hybrides (cycle détecté) : hors périmètre du routage
                 // compressé (gaté `cycle_period == 0`) — pas de réf compressée.
                 compressed_f64: None,
+            hybrid_phase_refs: Vec::new(),
             };
 
             // Build BLA table for this phase reference (one BLA table per reference)
@@ -1425,6 +1443,21 @@ pub fn compute_reference_orbit_with_progress(
     // pendant tout le calcul — indistinguable d'un hang.
     ref_progress: Option<&std::sync::atomic::AtomicU32>,
 ) -> Option<(ReferenceOrbit, String, String)> {
+    compute_reference_orbit_phase(params, cancel, force_dense_gmp, ref_progress, 0)
+}
+
+/// Cœur du build d'orbite, paramétré par la PHASE DE DÉPART (G4 jalon 5, port
+/// F3 `hybrid_reference` : la réf de phase `p` itère `phases[(p+i) % N]`).
+/// `phase_start == 0` = réf primaire ; pour un hybride multi-phase elle
+/// construit récursivement les réfs 1..N-1 dans `hybrid_phase_refs`
+/// (récursion de profondeur 1 : les appels `phase_start > 0` ne récursent pas).
+fn compute_reference_orbit_phase(
+    params: &FractalParams,
+    cancel: Option<&AtomicBool>,
+    force_dense_gmp: bool,
+    ref_progress: Option<&std::sync::atomic::AtomicU32>,
+    phase_start: usize,
+) -> Option<(ReferenceOrbit, String, String)> {
     // Utiliser la précision calculée au lieu du preset
     use crate::fractal::perturbation::compute_perturbation_precision_bits;
     let prec = compute_perturbation_precision_bits(params);
@@ -1512,7 +1545,17 @@ pub fn compute_reference_orbit_with_progress(
         FractalType::Julia => true,
         _ => false,
     };
+    // G4 : un hybride porte `fractal_type == Mandelbrot` (--phases ⇒ --type 3)
+    // mais sa formule N'EST PAS z²+c → tout chemin/heuristique qui hardcode
+    // z²+c (fast-path dd, atom-domain dZdC=2·Z·dz+1, compresseur fantôme,
+    // Brent) doit être gaté OFF. Sans ce gate, le fast-path dd (~1e13–1e19)
+    // bâtissait une référence z²+c pour un [M,BS] → image garbage.
+    let is_hybrid = params
+        .hybrid_phases
+        .as_ref()
+        .is_some_and(|p| !p.is_empty());
     let dd_eligible = !force_dense_gmp
+        && !is_hybrid
         && dd_type_ok
         && {
             let px = super::effective_pixel_size(params);
@@ -1563,6 +1606,7 @@ pub fn compute_reference_orbit_with_progress(
                 // (l'orbite dd est déjà bon marché ; le routage retombe sur le
                 // path plein).
                 compressed_f64: None,
+            hybrid_phase_refs: Vec::new(),
             },
             cx_str,
             cy_str,
@@ -1597,9 +1641,13 @@ pub fn compute_reference_orbit_with_progress(
             &cref
         }
     });
-    let mut bytecode_state: Option<GmpInterpState> = bytecode_formula
-        .as_ref()
-        .map(|_| GmpInterpState::new(prec, z.clone()));
+    let mut bytecode_state: Option<GmpInterpState> = bytecode_formula.as_ref().map(|f| {
+        let mut st = GmpInterpState::new(prec, z.clone());
+        // G4 jalon 5 : réf de phase p — itère `phases[(p+i) % N]` (F3
+        // `hybrid_reference`, `hybrid.cc:99`). p=0 pour la primaire.
+        st.phase = phase_start % f.phases.len().max(1);
+        st
+    });
 
     // Reference orbit uses the F3-style fixed bailout (1e10 squared norm),
     // not the per-pixel bailout. See REFERENCE_BAILOUT_SQR doc.
@@ -1687,6 +1735,7 @@ pub fn compute_reference_orbit_with_progress(
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false);
     let enable_period_detection = matches!(params.fractal_type, FractalType::Mandelbrot)
+        && !is_hybrid
         && period_opt_in
         && !period_disabled_env;
     let period_tolerance = if enable_period_detection {
@@ -1752,6 +1801,7 @@ pub fn compute_reference_orbit_with_progress(
     // NB : le fast-path dd (≤96 b, ~zoom < 1e19) court-circuite cette boucle GMP →
     // pas de troncature sur cette tranche (réf déjà bon marché).
     let atom_period_enabled = matches!(params.fractal_type, FractalType::Mandelbrot)
+        && !is_hybrid
         && super::delta::atom_hp_enabled()
         && super::effective_pixel_size(params)
             < super::delta::ATOM_PERIOD_PIXEL_SIZE_THRESHOLD;
@@ -1773,6 +1823,7 @@ pub fn compute_reference_orbit_with_progress(
     let mut compressor = if (super::compress::compress_stats_enabled()
         || super::compress::compress_enabled())
         && matches!(ftype, FractalType::Mandelbrot)
+        && !is_hybrid
         && params.seed.re == 0.0
         && params.seed.im == 0.0
     {
@@ -2012,6 +2063,22 @@ pub fn compute_reference_orbit_with_progress(
             len, max_norm, first_over_pixel_er
         );
     }
+    // G4 jalon 5 : réfs par phase (F3 `hybrid_references`). Construites UNE fois
+    // sur la primaire (phase_start == 0) ; les appels récursifs (profondeur 1)
+    // ne récursent pas. Annulation propagée (None).
+    let n_phases = bytecode_formula.as_ref().map_or(1, |f| f.phases.len());
+    let hybrid_phase_refs = if phase_start == 0 && n_phases > 1 {
+        let mut refs = Vec::with_capacity(n_phases - 1);
+        for p in 1..n_phases {
+            let (orbit_p, _, _) =
+                compute_reference_orbit_phase(params, cancel, force_dense_gmp, None, p)?;
+            refs.push(orbit_p);
+        }
+        refs
+    } else {
+        Vec::new()
+    };
+
     Some((
         ReferenceOrbit {
             cref: cref_f64,
@@ -2028,6 +2095,7 @@ pub fn compute_reference_orbit_with_progress(
             z_ref_dd,
             atom_truncated,
             compressed_f64,
+            hybrid_phase_refs,
         },
         cx_str,
         cy_str,

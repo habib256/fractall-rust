@@ -414,6 +414,12 @@ pub fn harmonic_candidate(params: &FractalParams) -> Option<HarmonicVariant> {
     if params.seed.re != 0.0 || params.seed.im != 0.0 {
         return None;
     }
+    // G4 : jamais candidat pour un hybride multi-phase — la table LLA/MLA est
+    // dérivée de z²+c (dips de l'orbite z²+c), et le path pixel multi-phase ne
+    // la consulte de toute façon pas. Évite un build O(M) inutile par render.
+    if params.hybrid_phases.as_ref().is_some_and(|p| !p.is_empty()) {
+        return None;
+    }
     if !variant_eligible(params) {
         return None;
     }

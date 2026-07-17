@@ -226,18 +226,28 @@ fn iterate_pixel_unified_multi_phase(
         };
     }
     let n_phases = formula.phases.len();
+    // G4 jalon 5 : références PAR PHASE (F3 `hybrid_references`). `refs(p)` =
+    // orbite itérée avec `phases[(p+i) % N]`. Invariant de la boucle (F3
+    // `hybrid.cc:266-341`) : `(phase + m) ≡ n (mod N)` — le pas pixel
+    // `phases[n % N]` correspond TOUJOURS au pas de référence `Z[m]→Z[m+1]`.
+    // Chaque rebase (norme OU bout de réf) fait `phase := (phase + m) % N`
+    // AVANT `m := 0`, préservant l'invariant. Sans ça, tout rebase avec
+    // `n % N ≠ 0` désynchronise → garbage (prouvé [M,BS] @3e10 uniforme).
+    let refs = |p: usize| -> &ReferenceOrbit {
+        if p == 0 { ref_orbit } else { &ref_orbit.hybrid_phase_refs[p - 1] }
+    };
     let mut delta = delta_initial;
     let mut n = 0u32;
     let mut m = 0u32;
+    let mut phase: usize = 0;
     let mut rebase_count = 0u32;
     let bla_steps = 0u32;
     let mut iters_ptb = 0u32;
-    let mut ref_exhausted_flag = false;
 
     while n < iteration_max
         && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
     {
-        let z_m = ref_orbit.z_ref_f64[m as usize];
+        let z_m = refs(phase).z_ref_f64[m as usize];
         let z_abs = z_m + delta;
         if z_abs.norm_sqr() >= bailout_sqr {
             return UnifiedPixelResult {
@@ -256,19 +266,21 @@ fn iterate_pixel_unified_multi_phase(
         // au mélange). Une vraie BLA multi-phase est un travail séparé.
         let _ = bla;
 
-        // Pas perturbation : phase courante = phases[n % n_phases].
-        let phase = &formula.phases[(n as usize) % n_phases];
+        // Pas perturbation : phase courante = phases[n % n_phases] — cohérent
+        // avec le pas de référence grâce à l'invariant (phase + m) ≡ n.
+        let ph = &formula.phases[(n as usize) % n_phases];
         let mut state = super::delta_form::DeltaState::new(z_m, delta);
-        state.step(phase, c_ref, dc);
+        state.step(ph, c_ref, dc);
         delta = state.delta;
         n += 1;
         m += 1;
         iters_ptb += 1;
 
+        let ref_len_cur = refs(phase).z_ref_f64.len();
         if !delta.re.is_finite() || !delta.im.is_finite() {
             return UnifiedPixelResult {
                 iteration: n,
-                z_final: ref_orbit.z_ref_f64[m.min((ref_len - 1) as u32) as usize] + delta,
+                z_final: refs(phase).z_ref_f64[(m as usize).min(ref_len_cur - 1)] + delta,
                 rebase_count,
                 bla_steps,
                 orbit: None,
@@ -278,51 +290,34 @@ fn iterate_pixel_unified_multi_phase(
             };
         }
 
-        let end_of_ref = (m as usize) + 1 >= ref_len;
-        if end_of_ref {
-            if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
-                // Orbite périodique (centre intérieur) : cycler m via modulo.
-                m = m_wrapped;
-            } else if ref_orbit.atom_truncated {
-                // Réf tronquée atom-domain (quasi-périodique à l'échelle de la
-                // vue) : rebase-at-end F3 (`hybrid.cc:301`, port de
-                // pixel_loop_exp.rs) — `δ := Z[end]+δ, m := 0`. Sûr en f64
-                // mid-range : Z[end] est petit (critère atom) et les grazes
-                // > 1e-280 ne sous-débordent pas (cf. diag G2, TODO).
-                let z_m_end = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
-                delta = z_m_end + delta;
-                m = 0;
-                rebase_count += 1;
-            } else {
-                // Orbite tronquée par escape (centre escape-time, non-périodique) :
-                // rebaser sur z_ref[end] colle tous les pixels au même état
-                // (`δ := z_ref[end] + δ`, indistinguable au pixel près) → image
-                // uniforme (cf. e113.toml). On flag l'exhaustion et on quitte
-                // ; le caller route ces pixels vers `iterate_pixel_gmp` qui
-                // les ré-itère per-pixel en GMP pour récupérer le vrai escape iter.
-                ref_exhausted_flag = true;
-                break;
-            }
-        } else {
-            let z_m_new = ref_orbit.z_ref_f64[m as usize];
-            let z_curr = z_m_new + delta;
-            if z_curr.norm_sqr() < delta.norm_sqr() {
-                delta = z_curr;
-                m = 0;
-                rebase_count += 1;
-            }
+        // Rebase F3 (`hybrid.cc:296-307`) : norme OU bout de référence ⇒
+        // `δ := Z[m]+δ ; phase := (phase+m) % N ; m := 0`. Pas de wrap_periodic
+        // ni de fallback GMP par-pixel en multi-phase : le Brent est gaté OFF
+        // pour les hybrides (cycle_period=0) et `iterate_pixel_gmp` est z²+c
+        // hardcodé (ne cycle pas) — le rebase-at-end F3 couvre les réfs
+        // tronquées par escape (chaque réf de phase repart de Z[0]=0).
+        let m_read = (m as usize).min(ref_len_cur - 1);
+        let z_m_new = refs(phase).z_ref_f64[m_read];
+        let z_curr = z_m_new + delta;
+        let end_of_ref = (m as usize) + 1 >= ref_len_cur;
+        if end_of_ref || z_curr.norm_sqr() < delta.norm_sqr() {
+            delta = z_curr;
+            phase = (phase + m as usize) % n_phases;
+            m = 0;
+            rebase_count += 1;
         }
     }
-    let final_m = m.min((ref_len - 1) as u32);
+    let ref_len_cur = refs(phase).z_ref_f64.len();
+    let final_m = (m as usize).min(ref_len_cur - 1);
     UnifiedPixelResult {
         iteration: n,
-        z_final: ref_orbit.z_ref_f64[final_m as usize] + delta,
+        z_final: refs(phase).z_ref_f64[final_m] + delta,
         rebase_count,
         bla_steps,
                 orbit: None,
             distance: None,
             is_interior: false,
-            ref_exhausted: ref_exhausted_flag,
+            ref_exhausted: false,
     }
 }
 
@@ -1060,6 +1055,360 @@ mod tests {
         orbit
     }
 
+    /// **G4 jalon 5 — verrou GMP des hybrides genuine en perturbation.**
+    ///
+    /// Le SEUL ground truth valable pour un hybride multi-phase est le GMP
+    /// par-pixel qui CYCLE les phases (`GmpInterpState`) : le f64-std diverge
+    /// par chaos sur bord hirsute (mesuré : 4 %→85 % de désaccord entre 300 et
+    /// 2000 iters, sans qu'aucun des deux côtés soit « vrai »), et
+    /// `iterate_point_mpc` est z²+c hardcodé. Ici : grille de dc autour d'un
+    /// centre [M,BS] à 3e10 (structure réelle, trouvée par zoom-hunt),
+    /// perturbation multi-phase (réfs par phase + tracking F3) vs itération
+    /// GMP-256 par point. Avant le fix jalon 5 (désync phase/référence au
+    /// rebase + réf dd z²+c), l'image était UNIFORME (100 % faux).
+    /// Grille de dc → (exact, off1, worse, max_diff) : perturbation bytecode
+    /// vs GMP par-point cyclant les phases (`GmpInterpState`, même interpréteur
+    /// que l'orbite référence). Instrument des verrous hybrides jalon 5.
+    fn grid_vs_gmp_cycling(
+        label: &str,
+        phases: Option<Vec<FractalType>>,
+        cx: &str,
+        cy: &str,
+        zoom: f64,
+        iter_max: u32,
+    ) -> (u32, u32, u32, u32, i64) {
+        use crate::fractal::bytecode::formula_for_params;
+        use rug::{Assign, Complex as GmpComplex};
+
+        let width = 160u32;
+        let height = 100u32;
+        let span_x = 4.0 / zoom;
+        let span_y = span_x * height as f64 / width as f64;
+
+        let mut params = default_params_for_type(FractalType::Mandelbrot, width, height);
+        params.center_x = cx.parse().unwrap();
+        params.center_y = cy.parse().unwrap();
+        params.center_x_hp = Some(cx.into());
+        params.center_y_hp = Some(cy.into());
+        params.span_x = span_x;
+        params.span_y = span_y;
+        params.iteration_max = iter_max;
+        params.algorithm_mode = AlgorithmMode::Perturbation;
+        params.hybrid_phases = phases;
+
+        let (orbit, _, _) = compute_reference_orbit(&params, None, false)
+            .expect("compute_reference_orbit failed");
+        let formula = formula_for_params(&params).expect("formula");
+        assert_eq!(
+            orbit.hybrid_phase_refs.len() + 1,
+            formula.phases.len().max(1),
+            "réfs par phase manquantes"
+        );
+        let c_norm = (orbit.cref.re * orbit.cref.re + orbit.cref.im * orbit.cref.im).sqrt();
+        let tables = build_bla_table_for_formula(&formula, &orbit.z_ref_f64, c_norm, 6e-8)
+            .expect("BLA table build");
+        let bla = &tables[0];
+
+        let prec = crate::fractal::perturbation::compute_perturbation_precision_bits(&params);
+        let bailout_sqr = params.bailout * params.bailout;
+
+        let (mut total, mut exact, mut off_by_1, mut worse) = (0u32, 0u32, 0u32, 0u32);
+        let mut max_diff = 0i64;
+        for gj in 0..10 {
+            for gi in 0..16 {
+                let dx = ((gi as f64 + 0.5) / 16.0 - 0.5) * span_x;
+                let dy = ((gj as f64 + 0.5) / 10.0 - 0.5) * span_y;
+                let dc = Complex64::new(dx, dy);
+
+                let res = iterate_pixel_unified_full(
+                    &orbit,
+                    bla,
+                    &formula,
+                    orbit.cref,
+                    dc,
+                    Complex64::new(0.0, 0.0),
+                    iter_max,
+                    params.bailout,
+                    UnifiedOptions::default(),
+                );
+
+                let mut c_px = GmpComplex::with_val(prec, (dx, dy));
+                c_px += &orbit.cref_gmp;
+                let mut st = crate::fractal::bytecode::GmpInterpState::new(
+                    prec,
+                    GmpComplex::with_val(prec, (0.0, 0.0)),
+                );
+                let mut n_gmp = iter_max;
+                let mut n = 0u32;
+                let mut norm = rug::Float::with_val(prec, 0);
+                while n < iter_max {
+                    // |z|² >= bailout² → escape à n (convention tête-de-boucle
+                    // du pixel loop).
+                    norm.assign(st.z.real() * st.z.real());
+                    norm += GmpComplex::with_val(prec, (st.z.imag() * st.z.imag(), 0)).real();
+                    if norm.to_f64() >= bailout_sqr {
+                        n_gmp = n;
+                        break;
+                    }
+                    st.step(&formula, &c_px);
+                    n += 1;
+                }
+
+                let diff = (res.iteration as i64 - n_gmp as i64).abs();
+                total += 1;
+                if diff == 0 {
+                    exact += 1;
+                } else if diff == 1 {
+                    off_by_1 += 1;
+                } else {
+                    worse += 1;
+                }
+                max_diff = max_diff.max(diff);
+            }
+        }
+        eprintln!(
+            "[GRID-GMP {label}] total={total} exact={exact} off1={off_by_1} worse={worse} max_diff={max_diff}"
+        );
+        (total, exact, off_by_1, worse, max_diff)
+    }
+
+    /// **G4 jalon 5 — verrou GMP des hybrides genuine en perturbation.**
+    ///
+    /// Le SEUL ground truth valable pour un hybride multi-phase est le GMP
+    /// par-pixel qui CYCLE les phases (le f64-std diverge par chaos sur bord
+    /// hirsute : 4 %→85 % de désaccord entre 300 et 2000 iters, et
+    /// `iterate_point_mpc` est z²+c hardcodé). Contrôles imprimés : [M,M] à un
+    /// bord M (mécanique multi-phase, dynamique douce) et [M,BS] (hérite la
+    /// sensibilité hirsute BS, cf. G3 : presets BS-famille sur frontières
+    /// LISSES uniquement). Avant le fix jalon 5 (désync phase/réf au rebase +
+    /// réf dd z²+c), [M,BS] rendait UNIFORME (0 % de structure).
+    #[test]
+    fn multi_phase_perturbation_matches_gmp_per_pixel() {
+        // Contrôle : [M,M] au bord seahorse — multi-phase mécanique, chaos M.
+        let (t_mm, e_mm, o_mm, _w_mm, _m_mm) = grid_vs_gmp_cycling(
+            "MM@3e10",
+            Some(vec![FractalType::Mandelbrot, FractalType::Mandelbrot]),
+            "-0.743643887037158704752191506114774",
+            "0.131825904205311970493132056385139",
+            3e10,
+            800,
+        );
+        // Hybride genuine : [M,BS] (bord hirsute BS-famille).
+        let (t_bs, e_bs, o_bs, _w_bs, _m_bs) = grid_vs_gmp_cycling(
+            "MBS@3e10",
+            Some(vec![FractalType::Mandelbrot, FractalType::BurningShip]),
+            "-0.4744047619051931",
+            "-0.6327380952385265",
+            3e10,
+            800,
+        );
+        // [M,M] : dynamique M douce → quasi-exactitude exigée.
+        assert!(
+            (e_mm + o_mm) as f64 >= t_mm as f64 * 0.97,
+            "[M,M] vs GMP cyclant : exact+off1={}/{}",
+            e_mm + o_mm,
+            t_mm
+        );
+        // [M,BS] : bord hirsute — la MAJORITÉ doit être exacte (avant fix :
+        // 0 % de structure, uniforme). Le résidu est le plancher chaos f64
+        // (même classe que les frontières hirsutes single-phase, cf. G3).
+        assert!(
+            e_bs as f64 >= t_bs as f64 * 0.50,
+            "[M,BS] vs GMP cyclant : exact={}/{} off1={}",
+            e_bs,
+            t_bs,
+            o_bs
+        );
+    }
+
+    /// Diagnostic (--ignored) : stabilité du ground truth GMP sur la grille
+    /// [M,BS] — itère chaque point à 256 ET 512 bits et compte les désaccords
+    /// ENTRE LES DEUX VÉRITÉS. Des points truth-instables = scène au-delà de la
+    /// sensibilité de précision (classe « hirsute » G3) : le résidu du verrou
+    /// principal sur ces points n'est PAS attribuable au pixel loop.
+    #[test]
+    #[ignore]
+    fn multi_phase_truth_stability_diagnostic() {
+        use crate::fractal::bytecode::formula_for_params;
+        use rug::{Assign, Complex as GmpComplex};
+
+        let iter_max = 800u32;
+        let zoom = 3e10;
+        let span_x = 4.0 / zoom;
+        let span_y = span_x * 100.0 / 160.0;
+        let mut params = default_params_for_type(FractalType::Mandelbrot, 160, 100);
+        params.center_x_hp = Some("-0.4744047619051931".into());
+        params.center_y_hp = Some("-0.6327380952385265".into());
+        params.span_x = span_x;
+        params.span_y = span_y;
+        params.iteration_max = iter_max;
+        params.hybrid_phases = Some(vec![FractalType::Mandelbrot, FractalType::BurningShip]);
+        let formula = formula_for_params(&params).expect("formula");
+        let bailout_sqr = params.bailout * params.bailout;
+
+        let truth = |prec: u32, dx: f64, dy: f64| -> u32 {
+            let cx = rug::Float::parse(params.center_x_hp.as_deref().unwrap()).unwrap();
+            let cy = rug::Float::parse(params.center_y_hp.as_deref().unwrap()).unwrap();
+            let mut c_px = GmpComplex::with_val(prec, (dx, dy));
+            c_px += GmpComplex::with_val(
+                prec,
+                (rug::Float::with_val(prec, cx), rug::Float::with_val(prec, cy)),
+            );
+            let mut st = crate::fractal::bytecode::GmpInterpState::new(
+                prec,
+                GmpComplex::with_val(prec, (0.0, 0.0)),
+            );
+            let mut n = 0u32;
+            let mut norm = rug::Float::with_val(prec, 0);
+            while n < iter_max {
+                norm.assign(st.z.real() * st.z.real());
+                norm += GmpComplex::with_val(prec, (st.z.imag() * st.z.imag(), 0)).real();
+                if norm.to_f64() >= bailout_sqr {
+                    return n;
+                }
+                st.step(&formula, &c_px);
+                n += 1;
+            }
+            iter_max
+        };
+
+        let (mut unstable, mut total) = (0u32, 0u32);
+        for gj in 0..10 {
+            for gi in 0..16 {
+                let dx = ((gi as f64 + 0.5) / 16.0 - 0.5) * span_x;
+                let dy = ((gj as f64 + 0.5) / 10.0 - 0.5) * span_y;
+                let a = truth(256, dx, dy);
+                let b = truth(512, dx, dy);
+                total += 1;
+                if a != b {
+                    unstable += 1;
+                }
+            }
+        }
+        eprintln!("[TRUTH-STAB MBS@3e10] truth256≠truth512 : {unstable}/{total}");
+    }
+
+    /// Diagnostic (--ignored) : attribution du résidu [M,BS] — bruit inhérent
+    /// vs bug systématique. Rend la MÊME grille absolue avec deux références
+    /// différentes (centre décalé de ~span/3). Points dont la réponse CHANGE
+    /// avec la référence = dominés par le bruit f64 du delta (chaque réf = une
+    /// réalisation de bruit) ; stables mais ≠ vérité = systématique.
+    #[test]
+    #[ignore]
+    fn multi_phase_reference_sensitivity_diagnostic() {
+        use crate::fractal::bytecode::formula_for_params;
+        use rug::{Assign, Complex as GmpComplex, Float};
+
+        let iter_max = 800u32;
+        let zoom = 3e10;
+        let span_x = 4.0 / zoom;
+        let span_y = span_x * 100.0 / 160.0;
+        let cx_hp = "-0.4744047619051931";
+        let cy_hp = "-0.6327380952385265";
+
+        let build = |cx_hp: &str, cy_hp: &str| {
+            let mut params = default_params_for_type(FractalType::Mandelbrot, 160, 100);
+            params.center_x = cx_hp.parse().unwrap();
+            params.center_y = cy_hp.parse().unwrap();
+            params.center_x_hp = Some(cx_hp.into());
+            params.center_y_hp = Some(cy_hp.into());
+            params.span_x = span_x;
+            params.span_y = span_y;
+            params.iteration_max = iter_max;
+            params.algorithm_mode = AlgorithmMode::Perturbation;
+            params.hybrid_phases =
+                Some(vec![FractalType::Mandelbrot, FractalType::BurningShip]);
+            let (orbit, _, _) =
+                compute_reference_orbit(&params, None, false).expect("orbit");
+            (params, orbit)
+        };
+
+        // Réf 1 : centre nominal. Réf 2 : centre décalé (span/3, span/7).
+        let shift_x = span_x / 3.0;
+        let shift_y = span_y / 7.0;
+        let prec = 256u32;
+        let cx2 = {
+            let v = Float::with_val(prec, Float::parse(cx_hp).unwrap()) + shift_x;
+            v.to_string_radix(10, None)
+        };
+        let cy2 = {
+            let v = Float::with_val(prec, Float::parse(cy_hp).unwrap()) + shift_y;
+            v.to_string_radix(10, None)
+        };
+        let (params1, orbit1) = build(cx_hp, cy_hp);
+        let (_params2, orbit2) = build(&cx2, &cy2);
+        let formula = formula_for_params(&params1).expect("formula");
+        let c_norm =
+            (orbit1.cref.re * orbit1.cref.re + orbit1.cref.im * orbit1.cref.im).sqrt();
+        let t1 = build_bla_table_for_formula(&formula, &orbit1.z_ref_f64, c_norm, 6e-8)
+            .expect("bla1");
+        let t2 = build_bla_table_for_formula(&formula, &orbit2.z_ref_f64, c_norm, 6e-8)
+            .expect("bla2");
+
+        let bailout_sqr = params1.bailout * params1.bailout;
+        let truth = |dx: f64, dy: f64| -> u32 {
+            let mut c_px = GmpComplex::with_val(prec, (dx, dy));
+            c_px += &orbit1.cref_gmp;
+            let mut st = crate::fractal::bytecode::GmpInterpState::new(
+                prec,
+                GmpComplex::with_val(prec, (0.0, 0.0)),
+            );
+            let mut n = 0u32;
+            let mut norm = Float::with_val(prec, 0);
+            while n < iter_max {
+                norm.assign(st.z.real() * st.z.real());
+                norm += GmpComplex::with_val(prec, (st.z.imag() * st.z.imag(), 0)).real();
+                if norm.to_f64() >= bailout_sqr {
+                    return n;
+                }
+                st.step(&formula, &c_px);
+                n += 1;
+            }
+            iter_max
+        };
+
+        let (mut both_ok, mut noise, mut systematic, mut total_bad) = (0u32, 0u32, 0u32, 0u32);
+        for gj in 0..10 {
+            for gi in 0..16 {
+                let dx = ((gi as f64 + 0.5) / 16.0 - 0.5) * span_x;
+                let dy = ((gj as f64 + 0.5) / 10.0 - 0.5) * span_y;
+                let run = |orbit: &crate::fractal::perturbation::orbit::ReferenceOrbit,
+                           bla: &BlaTableUnified,
+                           dcx: f64,
+                           dcy: f64| {
+                    iterate_pixel_unified_full(
+                        orbit,
+                        bla,
+                        &formula,
+                        orbit.cref,
+                        Complex64::new(dcx, dcy),
+                        Complex64::new(0.0, 0.0),
+                        iter_max,
+                        params1.bailout,
+                        UnifiedOptions::default(),
+                    )
+                    .iteration
+                };
+                let n1 = run(&orbit1, &t1[0], dx, dy);
+                let n2 = run(&orbit2, &t2[0], dx - shift_x, dy - shift_y);
+                let nt = truth(dx, dy);
+                if n1 == nt && n2 == nt {
+                    both_ok += 1;
+                } else {
+                    total_bad += 1;
+                    if n1 != n2 {
+                        noise += 1; // réponse dépend de la réf → plancher bruit
+                    } else {
+                        systematic += 1; // stable mais faux → suspect
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "[REF-SENS MBS@3e10] both_exact={both_ok} bad={total_bad} (noise={noise} systematic={systematic})"
+        );
+    }
+
     /// Render une image complète Mandelbrot zoom 1e6 via le pixel loop
     /// unifié, sauvegarde-la, et diffe vs la golden legacy
     /// `tests/golden/mandelbrot_perturb_1e6.png`.
@@ -1412,6 +1761,8 @@ mod tests {
     /// mandel_phase]) = formula avec 2 phases identiques Mandelbrot. Le
     /// pixel loop doit produire le même résultat que la formule mono-phase
     /// Mandelbrot (modulo le path multi-phase qui n'utilise pas la BLA).
+    /// Jalon 5 : l'orbite est bâtie avec `hybrid_phases` — le contrat du
+    /// loop multi-phase exige les références PAR PHASE (`hybrid_phase_refs`).
     #[test]
     fn unified_multi_phase_identical_phases_eq_mono() {
         let iter_max = 300u32;
@@ -1421,7 +1772,20 @@ mod tests {
         let span_x = 4.0 / zoom;
         let span_y = span_x * 100.0 / 160.0;
 
-        let orbit = make_ref_orbit(cx, cy, zoom, iter_max);
+        let orbit = {
+            let mut params = default_params_for_type(FractalType::Mandelbrot, 160, 100);
+            params.center_x = cx;
+            params.center_y = cy;
+            params.span_x = span_x;
+            params.span_y = span_y;
+            params.iteration_max = iter_max;
+            params.algorithm_mode = AlgorithmMode::Perturbation;
+            params.hybrid_phases =
+                Some(vec![FractalType::Mandelbrot, FractalType::Mandelbrot]);
+            let (orbit, _, _) = compute_reference_orbit(&params, None, true)
+                .expect("compute_reference_orbit failed");
+            orbit
+        };
         let mono = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
         let hybrid = Formula::hybrid(vec![mono.phases[0].clone(), mono.phases[0].clone()]);
 

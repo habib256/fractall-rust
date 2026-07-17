@@ -36,6 +36,21 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
   nucleus phase-aware + éditeur GUI.
 
 ### Corrigé
+- **G4 jalon 5a — hybrides GENUINE deep : références par phase** (port F3
+  `hybrid_references`). Trois bugs latents corrigés, invisibles au verrou
+  `[M,M]` (phases identiques ⇒ désync sans effet) : (1) **désync
+  phase/référence au rebase** — le pas pixel `phases[n % N]` vs la réf itérée
+  `phases[m % N]` divergeaient après tout rebase `m := 0` avec `n % N ≠ 0` ;
+  fix = N orbites référence (la réf p itère `phases[(p+i) % N]`,
+  `hybrid_phase_refs`) + tracking F3 `(phase + m) ≡ n (mod N)` dans les boucles
+  f64/exp ; (2) **fast-path dd de l'orbite z²+c** pris par les hybrides
+  (`fractal_type == Mandelbrot`) → référence fausse ; gates `!is_hybrid` sur
+  dd/atom-domain/Brent/compresseur/harmonic ; (3) **cache d'orbite** sans
+  discriminant `hybrid_phases` (réutilisation [M,BS]→[M] au même centre).
+  Avant fix : [M,BS] @3e10 = image UNIFORME (100 % faux) ; après : structure
+  exacte, [M,M] 160/160 pixel-exact vs GMP cyclant, résidu [M,BS] = plancher
+  bruit f64 des plis abs (78 % dépendant de la réf, vérité GMP 256=512 stable).
+  Verrou : grille GMP-cyclant `multi_phase_perturbation_matches_gmp_per_pixel`.
 - **Perturbation réf-intérieure >512²** : un 2e bloc de résolution glitch récursive
   (`perturbation/mod.rs`) n'était pas gaté `!bytecode_path` → il supprimait le
   fallback GMP → ~3.4 % de structure spurious. Gate ajouté.

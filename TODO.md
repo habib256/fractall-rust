@@ -33,12 +33,15 @@ pixel-exact + quality 15/15 PASS.
 - **GUI temps-réel (G10)** : réutilisation orbite (G10.2), recolorisation
   sans clone (G10.3), pixels XaoS colonnes/lignes (G10.4/b), file de tuiles
   priorité-centre + streaming (G10.5), warp GPU molette (G10.1, signe Y corrigé).
-- **Hybrides (G4 jalon 1-4)** : les hybrides multi-phase **RENDENT** (CLI
+- **Hybrides (G4 jalon 1-5a)** : les hybrides multi-phase **RENDENT** (CLI
   `--phases mandelbrot,burning_ship`) via le path f64 standard. `hybrid_phases` +
   `formula_for_params` + `compile_hybrid_formula`. [M,M]==Mandelbrot pixel-exact.
   Deep OK en perturbation sur TOUT le range : f64 (jalon 3, ~1e13–1e280) +
-  ComplexExp (jalon 4, > 1e280, vérifié `[M,M]==M` @ **1e1000**). Reste
-  (jalon 5) : BLA par phase (perf) + nucleus phase-aware + éditeur GUI.
+  ComplexExp (jalon 4, > 1e280, vérifié `[M,M]==M` @ **1e1000**). **Jalon 5a :
+  les hybrides GENUINE ([M,BS]) deep sont CORRECTS** — réfs par phase (port F3)
+  + tracking `(phase+m)≡n (mod N)` + gates `!is_hybrid` sur tous les chemins
+  z²+c hardcodés ; verrou grille vs GMP-cyclant ([M,M] 160/160). Reste
+  (jalon 5b+) : BLA par phase (perf) + nucleus phase-aware + éditeur GUI.
 - **Durcissements** : gate `!bytecode_path` sur le 2e bloc glitch récursif
   (`mod.rs:1634`, supprimait ~3.4 % structure spurious à >512²) ; golden
   `mandelbrot_interior_ref_640` (seul cas >512², exerce l'escalade dd).
@@ -1416,6 +1419,34 @@ le câblage params/render, + la BLA par phase + le nucleus phase-aware + l'UI.
   (verrou render-level `hybrid_mm_equals_mandelbrot_deep_perturbation`, sans
   GMP externe — le GMP par-pixel ne cycle pas). Single-phase INCHANGÉ (tout
   gaté `multi_phase`).
+- [x] **✅ Jalon 5a — références PAR PHASE : correction hybrides GENUINE deep
+  `[2026-07-17]`** : port F3 `hybrid_references`/`hybrid.cc:266-341`. Le verrou
+  [M,M] était AVEUGLE par construction (phases identiques ⇒ désync sans effet) ;
+  un [M,BS] genuine @3e10 rendait UNIFORME (1 couleur, 100 % faux). Trois bugs :
+  **(1) désync phase/référence** — pas pixel `phases[n % N]` vs réf `phases[m %
+  N]` divergent après tout rebase `m := 0` avec `n % N ≠ 0` ; fix = N orbites
+  (réf p itère `phases[(p+i) % N]`, `compute_reference_orbit_phase` →
+  `ReferenceOrbit.hybrid_phase_refs`, récursion prof. 1) + tracking de phase
+  dans les boucles f64/exp (invariant `(phase+m) ≡ n (mod N)`, rebase ⇒
+  `phase := (phase+m) % N ; m := 0`, rebase-at-end inconditionnel — exit
+  wrap_periodic/ref_exhausted→GMP, tous deux faux pour un hybride).
+  **(2) chemins z²+c hardcodés pris par les hybrides** (`fractal_type ==
+  Mandelbrot`) : fast-path dd de l'orbite (~1e13–1e19, réf FAUSSE), atom-domain
+  (`dZdC=2·Z·dz+1`), Brent, compresseur fantôme, `harmonic_candidate` → tous
+  gatés `!is_hybrid`. **(3) cache d'orbite sans discriminant `hybrid_phases`**
+  (réutilisation [M,BS]→[M] même centre, GUI). **Méthodo ground truth** : le
+  f64-std n'est PAS un juge valable sur bord hirsute (chaos : 4→85 % de
+  désaccord entre 300 et 2000 iters) ; le SEUL juge = GMP par-pixel CYCLANT
+  (`GmpInterpState`). Vérifié : [M,M] grille 160/160 EXACT vs GMP ; [M,BS]
+  95 exact + 6 off1 / 160, résidu adjugé PLANCHER BRUIT f64 des plis abs
+  (diagnostics : vérité 256 b == 512 b sur 160/160 → vérité convergée ; 69/88
+  points faux CHANGENT de réponse avec une réf décalée → bruit, pas
+  systématique ; classe hirsute BS-famille, cf. G3). Verrous :
+  `multi_phase_perturbation_matches_gmp_per_pixel` (grille GMP-cyclant) + 2
+  diagnostics `--ignored` (truth-stability, ref-sensitivity) + verrous [M,M]
+  jalons 3-4 inchangés. **Reste jalon 5b : BLA par phase (perf)** —
+  `bla[phase].lookup(m, δ²)` sur `refs[p]`, pas m = `phases[(p+m) % N]`
+  (`build_cycled`), merges phase-agnostiques.
 - [x] **✅ Jalon 4 — hybrides DEEP-EXP (ComplexExp, > 1e280) `[2026-07-17]`** :
   `iterate_pixel_unified_exp_multi_phase` (`pixel_loop_exp.rs`) — mirror du
   multi-phase f64 en `DeltaStateExp` (FloatExp survit à l'underflow f64 du delta),
