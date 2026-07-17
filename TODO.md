@@ -1632,6 +1632,15 @@ le câblage params/render, + la BLA par phase + le nucleus phase-aware + l'UI.
   seahorse/e17). Comblent le trou golden entre 1e8 (minibrot) et 1e50+
   (escape-time). Path perturbation par défaut `bytecode_f64`. 21 goldens (était
   18), revus visuellement, déterministes (re-run vert). Rendu <50 ms/cas.
+- [x] **Golden hybride genuine deep + nucleus phase-aware** (2026-07-17) :
+  `hybrid_mbs_nucleus_5e28` ([M,BS] `--find-nucleus` @5e28, satellite p=304)
+  — verrouille find_nucleus_formula + K non-conforme + BLA multi-phase
+  σ₁(K) + réfs par phase + atom mat2 en un cas (~0.12 s, revu, déterministe).
+  Le log `[NUCLEUS]` imprime désormais le centre raffiné (50 chiffres,
+  reproductibilité F3-style). 25 goldens. NB : `FRACTALL_UPDATE_GOLDENS`
+  réécrit les 22 anciens PNG (metadata `use_dd_tier: None→false`, pixels
+  vérifiés 22/22 identiques) — churn non commité, à purger au prochain
+  update légitime.
 - [ ] **Vérifier visuellement la GUI AA** (env de dev headless ici → non testé
   à l'écran ; la logique compile et le CLI est vérifié).
 - [ ] **AA polish** : per-pixel decorrelation (`burtle_hash`, utile à bas N) ;
