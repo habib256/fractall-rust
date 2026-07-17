@@ -299,16 +299,20 @@ formule (hybride via `compile_hybrid_formula` si `hybrid_phases`, sinon
 cycle déjà les phases) : `select_algorithm` **force `StandardF64`** pour un
 hybride, le GMP par-pixel `iterate_point_mpc` étant z²+c hardcodé (ne cycle
 pas). `render_dispatch` renvoie `None` (GPU ne cycle pas → fallback CPU).
-**Deep (jalon 3)** : dans la bande f64-perturbation (`pixel ∈
-[exp_threshold, perturb_threshold]`, ~zoom 1e10–1e13) `select_algorithm` route
-l'hybride vers **Perturbation** ; `delta.rs::try_bytecode_unified_path` route
-le multi-phase vers `iterate_pixel_unified_multi_phase` (pas directs f64 +
-rebasing, SANS BLA ; dd/exp gatés single-phase). Orbite référence itérée avec
-la formule hybride (`orbit.rs` → `formula_for_params`). Verrous : `[M,M] ==
-Mandelbrot` pixel-exact — unit test (f64-std) + render-level deep-perturbation
-(`hybrid_mm_equals_mandelbrot_deep_perturbation`) — + golden
-`mandelbrot_hybrid_burningship`. **Reste (jalon 4)** : exp multi-phase
-(deep > 1e13) + BLA par phase (perf) + nucleus phase-aware + éditeur GUI.
+**Deep (jalons 3-4)** : dès que la perturbation est viable (`should_use_
+perturbation`) `select_algorithm` route l'hybride vers **Perturbation** ;
+`delta.rs::try_bytecode_unified_path` route le multi-phase (pas directs SANS BLA
++ rebasing F3, cyclant `phases[n % len]`) vers `iterate_pixel_unified_multi_
+phase` en **f64** (jalon 3, zoom ~1e13–1e280) ou `iterate_pixel_unified_exp_
+multi_phase` en **ComplexExp** (jalon 4, deep > 1e280, `wants_exp`) ; le tier
+f64/exp est choisi par pixel (`wants_exp`), le dd reste gaté single-phase.
+Orbite référence itérée avec la formule hybride (`orbit.rs` →
+`formula_for_params`). Verrous : `[M,M] == Mandelbrot` pixel-exact — unit test
+(f64-std) + render-level deep-perturbation (`hybrid_mm_equals_mandelbrot_deep_
+perturbation`, ~3e10) + deep-exp (`hybrid_mm_equals_mandelbrot_deep_exp_e1000`,
+zoom 1e1000, tier exp) — + golden `mandelbrot_hybrid_burningship`. **Reste
+(jalon 5)** : BLA par phase (perf) + nucleus phase-aware + éditeur GUI de
+séquence.
 `fractal_type` sert la convention d'appel (Mandelbrot-like : δ₀=0, dc=pixel).
 
 ### Wisdom auto-dispatch (`fractal/wisdom.rs`, 2026-07-12 · G9.1 2026-07-15)

@@ -692,14 +692,38 @@ fn try_bytecode_unified_path(
         let delta_init = delta0.to_complex64_approx();
         let dc_approx = dc.to_complex64_approx();
 
-        // ── Path f64 HYBRIDE multi-phase (G4 jalon 3) ───────────────────────
-        // Boucle multi-phase (cycle `phases[n % len]`, pas directs f64 + rebase,
-        // SANS BLA — la BLA est bâtie pour UNE phase). Deep exp/dd non couvert
-        // (gate ci-dessus) → si on arrive ici en use_exp_path, sous-débordement
-        // f64 probable ⇒ None (fallback StandardF64/GMP, le multi-phase deep = jalon 4).
+        // ── Path HYBRIDE multi-phase (G4 jalons 3-4) ────────────────────────
+        // Boucle multi-phase (cycle `phases[n % len]`, pas directs + rebase F3,
+        // SANS BLA — la BLA est bâtie pour UNE phase). Deep zoom > 1e13
+        // (`use_exp_path`) → ComplexExp (jalon 4) ; sinon f64 (jalon 3). Mêmes
+        // `c_ref`/`dc` que le path f64 (pas seed/zero) — c'est ce qui a été
+        // vérifié pixel-exact `[M,M]==[M]` en f64 ; l'exp mirror la même boucle.
         if multi_phase {
             if use_exp_path {
-                return None;
+                let bla_exp = entry.bla_exp.as_ref().map(|v| &v[0]);
+                let res_exp = iterate_pixel_unified_exp(
+                    ref_orbit,
+                    bla,
+                    bla_exp,
+                    &formula,
+                    c_ref,
+                    *dc,
+                    *delta0,
+                    params.iteration_max,
+                    params.bailout,
+                    params.max_perturb_iterations,
+                    params.max_bla_steps,
+                );
+                return Some(crate::fractal::bytecode::pixel_loop::UnifiedPixelResult {
+                    iteration: res_exp.iteration,
+                    z_final: res_exp.z_final,
+                    rebase_count: res_exp.rebase_count,
+                    bla_steps: res_exp.bla_steps,
+                    orbit: None,
+                    distance: None,
+                    is_interior: false,
+                    ref_exhausted: res_exp.ref_exhausted,
+                });
             }
             return Some(crate::fractal::bytecode::pixel_loop::iterate_pixel_unified_full(
                 ref_orbit,

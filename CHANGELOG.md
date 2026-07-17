@@ -21,16 +21,19 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
 - **G9.5 bench GPU** : `--wisdom-bench` mesure aussi la clé `gpu_perturb_f64`
   (`src/fractal/wisdom_bench.rs`) → `~/.config/fractall/wisdom.toml`, consommée par
   l'arbitrage device.
-- **G4 hybrides multi-phase (jalons 1-2)** : les fractales HYBRIDES rendent —
+- **G4 hybrides multi-phase (jalons 1-4)** : les fractales HYBRIDES rendent —
   CLI **`--phases mandelbrot,burning_ship`** (types escape-time itérés
   cycliquement). `params.hybrid_phases` + `formula_for_params` +
   `compile_hybrid_formula` (`src/fractal/bytecode/`). Rendu par le path f64
-  standard, **et en perturbation deep (jalon 3)** dans la bande f64-perturbation
-  (~zoom 1e10–1e13, `iterate_pixel_unified_multi_phase`, sans BLA). `[M,M]`
-  pixel-exact == Mandelbrot (invariants testés : f64-std + deep-perturbation),
-  `[M,BS]` = hybride genuine. `render_dispatch` renvoie `None` (GPU ne cycle
-  pas). Verrous : 2 unit/render-level tests + golden `mandelbrot_hybrid_
-  burningship`. Deep > 1e13 (exp multi-phase) = jalon 4.
+  standard, **et en perturbation deep** sur TOUT le range : f64
+  (`iterate_pixel_unified_multi_phase`, ~zoom 1e13–1e280, jalon 3) puis
+  **ComplexExp** (`iterate_pixel_unified_exp_multi_phase`, deep > 1e280,
+  jalon 4) — sans BLA, cyclant `phases[n % len]` + rebasing F3. `[M,M]`
+  pixel-exact == Mandelbrot (invariants testés : f64-std + deep-perturbation
+  3e10 + deep-exp **1e1000**), `[M,BS]` = hybride genuine. `render_dispatch`
+  renvoie `None` (GPU ne cycle pas). Verrous : 3 unit/render-level tests +
+  golden `mandelbrot_hybrid_burningship`. Reste (jalon 5) : BLA par phase +
+  nucleus phase-aware + éditeur GUI.
 
 ### Corrigé
 - **Perturbation réf-intérieure >512²** : un 2e bloc de résolution glitch récursive

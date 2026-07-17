@@ -33,11 +33,12 @@ pixel-exact + quality 15/15 PASS.
 - **GUI temps-réel (G10)** : réutilisation orbite (G10.2), recolorisation
   sans clone (G10.3), pixels XaoS colonnes/lignes (G10.4/b), file de tuiles
   priorité-centre + streaming (G10.5), warp GPU molette (G10.1, signe Y corrigé).
-- **Hybrides (G4 jalon 1-2)** : les hybrides multi-phase **RENDENT** (CLI
+- **Hybrides (G4 jalon 1-4)** : les hybrides multi-phase **RENDENT** (CLI
   `--phases mandelbrot,burning_ship`) via le path f64 standard. `hybrid_phases` +
   `formula_for_params` + `compile_hybrid_formula`. [M,M]==Mandelbrot pixel-exact.
-  Deep OK en perturbation f64 (jalon 3, ~1e10–1e13). Reste (jalon 4) : exp
-  multi-phase (>1e13) + BLA par phase + nucleus phase-aware + éditeur GUI.
+  Deep OK en perturbation sur TOUT le range : f64 (jalon 3, ~1e13–1e280) +
+  ComplexExp (jalon 4, > 1e280, vérifié `[M,M]==M` @ **1e1000**). Reste
+  (jalon 5) : BLA par phase (perf) + nucleus phase-aware + éditeur GUI.
 - **Durcissements** : gate `!bytecode_path` sur le 2e bloc glitch récursif
   (`mod.rs:1634`, supprimait ~3.4 % structure spurious à >512²) ; golden
   `mandelbrot_interior_ref_640` (seul cas >512², exerce l'escalade dd).
@@ -1414,8 +1415,19 @@ le câblage params/render, + la BLA par phase + le nucleus phase-aware + l'UI.
   cycle). **Vérifié : [M,M] @3e10 PIXEL-EXACT == Mandelbrot perturbation**
   (verrou render-level `hybrid_mm_equals_mandelbrot_deep_perturbation`, sans
   GMP externe — le GMP par-pixel ne cycle pas). Single-phase INCHANGÉ (tout
-  gaté `multi_phase`). **Reste jalon 4 : exp multi-phase (deep > 1e13) + BLA
-  par phase (perf) + nucleus phase-aware + éditeur GUI.**
+  gaté `multi_phase`).
+- [x] **✅ Jalon 4 — hybrides DEEP-EXP (ComplexExp, > 1e280) `[2026-07-17]`** :
+  `iterate_pixel_unified_exp_multi_phase` (`pixel_loop_exp.rs`) — mirror du
+  multi-phase f64 en `DeltaStateExp` (FloatExp survit à l'underflow f64 du delta),
+  SANS BLA, cyclant `phases[n % len]` + rebasing F3 en FloatExp. `iterate_pixel_
+  unified_exp` dispatche multi→ce loop (au lieu d'`assert!(phases==1)`) ;
+  `delta.rs` route le multi-phase exp (`use_exp_path`) au lieu de `return None`.
+  `select_algorithm` : gate `!wants_exp` SUPPRIMÉ — le tier f64/exp est choisi
+  par pixel dans `try_bytecode_unified_path`. **Vérifié : [M,M] @ zoom 1e1000
+  PIXEL-EXACT == Mandelbrot exp** (56 couleurs, escapes réels ; verrou render-level
+  `hybrid_mm_equals_mandelbrot_deep_exp_e1000`, garde-fou anti-tuile-uniforme).
+  Single-phase INCHANGÉ (fast path Mandelbrot exp non touché ; 269 unit + golden
+  verts). **Reste jalon 5 : BLA par phase (perf) + nucleus phase-aware + éditeur GUI.**
 - [ ] **BLA multi-phase native** : `Vec<BlaTableUnified>` (une par phase) au lieu
   d'une seule ; `iterate_pixel_unified_*` switche de BLA au changement de phase
   (F3 `engine.cc:287-295`, `bla.cc::hybrid_blas`). Tests d'invariance hybride
