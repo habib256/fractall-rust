@@ -253,6 +253,10 @@ struct TomlParams {
     zoom: String,
     iterations: Option<u32>,
     rotate: Option<f64>,
+    /// G4 jalon 5e : séquence de phases hybride, format `--phases` CLI
+    /// (`"mandelbrot,burning_ship"`). Consommé par le harness (cas de parité
+    /// hybride vs F3 natif — compare_f3.py émet les blocs `[[formula]]`).
+    phases: Option<String>,
 }
 
 fn load_toml_params(path: &std::path::Path) -> TomlParams {
@@ -309,8 +313,9 @@ fn load_toml_params(path: &std::path::Path) -> TomlParams {
     let rotate = table
         .get("rotate")
         .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
+    let phases = take_str("phases");
 
-    TomlParams { real, imag, zoom, iterations, rotate }
+    TomlParams { real, imag, zoom, iterations, rotate, phases }
 }
 
 /// `--wisdom-bench` (G9.2) : mesure les débits effectifs par technique (CPU
@@ -439,6 +444,29 @@ fn main() {
         params.span_y_hp = Some(span_y_gmp.to_string());
         params.span_x = span_x_gmp.to_f64();
         params.span_y = span_y_gmp.to_f64();
+
+        // Phases hybrides du TOML (G4 jalon 5e) — un --phases CLI explicite
+        // reste prioritaire (déjà appliqué plus haut).
+        if cli.phases.is_none() {
+            if let Some(ref spec) = t.phases {
+                let mut phases = Vec::new();
+                for name in spec.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                    match FractalType::from_hybrid_name(name) {
+                        Some(ft) => phases.push(ft),
+                        None => {
+                            eprintln!(
+                                "TOML {}: phases — type inconnu '{name}'",
+                                toml_path.display()
+                            );
+                            std::process::exit(2);
+                        }
+                    }
+                }
+                if !phases.is_empty() {
+                    params.hybrid_phases = Some(phases);
+                }
+            }
+        }
 
         if let Some(iters) = t.iterations {
             params.iteration_max = iters;

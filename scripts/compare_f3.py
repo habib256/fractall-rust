@@ -114,12 +114,15 @@ class LightToml:
     zoom: str
     iterations: int | None
     rotate: float | None
+    # G4 jalon 5e : séquence de phases hybride ("mandelbrot,burning_ship").
+    phases: str | None = None
 
 
 def parse_light_toml(path: Path) -> LightToml:
     real = imag = zoom = None
     iters = None
     rotate = None
+    phases = None
     for line in path.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -138,9 +141,11 @@ def parse_light_toml(path: Path) -> LightToml:
         elif k == "rotate":
             try: rotate = float(v)
             except ValueError: pass
+        elif k == "phases":
+            phases = v
     if real is None or imag is None or zoom is None:
         raise ValueError(f"TOML {path} sans champ real/imag/zoom")
-    return LightToml(real, imag, zoom, iters, rotate)
+    return LightToml(real, imag, zoom, iters, rotate, phases)
 
 
 def write_f3_wrapper(
@@ -176,6 +181,25 @@ def write_f3_wrapper(
     )
     if src.rotate is not None and src.rotate != 0.0:
         text += f"transform.rotate = {src.rotate}\n"
+    # G4 jalon 5e : hybrides multi-phase — un bloc [[formula]] par phase,
+    # opcodes alignés sur bytecode/compile.rs (F3 param.cc op_string).
+    if src.phases:
+        F3_OPCODES = {
+            "mandelbrot": "sqr add", "m": "sqr add", "mandel": "sqr add",
+            "burning_ship": "absx absy sqr add", "burningship": "absx absy sqr add",
+            "bs": "absx absy sqr add", "ship": "absx absy sqr add",
+            "tricorn": "negy sqr add", "mandelbar": "negy sqr add",
+            "celtic": "sqr absx add",
+            "buffalo": "sqr absx absy add",
+            "perpbs": "absy negy sqr add", "pbs": "absy negy sqr add",
+            "perpendicularburningship": "absy negy sqr add",
+        }
+        for name in src.phases.split(","):
+            key = "".join(c for c in name.strip().lower() if c.isalnum() or c == "_")
+            ops = F3_OPCODES.get(key)
+            if ops is None:
+                raise ValueError(f"phases: type inconnu pour F3: {name!r}")
+            text += f'\n[[formula]]\nopcodes = "{ops}"\n'
     f3.write_text(text)
     return f3
 

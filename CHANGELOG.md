@@ -21,6 +21,11 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
 - **G9.5 bench GPU** : `--wisdom-bench` mesure aussi la clé `gpu_perturb_f64`
   (`src/fractal/wisdom_bench.rs`) → `~/.config/fractall/wisdom.toml`, consommée par
   l'arbitrage device.
+- **G4 jalon 5e — parité hybride vs F3 natif** : light-toml `phases = "…"`
+  (loader CLI `--toml` + `compare_f3.py` → blocs `[[formula]]` F3). Cas corpus
+  `hybrid_mbs_smooth_e8` (f64-std, Δmean 0.0026) et `hybrid_mbs_smooth_e13`
+  (**perturbation multi-phase : Δ = 0.0000, pixel-identique à F3**) — le juge
+  EXTERNE du stack G4 hybride complet.
 - **G4 jalon 5c — éditeur GUI de séquence hybride** : menu Type → « Hybride
   (séquence) » (composer ➕/⌫/🗑, Appliquer ≥ 2 phases, Désactiver) ; label
   « Hybride: M⊕BS » quand actif ; drag-and-drop PNG restaure la séquence.

@@ -1493,10 +1493,23 @@ le câblage params/render, + la BLA par phase + le nucleus phase-aware + l'UI.
   grille vs GMP-cyclant 27/160 exact à 30k iters = **plancher chaos hirsute**
   (PROUVÉ hors de cause pour l'atom : résultat IDENTIQUE 27/160 avec
   `FRACTALL_ATOM_PERIOD=0`, cohérent avec la croissance chaos 4→85 % entre
-  300 et 2000 iters mesurée à 3e10). **Reste (jalon 5e+)** : nucleus
-  phase-aware (période/centre/size par phase, `engine.cc:118-218`) + cas
-  harness hybrides (parité vs F3 native) + fast-path Mandelbrot inline
-  multi-phase.
+  300 et 2000 iters mesurée à 3e10).
+- [x] **✅ Jalon 5e — parité hybride vs F3 NATIF (juge externe) `[2026-07-17]`** :
+  le format light-toml porte `phases = "mandelbrot,burning_ship"` (loader
+  `main.rs::load_toml_params`, CLI `--phases` prioritaire ; `compare_f3.py`
+  émet les blocs `[[formula]]\nopcodes = "…"` F3 par phase, mapping aligné
+  `bytecode/compile.rs` ↔ `param.cc op_string`). Cas corpus (frontières LISSES
+  — les zones speckle du set hybride BS-famille sont à sensibilité extrême,
+  ~55 % de désaccord inside cross-engine par chaos, STRUCTURE macro identique,
+  même classe que G3) : `hybrid_mbs_smooth_e8` (f64-std, Δmean 0.0026 = fraction
+  NF, inside_mismatch 0) et **`hybrid_mbs_smooth_e13` (PERTURBATION multi-phase,
+  pixel 3.4e-15 : Δmean = Δmax = 0.0000, inside 0 — PIXEL-IDENTIQUE à F3)**.
+  Le stack G4 entier (réfs par phase + BLA cyclée + rebasing + atom mat2) a son
+  juge externe. Coordonnées par zoom-hunt smoothness-guided (voisinage 5×5 le
+  moins varié). Les cas rejoignent le corpus full automatiquement (tier quick =
+  liste fixe, inchangée). **Reste (jalon 5f+)** : nucleus phase-aware
+  (période/centre/size par phase, `engine.cc:118-218`) + fast-path Mandelbrot
+  inline multi-phase.
 - [x] **✅ Jalon 4 — hybrides DEEP-EXP (ComplexExp, > 1e280) `[2026-07-17]`** :
   `iterate_pixel_unified_exp_multi_phase` (`pixel_loop_exp.rs`) — mirror du
   multi-phase f64 en `DeltaStateExp` (FloatExp survit à l'underflow f64 du delta),

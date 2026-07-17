@@ -1,0 +1,10 @@
+# G4 jalon 5e — hybride genuine [Mandelbrot, BurningShip], zoom 2e8, zone LISSE
+# (gradient d'échappement sans bord hirsute — les frontières speckle du set
+# hybride BS-famille sont à sensibilité de précision extrême, non comparables
+# cross-engine, cf. G3). Valide la SÉMANTIQUE de formule + le comptage
+# d'itérations vs F3 natif ([[formula]] opcodes).
+real = "-0.474404908721344"
+imag = "-0.6327381895546773"
+zoom = "2e8"
+iterations = 2000
+phases = "mandelbrot,burning_ship"

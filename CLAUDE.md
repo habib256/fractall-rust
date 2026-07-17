@@ -337,8 +337,13 @@ troncature des réfs hybrides via `J' = A_i·J + I` (Jacobiens dual-numbers,
 B = I car Add terminal), J en FloatExp, critère `|adj(J)·Z|² < r²·det(J)²`
 (≡ critère complexe pour J conforme — [M,M] tronque au MÊME index que [M] ⟹
 **[M,M] e50 == [M] à 0 px**, verrou `hybrid_mm_equals_mandelbrot_deep_f64_
-e50`). Perf e50 : 0.50 → 0.38 s. **Reste (jalon 5e+)** : nucleus phase-aware +
-cas harness hybrides + fast-path inline multi-phase.
+e50`). Perf e50 : 0.50 → 0.38 s. **Jalon 5e — parité vs F3 NATIF** : light-toml
+`phases = "…"` (loader CLI + `compare_f3.py` → blocs `[[formula]]` F3) ; cas
+corpus `hybrid_mbs_smooth_e8` (f64-std, Δmean 0.0026) et `hybrid_mbs_smooth_
+e13` (**perturbation multi-phase : Δ = 0.0000 PIXEL-IDENTIQUE à F3**) — juge
+externe du stack G4. ⚠️ Les zones speckle hybrides BS-famille sont
+non-comparables cross-engine (chaos, structure macro identique — classe G3).
+**Reste (jalon 5f+)** : nucleus phase-aware + fast-path inline multi-phase.
 `fractal_type` sert la convention d'appel (Mandelbrot-like : δ₀=0, dc=pixel).
 
 ### Wisdom auto-dispatch (`fractal/wisdom.rs`, 2026-07-12 · G9.1 2026-07-15)

@@ -1,0 +1,9 @@
+# G4 jalon 5e — hybride genuine [Mandelbrot, BurningShip], zoom 9.3e12,
+# frontière LISSE (hunt smoothness-guided) — path PERTURBATION multi-phase
+# chez fractall (réfs par phase + BLA cyclée + rebasing F3, pixel 3.4e-15).
+# Juge la position exacte de la frontière vs F3 natif.
+real = "-0.474404914780100630144032921810699588477366255144032921810700"
+imag = "-0.632738206821761938443072702331961591220850480109739368998629"
+zoom = "9.3e12"
+iterations = 6000
+phases = "mandelbrot,burning_ship"
