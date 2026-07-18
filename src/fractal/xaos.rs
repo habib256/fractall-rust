@@ -220,6 +220,7 @@ pub fn params_allow_pixel_reuse(params: &FractalParams) -> bool {
         && !params.find_nucleus
         && !needs_extra_data
         && params.aa_subpixel_offset == [0.0, 0.0]
+        && params.aa_jitter.is_none()
 }
 
 /// Coordonnées de vue effectives (strings HP si présentes, sinon f64 formaté

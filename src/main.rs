@@ -14,7 +14,6 @@ mod gpu;
 use fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalType, LyapunovPreset, OutColoringMode, PlaneTransform};
 use render::render_escape_time;
 use io::png::{colorize_to_rgb, save_png_rgb_with_metadata, save_png_with_metadata};
-use fractal::jitter::sample_offset;
 use io::exr::save_iterations_exr;
 use gpu::GpuRenderer;
 
@@ -888,11 +887,13 @@ fn main() {
                 *a += c as f64;
             }
         };
-        accumulate(&mut accum, &colorize_to_rgb(&params, &iterations, &zs));
-        for k in 1..aa_samples as u64 {
-            let (ox, oy) = sample_offset(k);
+        // Décorrélation Cranley-Patterson F3 par pixel (`jitter::pixel_offset`) :
+        // chaque sample (y compris k=0) est jitteré par pixel → pas de motif AA
+        // corrélé à bas N. Tous les samples sont re-rendus (k=0 n'est plus le
+        // centre exact ; le rendu de base ci-dessus n'est réutilisé qu'à N=1).
+        for k in 0..aa_samples as u64 {
             let mut p = params.clone();
-            p.aa_subpixel_offset = [ox * aa_jitter_scale, oy * aa_jitter_scale];
+            p.aa_jitter = Some((k, aa_jitter_scale));
             let (it, zz) = render_escape_time(&p);
             accumulate(&mut accum, &colorize_to_rgb(&p, &it, &zz));
             println!("[AA] sample {}/{}", k + 1, aa_samples);

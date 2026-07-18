@@ -1485,8 +1485,10 @@ impl FractallApp {
                     let mut p = params.clone();
                     p.width = w;
                     p.height = h;
-                    let (ox, oy) = crate::fractal::jitter::sample_offset(k);
-                    p.aa_subpixel_offset = [ox * aa_jitter_scale, oy * aa_jitter_scale];
+                    // Décorrélation Cranley-Patterson F3 par pixel (bas N sans
+                    // aliasing corrélé). La boucle rend déjà tous les samples
+                    // k=0..N (aucun réemploi de base à casser).
+                    p.aa_jitter = Some((k, aa_jitter_scale));
 
                     // Même dispatcher unifié que le CLI (cache d'orbite réutilisé
                     // entre samples, même centre).

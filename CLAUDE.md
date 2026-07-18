@@ -74,7 +74,7 @@ src/
 │   ├── types.rs         # FractalType, FractalParams, AlgorithmMode, …
 │   ├── definitions.rs   # constantes par type + LyapunovPreset
 │   ├── iterations.rs    # escape-time f64 + dispatch bytecode unifié
-│   ├── jitter.rs        # AA per-frame : radical_inverse + triangle (port F3)
+│   ├── jitter.rs        # AA : radical_inverse + triangle + burtle_hash décorr. par pixel (port F3)
 │   ├── xaos.rs          # G10.4 réutilisation pixels inter-frame (XaoS)
 │   ├── gmp.rs           # précision arbitraire (rug / mpc)
 │   ├── lyapunov.rs      # Lyapunov exponent
@@ -451,7 +451,8 @@ que la réutilisation GUI multi-frame ; les rendus single-shot (CLI/quality/harn
 | `use_dd_tier` | tier double-double ~106b Mandelbrot deep (float128-like, sans BLA) | false |
 | `find_nucleus` | nucleus Mandelbrot avant orbit | false |
 | `jitter_scale` | amplitude AA sous-pixel (px) | 0.0 |
-| `aa_subpixel_offset` | offset AA transitoire (`#[serde(skip)]`, posé par la boucle multi-sample) | `[0,0]` |
+| `aa_subpixel_offset` | offset AA uniforme transitoire legacy (`#[serde(skip)]`) | `[0,0]` |
+| `aa_jitter` | sample AA par pixel `Some((k,scale))` (`#[serde(skip)]`, décorr. Cranley-Patterson F3, prioritaire) | `None` |
 | `rotation` | degrés CCW, mat2(cos,-sin,sin,cos) | 0.0 |
 
 ⚠️ **`max_perturb_iterations` / `max_bla_steps` : clampés à `≥ iteration_max`**
@@ -470,14 +471,22 @@ d'évasion particulière (Newton, Magnet, Sin, Nova, Pickover, densité, vectori
 AlphaMandelbrot) gardent leur propre bailout (souvent 4). Configurable par
 pixel via `--bailout`/PNG.
 
-**Anti-aliasing multi-sample** (`fractal/jitter.rs`) : chaque sample décale la
-grille d'un offset sous-pixel low-discrepancy (Halton `radical_inverse` + tente
-`triangle`, port F3 `hybrid.h`) posé dans `aa_subpixel_offset`, appliqué au
-mapping pixel→c des 4 paths (f64/GMP/perturbation + cancellables) ; les rendus
-colorisés sont moyennés en RGB. CLI `--aa-samples N`/`--jitter-scale` (boucle
-dans `main.rs` via `io::png::colorize_to_rgb` + `save_png_rgb_with_metadata`) ;
-GUI : dropdown **AA** (accumulation après les passes, `RenderMessage::AaProgress`).
-CPU uniquement.
+**Anti-aliasing multi-sample** (`fractal/jitter.rs`) : chaque sample jitère le
+mapping pixel→c d'un offset sous-pixel low-discrepancy (Halton `radical_inverse`
++ tente `triangle`, port F3 `hybrid.h`), moyenne des rendus colorisés en RGB.
+**Décorrélation Cranley-Patterson PAR PIXEL** (`jitter::pixel_offset`, port fidèle
+F3 `jitter` `hybrid.h:62`) : chaque pixel reçoit une rotation
+`h = burtle_hash(j·w+i)/2³²` ajoutée à la valeur de Halton avant la tente → les
+pixels voisins tirent des sous-positions **décorrélées** (dithering), supprimant
+l'aliasing corrélé du schéma per-frame uniforme à **bas N**. Porté par le champ
+transitoire `aa_jitter: Option<(k, scale)>` (prioritaire sur `aa_subpixel_offset`
+uniforme legacy), appliqué au mapping des paths CPU (f64/GMP/perturbation
+f64/exp/dd). ⚠️ Gaté `aa_jit.is_some()` → **hors AA bit-identique** (goldens
+pixel-exact). Le sample `k=0` est aussi jitteré (fidèle F3), et le point
+dégénéré `v=0.5` de `triangle` n'est plus jamais atteint. CLI
+`--aa-samples N`/`--jitter-scale` (boucle dans `main.rs` via
+`io::png::colorize_to_rgb` + `save_png_rgb_with_metadata`) ; GUI : dropdown **AA**
+(accumulation après les passes, `RenderMessage::AaProgress`). CPU uniquement.
 
 ## Couleur
 

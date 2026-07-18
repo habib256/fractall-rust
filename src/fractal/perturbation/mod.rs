@@ -1165,6 +1165,16 @@ pub fn render_perturbation_with_cache(
     // précalcul dc ci-dessous (la moyenne des frames colorés est faite par
     // l'appelant, CLI/GUI). Remplace l'ancien jitter per-pixel non-moyenné.
     let [aa_dx, aa_dy] = params.aa_subpixel_offset;
+    // AA **par pixel** (Cranley-Patterson F3, `jitter::pixel_offset`) :
+    // prioritaire sur l'offset uniforme. Quand actif, `aa_dx/aa_dy` valent 0
+    // (le précalcul dc reste la base non-jitterée) et la boucle ajoute l'offset
+    // décorrélé du pixel `jx·(span/width)`, `jy·(span/height)` en c-space avant
+    // rotation. `None` hors AA → aucun surcoût (branche non prise).
+    let aa_jit = params.aa_jitter;
+    let img_w = params.width as usize;
+    // Échelles pixel→c en FloatExp (survivent l'underflow deep zoom).
+    let jit_re_fexp = x_range_fexp * inv_width;
+    let jit_im_fexp = y_range_fexp * inv_height;
 
     // Pré-calcul dc pour amortir le coût par pixel (surtout utile sur petites images).
     // Stocker directement en FloatExp pour éviter les conversions via Complex64.
@@ -1211,9 +1221,12 @@ pub fn render_perturbation_with_cache(
     let build_dc_dd = params.use_dd_tier
         && matches!(params.fractal_type, FractalType::Mandelbrot)
         && rot.is_none();
-    let (dc_re_dd, dc_im_dd): (
+    #[allow(clippy::type_complexity)]
+    let (dc_re_dd, dc_im_dd, jit_re_dd, jit_im_dd): (
         Vec<crate::fractal::perturbation::dd::DoubleDoubleExp>,
         Vec<crate::fractal::perturbation::dd::DoubleDoubleExp>,
+        crate::fractal::perturbation::dd::DoubleDoubleExp,
+        crate::fractal::perturbation::dd::DoubleDoubleExp,
     ) = if build_dc_dd {
         use crate::fractal::perturbation::dd::DoubleDoubleExp as DdE;
         let (x_range_dd, y_range_dd) = effective_spans_dd(params);
@@ -1232,9 +1245,11 @@ pub fn render_perturbation_with_cache(
                 y_range_dd.mul(frac)
             })
             .collect();
-        (re, im)
+        // Échelle pixel→c en dd pour l'AA par pixel (jx·span/width).
+        (re, im, x_range_dd.div(width_dd), y_range_dd.div(height_dd))
     } else {
-        (Vec::new(), Vec::new())
+        use crate::fractal::perturbation::dd::DoubleDoubleExp as DdE;
+        (Vec::new(), Vec::new(), DdE::from_f64(0.0), DdE::from_f64(0.0))
     };
 
     // Pré-construit la table BLA partagée pendant que le pool rayon est libre :
@@ -1327,12 +1342,27 @@ pub fn render_perturbation_with_cache(
                         }
                     }
 
-                    // dc précalculé (inclut l'offset sous-pixel AA per-frame
-                    // `params.aa_subpixel_offset`, replié dans le précalcul plus haut).
-                    let dc = ComplexExp {
+                    // AA par pixel (Cranley-Patterson F3) : offset décorrélé du
+                    // pixel, en unités de pixel. `(0,0)` hors AA per-pixel.
+                    let (jx, jy) = match aa_jit {
+                        Some((k, scale)) => {
+                            crate::fractal::jitter::pixel_offset(img_w, i, j, k, scale)
+                        }
+                        None => (0.0, 0.0),
+                    };
+
+                    // dc précalculé (base séparable non-jitterée). L'offset AA
+                    // par pixel (converti en c-space via l'échelle pixel→c) n'est
+                    // ajouté QUE si l'AA per-pixel est actif → hors AA, `dc` est
+                    // l'expression d'origine bit-identique (goldens verrouillés).
+                    let mut dc = ComplexExp {
                         re: dc_re_fexp[i],
                         im: dc_im,
                     };
+                    if aa_jit.is_some() {
+                        dc.re = dc.re + jit_re_fexp * jx;
+                        dc.im = dc.im + jit_im_fexp * jy;
+                    }
 
                     // Rotation : dc' = K * dc (aligné F3 hybrid.cc:265).
                     // Cas dominant rot=None : no-op. Sinon, mélange re/im en restant
@@ -1363,10 +1393,15 @@ pub fn render_perturbation_with_cache(
                     // Tier dd : `dc` du pixel en ~106 b (Mandelbrot, précompute plus
                     // haut). `None` → le dispatch retombe sur le dc ComplexExp 53 b.
                     let dc_dd = if build_dc_dd {
-                        Some(crate::fractal::perturbation::dd::ComplexDDExp {
-                            re: dc_re_dd[i],
-                            im: dc_im_dd[j],
-                        })
+                        use crate::fractal::perturbation::dd::DoubleDoubleExp as DdE;
+                        let (mut re, mut im) = (dc_re_dd[i], dc_im_dd[j]);
+                        // AA par pixel en dd : ajoute jx·(span/width), jy·(span/height).
+                        // Gaté sur l'AA per-pixel → dd non-AA bit-identique.
+                        if aa_jit.is_some() {
+                            re = re.add(jit_re_dd.mul(DdE::from_f64(jx)));
+                            im = im.add(jit_im_dd.mul(DdE::from_f64(jy)));
+                        }
+                        Some(crate::fractal::perturbation::dd::ComplexDDExp { re, im })
                     } else {
                         None
                     };

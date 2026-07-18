@@ -382,6 +382,10 @@ fn render_escape_time_f64_cancellable_with_reuse(
     let rot = params.transform_matrix();
     // Offset sous-pixel AA per-frame (unités de pixel, [0,0] hors AA).
     let [aa_dx, aa_dy] = params.aa_subpixel_offset;
+    // AA par pixel (Cranley-Patterson F3) : prioritaire sur l'offset uniforme.
+    // `None` hors AA → branche bit-identique. Largeur globale pour le hash pixel.
+    let aa_jit = params.aa_jitter;
+    let img_w = params.width as usize;
 
     // G10.5 : file de tuiles priorité-centre (curseur en GUI). Les buffers
     // sont découpés en segments disjoints par tuile ; l'ordre d'exécution ne
@@ -439,8 +443,17 @@ fn render_escape_time_f64_cancellable_with_reuse(
                         }
                     }
                 }
-                let x_ratio = (i as f64 + 0.5 + aa_dx) / params.width as f64;
-                let dx = (x_ratio - 0.5) * params.span_x;
+                // AA par pixel : recompute dx ET dy avec l'offset décorrélé du
+                // pixel (jy dépend de i aussi → ne peut être sorti de la boucle).
+                let (dx, dy) = if let Some((k, scale)) = aa_jit {
+                    let (jx, jy) = crate::fractal::jitter::pixel_offset(img_w, i, j, k, scale);
+                    let xr = (i as f64 + 0.5 + jx) / params.width as f64;
+                    let yr = (j as f64 + 0.5 + jy) / params.height as f64;
+                    ((xr - 0.5) * params.span_x, (yr - 0.5) * params.span_y)
+                } else {
+                    let x_ratio = (i as f64 + 0.5 + aa_dx) / params.width as f64;
+                    ((x_ratio - 0.5) * params.span_x, dy)
+                };
                 let (dx_r, dy_r) = match rot {
                     Some((a, b, c, d)) => (a * dx + b * dy, c * dx + d * dy),
                     None => (dx, dy),
@@ -573,6 +586,9 @@ fn render_escape_time_gmp_cancellable_with_reuse(
     let rot = params.transform_matrix();
     // Offset sous-pixel AA per-frame (unités de pixel, [0,0] hors AA).
     let [aa_dx, aa_dy] = params.aa_subpixel_offset;
+    // AA par pixel (Cranley-Patterson F3) : prioritaire sur l'offset uniforme.
+    let aa_jit = params.aa_jitter;
+    let img_w = params.width as usize;
 
     // G10.5 : file de tuiles priorité-centre. Les pixels GMP sont lourds
     // (100 µs–ms) → poll d'annulation par ligne de tuile en plus du poll par
@@ -637,9 +653,28 @@ fn render_escape_time_gmp_cancellable_with_reuse(
                 }
                 let mut i_f = Float::with_val(prec, i as u32);
                 i_f += &half;
-                if aa_dx != 0.0 {
-                    i_f += aa_dx;
-                }
+                // AA par pixel : jx sur i_f, dy recomputé (jy dépend de i aussi).
+                // Hors AA per-pixel, `dy_ref` = le `dy` de la boucle externe →
+                // arithmétique GMP bit-identique.
+                let dy_pp;
+                let dy_ref: &Float = if let Some((k, scale)) = aa_jit {
+                    let (jx, jy) = crate::fractal::jitter::pixel_offset(img_w, i, j, k, scale);
+                    i_f += jx;
+                    let mut jf = Float::with_val(prec, j as u32);
+                    jf += &half;
+                    jf += jy;
+                    jf /= &height_f;
+                    jf -= &half;
+                    let mut d = span_y.clone();
+                    d *= &jf;
+                    dy_pp = d;
+                    &dy_pp
+                } else {
+                    if aa_dx != 0.0 {
+                        i_f += aa_dx;
+                    }
+                    &dy
+                };
                 let mut x_ratio = i_f;
                 x_ratio /= &width_f;
                 x_ratio -= &half;
@@ -647,8 +682,8 @@ fn render_escape_time_gmp_cancellable_with_reuse(
                 dx *= &x_ratio;
                 let (xg, yg) = match rot {
                     Some((a, b, c, d)) => {
-                        let dx_r = Float::with_val(prec, &dx * a) + Float::with_val(prec, &dy * b);
-                        let dy_r = Float::with_val(prec, &dx * c) + Float::with_val(prec, &dy * d);
+                        let dx_r = Float::with_val(prec, &dx * a) + Float::with_val(prec, dy_ref * b);
+                        let dy_r = Float::with_val(prec, &dx * c) + Float::with_val(prec, dy_ref * d);
                         (
                             Float::with_val(prec, &dx_r + &center_x),
                             Float::with_val(prec, &dy_r + &center_y),
@@ -656,7 +691,7 @@ fn render_escape_time_gmp_cancellable_with_reuse(
                     }
                     None => (
                         Float::with_val(prec, &dx + &center_x),
-                        Float::with_val(prec, &dy + &center_y),
+                        Float::with_val(prec, dy_ref + &center_y),
                     ),
                 };
                 // IMPORTANT: Utiliser la version GMP de plane_transform pour éviter la perte de précision
@@ -734,6 +769,48 @@ mod tests {
             assert_eq!(base.0, r.0, "iterations divergent (priorité {prio:?})");
             assert_eq!(base.1, r.1, "zs divergent (priorité {prio:?})");
         }
+    }
+
+    /// G6 — AA par pixel (Cranley-Patterson F3) : l'offset `aa_jitter` traverse
+    /// bien le mapping pixel→c du path de rendu, est déterministe, décale
+    /// réellement l'échantillonnage (≠ rendu non-jitteré), et VARIE par pixel
+    /// (≠ un simple offset uniforme de grille — la signature de la décorrélation
+    /// spatiale). Verrou du câblage render-level ; le math est verrouillé dans
+    /// `fractal::jitter`.
+    #[test]
+    fn aa_jitter_flows_through_and_is_deterministic() {
+        let mut base_p = small_mandelbrot(80, 64);
+        base_p.aa_jitter = None;
+        let base = render_with_tiles(&base_p, None);
+
+        // Déterministe : même sample rendu deux fois → bit-identique.
+        let mut p = base_p.clone();
+        p.aa_jitter = Some((1, 1.0));
+        let a = render_with_tiles(&p, None);
+        let a2 = render_with_tiles(&p, None);
+        assert_eq!(a.0, a2.0, "AA par pixel non déterministe (iterations)");
+        assert_eq!(a.1, a2.1, "AA par pixel non déterministe (zs)");
+
+        // L'offset décale l'échantillonnage → diffère du rendu non-jitteré.
+        assert_ne!(base.0, a.0, "aa_jitter n'a rien décalé (offset ignoré ?)");
+
+        // Décorrélation spatiale : un offset UNIFORME de grille (aa_subpixel_offset)
+        // décalerait tous les pixels du même vecteur ; la version par pixel produit
+        // un motif différent d'un décalage uniforme équivalent.
+        let mut u = base_p.clone();
+        let (ux, uy) = crate::fractal::jitter::pixel_offset(80, 40, 32, 1, 1.0);
+        u.aa_subpixel_offset = [ux, uy];
+        let uniform = render_with_tiles(&u, None);
+        assert_ne!(
+            uniform.0, a.0,
+            "AA par pixel identique à un offset uniforme (décorrélation absente ?)"
+        );
+
+        // Deux samples différents → motifs différents (k traverse Halton).
+        let mut p2 = base_p.clone();
+        p2.aa_jitter = Some((2, 1.0));
+        let b = render_with_tiles(&p2, None);
+        assert_ne!(a.0, b.0, "samples k=1 et k=2 identiques (k ignoré ?)");
     }
 
     /// G10.5 : le sink reçoit chaque pixel exactement une fois, avec les mêmes

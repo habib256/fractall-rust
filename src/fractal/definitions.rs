@@ -67,6 +67,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         orbit_trap_type: OrbitTrapType::Point,
         jitter_scale: 0.0,
         aa_subpixel_offset: [0.0, 0.0],
+        aa_jitter: None,
         // Activé par défaut depuis P3.1 Session E : path bytecode unifié
         // (BLA mat2 + delta-form + rebasing F3) remplace le path legacy
         // (glitch detection Pauldelbrot + secondary refs) quand applicable.

@@ -1674,8 +1674,25 @@ le câblage params/render, + la BLA par phase + le nucleus phase-aware + l'UI.
   update légitime.
 - [ ] **Vérifier visuellement la GUI AA** (env de dev headless ici → non testé
   à l'écran ; la logique compile et le CLI est vérifié).
-- [ ] **AA polish** : per-pixel decorrelation (`burtle_hash`, utile à bas N) ;
-  exposer `--jitter-scale` dans la GUI ; AA sur le path GPU.
+- [x] **✅ AA per-pixel decorrelation (`burtle_hash`, 2026-07-18)** — port fidèle
+  de F3 `jitter` (`hybrid.h:62`) : chaque pixel reçoit une rotation
+  Cranley-Patterson `h = burtle_hash(j·w+i)/2³²` ajoutée à la valeur de Halton
+  avant le filtre tente (`jitter::pixel_offset`). Le schéma per-frame uniforme
+  faisait échantillonner TOUS les pixels aux MÊMES sous-positions → aliasing
+  corrélé (motif visible, pas un dithering) à **bas N** ; la variante par pixel
+  décorrèle spatialement les samples. Câblé sur les 3 paths CPU (f64-std, GMP,
+  perturbation f64/exp/dd) via le champ transitoire `aa_jitter: Option<(k,scale)>`
+  (prioritaire sur `aa_subpixel_offset` uniforme). Le sample `k=0` est aussi
+  jitteré (fidèle F3) et le point dégénéré `v=0.5` de `triangle` n'est plus jamais
+  atteint (la rotation le décale). ⚠️ **Non-AA bit-identique** : le terme jitter
+  est gaté `aa_jit.is_some()` sur tous les paths → goldens pixel-exact + quality
+  seahorse max_diff=0 inchangés. Verrous : `jitter::{burtle_hash bit-exact vs F3,
+  pixel_offset décorrélation + tente centrée}` (4 tests) + render-level
+  `aa_jitter_flows_through_and_is_deterministic` (déterminisme + ≠ non-jitteré +
+  ≠ offset uniforme + k traverse Halton). Vérifié e2e : f64 (zoom 200,
+  584→5694 couleurs), perturbation e13 (578→5752), dd e13 (sans crash).
+- [ ] **AA polish restant** : exposer `--jitter-scale` dans la GUI ; AA sur le
+  path GPU.
 
 ### G7 — I/O & interop · `[P2]`
 

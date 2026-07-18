@@ -962,6 +962,17 @@ pub struct FractalParams {
     #[serde(skip)]
     pub aa_subpixel_offset: [f64; 2],
 
+    /// Sample AA **par pixel** (transitoire) : `Some((k, scale))` active la
+    /// décorrélation Cranley-Patterson F3 (`fractal::jitter::pixel_offset`) pour
+    /// le sample `k`, chaque pixel recevant sa propre rotation de la séquence de
+    /// Halton (échelle `scale` en pixels). Prioritaire sur `aa_subpixel_offset`
+    /// (offset uniforme legacy) : quand `Some`, les paths de rendu ajoutent
+    /// l'offset PAR PIXEL au mapping pixel→c. `None` hors AA (tous les rendus
+    /// single-shot : CLI, goldens, quality, harness) → chemin bit-identique.
+    /// `#[serde(skip)]` : état de rendu, jamais dans les PNG.
+    #[serde(skip)]
+    pub aa_jitter: Option<(u64, f64)>,
+
     /// Active le moteur d'itération bytecode hybride (Fraktaler-3 style).
     /// Activé par défaut depuis P3.1 Session E. Path unifié BLA mat2 +
     /// delta-form + rebasing F3 pour les types escape-time supportés
