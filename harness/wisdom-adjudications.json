@@ -1,0 +1,12 @@
+{
+ "e50": {
+  "verdict": "wisdom_correct",
+  "routed_path": "bytecode_f64",
+  "faster_alt": "lla",
+  "period0": 112,
+  "reason": "Harmonic LLA est ~1.9x plus rapide que la BLA f64 mais FAUSSE vs GMP pur (div_ratio=0.036, p99_iter_diff=53, max=418). La BLA f64 (choix du wisdom) est correcte (WARN, p99=0, quelques px de bord disperses; le preset quality force dd pour pixel-exact, dd=opt-in). period0=112 > seuil HARMONIC_AUTO_PERIOD0_MAX=100 => route_harmonic_auto(112)=false => auto n'active PAS harmonic. Le seuil est ancre sur la CORRECTION, pas la vitesse: ne PAS le relever pour ce ratio. Verrou test: fractal::wisdom::tests::route_harmonic_auto_calibrated_thresholds (assert !route_harmonic_auto(112)).",
+  "adjudicated_utc": "2026-07-18T00:00:00+00:00",
+  "at_commit": "cf11b59",
+  "method": "fractall-quality compare --zoom 1e50 96x96 vs GMP pur, forced FRACTALL_HARMONIC_LA=lla|bla"
+ }
+}

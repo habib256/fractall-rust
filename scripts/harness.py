@@ -46,6 +46,13 @@ BASELINE = HARNESS_DIR / "baseline.json"
 SCORECARD = REPO / "SCORECARD.md"
 BENCH = REPO / "bench" / "harness"
 ADJUDICATIONS = HARNESS_DIR / "adjudications.json"
+# Adjudications persistées de l'axe wisdom-optimality : case → tradeoff
+# correction déjà tranché vs GMP (l'alternative rapide rend une AUTRE image mais
+# FAUSSE, le wisdom a raison de router le plus lent-mais-correct). Évite de
+# re-litiger le MÊME ADJUDICATE à chaque run — tant que le RÉGIME (routed_path +
+# output_differs) est inchangé. Un changement de régime ré-escalade (le verdict
+# ADJUDICATE brut est conservé, seul le tag change).
+WISDOM_ADJUDICATIONS = HARNESS_DIR / "wisdom-adjudications.json"
 
 # Seed de l'axe fuzz (sondes aléatoires DÉTERMINISTES pert-vs-GMP, cf.
 # scripts/fuzz_scenes.py). Committée ici → chaque score rejoue les MÊMES
@@ -959,6 +966,20 @@ def load_adjudications() -> dict:
             return {}
     return {}
 
+def load_wisdom_adjudications() -> dict:
+    """Tradeoffs correction déjà tranchés de l'axe wisdom-optimality : case →
+    {routed_path, faster_alt, reason, ...}. Consommés par cmd_wisdom_opt pour
+    marquer un ADJUDICATE connu « déjà-adjugé✓ » (le wisdom route le path
+    lent-mais-CORRECT ; l'alternative rapide est fausse vs GMP). Le verdict brut
+    reste ADJUDICATE ; seul le régime (routed_path + output_differs) est comparé
+    à l'enregistrement — un changement ré-escalade en `⚠ RÉGIME CHANGÉ`."""
+    if WISDOM_ADJUDICATIONS.exists():
+        try:
+            return json.loads(WISDOM_ADJUDICATIONS.read_text())
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
 def _gap(axis, case, metric, value, baseline_value, severity, note):
     return {"axis": axis, "case": case, "metric": metric, "value": value,
             "baseline_value": baseline_value, "severity": severity,
@@ -1708,6 +1729,7 @@ def cmd_wisdom_opt(args) -> None:
     height = args.size or 256
     runs = args.runs or 3
     warn_r, fail_r = 1.10, 1.25
+    wisdom_adj = load_wisdom_adjudications()  # tradeoffs correction déjà tranchés
     base_env = os.environ.copy()
     base_env["FRACTALL_NO_AUTO_ADJUST"] = "1"
     base_env["FRACTALL_NO_PERIOD"] = "1"   # aligné prod + axe vitesse (Brent OFF)
@@ -1770,17 +1792,32 @@ def cmd_wisdom_opt(args) -> None:
             verdict = "ADJUDICATE"
         else:
             verdict = "WARN" if ratio <= fail_r else "FAIL"
+        # Adjudication persistée : un ADJUDICATE connu (wisdom route le path
+        # lent-mais-CORRECT, l'alternative rapide est fausse vs GMP) est marqué
+        # « déjà-adjugé✓ » tant que le RÉGIME est stable — pas de re-litige. Le
+        # verdict brut reste ADJUDICATE (aucune sémantique de comptage touchée) ;
+        # un changement de routed_path OU la disparition de output_differs =
+        # `⚠ RÉGIME CHANGÉ` (l'adjudication ne tient peut-être plus → ré-adjuger).
+        adj = wisdom_adj.get(name) if verdict == "ADJUDICATE" else None
+        adj_status = None
+        if adj is not None:
+            regime_ok = (adj.get("routed_path") == routed and differs is True)
+            adj_status = "known" if regime_ok else "regime_changed"
         n_pass += verdict == "PASS"
         n_warn += verdict == "WARN"
         n_fail += verdict == "FAIL"
         n_adj += verdict == "ADJUDICATE"
         rows.append({"case": name, "status": "ok", "verdict": verdict,
                      "ratio_chosen_vs_best": round(ratio, 3), "noisy": noisy,
-                     "output_differs": differs,
+                     "output_differs": differs, "adj_status": adj_status,
                      "chosen_s": round(chosen, 4), "best_alt": best_var,
                      "best_alt_s": round(best_alt, 4),
                      "routed_path": routed, "times": times})
         tag = " noisy" if noisy else " sortie≠" if differs else ""
+        if adj_status == "known":
+            tag = " déjà-adjugé✓"
+        elif adj_status == "regime_changed":
+            tag = " ⚠ RÉGIME CHANGÉ"
         print(f"[{verdict}{tag}] auto={chosen*1000:.0f}ms routed={routed} "
               f"vs best({best_var})={best_alt*1000:.0f}ms ratio={ratio:.2f}")
 
@@ -1810,19 +1847,34 @@ def cmd_wisdom_opt(args) -> None:
             L.append(f"| {r['case']} | {r['status']} | — | — | — | — | — |")
             continue
         d = {True: "oui", False: "non", None: "?"}[r.get("output_differs")]
-        L.append(f"| {r['case']} | {r['verdict']} | {r['routed_path']} | "
+        vcell = r["verdict"]
+        if r.get("adj_status") == "known":
+            vcell += " (déjà-adjugé✓)"
+        elif r.get("adj_status") == "regime_changed":
+            vcell += " (⚠ RÉGIME CHANGÉ)"
+        L.append(f"| {r['case']} | {vcell} | {r['routed_path']} | "
                  f"{r['ratio_chosen_vs_best']} | {r['chosen_s']*1000:.0f} | "
                  f"{r['best_alt']} {r['best_alt_s']*1000:.0f}ms | {d} |")
     (out / "wisdom-opt.md").write_text("\n".join(L) + "\n")
     print(f"\n✓ rapport : {(out / 'wisdom-opt.md').relative_to(REPO)}")
     print(f"→ **{n_pass} PASS · {n_warn} WARN · {n_fail} FAIL · "
           f"{n_adj} ADJUDICATE**")
+    n_adj_known = sum(r.get("adj_status") == "known" for r in rows)
+    n_adj_changed = sum(r.get("adj_status") == "regime_changed" for r in rows)
+    n_adj_fresh = n_adj - n_adj_known - n_adj_changed
     if n_fail:
         print("⚠ wisdom SUB-OPTIMAL (plus lent à sortie IDENTIQUE) — seuil "
               "routage à recalibrer, voir le rapport.")
-    if n_adj:
-        print("• ADJUDICATE : alternative plus rapide mais sortie ≠ — vérifier "
-              "correction vs GMP avant toute recalibration.")
+    if n_adj_fresh:
+        print(f"• ADJUDICATE (×{n_adj_fresh} NOUVEAU) : alternative plus rapide "
+              "mais sortie ≠ — vérifier correction vs GMP, puis persister dans "
+              "harness/wisdom-adjudications.json.")
+    if n_adj_known:
+        print(f"• ADJUDICATE (×{n_adj_known} déjà-adjugé✓) : tradeoff correction "
+              "connu (wisdom route le lent-mais-correct) — rien à faire.")
+    if n_adj_changed:
+        print(f"⚠ ADJUDICATE (×{n_adj_changed} RÉGIME CHANGÉ) : le routage/sortie "
+              "diffère de l'adjudication persistée — RÉ-ADJUGER vs GMP.")
 
 
 def cmd_journal(_args) -> None:

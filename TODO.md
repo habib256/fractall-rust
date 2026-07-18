@@ -10,11 +10,22 @@
 
 ---
 
-## 🧭 État actuel (2026-07-17) — lire ceci en premier
+## 🧭 État actuel (2026-07-18) — lire ceci en premier
 
 **Moteur : 0 gap mesuré.** harness quick + standard-speed + wisdom-optimality
-verts, bat F3 partout (geomean speed ~0.18, 25/25 wins). 271 unit CLI + 24 golden
-pixel-exact + quality 15/15 PASS.
+verts, bat F3 partout (geomean speed ~0.19, 10/10 wins quick). 286 unit CLI + 24
+golden pixel-exact + quality 16/16 PASS. Re-confirmé à cf11b59 (le commit AA
+per-pixel decorr. ne touche aucun path non-AA).
+
+- **wisdom-optimality re-vérifié 2026-07-18** : le SEUL ADJUDICATE de l'axe (e50,
+  auto=bytecode_f64 vs lla 1.87×, sortie≠) est un tradeoff correction déjà
+  tranché — harmonic LLA FAUX vs GMP (div 0.036, p99=53) alors que la BLA du
+  wisdom est correcte (WARN p99=0) ; period0=112 > seuil 100 → auto n'active pas
+  harmonic (test-lock `route_harmonic_auto_calibrated_thresholds`). Persisté dans
+  `harness/wisdom-adjudications.json` : l'axe le marque désormais `déjà-adjugé✓`
+  (plus de re-litige) et ré-escalade `⚠ RÉGIME CHANGÉ` si routed_path/sortie
+  bouge. e113/dragon = PASS (harmonic n'aide pas) → concern « fix-epsilon invalide
+  le seuil » clos.
 
 **FAIT :**
 - **Correction (G1-G3)** : parité F3 sur le corpus (84 cas), 0 régression, validée
