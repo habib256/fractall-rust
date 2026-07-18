@@ -2106,7 +2106,31 @@ Jalons (chacun ≈ 1-2 itérations /improve, ordre suggéré) :
     vitesse f64** via BLA **second ordre** (terme C·δ²,
     exactement ce que fait le kernel GPU conforme, `bla.rs::c_new`) : garde le
     rayon 2⁻²⁴ large ET la précision — mais exige des dérivées secondes
-    (hyper-dual) dans la mat2 unifiée. (3) ✅ **FAIT (2026-07-15)** : réévalué les presets `use_dd_tier`. **misiurewicz-m32
+    (hyper-dual) dans la mat2 unifiée.
+    - **📊 BASELINE PERF MESURÉE (2026-07-18)** — combien le fix epsilon 2⁻⁵³
+      coûte AUJOURD'HUI (= ce que le 2nd-ordre récupérerait), A/B 256² 2⁻⁵³ vs
+      2⁻²⁴ (epsilon togglé, rebuild) : **e50 0.62→0.18 s (3.4×)**, e113
+      0.08→0.04 s (2×), **dragon 1.99→1.86 s (négligeable)**, flake/floral déjà
+      ~0.01 s (courts/exp). ⇒ gain RÉEL mais BORNÉ : ~3× sur les spirales f64
+      SENSIBLES (long ref, e50-class), quasi-nul ailleurs. Les rendus 2⁻²⁴ sont
+      **rapides-mais-FAUX** (e50 div 0.036 vs GMP) ; le terme C·δ² donnerait la
+      vitesse 2⁻²⁴ AVEC la correction 2⁻⁵³. Le quick geomean (0.195) est dominé
+      par les cas courts + dragon → l'impact agrégé serait modéré (on gagne déjà
+      10/10 vs F3).
+    - **PLAN scopé (à faire en session DÉDIÉE, PAS en fin d'itération — changement
+      cœur BLA correctness-critical, tous les rendus Mandelbrot)** : (a) champ
+      `c: Complex64` sur `BlaMultiStep` (`bla_dual.rs`), **conformal-only**
+      (Mandelbrot/Julia/Multibrot ; A = similarité [[re,-im],[im,re]] ⇒ C
+      scalaire complexe ; non-conformal BS/Celtic gardent C=0 = linéaire actuel,
+      le tenseur Hessien mat2 est hors scope). (b) merge : porter `bla.rs`
+      `c_new = a2·c1 + c2·a1²` en version complexe extraite du Mat2. (c) rayon de
+      validité ÉTENDU (erreur O(δ³) au lieu de O(δ²) ⇒ rayon plus grand à epsilon
+      égal) — c'est LÀ le gain vitesse. (d) pixel loop : `δ' = A·δ + B·dc + C·δ²`
+      (`pixel_loop.rs`). (e) VALIDATION : goldens pixel-exacts inchangés (non-
+      conformal), + GMP sur e50/e113 (doit rester div ~3e-4 comme 2⁻⁵³) + A/B
+      perf tier standard. Verrou : nouveau golden e50 f64 + preset quality.
+      ⚠️ Risque élevé (merge du hot-path) : ne PAS bundler avec autre chose.
+    (3) ✅ **FAIT (2026-07-15)** : réévalué les presets `use_dd_tier`. **misiurewicz-m32
     (1e12) et mandelbrot-e18-minibrot (1e18) sont pixel-exacts en f64 pur**
     depuis le fix epsilon (max_diff=0 vs GMP à 96²/128²/160²) → RETIRÉS de la
     liste dd (`quality/mod.rs`) : la QA vérifie désormais le path f64 que la
