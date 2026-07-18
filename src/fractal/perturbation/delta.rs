@@ -181,9 +181,17 @@ fn build_bla_entry(
     // **pixel-exactes GMP** (e15/e20 max_diff=0) et e30 tombe à div 3e-4 (=
     // niveau du pas direct sans BLA / du kernel GPU f64). Coût : rayons plus
     // petits → moins de skips longs (BLA moins agressive) mais correcte.
-    // NB : ne concerne QUE le tier f64 ; l'exp (FloatExp, mantisse f64 aussi)
-    // garde `bla_threshold` pour l'instant (cf. TODO G9 — même correctif à
-    // porter, à mesurer côté deep-zoom). Le dd a son propre 2⁻⁸⁰ (ci-dessous).
+    // NB : ne concerne QUE le tier f64. Le tier **exp** (FloatExp, `bla_exp`
+    // plus bas) garde DÉLIBÉRÉMENT `bla_threshold`=2⁻²⁴ : le porter à 2⁻⁵³ a été
+    // MESURÉ et **RÉFUTÉ 2× (2026-07-15 puis 2026-07-18, cf. TODO G9)** — aux
+    // zooms exp (> 1e280) la réf est atom-tronquée + CYCLÉE (période courte),
+    // la BLA ne fait donc pas les longs sauts qui stressent le rayon de validité
+    // (l'over-skip epsilon est une pathologie des réfs LONGUES du tier f64). À
+    // 2⁻⁵³ : ZÉRO gain correction sur les vraies scènes exp (e1000 pixel-
+    // identique, liiiines div 0.004 identique) mais +10-30 % de temps (e401,
+    // e1000). ⚠️ NE PAS re-tenter sur la base d'un e30 FORCÉ en exp
+    // (`FRACTALL_EXP_THRESHOLD=1`) : réf LONGUE artificielle, non représentative
+    // — c'est le piège qui a fait re-dériver ce faux fix. Le dd a son 2⁻⁸⁰.
     const F64_BLA_EPSILON: f64 = 1.0 / (1u64 << 53) as f64; // 2⁻⁵³ ≈ 1.11e-16
     // G4 jalon 5b : pour un hybride multi-phase, `tables[p]` est bâtie CYCLÉE
     // sur la réf de phase p (F3 `hybrid_blas` : `blasR2calc(Z[phase], opss, …,
@@ -242,9 +250,14 @@ fn build_bla_entry(
     };
     // Table BLA FloatExp (path atom-tronqué HP, gated FRACTALL_ATOM_PERIOD=1).
     // Construite depuis `ref_orbit.z_ref` (ComplexExp) — préserve les grazes
-    // ~1e-8000. Mêmes epsilon (`bla_threshold`) et c_norm que le build f64,
+    // ~1e-8000. Mêmes epsilon (`bla_threshold`=2⁻²⁴) et c_norm que le build f64,
     // convertis en FloatExp (le c_norm f64 underflow à 0 en deep zoom, donc on
     // recalcule un c_norm FloatExp fidèle via les spans HP).
+    //
+    // ⚠️ L'epsilon reste 2⁻²⁴ (PAS le 2⁻⁵³ du tier f64) DÉLIBÉRÉMENT : porter
+    // 2⁻⁵³ ici a été mesuré et RÉFUTÉ 2× (cf. `F64_BLA_EPSILON` plus haut +
+    // TODO G9) — les vraies scènes exp ont une réf atom-tronquée courte, donc
+    // pas d'over-skip epsilon, et 2⁻⁵³ ne coûte que du temps (+10-30 %).
     //
     // ⚠️ PERF : `bla_exp` n'est LU que par le path pixel `use_exp_path`
     // (`try_bytecode_unified_path`, `pixel_size < pixel_size_exp_threshold()`,

@@ -2078,9 +2078,18 @@ Jalons (chacun ≈ 1-2 itérations /improve, ordre suggéré) :
     (fractall gagne toujours 10/10 vs F3) — compromis correction>vitesse assumé.
     Verrous : goldens e10/e15/e20/e50/deep_e113/glitch_test_2_atom/cusp_m075
     régénérés (corrections, revus visuellement). 233 unit + 21 golden + QA 15/15
-    PASS. **Reste** : (1) ~~porter le même fix au tier **exp**~~ **❌ RÉFUTÉ
-    (2026-07-15, /improve)** : mesuré, le tier exp (FloatExp, `bla_exp`) N'a PAS
-    l'over-skip epsilon et le passer à 2⁻⁵³ est une **pure régression vitesse**.
+    PASS. **Reste** : (1) ~~porter le même fix au tier **exp**~~ **❌ RÉFUTÉ 2×
+    (2026-07-15 puis 2026-07-18, /improve)** : mesuré, le tier exp (FloatExp,
+    `bla_exp`) N'a PAS l'over-skip epsilon et le passer à 2⁻⁵³ est une **pure
+    régression vitesse**. ⚠️ **Re-dérivé par erreur le 2026-07-18** (comparaison
+    Imagina-Algorithms) : le commentaire `delta.rs` disait « exp garde
+    bla_threshold POUR L'INSTANT, correctif à porter » — lu comme item OUVERT, il
+    contredisait cette réfutation. Le faux fix a été « prouvé » sur un **e30 FORCÉ
+    en exp** (`FRACTALL_EXP_THRESHOLD=1`, div 0.036→0.0003) — mais c'est une réf
+    LONGUE artificielle, non représentative des vraies scènes exp (réf courte
+    atom-tronquée). Reverté ; commentaire `delta.rs` corrigé en « RÉFUTÉ,
+    ne pas re-tenter ». Leçon : un « à mesurer » stale dans le code = piège à
+    re-dérivation.
     Preuves : liiiines (zoom 3.16e321, seule scène exp GMP-tractable à 12.5 k
     iters, `path=bytecode_exp` atom-tronqué) donne div 0.00415 **identique** de
     ε=2⁻²⁴ à 2⁻⁵³ **à 1e-300** (BLA quasi-off) — l'over-skip n'apparaît qu'à
