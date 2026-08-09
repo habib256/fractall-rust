@@ -62,6 +62,22 @@ pub enum RenderMessage {
         sample: u32,
         total: u32,
     },
+    /// Frame PARTIELLE de navigation (port de la « dynamic resolution » XaoS,
+    /// `zoom.cpp::calculatenewinterruptible`) : buffer **RGBA** où seuls les
+    /// pixels déjà calculés sont opaques (alpha 255), le reste transparent.
+    ///
+    /// Why : à grande profondeur une image complète coûte ~1 s ; l'afficher d'un
+    /// bloc produit un « pop » périodique. XaoS livre au contraire une image à
+    /// chaque frame en remplissant les lignes manquantes par duplication. Ici
+    /// l'équivalent est l'alpha : la GUI compose l'overlay sur la texture
+    /// précédente WARPÉE (G10.1), qui joue le rôle de remplissage — et comme la
+    /// file de tuiles est ordonnée par priorité, la zone sous le curseur devient
+    /// nette en premier, puis l'image se complète vers l'extérieur.
+    NavProgress {
+        rgba: Vec<u8>,
+        width: u32,
+        height: u32,
+    },
     /// Toutes les passes sont terminées.
     AllComplete {
         /// Updated orbit cache for reuse in subsequent renders.

@@ -178,6 +178,12 @@ pub struct FractallApp {
 
     // Texture egui pour l'affichage
     texture: Option<TextureHandle>,
+    /// Overlay partiel de navigation (RGBA, transparent là où le rendu en cours
+    /// n'a pas encore calculé) + la vue à laquelle il correspond. Composé
+    /// PAR-DESSUS la texture principale warpée : port de la « dynamic
+    /// resolution » XaoS, cf. `RenderMessage::NavProgress`.
+    nav_overlay_texture: Option<TextureHandle>,
+    nav_overlay_view: Option<ViewSnapshot>,
     /// Vue (centre/span HP) que représente la texture actuellement affichée.
     /// Sert au warp GPU (G10.1) : pendant un rendu, la texture est encore l'ANCIENNE
     /// vue ; on la transforme par (view_texture → view_live) pour un aperçu fluide.
@@ -291,7 +297,103 @@ pub struct FractallApp {
     julia_preview_last_request_time: Option<Instant>,
     julia_preview_cancel: Arc<AtomicBool>,
     julia_preview_rendering: bool,
+
+    /// Navigation « à la XaoS » : bouton maintenu = zoom CONTINU ancré au
+    /// curseur (gauche = in, droit = out), au lieu du clic ×2 / de la
+    /// sélection rectangle. Exploite la réutilisation pixels inter-frame
+    /// (G10.4) + le warp (G10.1) pour un mouvement fluide.
+    xaos_nav_mode: bool,
+    /// Instant du dernier tick de zoom continu — cadence indépendante du
+    /// framerate (`facteur = RATE^(dir·dt)`). `None` = bouton relâché.
+    xaos_nav_last_tick: Option<Instant>,
+    /// Bouton maintenu en cours (drag de navigation actif) : sélectionne la
+    /// config de rendu « navigation » (passe unique) dans `start_render_with`.
+    xaos_nav_dragging: bool,
+    /// Instant du dernier rendu lancé pendant la navigation (throttle).
+    xaos_nav_last_render: Option<Instant>,
+    /// Rendu de STABILISATION (bouton relâché, vue figée) : navigation encore,
+    /// donc passe unique + streaming partiel, mais résolution PLEINE — la
+    /// résolution dynamique ne s'applique qu'au mouvement.
+    xaos_nav_settle: bool,
+    /// Diviseur de résolution du rendu en cours / du dernier terminé — sert à
+    /// extrapoler le coût plein cadre depuis `last_render_time` (coût ∝ d²).
+    rendering_divisor: u8,
+    last_render_divisor: u8,
+    /// Vitesse de zoom courante, en `ln(facteur)` par seconde (signée : > 0 =
+    /// zoom avant). Rampe vers la cible au lieu de démarrer/s'arrêter net.
+    xaos_nav_vel: f64,
+    /// Point d'ancrage normalisé du zoom, conservé pendant la décélération
+    /// (le curseur peut avoir quitté l'image, le mouvement doit rester ancré).
+    xaos_nav_anchor: Option<(f32, f32)>,
+
+    /// FRACTALL_UI_TRACE=1 : trace des à-coups du thread UI (lu une fois).
+    ui_trace: bool,
+    /// Début de la frame UI précédente (mesure de l'intervalle réel).
+    ui_frame_last: Option<Instant>,
+    /// Événements notables de la frame en cours (rendu lancé, texture chargée…).
+    ui_frame_events: Vec<String>,
 }
+
+/// Seuil de signalement d'un trou de frame UI (ms) sous `FRACTALL_UI_TRACE`.
+const UI_TRACE_GAP_MS: f64 = 40.0;
+
+/// Cadence de publication des frames partielles de navigation (~25 FPS, milieu
+/// de la fenêtre XaoS 15-35 FPS en animation, `ui_helper.cpp`).
+const NAV_STREAM_INTERVAL: Duration = Duration::from_millis(40);
+
+/// Durée VISÉE d'une image de navigation (s). Au-delà, la résolution dynamique
+/// entre en jeu (port de la « dynamic resolution » XaoS, `algorithms.md` :
+/// « calculate only the details that can be determined within a time
+/// interval »). XaoS vise 15-35 FPS en animation ; on est plus conservateur car
+/// notre coût par pixel (perturbation deep) est de plusieurs ordres au-dessus.
+const NAV_FRAME_TARGET_SECS: f64 = 0.25;
+
+/// Diviseur de résolution maximal en navigation (1/4 de côté = 1/16 des pixels).
+const NAV_MAX_DIVISOR: u8 = 4;
+
+/// Vitesse de croisière du zoom continu : facteur d'échelle par seconde.
+/// Valeur XaoS : `MAXSTEP = 0.024` de span par frame nominale de 1/20 s
+/// (`config.h`, `uih_zoomupdate` : `mmul = (1-step)^mul`), soit
+/// `(1-0.024)^-20 ≈ 1.62` par seconde.
+const XAOS_NAV_ZOOM_RATE: f64 = 1.624;
+
+/// Durée de montée en vitesse (s). XaoS accélère par paliers `speedup*2` par
+/// frame (`uih_zoom`) : `MAXSTEP / (2·STEP) ≈ 6.7` frames de 1/20 s.
+const XAOS_NAV_ACCEL_SECS: f64 = 0.33;
+
+/// Durée de décélération après relâchement (s). XaoS décroît deux fois plus
+/// lentement qu'il n'accélère (`uih_slowdown` retire `speedup` par frame) :
+/// le zoom continue en s'amortissant au lieu de s'arrêter net.
+const XAOS_NAV_DECEL_SECS: f64 = 0.67;
+
+/// Sous cette vitesse (en ln(facteur)/s) la navigation est considérée à l'arrêt.
+const XAOS_NAV_VEL_EPSILON: f64 = 1e-3;
+
+/// Intervalle minimal entre deux rendus pendant la navigation XaoS (~30 Hz).
+/// Sans ce plancher, une scène peu profonde (rendu ~5 ms) déclencherait des
+/// centaines de spawns de thread + uploads de texture par seconde, ce qui
+/// affame le thread UI → frames irrégulières = saccades. Le warp assure la
+/// continuité visuelle entre deux rendus.
+const XAOS_NAV_MIN_RENDER_INTERVAL: Duration = Duration::from_millis(33);
+
+/// Avance de vue MAXIMALE tolérée entre deux images fraîches, en facteur de
+/// zoom. La vitesse de navigation s'adapte au débit réel du moteur pour tenir
+/// cette borne (`rate = MAX_STEP^(1/durée_rendu)`, plafonnée par
+/// `XAOS_NAV_ZOOM_RATE`).
+///
+/// Why : à grande profondeur une image coûte ~1 s ; à ×3/s la vue avance de ×3
+/// entre deux images → la texture warpée est étirée ×3 (floue) avant d'être
+/// remplacée d'un coup par une image nette = « pop » périodique perçu comme une
+/// saccade. Borner l'écart réduit l'amplitude du pop ET rend le rendu bien moins
+/// cher : la réutilisation pixels inter-frame (G10.4) ne récupère que la partie
+/// commune des deux vues (~1/step² des pixels), donc un petit pas est
+/// quasi gratuit là où un ×3 recalcule presque tout. Cercle vertueux : pas plus
+/// petit → rendu plus rapide → cadence plus haute → vitesse réelle qui remonte.
+const XAOS_NAV_MAX_STEP_PER_RENDER: f64 = 1.35;
+
+/// Plancher de vitesse : même si le moteur est très lent, la navigation garde
+/// une progression perceptible (facteur par seconde).
+const XAOS_NAV_MIN_ZOOM_RATE: f64 = 1.05;
 
 /// Presets de résolution pour le rendu haute qualité.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -379,6 +481,8 @@ impl FractallApp {
             distances: Arc::new(Vec::new()),
             orbits: Arc::new(Vec::new()),
             texture: None,
+            nav_overlay_texture: None,
+            nav_overlay_view: None,
             texture_view: None,
             rendering_view: None,
             palette_preview_textures: [
@@ -449,6 +553,21 @@ impl FractallApp {
             julia_preview_last_request_time: None,
             julia_preview_cancel: Arc::new(AtomicBool::new(false)),
             julia_preview_rendering: false,
+
+            // Navigation XaoS (zoom continu au bouton maintenu) : off par défaut
+            xaos_nav_mode: false,
+            xaos_nav_last_tick: None,
+            xaos_nav_dragging: false,
+            xaos_nav_last_render: None,
+            xaos_nav_settle: false,
+            rendering_divisor: 1,
+            last_render_divisor: 1,
+            xaos_nav_vel: 0.0,
+            xaos_nav_anchor: None,
+
+            ui_trace: std::env::var("FRACTALL_UI_TRACE").is_ok_and(|v| v != "0"),
+            ui_frame_last: None,
+            ui_frame_events: Vec::new(),
         }
     }
     
@@ -540,7 +659,12 @@ impl FractallApp {
     /// la texture (centre_tex ± span_tex/2) dans la vue live. Ratios O(1) calculés
     /// en HP puis f64 → exact à toute profondeur.
     fn compute_warp_rect(&self, image_rect: egui::Rect) -> Option<egui::Rect> {
-        let tex = self.texture_view.as_ref()?;
+        self.warp_rect_for(self.texture_view.as_ref()?, image_rect)
+    }
+
+    /// Idem pour une vue de texture arbitraire (texture principale ou overlay
+    /// partiel de navigation, qui peut dater d'une vue légèrement antérieure).
+    fn warp_rect_for(&self, tex: &ViewSnapshot, image_rect: egui::Rect) -> Option<egui::Rect> {
         let live = self.current_view_snapshot();
         if !tex.axis_aligned || !live.axis_aligned {
             return None;
@@ -1066,8 +1190,39 @@ impl FractallApp {
                     crate::fractal::wisdom::Device::Cpu
                 },
             ) == crate::fractal::wisdom::Algorithm::Perturbation;
-        let config = if refine {
-            ProgressiveConfig::single_pass()
+        // Navigation XaoS (bouton maintenu) : une passe UNIQUE pleine
+        // résolution. Les passes basse résolution repeignent l'image flou→net
+        // à chaque cycle de rendu — un pulsing perçu comme une saccade — et
+        // n'apportent aucun feedback ici : le warp (G10.1) affiche déjà la
+        // vue live en continu, en plus net que la passe 1/16. Vaut AUSSI pour
+        // les scènes lentes (c'est là que le flash de la passe 1/16 est le
+        // plus visible), et pour le rendu final au relâchement.
+        // Résolution DYNAMIQUE de navigation (port XaoS « dynamic resolution ») :
+        // en mouvement, on calcule ce qui tient dans NAV_FRAME_TARGET_SECS plutôt
+        // que d'imposer la pleine résolution coûte que coûte. Le coût varie en d²
+        // (côté/d) ; on extrapole le coût plein cadre depuis la dernière durée
+        // mesurée et son propre diviseur, et on prend le plus petit d qui tient.
+        // Le rendu de stabilisation (bouton relâché) reste en pleine résolution,
+        // et le raffinement idle rend l'image exacte ensuite.
+        let nav_divisor = if self.xaos_nav_dragging && !self.xaos_nav_settle {
+            let full_cost = self
+                .last_render_time
+                .map(|t| t * (self.last_render_divisor as f64).powi(2));
+            match full_cost {
+                Some(c) if c > NAV_FRAME_TARGET_SECS => {
+                    let d = (c / NAV_FRAME_TARGET_SECS).sqrt().ceil() as u32;
+                    (d.next_power_of_two() as u8).min(NAV_MAX_DIVISOR)
+                }
+                _ => 1,
+            }
+        } else {
+            1
+        };
+
+        let config = if refine || self.xaos_nav_dragging {
+            ProgressiveConfig {
+                passes: vec![nav_divisor],
+            }
         } else {
             ProgressiveConfig::for_params_with_intermediate(
                 self.params.width,
@@ -1082,9 +1237,19 @@ impl FractallApp {
         // flag sera re-posé à la passe finale si elle copie des pixels).
         self.xaos_refine_pending = false;
 
+        if self.ui_trace {
+            self.ui_frame_events.push(format!(
+                "start_render(passes={},refine={},nav={})",
+                config.passes.len(),
+                refine,
+                self.xaos_nav_dragging
+            ));
+        }
+
         self.total_passes = config.passes.len() as u8;
         self.current_pass = 0;
         self.rendering = true;
+        self.rendering_divisor = *config.passes.last().unwrap_or(&1);
         self.is_preview = true;
         // G10.1 : mémoriser la vue de ce rendu ; elle deviendra `texture_view` au
         // chargement de la 1re texture. Jusque-là, la texture affichée reste
@@ -1148,6 +1313,10 @@ impl FractallApp {
             .hover_norm
             .map(|(x, y)| (x as f64, y as f64))
             .unwrap_or((0.5, 0.5));
+
+        // Navigation XaoS en cours → publier des frames PARTIELLES (overlay
+        // alpha) au fil des tuiles, au lieu d'attendre l'image complète.
+        let nav_stream = self.xaos_nav_dragging;
 
         // Spawner le thread de rendu progressif
         let handle = thread::spawn(move || {
@@ -1236,8 +1405,33 @@ impl FractallApp {
                         std::sync::Mutex::new((base, Instant::now(), sender.clone()))
                     })
                 };
+                // Navigation XaoS : overlay PARTIEL alpha (cf. RenderMessage::
+                // NavProgress). S'applique là où le streaming classique renonce —
+                // une passe SANS base (la seule passe du rendu de navigation) —
+                // parce que la base ne manque qu'en apparence : la GUI compose
+                // sur la texture précédente warpée. Publication plus rapprochée
+                // que le streaming classique (budget type XaoS : 15-35 FPS en
+                // animation, `ui_helper.cpp` FRAMERATE).
+                let nav_overlay = nav_stream
+                    && sink_state.is_none()
+                    && !refine
+                    && !matches!(
+                        params.out_coloring_mode,
+                        crate::fractal::OutColoringMode::OrbitTraps
+                            | crate::fractal::OutColoringMode::Wings
+                    );
+                let nav_state = nav_overlay.then(|| {
+                    std::sync::Mutex::new((
+                        vec![0u8; (pass_width as usize) * (pass_height as usize) * 4],
+                        Instant::now(),
+                        sender.clone(),
+                    ))
+                });
+
                 let sink_params = pass_params.clone();
-                let sink_closure = sink_state.as_ref().map(|state| {
+                let sink_closure = (sink_state.is_some() || nav_state.is_some()).then(|| {
+                    let sink_state = &sink_state;
+                    let nav_state = &nav_state;
                     move |u: crate::render::tiles::TileUpdate| {
                         // Colorisation par tuile (per-pixel, mêmes fonctions que
                         // les passes) hors verrou, puis blit + envoi sous verrou.
@@ -1250,21 +1444,45 @@ impl FractallApp {
                             u.w as u32,
                             u.h as u32,
                         );
-                        let mut guard = state.lock().unwrap();
-                        let (base, last_sent, tx) = &mut *guard;
-                        for row in 0..u.h {
-                            let dst = ((u.y0 + row) * pass_width as usize + u.x0) * 3;
-                            let src = row * u.w * 3;
-                            base[dst..dst + u.w * 3]
-                                .copy_from_slice(&tile_rgb[src..src + u.w * 3]);
+                        if let Some(state) = sink_state {
+                            let mut guard = state.lock().unwrap();
+                            let (base, last_sent, tx) = &mut *guard;
+                            for row in 0..u.h {
+                                let dst = ((u.y0 + row) * pass_width as usize + u.x0) * 3;
+                                let src = row * u.w * 3;
+                                base[dst..dst + u.w * 3]
+                                    .copy_from_slice(&tile_rgb[src..src + u.w * 3]);
+                            }
+                            if last_sent.elapsed() >= Duration::from_millis(100) {
+                                *last_sent = Instant::now();
+                                let _ = tx.send(RenderMessage::TileProgress {
+                                    display_buffer: base.clone(),
+                                    width: pass_width,
+                                    height: pass_height,
+                                });
+                            }
                         }
-                        if last_sent.elapsed() >= Duration::from_millis(100) {
-                            *last_sent = Instant::now();
-                            let _ = tx.send(RenderMessage::TileProgress {
-                                display_buffer: base.clone(),
-                                width: pass_width,
-                                height: pass_height,
-                            });
+                        if let Some(state) = nav_state {
+                            let mut guard = state.lock().unwrap();
+                            let (rgba, last_sent, tx) = &mut *guard;
+                            for row in 0..u.h {
+                                for col in 0..u.w {
+                                    let dst = ((u.y0 + row) * pass_width as usize + u.x0 + col) * 4;
+                                    let src = (row * u.w + col) * 3;
+                                    rgba[dst] = tile_rgb[src];
+                                    rgba[dst + 1] = tile_rgb[src + 1];
+                                    rgba[dst + 2] = tile_rgb[src + 2];
+                                    rgba[dst + 3] = 255; // calculé ⇒ opaque
+                                }
+                            }
+                            if last_sent.elapsed() >= NAV_STREAM_INTERVAL {
+                                *last_sent = Instant::now();
+                                let _ = tx.send(RenderMessage::NavProgress {
+                                    rgba: rgba.clone(),
+                                    width: pass_width,
+                                    height: pass_height,
+                                });
+                            }
                         }
                     }
                 });
@@ -1557,6 +1775,10 @@ impl FractallApp {
                 // Le warp devient l'identité (view_texture == view_live).
                 if self.rendering_view.is_some() {
                     self.texture_view = self.rendering_view.clone();
+                    // L'image COMPLÈTE de cette vue est arrivée : l'overlay
+                    // partiel de navigation devient redondant.
+                    self.nav_overlay_texture = None;
+                    self.nav_overlay_view = None;
                 }
                 self.load_texture_from_buffer(ctx, &tex.display_buffer, tex.width, tex.height);
                 ctx.request_repaint();
@@ -1684,9 +1906,48 @@ impl FractallApp {
                 // vue du rendu en cours → le warp G10.1 devient l'identité.
                 if self.rendering_view.is_some() {
                     self.texture_view = self.rendering_view.clone();
+                    // L'image COMPLÈTE de cette vue est arrivée : l'overlay
+                    // partiel de navigation devient redondant.
+                    self.nav_overlay_texture = None;
+                    self.nav_overlay_view = None;
                 }
                 self.load_texture_from_buffer(ctx, &display_buffer, width, height);
                 ctx.request_repaint();
+            }
+
+            RenderMessage::NavProgress {
+                rgba,
+                width,
+                height,
+            } => {
+                // Overlay partiel : composé sur la texture warpée, il ne
+                // REMPLACE pas l'image courante (les zones non calculées sont
+                // transparentes). Sa vue de référence est celle du rendu en
+                // cours, pour rester correctement placé si la navigation a
+                // continué depuis.
+                if (rgba.len() as u32) == width * height * 4 {
+                    let img = egui::ColorImage::from_rgba_unmultiplied(
+                        [width as usize, height as usize],
+                        &rgba,
+                    );
+                    match self.nav_overlay_texture.as_mut() {
+                        Some(t) if t.size() == [width as usize, height as usize] => {
+                            t.set(img, TextureOptions::LINEAR);
+                        }
+                        _ => {
+                            self.nav_overlay_texture = Some(ctx.load_texture(
+                                "fractal_nav_overlay",
+                                img,
+                                TextureOptions::LINEAR,
+                            ));
+                        }
+                    }
+                    self.nav_overlay_view = self.rendering_view.clone();
+                    if self.ui_trace {
+                        self.ui_frame_events.push("nav_overlay".to_string());
+                    }
+                    ctx.request_repaint();
+                }
             }
 
             RenderMessage::AaProgress {
@@ -1715,9 +1976,14 @@ impl FractallApp {
                         last_tex = Some(tex);
                     }
                     if last_tex.is_none() {
-                        if let Ok(tex) = rx.recv_timeout(Duration::from_millis(100)) {
-                            last_tex = Some(tex);
-                        }
+                        // La texture finale n'est pas encore colorisée. NE PAS
+                        // bloquer le thread UI dessus (`recv_timeout` gelait
+                        // l'affichage jusqu'à 100 ms → à-coup en navigation) :
+                        // on garde le receiver vivant, la boucle de polling en
+                        // tête d'`update` la récupérera à une frame suivante
+                        // (elle tourne aussi quand `rendering == false`).
+                        self.texture_ready_receiver = Some(rx);
+                        ctx.request_repaint();
                     }
                     if let Some(tex) = last_tex {
                         self.current_pass = tex.pass_index + 1;
@@ -1750,6 +2016,10 @@ impl FractallApp {
 
                 if let Some(start) = self.render_start_time.take() {
                     self.last_render_time = Some(start.elapsed().as_secs_f64());
+                    // Le diviseur qui a produit cette durée : sans lui, la
+                    // résolution dynamique lirait un coût déjà réduit comme un
+                    // coût plein cadre et ne redescendrait jamais.
+                    self.last_render_divisor = self.rendering_divisor;
                 }
                 // G10.4 : point de départ du délai idle avant raffinement.
                 self.last_render_finished = Some(Instant::now());
@@ -1841,8 +2111,24 @@ impl FractallApp {
             eprintln!("Warning: Failed to create RgbImage from buffer");
             return;
         };
+        if self.ui_trace {
+            self.ui_frame_events.push(format!("tex:{width}x{height}"));
+        }
         let color_image = rgb_image_to_color_image(&img);
-        self.texture = Some(ctx.load_texture("fractal", color_image, TextureOptions::LINEAR));
+        // Mise à jour EN PLACE quand les dimensions sont inchangées : `load_texture`
+        // ALLOUE une nouvelle texture GPU à chaque appel (le nom n'est qu'un label)
+        // et libère l'ancienne. En navigation continue (dizaines d'images/s) ce
+        // churn d'allocations GPU provoque des à-coups périodiques quand le driver
+        // récupère la mémoire. `TextureHandle::set` réécrit la texture existante.
+        match self.texture.as_mut() {
+            Some(t) if t.size() == [width as usize, height as usize] => {
+                t.set(color_image, TextureOptions::LINEAR);
+            }
+            _ => {
+                self.texture =
+                    Some(ctx.load_texture("fractal", color_image, TextureOptions::LINEAR));
+            }
+        }
     }
 
     /// Met à jour la texture egui à partir des données de fractale.
@@ -2256,6 +2542,27 @@ impl eframe::App for FractallApp {
 
     #[allow(deprecated)]
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // Trace des à-coups d'affichage (FRACTALL_UI_TRACE=1) : signale toute
+        // frame UI dont l'intervalle dépasse le seuil, avec les événements de la
+        // frame précédente. Sert à distinguer un « pop » de contenu (nouvelle
+        // image nette qui remplace le warp) d'un vrai gel du thread UI.
+        if self.ui_trace {
+            let now = Instant::now();
+            if let Some(prev) = self.ui_frame_last {
+                let ms = now.duration_since(prev).as_secs_f64() * 1000.0;
+                if ms > UI_TRACE_GAP_MS {
+                    println!(
+                        "[UI] gap={:.1}ms rendering={} events=[{}]",
+                        ms,
+                        self.rendering,
+                        self.ui_frame_events.join(" ")
+                    );
+                }
+            }
+            self.ui_frame_last = Some(now);
+            self.ui_frame_events.clear();
+        }
+
         // Init différée du GPU : une fois la fenêtre eframe prête, éviter "Parent device is lost" sur NVIDIA
         if !self.gpu_init_attempted {
             self.gpu_init_attempted = true;
@@ -2681,6 +2988,26 @@ impl eframe::App for FractallApp {
                             self.julia_preview_last_seed = None;
                             self.julia_preview_cancel.store(true, Ordering::Relaxed);
                         }
+                    }
+
+                    // Checkbox navigation XaoS : remplace le clic ×2 / la
+                    // sélection rectangle par un zoom continu au bouton maintenu.
+                    let old_xaos_nav = self.xaos_nav_mode;
+                    ui.checkbox(&mut self.xaos_nav_mode, "XaoS").on_hover_text(
+                        "Navigation à la XaoS : maintenir le bouton gauche = zoom avant continu \
+                         ancré au curseur, bouton droit = zoom arrière. Remplace le clic ×2 et \
+                         la sélection rectangle.",
+                    );
+                    if old_xaos_nav != self.xaos_nav_mode {
+                        // Sortie/entrée du mode : abandonner tout état transitoire.
+                        self.xaos_nav_last_tick = None;
+                        self.xaos_nav_dragging = false;
+                        self.xaos_nav_last_render = None;
+                        self.xaos_nav_vel = 0.0;
+                        self.xaos_nav_anchor = None;
+                        self.selecting = false;
+                        self.select_start = None;
+                        self.select_current = None;
                     }
 
                     ui.separator();
@@ -3109,11 +3436,17 @@ impl eframe::App for FractallApp {
                     let (image_rect, response) =
                         ui.allocate_exact_size(display_size, egui::Sense::click_and_drag());
                     let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-                    let warp = if self.rendering {
-                        self.compute_warp_rect(image_rect)
-                    } else {
-                        None
-                    };
+                    // G10.1 : la texture affichée représente `texture_view` ; dès
+                    // qu'elle diffère de la vue live, on la WARPE — que le rendu
+                    // soit en cours ou non. Gater sur `self.rendering` repeignait
+                    // l'image NON transformée sur les frames sans rendu actif
+                    // (juste après la fin d'un rendu, avant le suivant) : en
+                    // navigation continue la vue live a déjà avancé → saut en
+                    // arrière d'un rendu complet, puis saut en avant à la frame
+                    // suivante = saccade à la cadence de rendu. `compute_warp_rect`
+                    // renvoie déjà `None` quand les vues sont identiques (statique
+                    // inchangé, affichage bit-identique).
+                    let warp = self.compute_warp_rect(image_rect);
                     match warp {
                         // Warp actif : le zoom-in fait déborder l'ancienne image → clip au rect.
                         Some(r) => ui
@@ -3124,6 +3457,23 @@ impl eframe::App for FractallApp {
                             .painter()
                             .image(texture.id(), image_rect, uv, egui::Color32::WHITE),
                     };
+
+                    // Overlay partiel de navigation PAR-DESSUS : ses pixels déjà
+                    // calculés (alpha 255) recouvrent le warp, les autres le
+                    // laissent transparaître — c'est le remplissage, équivalent
+                    // de la duplication de lignes de XaoS (« reducing
+                    // resolution »). Warpé lui aussi : la vue a pu avancer
+                    // depuis sa publication.
+                    if let Some(overlay) = &self.nav_overlay_texture {
+                        let rect = self
+                            .nav_overlay_view
+                            .as_ref()
+                            .and_then(|v| self.warp_rect_for(v, image_rect))
+                            .unwrap_or(image_rect);
+                        ui.painter()
+                            .with_clip_rect(image_rect)
+                            .image(overlay.id(), rect, uv, egui::Color32::WHITE);
+                    }
 
                     // Forcer le curseur à être une flèche quand on survole l'image
                     // IMPORTANT: Toujours afficher une flèche (Default) et non un curseur de texte ou autre
@@ -3190,7 +3540,130 @@ impl eframe::App for FractallApp {
                         }
                     }
 
-                    if !julia_mode {
+                    // Navigation XaoS : bouton MAINTENU = zoom continu ancré au
+                    // curseur (gauche = in, droit = out), cadence indépendante du
+                    // framerate. Le clic ×2 et la sélection rectangle sont
+                    // désactivés dans ce mode.
+                    //
+                    // Découplage géométrie / rendu (clé de la fluidité) : la vue
+                    // avance à CHAQUE frame (60 Hz), le rendu ne redémarre que
+                    // quand le précédent est fini ET qu'au moins
+                    // XAOS_NAV_MIN_RENDER_INTERVAL s'est écoulé. Entre deux, le
+                    // warp G10.1 transporte la texture vers la vue live → mouvement
+                    // continu ; la réutilisation pixels G10.4 rend chaque rendu
+                    // quasi gratuit (petit incrément).
+                    if self.xaos_nav_mode && !julia_mode {
+                        let (dir, pointer_pos) = ctx.input(|i| {
+                            let d = if i.pointer.primary_down() {
+                                1.0
+                            } else if i.pointer.secondary_down() {
+                                -1.0
+                            } else {
+                                0.0
+                            };
+                            // Le geste ne compte que s'il a COMMENCÉ sur l'image :
+                            // `primary_down()` est global, donc sans ce garde un
+                            // appui dans la barre de menus (ou tout autre panneau)
+                            // pilotait le zoom via le dernier ancrage mémorisé.
+                            // `press_origin` = position de l'appui en cours, tous
+                            // boutons confondus ; `None` au relâchement, ce qui
+                            // laisse la décélération se poursuivre normalement.
+                            let started_on_image = i
+                                .pointer
+                                .press_origin()
+                                .is_some_and(|p| image_rect.contains(p));
+                            let d = if started_on_image { d } else { 0.0 };
+                            (d, i.pointer.interact_pos())
+                        });
+                        // Ancrage : position courante si le curseur est sur
+                        // l'image, sinon le dernier ancrage connu (le zoom doit
+                        // rester ancré pendant la décélération, même curseur sorti).
+                        if let Some(p) = pointer_pos.filter(|p| image_rect.contains(*p)) {
+                            let local = p - image_rect.min;
+                            self.xaos_nav_anchor = Some((
+                                local.x / image_rect.width(),
+                                local.y / image_rect.height(),
+                            ));
+                        }
+
+                        let now = Instant::now();
+                        // dt borné : une frame lente ne doit pas produire un saut
+                        // de zoom incontrôlable.
+                        let dt = self
+                            .xaos_nav_last_tick
+                            .map(|t| now.duration_since(t).as_secs_f64())
+                            .unwrap_or(0.0)
+                            .clamp(0.0, 0.1);
+
+                        // Vitesse de croisière asservie au débit mesuré du moteur :
+                        // au plus XAOS_NAV_MAX_STEP_PER_RENDER de zoom entre deux
+                        // images fraîches. Pleine vitesse tant que le rendu suit.
+                        let cruise = match self.last_render_time {
+                            Some(t) if t > 0.0 => XAOS_NAV_ZOOM_RATE
+                                .min(XAOS_NAV_MAX_STEP_PER_RENDER.powf(1.0 / t))
+                                .max(XAOS_NAV_MIN_ZOOM_RATE),
+                            _ => XAOS_NAV_ZOOM_RATE,
+                        }
+                        .ln();
+
+                        // Rampe accel/décel (port XaoS `uih_zoom` / `uih_slowdown`) :
+                        // le bouton pilote une CIBLE de vitesse, pas la vitesse elle-
+                        // même. Départ et arrêt progressifs, et le zoom s'amortit
+                        // après relâchement au lieu de se figer net.
+                        let target = dir * cruise;
+                        let ramp_secs = if dir != 0.0 {
+                            XAOS_NAV_ACCEL_SECS
+                        } else {
+                            XAOS_NAV_DECEL_SECS
+                        };
+                        let max_delta = (cruise / ramp_secs) * dt;
+                        let dv = (target - self.xaos_nav_vel).clamp(-max_delta, max_delta);
+                        self.xaos_nav_vel += dv;
+                        if dir == 0.0 && self.xaos_nav_vel.abs() < XAOS_NAV_VEL_EPSILON {
+                            self.xaos_nav_vel = 0.0;
+                        }
+
+                        // « En mouvement » inclut le bouton enfoncé même à vitesse
+                        // encore nulle : sinon la 1re frame (dt = 0, donc vel
+                        // reste 0) n'enregistrerait pas le tick, dt resterait nul
+                        // à la frame suivante et la rampe ne démarrerait JAMAIS.
+                        let moving = self.xaos_nav_vel != 0.0 || dir != 0.0;
+                        if moving {
+                            self.xaos_nav_last_tick = Some(now);
+                            self.xaos_nav_dragging = true;
+                            if dt > 0.0 && self.xaos_nav_vel != 0.0 {
+                                if let Some((rx, ry)) = self.xaos_nav_anchor {
+                                    self.zoom_anchored_hp(
+                                        rx as f64,
+                                        ry as f64,
+                                        (self.xaos_nav_vel * dt).exp(),
+                                    );
+                                }
+                                let due = self.xaos_nav_last_render.is_none_or(|t| {
+                                    now.duration_since(t) >= XAOS_NAV_MIN_RENDER_INTERVAL
+                                });
+                                if !self.rendering && due {
+                                    self.xaos_nav_last_render = Some(now);
+                                    self.start_render();
+                                }
+                            }
+                            ctx.request_repaint();
+                        } else if self.xaos_nav_last_tick.take().is_some() {
+                            // Arrêt complet : rendu de stabilisation sur la vue
+                            // atteinte. `xaos_nav_dragging` est encore vrai →
+                            // passe unique + streaming partiel (pas de retour au
+                            // flou d'une passe 1/16) ; `settle` force la PLEINE
+                            // résolution, la résolution dynamique ne servant que
+                            // pendant le mouvement.
+                            self.xaos_nav_settle = true;
+                            self.start_render();
+                            self.xaos_nav_settle = false;
+                            self.xaos_nav_dragging = false;
+                            self.xaos_nav_last_render = None;
+                        }
+                    }
+
+                    if !julia_mode && !self.xaos_nav_mode {
                         ctx.input(|i| {
                             // Vérifier si le bouton gauche est pressé et si on est dans la zone de l'image
                             if i.pointer.primary_down() {
@@ -3275,7 +3748,7 @@ impl eframe::App for FractallApp {
                     
                     // Clic simple (sans drag) : zoom au point
                     // Seulement si on n'a pas fait de sélection et pas en mode Julia
-                    if response.clicked() && !self.selecting && !julia_mode {
+                    if response.clicked() && !self.selecting && !julia_mode && !self.xaos_nav_mode {
                         if let Some(pos) = response.interact_pointer_pos() {
                             let local_pos = pos - image_rect.min;
                             let pixel_x = (local_pos.x / image_rect.width()) * self.params.width as f32;
@@ -3285,8 +3758,10 @@ impl eframe::App for FractallApp {
                         }
                     }
 
-                    // Clic droit : dézoom centré sur la position de la souris (désactivé en mode Julia)
-                    if !julia_mode {
+                    // Clic droit : dézoom centré sur la position de la souris
+                    // (désactivé en mode Julia et en navigation XaoS — là le
+                    // bouton droit maintenu fait le dézoom continu)
+                    if !julia_mode && !self.xaos_nav_mode {
                         if response.secondary_clicked() {
                             if let Some(pos) = response.interact_pointer_pos() {
                                 let local_pos = pos - image_rect.min;
