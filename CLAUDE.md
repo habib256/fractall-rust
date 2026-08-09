@@ -43,6 +43,16 @@ Prérequis natifs : GMP / MPFR / MPC (pour `rug`).
 CI : `.github/workflows/ci.yml` (unit + golden sur push/PR, ubuntu,
 gmp/mpfr/mpc). Extension du corpus golden à venir (cf. TODO G6).
 
+**Release** : `.github/workflows/release.yml` (tag `v*` ou lancement manuel) →
+`dist/` via `.github/scripts/package.sh`. 4 cibles : linux-x86_64-glibc2.27
+(conteneur Ubuntu 18.04 — ⚠️ PAS en `container:`, Node 20 des actions exige
+glibc ≥ 2.28 ; on checkout sur l'hôte et on `docker run` le build seul),
+linux-arm64-pi400 (runner ARM64 natif + conteneur bullseye = glibc 2.31 pour
+couvrir Pi OS bullseye ET bookworm, `-C target-cpu=cortex-a72`),
+windows-x86_64 (toolchain **GNU + MSYS2** — `gmp-mpfr-sys` compile GMP depuis
+les sources et **ne supporte pas MSVC** ; les DLL MinGW sont copiées à côté
+des .exe), macos-arm64.
+
 ## Harness d'auto-amélioration (HARNESS.md)
 
 Trois axes mesurés contre Fraktaler-3 : **vitesse** (wall-clock head-to-head,

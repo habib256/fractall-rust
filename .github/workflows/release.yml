@@ -1,0 +1,226 @@
+name: Release artifacts
+
+# Fabrique les binaires de distribution dans `dist/` pour 4 cibles :
+#   - linux-x86_64-glibc2.27  (Ubuntu 18.04 → tourne sur toute glibc ≥ 2.27)
+#   - linux-arm64-pi400       (Cortex-A72 tuné, Debian bullseye → glibc ≥ 2.31)
+#   - windows-x86_64          (toolchain GNU + MSYS2, cf. note gmp-mpfr-sys)
+#   - macos-arm64             (Apple Silicon)
+#
+# Déclenchement : tag `v*` (crée aussi la Release GitHub) ou lancement manuel.
+#
+# ⚠️ CONTRAINTE STRUCTURANTE — `rug` dépend de `gmp-mpfr-sys`, qui COMPILE
+# GMP/MPFR/MPC depuis les sources avec le système de build GNU. Conséquences :
+#   - Windows : MSVC N'EST PAS supporté → toolchain `x86_64-pc-windows-gnu`
+#     avec MSYS2 (m4/make/gcc mingw-w64). Cf. README de gmp-mpfr-sys.
+#   - Aucun chemin de build ne doit contenir d'espace (limite du build system).
+#   - Pas de `libgmp-dev` système à installer : tout est bâti depuis les sources
+#     (d'où des builds longs, ~10-20 min avec LTO fat + codegen-units=1).
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Linux x86-64, glibc 2.27 ────────────────────────────────────────────────
+  # Ubuntu 18.04 fournit EXACTEMENT glibc 2.27 ; un binaire lié là tourne sur
+  # toute distribution plus récente.
+  #
+  # ⚠️ 18.04 ne peut PAS être utilisé via `container:` : les actions GitHub
+  # embarquent Node 20, qui exige glibc ≥ 2.28 et refuse de démarrer sur bionic.
+  # On checkout donc sur l'hôte et on ne fait entrer QUE le build dans le
+  # conteneur, via `docker run`.
+  linux-glibc227:
+    name: Linux x86_64 (glibc 2.27)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build dans un conteneur Ubuntu 18.04
+        run: |
+          docker run --rm \
+            -v "$PWD":/w -w /w \
+            -e CARGO_HOME=/w/.cargo-home \
+            -e RUSTUP_HOME=/w/.rustup-home \
+            -e CARGO_TERM_COLOR=always \
+            ubuntu:18.04 bash -eux -c '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              # build-essential/m4/make/diffutils : exigés par le build source de
+              # GMP/MPFR/MPC. Les libs X11/Wayland/GL servent au binaire GUI
+              # (eframe features x11 + wayland).
+              apt-get install -y --no-install-recommends \
+                build-essential m4 make diffutils pkg-config \
+                curl ca-certificates \
+                libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+                libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs \
+                | sh -s -- -y --profile minimal --default-toolchain stable
+              . "$CARGO_HOME/env"
+              cargo build --release --locked --bins
+            '
+
+      - name: Assembler dist/
+        run: .github/scripts/package.sh linux-x86_64-glibc2.27
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fractall-linux-x86_64-glibc2.27
+          path: dist/*
+          if-no-files-found: error
+
+  # ── Linux ARM64 optimisé Raspberry Pi 400 ──────────────────────────────────
+  # Pi 400 = BCM2711, quatre Cortex-A72 en aarch64 → `target-cpu=cortex-a72`
+  # (active les extensions du cœur : CRC, pipeline tuning) plutôt que le
+  # générique `aarch64`. Build NATIF sur runner ARM64 (gratuit sur dépôt public) :
+  # bien plus rapide et fiable que QEMU pour le build source de GMP.
+  #
+  # Conteneur Debian bullseye = glibc 2.31 → couvre Raspberry Pi OS bullseye
+  # ET bookworm. Builder sur l'Ubuntu ARM du runner (glibc 2.35) casserait
+  # bullseye. Ici `container:` est possible : 2.31 ≥ 2.28, Node 20 démarre.
+  linux-pi400:
+    name: Linux ARM64 (Raspberry Pi 400)
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 120
+    container: debian:bullseye
+    env:
+      # Tuning Cortex-A72. S'ajoute au profil release (lto=fat, codegen-units=1).
+      RUSTFLAGS: -C target-cpu=cortex-a72
+    steps:
+      # Avant checkout : sans git, actions/checkout retombe sur un tarball API
+      # et le dépôt n'aurait pas d'historique (nécessaire au calcul de version).
+      - name: Outils de base
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            git curl ca-certificates \
+            build-essential m4 make diffutils pkg-config \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --release --locked --bins
+
+      - name: Assembler dist/
+        run: .github/scripts/package.sh linux-arm64-pi400
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fractall-linux-arm64-pi400
+          path: dist/*
+          if-no-files-found: error
+
+  # ── Windows x86-64 ─────────────────────────────────────────────────────────
+  # Toolchain GNU obligatoire (gmp-mpfr-sys ne supporte pas MSVC). MSYS2 fournit
+  # m4/make/gcc ; cargo est appelé DEPUIS le shell MSYS2 pour que le build
+  # source de GMP les trouve sur le PATH.
+  windows:
+    name: Windows x86_64 (GNU)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          # Paquets listés par le README de gmp-mpfr-sys pour le build Windows.
+          install: >-
+            diffutils m4 make
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-pkg-config
+
+      # Action JS : tourne côté runner (le `defaults.run.shell` msys2 ne
+      # s'applique qu'aux étapes `run`, et `shell:` est interdit sur `uses:`).
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable-x86_64-pc-windows-gnu
+
+      - name: Build
+        run: |
+          # setup-msys2 isole le PATH du shell (path-type minimal par défaut) :
+          # cargo, installé côté Windows par rustup, doit y être réinjecté.
+          export PATH="$(cygpath -u "$USERPROFILE")/.cargo/bin:$PATH"
+          cargo build --release --locked --bins
+
+      - name: Assembler dist/
+        run: .github/scripts/package.sh windows-x86_64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fractall-windows-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+  # ── macOS Apple Silicon ────────────────────────────────────────────────────
+  # Pour ajouter Intel : dupliquer ce job sur `macos-15-intel` avec le label
+  # `macos-x86_64`, ou produire un binaire universel via `lipo -create` dans un
+  # job supplémentaire consommant les deux artefacts.
+  macos:
+    name: macOS arm64
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --release --locked --bins
+
+      - name: Assembler dist/
+        run: .github/scripts/package.sh macos-arm64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fractall-macos-arm64
+          path: dist/*
+          if-no-files-found: error
+
+  # ── Publication ────────────────────────────────────────────────────────────
+  release:
+    name: Publier la Release
+    needs: [linux-glibc227, linux-pi400, windows, macos]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Créer la Release et attacher les archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -lhR dist/ | head -40
+          # N'attacher QUE les archives : `dist/*` contiendrait aussi les
+          # répertoires déployés, que `gh release` refuse.
+          shopt -s nullglob
+          files=(dist/*.tar.gz dist/*.zip)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "Aucune archive trouvée dans dist/" >&2
+            exit 1
+          fi
+          printf 'attachement: %s\n' "${files[@]}"
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            "${files[@]}"

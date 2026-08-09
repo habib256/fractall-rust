@@ -54,3 +54,6 @@ Thumbs.db
 /harness/inflight.json
 /harness/crash-journal.jsonl
 /fraktaler-3-3.1/build-linux-batch/
+
+## Artefacts de release (CI)
+/dist/
