@@ -14,6 +14,7 @@ use crate::fractal::perturbation::ReferenceOrbitCache;
 use crate::fractal::xaos::{self, XaosSourceFrame};
 use crate::render::render_escape_time_cancellable_with_reuse;
 use crate::gui::texture::rgb_image_to_color_image;
+use crate::gui::nav;
 use crate::gui::progressive::{ProgressiveConfig, RenderMessage, upscale_nearest};
 use crate::gpu::GpuRenderer;
 
@@ -309,8 +310,9 @@ pub struct FractallApp {
     /// Bouton maintenu en cours (drag de navigation actif) : sélectionne la
     /// config de rendu « navigation » (passe unique) dans `start_render_with`.
     xaos_nav_dragging: bool,
-    /// Instant du dernier rendu lancé pendant la navigation (throttle).
-    xaos_nav_last_render: Option<Instant>,
+    /// Machine à états de la navigation continue (vitesse, ancrage, cadence).
+    /// Logique PURE et testée dans `gui::nav` — cf. son en-tête pour le pourquoi.
+    nav: nav::NavState,
     /// Rendu de STABILISATION (bouton relâché, vue figée) : navigation encore,
     /// donc passe unique + streaming partiel, mais résolution PLEINE — la
     /// résolution dynamique ne s'applique qu'au mouvement.
@@ -319,12 +321,6 @@ pub struct FractallApp {
     /// extrapoler le coût plein cadre depuis `last_render_time` (coût ∝ d²).
     rendering_divisor: u8,
     last_render_divisor: u8,
-    /// Vitesse de zoom courante, en `ln(facteur)` par seconde (signée : > 0 =
-    /// zoom avant). Rampe vers la cible au lieu de démarrer/s'arrêter net.
-    xaos_nav_vel: f64,
-    /// Point d'ancrage normalisé du zoom, conservé pendant la décélération
-    /// (le curseur peut avoir quitté l'image, le mouvement doit rester ancré).
-    xaos_nav_anchor: Option<(f32, f32)>,
 
     /// FRACTALL_UI_TRACE=1 : trace des à-coups du thread UI (lu une fois).
     ui_trace: bool,
@@ -340,60 +336,6 @@ const UI_TRACE_GAP_MS: f64 = 40.0;
 /// Cadence de publication des frames partielles de navigation (~25 FPS, milieu
 /// de la fenêtre XaoS 15-35 FPS en animation, `ui_helper.cpp`).
 const NAV_STREAM_INTERVAL: Duration = Duration::from_millis(40);
-
-/// Durée VISÉE d'une image de navigation (s). Au-delà, la résolution dynamique
-/// entre en jeu (port de la « dynamic resolution » XaoS, `algorithms.md` :
-/// « calculate only the details that can be determined within a time
-/// interval »). XaoS vise 15-35 FPS en animation ; on est plus conservateur car
-/// notre coût par pixel (perturbation deep) est de plusieurs ordres au-dessus.
-const NAV_FRAME_TARGET_SECS: f64 = 0.25;
-
-/// Diviseur de résolution maximal en navigation (1/4 de côté = 1/16 des pixels).
-const NAV_MAX_DIVISOR: u8 = 4;
-
-/// Vitesse de croisière du zoom continu : facteur d'échelle par seconde.
-/// Valeur XaoS : `MAXSTEP = 0.024` de span par frame nominale de 1/20 s
-/// (`config.h`, `uih_zoomupdate` : `mmul = (1-step)^mul`), soit
-/// `(1-0.024)^-20 ≈ 1.62` par seconde.
-const XAOS_NAV_ZOOM_RATE: f64 = 1.624;
-
-/// Durée de montée en vitesse (s). XaoS accélère par paliers `speedup*2` par
-/// frame (`uih_zoom`) : `MAXSTEP / (2·STEP) ≈ 6.7` frames de 1/20 s.
-const XAOS_NAV_ACCEL_SECS: f64 = 0.33;
-
-/// Durée de décélération après relâchement (s). XaoS décroît deux fois plus
-/// lentement qu'il n'accélère (`uih_slowdown` retire `speedup` par frame) :
-/// le zoom continue en s'amortissant au lieu de s'arrêter net.
-const XAOS_NAV_DECEL_SECS: f64 = 0.67;
-
-/// Sous cette vitesse (en ln(facteur)/s) la navigation est considérée à l'arrêt.
-const XAOS_NAV_VEL_EPSILON: f64 = 1e-3;
-
-/// Intervalle minimal entre deux rendus pendant la navigation XaoS (~30 Hz).
-/// Sans ce plancher, une scène peu profonde (rendu ~5 ms) déclencherait des
-/// centaines de spawns de thread + uploads de texture par seconde, ce qui
-/// affame le thread UI → frames irrégulières = saccades. Le warp assure la
-/// continuité visuelle entre deux rendus.
-const XAOS_NAV_MIN_RENDER_INTERVAL: Duration = Duration::from_millis(33);
-
-/// Avance de vue MAXIMALE tolérée entre deux images fraîches, en facteur de
-/// zoom. La vitesse de navigation s'adapte au débit réel du moteur pour tenir
-/// cette borne (`rate = MAX_STEP^(1/durée_rendu)`, plafonnée par
-/// `XAOS_NAV_ZOOM_RATE`).
-///
-/// Why : à grande profondeur une image coûte ~1 s ; à ×3/s la vue avance de ×3
-/// entre deux images → la texture warpée est étirée ×3 (floue) avant d'être
-/// remplacée d'un coup par une image nette = « pop » périodique perçu comme une
-/// saccade. Borner l'écart réduit l'amplitude du pop ET rend le rendu bien moins
-/// cher : la réutilisation pixels inter-frame (G10.4) ne récupère que la partie
-/// commune des deux vues (~1/step² des pixels), donc un petit pas est
-/// quasi gratuit là où un ×3 recalcule presque tout. Cercle vertueux : pas plus
-/// petit → rendu plus rapide → cadence plus haute → vitesse réelle qui remonte.
-const XAOS_NAV_MAX_STEP_PER_RENDER: f64 = 1.35;
-
-/// Plancher de vitesse : même si le moteur est très lent, la navigation garde
-/// une progression perceptible (facteur par seconde).
-const XAOS_NAV_MIN_ZOOM_RATE: f64 = 1.05;
 
 /// Presets de résolution pour le rendu haute qualité.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -558,12 +500,10 @@ impl FractallApp {
             xaos_nav_mode: false,
             xaos_nav_last_tick: None,
             xaos_nav_dragging: false,
-            xaos_nav_last_render: None,
+            nav: nav::NavState::new(),
             xaos_nav_settle: false,
             rendering_divisor: 1,
             last_render_divisor: 1,
-            xaos_nav_vel: 0.0,
-            xaos_nav_anchor: None,
 
             ui_trace: std::env::var("FRACTALL_UI_TRACE").is_ok_and(|v| v != "0"),
             ui_frame_last: None,
@@ -1205,16 +1145,7 @@ impl FractallApp {
         // Le rendu de stabilisation (bouton relâché) reste en pleine résolution,
         // et le raffinement idle rend l'image exacte ensuite.
         let nav_divisor = if self.xaos_nav_dragging && !self.xaos_nav_settle {
-            let full_cost = self
-                .last_render_time
-                .map(|t| t * (self.last_render_divisor as f64).powi(2));
-            match full_cost {
-                Some(c) if c > NAV_FRAME_TARGET_SECS => {
-                    let d = (c / NAV_FRAME_TARGET_SECS).sqrt().ceil() as u32;
-                    (d.next_power_of_two() as u8).min(NAV_MAX_DIVISOR)
-                }
-                _ => 1,
-            }
+            nav::nav_divisor(self.last_render_time, self.last_render_divisor)
         } else {
             1
         };
@@ -3002,9 +2933,7 @@ impl eframe::App for FractallApp {
                         // Sortie/entrée du mode : abandonner tout état transitoire.
                         self.xaos_nav_last_tick = None;
                         self.xaos_nav_dragging = false;
-                        self.xaos_nav_last_render = None;
-                        self.xaos_nav_vel = 0.0;
-                        self.xaos_nav_anchor = None;
+                        self.nav.reset();
                         self.selecting = false;
                         self.select_start = None;
                         self.select_current = None;
@@ -3576,90 +3505,61 @@ impl eframe::App for FractallApp {
                             (d, i.pointer.interact_pos())
                         });
                         // Ancrage : position courante si le curseur est sur
-                        // l'image, sinon le dernier ancrage connu (le zoom doit
-                        // rester ancré pendant la décélération, même curseur sorti).
-                        if let Some(p) = pointer_pos.filter(|p| image_rect.contains(*p)) {
-                            let local = p - image_rect.min;
-                            self.xaos_nav_anchor = Some((
-                                local.x / image_rect.width(),
-                                local.y / image_rect.height(),
-                            ));
-                        }
+                        // l'image ; `None` conserve le dernier ancrage connu
+                        // (le zoom reste ancré pendant la décélération, même
+                        // curseur sorti de l'image).
+                        let anchor = pointer_pos
+                            .filter(|p| image_rect.contains(*p))
+                            .map(|p| {
+                                let local = p - image_rect.min;
+                                (
+                                    local.x / image_rect.width(),
+                                    local.y / image_rect.height(),
+                                )
+                            });
 
                         let now = Instant::now();
-                        // dt borné : une frame lente ne doit pas produire un saut
-                        // de zoom incontrôlable.
                         let dt = self
                             .xaos_nav_last_tick
                             .map(|t| now.duration_since(t).as_secs_f64())
-                            .unwrap_or(0.0)
-                            .clamp(0.0, 0.1);
+                            .unwrap_or(0.0);
 
-                        // Vitesse de croisière asservie au débit mesuré du moteur :
-                        // au plus XAOS_NAV_MAX_STEP_PER_RENDER de zoom entre deux
-                        // images fraîches. Pleine vitesse tant que le rendu suit.
-                        let cruise = match self.last_render_time {
-                            Some(t) if t > 0.0 => XAOS_NAV_ZOOM_RATE
-                                .min(XAOS_NAV_MAX_STEP_PER_RENDER.powf(1.0 / t))
-                                .max(XAOS_NAV_MIN_ZOOM_RATE),
-                            _ => XAOS_NAV_ZOOM_RATE,
+                        // Toute la décision (rampe de vitesse, ancrage, cadence
+                        // de rendu, stabilisation) vit dans `gui::nav`, testée
+                        // sans fenêtre. Ici on ne fait qu'EXÉCUTER la sortie.
+                        let outcome = self.nav.tick(nav::NavInput {
+                            dir,
+                            dt,
+                            anchor,
+                            cruise: nav::cruise_rate(self.last_render_time),
+                            rendering: self.rendering,
+                        });
+                        self.xaos_nav_last_tick = self.nav.is_active().then_some(now);
+
+                        if let Some((rx, ry, factor)) = outcome.zoom {
+                            self.zoom_anchored_hp(rx as f64, ry as f64, factor);
                         }
-                        .ln();
-
-                        // Rampe accel/décel (port XaoS `uih_zoom` / `uih_slowdown`) :
-                        // le bouton pilote une CIBLE de vitesse, pas la vitesse elle-
-                        // même. Départ et arrêt progressifs, et le zoom s'amortit
-                        // après relâchement au lieu de se figer net.
-                        let target = dir * cruise;
-                        let ramp_secs = if dir != 0.0 {
-                            XAOS_NAV_ACCEL_SECS
-                        } else {
-                            XAOS_NAV_DECEL_SECS
-                        };
-                        let max_delta = (cruise / ramp_secs) * dt;
-                        let dv = (target - self.xaos_nav_vel).clamp(-max_delta, max_delta);
-                        self.xaos_nav_vel += dv;
-                        if dir == 0.0 && self.xaos_nav_vel.abs() < XAOS_NAV_VEL_EPSILON {
-                            self.xaos_nav_vel = 0.0;
-                        }
-
-                        // « En mouvement » inclut le bouton enfoncé même à vitesse
-                        // encore nulle : sinon la 1re frame (dt = 0, donc vel
-                        // reste 0) n'enregistrerait pas le tick, dt resterait nul
-                        // à la frame suivante et la rampe ne démarrerait JAMAIS.
-                        let moving = self.xaos_nav_vel != 0.0 || dir != 0.0;
-                        if moving {
-                            self.xaos_nav_last_tick = Some(now);
-                            self.xaos_nav_dragging = true;
-                            if dt > 0.0 && self.xaos_nav_vel != 0.0 {
-                                if let Some((rx, ry)) = self.xaos_nav_anchor {
-                                    self.zoom_anchored_hp(
-                                        rx as f64,
-                                        ry as f64,
-                                        (self.xaos_nav_vel * dt).exp(),
-                                    );
-                                }
-                                let due = self.xaos_nav_last_render.is_none_or(|t| {
-                                    now.duration_since(t) >= XAOS_NAV_MIN_RENDER_INTERVAL
-                                });
-                                if !self.rendering && due {
-                                    self.xaos_nav_last_render = Some(now);
-                                    self.start_render();
-                                }
+                        match outcome.render {
+                            nav::NavRender::Moving => {
+                                self.xaos_nav_dragging = true;
+                                self.start_render();
                             }
+                            nav::NavRender::Settle => {
+                                // `dragging` reste vrai pour la config de rendu
+                                // (passe unique + streaming partiel, pas de
+                                // retour au flou d'une passe 1/16) ; `settle`
+                                // force la PLEINE résolution, la résolution
+                                // dynamique ne servant que pendant le mouvement.
+                                self.xaos_nav_dragging = true;
+                                self.xaos_nav_settle = true;
+                                self.start_render();
+                                self.xaos_nav_settle = false;
+                                self.xaos_nav_dragging = false;
+                            }
+                            nav::NavRender::None => {}
+                        }
+                        if outcome.repaint {
                             ctx.request_repaint();
-                        } else if self.xaos_nav_last_tick.take().is_some() {
-                            // Arrêt complet : rendu de stabilisation sur la vue
-                            // atteinte. `xaos_nav_dragging` est encore vrai →
-                            // passe unique + streaming partiel (pas de retour au
-                            // flou d'une passe 1/16) ; `settle` force la PLEINE
-                            // résolution, la résolution dynamique ne servant que
-                            // pendant le mouvement.
-                            self.xaos_nav_settle = true;
-                            self.start_render();
-                            self.xaos_nav_settle = false;
-                            self.xaos_nav_dragging = false;
-                            self.xaos_nav_last_render = None;
                         }
                     }
 
