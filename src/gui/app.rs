@@ -1497,7 +1497,7 @@ impl FractallApp {
                 };
 
                 match result {
-                    Some(((iterations, zs, distances, orbits), effective_mode, mut precision_label, from_gpu)) => {
+                    Some(((iterations, zs, distances, orbits), effective_mode, precision_label, from_gpu)) => {
                         // Buffers bruts en Arc : partagés (sans memcpy) entre la
                         // passe suivante, la frame source XaoS et l'état de l'app.
                         let iterations = Arc::new(iterations);
@@ -1522,11 +1522,6 @@ impl FractallApp {
                             }
                             _ => false,
                         };
-                        if xaos_approx {
-                            // Indicateur : la frame contient des pixels approximés
-                            // (le raffinement idle l'effacera au rendu exact).
-                            precision_label.push_str(" ≈XaoS");
-                        }
                         // Une passe écho-pur (100 % copiée) n'apporte aucune
                         // information : garder la frame source existante au
                         // lieu de la dégrader en copie de copie (zooms/pans
@@ -3866,8 +3861,22 @@ impl eframe::App for FractallApp {
                         ui.label(format!("GMP: {}b", effective_prec));
                     }
 
-                    // Afficher le statut du rendu progressif + barre de progression
-                    if self.rendering {
+                    // Statut du rendu progressif.
+                    //
+                    // En navigation XaoS les rendus s'enchaînent à ~30 Hz : la
+                    // barre animée, son pourcentage et le temps écoulé
+                    // apparaissent/disparaissent à cette cadence — clignotement
+                    // bleu en bas à droite, et largeur de la barre d'état qui
+                    // saute. On affiche un état STABLE pendant tout le geste
+                    // (y compris entre deux rendus, sinon le label lui-même
+                    // clignoterait avec `self.rendering`). Le rendu de
+                    // stabilisation, lui, retrouve la barre normale : c'est un
+                    // calcul unique dont la progression intéresse l'utilisateur.
+                    let nav_active = self.xaos_nav_mode && self.nav.is_active();
+                    if nav_active {
+                        ui.separator();
+                        ui.label("Navigation XaoS");
+                    } else if self.rendering {
                         ui.separator();
                         let total = self.total_passes.max(1) as f32;
                         let progress = (self.current_pass as f32 / total).min(1.0);

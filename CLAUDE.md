@@ -661,7 +661,7 @@ puis OpenGL ; Windows DX12 / Vulkan.
   source → au plus une cible) — garantit ≥ (1−a)·n colonnes fraîches par axe
   en zoom-in (fin de l'« écho pur » du zoom ×2 aligné qui ne calculait RIEN
   et retardait l'image exacte), no-op en pan/zoom-out/previews. Raffinement
-  exact silencieux à l'idle (400 ms, label `≈XaoS`, déclenché seulement si
+  exact silencieux à l'idle (400 ms, sans indicateur visible, déclenché seulement si
   erreur réelle > ε) via `build_refine_map` : map UNION identité
   (`keep_union`) qui conserve tout pixel dont un axe est ENTIÈREMENT exact
   (`col_exact`/`row_exact` — ≠ « aligné » : une ligne copiée alignée peut
