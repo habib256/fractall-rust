@@ -187,7 +187,7 @@ Le scorecard trace une section `beyond_f3` :
 ## Protocole de vérification (étape 5, obligatoire)
 
 ```bash
-cargo test --release --bin fractall-cli          # ~178 unit
+cargo test --release --lib                       # ~312 unit (cible lib)
 cargo test --release --test golden_images        # pixel-exact
 cargo run --release --bin fractall-quality -- suite
 python3 scripts/harness.py score --tier quick    # delta vs baseline

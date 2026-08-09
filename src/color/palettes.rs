@@ -113,7 +113,7 @@ impl PaletteLut {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct GradientStop {
+pub struct GradientStop {
     position: f64, // [0.0, 1.0]
     r: u8,
     g: u8,
@@ -121,7 +121,7 @@ struct GradientStop {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Gradient {
+pub struct Gradient {
     _name: &'static str,
     stops: &'static [GradientStop],
 }

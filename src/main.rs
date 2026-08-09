@@ -5,11 +5,9 @@ use std::sync::Arc;
 use clap::Parser;
 use rug::Float;
 
-mod fractal;
-mod color;
-mod render;
-mod io;
-mod gpu;
+// Les modules vivent dans la bibliothèque `fractall_cli` (src/lib.rs) : les
+// importer sous leur nom court conserve les chemins existants (`fractal::…`).
+use fractall_cli::{fractal, gpu, io, render};
 
 use fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalType, LyapunovPreset, OutColoringMode, PlaneTransform};
 use render::render_escape_time;
@@ -469,7 +467,7 @@ fn main() {
     // Formule opcodes F3 (G4 Op::Rot) : --opcodes prioritaire sur --phases
     // pour la formule (précédence dans formula_for_params). Validation tôt.
     if let Some(ref ops) = cli.opcodes {
-        if crate::fractal::bytecode::parse_opcodes_formula(ops).is_none() {
+        if fractall_cli::fractal::bytecode::parse_opcodes_formula(ops).is_none() {
             eprintln!("--opcodes : formule invalide '{ops}' (mots: add sqr mul store absx absy negx negy rot{{DEG}} ; chaque phase finit par add)");
             std::process::exit(2);
         }
@@ -537,7 +535,7 @@ fn main() {
         // explicite reste prioritaire.
         if cli.opcodes.is_none() {
             if let Some(ref ops) = t.formula_opcodes {
-                if crate::fractal::bytecode::parse_opcodes_formula(ops).is_none() {
+                if fractall_cli::fractal::bytecode::parse_opcodes_formula(ops).is_none() {
                     eprintln!(
                         "TOML {}: [[formula]] opcodes invalides '{}'",
                         toml_path.display(),
@@ -844,11 +842,11 @@ fn main() {
         // parité F3 : sans ça, NF utilise degree=2.5 par défaut pour tous
         // les types, ce qui décale le smooth iter de ~0.1-0.2 pour les
         // pixels juste échappés.
-        let degree = match crate::fractal::bytecode::compile_formula(
+        let degree = match fractall_cli::fractal::bytecode::compile_formula(
             params.fractal_type,
             params.multibrot_power,
         ) {
-            Some(formula) => crate::fractal::bytecode::formula_last_degree(&formula) as f64,
+            Some(formula) => fractall_cli::fractal::bytecode::formula_last_degree(&formula) as f64,
             None => params.multibrot_power.max(2.0),
         };
         match save_iterations_exr(

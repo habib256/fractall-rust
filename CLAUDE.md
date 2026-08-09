@@ -20,7 +20,9 @@ Prérequis natifs : GMP / MPFR / MPC (pour `rug`).
 
 ## Tests
 
-- **Unit tests** : `cargo test --release --bin fractall-cli` (~271 tests).
+- **Unit tests** : `cargo test --release --lib` (~312 tests). ⚠️ Cible **lib**
+  (`src/lib.rs`) : les binaires ne sont que des enveloppes, les tests des
+  modules ne tournent plus en triple sous `--bin`.
   Couvre `perturbation/{bla,delta,series,nonconformal,distance,interior,
   glitch,orbit,types,nucleus,mod}`, `jitter` (AA), `lyapunov`, `progressive`,
   `wisdom` (select_algorithm/device, plan), et tout le `bytecode/` (`compile`

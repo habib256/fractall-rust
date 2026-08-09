@@ -1,9 +1,4 @@
-mod fractal;
-mod color;
-mod render;
-mod io;
-mod gui;
-mod gpu;
+use fractall_cli::gui;
 
 use gui::FractallApp;
 

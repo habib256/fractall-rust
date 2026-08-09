@@ -31,11 +31,11 @@ jobs:
         with:
           shared-key: ci-ubuntu
 
-      - name: Unit tests (fractall-cli)
-        run: cargo test --release --locked --bin fractall-cli
-
-      - name: Unit tests (fractall-quality — metrics + presets)
-        run: cargo test --release --locked --bin fractall-quality
+      # Les tests unitaires des modules appartiennent à la cible `lib` depuis
+      # l'extraction de `src/lib.rs` : UNE exécution au lieu de la même suite
+      # rejouée par chaque binaire.
+      - name: Unit tests (lib — moteur, quality, gui)
+        run: cargo test --release --locked --lib
 
       - name: Golden image tests
         run: cargo test --release --locked --test golden_images

@@ -284,19 +284,11 @@ pub fn select_algorithm(params: &FractalParams, device: Device) -> Algorithm {
 /// Gain de débit minimal pour préférer le GPU au CPU : marge anti-bruit +
 /// amortissement du coût fixe (upload orbite/BLA, dispatch, readback). Le GPU
 /// doit être FRANCHEMENT plus rapide, pas à égalité.
-// Arbitrage device (G9.5) : consommé par les binaires cli et gui, pas par
-// quality (qui force son propre device). Même cause que les autres
-// exemptions du dépôt : 3 binaires sur un arbre de modules partagé.
-#[allow(dead_code)]
 const GPU_SPEED_MARGIN: f64 = 1.25;
 
 /// Plancher de `pixel_size` où le transport span hi/lo f32 du kernel GPU tient
 /// (miroir de `gpu/mod.rs::GPU_SPAN_F32_MIN`). En deça (deep extrême), le kernel
 /// GPU est incapable → CPU.
-// Arbitrage device (G9.5) : consommé par les binaires cli et gui, pas par
-// quality (qui force son propre device). Même cause que les autres
-// exemptions du dépôt : 3 binaires sur un arbre de modules partagé.
-#[allow(dead_code)]
 const GPU_SPAN_F32_MIN: f64 = 1e-37;
 
 /// **Auto-sélection du device (G9.5)** — CPU ou GPU par ARBITRAGE de débit
@@ -315,10 +307,6 @@ const GPU_SPAN_F32_MIN: f64 = 1e-37;
 ///
 /// `gpu_available` = GPU initialisé ET path requis supporté (SHADER_F64). Les
 /// overrides `--gpu`/`--no-gpu` sont appliqués par le caller AUTOUR de l'auto.
-// Arbitrage device (G9.5) : consommé par les binaires cli et gui, pas par
-// quality (qui force son propre device). Même cause que les autres
-// exemptions du dépôt : 3 binaires sur un arbre de modules partagé.
-#[allow(dead_code)]
 pub fn select_device(params: &FractalParams, gpu_available: bool) -> Device {
     if !gpu_available {
         return Device::Cpu;
@@ -359,10 +347,6 @@ pub fn select_device(params: &FractalParams, gpu_available: bool) -> Device {
 /// benché dépasse celui du CPU d'au moins [`GPU_SPEED_MARGIN`]. Toute absence de
 /// mesure (GPU non benché, technique CPU non benchée) → CPU (conservateur : on
 /// ne route jamais le GPU sans PREUVE qu'il est plus rapide).
-// Arbitrage device (G9.5) : consommé par les binaires cli et gui, pas par
-// quality (qui force son propre device). Même cause que les autres
-// exemptions du dépôt : 3 binaires sur un arbre de modules partagé.
-#[allow(dead_code)]
 fn arbitrate_device(gpu_iters_per_sec: Option<f64>, cpu_iters_per_sec: Option<f64>) -> Device {
     match (gpu_iters_per_sec, cpu_iters_per_sec) {
         (Some(g), Some(c)) if c > 0.0 && g > c * GPU_SPEED_MARGIN => Device::Gpu,

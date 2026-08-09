@@ -2,12 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-mod fractal;
-mod color;
-mod render;
-mod io;
-mod gpu;
-mod quality;
+use fractall_cli::{fractal, gpu, quality};
 
 use fractal::FractalType;
 use quality::{apply_zoom, compare, compare_gpu, params_from_preset, ComparisonOptions};

@@ -29,13 +29,6 @@ mod tests;
 
 pub use bla_dual::build_bla_table_for_formula;
 pub use compile::{compile_formula, formula_for_params};
-// ⚠️ Les 3 binaires (cli/gui/quality) compilent le MÊME arbre de modules — le
-// projet n'a pas de crate lib — donc un item consommé par UN SEUL d'entre eux
-// (ou par les seuls tests) paraît inutilisé dans les autres. C'est le cas ici :
-// `compile_hybrid_formula` n'est appelé que par les tests de `nucleus.rs`, et
-// `parse_opcodes_formula` que par le CLI (`main.rs`, options `--opcodes`).
-// Re-export séparé pour que l'exemption reste circonscrite à ces deux noms.
-#[allow(unused_imports)]
 pub use compile::{compile_hybrid_formula, parse_opcodes_formula};
 pub use interp::iterate_bytecode_f64;
 pub use interp_gmp::GmpInterpState;
