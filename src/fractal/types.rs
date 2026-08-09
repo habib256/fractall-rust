@@ -56,6 +56,9 @@ impl FractalType {
     /// Parse un nom de type pour `--phases` (hybrides G4). Seuls les types
     /// escape-time représentables en bytecode peuvent être une phase — les
     /// autres renvoient `None`. Insensible à la casse ; `_`/`-`/espaces ignorés.
+    // Consommé par le binaire CLI (`main.rs`, `--phases`) uniquement : les
+    // binaires gui/quality compilent le même arbre de modules et le voient mort.
+    #[allow(dead_code)]
     pub fn from_hybrid_name(s: &str) -> Option<Self> {
         let k: String = s
             .chars()

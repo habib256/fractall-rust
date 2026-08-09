@@ -1408,7 +1408,7 @@ le câblage params/render, + la BLA par phase + le nucleus phase-aware + l'UI.
   Compose une phase par type escape-time (réutilise le bytecode existant, aucune
   nouvelle sémantique) : `[Mandelbrot, BurningShip]` = Mandel-Ship alternant,
   `[M,M,BS]` = 2×M puis 1×BS. `None` si vide/type non-bytecode/power non-entière.
-  6 tests (dont `hybrid_MM_iterates_identically_to_single_M`).
+  6 tests (dont `hybrid_mm_iterates_identically_to_single_m`).
 - [x] **✅ Jalon 2 — les hybrides RENDENT `[2026-07-17]`** :
   `params.hybrid_phases: Option<Vec<FractalType>>` + `formula_for_params(params)`
   (source unique : hybride si `hybrid_phases`, sinon mono-formule). CLI

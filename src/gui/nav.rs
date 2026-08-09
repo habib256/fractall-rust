@@ -163,7 +163,9 @@ impl NavState {
         Self::default()
     }
 
-    /// Vitesse courante en `ln(facteur)/s` (diagnostic et tests).
+    /// Vitesse courante en `ln(facteur)/s`. Accesseur de test : la boucle GUI
+    /// n'a pas à connaître la vitesse, elle applique le `NavOutcome`.
+    #[cfg(test)]
     pub fn velocity(&self) -> f64 {
         self.vel
     }

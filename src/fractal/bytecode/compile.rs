@@ -381,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_MM_iterates_identically_to_single_M() {
+    fn hybrid_mm_iterates_identically_to_single_m() {
         // Invariant : [Mandelbrot, Mandelbrot] (2 phases identiques z²+c) doit
         // itérer EXACTEMENT comme le Mandelbrot mono-phase (même trajectoire,
         // même compte d'itérations, même z final).

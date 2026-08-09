@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use crate::fractal::bytecode::bla_dual::BlaTableUnified;
 use crate::fractal::bytecode::bla_dual_exp::BlaTableUnifiedExp;
 use crate::fractal::bytecode::pixel_loop_exp::iterate_pixel_unified_exp;
-use crate::fractal::bytecode::{build_bla_table_for_formula, compile_formula, Formula};
+use crate::fractal::bytecode::{build_bla_table_for_formula, Formula};
 use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::perturbation::bla::BlaTable;
 use crate::fractal::perturbation::orbit::{ReferenceOrbit, HybridBlaReferences};
@@ -3204,7 +3204,7 @@ mod tests {
             params, None, None, None, false,
         )
         .expect("orbite référence");
-        let formula = compile_formula(params.fractal_type, params.multibrot_power)
+        let formula = crate::fractal::bytecode::compile_formula(params.fractal_type, params.multibrot_power)
             .expect("formule compilable");
         let pixel_size = crate::fractal::perturbation::effective_pixel_size(params);
         let diag_px =

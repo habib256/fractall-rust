@@ -6,7 +6,7 @@ use num_complex::Complex64;
 use rug::{Assign, Complex, Float};
 
 use crate::fractal::{FractalParams, FractalType};
-use crate::fractal::bytecode::{compile_formula, GmpInterpState, Formula};
+use crate::fractal::bytecode::{GmpInterpState, Formula};
 use crate::fractal::gmp::{complex_to_complex64, pow_f64_mpc};
 use crate::fractal::perturbation::bla::{BlaTable, build_bla_table};
 use crate::fractal::perturbation::types::{ComplexExp, FloatExp};

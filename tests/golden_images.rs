@@ -281,7 +281,7 @@ const CASES: &[Case] = &[
     // 4440/2974 px). Rougit si le câblage hybride (formula_for_params, cyclage
     // iterate_bytecode_f64) ou le routage StandardF64 régresse. L'invariant
     // [M,M]==M est verrouillé séparément par le unit test
-    // `hybrid_MM_iterates_identically_to_single_M`.
+    // `hybrid_mm_iterates_identically_to_single_m`.
     Case {
         name: "mandelbrot_hybrid_burningship",
         args: &[

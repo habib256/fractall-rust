@@ -693,7 +693,9 @@ pub fn iterate_pixel_harmonic_mla(
     // Budget de pas directs GLOBAL au pixel (PAS remis à zéro par la
     // ré-ascension de l'écart #4).
     let mut iters_ptb = 0u32;
-    let mut z_abs = Complex64::new(0.0, 0.0);
+    // Déclaré sans valeur : le compilateur vérifie alors que toute lecture est
+    // précédée d'une affectation (l'initialisation à zéro le masquait).
+    let mut z_abs;
 
     // Écart fractall #4 : **ré-ascension après rebase de la queue directe**
     // (absent d'Imagina — leur évaluateur ne quitte jamais la queue). Un
