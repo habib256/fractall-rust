@@ -143,6 +143,7 @@ jobs:
           # Paquets listés par le README de gmp-mpfr-sys pour le build Windows.
           install: >-
             diffutils m4 make
+            zip
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-pkg-config
 
