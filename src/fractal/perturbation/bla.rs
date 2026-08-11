@@ -304,7 +304,7 @@ fn compute_bla_coefficients(
 /// # Single Step BLA
 ///
 /// Approximation of a single step by bilinear form is valid when:
-/// ```
+/// ```text
 /// |z_n²| << |2·Z_n·z_n + c|
 /// ⇑ assume negligibility of c << |2·Z_n·z_n|
 /// ⇑ factor out z_n

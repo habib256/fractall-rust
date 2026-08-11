@@ -24,7 +24,7 @@
 //! - **Formule de perturbation**: `z_{n+1} = 2·Z_m·z_n + z_n² + c`
 //!
 //!   Cette formule découle du développement de Taylor de `(Z_m + z_n)² + (C + c)`:
-//!   ```
+//!   ```text
 //!   (Z_m + z_n)² + (C + c) = Z_m² + 2·Z_m·z_n + z_n² + C + c
 //!                           = (Z_m² + C) + (2·Z_m·z_n + z_n² + c)
 //!                           = Z_{m+1} + z_{n+1}
