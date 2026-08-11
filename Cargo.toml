@@ -20,6 +20,10 @@ path = "src/main_quality.rs"
 name = "fractall-video"
 path = "src/main_video.rs"
 
+[[bin]]
+name = "fractall-video-gui"
+path = "src/main_video_gui.rs"
+
 [dependencies]
 # CLI avec derive pour simplifier la définition des arguments
 clap = { version = "4.5", features = ["derive"] }

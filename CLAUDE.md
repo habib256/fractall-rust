@@ -15,6 +15,7 @@ cargo run --release --bin fractall-cli -- --type 3 --output out.png
 cargo run --release --bin fractall-gui
 cargo run --release --bin fractall-quality -- suite
 cargo run --release --bin fractall-video -- plan cfg.toml -p proj/   # G12 vidéo
+cargo run --release --bin fractall-video-gui   # studio vidéo graphique (G12 j6)
 ```
 
 Prérequis natifs : GMP / MPFR / MPC (pour `rug`).
@@ -83,6 +84,11 @@ src/
 ├── main_gui.rs          # GUI fractall-gui (egui/eframe)
 ├── main_quality.rs      # QA fractall-quality (clap subcommands)
 ├── main_video.rs        # fractall-video (G12) : plan / render / assemble
+├── main_video_gui.rs    # fractall-video-gui : studio vidéo graphique (G12 j6)
+├── video_gui/           # Studio vidéo eframe SÉPARÉ du générateur (gui/ intact)
+│   ├── mod.rs              # VideoStudioApp : preview navigable + panneau + jobs
+│   ├── nav.rs              # zoom ancré / pan HP purs (règle -log2(span)+96)
+│   └── job.rs              # worker plan→render→assemble, manifest en mémoire
 ├── video/               # Pipeline vidéo zoom (G12, archi DeepDrill)
 │   ├── mod.rs              # Manifest TOML, keyframes ×2 (spans GMP exacts), render résumable
 │   ├── assemble.rs         # interpolation trilinear 2-keyframes + ffmpeg stdin / frames PNG
@@ -160,6 +166,21 @@ distinguer « explicite » du défaut).
   (clamp-to-edge AVANT floor), ffmpeg stdin rawvideo. AA vidéo = keyframes
   supersamplées (`image.supersample`). Verrous : frame à z=1 == keyframe
   colorisée pixel-exacte, continuité au raccord, déterminisme.
+
+**Studio graphique `fractall-video-gui`** (G12 jalon 6, 2026-08-11) :
+application eframe DÉDIÉE (le générateur `gui/` n'est pas touché). Preview
+navigable (molette = zoom ancré, glisser = pan, helpers HP purs
+`video_gui/nav.rs`) via le dispatcher unique (2 passes ¼→pleine, cancel par
+Arc neuf, cache d'orbite inter-passes) ; drag-and-drop d'un PNG fractall ou
+d'un `.fmap` = adoption de la cible ; le manifest est construit EN MÉMOIRE
+(`job::build_manifest` → `video::plan_from_manifest`), zéro fichier édité.
+Boutons « Générer » (reprise auto) et « Ré-assembler » (recolorer/re-timer
+sans recalcul, garde-fou empreinte : maps ≠ réglages → renvoi vers Générer).
+Hooks lib : `render_project_with_progress` / `assemble_project_with_progress`
+(`&mut dyn FnMut(événement)`, cancel `Arc<AtomicBool>`, annulation = outcome
+`Cancelled` PAS une erreur ; ffmpeg tué + .mp4 partiel supprimé) — les
+anciennes signatures restent des enveloppes à sortie console identique.
+⚠️ dimensions vidéo forcées PAIRES (`even_dims`, x264 yuv420p échoue sinon).
 
 **Dynamiques** (`video/spline.rs`) : `video.velocity` et `[dynamics]
 palette_offset` acceptent `"t/v,t/v,…"` (temps `M:S` ou s), cubique monotone ;

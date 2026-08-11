@@ -23,7 +23,7 @@ pub mod lighting;
 pub mod spline;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rug::Float;
@@ -288,7 +288,15 @@ pub fn map_fingerprint(params: &FractalParams) -> String {
 /// `video.keyframes` depuis le zoom final et écrit `project/manifest.toml`.
 /// Crée le dossier si besoin. Retourne le manifest écrit.
 pub fn plan_project(config: &Path, project: &Path) -> Result<Manifest, Box<dyn std::error::Error>> {
-    let mut m = Manifest::load(config)?;
+    plan_from_manifest(&Manifest::load(config)?, project)
+}
+
+/// Comme `plan_project`, mais depuis un `Manifest` EN MÉMOIRE : c'est le
+/// chemin du studio GUI (G12 jalon 6), qui construit le manifest lui-même —
+/// l'utilisateur n'édite aucun fichier. Remplit `video.keyframes`, valide la
+/// géométrie tôt, crée le dossier et écrit `project/manifest.toml`.
+pub fn plan_from_manifest(m: &Manifest, project: &Path) -> Result<Manifest, Box<dyn std::error::Error>> {
+    let mut m = m.clone();
     m.video.keyframes = keyframe_count(&m.location.zoom)?;
     // Valide la géométrie tôt (types/outcoloring invalides = erreur au plan,
     // pas au 30e keyframe du render).
@@ -298,16 +306,71 @@ pub fn plan_project(config: &Path, project: &Path) -> Result<Manifest, Box<dyn s
     Ok(m)
 }
 
+/// Événement de progression du rendu des keyframes (k ∈ 0..=n).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum KeyframeEvent {
+    /// Rendu de la keyframe `k` démarré.
+    Started { k: u32, n: u32 },
+    /// Map écrite (durée du rendu en secondes).
+    Rendered { k: u32, n: u32, seconds: f64 },
+    /// Reprise : map existante valide, réutilisée telle quelle.
+    Skipped { k: u32, n: u32 },
+    /// Map existante obsolète (empreinte ≠) → re-rendu (un `Started` suit).
+    Invalidated { k: u32, n: u32 },
+}
+
+/// Issue d'un rendu annulable. L'annulation n'est PAS une erreur : les maps
+/// déjà écrites restent valides (reprise par empreinte couleur-blind).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenderOutcome {
+    Complete { rendered: usize, skipped: usize },
+    Cancelled { rendered: usize, skipped: usize },
+}
+
 /// `render` : calcule les keyframes 0..=keyframes manquantes. Une map
 /// existante dont l'empreinte (params hors couleur) correspond est SKIPPÉE —
 /// c'est la reprise après interruption. Retourne (rendues, skippées).
+///
+/// Enveloppe no-cancel de `render_project_with_progress` reproduisant la
+/// sortie console historique (utilisée par le CLI `fractall-video render`).
 pub fn render_project(project: &Path) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+    let outcome = render_project_with_progress(
+        project,
+        &Arc::new(AtomicBool::new(false)),
+        &mut |ev| match ev {
+            KeyframeEvent::Invalidated { k, n } => {
+                println!("[{k}/{n}] keyframe_{k:05}.fmap invalide/obsolète → re-rendu");
+            }
+            KeyframeEvent::Rendered { k, n, seconds } => {
+                println!("[{k}/{n}] keyframe_{k:05}.fmap rendue en {seconds:.2}s");
+            }
+            KeyframeEvent::Started { .. } | KeyframeEvent::Skipped { .. } => {}
+        },
+    )?;
+    match outcome {
+        RenderOutcome::Complete { rendered, skipped } => Ok((rendered, skipped)),
+        // Inatteignable sans cancel externe — sémantique historique conservée.
+        RenderOutcome::Cancelled { .. } => Err("rendu annulé".into()),
+    }
+}
+
+/// Version annulable + progression (studio GUI, G12 jalon 6). Le `cancel` est
+/// vérifié en tête de boucle ET passé au dispatcher (annulation mi-keyframe
+/// réactive : la map en cours est perdue, les précédentes restent — la
+/// reprise repartira exactement là).
+pub fn render_project_with_progress(
+    project: &Path,
+    cancel: &Arc<AtomicBool>,
+    progress: &mut dyn FnMut(KeyframeEvent),
+) -> Result<RenderOutcome, Box<dyn std::error::Error>> {
     let manifest = Manifest::load(&project.join("manifest.toml"))?;
     let n = manifest.video.keyframes;
-    let cancel = Arc::new(AtomicBool::new(false));
     let (mut rendered, mut skipped) = (0usize, 0usize);
 
     for k in 0..=n {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(RenderOutcome::Cancelled { rendered, skipped });
+        }
         let params = keyframe_params(&manifest, k)
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
         let path = keyframe_path(project, k);
@@ -315,17 +378,19 @@ pub fn render_project(project: &Path) -> Result<(usize, usize), Box<dyn std::err
             if let Ok(existing) = load_fmap(&path) {
                 if map_fingerprint(&existing.params) == map_fingerprint(&params) {
                     skipped += 1;
+                    progress(KeyframeEvent::Skipped { k, n });
                     continue;
                 }
             }
-            println!("[{k}/{n}] keyframe_{k:05}.fmap invalide/obsolète → re-rendu");
+            progress(KeyframeEvent::Invalidated { k, n });
         }
+        progress(KeyframeEvent::Started { k, n });
         let t0 = std::time::Instant::now();
         let mut orbit_cache = None; // single-shot : pas de réutilisation inter-échelle
         let Some((iterations, zs, _orbits, distances)) = render_escape_time_cancellable_with_reuse(
-            &params, &cancel, None, &mut orbit_cache, None, None,
+            &params, cancel, None, &mut orbit_cache, None, None,
         ) else {
-            return Err("rendu annulé".into());
+            return Ok(RenderOutcome::Cancelled { rendered, skipped });
         };
         let map = FractalMap {
             params,
@@ -335,12 +400,27 @@ pub fn render_project(project: &Path) -> Result<(usize, usize), Box<dyn std::err
         };
         save_fmap(&map, &path)?;
         rendered += 1;
-        println!(
-            "[{k}/{n}] keyframe_{k:05}.fmap rendue en {:.2}s",
-            t0.elapsed().as_secs_f64()
-        );
+        progress(KeyframeEvent::Rendered { k, n, seconds: t0.elapsed().as_secs_f64() });
     }
-    Ok((rendered, skipped))
+    Ok(RenderOutcome::Complete { rendered, skipped })
+}
+
+/// Magnification manifest depuis un span_x HP : `zoom = 4/span_x` (convention
+/// `SPAN_AT_ZOOM_1`). ⚠️ PAS le « Zoom » de la barre d'état de fractall-gui
+/// (qui est `4·width/span`, par pixel). Calcul rug à précision
+/// `-log2(span) + 96` bits (plancher 256), sérialisation `to_string_radix`.
+pub fn zoom_from_span_x(span_x_hp: &str) -> Result<String, String> {
+    let probe = Float::parse(span_x_hp)
+        .map(|p| Float::with_val(128, p))
+        .map_err(|e| format!("span illisible '{span_x_hp}': {e}"))?;
+    if !probe.is_finite() || probe <= 0.0 {
+        return Err(format!("span invalide '{span_x_hp}' (doit être fini et > 0)"));
+    }
+    let exp = probe.get_exp().unwrap_or(0) as i64;
+    let prec = (((-exp).max(0) as u32).saturating_add(96)).max(256);
+    let span = Float::with_val(prec, Float::parse(span_x_hp).expect("déjà parsé"));
+    let zoom = Float::with_val(prec, SPAN_AT_ZOOM_1) / span;
+    Ok(zoom.to_string_radix(10, None))
 }
 
 #[cfg(test)]
@@ -485,6 +565,130 @@ height = 200
         assert_eq!(reloaded.video.keyframes, 20);
         assert_eq!(reloaded.image.width, 320);
         assert_eq!(reloaded.location.real, "-0.75");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn progress_manifest(dir: &Path) -> Manifest {
+        let mut m = Manifest::default();
+        m.image.width = 16;
+        m.image.height = 12;
+        m.fractal.iterations = 80;
+        m.location.zoom = "8".into(); // 3 segments → 4 maps
+        m.video.keyframes = keyframe_count(&m.location.zoom).unwrap();
+        m.save(&dir.join("manifest.toml")).unwrap();
+        m
+    }
+
+    /// Verrou hooks (G12 jalon 6) : chaque keyframe rapporte Started puis
+    /// Rendered dans l'ordre ; un second run rapporte n+1 Skipped.
+    #[test]
+    fn render_with_progress_reports_each_keyframe() {
+        let dir = tmp_project("progress");
+        progress_manifest(&dir);
+
+        let mut events = Vec::new();
+        let outcome = render_project_with_progress(
+            &dir,
+            &Arc::new(AtomicBool::new(false)),
+            &mut |ev| events.push(ev),
+        )
+        .unwrap();
+        assert_eq!(outcome, RenderOutcome::Complete { rendered: 4, skipped: 0 });
+        let started: Vec<u32> = events
+            .iter()
+            .filter_map(|e| match e {
+                KeyframeEvent::Started { k, .. } => Some(*k),
+                _ => None,
+            })
+            .collect();
+        let rendered: Vec<u32> = events
+            .iter()
+            .filter_map(|e| match e {
+                KeyframeEvent::Rendered { k, .. } => Some(*k),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(started, vec![0, 1, 2, 3]);
+        assert_eq!(rendered, vec![0, 1, 2, 3]);
+
+        let mut events2 = Vec::new();
+        let outcome2 = render_project_with_progress(
+            &dir,
+            &Arc::new(AtomicBool::new(false)),
+            &mut |ev| events2.push(ev),
+        )
+        .unwrap();
+        assert_eq!(outcome2, RenderOutcome::Complete { rendered: 0, skipped: 4 });
+        assert_eq!(events2.len(), 4);
+        assert!(events2.iter().all(|e| matches!(e, KeyframeEvent::Skipped { .. })));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Verrou annulation + reprise : cancel après la 2e map → Cancelled{2,0},
+    /// maps 0-1 présentes, 2-3 absentes ; relance sans cancel →
+    /// Complete{rendered:2, skipped:2} — l'annulation n'a RIEN perdu.
+    #[test]
+    fn render_with_progress_cancel_then_resume() {
+        let dir = tmp_project("cancel_resume");
+        progress_manifest(&dir);
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let trigger = cancel.clone();
+        let mut rendered_seen = 0u32;
+        let outcome = render_project_with_progress(&dir, &cancel, &mut |ev| {
+            if matches!(ev, KeyframeEvent::Rendered { .. }) {
+                rendered_seen += 1;
+                if rendered_seen == 2 {
+                    trigger.store(true, Ordering::Relaxed);
+                }
+            }
+        })
+        .unwrap();
+        assert_eq!(outcome, RenderOutcome::Cancelled { rendered: 2, skipped: 0 });
+        assert!(keyframe_path(&dir, 0).exists());
+        assert!(keyframe_path(&dir, 1).exists());
+        assert!(!keyframe_path(&dir, 2).exists());
+
+        let outcome2 =
+            render_project_with_progress(&dir, &Arc::new(AtomicBool::new(false)), &mut |_| {})
+                .unwrap();
+        assert_eq!(outcome2, RenderOutcome::Complete { rendered: 2, skipped: 2 });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Verrou `zoom_from_span_x` : inverse exact de la progression des spans,
+    /// y compris en régime deep au-delà du f64 (k=1200 → span ~1e-360).
+    #[test]
+    fn zoom_from_span_x_roundtrip() {
+        // span 4 → zoom 1 (comparaison en VALEUR GMP, pas en string).
+        let z = zoom_from_span_x("4").unwrap();
+        let zf = Float::with_val(128, Float::parse(&z).unwrap());
+        assert_eq!(zf, 1);
+        assert_eq!(keyframe_count(&z).unwrap(), 1); // clamp minimum
+
+        let mut m = Manifest::default();
+        m.location.zoom = "1e400".into();
+        for k in [10u32, 100, 1200] {
+            let p = keyframe_params(&m, k).unwrap();
+            let zoom = zoom_from_span_x(p.span_x_hp.as_ref().unwrap()).unwrap();
+            assert_eq!(keyframe_count(&zoom).unwrap(), k, "round-trip k={k}");
+        }
+
+        assert!(zoom_from_span_x("0").is_err());
+        assert!(zoom_from_span_x("-1").is_err());
+        assert!(zoom_from_span_x("abc").is_err());
+    }
+
+    /// Verrou `plan_from_manifest` (chemin studio GUI, sans fichier config).
+    #[test]
+    fn plan_from_manifest_fills_keyframes() {
+        let dir = tmp_project("planmem");
+        let mut m = Manifest::default();
+        m.location.zoom = "1e6".into();
+        let planned = plan_from_manifest(&m, &dir).unwrap();
+        assert_eq!(planned.video.keyframes, 20);
+        let reloaded = Manifest::load(&dir.join("manifest.toml")).unwrap();
+        assert_eq!(reloaded.video.keyframes, 20);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

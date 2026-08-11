@@ -2489,6 +2489,21 @@ Jalons :
   normale `z·conj(dz)`), étage d'éclairage post-colorisation
   (`lighting.alpha/beta`, « spatial images » DeepDrill), composable avec
   toutes les palettes. Verrou : lighting off == bit-identique existant.
+- [x] **Jalon 6 — Studio graphique `fractall-video-gui`** `[✅ 2026-08-11]` :
+  5e binaire eframe DÉDIÉ (demande utilisateur : ne pas toucher au
+  générateur — `git diff src/gui/` vide). Acquisition = preview navigable
+  (molette zoom ancré + pan HP, `video_gui/nav.rs` pur testé, dispatcher
+  unique 2 passes) + drag-and-drop PNG/.fmap ; réglages complets +
+  estimations live (sources de vérité partagées `keyframe_count`/`timeline`) ;
+  manifest construit EN MÉMOIRE (`plan_from_manifest`) — zéro fichier texte
+  édité par l'utilisateur. Workflow « Générer » (reprise auto) +
+  « Ré-assembler » (recolorer sans recalcul, garde-fou empreinte). Hooks lib
+  rétrocompat : `render_project_with_progress` / `assemble_project_with_
+  progress` (cancel Arc + `FnMut(événement)`, annulation = outcome propre,
+  ffmpeg tué + .mp4 partiel supprimé, sortie CLI inchangée à l'octet).
+  19 tests neufs (352 lib au total) : progression exhaustive, cancel→resume
+  sans perte, zoom ancré invariant à 1e-30, e2e spawn_generate réel,
+  garde-fou maps≠réglages, dims paires x264.
 
 Risques assumés : blend RGB entre keyframes = approximation (DeepDrill
 l'assume aussi ; si pompage visuel à haut `color_repeat`, l'alternative est

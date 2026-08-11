@@ -24,3 +24,4 @@ pub mod io;
 pub mod quality;
 pub mod render;
 pub mod video;
+pub mod video_gui;

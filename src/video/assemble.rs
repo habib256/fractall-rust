@@ -18,6 +18,8 @@ use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use rayon::prelude::*;
 
@@ -36,6 +38,7 @@ pub struct AssembleOptions {
     pub ffmpeg: String,
 }
 
+#[derive(Clone, Copy, Debug)]
 pub struct AssembleStats {
     pub frames: usize,
     pub duration_s: f64,
@@ -248,14 +251,17 @@ impl<'a> KeyframeCache<'a> {
 // ---------------------------------------------------------------------------
 
 enum FrameSink {
-    Ffmpeg(Child),
+    /// Sous-processus ffmpeg + chemin du fichier de sortie (mémorisé pour
+    /// pouvoir supprimer le .mp4 partiel en cas d'annulation — un x264 tué
+    /// en cours d'écriture est illisible).
+    Ffmpeg(Child, PathBuf),
     Frames(PathBuf),
 }
 
 impl FrameSink {
     fn write(&mut self, index: usize, frame: &[u8], w: u32, h: u32) -> Result<(), String> {
         match self {
-            FrameSink::Ffmpeg(child) => child
+            FrameSink::Ffmpeg(child, _) => child
                 .stdin
                 .as_mut()
                 .expect("stdin ffmpeg piped")
@@ -272,7 +278,7 @@ impl FrameSink {
 
     fn finish(self) -> Result<(), String> {
         match self {
-            FrameSink::Ffmpeg(mut child) => {
+            FrameSink::Ffmpeg(mut child, _) => {
                 drop(child.stdin.take()); // EOF → ffmpeg finalise
                 let status = child.wait().map_err(|e| format!("attente ffmpeg: {e}"))?;
                 if status.success() {
@@ -282,6 +288,20 @@ impl FrameSink {
                 }
             }
             FrameSink::Frames(_) => Ok(()),
+        }
+    }
+
+    /// Arrêt sur annulation : tue ffmpeg et supprime le .mp4 partiel
+    /// (illisible) ; les frames PNG déjà écrites restent (inoffensives).
+    fn abort(self) {
+        match self {
+            FrameSink::Ffmpeg(mut child, out) => {
+                drop(child.stdin.take());
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = std::fs::remove_file(&out);
+            }
+            FrameSink::Frames(_) => {}
         }
     }
 }
@@ -315,11 +335,64 @@ fn spawn_ffmpeg(opts: &AssembleOptions, out: &Path, w: u32, h: u32, fps: u32) ->
 // Assemblage
 // ---------------------------------------------------------------------------
 
+/// Progression d'assemblage : une frame écrite (`frame` 0-based sur `total`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AssembleFrameEvent {
+    pub frame: usize,
+    pub total: usize,
+    pub keyframe: u32,
+    pub z: f64,
+}
+
+/// Issue d'un assemblage annulable. Sur `Cancelled`, le .mp4 partiel a été
+/// supprimé (illisible) ; les frames PNG déjà écrites restent.
+#[derive(Debug)]
+pub enum AssembleOutcome {
+    Complete(AssembleStats),
+    Cancelled { frames_written: usize },
+}
+
 /// Assemble la vidéo d'un projet dont les keyframes sont rendues.
+///
+/// Enveloppe no-cancel de `assemble_project_with_progress` reproduisant la
+/// sortie console historique (CLI `fractall-video assemble`).
 pub fn assemble_project(
     project: &Path,
     opts: &AssembleOptions,
 ) -> Result<AssembleStats, Box<dyn std::error::Error>> {
+    let outcome = assemble_project_with_progress(
+        project,
+        opts,
+        &Arc::new(AtomicBool::new(false)),
+        &mut |ev: AssembleFrameEvent| {
+            if ev.frame % 100 == 0 || ev.frame + 1 == ev.total {
+                println!(
+                    "[assemble] frame {}/{} (keyframe {}, z={:.3})",
+                    ev.frame + 1,
+                    ev.total,
+                    ev.keyframe,
+                    ev.z
+                );
+            }
+        },
+    )?;
+    match outcome {
+        AssembleOutcome::Complete(stats) => Ok(stats),
+        // Inatteignable sans cancel externe — sémantique historique conservée.
+        AssembleOutcome::Cancelled { .. } => Err("assemblage annulé".into()),
+    }
+}
+
+/// Version annulable + progression (studio GUI, G12 jalon 6). `cancel` est
+/// vérifié à chaque frame ; `progress` est appelé après CHAQUE frame écrite
+/// (le consommateur throttle s'il veut). Sur annulation ou erreur, le sink
+/// est proprement abandonné (ffmpeg tué + .mp4 partiel supprimé).
+pub fn assemble_project_with_progress(
+    project: &Path,
+    opts: &AssembleOptions,
+    cancel: &Arc<AtomicBool>,
+    progress: &mut dyn FnMut(AssembleFrameEvent),
+) -> Result<AssembleOutcome, Box<dyn std::error::Error>> {
     let manifest = Manifest::load(&project.join("manifest.toml"))?;
     let n = manifest.video.keyframes;
     let fps = manifest.video.fps.max(1);
@@ -336,7 +409,9 @@ pub fn assemble_project(
     let positions = timeline(n, fps, &velocity)?;
 
     let mut sink = match (&opts.output, &opts.frames_dir) {
-        (Some(out), None) => FrameSink::Ffmpeg(spawn_ffmpeg(opts, out, out_w, out_h, fps)?),
+        (Some(out), None) => {
+            FrameSink::Ffmpeg(spawn_ffmpeg(opts, out, out_w, out_h, fps)?, out.clone())
+        }
         (None, Some(dir)) => {
             std::fs::create_dir_all(dir)?;
             FrameSink::Frames(dir.clone())
@@ -346,15 +421,38 @@ pub fn assemble_project(
 
     let mut cache = KeyframeCache::new(project, &manifest);
     let total = positions.len();
+    let mut written = 0usize;
     for (f, &p) in positions.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            sink.abort();
+            return Ok(AssembleOutcome::Cancelled { frames_written: written });
+        }
         let k = (p.floor() as u32).min(n);
         let frac = p - k as f64;
         let z = 2f64.powf(frac); // frac = 0 → z = 1 exactement
         let t = f as f64 / fps as f64;
         let off = palette_offset.eval(t);
 
-        let curr = cache.colorized(k, off)?;
-        let next = if z > 1.0 && k + 1 <= n { Some(cache.colorized(k + 1, off)?) } else { None };
+        // Erreurs de colorisation/écriture : abandonner le sink AVANT de
+        // propager (sinon un ffmpeg orphelin attend son stdin indéfiniment).
+        let curr = match cache.colorized(k, off) {
+            Ok(c) => c,
+            Err(e) => {
+                sink.abort();
+                return Err(e.into());
+            }
+        };
+        let next = if z > 1.0 && k + 1 <= n {
+            match cache.colorized(k + 1, off) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    sink.abort();
+                    return Err(e.into());
+                }
+            }
+        } else {
+            None
+        };
         cache.evict_before(k);
 
         let frame = interpolate_frame(
@@ -366,14 +464,18 @@ pub fn assemble_project(
             out_h as usize,
             z,
         );
-        sink.write(f, &frame, out_w, out_h)?;
-
-        if f % 100 == 0 || f + 1 == total {
-            println!("[assemble] frame {}/{} (keyframe {k}, z={z:.3})", f + 1, total);
+        if let Err(e) = sink.write(f, &frame, out_w, out_h) {
+            sink.abort();
+            return Err(e.into());
         }
+        written += 1;
+        progress(AssembleFrameEvent { frame: f, total, keyframe: k, z });
     }
     sink.finish()?;
-    Ok(AssembleStats { frames: total, duration_s: total as f64 / fps as f64 })
+    Ok(AssembleOutcome::Complete(AssembleStats {
+        frames: total,
+        duration_s: total as f64 / fps as f64,
+    }))
 }
 
 #[cfg(test)]
@@ -517,5 +619,85 @@ mod tests {
         assert_eq!(pos.len(), 41); // 4 s à 10 fps + initiale
         assert!(pos.iter().all(|&p| (0.0..=3.0).contains(&p)));
         assert!(pos.windows(2).all(|w| w[1] >= w[0]), "vélocité > 0 ⇒ monotone");
+    }
+
+    /// Petit projet réel rendu (2 segments, 16×12, 5 fps → 11 frames).
+    fn tiny_rendered_project(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("fractall_asm_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut m = crate::video::Manifest::default();
+        m.image.width = 16;
+        m.image.height = 12;
+        m.fractal.iterations = 80;
+        m.location.zoom = "4".into();
+        m.video.keyframes = crate::video::keyframe_count("4").unwrap();
+        m.video.fps = 5;
+        m.save(&dir.join("manifest.toml")).unwrap();
+        crate::video::render_project(&dir).unwrap();
+        dir
+    }
+
+    /// Verrou hooks (G12 jalon 6) : `progress` est appelé pour CHAQUE frame,
+    /// indices 0-based contigus, total cohérent avec les stats.
+    #[test]
+    fn assemble_with_progress_reports_every_frame() {
+        let dir = tiny_rendered_project("progress");
+        let frames = dir.join("frames");
+        let opts = AssembleOptions {
+            output: None,
+            frames_dir: Some(frames),
+            ffmpeg: "ffmpeg".into(),
+        };
+        let mut events: Vec<AssembleFrameEvent> = Vec::new();
+        let outcome = assemble_project_with_progress(
+            &dir,
+            &opts,
+            &Arc::new(AtomicBool::new(false)),
+            &mut |ev| events.push(ev),
+        )
+        .unwrap();
+        let AssembleOutcome::Complete(stats) = outcome else {
+            panic!("Complete attendu");
+        };
+        assert_eq!(events.len(), stats.frames);
+        assert!(events
+            .iter()
+            .enumerate()
+            .all(|(i, e)| e.frame == i && e.total == stats.frames));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Verrou annulation : cancel après la 3e frame → Cancelled{3}, les 3 PNG
+    /// écrits restent, la suite n'existe pas, pas de panic.
+    #[test]
+    fn assemble_with_progress_cancel_stops_cleanly() {
+        let dir = tiny_rendered_project("cancel");
+        let frames = dir.join("frames");
+        let opts = AssembleOptions {
+            output: None,
+            frames_dir: Some(frames.clone()),
+            ffmpeg: "ffmpeg".into(),
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let trigger = cancel.clone();
+        let mut count = 0usize;
+        let outcome = assemble_project_with_progress(&dir, &opts, &cancel, &mut |_| {
+            count += 1;
+            if count == 3 {
+                trigger.store(true, Ordering::Relaxed);
+            }
+        })
+        .unwrap();
+        let AssembleOutcome::Cancelled { frames_written } = outcome else {
+            panic!("Cancelled attendu");
+        };
+        assert_eq!(frames_written, 3);
+        for f in 0..3 {
+            assert!(frames.join(format!("frame_{f:06}.png")).exists(), "frame {f}");
+        }
+        assert!(!frames.join("frame_000003.png").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
