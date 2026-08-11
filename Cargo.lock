@@ -1050,6 +1050,7 @@ dependencies = [
  "eframe",
  "egui",
  "exr",
+ "flate2",
  "image",
  "naga",
  "num-complex",

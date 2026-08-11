@@ -23,3 +23,4 @@ pub mod gui;
 pub mod io;
 pub mod quality;
 pub mod render;
+pub mod video;

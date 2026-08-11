@@ -123,6 +123,7 @@ fn colorize_buffer(
                             iter_max,
                             palette_idx,
                             color_rep,
+                            params.color_offset,
                             out_mode,
                             color_space,
                             orbit,

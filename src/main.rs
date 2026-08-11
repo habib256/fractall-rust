@@ -96,13 +96,14 @@ struct Cli {
     #[arg(long)]
     iterations: Option<u32>,
 
-    /// Palette de couleurs (0 à 8, voir documentation)
-    #[arg(long, default_value_t = 6)]
-    palette: u8,
+    /// Palette de couleurs (0 à 26, défaut 6 = Plasma). Optionnel pour que
+    /// --from-map sache si l'utilisateur veut override la palette de la map.
+    #[arg(long)]
+    palette: Option<u8>,
 
-    /// Répétitions du gradient de couleur (2-40, pairs recommandés)
-    #[arg(long, default_value_t = 40)]
-    color_repeat: u32,
+    /// Répétitions du gradient de couleur (2-40, pairs recommandés, défaut 40)
+    #[arg(long)]
+    color_repeat: Option<u32>,
 
     /// Active le calcul haute précision avec GMP (via rug)
     #[arg(long)]
@@ -136,9 +137,9 @@ struct Cli {
     #[arg(long)]
     lyapunov_preset: Option<String>,
 
-    /// Mode de colorisation (iter, iter+real, iter+imag, iter+real/imag, iter+all, binary, biomorphs, potential, color-decomp, smooth)
-    #[arg(long, default_value = "smooth")]
-    outcoloring: String,
+    /// Mode de colorisation (iter, iter+real, iter+imag, iter+real/imag, iter+all, binary, biomorphs, potential, color-decomp, smooth ; défaut smooth)
+    #[arg(long)]
+    outcoloring: Option<String>,
 
     /// Transformation du plan complexe (0=mu, 1=1/mu, 2=1/(mu+0.25), 3=lambda, 4=1/lambda, 5=1/lambda-1, 6=1/(mu-1.40115))
     /// Valeurs acceptées: 0-6 ou noms (mu, 1/mu, 1/(mu+0.25), lambda, 1/lambda, 1/lambda-1, 1/(mu-1.40115))
@@ -227,6 +228,20 @@ struct Cli {
     /// Fichier de sortie PNG (requis, sauf avec --wisdom-bench)
     #[arg(long, value_name = "FICHIER")]
     output: Option<PathBuf>,
+
+    /// Écrit AUSSI les buffers bruts du rendu (itérations, z finaux, distances
+    /// éventuelles) dans une map `.fmap` (G12) : recolorisable sans recalcul
+    /// via --from-map, format d'échange des keyframes fractall-video.
+    /// Incompatible avec --aa-samples > 1 (sortie AA = moyenne RGB).
+    #[arg(long, value_name = "FICHIER.fmap")]
+    output_map: Option<PathBuf>,
+
+    /// Recolorise une map `.fmap` existante SANS recalcul : charge buffers et
+    /// paramètres de la map, applique les overrides couleur explicites
+    /// (--palette, --color-repeat, --outcoloring), écrit le PNG --output.
+    /// Les autres options de rendu sont ignorées.
+    #[arg(long, value_name = "FICHIER.fmap")]
+    from_map: Option<PathBuf>,
 
     /// Benche les techniques de rendu (CPU std/perturbation f64-exp-dd + GPU
     /// f32 si disponible) et persiste les débits mesurés (iters/s) dans le
@@ -406,6 +421,58 @@ fn run_wisdom_bench() {
     }
 }
 
+/// `--from-map` (G12 jalon 1) : recharge une map `.fmap`, applique les
+/// overrides couleur explicites du CLI, recolorise et écrit le PNG. Zéro
+/// rendu : c'est le chemin « recoloriser sans recalculer ».
+fn run_from_map(cli: &Cli, map_path: &std::path::Path, output_path: &std::path::Path) {
+    let map = match io::fmap::load_fmap(map_path) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("Erreur chargement map {}: {}", map_path.display(), e);
+            std::process::exit(1);
+        }
+    };
+    let mut params = map.params.clone();
+    if let Some(p) = cli.palette {
+        params.color_mode = p;
+    }
+    if let Some(cr) = cli.color_repeat {
+        params.color_repeat = cr.max(1);
+    }
+    if let Some(ref oc) = cli.outcoloring {
+        match OutColoringMode::from_cli_name(oc) {
+            Some(mode) => params.out_coloring_mode = mode,
+            None => {
+                eprintln!("Mode de colorisation invalide: '{oc}'");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    let center_x_hp = params.center_x_hp.clone().unwrap_or_else(|| params.center_x.to_string());
+    let center_y_hp = params.center_y_hp.clone().unwrap_or_else(|| params.center_y.to_string());
+    let span_x_hp = params.span_x_hp.clone().unwrap_or_else(|| params.span_x.to_string());
+    let span_y_hp = params.span_y_hp.clone().unwrap_or_else(|| params.span_y.to_string());
+    if let Err(e) = save_png_with_metadata(
+        &params,
+        &map.iterations,
+        &map.zs,
+        output_path,
+        &center_x_hp,
+        &center_y_hp,
+        &span_x_hp,
+        &span_y_hp,
+    ) {
+        eprintln!("Erreur lors de l'écriture du PNG: {e}");
+        std::process::exit(1);
+    }
+    println!(
+        "PNG recolorisé depuis {} : {}",
+        map_path.display(),
+        output_path.display()
+    );
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -419,6 +486,13 @@ fn main() {
         eprintln!("--output est requis (sauf avec --wisdom-bench)");
         std::process::exit(2);
     };
+
+    // Recolorisation depuis une map .fmap (G12 jalon 1) : aucun rendu, aucun
+    // --type requis — tout vient de la map, sauf les overrides couleur.
+    if let Some(ref map_path) = cli.from_map {
+        run_from_map(&cli, map_path, &output_path);
+        return;
+    }
 
     // Si --toml est fourni sans --type, défaut Mandelbrot (le corpus toml/ ne
     // contient que des Mandelbrot deep zoom au format rust-fractal-core).
@@ -637,9 +711,9 @@ fn main() {
         }
     }
 
-    // Palette et répétitions de couleurs.
-    params.color_mode = cli.palette;
-    params.color_repeat = cli.color_repeat.max(1);
+    // Palette et répétitions de couleurs (défauts historiques 6/40 si absents).
+    params.color_mode = cli.palette.unwrap_or(6);
+    params.color_repeat = cli.color_repeat.unwrap_or(40).max(1);
 
     // GMP haute précision.
     params.use_gmp = cli.gmp;
@@ -766,15 +840,16 @@ fn main() {
         }
     }
 
-    // Mode de colorisation (outcoloring).
-    match OutColoringMode::from_cli_name(&cli.outcoloring) {
+    // Mode de colorisation (outcoloring, défaut smooth).
+    let outcoloring = cli.outcoloring.as_deref().unwrap_or("smooth");
+    match OutColoringMode::from_cli_name(outcoloring) {
         Some(mode) => {
             params.out_coloring_mode = mode;
         }
         None => {
             eprintln!(
                 "Mode de colorisation invalide: '{}'. Options: iter, iter+real, iter+imag, iter+real/imag, iter+all, binary, biomorphs, potential, color-decomp, smooth",
-                cli.outcoloring
+                outcoloring
             );
             std::process::exit(1);
         }
@@ -798,6 +873,9 @@ fn main() {
     let start_time = std::time::Instant::now();
     let cancel = Arc::new(AtomicBool::new(false));
 
+    // Distances estimées, capturées pour --output-map (remplies par le path
+    // perturbation quand enable_distance_estimation ; vides sinon).
+    let mut map_distances: Vec<f64> = Vec::new();
     let (iterations, zs) = if use_gpu {
         match GpuRenderer::new() {
             Some(gpu) => {
@@ -823,7 +901,23 @@ fn main() {
             }
         }
     } else {
-        render_escape_time(&params)
+        // Même dispatcher unique que `render_escape_time`, version complète
+        // pour capturer les distances (consommées par --output-map).
+        let mut orbit_cache = None;
+        match render::render_escape_time_cancellable_with_reuse(
+            &params,
+            &cancel,
+            None,
+            &mut orbit_cache,
+            None,
+            None,
+        ) {
+            Some((i, z, _orbits, d)) => {
+                map_distances = d;
+                (i, z)
+            }
+            None => (Vec::new(), Vec::new()),
+        }
     };
 
     let render_time = start_time.elapsed();
@@ -925,6 +1019,34 @@ fn main() {
     if let Err(e) = png_result {
         eprintln!("Erreur lors de l'écriture du PNG: {e}");
         std::process::exit(1);
+    }
+
+    // Map .fmap (G12 jalon 1) : buffers bruts recolorisables sans recalcul.
+    if let Some(ref map_path) = cli.output_map {
+        if aa_samples > 1 && !use_gpu {
+            eprintln!(
+                "[MAP] --output-map ignoré avec --aa-samples > 1 (sortie AA = moyenne RGB, pas des canaux itération)"
+            );
+        } else {
+            let mut params_to_save = params.clone();
+            params_to_save.center_x_hp = Some(center_x_hp.clone());
+            params_to_save.center_y_hp = Some(center_y_hp.clone());
+            params_to_save.span_x_hp = Some(span_x_hp.clone());
+            params_to_save.span_y_hp = Some(span_y_hp.clone());
+            let map = io::fmap::FractalMap {
+                params: params_to_save,
+                iterations: iterations.clone(),
+                zs: zs.clone(),
+                distances: (!map_distances.is_empty()).then(|| std::mem::take(&mut map_distances)),
+            };
+            match io::fmap::save_fmap(&map, map_path) {
+                Ok(()) => println!("Map écrite: {}", map_path.display()),
+                Err(e) => {
+                    eprintln!("Erreur lors de l'écriture de la map: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
     }
     let save_time = save_start.elapsed();
     let total_time = start_time.elapsed();

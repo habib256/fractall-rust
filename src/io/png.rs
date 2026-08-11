@@ -57,6 +57,7 @@ pub fn colorize_to_rgb(params: &FractalParams, iterations: &[u32], zs: &[Complex
                             params.iteration_max,
                             params.color_mode,
                             params.color_repeat,
+                            params.color_offset,
                             params.out_coloring_mode,
                             params.color_space,
                             None,

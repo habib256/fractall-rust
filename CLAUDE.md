@@ -14,6 +14,7 @@ cargo build --release
 cargo run --release --bin fractall-cli -- --type 3 --output out.png
 cargo run --release --bin fractall-gui
 cargo run --release --bin fractall-quality -- suite
+cargo run --release --bin fractall-video -- plan cfg.toml -p proj/   # G12 vidéo
 ```
 
 Prérequis natifs : GMP / MPFR / MPC (pour `rug`).
@@ -81,6 +82,12 @@ src/
 ├── main.rs              # CLI fractall-cli (clap)
 ├── main_gui.rs          # GUI fractall-gui (egui/eframe)
 ├── main_quality.rs      # QA fractall-quality (clap subcommands)
+├── main_video.rs        # fractall-video (G12) : plan / render / assemble
+├── video/               # Pipeline vidéo zoom (G12, archi DeepDrill)
+│   ├── mod.rs              # Manifest TOML, keyframes ×2 (spans GMP exacts), render résumable
+│   ├── assemble.rs         # interpolation trilinear 2-keyframes + ffmpeg stdin / frames PNG
+│   ├── spline.rs           # valeurs dynamiques (cubique monotone Fritsch-Carlson)
+│   └── lighting.rs         # éclairage Lambert normal-map écran (« spatial images »)
 ├── fractal/
 │   ├── mod.rs           # exports + default_params_for_type()
 │   ├── types.rs         # FractalType, FractalParams, AlgorithmMode, …
@@ -125,8 +132,43 @@ src/
 ├── gui/                  # FractallApp (egui)
 ├── color/                # 27 palettes + RGB/HSB/LCH + 15 modes
 ├── io/png.rs             # save/load avec métadonnées JSON
+├── io/fmap.rs            # format map .fmap (G12) : canaux bruts compressés zlib
 └── quality/              # fractall-quality QA suite
 ```
+
+## Vidéo & maps (G12, 2026-08-11)
+
+**Format `.fmap`** (`io/fmap.rs`) : sidecar calcul/rendu — canaux bruts du
+dispatcher (iterations u32, zs 2×f64, distances f64 opt.) compressés zlib +
+JSON `FractalParams` (HP incluses). Round-trip **bit-identique** (verrou ;
+a nécessité serde_json `float_roundtrip` — sans la feature le parsing f64
+perd le dernier ulp). CLI : `--output-map out.fmap` (avec le PNG) et
+`--from-map out.fmap` (recolorisation SANS recalcul ; `--palette`/
+`--color-repeat`/`--outcoloring` sont devenus des overrides optionnels pour
+distinguer « explicite » du défaut).
+
+**`fractall-video`** (binaire-enveloppe, logique `src/video/`) :
+- `plan cfg.toml -p proj/` → `manifest.toml` (keyframes = ceil(log2(zoom)),
+  centre fixe, spans 4/2^k **exacts** — sérialisés en expansion décimale
+  COMPLÈTE, `Display` rug tronque à ~prec·log10(2) chiffres) ;
+- `render proj/` → keyframes `.fmap` séquentielles via le dispatcher unique
+  (`cache/xaos/tiles=None` ; pas de réutilisation d'orbite inter-échelle,
+  cf. régime atom-domain). Reprise = skip par empreinte **couleur-blind**
+  (changer la palette du manifest n'invalide pas les maps) ;
+- `assemble proj/ -o out.mp4 | --frames-dir d/` → blend trilinear DeepDrill
+  (curr à 1/z, next fenêtre `2·coord−0.5`, poids `z−1`), bilinéaire CPU+rayon
+  (clamp-to-edge AVANT floor), ffmpeg stdin rawvideo. AA vidéo = keyframes
+  supersamplées (`image.supersample`). Verrous : frame à z=1 == keyframe
+  colorisée pixel-exacte, continuité au raccord, déterminisme.
+
+**Dynamiques** (`video/spline.rs`) : `video.velocity` et `[dynamics]
+palette_offset` acceptent `"t/v,t/v,…"` (temps `M:S` ou s), cubique monotone ;
+spline plate == constante **bit-identique** (`as_constant`). Le champ
+`FractalParams::color_offset` (défaut 0.0 = `+0.0` bit-exact, goldens verts)
+décale la palette en unités de cycle. **Lighting** (`video/lighting.rs`,
+`[lighting] enable/alpha/beta`) : Lambert sur normale ÉCRAN (différences
+finies du champ smooth-iteration) — PAS de canal dz (aurait touché toutes les
+boucles pixel ; si un jour dz est exporté, brancher ici).
 
 ## Dépendances principales
 

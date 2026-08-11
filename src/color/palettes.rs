@@ -1251,7 +1251,7 @@ pub fn color_for_pixel(
     distance: Option<f64>,
     interior_flag_encoded: bool,
 ) -> (u8, u8, u8) {
-    color_for_pixel_with_lut(iteration, z, iter_max, palette_index, color_repeat,
+    color_for_pixel_with_lut(iteration, z, iter_max, palette_index, color_repeat, 0.0,
         out_coloring_mode, color_space, orbit, distance, interior_flag_encoded, None)
 }
 
@@ -1263,6 +1263,7 @@ pub fn color_for_pixel_with_lut(
     iter_max: u32,
     palette_index: u8,
     color_repeat: u32,
+    color_offset: f64,
     out_coloring_mode: OutColoringMode,
     color_space: ColorSpace,
     orbit: Option<&OrbitData>,
@@ -1321,10 +1322,15 @@ pub fn color_for_pixel_with_lut(
         t = 0.999_999;
     }
 
-    // Utiliser color_repeat pour la longueur du cycle
+    // Utiliser color_repeat pour la longueur du cycle. `color_offset` décale
+    // la position en unités de cycle (G12 jalon 4) — `+ 0.0` est bit-exact,
+    // le défaut 0.0 ne change aucun pixel. `pos - floor(pos)` ≡ `pos % 1.0`
+    // bit-identique pour pos ≥ 0 (fmod exact ; Sterbenz pour la soustraction)
+    // et reste dans [0,1) pour un offset négatif.
     let repeat_count = color_repeat.max(1) as f64;
-    let cycle = (t * repeat_count).floor();
-    let mut t_repeat = (t * repeat_count) % 1.0;
+    let pos = t * repeat_count + color_offset;
+    let cycle = pos.floor();
+    let mut t_repeat = pos - cycle;
 
     // Éviter les valeurs exactement à 0 ou 1 qui créent des discontinuités
     if t_repeat < 0.000_001 && t > 0.0 {

@@ -35,6 +35,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         fractal_type,
         color_mode: 6,   // SmoothPlasma (défaut dans le projet C)
         color_repeat: 40,
+        color_offset: 0.0,
         color_space: ColorSpace::Rgb,
         use_gmp: false,
         precision_bits: 256,

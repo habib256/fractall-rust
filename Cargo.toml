@@ -16,6 +16,10 @@ path = "src/main_gui.rs"
 name = "fractall-quality"
 path = "src/main_quality.rs"
 
+[[bin]]
+name = "fractall-video"
+path = "src/main_video.rs"
+
 [dependencies]
 # CLI avec derive pour simplifier la définition des arguments
 clap = { version = "4.5", features = ["derive"] }
@@ -36,13 +40,18 @@ bytemuck = { version = "1.15", features = ["derive"] }
 rug = { version = "1.24", features = ["float", "complex"] }
 # Sérialisation pour métadonnées PNG
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+# float_roundtrip : parsing f64 correctement arrondi — round-trip bit-identique
+# des params à travers le JSON (métadonnées PNG + format map .fmap, verrou G12).
+# Sans la feature, serde_json perd le dernier ulp (ex. bla_threshold 1/2²⁴).
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
 # Accès bas-niveau aux chunks PNG pour métadonnées
 png = "0.18"
 # Parsing de fichiers de localisation TOML (rust-fractal-core)
 toml = "1.1"
 # Export EXR raw (N0+NF channels, format Fraktaler-3) pour le harness de parité.
 exr = "1.72"
+# Compression zlib des canaux du format map .fmap (G12)
+flate2 = "1.0"
 
 [dev-dependencies]
 # Validation des shaders WGSL en tests unitaires (sans GPU).

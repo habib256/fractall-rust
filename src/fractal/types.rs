@@ -840,6 +840,12 @@ pub struct FractalParams {
     /// Espace colorimétrique pour les gradients (RGB, HSB, LCH)
     #[serde(default)]
     pub color_space: ColorSpace,
+    /// Décalage cyclique de palette, en cycles de gradient (0.0 = neutre).
+    /// Ajouté au produit `t·color_repeat` avant le découpage en cycles ;
+    /// `+ 0.0` étant bit-exact, le défaut ne change AUCUN pixel (goldens).
+    /// Animé par le pipeline vidéo (G12 jalon 4, `[dynamics] palette_offset`).
+    #[serde(default, skip_serializing_if = "color_offset_is_zero")]
+    pub color_offset: f64,
 
     /// Active le chemin GMP pour la haute précision.
     #[serde(default)]
@@ -1070,6 +1076,9 @@ fn default_true() -> bool { true }
 fn default_one_f64() -> f64 { 1.0 }
 fn default_color_mode() -> u8 { 6 } // Plasma
 fn default_color_repeat() -> u32 { 40 }
+/// skip_serializing_if de `color_offset` : le défaut 0.0 ne s'écrit pas
+/// (JSON métadonnées PNG/fmap inchangé hors animation vidéo).
+fn color_offset_is_zero(v: &f64) -> bool { *v == 0.0 }
 fn default_precision_bits() -> u32 { 256 }
 // Aligné Fraktaler-3 (`engine.cc:283`) : e = 1.0 / (1 << 24) ≈ 5.96e-8.
 // L'ancien défaut 1e-8 était inutilement conservateur, divisant par ~6 le

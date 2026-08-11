@@ -2415,6 +2415,88 @@ Jalons (ordre de ROI croissant en effort) :
   (r = 25 % diag autour du coin) complète à ~1 % du wall-clock total
   @768×576/20k iters.
 
+### G12 — Pipeline vidéo zoom (étude DeepDrill 2026-08-11) · `[P2 · feature]`
+
+> **Vision** : produire des zooms vidéo deep (keyframes ×2 + interpolation)
+> sans toucher au moteur. Inspiration architecturale : **DeepDrill**
+> (dirkwhoffmann) — trois outils découplés par un format de map persistant,
+> interpolation GPU 2-keyframes, ffmpeg en sortie. Le noyau algorithmique de
+> DeepDrill (Pauldelbrot + série classique) est derrière fractall : on ne
+> prend QUE la couche produit.
+> **Invariant** : le dispatcher unique reste intact — tous les nouveaux
+> appels passent par `render_escape_time_cancellable_with_reuse` avec
+> `cache/xaos/tiles = None` (sémantique single-shot).
+
+Faits habilitants : le dispatcher retourne déjà `(iterations, zs, distances)`
+(`escape_time.rs:117`) et `colorize_to_rgb` recolorise depuis ces buffers
+(`io/png.rs:23`) — la séparation calcul/colorisation existe en mémoire, il ne
+manque que la persistance. La math d'interpolation entre deux vues existe
+(`compute_warp_norm`, `gui/app.rs`, pur/testé). L'arithmétique HP des spans
+(`hp_arith_precision`) est en place.
+
+**LIVRÉ 2026-08-11 (jalons 1-5)** : 4e binaire `fractall-video` (plan/render/
+assemble), module `src/video/` (+ `io/fmap.rs`), 21 tests neufs (3 fmap + 18
+video), goldens 24/24 pixel-exacts inchangés, zéro warning. E2E réel : seahorse
+1e8, 28 keyframes 640×360 (ss=2) rendues en 4.5 s, mp4 320×180 406 frames
+assemblé en 8.7 s (lighting + palette_offset spline animés, revu visuellement).
+Écarts au plan initial, motivés : (a) l'éclairage jalon 5 utilise la normale
+ÉCRAN (différences finies du champ smooth-iteration) et non un canal dz —
+exporter dz aurait touché toutes les boucles pixel du moteur, exclu par
+l'invariant « moteur intact » ; (b) le blend keyframes suit le trilinear
+DeepDrill exact (poids z−1, fenêtre next 2·coord−0.5) plutôt qu'un poids
+log2(z) ; (c) pas d'extraction de `compute_warp_norm` — les keyframes
+partagent le même centre, le mapping se réduit à une échelle pure. Deux
+correctifs de fond au passage : serde_json `float_roundtrip` (le parsing f64
+perdait le dernier ulp → round-trip params PNG/fmap désormais bit-identique)
+et clamp-to-edge AVANT floor dans le bilinéaire (le clamp d'indice seul
+échantillonnait le voisin au bord). `color_offset` (FractalParams, défaut 0.0
+= `+0.0` bit-exact, goldens verts) anime la palette.
+
+Jalons :
+- [x] **Jalon 1 — Format map `.fmap`** (`src/io/fmap.rs`) : sidecar
+  calcul/rendu façon DrillMap. Header (version, w×h, JSON `FractalParams` =
+  même sérialisation que le chunk PNG), canaux `iterations` u32 + `zs` 2×f64
+  + `distances` f64 (optionnel), compression zlib (flate2). CLI
+  `--output-map out.fmap` et `--from-map out.fmap` (recolorisation sans
+  recalcul, options couleur CLI prioritaires). Hors périmètre : AA (moyenne
+  RGB non représentable en canaux itération). Verrous : round-trip
+  bit-identique ; `--from-map` + palette == rendu direct + palette
+  **pixel-exact** ; fingerprint incompatible → refus propre.
+- [x] **Jalon 2 — `fractall-video plan/render`** (4e binaire-enveloppe
+  `src/main_video.rs`, logique `src/video/`) : `plan` écrit
+  `project/manifest.toml` (centre HP fixe = cible, spans `span_0/2^k` en GMP
+  précision dynamique, `keyframes = ceil(log2(zoom_final))`, iters
+  croissants) ; `render` boucle **séquentielle** (rayon sature déjà les
+  cœurs par frame) résumable = skip des `.fmap` au fingerprint valide.
+  ⚠️ Pas de réutilisation d'orbite inter-keyframes (régime atom-domain :
+  une réf est baked à son span de construction). Verrous : progression
+  spans exacte en HP ; keyframe manifest == rendu CLI direct pixel-exact.
+- [x] **Jalon 3 — `fractall-video assemble`** : zoom continu `z(t)=2^(v·t)`,
+  frame entre keyframe k (échantillonnée à `z`) et k+1 (à `z/2`), blend en
+  `log2(z)` (schéma trilinear DeepDrill), bilinéaire **CPU + rayon** en v1
+  (déterministe, CI-safe). Sortie ffmpeg stdin (`-f rawvideo -pix_fmt rgb24`)
+  ou fallback `--frames-dir` PNG. AA vidéo = keyframes supersamplées 2× +
+  downscale assembleur. Contraintes v1 : rotation=0, plane=Mu (mêmes
+  préconditions d'axialité que le warp G10.1). Verrous : à `z=1.0` frame ==
+  keyframe colorisée pixel-exacte ; continuité au raccord ; déterminisme.
+- [x] **Jalon 4 — Valeurs dynamiques (splines)** (`src/video/spline.rs`) :
+  `video.velocity`, `palette.offset/scale` acceptent une spline temporelle
+  (`0:0/0,0:2/1,…`, cubique monotone), appliquée à l'ASSEMBLAGE uniquement
+  (recolorisation depuis les maps ≈ gratuite, aucun recalcul). Verrou :
+  spline constante == valeur fixe bit-identique.
+- [x] **Jalon 5 (opt-in) — Canal normal + éclairage Lambert** : canal
+  `normals` dans `.fmap` (le path distance estimation tracke déjà `dz` ;
+  normale `z·conj(dz)`), étage d'éclairage post-colorisation
+  (`lighting.alpha/beta`, « spatial images » DeepDrill), composable avec
+  toutes les palettes. Verrou : lighting off == bit-identique existant.
+
+Risques assumés : blend RGB entre keyframes = approximation (DeepDrill
+l'assume aussi ; si pompage visuel à haut `color_repeat`, l'alternative est
+l'interpolation en espace itération, à ne tenter que sur preuve) ; ffmpeg =
+dépendance runtime externe (fallback PNG) ; keyframes e100+ dominent le
+temps (reprise par fichier). Non retenu : Makefile généré (rayon suffit),
+portage shaders GLSL (CPU v1), textures overlay.
+
 ## ✅ Shipped (condensé, le plus récent en haut)
 
 **2026-07-16b** (`/improve`, ré-vérification CORRECTION corpus complet) :

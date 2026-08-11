@@ -1686,8 +1686,9 @@ mod tests {
                     res.iteration,
                     res.z_final,
                     iter_max,
-                    6,  // palette index Plasma
-                    40, // color_repeat
+                    6,   // palette index Plasma
+                    40,  // color_repeat
+                    0.0, // color_offset neutre
                     OutColoringMode::Smooth,
                     crate::fractal::ColorSpace::Rgb,
                     None, // orbit
