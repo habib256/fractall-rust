@@ -297,7 +297,8 @@ impl AlgorithmMode {
 }
 
 /// Espace colorimétrique pour les gradients
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// (`Hash` : clé du cache de LUT palette, cf. `PaletteLut::cached`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub enum ColorSpace {
     /// Espace RGB standard (défaut)

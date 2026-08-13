@@ -92,6 +92,33 @@ impl PaletteLut {
         Self { entries }
     }
 
+    /// LUT MÉMOÏSÉE par `(palette, espace)` — bit-identique à `new` (la table
+    /// ne dépend que de ces deux clés), partagée via `Arc`.
+    ///
+    /// Motivation : la colorisation par TUILES de la GUI (G10.5) appelle la
+    /// colorisation une fois par tuile. Construire 4096 entrées (dont des
+    /// conversions LCH) coûtait ~50 µs, soit ~30 % du travail d'une tuile
+    /// 64×64 et jusqu'à 5× celui d'une tuile 16×16 — pour un résultat
+    /// strictement identique à chaque fois.
+    pub fn cached(palette_index: u8, color_space: ColorSpace) -> std::sync::Arc<Self> {
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex, OnceLock};
+        static CACHE: OnceLock<Mutex<HashMap<(u8, ColorSpace), Arc<PaletteLut>>>> = OnceLock::new();
+        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let key = (palette_index, color_space);
+        // Verrou empoisonné (panic d'un autre thread pendant l'insertion) :
+        // la table étant purement dérivée de la clé, on retombe simplement
+        // sur une construction directe plutôt que de propager le panic.
+        let Ok(mut guard) = cache.lock() else {
+            return Arc::new(Self::new(palette_index, color_space));
+        };
+        Arc::clone(
+            guard
+                .entry(key)
+                .or_insert_with(|| Arc::new(Self::new(palette_index, color_space))),
+        )
+    }
+
     /// Look up RGB color for t in [0, 1) with linear interpolation between adjacent entries.
     #[inline]
     pub fn lookup(&self, t: f64) -> (u8, u8, u8) {

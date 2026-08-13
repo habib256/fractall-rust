@@ -42,54 +42,67 @@ pub fn colorize_buffers(
     height: u32,
 ) -> Vec<u8> {
     let w = width as usize;
+    let h = height as usize;
     let is_nebulabrot = params.fractal_type == FractalType::Nebulabrot;
     let is_buddhabrot = params.fractal_type == FractalType::Buddhabrot
         || params.fractal_type == FractalType::AntiBuddhabrot;
     let interior_flag_encoded = params.enable_interior_detection;
     let lut = if !is_nebulabrot && !is_buddhabrot {
-        Some(PaletteLut::new(params.color_mode, params.color_space))
+        Some(PaletteLut::cached(params.color_mode, params.color_space))
     } else {
         None
     };
 
-    // Parallélisation de la colorisation par lignes
-    (0..height as usize)
-        .into_par_iter()
-        .flat_map(|y| {
-            (0..width)
-                .flat_map(|x| {
-                    let idx = y * w + x as usize;
-                    let iter = iterations.get(idx).copied().unwrap_or(0);
-                    let z = zs.get(idx).copied().unwrap_or(Complex64::new(0.0, 0.0));
-                    let orbit = orbits.get(idx).and_then(|o| o.as_ref());
-                    let distance = distances.get(idx).copied().filter(|d| d.is_finite());
+    // Écriture DIRECTE dans le buffer de sortie (même patron que
+    // `video::lighting::shade_rgb` / `interpolate_frame`).
+    // ⚠️ Ne pas revenir à `flat_map(|x| vec![r, g, b]).collect()` : cette
+    // forme allouait un `Vec` de 3 octets PAR PIXEL, puis un `Vec` par ligne,
+    // puis concaténait le tout (cf. `examples/bench_colorize.rs`).
+    let row_body = |y: usize, row: &mut [u8]| {
+        for x in 0..w {
+            let idx = y * w + x;
+            let iter = iterations.get(idx).copied().unwrap_or(0);
+            let z = zs.get(idx).copied().unwrap_or(Complex64::new(0.0, 0.0));
+            let orbit = orbits.get(idx).and_then(|o| o.as_ref());
+            let distance = distances.get(idx).copied().filter(|d| d.is_finite());
 
-                    let (r, g, b) = if is_nebulabrot {
-                        color_for_nebulabrot_pixel(iter, z)
-                    } else if is_buddhabrot {
-                        color_for_buddhabrot_pixel(z, params.color_mode, params.color_repeat)
-                    } else {
-                        color_for_pixel_with_lut(
-                            iter,
-                            z,
-                            params.iteration_max,
-                            params.color_mode,
-                            params.color_repeat,
-                            params.color_offset,
-                            params.out_coloring_mode,
-                            params.color_space,
-                            orbit,
-                            distance,
-                            interior_flag_encoded,
-                            lut.as_ref(),
-                        )
-                    };
+            let (r, g, b) = if is_nebulabrot {
+                color_for_nebulabrot_pixel(iter, z)
+            } else if is_buddhabrot {
+                color_for_buddhabrot_pixel(z, params.color_mode, params.color_repeat)
+            } else {
+                color_for_pixel_with_lut(
+                    iter,
+                    z,
+                    params.iteration_max,
+                    params.color_mode,
+                    params.color_repeat,
+                    params.color_offset,
+                    params.out_coloring_mode,
+                    params.color_space,
+                    orbit,
+                    distance,
+                    interior_flag_encoded,
+                    lut.as_deref(),
+                )
+            };
 
-                    vec![r, g, b]
-                })
-                .collect::<Vec<u8>>()
-        })
-        .collect()
+            let o = x * 3;
+            row[o] = r;
+            row[o + 1] = g;
+            row[o + 2] = b;
+        }
+    };
+
+    // Parallélisation par lignes, y compris pour les petites TUILES du
+    // streaming GUI : mesuré (`bench_colorize`, pool saturé) équivalent à une
+    // boucle série sur une passe complète (25.7 vs 25.9 ms / 240 tuiles), mais
+    // 3× plus rapide sur une tuile isolée (fin de passe, workers drainés).
+    let mut out = vec![0u8; w * h * 3];
+    out.par_chunks_mut(w * 3)
+        .enumerate()
+        .for_each(|(y, row)| row_body(y, row));
+    out
 }
 
 /// Colorise les buffers bruts (itérations + z final) en RGB entrelacé
