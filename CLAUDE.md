@@ -180,7 +180,46 @@ Hooks lib : `render_project_with_progress` / `assemble_project_with_progress`
 (`&mut dyn FnMut(événement)`, cancel `Arc<AtomicBool>`, annulation = outcome
 `Cancelled` PAS une erreur ; ffmpeg tué + .mp4 partiel supprimé) — les
 anciennes signatures restent des enveloppes à sortie console identique.
-⚠️ dimensions vidéo forcées PAIRES (`even_dims`, x264 yuv420p échoue sinon).
+⚠️ dimensions vidéo forcées PAIRES (`even_dims`, x264 yuv420p échoue sinon —
+plancher 16 : demander 16×12 donne 16×16, piège des tests).
+
+**Timeline studio (G13, 2026-08-13)** — panneau bas de `fractall-video-gui`,
+logique pure dans `video_gui/timeline.rs`, workers dans `job.rs` :
+- **Miniatures des keyframes** : cellule par keyframe 0..=n, remplies au fil
+  du rendu (msg `VideoJobMsg::Thumb` = canaux BRUTS sous-échantillonnés
+  nearest-centre, `thumb_channels` — l'UI colorise, donc changement de
+  palette = recolorisation in-memory SANS relire les `.fmap`). Provisoires au
+  lancement : keyframe 0 = mini-rendu vue pleine (itérations plafonnées
+  5000, caché par type), keyframe n = copie réduite de la preview (gatée
+  `view_is_project_target`). Reprise/adoption : `spawn_thumb_scan` repeuple
+  depuis les maps existantes. Clic sur une miniature = la preview saute à
+  cette profondeur (`span_at_keyframe`, centre du projet).
+- **Ordre de rendu DICHOTOMIQUE** (`video::RenderOrder::Bisection`,
+  `bisection_order` : 0, n, milieux récursifs) : la timeline se peuple à
+  toutes les profondeurs tôt — sûr car keyframes indépendantes + reprise par
+  empreinte (verrou `bisection_render_produces_same_maps_as_sequential`).
+  CLI inchangé (`render_project_with_progress` = enveloppe Sequential).
+- **Courbe de vitesse par zone** (`SpeedCurve`) : points (position keyframe,
+  multiplicateur ×1/8..×8 log) édités sur la bande au-dessus des miniatures
+  (double-clic = ajouter, glisser = déplacer, clic droit = supprimer),
+  interpolation linéaire, compilés par `compile()` en spline temporelle
+  `video.velocity` (intégration trapèze `t(p)=∫dp/v(p)` + nœud de garde
+  +0.5 s pour que l'intégrateur point-milieu atteigne p=n). ⚠️ Courbe
+  plate → constante Display EXACTE (verrou bit-identique). La vitesse
+  n'étant consommée qu'à l'ASSEMBLAGE, éditer la courbe = « Ré-assembler »
+  seulement (verrou : fingerprints de maps insensibles à la vitesse).
+- **Scrubbing** : glisser sur la règle = frame vidéo interpolée dans la zone
+  centrale par `spawn_scrub_worker` (MÊME code que l'assembleur :
+  `colorize_keyframe` + `interpolate_frame`, cache LRU 4 keyframes
+  colorisées, debounce par drain du canal ; verrou : p entier == keyframe
+  colorisée pixel-exacte). Respawn du worker par empreinte
+  (dossier/couleurs/génération). Toute interaction de navigation sort du
+  mode scrub.
+- **ETA pondérée** : régression linéaire `secondes = a + b·k` sur les durées
+  mesurées (`eta_seconds`) — les keyframes profondes coûtent plus cher
+  qu'une moyenne naïve ne le prédit.
+- **Bandeau de divergence** : centre de la vue ≠ projet sur disque → warning
+  (le zoom n'est PAS comparé : inspecter une keyframe via clic est légitime).
 
 **Dynamiques** (`video/spline.rs`) : `video.velocity` et `[dynamics]
 palette_offset` acceptent `"t/v,t/v,…"` (temps `M:S` ou s), cubique monotone ;
