@@ -580,6 +580,31 @@ DistanceAO, Distance3D.
 
 **4 orbit traps** (`orbit_traps.rs`) : Point, Line, Cross, Circle.
 
+### ⚠️ Colorisation UNIQUE CLI ↔ GUI (invariant, 2026-08-13)
+
+**Une seule** boucle de colorisation : `io::png::colorize_buffers(params,
+iterations, zs, distances, orbits, width, height)`. `gui::colorize_buffer`
+n'en est qu'une enveloppe (dimensions explicites : la GUI colorise aussi des
+TUILES). Enveloppes de haut niveau : `colorize_to_rgb` (sans canaux annexes,
+réservée à l'AA multi-sample qui n'en produit pas) et
+`colorize_to_rgb_with_extras` (**à utiliser dès que le path dispose des
+canaux**).
+
+Le dispatcher renvoie 4 buffers : `(iterations, zs, orbits, distances)`. Les
+deux derniers sont CONSOMMÉS par la colorisation — `distances` par
+Distance/DistanceAO/Distance3D, `orbits` par OrbitTraps/Wings. Les jeter fait
+retomber ces 5 modes **silencieusement sur Smooth** (aucune erreur, image
+plausible mais fausse) : c'était le bug de la copie CLI, qui passait
+`None, None, false` en dur. Même cause pour Anti-Buddhabrot, absent du test
+`is_buddhabrot` côté CLI → colorisé comme un escape-time (densité maximale
+⇒ `iter == iteration_max` ⇒ noir).
+
+**Ne JAMAIS** réécrire une boucle de colorisation ailleurs ni appeler
+`color_for_pixel_with_lut` directement depuis un path de sortie : une
+divergence colorisation = un PNG qui ne ressemble pas à l'écran. Verrous :
+`io::png::tests::{antibuddhabrot_colorizes_as_density_like_buddhabrot,
+distance_channel_changes_distance_mode_output}`.
+
 ## Transformations de plan (XaoS-style)
 
 | ID | Nom | Formule |

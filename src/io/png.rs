@@ -7,6 +7,7 @@ use png::{Decoder, Encoder};
 use rayon::prelude::*;
 
 use crate::color::{color_for_pixel_with_lut, color_for_nebulabrot_pixel, color_for_buddhabrot_pixel, PaletteLut};
+use crate::fractal::orbit_traps::OrbitData;
 use crate::fractal::{FractalParams, FractalType};
 
 /// Clé du chunk tEXt pour les métadonnées fractales.
@@ -16,20 +17,35 @@ const METADATA_KEY: &str = "fractall-params";
 ///
 /// Les métadonnées permettent de restaurer exactement l'état de la fractale
 /// (coordonnées HP, type, paramètres) lors du chargement ultérieur de l'image.
-/// Colorise les buffers bruts (itérations + z final) en RGB entrelacé
-/// (3 octets/pixel, row-major). Factorisé pour être réutilisé par la
-/// sauvegarde PNG ET par l'accumulation anti-aliasing multi-sample, qui
-/// colorise chaque sample puis moyenne en espace RGB.
-pub fn colorize_to_rgb(params: &FractalParams, iterations: &[u32], zs: &[Complex64]) -> Vec<u8> {
-    let width = params.width;
+/// Colorisation RGB entrelacée (3 octets/pixel, row-major) des buffers bruts
+/// du dispatcher — **implémentation UNIQUE**, partagée par la sauvegarde PNG
+/// (CLI), la recolorisation depuis une map `.fmap`, le pipeline vidéo et la
+/// GUI (`gui::colorize_buffer` n'est plus qu'une enveloppe).
+///
+/// ⚠️ Ne pas dupliquer cette boucle : les deux copies historiques (CLI et GUI)
+/// avaient divergé — la copie CLI ignorait `distances`/`orbits` (les modes
+/// Distance*/OrbitTraps/Wings retombaient silencieusement sur Smooth) et ne
+/// reconnaissait pas Anti-Buddhabrot comme un rendu de densité.
+///
+/// `distances` et `orbits` peuvent être vides (`&[]`) quand le path de rendu
+/// ne les produit pas : les pixels manquants sont traités comme absents, ce
+/// qui reproduit exactement l'ancien comportement pour les modes qui ne les
+/// consomment pas. `width`/`height` sont explicites (la GUI colorise aussi des
+/// TUILES, plus petites que `params.width × params.height`).
+pub fn colorize_buffers(
+    params: &FractalParams,
+    iterations: &[u32],
+    zs: &[Complex64],
+    distances: &[f64],
+    orbits: &[Option<OrbitData>],
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
     let w = width as usize;
-    let h = params.height as usize;
-
-    assert_eq!(iterations.len(), w * h, "Taille de la matrice d'itérations invalide");
-    assert_eq!(zs.len(), w * h, "Taille de la matrice des valeurs z invalide");
-
     let is_nebulabrot = params.fractal_type == FractalType::Nebulabrot;
-    let is_buddhabrot = params.fractal_type == FractalType::Buddhabrot;
+    let is_buddhabrot = params.fractal_type == FractalType::Buddhabrot
+        || params.fractal_type == FractalType::AntiBuddhabrot;
+    let interior_flag_encoded = params.enable_interior_detection;
     let lut = if !is_nebulabrot && !is_buddhabrot {
         Some(PaletteLut::new(params.color_mode, params.color_space))
     } else {
@@ -37,14 +53,16 @@ pub fn colorize_to_rgb(params: &FractalParams, iterations: &[u32], zs: &[Complex
     };
 
     // Parallélisation de la colorisation par lignes
-    (0..h)
+    (0..height as usize)
         .into_par_iter()
         .flat_map(|y| {
             (0..width)
                 .flat_map(|x| {
                     let idx = y * w + x as usize;
-                    let iter = iterations[idx];
-                    let z = zs[idx];
+                    let iter = iterations.get(idx).copied().unwrap_or(0);
+                    let z = zs.get(idx).copied().unwrap_or(Complex64::new(0.0, 0.0));
+                    let orbit = orbits.get(idx).and_then(|o| o.as_ref());
+                    let distance = distances.get(idx).copied().filter(|d| d.is_finite());
 
                     let (r, g, b) = if is_nebulabrot {
                         color_for_nebulabrot_pixel(iter, z)
@@ -60,9 +78,9 @@ pub fn colorize_to_rgb(params: &FractalParams, iterations: &[u32], zs: &[Complex
                             params.color_offset,
                             params.out_coloring_mode,
                             params.color_space,
-                            None,
-                            None,
-                            false,
+                            orbit,
+                            distance,
+                            interior_flag_encoded,
                             lut.as_ref(),
                         )
                     };
@@ -72,6 +90,44 @@ pub fn colorize_to_rgb(params: &FractalParams, iterations: &[u32], zs: &[Complex
                 .collect::<Vec<u8>>()
         })
         .collect()
+}
+
+/// Colorise les buffers bruts (itérations + z final) en RGB entrelacé
+/// (3 octets/pixel, row-major). Factorisé pour être réutilisé par la
+/// sauvegarde PNG ET par l'accumulation anti-aliasing multi-sample, qui
+/// colorise chaque sample puis moyenne en espace RGB.
+///
+/// Enveloppe sans canaux annexes : à réserver aux paths qui n'en produisent
+/// pas (AA multi-sample). Les appelants qui DISPOSENT des distances/orbites
+/// (CLI, `--from-map`, vidéo) doivent passer par
+/// `colorize_to_rgb_with_extras`, sinon les modes Distance*/OrbitTraps/Wings
+/// retombent silencieusement sur Smooth.
+pub fn colorize_to_rgb(params: &FractalParams, iterations: &[u32], zs: &[Complex64]) -> Vec<u8> {
+    colorize_to_rgb_with_extras(params, iterations, zs, &[], &[])
+}
+
+/// Comme `colorize_to_rgb`, mais en consommant les canaux annexes du
+/// dispatcher : `distances` (modes Distance/DistanceAO/Distance3D) et `orbits`
+/// (modes OrbitTraps/Wings). Passer `&[]` pour un canal absent.
+pub fn colorize_to_rgb_with_extras(
+    params: &FractalParams,
+    iterations: &[u32],
+    zs: &[Complex64],
+    distances: &[f64],
+    orbits: &[Option<OrbitData>],
+) -> Vec<u8> {
+    let n = params.width as usize * params.height as usize;
+    assert_eq!(iterations.len(), n, "Taille de la matrice d'itérations invalide");
+    assert_eq!(zs.len(), n, "Taille de la matrice des valeurs z invalide");
+    colorize_buffers(
+        params,
+        iterations,
+        zs,
+        distances,
+        orbits,
+        params.width,
+        params.height,
+    )
 }
 
 pub fn save_png_with_metadata(
@@ -171,6 +227,86 @@ pub fn load_png_metadata(path: &Path) -> Result<FractalParams, Box<dyn std::erro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fractal::definitions::default_params_for_type;
+    use crate::fractal::OutColoringMode;
+
+    /// Buffers d'un rendu de densité (Buddhabrot-like) : `z.re` porte la
+    /// densité normalisée × 2, `iterations` la même densité × iteration_max.
+    fn density_buffers(n: usize, iter_max: u32) -> (Vec<u32>, Vec<Complex64>) {
+        let norm = |i: usize| (i as f64 + 1.0) / n as f64;
+        (
+            (0..n).map(|i| (norm(i) * iter_max as f64) as u32).collect(),
+            (0..n).map(|i| Complex64::new(norm(i) * 2.0, 0.0)).collect(),
+        )
+    }
+
+    /// Régression : Anti-Buddhabrot est un rendu de DENSITÉ, comme Buddhabrot.
+    /// La colorisation CLI le traitait comme un escape-time (la GUI non) → le
+    /// PNG sorti par `fractall-cli --type 33` ne ressemblait pas à ce que la
+    /// GUI affichait, et le pixel de densité maximale (iter == iteration_max)
+    /// tombait dans la branche « intérieur » → noir.
+    #[test]
+    fn antibuddhabrot_colorizes_as_density_like_buddhabrot() {
+        let (w, h) = (8u32, 4u32);
+        let n = (w * h) as usize;
+        let mut anti = default_params_for_type(FractalType::AntiBuddhabrot, w, h);
+        anti.iteration_max = 500;
+        let (iterations, zs) = density_buffers(n, anti.iteration_max);
+
+        let mut buddha = anti.clone();
+        buddha.fractal_type = FractalType::Buddhabrot;
+        buddha.color_mode = anti.color_mode;
+        buddha.color_repeat = anti.color_repeat;
+
+        let anti_rgb = colorize_to_rgb(&anti, &iterations, &zs);
+        let buddha_rgb = colorize_to_rgb(&buddha, &iterations, &zs);
+        assert_eq!(anti_rgb, buddha_rgb, "Anti-Buddhabrot doit suivre le path densité");
+
+        // Le pixel de densité maximale n'est PAS noir (l'ancien path
+        // escape-time le rendait noir via `iteration >= iteration_max`).
+        let last = (n - 1) * 3;
+        assert_ne!(
+            &anti_rgb[last..last + 3],
+            &[0u8, 0, 0],
+            "densité maximale colorisée en noir = ancien bug escape-time"
+        );
+    }
+
+    /// Régression : les modes Distance* consomment le canal `distances`. Sans
+    /// lui la colorisation retombe SILENCIEUSEMENT sur Smooth — c'est ce que
+    /// faisait le CLI (et `--from-map`, et le pipeline vidéo) alors que le
+    /// dispatcher produisait bien les distances.
+    #[test]
+    fn distance_channel_changes_distance_mode_output() {
+        let (w, h) = (16u32, 8u32);
+        let n = (w * h) as usize;
+        let mut params = default_params_for_type(FractalType::Mandelbrot, w, h);
+        params.iteration_max = 100;
+        params.enable_distance_estimation = true;
+        params.out_coloring_mode = OutColoringMode::Distance;
+
+        // Pixels échappés (iter < iteration_max) sinon la couleur est noire
+        // avant même de regarder le mode.
+        let iterations: Vec<u32> = (0..n).map(|i| (i % 90) as u32 + 1).collect();
+        let zs: Vec<Complex64> = (0..n)
+            .map(|i| Complex64::new(5.0 + i as f64 * 0.01, 1.0))
+            .collect();
+        let distances: Vec<f64> = (0..n).map(|i| 1e-6 * (i as f64 + 1.0)).collect();
+
+        let without = colorize_to_rgb(&params, &iterations, &zs);
+        let with = colorize_to_rgb_with_extras(&params, &iterations, &zs, &distances, &[]);
+        assert_ne!(with, without, "le canal distances doit être consommé");
+
+        // Les modes qui n'utilisent PAS les distances restent bit-identiques
+        // (garantie de non-régression des goldens).
+        let mut smooth = params.clone();
+        smooth.out_coloring_mode = OutColoringMode::Smooth;
+        assert_eq!(
+            colorize_to_rgb_with_extras(&smooth, &iterations, &zs, &distances, &[]),
+            colorize_to_rgb(&smooth, &iterations, &zs),
+            "Smooth ignore les distances : sortie inchangée"
+        );
+    }
 
     /// Vérifie qu'on peut désérialiser un JSON legacy (sauvegardé avant
     /// l'ajout récent de champs comme jitter_scale, use_bytecode_engine).
