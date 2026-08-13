@@ -26,10 +26,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Instant;
 
+use num_complex::Complex64;
 use rug::Float;
 
 use crate::fractal::perturbation::ReferenceOrbitCache;
-use crate::fractal::{default_params_for_type, FractalParams, FractalType, OutColoringMode};
+use crate::fractal::{
+    default_params_for_type, ColorSpace, FractalParams, FractalType, OutColoringMode,
+};
 use crate::io::fmap::load_fmap;
 use crate::io::png::{colorize_buffers, colorize_to_rgb, load_png_metadata};
 use crate::render::render_escape_time_cancellable_with_reuse;
@@ -62,6 +65,23 @@ const STUDIO_OUTCOLORINGS: &[(&str, &str)] = &[
     ("binary", "Binary"),
     ("color-decomp", "Color decomp"),
 ];
+
+fn studio_outcoloring_index(mode: OutColoringMode) -> Option<usize> {
+    let name = mode.cli_name();
+    STUDIO_OUTCOLORINGS.iter().position(|(cli, _)| *cli == name)
+}
+
+/// Frame assemblée dont la position de zoom est la plus proche de `p`.
+/// La timeline peut reculer (spline à vitesse négative), donc elle n'est pas
+/// nécessairement triée et ne peut pas être cherchée par partition binaire.
+fn nearest_position_index(positions: &[f64], p: f64) -> usize {
+    positions
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| (*a - p).abs().total_cmp(&(*b - p).abs()))
+        .map(|(i, _)| i)
+        .unwrap_or(0)
+}
 
 /// Résolutions presets (label, w, h) + entrée custom.
 const RESOLUTIONS: &[(&str, u32, u32)] = &[
@@ -110,6 +130,9 @@ pub struct VideoStudioApp {
     outcoloring_idx: usize,
     palette: u8,
     color_repeat: u32,
+    color_space: ColorSpace,
+    seed: Complex64,
+    multibrot_power: f64,
     preview_iters: u32,
 
     // --- Rendu preview asynchrone ---
@@ -141,10 +164,11 @@ pub struct VideoStudioApp {
     // --- Timeline (G13) : miniatures + courbe de vitesse + scrub ---
     tl_slots: Vec<ThumbSlot>,
     tl_textures: Vec<Option<egui::TextureHandle>>,
-    /// Empreinte couleurs des textures (palette, repeat, outcoloring, type) :
+    /// Empreinte couleurs des textures (palette, repeat, espace, outcoloring,
+    /// type) :
     /// un changement invalide les textures, PAS les canaux (recolorisation
     /// in-memory, aucun accès disque).
-    tl_stamp: (u8, u32, usize, usize),
+    tl_stamp: (u8, u32, ColorSpace, usize, usize, bool, u64),
     /// Keyframe en cours de rendu (surbrillance + auto-scroll).
     tl_current: Option<u32>,
     tl_autoscrolled: Option<u32>,
@@ -158,11 +182,12 @@ pub struct VideoStudioApp {
     /// Manifest du projet sur disque (sondé au changement de dossier).
     project_manifest: Option<crate::video::Manifest>,
     probed_dir: Option<String>,
-    /// Miniature provisoire keyframe 0 (vue pleine), cachée par type.
-    first_thumb: Option<(usize, ThumbSlot)>,
-    /// (type au moment du spawn, canal) — le type est capturé au SPAWN :
-    /// un changement de type pendant le rendu ne doit pas mal étiqueter.
-    first_thumb_rx: Option<(usize, mpsc::Receiver<VideoJobMsg>)>,
+    /// Miniature provisoire keyframe 0 (vue pleine), cachée par empreinte
+    /// type + centre + géométrie + itérations.
+    first_thumb: Option<(String, ThumbSlot)>,
+    /// (empreinte au moment du spawn, canal) : une réponse terminant après un
+    /// changement de cible ne doit jamais être attribuée à la nouvelle vue.
+    first_thumb_rx: Option<(String, mpsc::Receiver<VideoJobMsg>)>,
     /// Miniature provisoire keyframe finale (copie réduite de la preview).
     preview_thumb: Option<(Vec<u8>, u32, u32)>,
     /// Index du point de la courbe de vitesse en cours de drag.
@@ -195,6 +220,9 @@ impl VideoStudioApp {
             outcoloring_idx: 0,
             palette: p.color_mode,
             color_repeat: p.color_repeat,
+            color_space: p.color_space,
+            seed: p.seed,
+            multibrot_power: p.multibrot_power,
             preview_iters: 1000,
             preview_version: 0,
             preview_cancel: Arc::new(AtomicBool::new(false)),
@@ -218,7 +246,7 @@ impl VideoStudioApp {
             job_result: None,
             tl_slots: Vec::new(),
             tl_textures: Vec::new(),
-            tl_stamp: (255, 0, usize::MAX, usize::MAX),
+            tl_stamp: (255, 0, ColorSpace::Rgb, usize::MAX, usize::MAX, false, 0),
             tl_current: None,
             tl_autoscrolled: None,
             tl_measured: Vec::new(),
@@ -260,6 +288,9 @@ impl VideoStudioApp {
     fn preview_params(&self, w: u32, h: u32) -> Option<FractalParams> {
         let (_, ftype) = self.current_type();
         let mut p = default_params_for_type(ftype, w, h);
+        p.seed = self.seed;
+        p.multibrot_power = self.multibrot_power;
+        p.color_space = self.color_space;
         let prec = nav::view_precision(&self.view.sx);
         let cx = Float::parse(&self.view.cx).ok().map(|v| Float::with_val(prec, v))?;
         let cy = Float::parse(&self.view.cy).ok().map(|v| Float::with_val(prec, v))?;
@@ -365,6 +396,10 @@ impl VideoStudioApp {
         };
         self.palette = params.color_mode;
         self.color_repeat = params.color_repeat;
+        self.color_space = params.color_space;
+        self.outcoloring_idx = studio_outcoloring_index(params.out_coloring_mode).unwrap_or(0);
+        self.seed = params.seed;
+        self.multibrot_power = params.multibrot_power;
         self.preview_iters = params.iteration_max;
         self.settings.iterations = params.iteration_max;
         self.orbit_cache = None;
@@ -380,6 +415,9 @@ impl VideoStudioApp {
             imag: self.view.cy.clone(),
             zoom,
             type_id,
+            seed: self.seed,
+            multibrot_power: self.multibrot_power,
+            color_space: self.color_space,
             palette: self.palette,
             color_repeat: self.color_repeat,
             outcoloring: self.current_outcoloring().to_string(),
@@ -409,6 +447,12 @@ impl VideoStudioApp {
         self.job_started = Some(Instant::now());
         self.cancel_requested = false;
         self.job_result = None;
+        // Un nouveau rendu peut viser une autre cible tout en gardant le même
+        // nombre de keyframes. Les anciennes miniatures définitives ne
+        // doivent pas survivre jusqu'à leur remplacement progressif.
+        if !assemble_only {
+            self.clear_timeline_slots();
+        }
         // Timeline/ETA : nouveau job = nouvelles mesures ; le manifest vient
         // d'être (ré)écrit par plan → re-sonder le dossier.
         self.tl_measured.clear();
@@ -428,9 +472,7 @@ impl VideoStudioApp {
                     self.tl_current = Some(k);
                     // Le plan vient d'écrire le manifest : re-sonder pour que
                     // timeline/scrub/banner voient le projet dès le job.
-                    if self.project_manifest.is_none() {
-                        self.probed_dir = None;
-                    }
+                    self.probed_dir = None;
                 }
                 Ok(VideoJobMsg::RenderProgress { done, total, k, seconds }) => {
                     self.job_phase = format!("Keyframes {done}/{total}");
@@ -442,10 +484,29 @@ impl VideoStudioApp {
                         self.tl_measured.push((k, s));
                     }
                 }
-                Ok(VideoJobMsg::Thumb { k, w, h, iter_max, iterations, zs, provisional }) => {
+                Ok(VideoJobMsg::Thumb {
+                    k,
+                    w,
+                    h,
+                    fractal_type,
+                    color_space,
+                    iter_max,
+                    iterations,
+                    zs,
+                    provisional,
+                }) => {
                     self.apply_thumb(
                         k as usize,
-                        ThumbSlot::Channels { w, h, iter_max, iterations, zs, provisional },
+                        ThumbSlot::Channels {
+                            w,
+                            h,
+                            fractal_type,
+                            color_space,
+                            iter_max,
+                            iterations,
+                            zs,
+                            provisional,
+                        },
                     );
                 }
                 Ok(VideoJobMsg::AssembleProgress { frame, total }) => {
@@ -504,6 +565,13 @@ impl VideoStudioApp {
         self.tl_textures[k] = None;
     }
 
+    fn clear_timeline_slots(&mut self) {
+        self.tl_slots.fill(ThumbSlot::Empty);
+        self.tl_textures.fill(None);
+        self.tl_current = None;
+        self.tl_autoscrolled = None;
+    }
+
     /// Sonde le dossier projet quand il change (ou après un job) : manifest
     /// sur disque + scan des maps existantes pour repeupler la timeline.
     fn probe_project(&mut self) {
@@ -512,14 +580,26 @@ impl VideoStudioApp {
             return;
         }
         self.probed_dir = Some(dir.clone());
+        let dir_changed = self.scanned_dir != dir;
+        if dir_changed {
+            // Deux projets de même longueur partageraient sinon les mêmes
+            // slots : les maps absentes du nouveau dossier resteraient
+            // illustrées par les miniatures définitives de l'ancien.
+            self.scan_rx = None;
+            self.clear_timeline_slots();
+            self.scanned_dir = dir.clone();
+        }
         self.project_manifest = (!dir.is_empty())
             .then(|| crate::video::Manifest::load(&Path::new(&dir).join("manifest.toml")).ok())
-            .flatten();
+            .flatten()
+            .filter(|m| crate::video::validate_project_keyframes(m).is_ok());
         if let Some(m) = &self.project_manifest {
-            if self.scanned_dir != dir {
-                self.scanned_dir = dir.clone();
-                self.scan_rx =
-                    Some(job::spawn_thumb_scan(PathBuf::from(&dir), m.video.keyframes));
+            if dir_changed {
+                self.scan_rx = Some(job::spawn_thumb_scan(
+                    PathBuf::from(&dir),
+                    m.video.keyframes,
+                    m.color.color_space,
+                ));
             }
         }
     }
@@ -529,10 +609,29 @@ impl VideoStudioApp {
         let mut disconnected = false;
         loop {
             match rx.try_recv() {
-                Ok(VideoJobMsg::Thumb { k, w, h, iter_max, iterations, zs, provisional }) => {
+                Ok(VideoJobMsg::Thumb {
+                    k,
+                    w,
+                    h,
+                    fractal_type,
+                    color_space,
+                    iter_max,
+                    iterations,
+                    zs,
+                    provisional,
+                }) => {
                     self.apply_thumb(
                         k as usize,
-                        ThumbSlot::Channels { w, h, iter_max, iterations, zs, provisional },
+                        ThumbSlot::Channels {
+                            w,
+                            h,
+                            fractal_type,
+                            color_space,
+                            iter_max,
+                            iterations,
+                            zs,
+                            provisional,
+                        },
                     );
                 }
                 Ok(_) => {}
@@ -549,15 +648,33 @@ impl VideoStudioApp {
     }
 
     fn drain_first_thumb(&mut self) {
-        let Some((spawn_type, rx)) = self.first_thumb_rx.take() else { return };
+        let Some((spawn_key, rx)) = self.first_thumb_rx.take() else { return };
         match rx.try_recv() {
-            Ok(VideoJobMsg::Thumb { k: 0, w, h, iter_max, iterations, zs, .. }) => {
-                let slot =
-                    ThumbSlot::Channels { w, h, iter_max, iterations, zs, provisional: true };
-                self.first_thumb = Some((spawn_type, slot));
+            Ok(VideoJobMsg::Thumb {
+                k: 0,
+                w,
+                h,
+                fractal_type,
+                color_space,
+                iter_max,
+                iterations,
+                zs,
+                ..
+            }) => {
+                let slot = ThumbSlot::Channels {
+                    w,
+                    h,
+                    fractal_type,
+                    color_space,
+                    iter_max,
+                    iterations,
+                    zs,
+                    provisional: true,
+                };
+                self.first_thumb = Some((spawn_key, slot));
             }
             Ok(_) | Err(mpsc::TryRecvError::Empty) => {
-                self.first_thumb_rx = Some((spawn_type, rx));
+                self.first_thumb_rx = Some((spawn_key, rx));
             }
             Err(mpsc::TryRecvError::Disconnected) => {}
         }
@@ -579,10 +696,7 @@ impl VideoStudioApp {
         match &self.project_manifest {
             Some(m) => {
                 self.view_center_matches_project()
-                    && zoom_from_span_x(&self.view.sx)
-                        .ok()
-                        .and_then(|z| crate::video::keyframe_count(&z).ok())
-                        == Some(m.video.keyframes)
+                    && timeline::span_matches_keyframe(&self.view.sx, m.video.keyframes)
             }
             None => true,
         }
@@ -621,7 +735,7 @@ impl VideoStudioApp {
                 // exactement ce que la preview affiche (copie réduite) —
                 // seulement si la vue EST la cible du projet (sinon on
                 // collerait une image sans rapport sur la timeline du projet).
-                if self.view_is_project_target() {
+                if self.view_is_project_target() && !self.settings.lighting {
                     let (thumb, tw, th) = timeline::downscale_rgb_nearest(
                         &pass.rgb,
                         pass.w,
@@ -673,35 +787,124 @@ impl VideoStudioApp {
             self.tl_textures = (0..len).map(|_| None).collect();
         }
         // Empreinte couleurs : recoloriser (textures seulement, canaux gardés).
-        let stamp = (self.palette, self.color_repeat, self.outcoloring_idx, self.type_idx);
+        let stamp = (
+            self.palette,
+            self.color_repeat,
+            self.color_space,
+            self.outcoloring_idx,
+            self.type_idx,
+            self.settings.lighting,
+            self.settings.lighting_beta.to_bits(),
+        );
         if stamp != self.tl_stamp {
             self.tl_stamp = stamp;
             for t in &mut self.tl_textures {
                 *t = None;
             }
+            // La miniature RGB finale vient de la preview non éclairée et ne
+            // possède plus les canaux nécessaires au relief. Ne pas la faire
+            // passer pour une approximation de la sortie éclairée.
+            if self.settings.lighting {
+                if let Some(last) = self.tl_slots.last_mut() {
+                    if matches!(last, ThumbSlot::Rgb { .. }) {
+                        *last = ThumbSlot::Empty;
+                    }
+                }
+            }
         }
-        // Provisoire keyframe 0 : mini rendu par type (itérations plafonnées —
-        // le détail deep-iter est invisible à 96 px).
-        let type_changed = self.first_thumb.as_ref().is_some_and(|(ti, _)| *ti != self.type_idx);
-        if (self.first_thumb.is_none() || type_changed) && self.first_thumb_rx.is_none() {
-            let (_, ftype) = self.current_type();
-            let mut p = default_params_for_type(ftype, 96, timeline::THUMB_MAX_H);
-            let iters = self.settings.iterations.clamp(50, 5000);
-            p.iteration_max = iters;
-            p.max_perturb_iterations = iters;
-            p.max_bla_steps = iters;
+        // Provisoire keyframe 0 : même centre/type/aspect que le projet (ou la
+        // cible courante sans projet), avec les itérations plafonnées.
+        let (ftype, type_id, seed, power, color_space, cx, cy, source_w, source_h, iters) =
+            match &self.project_manifest {
+                Some(m) => {
+                    let Some(ftype) = FractalType::from_id(m.fractal.r#type) else {
+                        return;
+                    };
+                    let defaults = default_params_for_type(ftype, 1, 1);
+                    let seed = match (m.fractal.julia_re, m.fractal.julia_im) {
+                        (Some(re), Some(im)) => Complex64::new(re, im),
+                        (None, None) => defaults.seed,
+                        _ => return,
+                    };
+                    (
+                        ftype,
+                        m.fractal.r#type,
+                        seed,
+                        m.fractal.multibrot_power.unwrap_or(defaults.multibrot_power),
+                        m.color.color_space,
+                        m.location.real.as_str(),
+                        m.location.imag.as_str(),
+                        m.image.width,
+                        m.image.height,
+                        m.fractal.iterations,
+                    )
+                }
+                None => {
+                    let (type_id, ftype) = self.current_type();
+                    (
+                        ftype,
+                        type_id,
+                        self.seed,
+                        self.multibrot_power,
+                        self.color_space,
+                        self.view.cx.as_str(),
+                        self.view.cy.as_str(),
+                        self.settings.width,
+                        self.settings.height,
+                        self.settings.iterations,
+                    )
+                }
+            };
+        let first_key = format!(
+            "{type_id}|{:x},{:x}|{:x}|{color_space:?}|{cx}|{cy}|{source_w}x{source_h}|{}",
+            seed.re.to_bits(),
+            seed.im.to_bits(),
+            power.to_bits(),
+            iters.clamp(50, 5000)
+        );
+        let cached_matches = self.first_thumb.as_ref().is_some_and(|(key, _)| *key == first_key);
+        let pending_matches = self
+            .first_thumb_rx
+            .as_ref()
+            .is_some_and(|(key, _)| *key == first_key);
+        if !cached_matches && !pending_matches {
+            // Dropper le receiver périmé fait terminer silencieusement son
+            // worker dès son prochain send.
             self.first_thumb = None;
-            self.first_thumb_rx = Some((self.type_idx, job::spawn_first_thumb(p)));
+            self.first_thumb_rx = None;
+            if self.tl_slots.first().is_some_and(|slot| !slot.is_final()) {
+                self.tl_slots[0] = ThumbSlot::Empty;
+                self.tl_textures[0] = None;
+            }
+            if let Ok(p) =
+                job::first_thumb_params(
+                    ftype,
+                    seed,
+                    power,
+                    color_space,
+                    cx,
+                    cy,
+                    source_w,
+                    source_h,
+                    iters,
+                )
+            {
+                self.first_thumb_rx = Some((first_key.clone(), job::spawn_first_thumb(p)));
+            }
         }
-        if let Some((ti, slot)) = &self.first_thumb {
-            if *ti == self.type_idx && matches!(self.tl_slots.first(), Some(ThumbSlot::Empty)) {
+        if let Some((key, slot)) = &self.first_thumb {
+            if *key == first_key && matches!(self.tl_slots.first(), Some(ThumbSlot::Empty)) {
                 let slot = slot.clone();
                 self.apply_thumb(0, slot);
             }
         }
         // Provisoire keyframe finale depuis la preview.
         if let Some((rgb, w, h)) = &self.preview_thumb {
-            if len > 0 && matches!(self.tl_slots[len - 1], ThumbSlot::Empty) {
+            if self.view_is_project_target()
+                && !self.settings.lighting
+                && len > 0
+                && matches!(self.tl_slots[len - 1], ThumbSlot::Empty)
+            {
                 let slot = ThumbSlot::Rgb { rgb: rgb.clone(), w: *w, h: *h };
                 self.apply_thumb(len - 1, slot);
             }
@@ -715,15 +918,37 @@ impl VideoStudioApp {
         match slot {
             ThumbSlot::Empty => None,
             ThumbSlot::Rgb { rgb, w, h } => Some((rgb.clone(), *w, *h)),
-            ThumbSlot::Channels { w, h, iter_max, iterations, zs, .. } => {
-                let (_, ftype) = self.current_type();
-                let mut p = default_params_for_type(ftype, *w, *h);
+            ThumbSlot::Channels {
+                w,
+                h,
+                fractal_type,
+                color_space: _,
+                iter_max,
+                iterations,
+                zs,
+                ..
+            } => {
+                let mut p = default_params_for_type(*fractal_type, *w, *h);
+                p.color_space = self.color_space;
                 p.iteration_max = *iter_max;
                 p.color_mode = self.palette;
                 p.color_repeat = self.color_repeat.max(1);
                 p.out_coloring_mode = OutColoringMode::from_cli_name(self.current_outcoloring())
                     .unwrap_or(OutColoringMode::Smooth);
-                Some((colorize_buffers(&p, iterations, zs, &[], &[], *w, *h), *w, *h))
+                let mut rgb = colorize_buffers(&p, iterations, zs, &[], &[], *w, *h);
+                if self.settings.lighting {
+                    crate::video::lighting::shade_rgb(
+                        &mut rgb,
+                        iterations,
+                        zs,
+                        *w as usize,
+                        *h as usize,
+                        *iter_max,
+                        45.0,
+                        self.settings.lighting_beta,
+                    );
+                }
+                Some((rgb, *w, *h))
             }
         }
     }
@@ -772,10 +997,11 @@ impl VideoStudioApp {
         };
         let dir = self.probed_dir.clone().unwrap_or_default();
         let fp = format!(
-            "{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{:?}|{}|{}|{}|{}",
             dir,
             self.palette,
             self.color_repeat,
+            self.color_space,
             self.current_outcoloring(),
             self.settings.lighting,
             self.settings.lighting_beta,
@@ -785,6 +1011,7 @@ impl VideoStudioApp {
             let mut m = pm.clone();
             m.color.palette = self.palette;
             m.color.color_repeat = self.color_repeat.max(1);
+            m.color.color_space = self.color_space;
             m.color.outcoloring = self.current_outcoloring().to_string();
             m.lighting.enable = self.settings.lighting;
             m.lighting.beta = self.settings.lighting_beta;
@@ -823,12 +1050,16 @@ impl VideoStudioApp {
         self.scrub_p = p;
         // Libellé temporel : frame la plus proche de p dans la timeline réelle.
         let fps = self.settings.fps.clamp(1, 120) as f64;
+        let mut frame_idx = 0usize;
+        let mut last_frame = 0usize;
         if let Some((_, positions)) = &self.scrub_positions {
-            let idx = positions.partition_point(|&q| q < p).min(positions.len().saturating_sub(1));
+            last_frame = positions.len().saturating_sub(1);
+            frame_idx = nearest_position_index(positions, p);
             self.scrub_label = format!(
                 "Frame {idx}/{} · t = {} · p = {p:.2}",
                 positions.len().saturating_sub(1),
-                fmt_duration(idx as f64 / fps),
+                fmt_duration(frame_idx as f64 / fps),
+                idx = frame_idx,
             );
         } else {
             self.scrub_label = format!("p = {p:.2}");
@@ -839,6 +1070,15 @@ impl VideoStudioApp {
             if let Some(tx) = &self.scrub_tx {
                 let _ = tx.send(ScrubRequest {
                     p,
+                    palette_offset: if self.settings.palette_scroll {
+                        if last_frame == 0 {
+                            0.0
+                        } else {
+                            self.settings.palette_cycles * frame_idx as f64 / last_frame as f64
+                        }
+                    } else {
+                        0.0
+                    },
                     out_w: w.max(64),
                     out_h: h.max(48),
                     version: self.scrub_version,
@@ -917,6 +1157,9 @@ impl VideoStudioApp {
                     if ui.selectable_value(&mut self.type_idx, i, *label).changed() {
                         let p = default_params_for_type(STUDIO_TYPES[i].1, 800, 600);
                         self.view = HpView::new(p.center_x, p.center_y, p.span_x);
+                        self.color_space = p.color_space;
+                        self.seed = p.seed;
+                        self.multibrot_power = p.multibrot_power;
                         self.orbit_cache = None;
                         self.preview_dirty = true;
                     }
@@ -1199,7 +1442,7 @@ impl VideoStudioApp {
                 ui.painter().vline(
                     x,
                     full_rect.y_range(),
-                    egui::Stroke::new(2.0, ui.visuals().warn_fg_color),
+                    egui::Stroke::new(2.0_f32, ui.visuals().warn_fg_color),
                 );
             }
         });
@@ -1225,12 +1468,12 @@ impl VideoStudioApp {
 
         // Repères ×1 (plein) et ×½ / ×2 (pointillés discrets).
         let weak = ui.visuals().weak_text_color();
-        painter.hline(rect.x_range(), y_of(1.0), egui::Stroke::new(1.0, weak));
+        painter.hline(rect.x_range(), y_of(1.0), egui::Stroke::new(1.0_f32, weak));
         for m in [0.5, 2.0] {
             painter.hline(
                 rect.x_range(),
                 y_of(m),
-                egui::Stroke::new(0.5, weak.linear_multiply(0.4)),
+                egui::Stroke::new(0.5_f32, weak.linear_multiply(0.4)),
             );
         }
 
@@ -1243,7 +1486,7 @@ impl VideoStudioApp {
                 egui::pos2(x, y_of(curve.multiplier_at(p_of(x))))
             })
             .collect();
-        painter.add(egui::Shape::line(pts, egui::Stroke::new(1.5, accent)));
+        painter.add(egui::Shape::line(pts, egui::Stroke::new(1.5_f32, accent)));
 
         // Interactions.
         let resp = ui.interact(rect, ui.id().with("speed-curve"), egui::Sense::click_and_drag());
@@ -1297,7 +1540,7 @@ impl VideoStudioApp {
         for &(p, m) in &self.settings.speed_points {
             let c = egui::pos2(x_of(p), y_of(m));
             painter.circle_filled(c, 4.0, accent);
-            painter.circle_stroke(c, 4.0, egui::Stroke::new(1.0, ui.visuals().strong_text_color()));
+            painter.circle_stroke(c, 4.0, egui::Stroke::new(1.0_f32, ui.visuals().strong_text_color()));
         }
         if self.settings.speed_points.is_empty() {
             painter.text(
@@ -1334,7 +1577,7 @@ impl VideoStudioApp {
             painter.vline(
                 x,
                 egui::Rangef::new(rect.max.y - 5.0, rect.max.y),
-                egui::Stroke::new(1.0, weak),
+                egui::Stroke::new(1.0_f32, weak),
             );
         }
         let resp = ui.interact(rect, ui.id().with("tl-ruler"), egui::Sense::click_and_drag());
@@ -1403,7 +1646,7 @@ impl VideoStudioApp {
                     painter.rect_stroke(
                         cell,
                         2.0,
-                        egui::Stroke::new(1.0, visuals.weak_text_color()),
+                        egui::Stroke::new(1.0_f32, visuals.weak_text_color()),
                         egui::StrokeKind::Inside,
                     );
                     painter.text(
@@ -1419,7 +1662,7 @@ impl VideoStudioApp {
                 painter.rect_stroke(
                     cell,
                     2.0,
-                    egui::Stroke::new(2.0, visuals.selection.bg_fill),
+                    egui::Stroke::new(2.0_f32, visuals.selection.bg_fill),
                     egui::StrokeKind::Outside,
                 );
             }
@@ -1631,11 +1874,19 @@ mod tests {
     #[test]
     fn studio_outcolorings_are_valid_cli_names() {
         for (name, _) in STUDIO_OUTCOLORINGS {
-            assert!(
-                OutColoringMode::from_cli_name(name).is_some(),
-                "outcoloring invalide: {name}"
-            );
+            let mode = OutColoringMode::from_cli_name(name)
+                .unwrap_or_else(|| panic!("outcoloring invalide: {name}"));
+            assert_eq!(studio_outcoloring_index(mode).map(|i| STUDIO_OUTCOLORINGS[i].0), Some(*name));
         }
+        assert_eq!(studio_outcoloring_index(OutColoringMode::Distance), None);
+    }
+
+    #[test]
+    fn scrub_nearest_frame_handles_reversing_timeline() {
+        let positions = [0.0, 0.8, 1.6, 1.1, 0.7, 1.4];
+        assert_eq!(nearest_position_index(&positions, 1.05), 3);
+        assert_eq!(nearest_position_index(&positions, 1.45), 5);
+        assert_eq!(nearest_position_index(&[], 1.0), 0);
     }
 
     /// Les résolutions presets sont toutes paires (contrainte x264 yuv420p).

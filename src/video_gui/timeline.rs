@@ -14,6 +14,7 @@
 use num_complex::Complex64;
 use rug::Float;
 
+use crate::fractal::{ColorSpace, FractalType};
 use crate::io::fmap::FractalMap;
 
 /// Hauteur maximale d'une miniature (px) ; la largeur suit l'aspect de la map.
@@ -33,6 +34,11 @@ pub enum ThumbSlot {
     Channels {
         w: u32,
         h: u32,
+        /// Type porté par la map source. Il ne faut pas utiliser le type
+        /// actuellement sélectionné dans l'UI : un projet rouvert peut être
+        /// d'un autre type.
+        fractal_type: FractalType,
+        color_space: ColorSpace,
         iter_max: u32,
         iterations: Vec<u32>,
         zs: Vec<Complex64>,
@@ -100,6 +106,21 @@ pub fn span_at_keyframe(k: u32) -> String {
     let span = Float::with_val(prec, 4.0) >> k;
     let digits = k as usize * 7 / 10 + 60;
     span.to_string_radix(10, Some(digits))
+}
+
+/// La vue de span `span_x_hp` correspond-elle exactement à la keyframe `k` ?
+///
+/// `keyframe_count(4/span)` ne suffit pas : tous les zooms de
+/// `(2^(k-1), 2^k]` donnent le même `k`, alors que la map finale est rendue
+/// au span dyadique exact `4/2^k`. Accepter toute cette tranche ferait passer
+/// une preview jusqu'à presque 2× trop large pour la vraie miniature finale.
+pub fn span_matches_keyframe(span_x_hp: &str, k: u32) -> bool {
+    let prec = (k + 128).max(256);
+    let Ok(parsed) = Float::parse(span_x_hp) else {
+        return false;
+    };
+    let span = Float::with_val(prec, parsed);
+    span.is_finite() && span > 0 && span == (Float::with_val(prec, 4.0) >> k)
 }
 
 // ---------------------------------------------------------------------------
@@ -279,6 +300,17 @@ mod tests {
             let expected = Float::with_val(prec, 4.0) >> k;
             assert_eq!(reloaded, expected, "span_at_keyframe({k})");
         }
+    }
+
+    /// Deux zooms peuvent produire le même nombre de keyframes sans afficher
+    /// la même vue. Seul le span exact de la map peut servir de miniature.
+    #[test]
+    fn span_match_rejects_same_zoom_bucket() {
+        assert!(span_matches_keyframe("0.00390625", 10)); // 4 / 2^10
+        assert!(span_matches_keyframe(&span_at_keyframe(1200), 1200));
+        assert!(!span_matches_keyframe("0.004", 10)); // zoom 1000, même ceil(log2)=10
+        assert!(!span_matches_keyframe("0.002", 10));
+        assert!(!span_matches_keyframe("not-a-number", 10));
     }
 
     /// Verrou : courbe plate (vide / un point / tous égaux) → constante en

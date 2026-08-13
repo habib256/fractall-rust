@@ -14,8 +14,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{mpsc, Arc};
 
 use num_complex::Complex64;
+use rug::Float;
 
-use crate::fractal::FractalParams;
+use crate::fractal::{default_params_for_type, ColorSpace, FractalParams, FractalType};
 use crate::io::fmap::load_fmap;
 use crate::video::assemble::{
     assemble_project_with_progress, colorize_keyframe, interpolate_frame, timeline,
@@ -43,6 +44,8 @@ pub enum VideoJobMsg {
         k: u32,
         w: u32,
         h: u32,
+        fractal_type: FractalType,
+        color_space: ColorSpace,
         iter_max: u32,
         iterations: Vec<u32>,
         zs: Vec<Complex64>,
@@ -65,6 +68,9 @@ pub struct TargetView {
     /// Magnification manifest (= `video::zoom_from_span_x(span de la vue)`).
     pub zoom: String,
     pub type_id: u8,
+    pub seed: Complex64,
+    pub multibrot_power: f64,
+    pub color_space: ColorSpace,
     pub palette: u8,
     pub color_repeat: u32,
     pub outcoloring: String,
@@ -142,6 +148,62 @@ pub fn palette_scroll_spline(duration_s: f64, cycles: f64) -> String {
     format!("0/0,{duration_s}/{cycles}")
 }
 
+/// Paramètres du rendu provisoire de la keyframe 0. Cette vue est toujours
+/// centrée sur la cible du projet avec un span horizontal de 4, exactement
+/// comme `video::keyframe_params(manifest, 0)` ; seules ses dimensions et son
+/// plafond d'itérations sont réduits pour la timeline.
+pub fn first_thumb_params(
+    fractal_type: FractalType,
+    seed: Complex64,
+    multibrot_power: f64,
+    color_space: ColorSpace,
+    center_x_hp: &str,
+    center_y_hp: &str,
+    source_w: u32,
+    source_h: u32,
+    iterations: u32,
+) -> Result<FractalParams, String> {
+    if source_w == 0 || source_h == 0 {
+        return Err("dimensions source nulles pour la miniature".into());
+    }
+    let parse_center = |name: &str, value: &str| {
+        let parsed = Float::parse(value).map_err(|e| format!("{name} illisible: {e}"))?;
+        let value = Float::with_val(256, parsed);
+        if !value.is_finite() {
+            return Err(format!("{name} non fini"));
+        }
+        Ok(value)
+    };
+    let cx = parse_center("centre réel", center_x_hp)?;
+    let cy = parse_center("centre imaginaire", center_y_hp)?;
+
+    let h = THUMB_MAX_H.min(source_h).max(1);
+    let w = (((source_w as f64 / source_h as f64) * h as f64).round() as u32).max(1);
+    let mut p = default_params_for_type(fractal_type, w, h);
+    if !seed.re.is_finite() || !seed.im.is_finite() {
+        return Err("seed Julia non fini".into());
+    }
+    if !multibrot_power.is_finite() || multibrot_power <= 0.0 {
+        return Err(format!("exposant Multibrot invalide: {multibrot_power}"));
+    }
+    p.seed = seed;
+    p.multibrot_power = multibrot_power;
+    p.color_space = color_space;
+    p.center_x = cx.to_f64();
+    p.center_y = cy.to_f64();
+    p.center_x_hp = Some(center_x_hp.to_string());
+    p.center_y_hp = Some(center_y_hp.to_string());
+    p.span_x = 4.0;
+    p.span_y = 4.0 * source_h as f64 / source_w as f64;
+    p.span_x_hp = Some("4".into());
+    p.span_y_hp = Some(p.span_y.to_string());
+    let iterations = iterations.clamp(50, 5000);
+    p.iteration_max = iterations;
+    p.max_perturb_iterations = iterations;
+    p.max_bla_steps = iterations;
+    Ok(p)
+}
+
 /// ffmpeg présent ? Sondé UNE fois par session studio (jamais dans update()).
 pub fn detect_ffmpeg() -> bool {
     Command::new("ffmpeg")
@@ -185,13 +247,23 @@ pub fn estimates(
     let positions = timeline(n, fps, &velocity)?;
     let frames = positions.len();
     let ss = ss.max(1) as u64;
-    let px = w as u64 * ss * h as u64 * ss;
+    let render_w = (w as u64)
+        .checked_mul(ss)
+        .ok_or("largeur supersamplée trop grande")?;
+    let render_h = (h as u64)
+        .checked_mul(ss)
+        .ok_or("hauteur supersamplée trop grande")?;
+    let px = render_w.checked_mul(render_h).ok_or("nombre de pixels trop grand")?;
+    let map_bytes = (n as u64 + 1)
+        .checked_mul(px)
+        .and_then(|v| v.checked_mul(4 + 16))
+        .ok_or("estimation de taille trop grande")?;
     Ok(Estimates {
         keyframes: n,
         maps: n + 1,
-        duration_s: frames as f64 / fps as f64,
+        duration_s: frames.saturating_sub(1) as f64 / fps as f64,
         frames,
-        map_bytes: (n as u64 + 1) * px * (4 + 16),
+        map_bytes,
     })
 }
 
@@ -209,10 +281,14 @@ pub fn build_manifest(s: &StudioSettings, t: &TargetView) -> Manifest {
     m.image.height = h;
     m.image.supersample = s.supersample.max(1);
     m.fractal.r#type = t.type_id;
+    m.fractal.julia_re = Some(t.seed.re);
+    m.fractal.julia_im = Some(t.seed.im);
+    m.fractal.multibrot_power = Some(t.multibrot_power);
     m.fractal.iterations = s.iterations.max(1);
     m.fractal.iterations_growth = s.iterations_growth.max(0.0);
     m.color.palette = t.palette;
     m.color.color_repeat = t.color_repeat.max(1);
+    m.color.color_space = t.color_space;
     m.color.outcoloring = t.outcoloring.clone();
     m.video.fps = s.fps.clamp(1, 120);
     m.video.velocity = velocity.clone();
@@ -259,13 +335,20 @@ fn run_assemble(
 /// Charge la map de la keyframe `k` et émet sa miniature (canaux
 /// sous-échantillonnés). Silencieux si la map est illisible (mi-écriture,
 /// annulation) : la miniature arrivera au prochain passage.
-fn emit_thumb(project: &Path, k: u32, tx: &mpsc::Sender<VideoJobMsg>) {
+fn emit_thumb(
+    project: &Path,
+    k: u32,
+    color_space: ColorSpace,
+    tx: &mpsc::Sender<VideoJobMsg>,
+) {
     if let Ok(map) = load_fmap(&keyframe_path(project, k)) {
         let (w, h, iterations, zs) = thumb_channels(&map, THUMB_MAX_H);
         let _ = tx.send(VideoJobMsg::Thumb {
             k,
             w,
             h,
+            fractal_type: map.params.fractal_type,
+            color_space,
             iter_max: map.params.iteration_max,
             iterations,
             zs,
@@ -311,12 +394,12 @@ pub fn spawn_generate(
                         k,
                         seconds: Some(seconds),
                     });
-                    emit_thumb(&project, k, &tx);
+                    emit_thumb(&project, k, m.color.color_space, &tx);
                 }
                 KeyframeEvent::Skipped { k, .. } => {
                     done += 1;
                     let _ = tx.send(VideoJobMsg::RenderProgress { done, total, k, seconds: None });
-                    emit_thumb(&project, k, &tx);
+                    emit_thumb(&project, k, m.color.color_space, &tx);
                 }
                 KeyframeEvent::Invalidated { .. } => {}
             },
@@ -340,12 +423,16 @@ pub fn spawn_generate(
 /// Scan des maps EXISTANTES d'un projet (reprise / dossier adopté) : émet une
 /// miniature par `.fmap` présent, en ordre dichotomique pour couvrir toutes
 /// les profondeurs au plus tôt. Thread détaché, s'arrête de lui-même.
-pub fn spawn_thumb_scan(project: PathBuf, n: u32) -> mpsc::Receiver<VideoJobMsg> {
+pub fn spawn_thumb_scan(
+    project: PathBuf,
+    n: u32,
+    color_space: ColorSpace,
+) -> mpsc::Receiver<VideoJobMsg> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         for k in bisection_order(n) {
             if keyframe_path(&project, k).exists() {
-                emit_thumb(&project, k, &tx);
+                emit_thumb(&project, k, color_space, &tx);
             }
         }
         // Boucle bornée : le thread se termine seul, même si le récepteur
@@ -367,6 +454,8 @@ pub fn spawn_first_thumb(params: FractalParams) -> mpsc::Receiver<VideoJobMsg> {
                 k: 0,
                 w: params.width,
                 h: params.height,
+                fractal_type: params.fractal_type,
+                color_space: params.color_space,
                 iter_max: params.iteration_max,
                 iterations,
                 zs,
@@ -386,6 +475,10 @@ pub fn spawn_first_thumb(params: FractalParams) -> mpsc::Receiver<VideoJobMsg> {
 #[derive(Clone, Copy, Debug)]
 pub struct ScrubRequest {
     pub p: f64,
+    /// Décalage de palette à l'instant exact de cette frame. Il appartient à
+    /// la requête (et non au worker) car deux frames à la même profondeur
+    /// peuvent avoir des couleurs différentes avec une palette animée.
+    pub palette_offset: f64,
     pub out_w: u32,
     pub out_h: u32,
     pub version: u64,
@@ -412,17 +505,20 @@ pub fn spawn_scrub_worker(
     let (tx_req, rx_req) = mpsc::channel::<ScrubRequest>();
     let (tx_rep, rx_rep) = mpsc::channel();
     std::thread::spawn(move || {
-        let ss = manifest.image.supersample.max(1);
-        let (src_w, src_h) =
-            ((manifest.image.width * ss) as usize, (manifest.image.height * ss) as usize);
+        if video::validate_project_keyframes(&manifest).is_err() {
+            return;
+        }
+        let (src_w, src_h) = match video::render_dimensions(&manifest) {
+            Ok((w, h)) => (w as usize, h as usize),
+            Err(_) => return,
+        };
         let n = manifest.video.keyframes;
-        let offset = manifest.color.palette_offset;
-        let mut cache: HashMap<u32, Arc<Vec<u8>>> = HashMap::new();
+        let mut cache: HashMap<u32, (u64, Arc<Vec<u8>>)> = HashMap::new();
 
         // Colorise (ou ressort du cache) la keyframe k. None si la map est
         // absente/illisible ou de géométrie inattendue (projet obsolète).
         fn colorized(
-            cache: &mut HashMap<u32, Arc<Vec<u8>>>,
+            cache: &mut HashMap<u32, (u64, Arc<Vec<u8>>)>,
             project: &Path,
             manifest: &Manifest,
             offset: f64,
@@ -430,8 +526,11 @@ pub fn spawn_scrub_worker(
             src_h: usize,
             k: u32,
         ) -> Option<Arc<Vec<u8>>> {
-            if let Some(c) = cache.get(&k) {
-                return Some(c.clone());
+            let offset_bits = offset.to_bits();
+            if let Some((bits, c)) = cache.get(&k) {
+                if *bits == offset_bits {
+                    return Some(c.clone());
+                }
             }
             let map = load_fmap(&keyframe_path(project, k)).ok()?;
             if map.params.width as usize != src_w || map.params.height as usize != src_h {
@@ -443,7 +542,7 @@ pub fn spawn_scrub_worker(
                     cache.remove(&far);
                 }
             }
-            cache.insert(k, rgb.clone());
+            cache.insert(k, (offset_bits, rgb.clone()));
             Some(rgb)
         }
 
@@ -459,6 +558,7 @@ pub fn spawn_scrub_worker(
                 frac = 0.0;
             }
             let z = 2f64.powf(frac);
+            let offset = req.palette_offset;
             let Some(curr) = colorized(&mut cache, &project, &manifest, offset, src_w, src_h, k)
             else {
                 let _ = tx_rep.send(ScrubReply::Missing { k, version: req.version });
@@ -553,6 +653,65 @@ mod tests {
         assert_eq!(even_dims(0, 3), (16, 16));
     }
 
+    /// La miniature provisoire F0 appartient à la cible du projet, pas au
+    /// centre par défaut du type. Son aspect suit aussi la géométrie vidéo.
+    #[test]
+    fn first_thumb_uses_project_center_type_and_aspect() {
+        let cx = "-0.743643887037158704752191506114774";
+        let cy = "0.131825904205311970493132056385139";
+        let seed = Complex64::new(-0.12, 0.74);
+        let p = first_thumb_params(
+            FractalType::Tricorn,
+            seed,
+            3.25,
+            ColorSpace::Lch,
+            cx,
+            cy,
+            640,
+            480,
+            9000,
+        )
+        .unwrap();
+        assert_eq!(p.fractal_type, FractalType::Tricorn);
+        assert_eq!(p.seed, seed);
+        assert_eq!(p.multibrot_power, 3.25);
+        assert_eq!(p.color_space, ColorSpace::Lch);
+        assert_eq!(p.center_x_hp.as_deref(), Some(cx));
+        assert_eq!(p.center_y_hp.as_deref(), Some(cy));
+        assert_eq!((p.width, p.height), (72, 54));
+        assert_eq!(p.span_x, 4.0);
+        assert_eq!(p.span_y, 3.0);
+        assert_eq!(p.iteration_max, 5000, "miniature plafonnée");
+        assert!(
+            first_thumb_params(
+                FractalType::Mandelbrot,
+                seed,
+                2.5,
+                ColorSpace::Rgb,
+                cx,
+                cy,
+                0,
+                480,
+                100,
+            )
+            .is_err()
+        );
+        assert!(
+            first_thumb_params(
+                FractalType::Mandelbrot,
+                seed,
+                2.5,
+                ColorSpace::Rgb,
+                "oops",
+                cy,
+                640,
+                480,
+                100,
+            )
+            .is_err()
+        );
+    }
+
     /// Les estimations partagent les sources de vérité du pipeline : frames
     /// == longueur de `timeline`, keyframes == `keyframe_count`.
     #[test]
@@ -562,11 +721,15 @@ mod tests {
         assert_eq!(e.maps, 4);
         let expected_frames = timeline(3, 30, &Dynamic::Constant(1.0)).unwrap().len();
         assert_eq!(e.frames, expected_frames); // 91
-        assert!((e.duration_s - e.frames as f64 / 30.0).abs() < 1e-12);
+        assert!((e.duration_s - (e.frames - 1) as f64 / 30.0).abs() < 1e-12);
         // 4 maps × (320·2)·(180·2) px × 20 octets
         assert_eq!(e.map_bytes, 4 * 640 * 360 * 20);
         assert!(estimates("8", 30, "0.0", 320, 180, 1).is_err());
         assert!(estimates("abc", 30, "1.0", 320, 180, 1).is_err());
+        assert!(
+            estimates("8", 30, "1.0", u32::MAX, u32::MAX, u32::MAX).is_err(),
+            "l'estimation extrême doit retourner Err, pas déborder"
+        );
         // Une spline de vitesse est comprise (la courbe éditée passe ici).
         let spline = estimates("8", 30, "0/1,6/0.5", 320, 180, 1).unwrap();
         assert!(spline.frames > e.frames, "un ralentissement allonge la vidéo");
@@ -611,12 +774,30 @@ mod tests {
         assert_eq!(d.eval(99.0), 2.0, "clamp après la fin");
     }
 
+    #[test]
+    fn palette_scroll_reaches_requested_cycles_on_last_frame() {
+        let mut settings = StudioSettings::default();
+        settings.fps = 5;
+        settings.palette_scroll = true;
+        settings.palette_cycles = 2.0;
+        let target = TargetView { zoom: "4".into(), ..test_target() };
+        let manifest = build_manifest(&settings, &target);
+        let offset = Dynamic::parse(manifest.dynamics.palette_offset.as_deref().unwrap()).unwrap();
+        let velocity = Dynamic::parse(&manifest.video.velocity).unwrap();
+        let positions = timeline(2, settings.fps, &velocity).unwrap();
+        let last_t = positions.len().saturating_sub(1) as f64 / settings.fps as f64;
+        assert_eq!(offset.eval(last_t), settings.palette_cycles);
+    }
+
     fn test_target() -> TargetView {
         TargetView {
             real: "-0.75".into(),
             imag: "0.01".into(),
             zoom: "8".into(),
             type_id: 3,
+            seed: Complex64::new(-0.31, 0.68),
+            multibrot_power: 3.5,
+            color_space: ColorSpace::Hsb,
             palette: 4,
             color_repeat: 32,
             outcoloring: "smooth".into(),
@@ -631,6 +812,10 @@ mod tests {
         let m = build_manifest(&s, &test_target());
         assert_eq!((m.image.width, m.image.height), (1920, 1080));
         assert_eq!(m.location.zoom, "8");
+        assert_eq!(m.fractal.julia_re, Some(-0.31));
+        assert_eq!(m.fractal.julia_im, Some(0.68));
+        assert_eq!(m.fractal.multibrot_power, Some(3.5));
+        assert_eq!(m.color.color_space, ColorSpace::Hsb);
         assert_eq!(m.color.palette, 4);
         assert_eq!(m.video.keyframes, 0, "rempli par plan_from_manifest");
         let spline = m.dynamics.palette_offset.expect("défilement activé");
@@ -711,17 +896,23 @@ mod tests {
             iterations_growth: 0.0,
             ..Default::default()
         };
-        let target = TargetView { zoom: "8".into(), ..test_target() };
+        // Le sélecteur UI peut encore être sur Mandelbrot lors de l'ouverture
+        // d'un projet existant : la miniature doit porter le type de sa map.
+        let target = TargetView { zoom: "8".into(), type_id: 14, ..test_target() };
         let m = plan_from_manifest(&build_manifest(&settings, &target), &project).unwrap();
         video::render_project(&project).unwrap();
         // Supprime la map 2 : le scan ne doit émettre que 0, 1, 3.
         std::fs::remove_file(keyframe_path(&project, 2)).unwrap();
 
-        let rx = spawn_thumb_scan(project.clone(), m.video.keyframes);
+        let rx = spawn_thumb_scan(project.clone(), m.video.keyframes, ColorSpace::Lch);
         let mut ks: Vec<u32> = Vec::new();
         while let Ok(msg) = rx.recv_timeout(Duration::from_secs(30)) {
             match msg {
-                VideoJobMsg::Thumb { k, .. } => ks.push(k),
+                VideoJobMsg::Thumb { k, fractal_type, color_space, .. } => {
+                    assert_eq!(fractal_type, FractalType::Tricorn);
+                    assert_eq!(color_space, ColorSpace::Lch);
+                    ks.push(k);
+                }
                 other => panic!("message inattendu : {other:?}"),
             }
             if ks.len() == 3 {
@@ -757,7 +948,14 @@ mod tests {
         // p = 1 exact, sortie à la taille SOURCE (⚠️ even_dims plancher 16 :
         // le 16×12 demandé devient 16×16) → identité pixel-exacte.
         let (out_w, out_h) = (m.image.width, m.image.height);
-        tx.send(ScrubRequest { p: 1.0, out_w, out_h, version: 1 }).unwrap();
+        tx.send(ScrubRequest {
+            p: 1.0,
+            palette_offset: m.color.palette_offset,
+            out_w,
+            out_h,
+            version: 1,
+        })
+        .unwrap();
         match rx.recv_timeout(Duration::from_secs(30)).expect("réponse scrub") {
             ScrubReply::Frame { rgb, missing_next, version, .. } => {
                 assert_eq!(version, 1);
@@ -769,12 +967,38 @@ mod tests {
             }
             ScrubReply::Missing { k, .. } => panic!("keyframe {k} manquante inattendue"),
         }
+        // Même profondeur, autre instant de palette : le cache RGB du worker
+        // doit être invalidé par l'offset et refléter la frame demandée.
+        tx.send(ScrubRequest {
+            p: 1.0,
+            palette_offset: 0.25,
+            out_w,
+            out_h,
+            version: 2,
+        })
+        .unwrap();
+        match rx.recv_timeout(Duration::from_secs(30)).expect("réponse scrub recolorisée") {
+            ScrubReply::Frame { rgb, version, .. } => {
+                assert_eq!(version, 2);
+                let map1 = load_fmap(&keyframe_path(&project, 1)).unwrap();
+                let expected = colorize_keyframe(&map1, &m, 0.25).unwrap();
+                assert_eq!(rgb, expected, "offset animé appliqué malgré le cache");
+            }
+            ScrubReply::Missing { k, .. } => panic!("keyframe {k} manquante inattendue"),
+        }
         // Keyframe supprimée → Missing explicite.
         std::fs::remove_file(keyframe_path(&project, 0)).unwrap();
-        tx.send(ScrubRequest { p: 0.0, out_w, out_h, version: 2 }).unwrap();
+        tx.send(ScrubRequest {
+            p: 0.0,
+            palette_offset: m.color.palette_offset,
+            out_w,
+            out_h,
+            version: 3,
+        })
+        .unwrap();
         match rx.recv_timeout(Duration::from_secs(30)).expect("réponse scrub") {
             ScrubReply::Missing { k, version } => {
-                assert_eq!((k, version), (0, 2));
+                assert_eq!((k, version), (0, 3));
             }
             ScrubReply::Frame { .. } => panic!("Missing attendu pour une map absente"),
         }

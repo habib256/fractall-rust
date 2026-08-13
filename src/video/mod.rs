@@ -29,7 +29,9 @@ use std::sync::Arc;
 use rug::Float;
 use serde::{Deserialize, Serialize};
 
-use crate::fractal::{default_params_for_type, FractalParams, FractalType, OutColoringMode};
+use crate::fractal::{
+    default_params_for_type, ColorSpace, FractalParams, FractalType, OutColoringMode,
+};
 use crate::io::fmap::{load_fmap, save_fmap, FractalMap};
 use crate::render::render_escape_time_cancellable_with_reuse;
 
@@ -85,11 +87,29 @@ pub struct FractalSection {
     pub iterations_growth: f64,
     /// Estimation de distance (nécessaire aux modes Distance*).
     pub distance_estimation: bool,
+    /// Seed Julia adopté depuis la source. `None` conserve le défaut du type
+    /// pour la compatibilité avec les anciens manifests.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub julia_re: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub julia_im: Option<f64>,
+    /// Exposant Multibrot adopté depuis la source. `None` conserve le défaut
+    /// historique (2.5) des anciens manifests.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub multibrot_power: Option<f64>,
 }
 
 impl Default for FractalSection {
     fn default() -> Self {
-        Self { r#type: 3, iterations: 1000, iterations_growth: 0.0, distance_estimation: false }
+        Self {
+            r#type: 3,
+            iterations: 1000,
+            iterations_growth: 0.0,
+            distance_estimation: false,
+            julia_re: None,
+            julia_im: None,
+            multibrot_power: None,
+        }
     }
 }
 
@@ -98,6 +118,7 @@ impl Default for FractalSection {
 pub struct ColorSection {
     pub palette: u8,
     pub color_repeat: u32,
+    pub color_space: ColorSpace,
     pub outcoloring: String,
     /// Décalage cyclique de palette ∈ [0,1) (0 = neutre). Spline temporelle
     /// possible via `[dynamics] palette_offset` (jalon 4).
@@ -106,7 +127,13 @@ pub struct ColorSection {
 
 impl Default for ColorSection {
     fn default() -> Self {
-        Self { palette: 6, color_repeat: 40, outcoloring: "smooth".into(), palette_offset: 0.0 }
+        Self {
+            palette: 6,
+            color_repeat: 40,
+            color_space: ColorSpace::Rgb,
+            outcoloring: "smooth".into(),
+            palette_offset: 0.0,
+        }
     }
 }
 
@@ -175,14 +202,23 @@ impl Manifest {
     }
 
     pub fn save(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-        std::fs::write(path, toml::to_string_pretty(self)?)?;
-        Ok(())
+        let text = toml::to_string_pretty(self)?;
+        crate::io::atomic::write_atomic(path, |file| {
+            use std::io::Write as _;
+            file.write_all(text.as_bytes())?;
+            Ok(())
+        })
     }
 }
 
 // ---------------------------------------------------------------------------
 // Géométrie des keyframes
 // ---------------------------------------------------------------------------
+
+/// Limite opérationnelle généreuse (~10^30103 de zoom). Au-delà, même les
+/// noms/coordonnées des keyframes et leur planification deviennent une entrée
+/// déraisonnable avant tout rendu utile.
+const MAX_KEYFRAMES: u32 = 100_000;
 
 /// Nombre de segments keyframe pour atteindre `zoom` : `ceil(log2(zoom))`,
 /// exact même pour les puissances de 2 (via mantisse·2^e GMP). Minimum 1.
@@ -198,7 +234,27 @@ pub fn keyframe_count(zoom: &str) -> Result<u32, String> {
     let e = f.get_exp().unwrap_or(0) as i64;
     let pow = Float::with_val(128, Float::i_exp(1, (e - 1).clamp(i32::MIN as i64, i32::MAX as i64) as i32));
     let n = if f == pow { e - 1 } else { e };
-    Ok(n.max(1) as u32)
+    let n = n.max(1);
+    if n > MAX_KEYFRAMES as i64 {
+        return Err(format!(
+            "zoom trop profond: {n} keyframes (maximum {MAX_KEYFRAMES})"
+        ));
+    }
+    Ok(n as u32)
+}
+
+/// Vérifie qu'un manifest de PROJET (déjà planifié) n'a pas un compte stocké
+/// désynchronisé de son zoom. Les configs d'entrée non planifiées gardent 0
+/// et passent d'abord par `plan_from_manifest`.
+pub(crate) fn validate_project_keyframes(m: &Manifest) -> Result<u32, String> {
+    let expected = keyframe_count(&m.location.zoom)?;
+    if m.video.keyframes != expected {
+        return Err(format!(
+            "video.keyframes={} ne correspond pas à location.zoom (attendu {expected}) — relancez `fractall-video plan`",
+            m.video.keyframes
+        ));
+    }
+    Ok(expected)
 }
 
 /// Précision GMP pour l'arithmétique des spans à la keyframe `k` :
@@ -208,15 +264,51 @@ fn span_precision(k: u32) -> u32 {
     (k + 96).max(256)
 }
 
+/// Dimensions réelles des maps après supersampling, validées sans wrap.
+/// Tous les consommateurs du manifest doivent partager ce calcul.
+pub(crate) fn render_dimensions(m: &Manifest) -> Result<(u32, u32), String> {
+    if m.image.width == 0 || m.image.height == 0 {
+        return Err("image.width/height doivent être > 0".into());
+    }
+    let ss = m.image.supersample.max(1);
+    let w = m
+        .image
+        .width
+        .checked_mul(ss)
+        .ok_or_else(|| "image.width × supersample déborde u32".to_string())?;
+    let h = m
+        .image
+        .height
+        .checked_mul(ss)
+        .ok_or_else(|| "image.height × supersample déborde u32".to_string())?;
+    let pixels = w as u64 * h as u64;
+    if pixels > usize::MAX as u64 / 16 {
+        return Err("dimensions trop grandes pour les buffers de rendu".into());
+    }
+    Ok((w, h))
+}
+
 /// Paramètres COMPLETS de la keyframe `k` (0 = vue pleine, `k` = span/2^k).
 /// Centre fixe (= la cible), spans en progression ×2 exacte : `span_x(k) =
 /// 4/2^k` est une puissance de 2, donc **exacte en GMP à toute profondeur**.
 pub fn keyframe_params(m: &Manifest, k: u32) -> Result<FractalParams, String> {
     let ftype = FractalType::from_id(m.fractal.r#type)
         .ok_or_else(|| format!("type de fractale invalide: {}", m.fractal.r#type))?;
-    let ss = m.image.supersample.max(1);
-    let (w, h) = (m.image.width * ss, m.image.height * ss);
+    let (w, h) = render_dimensions(m)?;
     let mut p = default_params_for_type(ftype, w, h);
+    match (m.fractal.julia_re, m.fractal.julia_im) {
+        (Some(re), Some(im)) if re.is_finite() && im.is_finite() => {
+            p.seed = num_complex::Complex64::new(re, im);
+        }
+        (None, None) => {}
+        _ => return Err("fractal.julia_re/julia_im doivent être deux nombres finis".into()),
+    }
+    if let Some(power) = m.fractal.multibrot_power {
+        if !power.is_finite() || power <= 0.0 {
+            return Err(format!("fractal.multibrot_power invalide: {power}"));
+        }
+        p.multibrot_power = power;
+    }
 
     let prec = span_precision(k);
     // Centre HP (strings du manifest, vérité absolue) + approximation f64.
@@ -226,6 +318,9 @@ pub fn keyframe_params(m: &Manifest, k: u32) -> Result<FractalParams, String> {
     let cy = Float::parse(&m.location.imag)
         .map(|v| Float::with_val(prec, v))
         .map_err(|e| format!("location.imag illisible: {e}"))?;
+    if !cx.is_finite() || !cy.is_finite() {
+        return Err("location.real/imag doivent être finis".into());
+    }
     p.center_x_hp = Some(m.location.real.clone());
     p.center_y_hp = Some(m.location.imag.clone());
     p.center_x = cx.to_f64();
@@ -257,6 +352,7 @@ pub fn keyframe_params(m: &Manifest, k: u32) -> Result<FractalParams, String> {
 
     p.color_mode = m.color.palette;
     p.color_repeat = m.color.color_repeat.max(1);
+    p.color_space = m.color.color_space;
     p.out_coloring_mode = OutColoringMode::from_cli_name(&m.color.outcoloring)
         .ok_or_else(|| format!("outcoloring invalide: '{}'", m.color.outcoloring))?;
     p.enable_distance_estimation = m.fractal.distance_estimation;
@@ -276,6 +372,8 @@ pub fn map_fingerprint(params: &FractalParams) -> String {
     let mut p = params.clone();
     p.color_mode = 0;
     p.color_repeat = 1;
+    p.color_space = ColorSpace::Rgb;
+    p.color_offset = 0.0;
     p.out_coloring_mode = OutColoringMode::Smooth;
     serde_json::to_string(&p).unwrap_or_default()
 }
@@ -298,9 +396,26 @@ pub fn plan_project(config: &Path, project: &Path) -> Result<Manifest, Box<dyn s
 pub fn plan_from_manifest(m: &Manifest, project: &Path) -> Result<Manifest, Box<dyn std::error::Error>> {
     let mut m = m.clone();
     m.video.keyframes = keyframe_count(&m.location.zoom)?;
+    if !m.fractal.iterations_growth.is_finite() || m.fractal.iterations_growth < 0.0 {
+        return Err("fractal.iterations_growth doit être fini et ≥ 0".into());
+    }
     // Valide la géométrie tôt (types/outcoloring invalides = erreur au plan,
     // pas au 30e keyframe du render).
     keyframe_params(&m, 0).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    let velocity = spline::Dynamic::parse(&m.video.velocity)
+        .map_err(|e| format!("video.velocity: {e}"))?;
+    assemble::timeline_sample_count(m.video.keyframes, m.video.fps, &velocity)
+        .map_err(|e| format!("video.velocity: {e}"))?;
+    if let Some(offset) = &m.dynamics.palette_offset {
+        spline::Dynamic::parse(offset)
+            .map_err(|e| format!("dynamics.palette_offset: {e}"))?;
+    }
+    if !m.color.palette_offset.is_finite() {
+        return Err("color.palette_offset doit être fini".into());
+    }
+    if !m.lighting.alpha.is_finite() || !m.lighting.beta.is_finite() {
+        return Err("lighting.alpha/beta doivent être finis".into());
+    }
     std::fs::create_dir_all(project)?;
     m.save(&project.join("manifest.toml"))?;
     Ok(m)
@@ -409,7 +524,8 @@ pub fn render_project_with_progress_ordered(
     progress: &mut dyn FnMut(KeyframeEvent),
 ) -> Result<RenderOutcome, Box<dyn std::error::Error>> {
     let manifest = Manifest::load(&project.join("manifest.toml"))?;
-    let n = manifest.video.keyframes;
+    let n = validate_project_keyframes(&manifest)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     let (mut rendered, mut skipped) = (0usize, 0usize);
     let ks: Vec<u32> = match order {
         RenderOrder::Sequential => (0..=n).collect(),
@@ -497,6 +613,34 @@ mod tests {
         assert_eq!(keyframe_count("1").unwrap(), 1); // minimum
         assert!(keyframe_count("abc").is_err());
         assert!(keyframe_count("-3").is_err());
+        assert!(keyframe_count("1e40000").is_err(), "profondeur absurde bornée");
+    }
+
+    #[test]
+    fn project_rejects_keyframe_count_desynchronized_from_zoom() {
+        let dir = tmp_project("badcount");
+        let mut m = Manifest::default();
+        m.location.zoom = "8".into();
+        m.video.keyframes = u32::MAX;
+        m.save(&dir.join("manifest.toml")).unwrap();
+        let err = render_project(&dir).unwrap_err().to_string();
+        assert!(err.contains("attendu 3"), "erreur explicite: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn render_dimensions_reject_zero_and_supersample_overflow() {
+        let mut m = Manifest::default();
+        m.image.width = 0;
+        assert!(render_dimensions(&m).is_err());
+        m.image.width = u32::MAX;
+        m.image.height = 1;
+        m.image.supersample = 2;
+        assert!(render_dimensions(&m).is_err());
+        m.image.width = 3840;
+        m.image.height = 2160;
+        m.image.supersample = 3;
+        assert_eq!(render_dimensions(&m).unwrap(), (11_520, 6480));
     }
 
     /// Verrou jalon 2 : progression des spans EXACTE en HP — `span_x(k)`
@@ -519,6 +663,47 @@ mod tests {
         // Underflow f64 assumé en très deep : la vérité est la string HP.
         let deep = keyframe_params(&m, 1200).unwrap();
         assert_eq!(deep.span_x, 0.0, "span f64 underflow attendu à k=1200");
+    }
+
+    /// Les paramètres propres aux types exposés par le studio doivent
+    /// traverser le manifest. Leur absence garde les défauts historiques des
+    /// anciens projets.
+    #[test]
+    fn keyframe_preserves_julia_seed_and_multibrot_power() {
+        let mut julia = Manifest::default();
+        julia.fractal.r#type = 4;
+        let historical = keyframe_params(&julia, 0).unwrap();
+        assert_eq!(
+            historical.seed,
+            default_params_for_type(FractalType::Julia, 1, 1).seed,
+            "ancien manifest sans seed"
+        );
+        julia.fractal.julia_re = Some(-0.745);
+        julia.fractal.julia_im = Some(0.113);
+        julia.color.color_space = ColorSpace::Lch;
+        assert_eq!(
+            keyframe_params(&julia, 0).unwrap().seed,
+            num_complex::Complex64::new(-0.745, 0.113)
+        );
+        assert_eq!(keyframe_params(&julia, 0).unwrap().color_space, ColorSpace::Lch);
+
+        let mut multi = Manifest::default();
+        multi.fractal.r#type = 23;
+        multi.fractal.multibrot_power = Some(3.75);
+        assert_eq!(keyframe_params(&multi, 0).unwrap().multibrot_power, 3.75);
+        multi.fractal.multibrot_power = Some(0.0);
+        assert!(keyframe_params(&multi, 0).is_err());
+        julia.fractal.julia_im = None;
+        assert!(keyframe_params(&julia, 0).is_err(), "seed partiel refusé");
+    }
+
+    #[test]
+    fn keyframe_rejects_non_finite_center() {
+        for center in ["NaN", "inf", "-inf"] {
+            let mut m = Manifest::default();
+            m.location.real = center.into();
+            assert!(keyframe_params(&m, 0).is_err(), "centre {center} refusé");
+        }
     }
 
     /// Verrou jalon 2 : une keyframe rendue depuis le manifest == le rendu
@@ -572,11 +757,13 @@ mod tests {
         let (r2, s2) = render_project(&dir).unwrap();
         assert_eq!((r2, s2), (0, 4), "second passage : tout skippé");
 
-        // Changement de palette → maps toujours valides (fingerprint couleur-blind).
+        // Changements de colorisation → maps toujours valides
+        // (fingerprint couleur-blind).
         m.color.palette = 3;
+        m.color.color_space = ColorSpace::Lch;
         m.save(&dir.join("manifest.toml")).unwrap();
         let (r3, s3) = render_project(&dir).unwrap();
-        assert_eq!((r3, s3), (0, 4), "palette ≠ ⇒ maps réutilisées");
+        assert_eq!((r3, s3), (0, 4), "couleurs ≠ ⇒ maps réutilisées");
 
         // Changement d'itérations → invalide, re-rendu.
         m.fractal.iterations = 200;
@@ -786,5 +973,30 @@ height = 200
         let reloaded = Manifest::load(&dir.join("manifest.toml")).unwrap();
         assert_eq!(reloaded.video.keyframes, 20);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plan_rejects_invalid_temporal_and_lighting_values_before_write() {
+        for (tag, mutate) in [
+            ("velocity", 0u8),
+            ("palette", 1u8),
+            ("lighting", 2u8),
+            ("huge", 3u8),
+            ("growth", 4u8),
+        ] {
+            let dir = tmp_project(tag);
+            let mut m = Manifest::default();
+            match mutate {
+                0 => m.video.velocity = "0/1,inf/1".into(),
+                1 => m.dynamics.palette_offset = Some("-1/0,2/1".into()),
+                2 => m.lighting.beta = f64::INFINITY,
+                3 => m.video.velocity = "0.000000001".into(),
+                4 => m.fractal.iterations_growth = f64::NAN,
+                _ => unreachable!(),
+            }
+            assert!(plan_from_manifest(&m, &dir).is_err(), "devait refuser {tag}");
+            assert!(!dir.join("manifest.toml").exists(), "aucun manifest écrit pour {tag}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

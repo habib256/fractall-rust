@@ -3599,14 +3599,20 @@ impl eframe::App for FractallApp {
                             ui.painter().rect_stroke(
                                 rect,
                                 0.0,
-                                egui::Stroke::new(3.0, egui::Color32::from_rgb(255, 255, 0)),
+                                egui::Stroke::new(
+                                    3.0_f32,
+                                    egui::Color32::from_rgb(255, 255, 0),
+                                ),
                                 egui::StrokeKind::Middle,
                             );
                             // Rectangle intérieur pour meilleure visibilité
                             ui.painter().rect_stroke(
                                 rect.expand(-1.0),
                                 0.0,
-                                egui::Stroke::new(1.0, egui::Color32::from_rgb(0, 0, 0)), // Bordure noire intérieure
+                                egui::Stroke::new(
+                                    1.0_f32,
+                                    egui::Color32::from_rgb(0, 0, 0),
+                                ), // Bordure noire intérieure
                                 egui::StrokeKind::Middle,
                             );
                             
@@ -3682,7 +3688,10 @@ impl eframe::App for FractallApp {
                         ui.painter().rect_stroke(
                             overlay_rect,
                             4.0,
-                            egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 100, 100)),
+                            egui::Stroke::new(
+                                2.0_f32,
+                                egui::Color32::from_rgb(100, 100, 100),
+                            ),
                             egui::StrokeKind::Middle,
                         );
 

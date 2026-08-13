@@ -98,13 +98,17 @@ impl Dynamic {
 /// `"M:S"` (ex. `1:30` = 90 s) ou secondes décimales (`"12.5"`).
 fn parse_time(s: &str) -> Result<f64, String> {
     let s = s.trim();
-    if let Some((m, sec)) = s.split_once(':') {
+    let value = if let Some((m, sec)) = s.split_once(':') {
         let m: f64 = m.trim().parse().map_err(|e| format!("minutes invalides '{s}': {e}"))?;
         let sec: f64 = sec.trim().parse().map_err(|e| format!("secondes invalides '{s}': {e}"))?;
-        Ok(m * 60.0 + sec)
+        m * 60.0 + sec
     } else {
-        s.parse::<f64>().map_err(|e| format!("temps invalide '{s}': {e}"))
+        s.parse::<f64>().map_err(|e| format!("temps invalide '{s}': {e}"))?
+    };
+    if !value.is_finite() || value < 0.0 {
+        return Err(format!("temps non fini ou négatif: '{s}'"));
     }
+    Ok(value)
 }
 
 /// Spline cubique de Hermite à tangentes Fritsch-Carlson (monotone par
@@ -220,6 +224,13 @@ mod tests {
         assert_eq!(d.eval(-10.0), 0.0, "clamp avant le premier nœud");
         assert_eq!(d.eval(1000.0), 2.0, "clamp après le dernier nœud");
         assert_eq!(d.end_time(), Some(90.0));
+    }
+
+    #[test]
+    fn spline_rejects_non_finite_and_negative_times() {
+        for value in ["inf/1,inf/2", "NaN/1,2/2", "-1/1,2/2", "-1:30/1,2/2"] {
+            assert!(Dynamic::parse(value).is_err(), "devait refuser {value}");
+        }
     }
 
     /// Monotonie Fritsch-Carlson : entre deux nœuds, la valeur reste dans

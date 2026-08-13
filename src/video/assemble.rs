@@ -24,7 +24,10 @@ use std::sync::Arc;
 use rayon::prelude::*;
 
 use super::spline::Dynamic;
-use super::{keyframe_path, lighting, Manifest};
+use super::{
+    keyframe_params, keyframe_path, lighting, map_fingerprint, render_dimensions, Manifest,
+    validate_project_keyframes,
+};
 use crate::fractal::OutColoringMode;
 use crate::io::fmap::{load_fmap, FractalMap};
 use crate::io::png::colorize_to_rgb_with_extras;
@@ -48,6 +51,50 @@ pub struct AssembleStats {
 // Timeline
 // ---------------------------------------------------------------------------
 
+/// Garde-fou mémoire/temps pour un manifest accidentel ou hostile. Dix
+/// millions de frames représentent déjà plus de 23 h à 120 fps.
+const MAX_TIMELINE_SAMPLES: usize = 10_000_000;
+
+/// Valide la timeline et retourne son nombre de frames sans allouer le
+/// vecteur des positions. Utilisé dès `plan` pour échouer avant le rendu des
+/// keyframes.
+pub(crate) fn timeline_sample_count(
+    n: u32,
+    fps: u32,
+    velocity: &Dynamic,
+) -> Result<usize, String> {
+    if fps == 0 {
+        return Err("fps doit être > 0".into());
+    }
+    let samples = if let Some(v) = velocity.as_constant() {
+        if v <= 0.0 {
+            return Err(format!(
+                "vélocité constante {v} ≤ 0 : la vidéo n'avancerait jamais (utilisez une spline pour les segments à reculons)"
+            ));
+        }
+        let intervals = n as f64 * fps as f64 / v;
+        if !intervals.is_finite() {
+            return Err("durée de timeline non finie".into());
+        }
+        let total = intervals.floor();
+        let reaches_end = total / fps as f64 * v >= n as f64;
+        total + if reaches_end { 1.0 } else { 2.0 }
+    } else {
+        let t_end = velocity.end_time().ok_or("spline sans fin temporelle")?;
+        let frames = t_end * fps as f64;
+        if !frames.is_finite() || frames < 0.0 {
+            return Err("durée de timeline non finie ou négative".into());
+        }
+        frames.round() + 1.0
+    };
+    if samples > MAX_TIMELINE_SAMPLES as f64 {
+        return Err(format!(
+            "timeline trop longue: {samples:.0} frames (maximum {MAX_TIMELINE_SAMPLES})"
+        ));
+    }
+    Ok(samples as usize)
+}
+
 /// Positions `p ∈ [0, n]` (keyframe fractionnaire) de chaque frame de sortie.
 ///
 /// * vélocité CONSTANTE `v` (> 0) : forme fermée `p = v·t`, durée `n/v`
@@ -56,9 +103,7 @@ pub struct AssembleStats {
 ///   `p += v(t+dt/2)·dt`, clamp [0, n] (une vélocité négative recule, façon
 ///   wobble DeepDrill).
 pub fn timeline(n: u32, fps: u32, velocity: &Dynamic) -> Result<Vec<f64>, String> {
-    if fps == 0 {
-        return Err("fps doit être > 0".into());
-    }
+    let sample_count = timeline_sample_count(n, fps, velocity)?;
     let n_f = n as f64;
     if let Some(v) = velocity.as_constant() {
         if v <= 0.0 {
@@ -67,9 +112,10 @@ pub fn timeline(n: u32, fps: u32, velocity: &Dynamic) -> Result<Vec<f64>, String
             ));
         }
         let total = (n_f * fps as f64 / v).floor() as usize;
-        let mut positions: Vec<f64> = (0..=total)
+        let mut positions: Vec<f64> = Vec::with_capacity(sample_count);
+        positions.extend((0..=total)
             .map(|f| ((f as f64 / fps as f64) * v).min(n_f))
-            .collect();
+        );
         if positions.last().copied().unwrap_or(0.0) < n_f {
             positions.push(n_f);
         }
@@ -78,7 +124,7 @@ pub fn timeline(n: u32, fps: u32, velocity: &Dynamic) -> Result<Vec<f64>, String
     let t_end = velocity.end_time().expect("spline ⇒ end_time");
     let dt = 1.0 / fps as f64;
     let frames = (t_end * fps as f64).round() as usize;
-    let mut positions = Vec::with_capacity(frames + 1);
+    let mut positions = Vec::with_capacity(sample_count);
     let mut p = 0.0f64;
     for f in 0..=frames {
         positions.push(p.clamp(0.0, n_f));
@@ -187,6 +233,7 @@ pub fn colorize_keyframe(map: &FractalMap, manifest: &Manifest, palette_offset: 
     let mut p = map.params.clone();
     p.color_mode = manifest.color.palette;
     p.color_repeat = manifest.color.color_repeat.max(1);
+    p.color_space = manifest.color.color_space;
     p.out_coloring_mode = OutColoringMode::from_cli_name(&manifest.color.outcoloring)
         .ok_or_else(|| format!("outcoloring invalide: '{}'", manifest.color.outcoloring))?;
     p.color_offset = palette_offset;
@@ -246,14 +293,19 @@ impl<'a> KeyframeCache<'a> {
             // assertait sur la taille du buffer → PANIC. On refuse proprement
             // et on renvoie vers `render` (le CLI `assemble` ne vérifie
             // aucune empreinte, contrairement au studio GUI).
-            let ss = self.manifest.image.supersample.max(1);
-            let (exp_w, exp_h) = (self.manifest.image.width * ss, self.manifest.image.height * ss);
+            let (exp_w, exp_h) = render_dimensions(self.manifest)?;
             if map.params.width != exp_w || map.params.height != exp_h {
                 return Err(format!(
                     "keyframe {k} rendue en {}×{} mais le manifest attend {exp_w}×{exp_h} \
                      (image.width/height/supersample modifiés depuis le rendu) — \
                      relancez `fractall-video render`",
                     map.params.width, map.params.height
+                ));
+            }
+            let expected = keyframe_params(self.manifest, k)?;
+            if map_fingerprint(&map.params) != map_fingerprint(&expected) {
+                return Err(format!(
+                    "keyframe {k} ne correspond plus au manifest (cible, type, itérations ou canaux de calcul modifiés) — relancez `fractall-video render`"
                 ));
             }
             self.maps.insert(k, map);
@@ -303,13 +355,18 @@ impl FrameSink {
 
     fn finish(self) -> Result<(), String> {
         match self {
-            FrameSink::Ffmpeg(mut child, _) => {
+            FrameSink::Ffmpeg(mut child, out) => {
                 drop(child.stdin.take()); // EOF → ffmpeg finalise
-                let status = child.wait().map_err(|e| format!("attente ffmpeg: {e}"))?;
-                if status.success() {
-                    Ok(())
-                } else {
-                    Err(format!("ffmpeg a échoué ({status})"))
+                match child.wait() {
+                    Ok(status) if status.success() => Ok(()),
+                    Ok(status) => {
+                        let _ = std::fs::remove_file(&out);
+                        Err(format!("ffmpeg a échoué ({status})"))
+                    }
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&out);
+                        Err(format!("attente ffmpeg: {e}"))
+                    }
                 }
             }
             FrameSink::Frames(_) => Ok(()),
@@ -329,6 +386,32 @@ impl FrameSink {
             FrameSink::Frames(_) => {}
         }
     }
+}
+
+/// Après une réussite, le dossier doit représenter exactement cette vidéo.
+/// On ne touche qu'aux fichiers produits par nous (`frame_<index>.png`) et
+/// seulement à l'ancien suffixe situé après la dernière frame courante.
+fn remove_stale_frame_suffix(dir: &Path, frame_count: usize) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("lecture du dossier frames {}: {e}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("lecture d'une entrée frames: {e}"))?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(index) = name
+            .strip_prefix("frame_")
+            .and_then(|s| s.strip_suffix(".png"))
+            .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|s| s.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        if index >= frame_count {
+            std::fs::remove_file(entry.path())
+                .map_err(|e| format!("suppression de la frame obsolète {name}: {e}"))?;
+        }
+    }
+    Ok(())
 }
 
 fn spawn_ffmpeg(opts: &AssembleOptions, out: &Path, w: u32, h: u32, fps: u32) -> Result<Child, String> {
@@ -419,11 +502,23 @@ pub fn assemble_project_with_progress(
     progress: &mut dyn FnMut(AssembleFrameEvent),
 ) -> Result<AssembleOutcome, Box<dyn std::error::Error>> {
     let manifest = Manifest::load(&project.join("manifest.toml"))?;
-    let n = manifest.video.keyframes;
-    let fps = manifest.video.fps.max(1);
+    let n = validate_project_keyframes(&manifest)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    let fps = manifest.video.fps;
+    if fps == 0 {
+        return Err("video.fps doit être > 0".into());
+    }
+    if !manifest.color.palette_offset.is_finite() {
+        return Err("color.palette_offset doit être fini".into());
+    }
+    if !manifest.lighting.alpha.is_finite() || !manifest.lighting.beta.is_finite() {
+        return Err("lighting.alpha/beta doivent être finis".into());
+    }
     let (out_w, out_h) = (manifest.image.width, manifest.image.height);
-    let ss = manifest.image.supersample.max(1);
-    let (src_w, src_h) = ((out_w * ss) as usize, (out_h * ss) as usize);
+    let (src_w, src_h) = render_dimensions(&manifest)
+        .map(|(w, h)| (w as usize, h as usize))?;
+    keyframe_params(&manifest, 0)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
     let velocity = Dynamic::parse(&manifest.video.velocity)
         .map_err(|e| format!("video.velocity: {e}"))?;
@@ -497,15 +592,19 @@ pub fn assemble_project_with_progress(
         progress(AssembleFrameEvent { frame: f, total, keyframe: k, z });
     }
     sink.finish()?;
+    if let Some(dir) = &opts.frames_dir {
+        remove_stale_frame_suffix(dir, total)?;
+    }
     Ok(AssembleOutcome::Complete(AssembleStats {
         frames: total,
-        duration_s: total as f64 / fps as f64,
+        duration_s: total.saturating_sub(1) as f64 / fps as f64,
     }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fractal::{default_params_for_type, ColorSpace, FractalType};
 
     fn checker(w: usize, h: usize, seed: u8) -> Vec<u8> {
         (0..w * h * 3)
@@ -521,6 +620,33 @@ mod tests {
         let curr = checker(w, h, 7);
         let frame = interpolate_frame(&curr, None, w, h, w, h, 1.0);
         assert_eq!(frame, curr);
+    }
+
+    /// La map ne fige que les canaux de calcul : l'espace du gradient vient
+    /// du manifest courant, afin qu'un ré-assemblage puisse le modifier sans
+    /// recalculer les keyframes.
+    #[test]
+    fn colorize_keyframe_uses_manifest_color_space() {
+        let mut params = default_params_for_type(FractalType::Mandelbrot, 3, 1);
+        params.iteration_max = 100;
+        params.color_space = ColorSpace::Rgb;
+        let map = FractalMap {
+            params: params.clone(),
+            iterations: vec![1, 15, 80],
+            zs: vec![num_complex::Complex64::new(2.0, 1.0); 3],
+            distances: None,
+        };
+        let mut manifest = Manifest::default();
+        manifest.color.color_space = ColorSpace::Lch;
+
+        let actual = colorize_keyframe(&map, &manifest, 0.0).unwrap();
+        params.color_mode = manifest.color.palette;
+        params.color_repeat = manifest.color.color_repeat;
+        params.color_space = ColorSpace::Lch;
+        params.out_coloring_mode = OutColoringMode::Smooth;
+        let expected =
+            colorize_to_rgb_with_extras(&params, &map.iterations, &map.zs, &[], &[]);
+        assert_eq!(actual, expected);
     }
 
     /// Verrou jalon 3 : continuité au raccord — à z → 2⁻ la frame converge
@@ -568,6 +694,10 @@ mod tests {
         // Vélocité nulle/négative constante : refus.
         assert!(timeline(3, 30, &Dynamic::parse("0").unwrap()).is_err());
         assert!(timeline(3, 30, &Dynamic::parse("-1").unwrap()).is_err());
+        assert!(
+            timeline(3, 120, &Dynamic::parse("0.000000001").unwrap()).is_err(),
+            "une timeline démesurée doit être refusée avant allocation"
+        );
     }
 
     /// Bout en bout (jalons 2+3) : plan→render→assemble sur un projet réel
@@ -600,6 +730,7 @@ mod tests {
         };
         let stats = assemble_project(&dir, &opts).unwrap();
         assert_eq!(stats.frames, 11, "2 s à 5 fps + frame initiale");
+        assert_eq!(stats.duration_s, 2.0, "durée = intervalles/fps");
 
         // Frame 0 == keyframe 0 colorisée (couleurs du manifest), pixel-exact.
         let map0 = load_fmap(&keyframe_path(&dir, 0)).unwrap();
@@ -619,7 +750,12 @@ mod tests {
             frames_dir: Some(frames_b.clone()),
             ffmpeg: "ffmpeg".into(),
         };
+        std::fs::create_dir_all(&frames_b).unwrap();
+        std::fs::write(frames_b.join("frame_999999.png"), b"ancienne frame").unwrap();
+        std::fs::write(frames_b.join("notes.txt"), b"keep").unwrap();
         assemble_project(&dir, &opts_b).unwrap();
+        assert!(!frames_b.join("frame_999999.png").exists(), "suffixe obsolète supprimé");
+        assert!(frames_b.join("notes.txt").exists(), "fichier étranger conservé");
         for f in [0usize, 4, 10] {
             let a = std::fs::read(frames_a.join(format!("frame_{f:06}.png"))).unwrap();
             let b = std::fs::read(frames_b.join(format!("frame_{f:06}.png"))).unwrap();
@@ -627,6 +763,17 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_encoder_removes_partial_output() {
+        let out = std::env::temp_dir()
+            .join(format!("fractall_failed_encoder_{}.mp4", std::process::id()));
+        std::fs::write(&out, b"partial").unwrap();
+        let child = Command::new("false").stdin(Stdio::piped()).spawn().unwrap();
+        let err = FrameSink::Ffmpeg(child, out.clone()).finish().unwrap_err();
+        assert!(err.contains("échoué"));
+        assert!(!out.exists(), "sortie partielle supprimée");
     }
 
     /// Régression : un manifest dont les dimensions ont changé APRÈS le rendu
@@ -654,6 +801,63 @@ mod tests {
         };
         assert!(err.contains("render"), "erreur explicite attendue, eu : {err}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn assemble_rejects_stale_keyframe_parameters() {
+        let dir = tiny_rendered_project("staleparams");
+        let mut m = crate::video::Manifest::load(&dir.join("manifest.toml")).unwrap();
+        m.fractal.iterations += 100;
+        m.save(&dir.join("manifest.toml")).unwrap();
+
+        let opts = AssembleOptions {
+            output: None,
+            frames_dir: Some(dir.join("frames")),
+            ffmpeg: "ffmpeg".into(),
+        };
+        let err = assemble_project(&dir, &opts).unwrap_err().to_string();
+        assert!(err.contains("ne correspond plus"), "erreur explicite: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn assemble_rejects_desynchronized_keyframe_count() {
+        let dir = tiny_rendered_project("badcount");
+        let mut m = crate::video::Manifest::load(&dir.join("manifest.toml")).unwrap();
+        m.video.keyframes = 99;
+        m.save(&dir.join("manifest.toml")).unwrap();
+        let opts = AssembleOptions {
+            output: None,
+            frames_dir: Some(dir.join("frames")),
+            ffmpeg: "ffmpeg".into(),
+        };
+        let err = assemble_project(&dir, &opts).unwrap_err().to_string();
+        assert!(err.contains("attendu 2"), "erreur explicite: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn assemble_rejects_invalid_presentation_values() {
+        for (tag, mutate) in [("fps", 0u8), ("offset", 1u8), ("light", 2u8)] {
+            let dir = tiny_rendered_project(tag);
+            let mut m = crate::video::Manifest::load(&dir.join("manifest.toml")).unwrap();
+            match mutate {
+                0 => m.video.fps = 0,
+                1 => m.color.palette_offset = f64::NAN,
+                2 => m.lighting.alpha = f64::INFINITY,
+                _ => unreachable!(),
+            }
+            m.save(&dir.join("manifest.toml")).unwrap();
+            let frames = dir.join("frames");
+            let opts = AssembleOptions {
+                output: None,
+                frames_dir: Some(frames.clone()),
+                ffmpeg: "ffmpeg".into(),
+            };
+            assert!(assemble_project(&dir, &opts).is_err(), "devait refuser {tag}");
+            assert!(!frames.exists(), "aucun sink créé pour {tag}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// Timeline spline : durée = dernier nœud ; une spline PLATE donne la
