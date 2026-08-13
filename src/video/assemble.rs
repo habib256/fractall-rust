@@ -27,7 +27,7 @@ use super::spline::Dynamic;
 use super::{keyframe_path, lighting, Manifest};
 use crate::fractal::OutColoringMode;
 use crate::io::fmap::{load_fmap, FractalMap};
-use crate::io::png::colorize_to_rgb;
+use crate::io::png::colorize_to_rgb_with_extras;
 
 pub struct AssembleOptions {
     /// Fichier vidéo de sortie (encodé par ffmpeg). Exclusif avec frames_dir.
@@ -190,7 +190,17 @@ pub fn colorize_keyframe(map: &FractalMap, manifest: &Manifest, palette_offset: 
     p.out_coloring_mode = OutColoringMode::from_cli_name(&manifest.color.outcoloring)
         .ok_or_else(|| format!("outcoloring invalide: '{}'", manifest.color.outcoloring))?;
     p.color_offset = palette_offset;
-    let mut rgb = colorize_to_rgb(&p, &map.iterations, &map.zs);
+    // Le canal `distances` de la map (rendu avec `[fractal] distance_estimation`)
+    // alimente les modes Distance*/DistanceAO/Distance3D — sans lui, le
+    // manifest pourrait activer l'estimation de distance et le rendu retomber
+    // silencieusement sur Smooth.
+    let mut rgb = colorize_to_rgb_with_extras(
+        &p,
+        &map.iterations,
+        &map.zs,
+        map.distances.as_deref().unwrap_or(&[]),
+        &[],
+    );
     if manifest.lighting.enable {
         lighting::shade_rgb(
             &mut rgb,
@@ -231,6 +241,21 @@ impl<'a> KeyframeCache<'a> {
             let path = keyframe_path(self.project, k);
             let map = load_fmap(&path)
                 .map_err(|e| format!("keyframe {k} illisible ({}) : {e} — lancez `fractall-video render`", path.display()))?;
+            // Géométrie de la map ≠ géométrie du manifest (dimensions ou
+            // supersample modifiés après le rendu) : `interpolate_frame`
+            // assertait sur la taille du buffer → PANIC. On refuse proprement
+            // et on renvoie vers `render` (le CLI `assemble` ne vérifie
+            // aucune empreinte, contrairement au studio GUI).
+            let ss = self.manifest.image.supersample.max(1);
+            let (exp_w, exp_h) = (self.manifest.image.width * ss, self.manifest.image.height * ss);
+            if map.params.width != exp_w || map.params.height != exp_h {
+                return Err(format!(
+                    "keyframe {k} rendue en {}×{} mais le manifest attend {exp_w}×{exp_h} \
+                     (image.width/height/supersample modifiés depuis le rendu) — \
+                     relancez `fractall-video render`",
+                    map.params.width, map.params.height
+                ));
+            }
             self.maps.insert(k, map);
         }
         let rgb = std::sync::Arc::new(colorize_keyframe(&self.maps[&k], self.manifest, palette_offset)?);
@@ -601,6 +626,33 @@ mod tests {
             assert_eq!(a, b, "frame {f} non déterministe");
         }
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Régression : un manifest dont les dimensions ont changé APRÈS le rendu
+    /// des keyframes faisait paniquer `interpolate_frame` (assert sur la
+    /// taille du buffer). Le CLI `assemble` ne vérifie aucune empreinte
+    /// (contrairement au studio GUI) — l'erreur doit être propre et renvoyer
+    /// vers `render`.
+    #[test]
+    fn assemble_rejects_keyframes_of_wrong_size() {
+        let dir = tiny_rendered_project("wrongsize");
+        // Maps rendues en 16×12 ; on double la géométrie dans le manifest.
+        let mut m = crate::video::Manifest::load(&dir.join("manifest.toml")).unwrap();
+        m.image.width = 32;
+        m.image.height = 24;
+        m.save(&dir.join("manifest.toml")).unwrap();
+
+        let opts = AssembleOptions {
+            output: None,
+            frames_dir: Some(dir.join("frames")),
+            ffmpeg: "ffmpeg".into(),
+        };
+        let err = match assemble_project(&dir, &opts) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("assemblage avec des keyframes de mauvaise taille doit échouer"),
+        };
+        assert!(err.contains("render"), "erreur explicite attendue, eu : {err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

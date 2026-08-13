@@ -354,6 +354,39 @@ pub fn render_project(project: &Path) -> Result<(usize, usize), Box<dyn std::err
     }
 }
 
+/// Ordre de rendu des keyframes. Les keyframes étant INDÉPENDANTES (pas de
+/// réutilisation d'orbite inter-échelle, cf. doc de module) et la reprise
+/// par empreinte insensible à l'ordre, le choix est libre — il ne change ni
+/// les maps produites ni la sémantique de reprise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenderOrder {
+    /// 0, 1, …, n (comportement CLI historique).
+    Sequential,
+    /// 0, n, puis milieux récursifs (largeur d'abord) : la timeline du studio
+    /// se peuple à TOUTES les profondeurs dès les premières maps — une cible
+    /// décentrée ou une palette ratée se voit en minutes, pas en heures.
+    Bisection,
+}
+
+/// Ordre dichotomique : 0, n, puis les milieux de chaque intervalle en
+/// largeur d'abord. Permutation exacte de 0..=n.
+pub fn bisection_order(n: u32) -> Vec<u32> {
+    let mut out = vec![0u32];
+    if n > 0 {
+        out.push(n);
+    }
+    let mut queue = std::collections::VecDeque::from([(0u32, n)]);
+    while let Some((a, b)) = queue.pop_front() {
+        if b - a >= 2 {
+            let m = a + (b - a) / 2;
+            out.push(m);
+            queue.push_back((a, m));
+            queue.push_back((m, b));
+        }
+    }
+    out
+}
+
 /// Version annulable + progression (studio GUI, G12 jalon 6). Le `cancel` est
 /// vérifié en tête de boucle ET passé au dispatcher (annulation mi-keyframe
 /// réactive : la map en cours est perdue, les précédentes restent — la
@@ -363,11 +396,27 @@ pub fn render_project_with_progress(
     cancel: &Arc<AtomicBool>,
     progress: &mut dyn FnMut(KeyframeEvent),
 ) -> Result<RenderOutcome, Box<dyn std::error::Error>> {
+    render_project_with_progress_ordered(project, RenderOrder::Sequential, cancel, progress)
+}
+
+/// Comme `render_project_with_progress`, avec choix de l'ordre de rendu
+/// (G13 : le studio passe `Bisection` pour peupler sa timeline à toutes les
+/// profondeurs au plus tôt).
+pub fn render_project_with_progress_ordered(
+    project: &Path,
+    order: RenderOrder,
+    cancel: &Arc<AtomicBool>,
+    progress: &mut dyn FnMut(KeyframeEvent),
+) -> Result<RenderOutcome, Box<dyn std::error::Error>> {
     let manifest = Manifest::load(&project.join("manifest.toml"))?;
     let n = manifest.video.keyframes;
     let (mut rendered, mut skipped) = (0usize, 0usize);
+    let ks: Vec<u32> = match order {
+        RenderOrder::Sequential => (0..=n).collect(),
+        RenderOrder::Bisection => bisection_order(n),
+    };
 
-    for k in 0..=n {
+    for k in ks {
         if cancel.load(Ordering::Relaxed) {
             return Ok(RenderOutcome::Cancelled { rendered, skipped });
         }
@@ -677,6 +726,53 @@ height = 200
         assert!(zoom_from_span_x("0").is_err());
         assert!(zoom_from_span_x("-1").is_err());
         assert!(zoom_from_span_x("abc").is_err());
+    }
+
+    /// `bisection_order` : permutation exacte de 0..=n, extrémités d'abord,
+    /// milieu ensuite — l'ordre qui peuple la timeline à toutes les échelles.
+    #[test]
+    fn bisection_order_is_a_permutation_extremes_first() {
+        for n in [0u32, 1, 2, 3, 7, 8, 33] {
+            let order = bisection_order(n);
+            let mut sorted = order.clone();
+            sorted.sort_unstable();
+            assert_eq!(sorted, (0..=n).collect::<Vec<_>>(), "permutation n={n}");
+            assert_eq!(order[0], 0);
+            if n > 0 {
+                assert_eq!(order[1], n);
+            }
+            if n >= 2 {
+                assert_eq!(order[2], n / 2, "le milieu vient en 3e (n={n})");
+            }
+        }
+    }
+
+    /// L'ordre Bisection produit LES MÊMES maps que Sequential (keyframes
+    /// indépendantes) : mêmes fichiers, reprise complète au 2e passage.
+    #[test]
+    fn bisection_render_produces_same_maps_as_sequential() {
+        let dir = tmp_project("bisect");
+        progress_manifest(&dir);
+        let mut started: Vec<u32> = Vec::new();
+        let outcome = render_project_with_progress_ordered(
+            &dir,
+            RenderOrder::Bisection,
+            &Arc::new(AtomicBool::new(false)),
+            &mut |ev| {
+                if let KeyframeEvent::Started { k, .. } = ev {
+                    started.push(k);
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome, RenderOutcome::Complete { rendered: 4, skipped: 0 });
+        assert_eq!(started, bisection_order(3), "ordre de rendu = dichotomie");
+        // Un passage séquentiel derrière skippe tout : maps identiques valides.
+        let outcome2 =
+            render_project_with_progress(&dir, &Arc::new(AtomicBool::new(false)), &mut |_| {})
+                .unwrap();
+        assert_eq!(outcome2, RenderOutcome::Complete { rendered: 0, skipped: 4 });
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Verrou `plan_from_manifest` (chemin studio GUI, sans fichier config).

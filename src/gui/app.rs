@@ -8,7 +8,7 @@ use image::RgbImage;
 use num_complex::Complex64;
 use rug::Float;
 
-use crate::color::{color_for_pixel_with_lut, color_for_nebulabrot_pixel, color_for_buddhabrot_pixel, generate_palette_preview, PaletteLut};
+use crate::color::generate_palette_preview;
 use crate::fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalParams, FractalType, LyapunovPreset, OutColoringMode, PlaneTransform};
 use crate::fractal::perturbation::ReferenceOrbitCache;
 use crate::fractal::xaos::{self, XaosSourceFrame};
@@ -74,6 +74,11 @@ fn compute_warp_norm(
 
 /// Colorise un buffer d'itérations en RGB.
 /// Cette fonction est appelée dans le thread de rendu ou dans l'UI pour re-coloriser avec la palette actuelle.
+///
+/// ⚠️ Enveloppe de `io::png::colorize_buffers` (implémentation UNIQUE partagée
+/// avec le CLI / `--from-map` / le pipeline vidéo). Ne PAS réintroduire une
+/// boucle de colorisation ici : les deux copies historiques avaient divergé
+/// (canaux distances/orbites et Anti-Buddhabrot perdus côté CLI).
 fn colorize_buffer(
     iterations: &[u32],
     zs: &[Complex64],
@@ -83,61 +88,7 @@ fn colorize_buffer(
     width: u32,
     height: u32,
 ) -> Vec<u8> {
-    use rayon::prelude::*;
-
-    let w = width as usize;
-    let is_nebulabrot = params.fractal_type == FractalType::Nebulabrot;
-    let is_buddhabrot = params.fractal_type == FractalType::Buddhabrot
-        || params.fractal_type == FractalType::AntiBuddhabrot;
-    let iter_max = params.iteration_max;
-    let palette_idx = params.color_mode as u8;
-    let color_rep = params.color_repeat;
-    let out_mode = params.out_coloring_mode;
-    let color_space = params.color_space;
-    let interior_flag_encoded = params.enable_interior_detection;
-    let lut = if !is_nebulabrot && !is_buddhabrot {
-        Some(PaletteLut::new(palette_idx, color_space))
-    } else {
-        None
-    };
-
-    (0..height as usize)
-        .into_par_iter()
-        .flat_map(|y| {
-            (0..width)
-                .flat_map(|x| {
-                    let idx = y * w + x as usize;
-                    let iter = iterations.get(idx).copied().unwrap_or(0);
-                    let z = zs.get(idx).copied().unwrap_or(Complex64::new(0.0, 0.0));
-                    let orbit = orbits.get(idx).and_then(|o| o.as_ref());
-                    let distance = distances.get(idx).copied().filter(|d| d.is_finite());
-
-                    let (r, g, b) = if is_nebulabrot {
-                        color_for_nebulabrot_pixel(iter, z)
-                    } else if is_buddhabrot {
-                        color_for_buddhabrot_pixel(z, palette_idx, color_rep)
-                    } else {
-                        color_for_pixel_with_lut(
-                            iter,
-                            z,
-                            iter_max,
-                            palette_idx,
-                            color_rep,
-                            params.color_offset,
-                            out_mode,
-                            color_space,
-                            orbit,
-                            distance,
-                            interior_flag_encoded,
-                            lut.as_ref(),
-                        )
-                    };
-
-                    vec![r, g, b]
-                })
-                .collect::<Vec<u8>>()
-        })
-        .collect()
+    crate::io::png::colorize_buffers(params, iterations, zs, distances, orbits, width, height)
 }
 
 /// Mode de rendu CPU effectif (pour le label de statut uniquement). Réplique la
@@ -982,7 +933,13 @@ impl FractallApp {
             let cancel = Arc::new(AtomicBool::new(false));
             let total_passes = config.passes.len() as f32;
             let mut previous_pass: Option<(Vec<u32>, Vec<Complex64>, u32, u32)> = None;
-            let mut final_result: Option<(Vec<u32>, Vec<Complex64>)> = None;
+            type HqFinal = (
+                Vec<u32>,
+                Vec<Complex64>,
+                Vec<Option<crate::fractal::orbit_traps::OrbitData>>,
+                Vec<f64>,
+            );
+            let mut final_result: Option<HqFinal> = None;
 
             for (pass_index, &scale_divisor) in config.passes.iter().enumerate() {
                 if cancel.load(Ordering::Relaxed) {
@@ -1006,14 +963,16 @@ impl FractallApp {
                 );
 
                 match result {
-                    Some((iterations, zs, _orbits, _distances)) => {
+                    Some((iterations, zs, orbits, distances)) => {
                         // Progression : 5% au début, puis 5–90% répartis sur les passes, 90–95% sauvegarde
                         let pass_progress = (pass_index + 1) as f32 / total_passes * 0.85f32; // 0.85 * (1/5..5/5)
                         let progress = 0.05f32 + pass_progress; // 5% -> 90%
                         let _ = tx.send(HqRenderMessage::Progress(progress));
 
                         if pass_index + 1 == config.passes.len() {
-                            final_result = Some((iterations, zs));
+                            // Canaux annexes conservés : sans eux le PNG HQ des
+                            // modes Distance*/OrbitTraps/Wings retombe sur Smooth.
+                            final_result = Some((iterations, zs, orbits, distances));
                             break;
                         }
                         previous_pass = Some((iterations, zs, pass_width, pass_height));
@@ -1025,7 +984,7 @@ impl FractallApp {
                 }
             }
 
-            if let Some((iterations, zs)) = final_result {
+            if let Some((iterations, zs, orbits, distances)) = final_result {
                 let _ = tx.send(HqRenderMessage::Progress(0.92));
 
                 use std::path::Path;
@@ -1035,10 +994,16 @@ impl FractallApp {
                     .as_secs();
                 let filename = format!("fractal_{}x{}_{}.png", render_width, render_height, timestamp);
 
-                if let Err(e) = crate::io::png::save_png_with_metadata(
+                let buffer = crate::io::png::colorize_to_rgb_with_extras(
                     &render_params,
                     &iterations,
                     &zs,
+                    &distances,
+                    &orbits,
+                );
+                if let Err(e) = crate::io::png::save_png_rgb_with_metadata(
+                    &render_params,
+                    &buffer,
                     Path::new(&filename),
                     &center_x_hp,
                     &center_y_hp,
@@ -2624,17 +2589,25 @@ impl eframe::App for FractallApp {
 
             // S pour screenshot avec métadonnées
             if i.key_pressed(egui::Key::S) {
-                use crate::io::png::save_png_with_metadata;
+                use crate::io::png::{colorize_to_rgb_with_extras, save_png_rgb_with_metadata};
                 use std::path::Path;
                 let timestamp = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
                 let filename = format!("fractal_{}.png", timestamp);
-                if let Err(e) = save_png_with_metadata(
+                // Mêmes canaux annexes que l'affichage : le screenshot doit
+                // reproduire l'écran (Distance*/OrbitTraps/Wings inclus).
+                let buffer = colorize_to_rgb_with_extras(
                     &self.params,
                     &self.iterations,
                     &self.zs,
+                    &self.distances,
+                    &self.orbits,
+                );
+                if let Err(e) = save_png_rgb_with_metadata(
+                    &self.params,
+                    &buffer,
                     Path::new(&filename),
                     &self.center_x_hp,
                     &self.center_y_hp,

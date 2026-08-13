@@ -11,7 +11,7 @@ use fractall_cli::{fractal, gpu, io, render};
 
 use fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalType, LyapunovPreset, OutColoringMode, PlaneTransform};
 use render::render_escape_time;
-use io::png::{colorize_to_rgb, save_png_rgb_with_metadata, save_png_with_metadata};
+use io::png::{colorize_to_rgb, save_png_rgb_with_metadata};
 use io::exr::save_iterations_exr;
 use gpu::GpuRenderer;
 
@@ -453,10 +453,18 @@ fn run_from_map(cli: &Cli, map_path: &std::path::Path, output_path: &std::path::
     let center_y_hp = params.center_y_hp.clone().unwrap_or_else(|| params.center_y.to_string());
     let span_x_hp = params.span_x_hp.clone().unwrap_or_else(|| params.span_x.to_string());
     let span_y_hp = params.span_y_hp.clone().unwrap_or_else(|| params.span_y.to_string());
-    if let Err(e) = save_png_with_metadata(
+    // Le canal `distances` de la map alimente les modes Distance*/DistanceAO/
+    // Distance3D — sans lui, ces modes retombent silencieusement sur Smooth.
+    let buffer = io::png::colorize_to_rgb_with_extras(
         &params,
         &map.iterations,
         &map.zs,
+        map.distances.as_deref().unwrap_or(&[]),
+        &[],
+    );
+    if let Err(e) = save_png_rgb_with_metadata(
+        &params,
+        &buffer,
         output_path,
         &center_x_hp,
         &center_y_hp,
@@ -873,9 +881,12 @@ fn main() {
     let start_time = std::time::Instant::now();
     let cancel = Arc::new(AtomicBool::new(false));
 
-    // Distances estimées, capturées pour --output-map (remplies par le path
-    // perturbation quand enable_distance_estimation ; vides sinon).
+    // Canaux annexes du dispatcher, capturés pour la COLORISATION (modes
+    // Distance*/OrbitTraps/Wings) et pour --output-map : distances (path
+    // perturbation avec enable_distance_estimation) et orbites (path f64 avec
+    // orbit traps). Vides quand le path ne les produit pas.
     let mut map_distances: Vec<f64> = Vec::new();
+    let mut map_orbits: Vec<Option<fractal::orbit_traps::OrbitData>> = Vec::new();
     let (iterations, zs) = if use_gpu {
         match GpuRenderer::new() {
             Some(gpu) => {
@@ -912,8 +923,9 @@ fn main() {
             None,
             None,
         ) {
-            Some((i, z, _orbits, d)) => {
+            Some((i, z, orbits, d)) => {
                 map_distances = d;
+                map_orbits = orbits;
                 (i, z)
             }
             None => (Vec::new(), Vec::new()),
@@ -1005,10 +1017,19 @@ fn main() {
             &span_y_hp,
         )
     } else {
-        save_png_with_metadata(
+        // Colorisation AVEC les canaux annexes du dispatcher : sans eux les
+        // modes Distance*/OrbitTraps/Wings retombent silencieusement sur
+        // Smooth (le PNG du CLI divergeait de l'affichage GUI).
+        let buffer = io::png::colorize_to_rgb_with_extras(
             &params,
             &iterations,
             &zs,
+            &map_distances,
+            &map_orbits,
+        );
+        save_png_rgb_with_metadata(
+            &params,
+            &buffer,
             &output_path,
             &center_x_hp,
             &center_y_hp,
