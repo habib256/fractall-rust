@@ -1965,25 +1965,27 @@ impl FractallApp {
 
     /// Applique le redimensionnement et relance un rendu.
     fn apply_resize(&mut self, new_width: u32, new_height: u32) {
-        let current_aspect = self.params.span_x / self.params.span_y;
-        let target_aspect = new_width as f64 / new_height as f64;
-
-        let (new_span_x, new_span_y) = if current_aspect > target_aspect {
-            // Élargir la hauteur pour éviter toute déformation.
-            (self.params.span_x, self.params.span_x / target_aspect)
-        } else {
-            // Élargir la largeur pour éviter toute déformation.
-            (self.params.span_y * target_aspect, self.params.span_y)
-        };
-
-        self.params.span_x = new_span_x;
-        self.params.span_y = new_span_y;
+        // ⚠️ Spans recalculés en HP, centre INTOUCHÉ. L'ancienne version
+        // travaillait en f64 puis `sync_params_to_hp()` réécrivait les 4 chaînes
+        // HP (centre inclus) depuis leurs approximations 53 bits : à zoom
+        // profond, tout redimensionnement de fenêtre arrondissait le centre →
+        // vue fausse / image uniforme (bug 2026-08-23).
+        let prec = self.hp_arith_precision();
+        let sx = Float::parse(&self.span_x_hp)
+            .map(|p| Float::with_val(prec, p))
+            .unwrap_or_else(|_| Float::with_val(prec, self.params.span_x));
+        let sy = Float::parse(&self.span_y_hp)
+            .map(|p| Float::with_val(prec, p))
+            .unwrap_or_else(|_| Float::with_val(prec, self.params.span_y));
+        let (nsx, nsy) = resized_spans_hp(&sx, &sy, new_width, new_height, prec);
+        self.span_x_hp = nsx.to_string_radix(10, None);
+        self.span_y_hp = nsy.to_string_radix(10, None);
         self.window_width = new_width;
         self.window_height = new_height;
         self.params.width = new_width;
         self.params.height = new_height;
-        // Synchroniser les chaînes HP pour éviter un saut au prochain zoom profond
-        self.sync_params_to_hp();
+        // HP → params (chaînes + miroirs f64) ; le centre HP reste exact.
+        self.sync_hp_to_params();
         self.iterations = Arc::new(Vec::new());
         self.zs = Arc::new(Vec::new());
         self.orbits = Arc::new(Vec::new());
@@ -2190,7 +2192,16 @@ impl FractallApp {
         }
     }
 
-    /// Calcule les coordonnées complexes depuis les coordonnées pixel.
+    /// Ratio ([0,1]²) d'un pixel dans l'image de rendu — entrée des zooms HP.
+    fn pixel_to_ratio(&self, pixel_x: f32, pixel_y: f32) -> (f64, f64) {
+        (
+            pixel_x as f64 / self.params.width.max(1) as f64,
+            pixel_y as f64 / self.params.height.max(1) as f64,
+        )
+    }
+
+    /// Calcule les coordonnées complexes (f64) depuis les coordonnées pixel.
+    /// Réservé aux usages f64 (seed Julia) — PAS au zoom (cf. `zoom_at_ratio`).
     fn pixel_to_complex(&self, pixel_x: f32, pixel_y: f32, viewport_width: f32, viewport_height: f32) -> Complex64 {
         let x_ratio = pixel_x as f64 / viewport_width as f64;
         let y_ratio = pixel_y as f64 / viewport_height as f64;
@@ -2204,14 +2215,15 @@ impl FractallApp {
         Complex64::new(x, y)
     }
     
-    /// Zoom au point spécifié avec un facteur donné.
-    fn zoom_at_point(&mut self, point: Complex64, factor: f64) {
-        // Calculer le ratio du point dans l'image
-        // point = center + (ratio - 0.5) * span
-        // => ratio = (point - center) / span + 0.5
-        let ratio_x = (point.re - self.params.center_x) / self.params.span_x + 0.5;
-        let ratio_y = (point.im - self.params.center_y) / self.params.span_y + 0.5;
-        
+    /// Zoom au point spécifié par son RATIO dans l'image ([0,1]², 0.5 = centre)
+    /// avec un facteur donné.
+    ///
+    /// ⚠️ Ne pas passer par un `Complex64` f64 : `center + (r−0.5)·span` puis
+    /// `(point − center)/span + 0.5` absorbe le décalage dès que
+    /// `span < ~1e-16·|center|` (zoom > ~1e15) → ratio 0.5 quel que soit le
+    /// clic (NaN si span f64 = 0). Les ratios pixel vont directement au zoom HP,
+    /// comme la molette et le rectangle.
+    fn zoom_at_ratio(&mut self, ratio_x: f64, ratio_y: f64, factor: f64) {
         // Utiliser le zoom haute précision
         self.zoom_hp(ratio_x, ratio_y, factor);
 
@@ -2253,7 +2265,7 @@ impl FractallApp {
         self.zoom_rect_hp(xr1, yr1, xr2, yr2);
 
         // G10.2 : cache d'orbite conservé (réutilisation subset off-center si la
-        // vue est contenue ; rebuild sinon — décidé par le moteur). Cf. zoom_at_point.
+        // vue est contenue ; rebuild sinon — décidé par le moteur). Cf. zoom_at_ratio.
 
         self.start_render();
     }
@@ -2264,13 +2276,10 @@ impl FractallApp {
         self.start_render();
     }
     
-    /// Dézoom au point spécifié : symétrique de `zoom_at_point` (re-centre sur le
+    /// Dézoom au point spécifié : symétrique de `zoom_at_ratio` (re-centre sur le
     /// point sous le curseur puis élargit le span). Avant, `_point` était ignoré
     /// → le dézoom se faisait toujours au centre (asymétrie avec le clic gauche).
-    fn zoom_out_at_point(&mut self, point: Complex64, factor: f64) {
-        // ratio du point dans l'image : ratio = (point - center)/span + 0.5
-        let ratio_x = (point.re - self.params.center_x) / self.params.span_x + 0.5;
-        let ratio_y = (point.im - self.params.center_y) / self.params.span_y + 0.5;
+    fn zoom_out_at_ratio(&mut self, ratio_x: f64, ratio_y: f64, factor: f64) {
         // zoom_factor < 1 ⇒ new_span = span / zoom_factor = span × factor (dézoom),
         // tout en re-centrant sur le point (même chemin HP que le zoom in).
         self.zoom_hp(ratio_x, ratio_y, 1.0 / factor);
@@ -2531,6 +2540,9 @@ impl eframe::App for FractallApp {
             // C pour cycle palette
             if i.key_pressed(egui::Key::C) {
                 self.palette_index = (self.palette_index + 1) % 27;
+                // Synchroniser params (comme R et les boutons < / >) : sinon la
+                // passe suivante / un screenshot reviennent à l'ancienne palette.
+                self.params.color_mode = self.palette_index;
                 if !self.iterations.is_empty() {
                     self.update_texture(ctx);
                 }
@@ -2629,15 +2641,13 @@ impl eframe::App for FractallApp {
                     matches!(e, egui::Event::Text(text) if text == "+" || text == "=")
                 });
                 if zoom_in_pressed {
-                    let center = Complex64::new(self.params.center_x, self.params.center_y);
-                    self.zoom_at_point(center, 1.5);
+                    self.zoom_at_ratio(0.5, 0.5, 1.5);
                 }
             }
 
             // - pour dézoom au centre (désactivé en mode Julia)
             if !julia_mode && i.key_pressed(egui::Key::Minus) {
-                let center = Complex64::new(self.params.center_x, self.params.center_y);
-                self.zoom_out_at_point(center, 1.5);
+                self.zoom_out_at_ratio(0.5, 0.5, 1.5);
             }
 
             // 0 pour reset zoom (désactivé en mode Julia) — ne pas déclencher si le focus est sur le champ Itérations (pour pouvoir taper "50", "500", etc.)
@@ -3628,8 +3638,8 @@ impl eframe::App for FractallApp {
                             let local_pos = pos - image_rect.min;
                             let pixel_x = (local_pos.x / image_rect.width()) * self.params.width as f32;
                             let pixel_y = (local_pos.y / image_rect.height()) * self.params.height as f32;
-                            let point = self.pixel_to_complex(pixel_x, pixel_y, self.params.width as f32, self.params.height as f32);
-                            self.zoom_at_point(point, 2.0);
+                            let (rx, ry) = self.pixel_to_ratio(pixel_x, pixel_y);
+                            self.zoom_at_ratio(rx, ry, 2.0);
                         }
                     }
 
@@ -3642,8 +3652,8 @@ impl eframe::App for FractallApp {
                                 let local_pos = pos - image_rect.min;
                                 let pixel_x = (local_pos.x / image_rect.width()) * self.params.width as f32;
                                 let pixel_y = (local_pos.y / image_rect.height()) * self.params.height as f32;
-                                let point = self.pixel_to_complex(pixel_x, pixel_y, self.params.width as f32, self.params.height as f32);
-                                self.zoom_out_at_point(point, 2.0);
+                                let (rx, ry) = self.pixel_to_ratio(pixel_x, pixel_y);
+                                self.zoom_out_at_ratio(rx, ry, 2.0);
                             } else {
                                 // Fallback si pas de position : dézoom au centre
                                 self.zoom_out(2.0);
@@ -3656,8 +3666,8 @@ impl eframe::App for FractallApp {
                                             let local_pos = pos - image_rect.min;
                                             let pixel_x = (local_pos.x / image_rect.width()) * self.params.width as f32;
                                             let pixel_y = (local_pos.y / image_rect.height()) * self.params.height as f32;
-                                            let point = self.pixel_to_complex(pixel_x, pixel_y, self.params.width as f32, self.params.height as f32);
-                                            self.zoom_out_at_point(point, 2.0);
+                                            let (rx, ry) = self.pixel_to_ratio(pixel_x, pixel_y);
+                                            self.zoom_out_at_ratio(rx, ry, 2.0);
                                         }
                                     }
                                 }
@@ -3928,6 +3938,21 @@ impl eframe::App for FractallApp {
     }
 }
 
+/// Spans après redimensionnement de la surface `w×h`, en HP : on conserve la
+/// dimension contraignante et on élargit l'autre pour garder l'aspect pixel
+/// carré sans déformation (même règle que l'ancienne version f64).
+pub(crate) fn resized_spans_hp(sx: &Float, sy: &Float, w: u32, h: u32, prec: u32) -> (Float, Float) {
+    let target_aspect = Float::with_val(prec, w.max(1)) / Float::with_val(prec, h.max(1));
+    let current_aspect = Float::with_val(prec, sx / sy);
+    if current_aspect > target_aspect {
+        // Élargir la hauteur.
+        (sx.clone(), Float::with_val(prec, sx / &target_aspect))
+    } else {
+        // Élargir la largeur.
+        (Float::with_val(prec, sy * &target_aspect), sy.clone())
+    }
+}
+
 #[cfg(test)]
 mod warp_tests {
     use super::{compute_warp_norm, ViewSnapshot};
@@ -4006,5 +4031,31 @@ mod warp_tests {
         let tex = v("0", "0", "4", "4");
         let live = v("0", "0", "0", "4");
         assert!(compute_warp_norm(&tex, &live, 256).is_none());
+    }
+}
+
+#[cfg(test)]
+mod resize_tests {
+    use super::resized_spans_hp;
+    use rug::Float;
+
+    /// Verrou bug 2026-08-23 : le resize se calcule en HP — un span 1e-30
+    /// (sous l'ulp f64 du centre) garde sa valeur exacte et l'aspect cible,
+    /// sans passer par f64.
+    #[test]
+    fn resized_spans_keep_hp_precision_and_aspect() {
+        let prec = 256;
+        let sx = Float::with_val(prec, Float::parse("4e-30").unwrap());
+        let sy = Float::with_val(prec, Float::parse("3e-30").unwrap());
+        // 4:3 → 16:9 : la vue tient en hauteur → hauteur conservée, largeur élargie.
+        let (nx, ny) = resized_spans_hp(&sx, &sy, 1600, 900, prec);
+        assert_eq!(ny, sy);
+        let aspect = Float::with_val(prec, &nx / &ny);
+        let want = Float::with_val(prec, 16) / Float::with_val(prec, 9);
+        assert!((aspect - want).abs() < 1e-60);
+        // 4:3 → 1:1 : la vue tient en largeur → largeur conservée, hauteur élargie.
+        let (nx, ny) = resized_spans_hp(&sx, &sy, 500, 500, prec);
+        assert_eq!(nx, sx);
+        assert_eq!(ny, sx);
     }
 }
