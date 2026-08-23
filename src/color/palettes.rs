@@ -1304,10 +1304,12 @@ pub fn color_for_pixel_with_lut(
     }
 
     let original_z_im_negative = z.im < 0.0;
-    let is_interior = interior_flag_encoded && z.im < 0.0;
-    if is_interior && out_coloring_mode != OutColoringMode::BinaryDecomposition {
-        return (0, 0, 0);
-    }
+    // Interior detection : le flag « intérieur » est encodé par le signe de
+    // z.im UNIQUEMENT pour `iter >= iteration_max` (iterations.rs), déjà
+    // renvoyés noirs ci-dessus. Pour un pixel ÉCHAPPÉ, `z.im < 0` n'est que
+    // le z final réel : le tester ici noircissait ~la moitié de l'extérieur
+    // (bug 2026-08-23, verrou `interior_flag_never_blackens_escaped_pixels`).
+    let _ = interior_flag_encoded;
 
     // Restore z with positive im for calculations (except for sign check)
     let z_positive = Complex64::new(z.re, z.im.abs());
@@ -1368,7 +1370,9 @@ pub fn color_for_pixel_with_lut(
     }
 
     // Alternance endroit/envers pour créer des cycles de couleur
-    if (cycle as i64) % 2 == 1 {
+    // `rem_euclid` : pour un offset négatif `cycle` peut être < 0 et `%`
+    // renverrait -1 → cycles impairs négatifs jamais retournés → couture.
+    if (cycle as i64).rem_euclid(2) == 1 {
         t_repeat = 1.0 - t_repeat;
     }
 
@@ -1435,3 +1439,56 @@ pub fn color_for_buddhabrot_pixel(
     gradient_interpolate(palette, t_repeat)
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fractal::ColorSpace;
+
+    fn smooth(iter: u32, z: Complex64, offset: f64, flag: bool) -> (u8, u8, u8) {
+        color_for_pixel_with_lut(
+            iter, z, 1000, 0, 3000, offset, OutColoringMode::Smooth, ColorSpace::Rgb,
+            None, None, flag, None,
+        )
+    }
+
+    /// Verrou bug 2026-08-23 : `--enable-interior-detection` ne doit JAMAIS
+    /// noircir un pixel échappé (le flag n'est encodé qu'à iter == max).
+    #[test]
+    fn interior_flag_never_blackens_escaped_pixels() {
+        let z = Complex64::new(30.0, -30.0); // échappé, im < 0
+        let with = smooth(10, z, 0.0, true);
+        let without = smooth(10, z, 0.0, false);
+        assert_eq!(with, without);
+        assert_ne!(with, (0, 0, 0));
+        // L'intérieur reste noir.
+        assert_eq!(smooth(1000, Complex64::new(0.1, -0.1), 0.0, true), (0, 0, 0));
+    }
+
+    /// Verrou bug 2026-08-23 : un `color_offset` négatif doit rester
+    /// continu aux frontières de cycle (alternance endroit/envers préservée
+    /// sur les cycles négatifs). Même saut maximal que l'offset positif.
+    #[test]
+    fn negative_color_offset_has_no_seam() {
+        let max_jump = |offset: f64| {
+            let mut prev: Option<(u8, u8, u8)> = None;
+            let mut worst = 0i32;
+            for i in 0..200_000 {
+                let r = 25.0 + 600.0 * (i as f64) / 200_000.0;
+                let c = smooth(3, Complex64::new(r, 0.0), offset, false);
+                if let Some(p) = prev {
+                    let j = (c.0 as i32 - p.0 as i32).abs()
+                        + (c.1 as i32 - p.1 as i32).abs()
+                        + (c.2 as i32 - p.2 as i32).abs();
+                    worst = worst.max(j);
+                }
+                prev = Some(c);
+            }
+            worst
+        };
+        let pos = max_jump(5.0);
+        let neg = max_jump(-5.0);
+        assert!(pos <= 4, "offset positif : saut {pos}");
+        assert!(neg <= 4, "offset négatif : saut {neg} (couture)");
+    }
+}
