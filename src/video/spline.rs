@@ -160,6 +160,15 @@ impl MonotoneCubic {
                 m[i + 1] = tau * beta * d[i];
             }
         }
+        // Valeurs extrêmes (~1e300) : une sécante infinie donne tau = 0 et
+        // m = 0·inf = NaN → p = NaN à l'assemblage → panic interpolate_frame
+        // (sans abort ffmpeg). Tangente non finie → 0 (spline localement plate,
+        // toujours monotone).
+        for t in m.iter_mut() {
+            if !t.is_finite() {
+                *t = 0.0;
+            }
+        }
         Self { knots, tangents: m }
     }
 
@@ -245,6 +254,17 @@ mod tests {
             assert!(v >= prev - 1e-12, "non-monotone à t={t}: {v} < {prev}");
             assert!((0.0..=9.0).contains(&v), "overshoot à t={t}: {v}");
             prev = v;
+        }
+    }
+
+    /// Verrou 2026-08-23 : des valeurs ~1e300 ne produisent pas de tangente
+    /// NaN (eval reste fini).
+    #[test]
+    fn extreme_values_keep_eval_finite() {
+        let d = Dynamic::parse("0/0,1e-10/1e300,1/2e300,2/3e300").unwrap();
+        for i in 0..=200 {
+            let v = d.eval(i as f64 * 0.01);
+            assert!(v.is_finite(), "t={} → {v}", i as f64 * 0.01);
         }
     }
 

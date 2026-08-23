@@ -299,7 +299,10 @@ pub fn build_axis_map(
         let p = a * (x as f64 + 0.5) + b;
         // Les positions vraies dévient de ≤ tol de la grille source : examiner
         // round(p) et ses deux voisins suffit (positions quasi-monotones).
-        let k0 = p.round() as i64;
+        // `as i64` sature à ±9.2e18 pour |p| énorme (frame source deep puis
+        // reset à span 4) : `k0 ± 1` débordait en debug. Hors plage → aucun
+        // candidat (clamp à une valeur hors [0, n_old)).
+        let k0 = p.round().clamp(-2.0, n_old as f64 + 2.0) as i64;
         let mut best: Option<(f64, usize)> = None; // (distance signée en px source, k)
         for k in (k0 - 1)..=(k0 + 1) {
             if k < 0 || k >= n_old as i64 {
