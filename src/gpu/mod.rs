@@ -495,6 +495,14 @@ impl GpuRenderer {
         if params.is_hybrid_formula() {
             return None;
         }
+        // Nucleus finder : la référence est déplacée par Newton et le kernel
+        // calcule `center − cref` en f64 — au-delà de ~1e16 l'offset est sous
+        // l'ulp (recentrage silencieux ≠ CPU, ou frame vide) ; de plus la
+        // matrice K du nucleus (dans le cache) n'est appliquée qu'au mapping
+        // CPU. → fallback CPU (bug 2026-08-23).
+        if params.find_nucleus {
+            return None;
+        }
         // Sélection wisdom (source unique, G9.1) — device Gpu : seuil
         // d'activation perturbation f32 (~1e5) au lieu du seuil CPU (~1e12).
         let use_perturbation = wisdom::select_algorithm(params, wisdom::Device::Gpu)

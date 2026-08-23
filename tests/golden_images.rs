@@ -303,7 +303,10 @@ const CASES: &[Case] = &[
     // aiguille (forme genuine des hybrides à plis abs) sur speckle — revu
     // visuellement, déterminisme run-to-run vérifié (0 px). Rougit si le
     // nucleus formule, la normalisation det=1 de K, transform_sigma1 ou le
-    // stack BLA multi-phase change.
+    // stack BLA multi-phase change. Régénéré 2026-08-23 : K était calculée
+    // puis perdue (clone local) — elle est désormais propagée via
+    // `ReferenceOrbitCache::nucleus_transform` au mapping pixel→c (aiguille
+    // réorientée dans le frame du minibrot, revu visuellement).
     Case {
         name: "hybrid_mbs_nucleus_5e28",
         args: &[

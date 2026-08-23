@@ -556,6 +556,16 @@ pub struct ReferenceOrbitCache {
     /// G4 Op::Rot : formule opcodes F3 pour laquelle la référence a été
     /// itérée — même rôle discriminant que `hybrid_phases`.
     pub hybrid_opcodes: Option<String>,
+    /// Nucleus finder (`find_nucleus`) : matrice K (normalisée det=1) et
+    /// rotation dérivée renvoyées par `hybrid_size`, à appliquer au mapping
+    /// pixel→c de la VUE (F3 `engine.cc:208` : `out.transform = K`). `None`
+    /// si le nucleus n'a pas tourné ou si K est dégénérée. Avant 2026-08-23
+    /// K était calculée puis perdue dans un clone local → minibrots non
+    /// alignés rendus sans rotation.
+    pub nucleus_transform: Option<([f64; 4], f64)>,
+    /// Puissance Multibrot de la formule (discriminant : Multibrot est dans la
+    /// famille perturbation, une orbite z³+c ≠ z²+c au même centre).
+    pub multibrot_power: f64,
 }
 
 impl ReferenceOrbitCache {
@@ -678,6 +688,7 @@ impl ReferenceOrbitCache {
         self.fractal_type == params.fractal_type
             && self.hybrid_phases == params.hybrid_phases
             && self.hybrid_opcodes == params.hybrid_opcodes
+            && self.multibrot_power.to_bits() == params.multibrot_power.to_bits()
             && gmp_ok
             && self.center_x_gmp == cx_str
             && self.center_y_gmp == cy_str
@@ -729,6 +740,8 @@ impl ReferenceOrbitCache {
                 .unwrap_or_else(|| params.span_y.to_string()),
             hybrid_phases: params.hybrid_phases.clone(),
             hybrid_opcodes: params.hybrid_opcodes.clone(),
+            nucleus_transform: None,
+            multibrot_power: params.multibrot_power,
         }
     }
 
@@ -771,6 +784,15 @@ impl ReferenceOrbitCache {
             || (super::uses_bytecode_path(params)
                 && !super::should_use_full_gmp_perturbation(params));
         // Mêmes invariants « non-géométriques » que is_valid_for.
+        // Discriminants de FORMULE (mêmes que is_valid_for) : sans eux une
+        // orbite z²+c serait réutilisée pour un [M,BS] / opcodes au même
+        // centre (bug latent 2026-08-23).
+        if self.hybrid_phases != params.hybrid_phases
+            || self.hybrid_opcodes != params.hybrid_opcodes
+            || self.multibrot_power.to_bits() != params.multibrot_power.to_bits()
+        {
+            return false;
+        }
         if !(self.fractal_type == params.fractal_type
             && gmp_ok
             && self.precision_bits >= required_prec
@@ -986,6 +1008,8 @@ pub fn compute_reference_orbit_cached(
     const MAX_ITERATION_CAP: u32 = 10_000_000;
 
     let mut adjusted_params = params.clone();
+    // K/rotation du nucleus finder, propagées au cache (cf. `nucleus_transform`).
+    let mut nucleus_transform: Option<([f64; 4], f64)> = None;
 
     // Nucleus finder (Mandelbrot only, opt-in via `find_nucleus`). À deep
     // zoom escape-time, l'utilisateur cible un point près d'un minibrot dont
@@ -1133,6 +1157,7 @@ pub fn compute_reference_orbit_cached(
                         adjusted_params.rotation = new_rotation_deg;
                         if k_normalized.iter().all(|x| x.is_finite()) {
                             adjusted_params.transform_k = Some(k_normalized);
+                            nucleus_transform = Some((k_normalized, new_rotation_deg));
                         }
                         if perf {
                             eprintln!(
@@ -1420,7 +1445,7 @@ pub fn compute_reference_orbit_cached(
         );
     }
 
-    Some(Arc::new(ReferenceOrbitCache::new(
+    let mut cache = ReferenceOrbitCache::new(
         orbit,
         bla_table,
         series_table,
@@ -1428,7 +1453,9 @@ pub fn compute_reference_orbit_cached(
         center_x_gmp,
         center_y_gmp,
         hybrid_refs,
-    )))
+    );
+    cache.nucleus_transform = nucleus_transform;
+    Some(Arc::new(cache))
 }
 
 /// Calcule l'orbite de référence haute précision au centre de l'image.

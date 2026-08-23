@@ -1081,9 +1081,18 @@ pub fn render_perturbation_with_cache(
     // Use the cache's iteration_max if it was auto-adjusted upward by series skip ratio.
     // This ensures iterate_pixel uses the adjusted value to reveal detail that would
     // otherwise be hidden behind an insufficient iteration count.
-    let params = if cache.iteration_max > params.iteration_max {
+    // Idem pour la matrice K du nucleus finder : F3 rend la vue dans le frame
+    // du minibrot (`out.transform = K`, `engine.cc:208`). K vit dans le cache
+    // (calculée avec l'orbite) et s'applique ici au mapping pixel→c —
+    // `transform_matrix()` (rot) ET `transform_sigma1()` (rayon BLA).
+    let nucleus_k = if params.find_nucleus { cache.nucleus_transform } else { None };
+    let params = if cache.iteration_max > params.iteration_max || nucleus_k.is_some() {
         let mut adjusted = params.clone();
-        adjusted.iteration_max = cache.iteration_max;
+        adjusted.iteration_max = adjusted.iteration_max.max(cache.iteration_max);
+        if let Some((k, rot_deg)) = nucleus_k {
+            adjusted.transform_k = Some(k);
+            adjusted.rotation = rot_deg;
+        }
         std::borrow::Cow::Owned(adjusted)
     } else {
         std::borrow::Cow::Borrowed(params)
@@ -2378,6 +2387,19 @@ mod tests {
             cache_big.can_subset_reuse(&view),
             "la vue devrait être contenue dans l'empreinte de la référence"
         );
+        // Verrou 2026-08-23 : un changement de FORMULE au même centre
+        // invalide la réutilisation subset (comme is_valid_for).
+        let mut hybrid = view.clone();
+        hybrid.hybrid_phases = Some(vec![FractalType::Mandelbrot, FractalType::BurningShip]);
+        assert!(!cache_big.can_subset_reuse(&hybrid), "hybride ≠ z²+c");
+        assert!(!cache_big.is_valid_for(&hybrid));
+        let mut opcodes = view.clone();
+        opcodes.hybrid_opcodes = Some("sqr rot{30} add".into());
+        assert!(!cache_big.can_subset_reuse(&opcodes), "opcodes ≠ z²+c");
+        let mut power = view.clone();
+        power.multibrot_power = 3.0;
+        assert!(!cache_big.can_subset_reuse(&power), "puissance ≠");
+        assert!(!cache_big.is_valid_for(&power));
 
         // Rendu avec réutilisation off-center (offset dc = view.center - big.center).
         let (res_reuse, cache_after) =
