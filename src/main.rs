@@ -527,6 +527,10 @@ fn main() {
     };
 
     // Paramètres par défaut pour ce type.
+    if cli.width == 0 || cli.height == 0 {
+        eprintln!("Erreur : --width/--height doivent être ≥ 1 (reçu {}×{})", cli.width, cli.height);
+        std::process::exit(1);
+    }
     let mut params = default_params_for_type(fractal_type, cli.width, cli.height);
 
     // Hybride multi-phase (G4) : --phases type1,type2,… → hybrid_phases.
@@ -663,15 +667,23 @@ fn main() {
         let ymin = cli.ymin.unwrap_or(default_ymin);
         let ymax = cli.ymax.unwrap_or(default_ymax);
         params.set_bounds(xmin, xmax, ymin, ymax);
+        // Les bornes f64 remplacent TOUTE coordonnée HP antérieure (--toml) :
+        // les paths HP-aware liraient sinon les anciennes chaînes.
+        params.center_x_hp = None;
+        params.center_y_hp = None;
+        params.span_x_hp = None;
+        params.span_y_hp = None;
     }
 
     // Recentrage éventuel (prioritaire sur les bornes).
     if cli.center_x.is_some() || cli.center_y.is_some() {
         if let Some(cx) = cli.center_x {
             params.center_x = cx;
+            params.center_x_hp = None; // override f64 → la chaîne HP (--toml) serait prioritaire
         }
         if let Some(cy) = cli.center_y {
             params.center_y = cy;
+            params.center_y_hp = None;
         }
     }
 
@@ -880,6 +892,14 @@ fn main() {
             );
             std::process::exit(1);
         }
+    }
+
+    // Garde-fou : un f64 non fini (`--rotation nan`, `--center-x inf`…) se
+    // sérialise en `null` dans les métadonnées PNG, que serde refuse au
+    // rechargement (drag-and-drop GUI, --from-map) — bug 2026-08-23.
+    if let Some(name) = non_finite_param(&params) {
+        eprintln!("Erreur : paramètre '{name}' non fini (NaN/inf) — valeur refusée");
+        std::process::exit(1);
     }
 
     // Calcul escape-time (CPU ou GPU).
@@ -1101,3 +1121,21 @@ fn main() {
     );
 }
 
+
+/// Nom du premier paramètre f64 non fini, s'il y en a un.
+fn non_finite_param(p: &fractal::FractalParams) -> Option<&'static str> {
+    let checks: [(&str, f64); 11] = [
+        ("center_x", p.center_x),
+        ("center_y", p.center_y),
+        ("span_x", p.span_x),
+        ("span_y", p.span_y),
+        ("rotation", p.rotation),
+        ("bailout", p.bailout),
+        ("color_offset", p.color_offset),
+        ("multibrot_power", p.multibrot_power),
+        ("jitter_scale", p.jitter_scale),
+        ("seed.re", p.seed.re),
+        ("seed.im", p.seed.im),
+    ];
+    checks.iter().find(|(_, v)| !v.is_finite()).map(|(n, _)| *n)
+}
