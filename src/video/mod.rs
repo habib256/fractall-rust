@@ -402,6 +402,8 @@ pub fn plan_from_manifest(m: &Manifest, project: &Path) -> Result<Manifest, Box<
     // Valide la géométrie tôt (types/outcoloring invalides = erreur au plan,
     // pas au 30e keyframe du render).
     keyframe_params(&m, 0).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    assemble::video_outcoloring(&m.color.outcoloring)
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("color.outcoloring: {e}").into() })?;
     let velocity = spline::Dynamic::parse(&m.video.velocity)
         .map_err(|e| format!("video.velocity: {e}"))?;
     assemble::timeline_sample_count(m.video.keyframes, m.video.fps, &velocity)
@@ -598,6 +600,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// Verrou bug 2026-08-23 : OrbitTraps/Wings (canal orbites non persisté
+    /// dans les .fmap) sont REFUSÉS au plan au lieu de retomber en Smooth.
+    #[test]
+    fn plan_rejects_orbit_based_outcoloring() {
+        for mode in ["orbittraps", "wings"] {
+            assert!(assemble::video_outcoloring(mode).is_err(), "{mode}");
+        }
+        assert!(assemble::video_outcoloring("smooth").is_ok());
+        assert!(assemble::video_outcoloring("distance").is_ok());
+        assert!(assemble::video_outcoloring("nope").is_err());
     }
 
     /// Verrou jalon 2 : `keyframe_count` = ceil(log2(zoom)), exact aussi sur

@@ -226,6 +226,22 @@ pub fn interpolate_frame(
 // Colorisation des keyframes
 // ---------------------------------------------------------------------------
 
+/// Mode de colorisation du manifest, validé pour la vidéo. Les modes
+/// OrbitTraps/Wings consomment le canal `orbits` du dispatcher, que les
+/// `.fmap` ne persistent pas : ils retomberaient SILENCIEUSEMENT sur Smooth
+/// (classe « colorisation unique », CLAUDE.md) — refusés explicitement.
+pub fn video_outcoloring(name: &str) -> Result<OutColoringMode, String> {
+    let mode = OutColoringMode::from_cli_name(name)
+        .ok_or_else(|| format!("outcoloring invalide: '{name}'"))?;
+    if matches!(mode, OutColoringMode::OrbitTraps | OutColoringMode::Wings) {
+        return Err(format!(
+            "outcoloring '{name}' non supporté en vidéo (le canal orbites n'est pas \
+             persisté dans les .fmap ; le rendu retomberait sur Smooth)"
+        ));
+    }
+    Ok(mode)
+}
+
 /// Colorise une map de keyframe avec les couleurs du MANIFEST (pas celles
 /// baked dans la map — changer la palette du manifest recolore sans re-rendre)
 /// + décalage de palette dynamique + éclairage optionnel (jalon 5).
@@ -234,8 +250,7 @@ pub fn colorize_keyframe(map: &FractalMap, manifest: &Manifest, palette_offset: 
     p.color_mode = manifest.color.palette;
     p.color_repeat = manifest.color.color_repeat.max(1);
     p.color_space = manifest.color.color_space;
-    p.out_coloring_mode = OutColoringMode::from_cli_name(&manifest.color.outcoloring)
-        .ok_or_else(|| format!("outcoloring invalide: '{}'", manifest.color.outcoloring))?;
+    p.out_coloring_mode = video_outcoloring(&manifest.color.outcoloring)?;
     p.color_offset = palette_offset;
     // Le canal `distances` de la map (rendu avec `[fractal] distance_estimation`)
     // alimente les modes Distance*/DistanceAO/Distance3D — sans lui, le
