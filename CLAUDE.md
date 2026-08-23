@@ -803,12 +803,28 @@ puis OpenGL ; Windows DX12 / Vulkan.
   en zoom-in (fin de l'« écho pur » du zoom ×2 aligné qui ne calculait RIEN
   et retardait l'image exacte), no-op en pan/zoom-out/previews. Raffinement
   exact silencieux à l'idle (400 ms, sans indicateur visible, déclenché seulement si
-  erreur réelle > ε) via `build_refine_map` : map UNION identité
-  (`keep_union`) qui conserve tout pixel dont un axe est ENTIÈREMENT exact
-  (`col_exact`/`row_exact` — ≠ « aligné » : une ligne copiée alignée peut
-  être décalée par l'axe colonne, cf. pan horizontal) et ne recalcule que
-  les approximations → cycle zoom ×2 écho+refine ≈ 107 % d'un rendu frais
-  (image visible à ~0.8×, vs 148 % en refine total et ~200 % pré-injectivité).
+  erreur réelle > ε) via `build_refine_map` : map identité à tolérance
+  exacte sur l'**erreur PAR PIXEL** — conserve tout pixel dont l'erreur ≤ ε,
+  recalcule les approximations → cycle zoom ×2 écho+refine ≈ 99 % d'un
+  rendu frais (image visible à ~0.8×, vs 148 % en refine total).
+  ⚠️ **Erreur PAR PIXEL** (`XaosSourceFrame::err`, 2026-08-23) : un modèle
+  par axe (`col_err` = « toute la colonne est décalée ») est FAUX sur une
+  frame mixte — ce qu'est TOUTE frame d'écho zoom-in (colonnes fraîches par
+  injectivité) : l'erreur cachée croissait géométriquement en molette
+  continue (0,48 → 1,5 px en 6 crans). `col_err/row_err` ne sont plus que
+  des hints de sélection ; `XaosMap` porte jusqu'à deux candidats par axe
+  (hinté = pixels copiés, nominal = pixels frais), injectivité par variante,
+  décision de copie PAR PIXEL dans `source_index` (verrou
+  `continuous_anchored_zoom_keeps_true_error_bounded`). La transformée
+  frame→frame est en précision DYNAMIQUE (`transform_precision`,
+  −log2(span)+96 : à 256 b fixes, Δcentre d'un zoom ancré disparaissait
+  au-delà de ~1e74, verrou `deep_anchored_zoom_transform_sees_off_center_
+  delta`). **Plus de réutilisation grossière inter-passes côté GUI**
+  (progressif ET HQ) : le pixel (i/r, j/r) copié a son centre décalé de
+  (r−1)/2 px → treillis 1/16 de pixels faux (559/65536 mesurés) que XaoS
+  marquait exacts. Une passe intermédiaire (1/16) ne remplace jamais une
+  frame source plus résolue ; `glitch_ratio` est calculé sur les pixels
+  CALCULÉS (les copies diluaient le ratio → escalade dd sautée).
   Frame source stockée par passe CPU uniquement (jamais GPU f32, jamais une
   passe écho-pur — aucune information nouvelle, dégraderait la source en
   copies de copies). Compatibilité = fingerprint JSON des params
@@ -817,8 +833,9 @@ puis OpenGL ; Windows DX12 / Vulkan.
   ⚠️ **Invariant : écho XaoS et reuse basse-résolution inter-passes sont
   mutuellement EXCLUSIFS** (dispatcher + `render_perturbation_with_cache`) :
   le `reuse` copie des centres décalés de (ratio−1)/2 px, ce qui
-  contaminerait les axes que le map déclare FRAIS/exacts, consommés par le
-  refine union (verrou `echo_pass_ignores_coarse_pass_reuse`). Les passes
+  contaminerait les pixels que le map déclare FRAIS/exacts (verrou
+  `echo_pass_ignores_coarse_pass_reuse`) — et la GUI ne passe plus JAMAIS
+  de `reuse` (cf. ci-dessus). Les passes
   intermédiaires écho-pur sont SAUTÉES (le warp G10.1 affiche déjà le même
   contenu, en plus net — supprime le pompage flou preview→full en
   navigation) ; la passe finale tourne toujours. Diagnostics :
