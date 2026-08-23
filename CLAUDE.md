@@ -160,7 +160,9 @@ distinguer « explicite » du défaut).
 - `render proj/` → keyframes `.fmap` séquentielles via le dispatcher unique
   (`cache/xaos/tiles=None` ; pas de réutilisation d'orbite inter-échelle,
   cf. régime atom-domain). Reprise = skip par empreinte **couleur-blind**
-  (changer la palette du manifest n'invalide pas les maps) ;
+  (changer la palette du manifest n'invalide pas les maps). ⚠️ Le canal
+  `orbits` n'est PAS persisté : `assemble::video_outcoloring` REFUSE
+  OrbitTraps/Wings au plan et à l'assemblage (sinon Smooth silencieux) ;
 - `assemble proj/ -o out.mp4 | --frames-dir d/` → blend trilinear DeepDrill
   (curr à 1/z, next fenêtre `2·coord−0.5`, poids `z−1`), bilinéaire CPU+rayon
   (clamp-to-edge AVANT floor), ffmpeg stdin rawvideo. AA vidéo = keyframes
@@ -175,7 +177,10 @@ Arc neuf, cache d'orbite inter-passes) ; drag-and-drop d'un PNG fractall ou
 d'un `.fmap` = adoption de la cible ; le manifest est construit EN MÉMOIRE
 (`job::build_manifest` → `video::plan_from_manifest`), zéro fichier édité.
 Boutons « Générer » (reprise auto) et « Ré-assembler » (recolorer/re-timer
-sans recalcul, garde-fou empreinte : maps ≠ réglages → renvoi vers Générer).
+sans recalcul ; cible = `location` du manifest SUR DISQUE, pas la vue —
+inspecter une keyframe par clic ne re-planifie pas ; `job::check_assemble_only`
+refuse AVANT toute écriture un nombre de keyframes ≠ ou une empreinte
+keyframe 0 ≠ → renvoi vers Générer).
 Hooks lib : `render_project_with_progress` / `assemble_project_with_progress`
 (`&mut dyn FnMut(événement)`, cancel `Arc<AtomicBool>`, annulation = outcome
 `Cancelled` PAS une erreur ; ffmpeg tué + .mp4 partiel supprimé) — les
@@ -325,7 +330,11 @@ Device` (`fractal/wisdom.rs`) arbitre CPU/GPU par débit benché machine
 plage deep both-perturbation (les deux devices font de la perturbation, ~1e12
 à 4e37) ; JAMAIS sur les shaders std f32 (24 b = faux). Arbitrage final
 `arbitrate_device` : GPU si `gpu_thr > cpu_thr · GPU_SPEED_MARGIN` (les deux
-benchés). Sur GPU grand public (f64 1:64) l'auto reste CPU. Consommé par
+benchés). **`wisdom::gpu_lacks_features(params)`** (2026-08-23) gate
+`select_device` ET `render_dispatch` : `GpuDispatchResult` n'a ni
+`distances` ni `orbits` et le kernel est f64 pur → modes Distance*/
+OrbitTraps/Wings, `enable_distance_estimation/orbit_traps`, `use_dd_tier`
+⇒ jamais GPU (sinon Smooth silencieux / dd ignoré). Sur GPU grand public (f64 1:64) l'auto reste CPU. Consommé par
 `main.rs` (`use_gpu`), `gui/app.rs` (menu « Tech: 🔄 Auto »), CLI overrides
 `--gpu`/`--no-gpu`. Goldens forcent `--no-gpu`.
 
@@ -389,7 +398,12 @@ Pipeline :
    indispensable pour les minibrots non-axis-aligned (seahorse valley,
    flake, olbaid*). F3 `out.transform = K; out.p.transform.rotate = 0`
    (`engine.cc:208`) : on écrase de même `params.rotation` par la valeur
-   dérivée de K.
+   dérivée de K. ⚠️ K est calculée AVEC l'orbite et transportée par
+   `ReferenceOrbitCache::nucleus_transform` ; `render_perturbation_with_cache`
+   l'applique au `params` effectif (transform_k + rotation ⇒ `transform_matrix`
+   ET `transform_sigma1`). Avant 2026-08-23 elle mourait dans un clone local
+   (golden `hybrid_mbs_nucleus_5e28` régénéré). `render_dispatch` GPU renvoie
+   `None` sur `find_nucleus` (offset `center−cref` f64 + K non appliquée).
 
 **Why** : à deep zoom, l'orbite référence escape avant `iteration_max` →
 perturbation tronque. Le nucleus refine vers un centre périodique exact
