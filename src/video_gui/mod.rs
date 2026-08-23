@@ -187,7 +187,9 @@ pub struct VideoStudioApp {
     first_thumb: Option<(String, ThumbSlot)>,
     /// (empreinte au moment du spawn, canal) : une réponse terminant après un
     /// changement de cible ne doit jamais être attribuée à la nouvelle vue.
-    first_thumb_rx: Option<(String, mpsc::Receiver<VideoJobMsg>)>,
+    /// (clé, receiver, cancel) — le cancel permet d'arrêter un mini-rendu
+    /// périmé (dropper le receiver ne stoppait pas le calcul).
+    first_thumb_rx: Option<(String, mpsc::Receiver<VideoJobMsg>, Arc<AtomicBool>)>,
     /// Miniature provisoire keyframe finale (copie réduite de la preview).
     preview_thumb: Option<(Vec<u8>, u32, u32)>,
     /// Index du point de la courbe de vitesse en cours de drag.
@@ -339,6 +341,18 @@ impl VideoStudioApp {
         self.preview_rx = Some(rx);
         self.preview_rendering = true;
         self.preview_dirty = false;
+        // La vue change : la copie réduite de l'ANCIENNE preview n'est plus la
+        // keyframe finale (bug 2026-08-23 : sans projet sur disque,
+        // `view_is_project_target()` est toujours vrai et l'ancienne cible
+        // restait collée sur la nouvelle timeline). On retire aussi le
+        // provisoire RGB déjà appliqué sur le dernier slot.
+        self.preview_thumb = None;
+        if let Some(last) = self.tl_slots.len().checked_sub(1) {
+            if matches!(self.tl_slots[last], ThumbSlot::Rgb { .. }) {
+                self.tl_slots[last] = ThumbSlot::Empty;
+                self.tl_textures[last] = None;
+            }
+        }
 
         let cache0 = self.orbit_cache.clone();
         std::thread::spawn(move || {
@@ -425,13 +439,23 @@ impl VideoStudioApp {
     }
 
     fn start_job(&mut self, assemble_only: bool) {
-        let target = match self.target_view() {
+        let mut target = match self.target_view() {
             Ok(t) => t,
             Err(e) => {
                 self.status = e;
                 return;
             }
         };
+        // Ré-assembler = les maps du PROJET : la cible (centre/zoom) vient du
+        // manifest sur disque, pas de la vue courante — inspecter une keyframe
+        // par clic sur une miniature ne doit pas re-planifier la vidéo.
+        if assemble_only {
+            if let Some(m) = &self.project_manifest {
+                target.real = m.location.real.clone();
+                target.imag = m.location.imag.clone();
+                target.zoom = m.location.zoom.clone();
+            }
+        }
         let manifest = job::build_manifest(&self.settings, &target);
         let project = PathBuf::from(self.output_dir.trim());
         self.job_cancel = Arc::new(AtomicBool::new(false));
@@ -648,7 +672,7 @@ impl VideoStudioApp {
     }
 
     fn drain_first_thumb(&mut self) {
-        let Some((spawn_key, rx)) = self.first_thumb_rx.take() else { return };
+        let Some((spawn_key, rx, cancel)) = self.first_thumb_rx.take() else { return };
         match rx.try_recv() {
             Ok(VideoJobMsg::Thumb {
                 k: 0,
@@ -674,7 +698,7 @@ impl VideoStudioApp {
                 self.first_thumb = Some((spawn_key, slot));
             }
             Ok(_) | Err(mpsc::TryRecvError::Empty) => {
-                self.first_thumb_rx = Some((spawn_key, rx));
+                self.first_thumb_rx = Some((spawn_key, rx, cancel));
             }
             Err(mpsc::TryRecvError::Disconnected) => {}
         }
@@ -866,12 +890,15 @@ impl VideoStudioApp {
         let pending_matches = self
             .first_thumb_rx
             .as_ref()
-            .is_some_and(|(key, _)| *key == first_key);
+            .is_some_and(|(key, _, _)| *key == first_key);
         if !cached_matches && !pending_matches {
-            // Dropper le receiver périmé fait terminer silencieusement son
-            // worker dès son prochain send.
+            // Annuler le mini-rendu périmé (en drag, la clé change à chaque
+            // frame : sans cancel, des dizaines de rendus fantômes saturaient
+            // le pool rayon — bug 2026-08-23) puis dropper son receiver.
             self.first_thumb = None;
-            self.first_thumb_rx = None;
+            if let Some((_, _, cancel)) = self.first_thumb_rx.take() {
+                cancel.store(true, Ordering::Relaxed);
+            }
             if self.tl_slots.first().is_some_and(|slot| !slot.is_final()) {
                 self.tl_slots[0] = ThumbSlot::Empty;
                 self.tl_textures[0] = None;
@@ -889,7 +916,9 @@ impl VideoStudioApp {
                     iters,
                 )
             {
-                self.first_thumb_rx = Some((first_key.clone(), job::spawn_first_thumb(p)));
+                let cancel = Arc::new(AtomicBool::new(false));
+                self.first_thumb_rx =
+                    Some((first_key.clone(), job::spawn_first_thumb(p, cancel.clone()), cancel));
             }
         }
         if let Some((key, slot)) = &self.first_thumb {
@@ -1507,12 +1536,17 @@ impl VideoStudioApp {
         if let (Some(i), Some(pp)) = (self.curve_drag, resp.interact_pointer_pos()) {
             if resp.dragged() && i < self.settings.speed_points.len() {
                 // Position clampée entre les voisins : l'ordre reste trié.
-                let lo = if i > 0 { self.settings.speed_points[i - 1].0 + 0.05 } else { 0.0 };
-                let hi = if i + 1 < self.settings.speed_points.len() {
-                    self.settings.speed_points[i + 1].0 - 0.05
+                // Bornes = voisins (marge 0.05 si la place le permet, sinon
+                // les voisins eux-mêmes) : `hi.max(lo)` pouvait pousser le
+                // point AU-DELÀ du suivant quand deux voisins étaient à
+                // < 0.1 → liste désordonnée (bug 2026-08-23).
+                let prev = if i > 0 { self.settings.speed_points[i - 1].0 } else { 0.0 };
+                let next = if i + 1 < self.settings.speed_points.len() {
+                    self.settings.speed_points[i + 1].0
                 } else {
                     n.max(1) as f64
                 };
+                let (lo, hi) = if next - prev > 0.1 { (prev + 0.05, next - 0.05) } else { (prev, next) };
                 self.settings.speed_points[i] = (p_of(pp.x).clamp(lo, hi.max(lo)), m_of(pp.y));
                 self.on_curve_edited();
             }

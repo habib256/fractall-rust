@@ -445,10 +445,15 @@ pub fn spawn_thumb_scan(
 /// params fournis par l'appelant à la taille miniature, itérations plafonnées
 /// (le détail deep-iter est invisible à 96 px). Émis `provisional: true` —
 /// remplacé par la map réelle dès qu'elle est rendue.
-pub fn spawn_first_thumb(params: FractalParams) -> mpsc::Receiver<VideoJobMsg> {
+pub fn spawn_first_thumb(params: FractalParams, cancel: Arc<AtomicBool>) -> mpsc::Receiver<VideoJobMsg> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let (iterations, zs) = crate::render::render_escape_time(&params);
+        let mut cache = None;
+        let Some((iterations, zs, _, _)) = crate::render::render_escape_time_cancellable_with_reuse(
+            &params, &cancel, None, &mut cache, None, None,
+        ) else {
+            return; // annulé (clé périmée)
+        };
         if iterations.len() == (params.width * params.height) as usize {
             let _ = tx.send(VideoJobMsg::Thumb {
                 k: 0,
@@ -604,6 +609,15 @@ pub fn spawn_assemble_only(
 ) -> mpsc::Receiver<VideoJobMsg> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
+        // Garde-fous AVANT d'écrire quoi que ce soit (plan_from_manifest
+        // réécrit manifest.toml) — bug 2026-08-23 : la keyframe 0 (span 4)
+        // est indépendante du zoom, donc un zoom de vue différent passait le
+        // garde-fou et le manifest était réécrit avec un autre nombre de
+        // keyframes (vidéo tronquée, ou maps manquantes).
+        if let Err(e) = check_assemble_only(&manifest, &project) {
+            let _ = tx.send(VideoJobMsg::Error(e));
+            return;
+        }
         let m = match plan_from_manifest(&manifest, &project) {
             Ok(m) => m,
             Err(e) => {
@@ -611,33 +625,35 @@ pub fn spawn_assemble_only(
                 return;
             }
         };
-        let expected = match keyframe_params(&m, 0) {
-            Ok(p) => p,
-            Err(e) => {
-                let _ = tx.send(VideoJobMsg::Error(e));
-                return;
-            }
-        };
-        match load_fmap(&keyframe_path(&project, 0)) {
-            Ok(map0) if map_fingerprint(&map0.params) == map_fingerprint(&expected) => {}
-            Ok(_) => {
-                let _ = tx.send(VideoJobMsg::Error(
-                    "les keyframes existantes ne correspondent plus aux réglages \
-                     (cible, dimensions ou itérations modifiées) — utilisez Générer"
-                        .into(),
-                ));
-                return;
-            }
-            Err(_) => {
-                let _ = tx.send(VideoJobMsg::Error(
-                    "aucune keyframe rendue dans ce dossier — utilisez Générer".into(),
-                ));
-                return;
-            }
-        }
         run_assemble(&m, &project, use_ffmpeg, &cancel, &tx);
     });
     rx
+}
+
+/// Vérifie, SANS rien écrire, qu'un « Ré-assembler » est légitime : le
+/// projet sur disque a le même nombre de keyframes (⇔ même zoom) et la
+/// keyframe 0 porte la même empreinte hors-couleur (cible, dimensions,
+/// itérations). Sinon il faut « Générer ».
+pub(crate) fn check_assemble_only(manifest: &Manifest, project: &Path) -> Result<(), String> {
+    let existing = Manifest::load(&project.join("manifest.toml"))
+        .map_err(|_| "aucun projet dans ce dossier — utilisez Générer".to_string())?;
+    let mut probe = manifest.clone();
+    probe.video.keyframes = video::keyframe_count(&probe.location.zoom)?;
+    if existing.video.keyframes != probe.video.keyframes {
+        return Err(format!(
+            "le zoom de la vue ({} keyframes) diffère du projet ({} keyframes) — \
+             revenez à la cible du projet ou utilisez Générer",
+            probe.video.keyframes, existing.video.keyframes
+        ));
+    }
+    let expected = keyframe_params(&probe, 0)?;
+    match load_fmap(&keyframe_path(project, 0)) {
+        Ok(map0) if map_fingerprint(&map0.params) == map_fingerprint(&expected) => Ok(()),
+        Ok(_) => Err("les keyframes existantes ne correspondent plus aux réglages \
+             (cible, dimensions ou itérations modifiées) — utilisez Générer"
+            .into()),
+        Err(_) => Err("aucune keyframe rendue dans ce dossier — utilisez Générer".into()),
+    }
 }
 
 #[cfg(test)]
@@ -733,6 +749,60 @@ mod tests {
         // Une spline de vitesse est comprise (la courbe éditée passe ici).
         let spline = estimates("8", 30, "0/1,6/0.5", 320, 180, 1).unwrap();
         assert!(spline.frames > e.frames, "un ralentissement allonge la vidéo");
+    }
+
+
+    /// Verrou bug 2026-08-23 : « Ré-assembler » avec un zoom de vue différent
+    /// du projet est REFUSÉ avant toute écriture — le manifest sur disque
+    /// reste intact (avant : réécrit avec un autre nombre de keyframes).
+    #[test]
+    fn assemble_only_refuses_zoom_change_without_touching_manifest() {
+        let dir = std::env::temp_dir().join(format!(
+            "fractall-assemble-guard-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let s = StudioSettings { width: 32, height: 32, iterations: 50, ..StudioSettings::default() };
+        let t = TargetView {
+            real: "-0.75".into(),
+            imag: "0.1".into(),
+            zoom: "8".into(), // 3 keyframes
+            type_id: 3,
+            seed: Complex64::new(0.0, 0.0),
+            multibrot_power: 2.0,
+            color_space: ColorSpace::Rgb,
+            palette: 6,
+            color_repeat: 40,
+            outcoloring: "smooth".into(),
+        };
+        let m = build_manifest(&s, &t);
+        let planned = plan_from_manifest(&m, &dir).unwrap();
+        assert_eq!(planned.video.keyframes, 3);
+        crate::video::render_project(&dir).unwrap();
+        let before = std::fs::read_to_string(dir.join("manifest.toml")).unwrap();
+
+        // Même cible → OK.
+        assert!(check_assemble_only(&m, &dir).is_ok());
+        // Zoom différent (clic sur la miniature 1, ou zoom plus profond) → refus.
+        let mut shallower = t.clone();
+        shallower.zoom = "2".into();
+        let err = check_assemble_only(&build_manifest(&s, &shallower), &dir).unwrap_err();
+        assert!(err.contains("zoom"), "{err}");
+        let mut deeper = t.clone();
+        deeper.zoom = "1e6".into();
+        assert!(check_assemble_only(&build_manifest(&s, &deeper), &dir).is_err());
+        // Centre différent → refus (empreinte keyframe 0).
+        let mut moved = t.clone();
+        moved.real = "-0.5".into();
+        assert!(check_assemble_only(&build_manifest(&s, &moved), &dir).is_err());
+        // Couleurs différentes → OK (color-blind).
+        let mut recolored = t.clone();
+        recolored.palette = 2;
+        assert!(check_assemble_only(&build_manifest(&s, &recolored), &dir).is_ok());
+
+        let after = std::fs::read_to_string(dir.join("manifest.toml")).unwrap();
+        assert_eq!(before, after, "le manifest ne doit pas être réécrit par un refus");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `compiled_velocity` : sans courbe → constante EXACTE (chemin
