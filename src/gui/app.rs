@@ -191,6 +191,10 @@ pub struct FractallApp {
     aa_samples: u32,
     /// Progression AA courante affichée dans le panneau (sample, total).
     aa_progress: Option<(u32, u32)>,
+    /// Couleurs (palette, repeat, mode, espace) figées au lancement du rendu :
+    /// les moyennes AA arrivent déjà colorisées avec elles — si l'utilisateur a
+    /// recoloré entre-temps, on n'écrase pas sa recolorisation (bug 2026-08-23).
+    render_color_key: (u8, u32, crate::fractal::OutColoringMode, crate::fractal::ColorSpace),
 
     // Métriques
     last_render_time: Option<f64>, // en secondes
@@ -412,6 +416,7 @@ impl FractallApp {
             is_preview: false,
             aa_samples: 1,
             aa_progress: None,
+            render_color_key: (6, 40, crate::fractal::OutColoringMode::Smooth, crate::fractal::ColorSpace::Rgb),
             last_render_time: None,
             render_start_time: None,
             last_render_device_label: None,
@@ -1189,6 +1194,8 @@ impl FractallApp {
         let aa_samples = if use_gpu { 1 } else { self.aa_samples.max(1) };
         let aa_jitter_scale = 1.0f64;
         self.aa_progress = if aa_samples > 1 { Some((0, aa_samples)) } else { None };
+        self.render_color_key =
+            (params.color_mode, params.color_repeat, params.out_coloring_mode, params.color_space);
 
         // G10.4 : frame source pour la réutilisation pixels inter-frame.
         // Désactivée en mode AA multi-sample (les échantillons doivent être
@@ -1803,7 +1810,18 @@ impl FractallApp {
                     self.nav_overlay_texture = None;
                     self.nav_overlay_view = None;
                 }
-                self.load_texture_from_buffer(ctx, &display_buffer, width, height);
+                // Buffer à la taille de la PASSE : upscaler vers la vue pleine
+                // (comme PassComplete) — l'affichage dimensionne sur la texture
+                // (scale ≤ 1), une passe ¼ s'affichait rétrécie (bug 2026-08-23).
+                let (fw, fh) = (self.params.width, self.params.height);
+                if (width, height) != (fw, fh) && width > 0 && height > 0 {
+                    let up = crate::gui::progressive::upscale_rgb_nearest(
+                        &display_buffer, width, height, fw, fh,
+                    );
+                    self.load_texture_from_buffer(ctx, &up, fw, fh);
+                } else {
+                    self.load_texture_from_buffer(ctx, &display_buffer, width, height);
+                }
                 ctx.request_repaint();
             }
 
@@ -1854,7 +1872,15 @@ impl FractallApp {
                 // courante est la dernière → image nette, plus en preview.
                 self.is_preview = false;
                 self.aa_progress = Some((sample, total));
-                self.load_texture_from_buffer(ctx, &display_buffer, width, height);
+                let current_key = (
+                    self.params.color_mode,
+                    self.params.color_repeat,
+                    self.params.out_coloring_mode,
+                    self.params.color_space,
+                );
+                if current_key == self.render_color_key {
+                    self.load_texture_from_buffer(ctx, &display_buffer, width, height);
+                } // sinon : couleurs changées depuis le lancement → garder la recolorisation
                 ctx.request_repaint();
             }
 
@@ -2513,8 +2539,14 @@ impl eframe::App for FractallApp {
             }
         });
 
-        // Gestion des raccourcis clavier
+        // Gestion des raccourcis clavier — inhibés quand un champ texte a le
+        // focus (itérations, coordonnées…) : taper `-`, `+`, `c`… dans le champ
+        // zoomait / changeait la palette (bug 2026-08-23 ; seul `0` était gaté).
+        let text_field_focused = ctx.wants_keyboard_input();
         ctx.input(|i| {
+            if text_field_focused {
+                return;
+            }
             // F1-F12 pour changer le type
             for (key, fractal_id) in [
                 (egui::Key::F1, 3),
