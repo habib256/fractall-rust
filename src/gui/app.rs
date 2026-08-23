@@ -957,7 +957,15 @@ impl FractallApp {
                 pass_params.width = pass_width;
                 pass_params.height = pass_height;
 
-                let reuse = previous_pass.as_ref().map(|(i, z, w, h)| (i.as_slice(), z.as_slice(), *w, *h));
+                // ⚠️ PAS de réutilisation grossière inter-passes : elle copie le
+                // pixel (i/r, j/r) de la passe précédente dont le centre est
+                // décalé de (r−1)/2 px (1,5 px à r=4) → treillis 1/16 de pixels
+                // FAUX dans l'image finale (mesuré : 559/65536 px à 256², vue
+                // par défaut). Gain ≤ 6 % pour une sortie inexacte — supprimé
+                // (bug 2026-08-23). Le dispatcher garde le mécanisme pour
+                // d'autres appelants/tests.
+                let reuse: Option<(&[u32], &[Complex64], u32, u32)> = None;
+                let _ = &previous_pass;
                 let result = crate::render::escape_time::render_escape_time_cancellable_with_reuse(
                     &pass_params,
                     &cancel,
@@ -1397,10 +1405,14 @@ impl FractallApp {
                         .map(|c| c as &(dyn Fn(crate::render::tiles::TileUpdate) + Sync)),
                 });
 
-                // Rendre cette passe (réutiliser la passe précédente si possible)
-                let reuse = previous_pass.as_ref().map(|(iter, zs, w, h)| {
-                    (iter.as_slice(), zs.as_slice(), *w, *h)
-                });
+                // Rendre cette passe. ⚠️ PAS de réutilisation grossière de la
+                // passe précédente : le pixel (i/r, j/r) copié a son centre
+                // décalé de (r−1)/2 px → treillis 1/16 de pixels FAUX dans la
+                // passe finale (559/65536 px mesurés à 256²), que le stockage
+                // XaoS marquait ensuite `col_exact` (map None) → jamais
+                // raffinés, propagés par l'écho de zoom en zoom (bug 2026-08-23).
+                let reuse: Option<(&[u32], &[Complex64], u32, u32)> = None;
+                let _ = &previous_pass;
                 let result = if use_gpu {
                     let gpu = gpu_renderer.as_ref().unwrap();
                     // Dispatch GPU PARTAGÉ avec le CLI (`GpuRenderer::render_dispatch`) :
@@ -1505,39 +1517,33 @@ impl FractallApp {
                         let xaos_frame = if from_gpu || pure_copy {
                             None
                         } else {
-                            let (w, h) = (pass_width as usize, pass_height as usize);
-                            let (col_err, row_err, col_exact, row_exact) = match &xaos_map {
-                                Some(m) => {
-                                    // Axe ENTIÈREMENT exact : calculé frais
-                                    // (non matché) — ou frame sans aucune
-                                    // approximation (refine, pan entier).
-                                    let all_exact = m.max_abs_err()
-                                        <= xaos::XAOS_EXACT_TOLERANCE_PX;
-                                    (
-                                        m.col_err.clone(),
-                                        m.row_err.clone(),
-                                        m.src_col.iter().map(|&s| all_exact || s < 0).collect(),
-                                        m.src_row.iter().map(|&s| all_exact || s < 0).collect(),
-                                    )
-                                }
-                                None => {
-                                    (vec![0.0; w], vec![0.0; h], vec![true; w], vec![true; h])
-                                }
-                            };
-                            Some(XaosSourceFrame {
-                                iterations: Arc::clone(&iterations),
-                                zs: Arc::clone(&zs),
-                                width: pass_width,
-                                height: pass_height,
-                                cx: view_cx.clone(),
-                                cy: view_cy.clone(),
-                                sx: view_sx.clone(),
-                                sy: view_sy.clone(),
-                                col_err: Arc::new(col_err),
-                                row_err: Arc::new(row_err),
-                                col_exact: Arc::new(col_exact),
-                                row_exact: Arc::new(row_exact),
-                                fingerprint: render_fingerprint.clone(),
+                            let view = (
+                                view_cx.clone(),
+                                view_cy.clone(),
+                                view_sx.clone(),
+                                view_sy.clone(),
+                            );
+                            // Erreur de position PAR PIXEL héritée du mapping
+                            // (vraie position des copies, 0 pour les pixels
+                            // calculés) ; frame sans map = exacte partout.
+                            Some(match &xaos_map {
+                                Some(m) => XaosSourceFrame::from_map(
+                                    Arc::clone(&iterations),
+                                    Arc::clone(&zs),
+                                    pass_width,
+                                    pass_height,
+                                    view,
+                                    render_fingerprint.clone(),
+                                    m,
+                                ),
+                                None => XaosSourceFrame::exact(
+                                    Arc::clone(&iterations),
+                                    Arc::clone(&zs),
+                                    pass_width,
+                                    pass_height,
+                                    view,
+                                    render_fingerprint.clone(),
+                                ),
                             })
                         };
 
@@ -1727,8 +1733,20 @@ impl FractallApp {
                 // passe a copié des pixels APPROXIMÉS (erreur réelle > ε),
                 // programmer le raffinement exact à l'idle — les copies
                 // exactes (pan entier, refine) n'en redéclenchent pas.
+                // Ne jamais REMPLACER une frame source plus résolue par une
+                // passe intermédiaire (zoom-out / grand facteur : la passe
+                // 1/16 n'est pas un écho pur et arrivait en premier ; deux
+                // crans rapides → le rendu suivant partait d'une frame 1/16 →
+                // XaoS dégénéré en rendu complet, bug 2026-08-23). Une frame
+                // de résolution ≥ (passe finale, ou même dims) remplace.
                 if let Some(frame) = xaos_frame {
-                    self.xaos_frame = Some(frame);
+                    let keep_existing = self.xaos_frame.as_ref().is_some_and(|old| {
+                        (old.width as u64 * old.height as u64)
+                            > (frame.width as u64 * frame.height as u64)
+                    });
+                    if !keep_existing {
+                        self.xaos_frame = Some(frame);
+                    }
                 }
                 self.xaos_refine_pending = xaos_approx;
                 // Déléguer upscale + colorize à un thread pour ne pas bloquer l'UI (évite "ne répond pas")

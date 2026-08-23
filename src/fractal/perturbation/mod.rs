@@ -1893,7 +1893,13 @@ pub fn render_perturbation_with_cache(
         // Augmenté de 10% à 30% pour éviter de recalculer toute l'image trop souvent.
         // La correction individuelle avec perturbation GMP est maintenant plus efficace.
         let total_pixels = width * height;
-        let glitch_ratio = glitched_indices.len() as f64 / total_pixels as f64;
+        // Ratio sur les pixels réellement CALCULÉS : les pixels copiés par
+        // l'écho XaoS ne sont jamais flaggés et diluaient le ratio (régime
+        // réf-intérieure ~36 % flaggés → < 0.30 après écho → escalade dd
+        // sautée → chaque pixel frais passait en GMP par-pixel, ordres de
+        // grandeur plus lent, bug 2026-08-23).
+        let computed_pixels = total_pixels.saturating_sub(xaos.map_or(0, |m| m.copied)).max(1);
+        let glitch_ratio = glitched_indices.len() as f64 / computed_pixels as f64;
         const GLITCH_FALLBACK_THRESHOLD: f64 = 0.30; // 30% (augmenté de 10%)
 
         // Le bytecode flag `glitched: true` UNIQUEMENT en exhaustion d'orbite

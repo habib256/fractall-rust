@@ -10,14 +10,15 @@
 //! (`Δcentre/span_old`, `span_new/span_old`) puis f64 — exact à toute
 //! profondeur, aucun HP dans la boucle pixel.
 //!
-//! Anti-dérive : chaque frame stocke par colonne/ligne l'écart signé (`col_err`/
-//! `row_err`, en unités de SES pixels) entre la position nominale de la grille
-//! et la position VRAIE des données copiées. Le matching de la frame suivante
-//! compare la grille nominale aux positions vraies (`k + err_old[k]`) — la
-//! vérité est préservée à travers les copies, l'erreur reste bornée par la
+//! Anti-dérive : chaque frame stocke PAR PIXEL l'écart signé (`err`, en unités
+//! de SES pixels) entre la position nominale de la grille et la position VRAIE
+//! des données. Le candidat source est choisi par axe (hints `col_err`/
+//! `row_err`), mais la COPIE est décidée par pixel contre sa position vraie —
+//! la vérité est préservée à travers les copies, l'erreur reste bornée par la
 //! tolérance (≤ 0.5 px) quel que soit le nombre de frames enchaînées, au lieu
-//! de s'accumuler. Le raffinement idle (GUI) recalcule ensuite exactement et
-//! remet les erreurs à zéro.
+//! de s'accumuler (un modèle par axe était faux sur les frames mixtes de
+//! l'écho zoom-in, cf. `XaosSourceFrame::err`). Le raffinement idle (GUI)
+//! recalcule ensuite exactement et remet les erreurs à zéro.
 //!
 //! Zoom-in (matching INJECTIF) : une colonne/ligne source ne sert qu'UN index
 //! cible (le mieux aligné). Sans cela, un zoom-in de facteur ≤ 2 duplique des
@@ -55,13 +56,13 @@ pub const XAOS_TOLERANCE_PX: f64 = 0.5;
 /// bruit des ratios HP→f64 (~1e-14 px), bien en dessous de tout décalage réel.
 pub const XAOS_EXACT_TOLERANCE_PX: f64 = 1e-9;
 
-/// Précision HP pour les ratios de la transformée frame→frame (mêmes ordres de
+/// Précision HP MINIMALE pour les ratios de la transformée frame→frame (mêmes ordres de
 /// grandeur que le warp G10.1 : des ratios O(1), 256 b couvrent tout zoom
 /// représentable en strings HP).
 const TRANSFORM_PRECISION_BITS: u32 = 256;
 
 /// Frame source pour la réutilisation inter-frame : buffers bruts de la
-/// dernière passe complétée + vue (HP strings) + positions vraies par axe.
+/// dernière passe complétée + vue (HP strings) + erreur de position PAR PIXEL.
 #[derive(Clone)]
 pub struct XaosSourceFrame {
     pub iterations: Arc<Vec<u32>>,
@@ -74,112 +75,223 @@ pub struct XaosSourceFrame {
     pub cy: String,
     pub sx: String,
     pub sy: String,
-    /// Écart signé (px de CETTE frame) entre position nominale et position
-    /// vraie des données, par colonne (`len == width`) et ligne (`len == height`).
-    /// 0.0 = pixel calculé exactement sur la grille.
+    /// **Vérité par pixel** : écart signé `(dx, dy)` (px de CETTE frame) entre
+    /// la position nominale `(i, j)` et la position VRAIE des données du pixel.
+    /// `[0, 0]` = calculé exactement sur la grille. `len == width·height`.
+    ///
+    /// ⚠️ Un modèle PAR AXE (« toute la colonne k est décalée de e ») est
+    /// FAUX dès qu'une frame est mixte — ce qui est le cas de TOUTE frame
+    /// d'écho zoom-in (l'injectivité laisse des colonnes/lignes fraîches) : un
+    /// pixel d'une colonne fraîche mais d'une ligne copiée est exact alors que
+    /// `row_err` lui prête un décalage → copié avec une erreur cachée qui
+    /// CROISSAIT géométriquement en zoom continu (0,48 → 1,5 px en 6 crans
+    /// ×1,2, bug 2026-08-23). D'où la vérité par pixel.
+    pub err: Arc<Vec<[f32; 2]>>,
+    /// Hints PAR AXE pour la sélection du candidat (écart typique des pixels
+    /// copiés de la colonne/ligne, 0 sinon). Ne servent qu'à choisir parmi
+    /// `round(p) ± 1` ; la décision de copie est prise PAR PIXEL sur `err`.
     pub col_err: Arc<Vec<f64>>,
     pub row_err: Arc<Vec<f64>>,
-    /// Vrai si TOUS les pixels de la colonne/ligne sont exacts (colonne
-    /// calculée fraîche lors d'une passe écho, ou frame sans aucune
-    /// approximation). ⚠️ Plus fort que `col_err ≈ 0` : une colonne COPIÉE
-    /// alignée (err≈0) peut contenir des pixels décalés par l'AUTRE axe.
-    /// Consommé par `build_refine_map` (sémantique union).
-    pub col_exact: Arc<Vec<bool>>,
-    pub row_exact: Arc<Vec<bool>>,
     /// Fingerprint des paramètres non-géométriques (cf. `params_fingerprint`).
     pub fingerprint: String,
 }
 
-/// Mapping résolu pour UNE passe de rendu : pour chaque colonne/ligne cible,
-/// l'index source (-1 = à calculer). Un pixel est copié ssi sa colonne ET sa
-/// ligne matchent. Consommé par les boucles pixel (f64 / GMP / perturbation).
+impl XaosSourceFrame {
+    /// Frame entièrement exacte (rendu frais ou raffiné).
+    pub fn exact(
+        iterations: Arc<Vec<u32>>,
+        zs: Arc<Vec<Complex64>>,
+        width: u32,
+        height: u32,
+        view: (String, String, String, String),
+        fingerprint: String,
+    ) -> Self {
+        let n = width as usize * height as usize;
+        XaosSourceFrame {
+            iterations,
+            zs,
+            width,
+            height,
+            cx: view.0,
+            cy: view.1,
+            sx: view.2,
+            sy: view.3,
+            err: Arc::new(vec![[0.0, 0.0]; n]),
+            col_err: Arc::new(vec![0.0; width as usize]),
+            row_err: Arc::new(vec![0.0; height as usize]),
+            fingerprint,
+        }
+    }
+
+    /// Frame produite par une passe avec `map` : erreurs par pixel héritées
+    /// du mapping (vraie position des pixels copiés, 0 pour les calculés).
+    pub fn from_map(
+        iterations: Arc<Vec<u32>>,
+        zs: Arc<Vec<Complex64>>,
+        width: u32,
+        height: u32,
+        view: (String, String, String, String),
+        fingerprint: String,
+        map: &XaosMap,
+    ) -> Self {
+        let mut f = Self::exact(iterations, zs, width, height, view, fingerprint);
+        f.err = Arc::new(map.produced_err(width as usize, height as usize));
+        f.col_err = Arc::new(map.col_err.clone());
+        f.row_err = Arc::new(map.row_err.clone());
+        f
+    }
+
+    /// Erreur de position max (px) sur la frame.
+    pub fn max_abs_err(&self) -> f64 {
+        self.err
+            .iter()
+            .fold(0.0f64, |m, e| m.max(e[0].abs() as f64).max(e[1].abs() as f64))
+    }
+}
+
+/// Mapping résolu pour UNE passe de rendu : candidat source par colonne/ligne
+/// cible (-1 = aucun), puis décision PAR PIXEL dans `source_index` : le pixel
+/// `(i, j)` est copié depuis `(src_col[i], src_row[j])` ssi la position VRAIE
+/// de ce pixel source (nominale + `src_err`) est à ≤ `tol` px cible de la
+/// position nominale cible sur les DEUX axes. Consommé par les boucles pixel
+/// (f64 / GMP / perturbation).
 pub struct XaosMap {
     pub iterations: Arc<Vec<u32>>,
     pub zs: Arc<Vec<Complex64>>,
     pub src_width: usize,
-    /// Index de colonne source par colonne cible (-1 = calculer).
+    /// Candidat PRIMAIRE (position hintée) par colonne cible (-1 = aucun).
     pub src_col: Vec<i32>,
-    /// Index de ligne source par ligne cible (-1 = calculer).
+    /// Candidat PRIMAIRE par ligne cible (-1 = aucun).
     pub src_row: Vec<i32>,
-    /// Sémantique UNION (mode raffinement, `build_refine_map`) : un pixel est
-    /// copié si sa colonne OU sa ligne est saine, à l'index IDENTITÉ
-    /// (invariant : posé uniquement quand la transformée frame→cible est
-    /// l'identité — même vue, mêmes dims — et `src_col[x] ∈ {x, -1}`,
-    /// `src_row[y] ∈ {y, -1}`). Un pixel de la frame est exact dès qu'un de
-    /// ses axes est sain : calculé frais (axe non matché à l'écho) ou copié
-    /// aligné. false = sémantique produit classique (colonne ET ligne).
-    pub keep_union: bool,
-    /// Positions vraies de la frame PRODUITE (px cible, 0.0 pour les colonnes/
-    /// lignes calculées) — à stocker avec la frame résultat.
+    /// Candidat SECONDAIRE (position nominale, pour les pixels frais d'une
+    /// colonne/ligne mixte) ; -1 si absent ou identique au primaire.
+    pub src_col2: Vec<i32>,
+    pub src_row2: Vec<i32>,
+    /// Écart NOMINAL `(k − p)/a` (px cible) de chaque candidat.
+    pub col_dev: Vec<f64>,
+    pub row_dev: Vec<f64>,
+    pub col_dev2: Vec<f64>,
+    pub row_dev2: Vec<f64>,
+    /// Facteur px source → px cible (`1/a`) par axe.
+    pub inv_ax: f64,
+    pub inv_ay: f64,
+    /// Erreur par pixel de la frame SOURCE (px source).
+    pub src_err: Arc<Vec<[f32; 2]>>,
+    /// Tolérance de copie (px cible).
+    pub tol: f64,
+    /// Hints par axe pour la frame PRODUITE (écart des pixels copiés dont la
+    /// source porte le hint de l'axe ; 0 pour les colonnes/lignes calculées).
     pub col_err: Vec<f64>,
     pub row_err: Vec<f64>,
-    /// Nombre de colonnes/lignes réutilisées (diagnostic + gate raffinement).
+    /// Nombre de colonnes/lignes ayant un candidat (diagnostic, borne sup.).
     pub reused_cols: usize,
     pub reused_rows: usize,
+    /// Statistiques EXACTES calculées au build : pixels copiés, erreur max
+    /// (px cible) parmi eux.
+    pub copied: usize,
+    pub max_err: f64,
 }
 
 impl XaosMap {
-    /// Fraction de pixels copiés (produit des fractions par axe, ou union en
-    /// mode raffinement).
+    /// Écart vrai (px cible) du pixel source candidat de `(i, j)`, `None` si
+    /// un des axes n'a pas de candidat.
+    #[inline(always)]
+    fn check(&self, sc: i32, sr: i32, dev_x: f64, dev_y: f64) -> Option<(usize, f64, f64)> {
+        if sc < 0 || sr < 0 {
+            return None;
+        }
+        let sidx = sr as usize * self.src_width + sc as usize;
+        let e = self.src_err.get(sidx).copied().unwrap_or([0.0, 0.0]);
+        let dx = dev_x + e[0] as f64 * self.inv_ax;
+        let dy = dev_y + e[1] as f64 * self.inv_ay;
+        (dx.abs() <= self.tol && dy.abs() <= self.tol).then_some((sidx, dx, dy))
+    }
+
+    /// Premier pixel source candidat de `(i, j)` dont la position VRAIE est
+    /// à ≤ tol sur les deux axes : combinaisons (primaire, secondaire) des
+    /// deux axes, primaire d'abord.
+    #[inline(always)]
+    fn deviation(&self, i: usize, j: usize) -> Option<(usize, f64, f64)> {
+        let (c1, c2) = (self.src_col[i], self.src_col2[i]);
+        let (r1, r2) = (self.src_row[j], self.src_row2[j]);
+        if (c1 < 0 && c2 < 0) || (r1 < 0 && r2 < 0) {
+            return None;
+        }
+        self.check(c1, r1, self.col_dev[i], self.row_dev[j])
+            .or_else(|| self.check(c1, r2, self.col_dev[i], self.row_dev2[j]))
+            .or_else(|| self.check(c2, r1, self.col_dev2[i], self.row_dev[j]))
+            .or_else(|| self.check(c2, r2, self.col_dev2[i], self.row_dev2[j]))
+    }
+
+    /// Index source du pixel cible `(i, j)`, `None` = à calculer. Point
+    /// d'entrée UNIQUE des 4 boucles pixel (f64 / GMP / perturbation /
+    /// perturbation-GMP).
+    #[inline(always)]
+    pub fn source_index(&self, i: usize, j: usize) -> Option<usize> {
+        self.deviation(i, j).map(|(sidx, _, _)| sidx)
+    }
+
+    /// Erreur par pixel de la frame PRODUITE par cette passe (px cible) :
+    /// écart vrai des pixels copiés, 0 pour les pixels calculés.
+    pub fn produced_err(&self, width: usize, height: usize) -> Vec<[f32; 2]> {
+        let mut out = vec![[0.0f32, 0.0]; width * height];
+        if width != self.src_col.len() || height != self.src_row.len() {
+            return out;
+        }
+        for j in 0..height {
+            for i in 0..width {
+                if let Some((_, dx, dy)) = self.deviation(i, j) {
+                    out[j * width + i] = [dx as f32, dy as f32];
+                }
+            }
+        }
+        out
+    }
+
+    fn finalize(mut self, width: usize, height: usize) -> Self {
+        let mut copied = 0usize;
+        let mut max_err = 0.0f64;
+        if width == self.src_col.len() && height == self.src_row.len() {
+            for j in 0..height {
+                if self.src_row[j] < 0 && self.src_row2[j] < 0 {
+                    continue;
+                }
+                for i in 0..width {
+                    if let Some((_, dx, dy)) = self.deviation(i, j) {
+                        copied += 1;
+                        max_err = max_err.max(dx.abs()).max(dy.abs());
+                    }
+                }
+            }
+        }
+        self.copied = copied;
+        self.max_err = max_err;
+        self
+    }
+
+    /// Fraction de pixels copiés.
     pub fn reused_fraction(&self, width: usize, height: usize) -> f64 {
         if width == 0 || height == 0 {
             return 0.0;
         }
-        let fc = self.reused_cols as f64 / width as f64;
-        let fr = self.reused_rows as f64 / height as f64;
-        if self.keep_union {
-            1.0 - (1.0 - fc) * (1.0 - fr)
-        } else {
-            fc * fr
-        }
+        self.copied as f64 / (width * height) as f64
     }
 
-    /// Vrai si au moins un pixel sera copié.
+    /// Au moins un pixel copié.
     pub fn any_reuse(&self) -> bool {
-        if self.keep_union {
-            self.reused_cols > 0 || self.reused_rows > 0
-        } else {
-            self.reused_cols > 0 && self.reused_rows > 0
-        }
+        self.copied > 0
     }
 
-    /// Vrai si le mapping copie TOUTE la cible (aucun pixel frais). Une passe
-    /// écho-pur n'apporte aucune information nouvelle : sa frame ne doit pas
-    /// remplacer la source existante (sinon les zooms enchaînés dégradent la
-    /// source en copies de copies).
+    /// Écho PUR : 100 % des pixels copiés (aucun calcul).
     pub fn is_pure_copy(&self, width: usize, height: usize) -> bool {
-        if self.keep_union {
-            self.reused_cols == width || self.reused_rows == height
-        } else {
-            self.reused_cols == width && self.reused_rows == height
-        }
+        width > 0 && height > 0 && self.copied == width * height
     }
 
-    /// Décision de copie pour le pixel (i, j) : `Some(index source)` si le
-    /// pixel doit être copié depuis la frame source, `None` s'il est à
-    /// calculer. Point d'entrée UNIQUE des 4 boucles pixel (f64 / GMP /
-    /// perturbation / perturbation-GMP) — encapsule la sémantique produit
-    /// (écho) vs union-identité (raffinement).
-    #[inline(always)]
-    pub fn source_index(&self, i: usize, j: usize) -> Option<usize> {
-        let (sc, sr) = (self.src_col[i], self.src_row[j]);
-        if self.keep_union {
-            // Invariant build_refine_map : axes identité → l'index source du
-            // pixel est (i, j) dès qu'un axe est sain.
-            (sc >= 0 || sr >= 0).then(|| j * self.src_width + i)
-        } else {
-            (sc >= 0 && sr >= 0).then(|| sr as usize * self.src_width + sc as usize)
-        }
-    }
-
-    /// Erreur positionnelle max (px cible) parmi les colonnes/lignes copiées.
+    /// Erreur positionnelle max (px cible) parmi les pixels copiés.
     /// ≤ `XAOS_EXACT_TOLERANCE_PX` ⇒ les copies sont exactes (pas de
     /// raffinement nécessaire, pas de label ≈).
     pub fn max_abs_err(&self) -> f64 {
-        self.col_err
-            .iter()
-            .chain(self.row_err.iter())
-            .fold(0.0f64, |m, e| m.max(e.abs()))
+        self.max_err
     }
 }
 
@@ -235,13 +347,19 @@ pub fn view_strings(params: &FractalParams) -> (String, String, String, String) 
     )
 }
 
-/// Coefficients (a, B) de la transformée pixel cible→source pour UN axe :
-/// `p_src = a·(x+0.5) + B` (index fractionnaire source). Dérivation :
-/// `c(x) = c_new + ((x+0.5)/n_new − 0.5)·s_new` et
-/// `k(c) = n_old·(0.5 + (c − c_old)/s_old) − 0.5`, d'où
-/// `a = (s_new/s_old)·(n_old/n_new)` et `B = n_old·(0.5 + Δc/s_old − 0.5·r) − 0.5`
-/// avec `r = s_new/s_old`, `Δc = c_new − c_old`. Les deux ratios sont calculés
-/// en HP (Δc de deux centres proches à deep zoom) puis convertis en f64 (O(1)).
+/// Bits de précision pour résoudre un centre à ~2⁻⁹⁶ du span `s` (plancher
+/// `TRANSFORM_PRECISION_BITS`).
+fn transform_precision(span: &str) -> u32 {
+    Float::parse(span)
+        .ok()
+        .and_then(|p| Float::with_val(64, p).get_exp())
+        .map(|e| ((-(e as i64)).max(0) + 96).clamp(TRANSFORM_PRECISION_BITS as i64, u32::MAX as i64) as u32)
+        .unwrap_or(TRANSFORM_PRECISION_BITS)
+}
+
+/// Transformée 1D frame source → cible : `x_old = a·(x_new + 0.5) + B` avec
+/// `a = (span_new/span_old)·(n_old/n_new)`, `B = n_old·(0.5 + Δc/span_old −
+/// r/2) − 0.5`. Ratios en HP (256 b) puis f64. `None` si dégénérée.
 fn axis_transform(
     c_old: &str,
     s_old: &str,
@@ -250,7 +368,12 @@ fn axis_transform(
     n_old: u32,
     n_new: u32,
 ) -> Option<(f64, f64)> {
-    let prec = TRANSFORM_PRECISION_BITS;
+    // Précision DYNAMIQUE : les centres doivent être résolus à une fraction
+    // de pixel du span (−log2(span) + marge), comme `hp_arith_precision` de
+    // la GUI. À 256 b fixes, au-delà de ~1e74 les deux centres d'un zoom
+    // ancré s'arrondissaient à la MÊME valeur → Δc = 0 → le map croyait le
+    // zoom centré → colonnes copiées décalées jusqu'à ~80 px (bug 2026-08-23).
+    let prec = transform_precision(s_old).max(transform_precision(s_new));
     let f = |s: &str| Float::parse(s).ok().map(|p| Float::with_val(prec, p));
     let (co, so, cn, sn) = (f(c_old)?, f(s_old)?, f(c_new)?, f(s_new)?);
     if so.is_zero() || n_old == 0 || n_new == 0 {
@@ -269,32 +392,48 @@ fn axis_transform(
     Some((a, b))
 }
 
-/// Matching d'UN axe : pour chaque index cible x, cherche la colonne/ligne
-/// source dont la position VRAIE (`k + err_old[k]`, px source) est la plus
-/// proche de la position nominale mappée `p = a·(x+0.5) + B`. Match si la
-/// distance, convertie en px CIBLE (`/a`), est ≤ `tol` — puis INJECTIVITÉ :
-/// chaque source ne sert que l'index cible le mieux aligné (cf. doc module :
-/// garantit du travail frais en zoom-in, no-op en pan/zoom-out).
-///
-/// Retourne (src, err_new, reused) : `src[x] = -1` si à calculer, sinon l'index
-/// source ; `err_new[x]` = position vraie − nominale en px cible (0.0 si
-/// calculé) ; `reused` = nombre d'indices matchés.
-pub fn build_axis_map(
-    n_new: usize,
-    n_old: usize,
-    a: f64,
-    b: f64,
-    err_old: &[f64],
-    tol: f64,
-) -> (Vec<i32>, Vec<f64>, usize) {
-    let mut src = vec![-1i32; n_new];
-    let mut err_new = vec![0.0f64; n_new];
+/// Résultat du matching d'un axe.
+pub struct AxisMap {
+    /// Candidat PRIMAIRE (meilleur par position hintée) par index cible (-1 = aucun).
+    pub src: Vec<i32>,
+    /// Candidat SECONDAIRE (meilleur par position nominale), -1 si absent ou
+    /// identique au primaire.
+    pub src2: Vec<i32>,
+    /// Écart NOMINAL (px cible) `(k − p)/a` de chaque candidat.
+    pub dev: Vec<f64>,
+    pub dev2: Vec<f64>,
+    /// Hint (px cible) pour la frame produite : écart hinté du primaire.
+    pub err: Vec<f64>,
+    /// Nombre d'indices avec au moins un candidat.
+    pub reused: usize,
+}
+
+/// Matching d'UN axe : pour chaque index cible x (position nominale mappée
+/// `p = a·(x+0.5) + B`), jusqu'à DEUX candidats parmi `round(p) ± 1` :
+/// le plus proche par position HINTÉE (`k + err_hint[k]`, pixels copiés de
+/// la colonne) et le plus proche par position NOMINALE (`k`, pixels frais
+/// d'une colonne mixte). Chacun est retenu si sa distance en px CIBLE (`/a`)
+/// est ≤ `tol` — puis INJECTIVITÉ JOINTE : chaque source k ne sert que la
+/// cible la mieux alignée, tous candidats confondus (cf. doc module :
+/// garantit du travail frais en zoom-in, no-op en pan/zoom-out). La décision
+/// finale de copie est PAR PIXEL (`XaosMap::source_index`), sur l'erreur
+/// vraie du pixel source.
+pub fn build_axis_map(n_new: usize, n_old: usize, a: f64, b: f64, err_hint: &[f64], tol: f64) -> AxisMap {
+    let mut out = AxisMap {
+        src: vec![-1i32; n_new],
+        src2: vec![-1i32; n_new],
+        dev: vec![0.0f64; n_new],
+        dev2: vec![0.0f64; n_new],
+        err: vec![0.0f64; n_new],
+        reused: 0,
+    };
     if n_old == 0 || !(a > 0.0) || !a.is_finite() || !b.is_finite() {
-        return (src, err_new, 0);
+        return out;
     }
-    let get_err = |k: usize| err_old.get(k).copied().unwrap_or(0.0);
-    // Passe 1 : meilleur candidat (d_target signé, k) par index cible.
-    let mut cand: Vec<Option<(f64, usize)>> = vec![None; n_new];
+    let get_err = |k: usize| err_hint.get(k).copied().unwrap_or(0.0);
+    // Passe 1 : candidats (score signé px cible, k) par index cible —
+    // [0] = hinté, [1] = nominal.
+    let mut cand: Vec<[Option<(f64, usize)>; 2]> = vec![[None, None]; n_new];
     for (x, c) in cand.iter_mut().enumerate() {
         let p = a * (x as f64 + 0.5) + b;
         // Les positions vraies dévient de ≤ tol de la grille source : examiner
@@ -303,48 +442,88 @@ pub fn build_axis_map(
         // reset à span 4) : `k0 ± 1` débordait en debug. Hors plage → aucun
         // candidat (clamp à une valeur hors [0, n_old)).
         let k0 = p.round().clamp(-2.0, n_old as f64 + 2.0) as i64;
-        let mut best: Option<(f64, usize)> = None; // (distance signée en px source, k)
+        let mut best_h: Option<(f64, usize)> = None;
+        let mut best_n: Option<(f64, usize)> = None;
         for k in (k0 - 1)..=(k0 + 1) {
             if k < 0 || k >= n_old as i64 {
                 continue;
             }
             let k = k as usize;
-            let d = (k as f64 + get_err(k)) - p;
-            if best.map_or(true, |(bd, _)| d.abs() < bd.abs()) {
-                best = Some((d, k));
+            let d_h = (k as f64 + get_err(k)) - p;
+            let d_n = k as f64 - p;
+            if best_h.map_or(true, |(bd, _)| d_h.abs() < bd.abs()) {
+                best_h = Some((d_h, k));
+            }
+            if best_n.map_or(true, |(bd, _)| d_n.abs() < bd.abs()) {
+                best_n = Some((d_n, k));
             }
         }
-        if let Some((d, k)) = best {
-            let d_target = d / a; // px cible
-            if d_target.abs() <= tol {
-                *c = Some((d_target, k));
+        let accept = |bd: Option<(f64, usize)>| {
+            bd.and_then(|(d, k)| {
+                let d_target = d / a; // px cible
+                (d_target.abs() <= tol).then_some((d_target, k))
+            })
+        };
+        c[0] = accept(best_h);
+        c[1] = accept(best_n);
+        // Même k des deux côtés → un seul candidat (le hinté).
+        if let (Some((_, kh)), Some((_, kn))) = (c[0], c[1]) {
+            if kh == kn {
+                c[1] = None;
             }
         }
     }
-    // Passe 2 : injectivité — pour chaque source k, ne garder que le candidat
-    // cible le mieux aligné. En zoom-in (a < 1) c'est ce qui force ≥ (1−a)·n
-    // indices à être recalculés (fin de l'écho pur) ; en pan/zoom-out le
-    // mapping est déjà injectif et rien ne change.
-    let mut best_target = vec![-1i64; n_old];
+    // Passe 2 : injectivité PAR VARIANTE — pour chaque source k, ne garder
+    // que la cible la mieux alignée de chaque variante (les deux variantes
+    // visent des populations de pixels DISJOINTES de la colonne : copiés à
+    // `k + hint` vs frais à `k` — une injectivité jointe laissait un nominal
+    // voué à échouer par pixel voler le hinté d'une autre cible). En zoom-in
+    // (a < 1) c'est ce qui force ≥ (1−a)·n indices à être recalculés (fin de
+    // l'écho pur) ; en pan/zoom-out le mapping est déjà injectif.
+    let mut best_target: Vec<[Option<(f64, usize)>; 2]> = vec![[None, None]; n_old]; // (|d|, x)
     for (x, c) in cand.iter().enumerate() {
-        if let Some((d, k)) = c {
-            let cur = best_target[*k];
-            if cur < 0 || d.abs() < cand[cur as usize].expect("candidat retenu").0.abs() {
-                best_target[*k] = x as i64;
+        for (v, cv) in c.iter().enumerate() {
+            if let Some((d, k)) = cv {
+                if best_target[*k][v].map_or(true, |(bd, _)| d.abs() < bd) {
+                    best_target[*k][v] = Some((d.abs(), x));
+                }
             }
         }
     }
-    let mut reused = 0usize;
     for (x, c) in cand.iter().enumerate() {
-        if let Some((d, k)) = c {
-            if best_target[*k] == x as i64 {
-                src[x] = *k as i32;
-                err_new[x] = *d;
-                reused += 1;
+        let p = a * (x as f64 + 0.5) + b;
+        let keep = |v: usize| -> Option<usize> {
+            c[v].and_then(|(_, k)| {
+                matches!(best_target[k][v], Some((_, bx)) if bx == x).then_some(k)
+            })
+        };
+        let kh = keep(0);
+        let kn = keep(1);
+        let mut any = false;
+        if let Some(k) = kh {
+            out.src[x] = k as i32;
+            out.dev[x] = (k as f64 - p) / a;
+            out.err[x] = ((k as f64 + get_err(k)) - p) / a;
+            any = true;
+        }
+        if let Some(k) = kn {
+            if kh.is_some() {
+                out.src2[x] = k as i32;
+                out.dev2[x] = (k as f64 - p) / a;
+            } else {
+                // Seul le nominal survit : il devient le primaire (hint = son
+                // écart nominal, ses pixels copiés seront à cette position).
+                out.src[x] = k as i32;
+                out.dev[x] = (k as f64 - p) / a;
+                out.err[x] = out.dev[x];
             }
+            any = true;
+        }
+        if any {
+            out.reused += 1;
         }
     }
-    (src, err_new, reused)
+    out
 }
 
 /// Construit le mapping complet frame source → passe cible. `None` si le
@@ -367,7 +546,11 @@ pub fn build_map_with_tolerance(
         return None;
     }
     let expected = src.width as usize * src.height as usize;
-    if expected == 0 || src.iterations.len() != expected || src.zs.len() != expected {
+    if expected == 0
+        || src.iterations.len() != expected
+        || src.zs.len() != expected
+        || src.err.len() != expected
+    {
         return None;
     }
     if src.fingerprint != params_fingerprint(params) {
@@ -376,113 +559,47 @@ pub fn build_map_with_tolerance(
     let (cx, cy, sx, sy) = view_strings(params);
     let (ax, bx) = axis_transform(&src.cx, &src.sx, &cx, &sx, src.width, params.width)?;
     let (ay, by) = axis_transform(&src.cy, &src.sy, &cy, &sy, src.height, params.height)?;
-    let (src_col, col_err, reused_cols) = build_axis_map(
-        params.width as usize,
-        src.width as usize,
-        ax,
-        bx,
-        &src.col_err,
-        tol,
-    );
-    let (src_row, row_err, reused_rows) = build_axis_map(
-        params.height as usize,
-        src.height as usize,
-        ay,
-        by,
-        &src.row_err,
-        tol,
-    );
+    let (w, h) = (params.width as usize, params.height as usize);
+    let cols = build_axis_map(w, src.width as usize, ax, bx, &src.col_err, tol);
+    let rows = build_axis_map(h, src.height as usize, ay, by, &src.row_err, tol);
     let map = XaosMap {
         iterations: Arc::clone(&src.iterations),
         zs: Arc::clone(&src.zs),
         src_width: src.width as usize,
-        src_col,
-        src_row,
-        keep_union: false,
-        col_err,
-        row_err,
-        reused_cols,
-        reused_rows,
-    };
+        src_col: cols.src,
+        src_row: rows.src,
+        src_col2: cols.src2,
+        src_row2: rows.src2,
+        col_dev: cols.dev,
+        row_dev: rows.dev,
+        col_dev2: cols.dev2,
+        row_dev2: rows.dev2,
+        inv_ax: 1.0 / ax,
+        inv_ay: 1.0 / ay,
+        src_err: Arc::clone(&src.err),
+        tol,
+        col_err: cols.err,
+        row_err: rows.err,
+        reused_cols: cols.reused,
+        reused_rows: rows.reused,
+        copied: 0,
+        max_err: 0.0,
+    }
+    .finalize(w, h);
     if !map.any_reuse() {
         return None;
     }
     Some(map)
 }
 
-/// Mapping de RAFFINEMENT : recalcule uniquement les pixels approximés de la
-/// frame (colonne ET ligne déviant de la grille), conserve tout pixel dont un
-/// axe est sain (calculé frais à l'écho, ou copié aligné) — sémantique UNION à
-/// index identité. C'est ce qui ramène le cycle zoom écho+refine à ~100 % du
-/// coût d'un rendu frais (le refine ne refait pas le travail de la passe
-/// écho). Exige la transformée identité (même vue, mêmes dims) ; sinon,
-/// fallback sur le matching produit à tolérance exacte (toujours correct).
+/// Mapping de RAFFINEMENT : même vue, mêmes dims → identité par axe, tolérance
+/// EXACTE : seuls les pixels dont l'erreur vraie est ≤ ε sont conservés
+/// (calculés frais, ou copiés alignés), les approximations sont recalculées.
+/// C'est ce qui ramène le cycle zoom écho+refine à ~100 % du coût d'un rendu
+/// frais. Vue ou dims différentes → matching exact classique (toujours
+/// correct).
 pub fn build_refine_map(src: &XaosSourceFrame, params: &FractalParams) -> Option<XaosMap> {
-    if !params_allow_pixel_reuse(params) {
-        return None;
-    }
-    let expected = src.width as usize * src.height as usize;
-    if expected == 0 || src.iterations.len() != expected || src.zs.len() != expected {
-        return None;
-    }
-    if src.col_exact.len() != src.width as usize || src.row_exact.len() != src.height as usize {
-        return None;
-    }
-    if src.fingerprint != params_fingerprint(params) {
-        return None;
-    }
-    let identity = src.width == params.width && src.height == params.height && {
-        let (cx, cy, sx, sy) = view_strings(params);
-        // Transformée identité : a = 1 et B = −0.5 (p = a·(x+0.5) + B = x).
-        let id = |c_old: &str, s_old: &str, c_new: &str, s_new: &str, n: u32| {
-            axis_transform(c_old, s_old, c_new, s_new, n, n)
-                .is_some_and(|(a, b)| (a - 1.0).abs() <= 1e-12 && (b + 0.5).abs() <= 1e-9)
-        };
-        id(&src.cx, &src.sx, &cx, &sx, src.width) && id(&src.cy, &src.sy, &cy, &sy, src.height)
-    };
-    if !identity {
-        // Vue ou dims différentes (ex : frame source plus ancienne après une
-        // passe écho-pur non stockée) : matching produit exact classique.
-        return build_map_with_tolerance(src, params, XAOS_EXACT_TOLERANCE_PX);
-    }
-    // Union sur les axes ENTIÈREMENT exacts uniquement (`col_exact`) : un axe
-    // simplement aligné (err≈0) ne suffit pas — ses pixels peuvent être
-    // décalés par l'autre axe (ex : pan horizontal fractionnaire, lignes
-    // alignées mais tout approximé).
-    let axis = |exact: &[bool]| -> (Vec<i32>, usize) {
-        let mut kept = 0usize;
-        let v = exact
-            .iter()
-            .enumerate()
-            .map(|(k, &e)| {
-                if e {
-                    kept += 1;
-                    k as i32
-                } else {
-                    -1
-                }
-            })
-            .collect();
-        (v, kept)
-    };
-    let (src_col, reused_cols) = axis(&src.col_exact);
-    let (src_row, reused_rows) = axis(&src.row_exact);
-    let map = XaosMap {
-        iterations: Arc::clone(&src.iterations),
-        zs: Arc::clone(&src.zs),
-        src_width: src.width as usize,
-        src_col,
-        src_row,
-        keep_union: true,
-        col_err: vec![0.0; params.width as usize],
-        row_err: vec![0.0; params.height as usize],
-        reused_cols,
-        reused_rows,
-    };
-    if !map.any_reuse() {
-        return None;
-    }
-    Some(map)
+    build_map_with_tolerance(src, params, XAOS_EXACT_TOLERANCE_PX)
 }
 
 #[cfg(test)]
@@ -503,22 +620,25 @@ mod tests {
             cy,
             sx,
             sy,
+            err: Arc::new(vec![[0.0, 0.0]; n]),
             col_err: Arc::new(vec![0.0; params.width as usize]),
             row_err: Arc::new(vec![0.0; params.height as usize]),
-            col_exact: Arc::new(vec![true; params.width as usize]),
-            row_exact: Arc::new(vec![true; params.height as usize]),
             fingerprint: params_fingerprint(params),
         }
     }
 
-    /// Reconstruit les flags `col_exact`/`row_exact` d'une frame produite par
-    /// une passe écho (même règle que la GUI : axe frais, ou map sans
-    /// approximation).
-    fn exact_flags_from_map(map: &XaosMap) -> (Vec<bool>, Vec<bool>) {
-        let all_exact = map.max_abs_err() <= XAOS_EXACT_TOLERANCE_PX;
-        (
-            map.src_col.iter().map(|&s| all_exact || s < 0).collect(),
-            map.src_row.iter().map(|&s| all_exact || s < 0).collect(),
+    /// Frame produite par une passe avec `map` (même règle que la GUI :
+    /// erreurs par pixel héritées du mapping).
+    fn frame_from_map(params: &FractalParams, iters: Vec<u32>, zs: Vec<Complex64>, map: &XaosMap) -> XaosSourceFrame {
+        let (cx, cy, sx, sy) = view_strings(params);
+        XaosSourceFrame::from_map(
+            Arc::new(iters),
+            Arc::new(zs),
+            params.width,
+            params.height,
+            (cx, cy, sx, sy),
+            params_fingerprint(params),
+            map,
         )
     }
 
@@ -590,26 +710,103 @@ mod tests {
         let map_ab = build_map(&src_a, &pb).expect("A→B");
 
         // Frame B stockée avec ses erreurs vraies.
-        let mut src_b = frame_for(&pb, vec![1; 64 * 64]);
-        src_b.col_err = Arc::new(map_ab.col_err.clone());
-        src_b.row_err = Arc::new(map_ab.row_err.clone());
+        let src_b = frame_from_map(&pb, vec![1; 64 * 64], vec![Complex64::new(0.0, 0.0); 64 * 64], &map_ab);
 
         let mut pc = pb.clone();
         pc.center_x += step;
         let map_bc = build_map(&src_b, &pc).expect("B→C");
+        let err_c = map_bc.produced_err(64, 64);
+        let mut copied = 0;
         for x in 0..64usize {
-            if map_bc.src_col[x] >= 0 {
-                assert!(
-                    map_bc.col_err[x].abs() <= XAOS_TOLERANCE_PX + 1e-9,
-                    "dérive non bornée : err[{x}] = {}",
-                    map_bc.col_err[x]
-                );
-                // Le match retenu est la colonne DÉCALÉE x+1 (vraie à +0.4),
-                // pas la colonne x (vraie à −0.6) : preuve que la comparaison
-                // se fait contre la position vraie, pas la grille nominale.
-                assert_eq!(map_bc.src_col[x], x as i32 + 1);
-                assert!((map_bc.col_err[x] - 0.4).abs() < 1e-9);
+            // Décision PAR PIXEL : un pixel copié vient de la colonne DÉCALÉE
+            // x+1 (vraie à +0.4), jamais de la colonne x (vraie à −0.6, hors
+            // tolérance) — preuve que la comparaison se fait contre la
+            // position vraie, pas la grille nominale.
+            if let Some(sidx) = map_bc.source_index(x, 10) {
+                copied += 1;
+                assert_eq!(sidx % 64, x + 1, "colonne source de {x}");
+                let e = err_c[10 * 64 + x];
+                assert!((e[0] - 0.4).abs() < 1e-6, "err produite = {}", e[0]);
+                assert!(e[0].abs() as f64 <= XAOS_TOLERANCE_PX + 1e-9, "dérive non bornée");
             }
+        }
+        assert_eq!(copied, 63, "toutes les colonnes sauf la dernière (x+1 = 64 hors champ)");
+        assert!(map_bc.max_abs_err() <= XAOS_TOLERANCE_PX + 1e-9);
+    }
+
+    /// Verrou bug 2026-08-23 (modèle d'erreur par axe non sain) : zoom
+    /// molette CONTINU ×1.2 ancré hors centre, 6 crans SANS raffinement —
+    /// l'écart VRAI de chaque pixel copié (coordonnée complexe stockée dans
+    /// `zs`, comparée à la coordonnée nominale) reste ≤ 0.5 px à chaque cran.
+    /// Avant : 0.48 → 0.76 → 1.03 → … → 1.5 px (croissance géométrique).
+    #[test]
+    fn continuous_anchored_zoom_keeps_true_error_bounded() {
+        let (w, h) = (101u32, 77u32);
+        let coord = |p: &FractalParams, i: usize, j: usize| {
+            Complex64::new(
+                p.center_x + ((i as f64 + 0.5) / w as f64 - 0.5) * p.span_x,
+                p.center_y + ((j as f64 + 0.5) / h as f64 - 0.5) * p.span_y,
+            )
+        };
+        // Frame exacte initiale : zs = coordonnée vraie du pixel.
+        let mut p = base_params(w, h);
+        let n = (w * h) as usize;
+        let zs: Vec<Complex64> = (0..n).map(|k| coord(&p, k % w as usize, k / w as usize)).collect();
+        let mut frame = frame_for(&p, vec![1; n]);
+        frame.zs = Arc::new(zs);
+        let (rx, ry) = (0.3, 0.7);
+        for step in 0..6 {
+            // Zoom ×1.2 ancré en (rx, ry) : le point sous le curseur est fixe.
+            let f = 1.2;
+            let mut z = p.clone();
+            z.span_x = p.span_x / f;
+            z.span_y = p.span_y / f;
+            z.center_x = p.center_x + (rx - 0.5) * p.span_x * (1.0 - 1.0 / f);
+            z.center_y = p.center_y + (ry - 0.5) * p.span_y * (1.0 - 1.0 / f);
+            let map = build_map(&frame, &z).expect("écho zoom");
+            // « Rendu » : copie via source_index, calcul exact sinon.
+            let mut zs_new = vec![Complex64::new(0.0, 0.0); n];
+            let mut worst = 0.0f64;
+            let mut copied = 0usize;
+            for j in 0..h as usize {
+                for i in 0..w as usize {
+                    let idx = j * w as usize + i;
+                    zs_new[idx] = match map.source_index(i, j) {
+                        Some(s) => {
+                            copied += 1;
+                            frame.zs[s]
+                        }
+                        None => coord(&z, i, j),
+                    };
+                    let nominal = coord(&z, i, j);
+                    let dx = (zs_new[idx].re - nominal.re) / (z.span_x / w as f64);
+                    let dy = (zs_new[idx].im - nominal.im) / (z.span_y / h as f64);
+                    worst = worst.max(dx.abs()).max(dy.abs());
+                }
+            }
+            assert!(copied > 0, "cran {step} : l'écho doit copier");
+            assert!(
+                worst <= XAOS_TOLERANCE_PX + 1e-6,
+                "cran {step} : écart vrai max {worst:.3} px > tolérance (dérive)"
+            );
+            // L'erreur DÉCLARÉE de la frame produite doit coïncider avec l'écart vrai.
+            let produced = map.produced_err(w as usize, h as usize);
+            for j in 0..h as usize {
+                for i in 0..w as usize {
+                    let idx = j * w as usize + i;
+                    let nominal = coord(&z, i, j);
+                    let dx = (zs_new[idx].re - nominal.re) / (z.span_x / w as f64);
+                    let dy = (zs_new[idx].im - nominal.im) / (z.span_y / h as f64);
+                    assert!(
+                        (produced[idx][0] as f64 - dx).abs() < 1e-4
+                            && (produced[idx][1] as f64 - dy).abs() < 1e-4,
+                        "cran {step} px ({i},{j}) : err déclarée {:?} ≠ vraie ({dx:.4},{dy:.4})",
+                        produced[idx]
+                    );
+                }
+            }
+            frame = frame_from_map(&z, vec![1; n], zs_new, &map);
+            p = z;
         }
     }
 
@@ -677,15 +874,9 @@ mod tests {
         let src = frame_for(&p, vec![1; 64 * 64]);
         let echo = build_map(&src, &moved).expect("écho");
         assert_eq!(echo.reused_cols, 64, "pan 0.3 px : tout copié");
-        // Frame résultat du pan : positions vraies −0.3, aucun axe frais.
-        let mut frame_b = frame_for(&moved, vec![1; 64 * 64]);
-        frame_b.col_err = Arc::new(echo.col_err.clone());
-        frame_b.row_err = Arc::new(echo.row_err.clone());
-        let (ce, re) = exact_flags_from_map(&echo);
-        assert!(ce.iter().all(|&e| !e), "aucune colonne fraîche");
-        assert!(re.iter().all(|&e| !e), "lignes alignées mais PAS exactes");
-        frame_b.col_exact = Arc::new(ce);
-        frame_b.row_exact = Arc::new(re);
+        // Frame résultat du pan : positions vraies −0.3 sur TOUS les pixels.
+        let frame_b = frame_from_map(&moved, vec![1; 64 * 64], vec![Complex64::new(0.0, 0.0); 64 * 64], &echo);
+        assert!(frame_b.err.iter().all(|e| (e[0] + 0.3).abs() < 1e-6 && e[1].abs() < 1e-6));
         assert!(
             build_refine_map(&frame_b, &moved).is_none(),
             "tout est approximé : le refine doit tout recalculer"
@@ -699,20 +890,21 @@ mod tests {
         // copie que les colonnes vraies et recalcule les approximations.
         let p = base_params(64, 64);
         let mut src = frame_for(&p, vec![1; 64 * 64]);
-        let mut col_err = vec![0.0; 64];
-        for e in col_err.iter_mut().skip(1).step_by(2) {
-            *e = 0.4;
+        let mut err = vec![[0.0f32, 0.0]; 64 * 64];
+        for (idx, e) in err.iter_mut().enumerate() {
+            if (idx % 64) % 2 == 1 {
+                e[0] = 0.4;
+            }
         }
-        src.col_err = Arc::new(col_err);
+        src.err = Arc::new(err);
         let map =
             build_map_with_tolerance(&src, &p, XAOS_EXACT_TOLERANCE_PX).expect("map refine");
-        assert_eq!(map.reused_rows, 64, "lignes exactes toutes conservées");
-        assert_eq!(map.reused_cols, 32);
+        assert_eq!(map.copied, 32 * 64, "seules les colonnes exactes sont conservées");
         for x in 0..64usize {
             if x % 2 == 0 {
-                assert_eq!(map.src_col[x], x as i32, "colonne exacte conservée");
+                assert_eq!(map.source_index(x, 7), Some(7 * 64 + x), "colonne exacte conservée");
             } else {
-                assert_eq!(map.src_col[x], -1, "colonne approximée recalculée");
+                assert_eq!(map.source_index(x, 7), None, "colonne approximée recalculée");
             }
         }
         assert!(map.max_abs_err() <= XAOS_EXACT_TOLERANCE_PX);
@@ -738,6 +930,47 @@ mod tests {
         let map = build_map(&src, &moved).expect("map");
         assert_eq!(map.src_col[0], 8, "pan HP vu par la transformée");
         assert!(map.col_err[0].abs() < 1e-6);
+    }
+
+    /// Verrou bug 2026-08-23 : transformée à précision dynamique — zoom
+    /// ancré hors centre à span 1e-80 (au-delà des 256 b fixes), le map voit
+    /// le décalage de centre (Δc ≈ 10⁻⁸¹, invisible à 256 b).
+    #[test]
+    fn deep_anchored_zoom_transform_sees_off_center_delta() {
+        let (w, h) = (1000u32, 10u32);
+        let prec = 512;
+        let mut p = base_params(w, h);
+        let cx0 = Float::with_val(prec, Float::parse("-0.75").unwrap());
+        let span = Float::with_val(prec, Float::parse("1e-80").unwrap());
+        let digits = Some(120);
+        p.center_x_hp = Some(cx0.to_string_radix(10, digits));
+        p.center_y_hp = Some("0.1".into());
+        p.span_x_hp = Some(span.to_string_radix(10, digits));
+        p.span_y_hp = Some(Float::with_val(prec, &span / 100).to_string_radix(10, digits));
+        // Zoom ×1.2 ancré en rx = 0.9 : Δcx = (0.9−0.5)·span·(1−1/1.2).
+        let f = 1.2f64;
+        let mut z = p.clone();
+        let dcx = Float::with_val(prec, &span * (0.4 * (1.0 - 1.0 / f)));
+        z.center_x_hp = Some(Float::with_val(prec, &cx0 + &dcx).to_string_radix(10, digits));
+        z.span_x_hp = Some(Float::with_val(prec, &span / f).to_string_radix(10, digits));
+        z.span_y_hp = Some(Float::with_val(prec, &span / (100.0 * f)).to_string_radix(10, digits));
+        let src = frame_for(&p, vec![1; (w * h) as usize]);
+        let map = build_map(&src, &z).expect("map");
+        // Vérité : colonne cible x ↔ position source p = a·(x+0.5)+B avec
+        // a = 1/f, B = n·(0.5 + 0.4·(1−1/f) − 0.5/f) − 0.5.
+        let a = 1.0 / f;
+        let b = w as f64 * (0.5 + 0.4 * (1.0 - 1.0 / f) - 0.5 / f) - 0.5;
+        for x in [0usize, 250, 500, 750, 999] {
+            let k = map.src_col[x];
+            if k >= 0 {
+                let p_true = a * (x as f64 + 0.5) + b;
+                assert!(
+                    (k as f64 - p_true).abs() <= 0.5 + 1e-6,
+                    "colonne {x} : source {k} vs position vraie {p_true:.3} (Δcentre perdu ?)"
+                );
+            }
+        }
+        assert!(map.any_reuse());
     }
 
     #[test]
@@ -889,7 +1122,7 @@ mod tests {
         src.zs = Arc::new(zs_a);
         let map = build_map(&src, &z).expect("map écho");
         let total = 64usize * 48;
-        let copied = map.reused_cols * map.reused_rows;
+        let copied = map.copied;
         assert!(copied > 0, "l'écho zoom doit copier des pixels");
         assert!(
             !map.is_pure_copy(64, 48),
@@ -902,16 +1135,8 @@ mod tests {
         // Frame B avec ses erreurs héritées → map de raffinement UNION :
         // conserve tout pixel dont un axe est frais (calculé à l'écho),
         // recalcule uniquement les copies approximées.
-        let mut src_b = frame_for(&z, vec![0; 64 * 48]);
-        src_b.iterations = Arc::new(it_b);
-        src_b.zs = Arc::new(zs_b);
-        src_b.col_err = Arc::new(map.col_err.clone());
-        src_b.row_err = Arc::new(map.row_err.clone());
-        let (ce, re) = exact_flags_from_map(&map);
-        src_b.col_exact = Arc::new(ce);
-        src_b.row_exact = Arc::new(re);
+        let src_b = frame_from_map(&z, it_b, zs_b, &map);
         let refine_map = build_refine_map(&src_b, &z).expect("map refine");
-        assert!(refine_map.keep_union, "refine identité ⇒ sémantique union");
         assert!(refine_map.max_abs_err() <= XAOS_EXACT_TOLERANCE_PX);
         assert!(refine_map.any_reuse(), "le refine doit garder les pixels frais de B");
         // L'union garde STRICTEMENT plus que le produit : tout pixel calculé
@@ -1069,19 +1294,12 @@ mod tests {
         src.sx = sx;
         src.sy = sy;
         let map = build_map(&src, &z).expect("map écho");
-        let copied = map.reused_cols * map.reused_rows;
+        let copied = map.copied;
         let t1 = Instant::now();
         let (it_b, zs_b, _, _) = render(&z, &cancel, None, &mut None, Some(&map), None).expect("B");
         let t_echo = t1.elapsed();
 
-        let mut src_b = frame_for(&z, vec![0; 1024 * 768]);
-        src_b.iterations = Arc::new(it_b);
-        src_b.zs = Arc::new(zs_b);
-        src_b.col_err = Arc::new(map.col_err.clone());
-        src_b.row_err = Arc::new(map.row_err.clone());
-        let (ce, re) = exact_flags_from_map(&map);
-        src_b.col_exact = Arc::new(ce);
-        src_b.row_exact = Arc::new(re);
+        let src_b = frame_from_map(&z, it_b, zs_b, &map);
         let refine_map = build_refine_map(&src_b, &z).expect("map refine");
         let kept = (refine_map.reused_fraction(1024, 768) * 1024.0 * 768.0) as usize;
         let t2 = Instant::now();
