@@ -11,7 +11,7 @@ use fractall_cli::{fractal, gpu, io, render};
 
 use fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalType, LyapunovPreset, OutColoringMode, PlaneTransform};
 use render::render_escape_time;
-use io::png::{colorize_to_rgb, save_png_rgb_with_metadata};
+use io::png::save_png_rgb_with_metadata;
 use io::exr::save_iterations_exr;
 use gpu::GpuRenderer;
 
@@ -721,7 +721,12 @@ fn main() {
 
     // Palette et répétitions de couleurs (défauts historiques 6/40 si absents).
     params.color_mode = cli.palette.unwrap_or(6);
-    params.color_repeat = cli.color_repeat.unwrap_or(40).max(1);
+    // `color_repeat` : override explicite seulement — le défaut vient du type
+    // (`default_params_for_type` : 1 pour les densités, 2 Lyapunov, 40 sinon),
+    // comme dans la GUI. Forcer 40 rendait Buddhabrot/Nebulabrot en 40 cycles.
+    if let Some(cr) = cli.color_repeat {
+        params.color_repeat = cr.max(1);
+    }
 
     // GMP haute précision.
     params.use_gmp = cli.gmp;
@@ -928,7 +933,10 @@ fn main() {
                 map_orbits = orbits;
                 (i, z)
             }
-            None => (Vec::new(), Vec::new()),
+            None => {
+                eprintln!("Erreur : rendu interrompu ou type non supporté par le dispatcher");
+                std::process::exit(1);
+            }
         }
     };
 
@@ -998,8 +1006,20 @@ fn main() {
         for k in 0..aa_samples as u64 {
             let mut p = params.clone();
             p.aa_jitter = Some((k, aa_jitter_scale));
-            let (it, zz) = render_escape_time(&p);
-            accumulate(&mut accum, &colorize_to_rgb(&p, &it, &zz));
+            // Dispatcher COMPLET : les canaux distances/orbites sont requis par
+            // les modes Distance*/OrbitTraps/Wings (sinon retombée silencieuse
+            // sur Smooth — classe « colorisation unique », cf. CLAUDE.md).
+            let mut aa_cache = None;
+            let Some((it, zz, orbits, dists)) = render::render_escape_time_cancellable_with_reuse(
+                &p, &cancel, None, &mut aa_cache, None, None,
+            ) else {
+                eprintln!("Erreur : rendu AA interrompu (sample {})", k + 1);
+                std::process::exit(1);
+            };
+            accumulate(
+                &mut accum,
+                &io::png::colorize_to_rgb_with_extras(&p, &it, &zz, &dists, &orbits),
+            );
             println!("[AA] sample {}/{}", k + 1, aa_samples);
         }
         let inv_n = 1.0 / aa_samples as f64;
