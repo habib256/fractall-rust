@@ -2731,9 +2731,15 @@ pub fn iterate_pixel_gmp(
     dc_gmp: &Complex,
     prec: u32,
 ) -> DeltaResult {
+    // `n` = itération ABSOLUE du pixel (compte renvoyé, borne iteration_max) ;
+    // `m` = index dans l'orbite de référence (remis à 0 au rebase). Avant
+    // 2026-08-23 un seul compteur servait aux deux : chaque rebase remettait
+    // la borne de boucle à 0 → pixel intérieur qui rebase = boucle INFINIE
+    // (hang observé), et compte d'itération faux après rebase.
     let mut n = 0u32;
+    let mut m = 0u32;
     let effective_len = ref_orbit.effective_len() as u32;
-    let max_iter = params.iteration_max.min(effective_len.saturating_sub(1));
+    let max_m = effective_len.saturating_sub(1);
     
     let bailout = Float::with_val(prec, params.bailout);
     let mut bailout_sqr = bailout.clone();
@@ -2765,9 +2771,9 @@ pub fn iterate_pixel_gmp(
     let min_scale_gmp = Float::with_val(prec, 1e-6);
 
     // Main iteration loop with full GMP precision
-    while n < max_iter {
-        // Get reference point at iteration n
-        let z_ref = match ref_orbit.get_z_ref_gmp(n) {
+    while n < params.iteration_max && m < max_m {
+        // Get reference point at iteration m
+        let z_ref = match ref_orbit.get_z_ref_gmp(m) {
             Some(z) => z,
             None => break, // End of effective orbit
         };
@@ -2796,13 +2802,14 @@ pub fn iterate_pixel_gmp(
             }
 
             // Calculate delta for next iteration: z_next - z_ref_next
-            if (n + 1) >= effective_len {
+            if (m + 1) >= effective_len {
                 delta = z_next;
-                n = 0;
+                n += 1;
+                m = 0;
                 continue;
             }
 
-            let z_ref_next = match ref_orbit.get_z_ref_gmp(n + 1) {
+            let z_ref_next = match ref_orbit.get_z_ref_gmp(m + 1) {
                 Some(z) => z,
                 None => break,
             };
@@ -2819,13 +2826,14 @@ pub fn iterate_pixel_gmp(
                 z_temp += dc_gmp;
             }
 
-            if (n + 1) >= effective_len {
+            if (m + 1) >= effective_len {
                 delta = z_temp;
-                n = 0;
+                n += 1;
+                m = 0;
                 continue;
             }
 
-            let z_ref_next = match ref_orbit.get_z_ref_gmp(n + 1) {
+            let z_ref_next = match ref_orbit.get_z_ref_gmp(m + 1) {
                 Some(z) => z,
                 None => break,
             };
@@ -2849,20 +2857,21 @@ pub fn iterate_pixel_gmp(
             delta = next_delta;
         }
         
-        // Advance iteration counter: delta now holds delta_{n+1}
+        // Advance iteration counters: delta now holds delta_{n+1}
         n += 1;
+        m += 1;
 
         // For Mandelbrot standard path, handle orbit end (BS/Tricorn already handled above).
         // Note: This is normally unreachable since max_iter <= effective_len - 1, but kept
         // as a defensive guard. If hit, rebase instead of breaking (matches f64 path behavior).
-        if !is_burning_ship && !is_tricorn && n >= effective_len {
+        if !is_burning_ship && !is_tricorn && m >= effective_len {
             // Can't compute z_curr without z_ref[n], so just break
             break;
         }
 
         // Check bailout using z_ref[n] (the NEW n, i.e. the next reference point)
         // IMPORTANT: After computing delta_{n+1}, the correct full z is z_ref[n+1] + delta_{n+1}
-        let z_ref_next = match ref_orbit.get_z_ref_gmp(n) {
+        let z_ref_next = match ref_orbit.get_z_ref_gmp(m) {
             Some(z) => z,
             None => break,
         };
@@ -2904,7 +2913,7 @@ pub fn iterate_pixel_gmp(
             && z_curr_norm_sqr < delta_norm_sqr {
             // Rebasing: replace z_n with Z_m + z_n and reset m to 0
             delta = z_curr;
-            n = 0;
+            m = 0;
             continue;
         }
 
@@ -2932,7 +2941,7 @@ pub fn iterate_pixel_gmp(
     
     // Final result
     // IMPORTANT: S'assurer que toutes les opérations utilisent la même précision prec
-    let final_index = n.min(effective_len.saturating_sub(1));
+    let final_index = m.min(effective_len.saturating_sub(1));
     let z_ref = match ref_orbit.get_z_ref_gmp(final_index) {
         Some(z) => z,
         None => match ref_orbit.z_ref_gmp.last() {
@@ -2971,8 +2980,7 @@ pub fn iterate_pixel_gmp(
     // produce short non-periodic reference orbits). Without this, every pixel
     // that outlives the reference inherits z_ref[effective_len-1] + delta,
     // yielding identical (iter, z) for spatially distinct pixels.
-    let ref_exhausted = effective_len.saturating_sub(1) < params.iteration_max
-        && n >= effective_len.saturating_sub(1);
+    let ref_exhausted = n < params.iteration_max && m >= max_m;
     let z_curr_norm_sqr = complex_norm_sqr(&z_curr, prec);
     if ref_exhausted && !is_glitched && z_curr_norm_sqr < bailout_sqr {
         let c_mandel = {

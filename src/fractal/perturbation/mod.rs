@@ -822,6 +822,7 @@ pub fn should_use_full_gmp_perturbation(params: &FractalParams) -> bool {
 
 /// Pre-computed constants for GMP dc computation.
 /// Avoids re-allocating shared GMP values for every pixel.
+#[derive(Clone)]
 pub struct DcGmpContext {
     pub inv_width: Float,
     pub inv_height: Float,
@@ -832,9 +833,45 @@ pub struct DcGmpContext {
     /// Matrice de rotation appliquée au delta (None si rotation == 0).
     /// Cf. `FractalParams::rotation_matrix` et F3 hybrid.cc:265.
     pub rot: Option<(f64, f64, f64, f64)>,
+    /// AA : offset sous-pixel uniforme legacy (`aa_subpixel_offset`, px).
+    pub aa_uniform: [f64; 2],
+    /// AA par pixel (Cranley-Patterson F3, `jitter::pixel_offset`), prioritaire.
+    pub aa_jitter: Option<(u64, f64)>,
+    pub width: usize,
+    /// `centre_vue − centre_référence` (GMP) pour les consommateurs RELATIFS
+    /// à la référence (`iterate_pixel_gmp`) — non nul seulement en
+    /// réutilisation subset off-center (G10.2). Cf. `compute_dc_ref`.
+    pub ref_offset: Option<(Float, Float)>,
 }
 
 impl DcGmpContext {
+    /// Contexte pour un consommateur relatif à la RÉFÉRENCE `cache` :
+    /// `compute_dc_ref` ajoute `centre_vue − cref`. Avant 2026-08-23 les
+    /// paths GMP legacy ignoraient cet offset (frame décalée du pan en
+    /// réutilisation off-center, `--no-bytecode` > 1e300).
+    pub fn with_reference(params: &FractalParams, prec: u32, cache: &ReferenceOrbitCache) -> Self {
+        let mut ctx = Self::new(params, prec);
+        let pf = |s: &str| Float::parse(s).ok().map(|p| Float::with_val(prec, p));
+        let cx = match &params.center_x_hp {
+            Some(s) => pf(s),
+            None => Some(Float::with_val(prec, params.center_x)),
+        };
+        let cy = match &params.center_y_hp {
+            Some(s) => pf(s),
+            None => Some(Float::with_val(prec, params.center_y)),
+        };
+        if let (Some(cx), Some(cy), Some(rx), Some(ry)) =
+            (cx, cy, pf(&cache.center_x_gmp), pf(&cache.center_y_gmp))
+        {
+            let ox = Float::with_val(prec, &cx - &rx);
+            let oy = Float::with_val(prec, &cy - &ry);
+            if !ox.is_zero() || !oy.is_zero() {
+                ctx.ref_offset = Some((ox, oy));
+            }
+        }
+        ctx
+    }
+
     pub fn new(params: &FractalParams, prec: u32) -> Self {
         let inv_width = Float::with_val(prec, 1.0) / Float::with_val(prec, params.width as f64);
         let inv_height = Float::with_val(prec, 1.0) / Float::with_val(prec, params.height as f64);
@@ -859,16 +896,55 @@ impl DcGmpContext {
 
         let half = Float::with_val(prec, 0.5);
 
-        DcGmpContext { inv_width, inv_height, half, x_range, y_range, prec, rot: params.transform_matrix() }
+        DcGmpContext {
+            inv_width,
+            inv_height,
+            half,
+            x_range,
+            y_range,
+            prec,
+            rot: params.transform_matrix(),
+            aa_uniform: params.aa_subpixel_offset,
+            aa_jitter: params.aa_jitter,
+            width: params.width as usize,
+            ref_offset: None,
+        }
+    }
+
+    /// `dc` relatif à la référence : `compute_dc` + (centre_vue − cref).
+    pub fn compute_dc_ref(&self, i: usize, j: usize) -> Complex {
+        let mut dc = self.compute_dc(i, j);
+        if let Some((ox, oy)) = &self.ref_offset {
+            let (mut re, mut im) = dc.into_real_imag();
+            re += ox;
+            im += oy;
+            dc = Complex::with_val(self.prec, (re, im));
+        }
+        dc
     }
 
     /// Compute dc for a pixel using pre-computed constants.
     /// Only 2-3 GMP allocations per pixel instead of ~13.
+    ///
+    /// AA : même jitter que les paths f64/exp (`pixel_offset` par pixel,
+    /// sinon offset uniforme) — sans lui, les pixels corrigés en GMP étaient
+    /// ré-évalués au centre exact à chaque sample (non anti-aliasés).
+    /// Hors AA (`(0,0)` / `None`) : expression d'origine bit-identique.
     pub fn compute_dc(&self, i: usize, j: usize) -> Complex {
+        let (jx, jy) = match self.aa_jitter {
+            Some((k, scale)) => crate::fractal::jitter::pixel_offset(self.width, i, j, k, scale),
+            None => (self.aa_uniform[0], self.aa_uniform[1]),
+        };
         let mut i_float = Float::with_val(self.prec, i as f64);
         i_float += &self.half;
+        if jx != 0.0 {
+            i_float += jx;
+        }
         let mut j_float = Float::with_val(self.prec, j as f64);
         j_float += &self.half;
+        if jy != 0.0 {
+            j_float += jy;
+        }
         let mut x_ratio = Float::with_val(self.prec, &i_float * &self.inv_width);
         let mut y_ratio = Float::with_val(self.prec, &j_float * &self.inv_height);
         x_ratio -= &self.half;
@@ -1918,7 +1994,9 @@ pub fn render_perturbation_with_cache(
         if !glitched_indices.is_empty() {
             let prec = compute_perturbation_precision_bits(params);
             let width_u32 = params.width;
-            let dc_ctx = DcGmpContext::new(params, prec);
+            // Relatif à la référence pour `iterate_pixel_gmp` (compute_dc_ref) ;
+            // les escalades full-GMP ci-dessous restent absolues (compute_dc).
+            let dc_ctx = DcGmpContext::with_reference(params, prec, &cache);
 
             // `iterate_pixel_gmp` lit `z_ref_gmp` (orbite GMP dense), qui peut
             // être vide sur le path bytecode (stockage sauté à la construction,
@@ -1950,7 +2028,7 @@ pub fn render_perturbation_with_cache(
                 .map(|&idx| {
                     let i = (idx as u32 % width_u32) as usize;
                     let j = (idx as u32 / width_u32) as usize;
-                    let dc_gmp = dc_ctx.compute_dc(i, j);
+                    let dc_gmp = dc_ctx.compute_dc_ref(i, j);
                     let result = iterate_pixel_gmp(
                         params,
                         gmp_orbit,
@@ -2184,8 +2262,9 @@ fn render_perturbation_gmp_path(
         .map(|_| AtomicBool::new(false))
         .collect();
 
-    // Pre-compute shared GMP constants for dc computation
-    let dc_ctx = DcGmpContext::new(params, prec);
+    // Pre-compute shared GMP constants for dc computation (relatif à la
+    // référence `cache` : offset off-center G10.2 inclus).
+    let dc_ctx = DcGmpContext::with_reference(params, prec, cache);
 
     // G10.5 : file de tuiles priorité-centre. Pixels GMP très lourds → poll
     // d'annulation par ligne de tuile.
@@ -2243,8 +2322,8 @@ fn render_perturbation_gmp_path(
                         }
                     }
 
-                    // Compute dc in GMP precision
-                    let dc_gmp = dc_ctx.compute_dc(i, j);
+                    // Compute dc in GMP precision (relatif à la référence)
+                    let dc_gmp = dc_ctx.compute_dc_ref(i, j);
 
                     // Iterate pixel with full GMP precision
                     let result = iterate_pixel_gmp(
@@ -2302,8 +2381,10 @@ fn render_perturbation_gmp_path(
             let gmp_params = MpcParams::from_params(&orbit_params);
             let width_u32 = params.width;
             
-            // Pre-compute shared GMP constants for dc computation
-            let dc_ctx = DcGmpContext::new(params, prec);
+            // Pre-compute shared GMP constants for dc computation. La base
+            // `center_*_gmp` est ici le centre de la RÉFÉRENCE (cache) →
+            // dc relatif à la référence (offset off-center inclus).
+            let dc_ctx = DcGmpContext::with_reference(params, prec, cache);
 
             let corrections: Vec<_> = glitched_indices
                 .par_iter()
@@ -2311,8 +2392,8 @@ fn render_perturbation_gmp_path(
                     let i = (idx as u32 % width_u32) as usize;
                     let j = (idx as u32 / width_u32) as usize;
 
-                    // Calculate pixel point directly in GMP: center + dc
-                    let dc_gmp = dc_ctx.compute_dc(i, j);
+                    // Calculate pixel point directly in GMP: cref + dc_ref
+                    let dc_gmp = dc_ctx.compute_dc_ref(i, j);
                     let mut z_pixel_re = center_x_gmp.clone();
                     z_pixel_re += dc_gmp.real();
                     let mut z_pixel_im = center_y_gmp.clone();
@@ -2426,6 +2507,84 @@ mod tests {
             ndiff * 100 <= total, // ≤ 1 % de pixels de bord tolérés
             "subset-reuse diverge du rendu frais : {ndiff}/{total} px"
         );
+
+        use super::{
+            compute_reference_orbit_cached, render_perturbation_gmp_path, DcGmpContext,
+            ProgressState, ReferenceOrbitCache,
+        };
+        use std::time::Instant;
+        // Verrou #24 (2026-08-23) : le path GMP legacy (iterate_pixel_gmp)
+        // propage aussi l'offset off-center. Références LEGACY (GMP dense,
+        // `use_bytecode_engine = false`) : big en A, réutilisée off-center pour
+        // `view`, vs référence fraîche au centre de la vue — même image
+        // (avant : frame décalée du pan). Juge : le rendu f64 frais.
+        let mut big_legacy = big.clone();
+        big_legacy.use_bytecode_engine = false;
+        let mut view_legacy = view.clone();
+        view_legacy.use_bytecode_engine = false;
+        let cache_big_legacy =
+            compute_reference_orbit_cached(&big_legacy, Some(&cancel), None, None, false)
+                .expect("réf legacy A");
+        assert!(!cache_big_legacy.orbit.z_ref_gmp.is_empty(), "GMP dense requis");
+        assert!(cache_big_legacy.can_subset_reuse(&view_legacy));
+        let ctx = DcGmpContext::with_reference(&view_legacy, 256, &cache_big_legacy);
+        let (ox, oy) = ctx.ref_offset.clone().expect("offset non nul (pan 0.3, 0.1)");
+        assert!((ox.to_f64() - 0.3).abs() < 1e-12 && (oy.to_f64() - 0.1).abs() < 1e-12);
+        let n = (view.width * view.height) as usize;
+        let gmp_render = |cache: &Arc<ReferenceOrbitCache>| {
+            let progress = Arc::new(ProgressState::default());
+            let (r, _) = render_perturbation_gmp_path(
+                &view_legacy, &cancel, None, None, None, cache,
+                vec![0u32; n], vec![Complex64::new(0.0, 0.0); n], vec![f64::INFINITY; n],
+                progress, Instant::now(),
+            ).expect("gmp path");
+            r.0
+        };
+        let it_gmp_offcenter = gmp_render(&cache_big_legacy);
+        let nd = it_gmp_offcenter.iter().zip(&it_fresh).filter(|(a, b)| a != b).count();
+        assert!(
+            nd * 100 <= total,
+            "path GMP off-center diverge du rendu frais : {nd}/{total} px (offset non propagé ?)"
+        );
+        // Prouver que l'offset compte : sans lui (ancien comportement) l'image
+        // serait celle de la vue centrée en A.
+        let mut no_off = ctx.clone();
+        no_off.ref_offset = None;
+        let d_ref = ctx.compute_dc_ref(3, 5);
+        let d_plain = no_off.compute_dc_ref(3, 5);
+        assert!((d_ref.real().to_f64() - d_plain.real().to_f64() - 0.3).abs() < 1e-12);
+    }
+
+    /// Verrou #25 (2026-08-23) : les corrections GMP suivent le jitter AA
+    /// (par pixel prioritaire, sinon uniforme) ; hors AA, bit-identique.
+    #[test]
+    fn gmp_dc_context_applies_aa_jitter() {
+        use super::DcGmpContext;
+        let mut p = default_params_for_type(FractalType::Mandelbrot, 16, 16);
+        p.center_x_hp = None;
+        p.center_y_hp = None;
+        p.span_x_hp = None;
+        p.span_y_hp = None;
+        let base = DcGmpContext::new(&p, 128);
+        let d0 = base.compute_dc(4, 7);
+        // Uniforme legacy : +0.25 px en x → +0.25·span/width.
+        let mut pu = p.clone();
+        pu.aa_subpixel_offset = [0.25, 0.0];
+        let du = DcGmpContext::new(&pu, 128).compute_dc(4, 7);
+        let expect = 0.25 * p.span_x / 16.0;
+        assert!((du.real().to_f64() - d0.real().to_f64() - expect).abs() < 1e-15);
+        assert_eq!(du.imag().to_f64(), d0.imag().to_f64());
+        // Par pixel (prioritaire sur l'uniforme) : = pixel_offset en c-space.
+        let mut pj = pu.clone();
+        pj.aa_jitter = Some((2, 1.0));
+        let dj = DcGmpContext::new(&pj, 128).compute_dc(4, 7);
+        let (jx, jy) = crate::fractal::jitter::pixel_offset(16, 4, 7, 2, 1.0);
+        assert!((dj.real().to_f64() - d0.real().to_f64() - jx * p.span_x / 16.0).abs() < 1e-15);
+        assert!((dj.imag().to_f64() - d0.imag().to_f64() - jy * p.span_y / 16.0).abs() < 1e-15);
+        // Deux pixels voisins → jitters décorrélés.
+        let dj2 = DcGmpContext::new(&pj, 128).compute_dc(5, 7);
+        let dx_plain = d0.real().to_f64() + p.span_x / 16.0;
+        assert!((dj2.real().to_f64() - dx_plain) != (dj.real().to_f64() - d0.real().to_f64()));
     }
 
     /// Régression (bug « zones d'erreur » 2026-07-16, centre d'image 1
