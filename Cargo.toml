@@ -1,6 +1,6 @@
 [package]
 name = "fractall-cli"
-version = "0.8.0"
+version = "0.8.2"
 edition = "2021"
 description = "Version en ligne de commande de fractall (visualiseur de fractales)"
 

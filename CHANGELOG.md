@@ -8,6 +8,32 @@ regroupement par type (Ajouté / Corrigé / Performance / Modifié), et sections
 jalon (`Gx`) pour l'historique. Ce fichier est un résumé actionnable — le détail
 technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
 
+## [0.8.2] — 2026-08-23 — chasse aux bugs
+
+### Corrigé
+- **Zoom XaoS** : erreur de position par pixel (le modèle par axe dérivait en
+  molette continue, 0,5 → 1,5 px), transformée HP à précision dynamique
+  (faux au-delà de ~1e74), fin de la réutilisation grossière inter-passes
+  (treillis 1/16 de pixels à 1,5 px, progressif et HQ), frame source non
+  dégradée en zoom-out, `glitch_ratio` sur pixels calculés.
+- **Perturbation** : K du nucleus finder enfin appliquée au pixel→c (golden
+  `hybrid_mbs_nucleus_5e28` régénéré) ; `iterate_pixel_gmp` bouclait à
+  l'infini sur un pixel intérieur qui rebase ; offset off-center et jitter
+  AA propagés aux paths GMP legacy ; discriminants de formule du cache subset.
+- **Couleur** : `--enable-interior-detection` noircissait ~50 % de
+  l'extérieur ; couture sur `color_offset` négatif.
+- **GUI** : resize en HP (centre préservé en deep zoom), clic-zoom par ratio
+  pixel (zoomait au centre > 1e15), touche `C`, AA vs recolorisation,
+  `TileProgress` upscalé, raccourcis inhibés en saisie.
+- **Studio vidéo** : « Ré-assembler » re-planifiait sur le zoom de la vue
+  (vidéo tronquée, manifest écrasé) ; miniatures provisoires périmées ;
+  mini-rendus non annulables ; drag des points de vitesse.
+- **CLI/vidéo/GPU** : AA multi-sample et vidéo perdaient distances/orbites
+  (Smooth silencieux — vidéo : refus explicite), `color_repeat` forcé à 40,
+  HP périmées après `--toml`, NaN dans les métadonnées PNG, dimensions 0 ;
+  jamais de GPU quand distances/orbites/dd sont demandés ni avec
+  `--find-nucleus`.
+
 ## [Non publié]
 
 ### Ajouté
