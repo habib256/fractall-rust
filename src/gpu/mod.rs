@@ -503,6 +503,11 @@ impl GpuRenderer {
         if params.find_nucleus {
             return None;
         }
+        // Canaux distances/orbites ou tier dd demandés : le GPU ne les produit
+        // pas → fallback CPU plutôt qu'une image plausible mais fausse.
+        if wisdom::gpu_lacks_features(params) {
+            return None;
+        }
         // Sélection wisdom (source unique, G9.1) — device Gpu : seuil
         // d'activation perturbation f32 (~1e5) au lieu du seuil CPU (~1e12).
         let use_perturbation = wisdom::select_algorithm(params, wisdom::Device::Gpu)

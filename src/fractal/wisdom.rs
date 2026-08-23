@@ -308,7 +308,7 @@ const GPU_SPAN_F32_MIN: f64 = 1e-37;
 /// `gpu_available` = GPU initialisé ET path requis supporté (SHADER_F64). Les
 /// overrides `--gpu`/`--no-gpu` sont appliqués par le caller AUTOUR de l'auto.
 pub fn select_device(params: &FractalParams, gpu_available: bool) -> Device {
-    if !gpu_available {
+    if !gpu_available || gpu_lacks_features(params) {
         return Device::Cpu;
     }
     // Correction : le GPU n'est viable que quand il rendrait en PERTURBATION
@@ -341,6 +341,22 @@ pub fn select_device(params: &FractalParams, gpu_available: bool) -> Device {
         None,
     );
     arbitrate_device(gpu_bench, cpu_bench)
+}
+
+/// Vrai si le rendu demande des canaux/tiers que le GPU ne produit pas :
+/// `GpuDispatchResult` n'a ni `distances` ni `orbits` (modes Distance*/
+/// OrbitTraps/Wings retomberaient SILENCIEUSEMENT sur Smooth — classe
+/// « colorisation unique », CLAUDE.md), et le kernel est f64 pur (un tier dd
+/// demandé serait ignoré). Consommé par `select_device` ET `render_dispatch`.
+pub fn gpu_lacks_features(params: &FractalParams) -> bool {
+    use crate::fractal::OutColoringMode as M;
+    params.use_dd_tier
+        || params.enable_distance_estimation
+        || params.enable_orbit_traps
+        || matches!(
+            params.out_coloring_mode,
+            M::Distance | M::DistanceAO | M::Distance3D | M::OrbitTraps | M::Wings
+        )
 }
 
 /// Cœur pur de l'arbitrage débit (testable). GPU choisi seulement si son débit
@@ -623,6 +639,28 @@ mod tests {
         let p = frame(1e2);
         assert_eq!(select_algorithm(&p, Device::Gpu), Algorithm::StandardF64);
         assert_eq!(select_device(&p, true), Device::Cpu);
+    }
+
+    /// Verrou 2026-08-23 : canaux distances/orbites ou tier dd → jamais GPU
+    /// (GpuDispatchResult ne les produit pas : Smooth silencieux / dd ignoré).
+    #[test]
+    fn select_device_never_gpu_when_features_missing() {
+        use crate::fractal::OutColoringMode as M;
+        let base = frame(1e30);
+        assert!(!gpu_lacks_features(&base));
+        let mut dd = base.clone();
+        dd.use_dd_tier = true;
+        assert!(gpu_lacks_features(&dd));
+        assert_eq!(select_device(&dd, true), Device::Cpu);
+        for mode in [M::Distance, M::DistanceAO, M::Distance3D, M::OrbitTraps, M::Wings] {
+            let mut p = base.clone();
+            p.out_coloring_mode = mode;
+            assert!(gpu_lacks_features(&p), "{mode:?}");
+            assert_eq!(select_device(&p, true), Device::Cpu);
+        }
+        let mut de = base.clone();
+        de.enable_distance_estimation = true;
+        assert_eq!(select_device(&de, true), Device::Cpu);
     }
 
     #[test]
