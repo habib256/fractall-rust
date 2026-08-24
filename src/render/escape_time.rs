@@ -19,6 +19,7 @@ use crate::fractal::xaos::XaosMap;
 use crate::fractal::{render_dragon, render_von_koch};
 use crate::fractal::{FractalParams, FractalResult, FractalType, OutColoringMode, PlaneTransform};
 use crate::render::output::RenderOutput;
+use crate::render::request::RenderRequest;
 use crate::render::tiles::{self, TileGrid, TileOpts, TileUpdate};
 
 fn special_view_needs_mpc(params: &FractalParams) -> bool {
@@ -46,7 +47,7 @@ fn special_view_needs_mpc(params: &FractalParams) -> bool {
 /// Le calcul est parallélisé sur plusieurs cœurs CPU avec rayon.
 ///
 /// **Chemin de rendu UNIQUE** : cette fonction (utilisée par le CLI) délègue au
-/// même dispatcher que la GUI, `render_escape_time_cancellable_with_reuse`. Il
+/// même dispatcher que la GUI, `render_request`. Il
 /// n'y a donc plus qu'UNE seule implémentation de la sélection
 /// type→algorithme (perturbation / GMP / f64 / spéciaux). Le CLI = rendu unique
 /// plein cadre (pas de cancel, pas de reuse, pas de cache). Cf. CLAUDE.md
@@ -54,15 +55,8 @@ fn special_view_needs_mpc(params: &FractalParams) -> bool {
 #[allow(dead_code)] // utilisé par le bin fractall-cli (main.rs), pas par gui/quality
 pub fn render_escape_time(params: &FractalParams) -> RenderOutput {
     let mut orbit_cache: Option<Arc<ReferenceOrbitCache>> = None;
-    render_escape_time_cancellable_with_reuse(
-        params,
-        &Arc::new(AtomicBool::new(false)),
-        None,
-        &mut orbit_cache,
-        None,
-        None,
-    )
-    .unwrap_or_default()
+    let cancel = Arc::new(AtomicBool::new(false));
+    render_request(RenderRequest::new(params, &cancel), &mut orbit_cache).unwrap_or_default()
 }
 
 struct ReuseData<'a> {
@@ -137,14 +131,21 @@ fn build_reuse<'a>(
 /// priorité normalisé + sink de streaming intra-passe). `None` (CLI/quality)
 /// ⇒ priorité centre, pas de streaming — mêmes pixels dans tous les cas
 /// (l'ordre d'exécution ne change pas les valeurs calculées).
-pub fn render_escape_time_cancellable_with_reuse(
-    params: &FractalParams,
-    cancel: &Arc<AtomicBool>,
-    reuse: Option<(&[u32], &[Complex64], u32, u32)>,
+/// Point d'entrée typé du dispatcher. Les champs nommés de [`RenderRequest`]
+/// empêchent d'intervertir reuse progressif, mapping XaoS et options de tuiles.
+pub fn render_request(
+    request: RenderRequest<'_>,
     orbit_cache: &mut Option<Arc<ReferenceOrbitCache>>,
-    xaos: Option<&XaosMap>,
-    tiles: Option<&TileOpts>,
 ) -> Option<RenderOutput> {
+    let RenderRequest {
+        params,
+        cancel,
+        progressive_reuse,
+        xaos,
+        tiles,
+        plan,
+    } = request;
+    let reuse = progressive_reuse.map(|r| (r.iterations, r.zs, r.width, r.height));
     // Garde-fou : un mapping construit pour d'autres dimensions serait indexé
     // hors bornes par les boucles pixel → on l'ignore (rendu complet).
     let xaos = xaos.filter(|m| {
@@ -238,7 +239,10 @@ pub fn render_escape_time_cancellable_with_reuse(
         // (`GpuRenderer::render_dispatch`, device Gpu) et les labels/passes
         // GUI. Couvre les modes forcés, le fallback plane_transform ≠ Mu et
         // l'Auto (perturbation > ~1e12, GMP > 1e16, sinon f64).
-        match wisdom::plan(params).algorithm {
+        let plan = plan
+            .unwrap_or_else(|| crate::render::CpuRenderPlan::for_params(params))
+            .wisdom();
+        match plan.algorithm {
             wisdom::Algorithm::Perturbation => {
                 return run_perturbation(reuse);
             }
@@ -747,8 +751,33 @@ mod tests {
     fn render_with_tiles(params: &FractalParams, tiles: Option<&TileOpts>) -> RenderOutput {
         let cancel = Arc::new(AtomicBool::new(false));
         let mut cache: Option<Arc<ReferenceOrbitCache>> = None;
-        render_escape_time_cancellable_with_reuse(params, &cancel, None, &mut cache, None, tiles)
-            .expect("rendu non annulé")
+        let mut request = RenderRequest::new(params, &cancel);
+        if let Some(tiles) = tiles {
+            request = request.with_tiles(tiles);
+        }
+        render_request(request, &mut cache).expect("rendu non annulé")
+    }
+
+    #[test]
+    fn resolved_wisdom_plan_preserves_render_output() {
+        let params = small_mandelbrot(24, 16);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut automatic_cache = None;
+        let automatic =
+            render_request(RenderRequest::new(&params, &cancel), &mut automatic_cache).unwrap();
+
+        let mut planned_cache = None;
+        let planned = render_request(
+            RenderRequest::new(&params, &cancel)
+                .with_plan(crate::render::CpuRenderPlan::for_params(&params)),
+            &mut planned_cache,
+        )
+        .unwrap();
+
+        assert_eq!(planned.iterations, automatic.iterations);
+        assert_eq!(planned.zs, automatic.zs);
+        assert_eq!(planned.distances, automatic.distances);
+        assert_eq!(planned.orbits.len(), automatic.orbits.len());
     }
 
     /// G5 : les wrappers synchrones MPC morts peuvent disparaître, mais les

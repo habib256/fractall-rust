@@ -3,17 +3,17 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use clap::Parser;
-use rug::Float;
-
 // Les modules vivent dans la bibliothèque `fractall_cli` (src/lib.rs) : les
 // importer sous leur nom court conserve les chemins existants (`fractal::…`).
 use fractall_cli::{fractal, gpu, io, render};
 
-use fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalType, LyapunovPreset, OutColoringMode, PlaneTransform};
-use render::render_escape_time;
-use io::png::save_png_rgb_with_metadata;
-use io::exr::save_iterations_exr;
+use fractal::{
+    apply_lyapunov_preset, default_params_for_type, AlgorithmMode, FractalType, LyapunovPreset,
+    OutColoringMode, PlaneTransform, ViewHp,
+};
 use gpu::GpuRenderer;
+use io::exr::save_iterations_exr;
+use io::png::save_png_rgb_with_metadata;
 
 /// Utilitaire CLI pour générer des fractales basées sur fractall.
 ///
@@ -320,22 +320,29 @@ fn load_toml_params(path: &std::path::Path) -> TomlParams {
         eprintln!("TOML {}: champ 'zoom' manquant", path.display());
         std::process::exit(1);
     });
-    let iterations = table.get("iterations").and_then(|v| v.as_integer()).map(|i| {
-        if i > u32::MAX as i64 {
-            eprintln!(
+    let iterations = table
+        .get("iterations")
+        .and_then(|v| v.as_integer())
+        .map(|i| {
+            if i > u32::MAX as i64 {
+                eprintln!(
                 "TOML {}: iterations={} > u32::MAX, clamp à {}. TODO: passer iteration_max en u64.",
                 path.display(),
                 i,
                 u32::MAX
             );
-            u32::MAX
-        } else if i < 0 {
-            eprintln!("TOML {}: iterations négatif ({}), forcé à 1024", path.display(), i);
-            1024
-        } else {
-            i as u32
-        }
-    });
+                u32::MAX
+            } else if i < 0 {
+                eprintln!(
+                    "TOML {}: iterations négatif ({}), forcé à 1024",
+                    path.display(),
+                    i
+                );
+                1024
+            } else {
+                i as u32
+            }
+        });
     let rotate = table
         .get("rotate")
         .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
@@ -346,44 +353,68 @@ fn load_toml_params(path: &std::path::Path) -> TomlParams {
     // compilation des champs structurés abs_x/abs_y/neg_x/neg_y/power dans
     // l'ordre F3 (`param.cc::compile_formula`) — le `store` du besoin mul est
     // ajouté au parse (`ensure_store_prefix`), pas ici.
-    let formula_opcodes = table.get("formula").and_then(|v| v.as_array()).map(|blocks| {
-        let mut phases_words: Vec<String> = Vec::new();
-        for block in blocks {
-            let Some(b) = block.as_table() else { continue };
-            if let Some(ops) = b.get("opcodes").and_then(|v| v.as_str()) {
-                let mut w = ops.trim().to_string();
-                if !w.ends_with("add") {
-                    w.push_str(" add");
+    let formula_opcodes = table
+        .get("formula")
+        .and_then(|v| v.as_array())
+        .map(|blocks| {
+            let mut phases_words: Vec<String> = Vec::new();
+            for block in blocks {
+                let Some(b) = block.as_table() else { continue };
+                if let Some(ops) = b.get("opcodes").and_then(|v| v.as_str()) {
+                    let mut w = ops.trim().to_string();
+                    if !w.ends_with("add") {
+                        w.push_str(" add");
+                    }
+                    phases_words.push(w);
+                    continue;
                 }
-                phases_words.push(w);
-                continue;
-            }
-            let flag = |k: &str| b.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
-            let mut words: Vec<String> = Vec::new();
-            if flag("abs_x") { words.push("absx".into()); }
-            if flag("abs_y") { words.push("absy".into()); }
-            if flag("neg_x") { words.push("negx".into()); }
-            if flag("neg_y") { words.push("negy".into()); }
-            let power = b.get("power").and_then(|v| v.as_integer()).unwrap_or(2).max(2) as u32;
-            let highest_bit = 31 - power.leading_zeros();
-            if power != (1u32 << highest_bit) {
-                words.push("store".into());
-            }
-            for bit in (0..highest_bit).rev() {
-                words.push("sqr".into());
-                if (power >> bit) & 1 == 1 {
-                    words.push("mul".into());
+                let flag = |k: &str| b.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+                let mut words: Vec<String> = Vec::new();
+                if flag("abs_x") {
+                    words.push("absx".into());
                 }
+                if flag("abs_y") {
+                    words.push("absy".into());
+                }
+                if flag("neg_x") {
+                    words.push("negx".into());
+                }
+                if flag("neg_y") {
+                    words.push("negy".into());
+                }
+                let power = b
+                    .get("power")
+                    .and_then(|v| v.as_integer())
+                    .unwrap_or(2)
+                    .max(2) as u32;
+                let highest_bit = 31 - power.leading_zeros();
+                if power != (1u32 << highest_bit) {
+                    words.push("store".into());
+                }
+                for bit in (0..highest_bit).rev() {
+                    words.push("sqr".into());
+                    if (power >> bit) & 1 == 1 {
+                        words.push("mul".into());
+                    }
+                }
+                words.push("add".into());
+                phases_words.push(words.join(" "));
             }
-            words.push("add".into());
-            phases_words.push(words.join(" "));
-        }
-        phases_words.join(" ")
-    }).filter(|s| !s.trim().is_empty())
-    // Clé légère top-level `opcodes` (mirror --opcodes) si pas de [[formula]].
-    .or_else(|| take_str("opcodes").filter(|s| !s.trim().is_empty()));
+            phases_words.join(" ")
+        })
+        .filter(|s| !s.trim().is_empty())
+        // Clé légère top-level `opcodes` (mirror --opcodes) si pas de [[formula]].
+        .or_else(|| take_str("opcodes").filter(|s| !s.trim().is_empty()));
 
-    TomlParams { real, imag, zoom, iterations, rotate, phases, formula_opcodes }
+    TomlParams {
+        real,
+        imag,
+        zoom,
+        iterations,
+        rotate,
+        phases,
+        formula_opcodes,
+    }
 }
 
 /// `--wisdom-bench` (G9.2) : mesure les débits effectifs par technique (CPU
@@ -399,7 +430,14 @@ fn run_wisdom_bench() {
     // gpu_std_f32 (vue shallow) ET gpu_perturb_f64 (vue e30), G9.5.
     let gpu_render = gpu.as_ref().map(|g| {
         move |params: &fractal::FractalParams| {
-            g.render_dispatch(params, &cancel, None, None).map(|r| r.iterations)
+            g.render_dispatch(
+                render::GpuRenderPlan::for_params(params),
+                params,
+                &cancel,
+                None,
+                None,
+            )
+            .map(|r| r.iterations)
         }
     });
     let file = match &gpu_render {
@@ -449,10 +487,22 @@ fn run_from_map(cli: &Cli, map_path: &std::path::Path, output_path: &std::path::
         }
     }
 
-    let center_x_hp = params.center_x_hp.clone().unwrap_or_else(|| params.center_x.to_string());
-    let center_y_hp = params.center_y_hp.clone().unwrap_or_else(|| params.center_y.to_string());
-    let span_x_hp = params.span_x_hp.clone().unwrap_or_else(|| params.span_x.to_string());
-    let span_y_hp = params.span_y_hp.clone().unwrap_or_else(|| params.span_y.to_string());
+    let center_x_hp = params
+        .center_x_hp
+        .clone()
+        .unwrap_or_else(|| params.center_x.to_string());
+    let center_y_hp = params
+        .center_y_hp
+        .clone()
+        .unwrap_or_else(|| params.center_y.to_string());
+    let span_x_hp = params
+        .span_x_hp
+        .clone()
+        .unwrap_or_else(|| params.span_x.to_string());
+    let span_y_hp = params
+        .span_y_hp
+        .clone()
+        .unwrap_or_else(|| params.span_y.to_string());
     // Le canal `distances` de la map alimente les modes Distance*/DistanceAO/
     // Distance3D. Vérification G5 : un mode qui requiert un canal absent de
     // la map est une ERREUR (le .fmap ne persiste jamais `orbits`, et
@@ -465,13 +515,8 @@ fn run_from_map(cli: &Cli, map_path: &std::path::Path, output_path: &std::path::
         eprintln!("Erreur : recolorisation impossible depuis cette map — {e}");
         std::process::exit(1);
     }
-    let buffer = io::png::colorize_to_rgb_with_extras(
-        &params,
-        &map.iterations,
-        &map.zs,
-        distances,
-        &[],
-    );
+    let buffer =
+        io::png::colorize_to_rgb_with_extras(&params, &map.iterations, &map.zs, distances, &[]);
     if let Err(e) = save_png_rgb_with_metadata(
         &params,
         &buffer,
@@ -521,7 +566,9 @@ fn main() {
         // → type 3 par défaut si --type/--toml absents.
         (None, None) if cli.phases.is_some() => 3,
         (None, None) => {
-            eprintln!("--type est requis (ou utilisez --toml <FICHIER> pour le format rust-fractal-core)");
+            eprintln!(
+                "--type est requis (ou utilisez --toml <FICHIER> pour le format rust-fractal-core)"
+            );
             std::process::exit(2);
         }
     };
@@ -538,7 +585,10 @@ fn main() {
 
     // Paramètres par défaut pour ce type.
     if cli.width == 0 || cli.height == 0 {
-        eprintln!("Erreur : --width/--height doivent être ≥ 1 (reçu {}×{})", cli.width, cli.height);
+        eprintln!(
+            "Erreur : --width/--height doivent être ≥ 1 (reçu {}×{})",
+            cli.width, cli.height
+        );
         std::process::exit(1);
     }
     let mut params = default_params_for_type(fractal_type, cli.width, cli.height);
@@ -574,35 +624,19 @@ fn main() {
     // restent prioritaires car traités après).
     if let Some(ref toml_path) = cli.toml {
         let t = load_toml_params(toml_path);
-        let prec = 1024u32;
-
-        // Centre HP (string GMP).
-        params.center_x_hp = Some(t.real.clone());
-        params.center_y_hp = Some(t.imag.clone());
-        if let Ok(p) = Float::parse(&t.real) {
-            params.center_x = Float::with_val(prec, p).to_f64();
-        }
-        if let Ok(p) = Float::parse(&t.imag) {
-            params.center_y = Float::with_val(prec, p).to_f64();
-        }
-
-        // Zoom -> span (utilise la résolution effective courante, qui peut
-        // encore changer si --width/--height sont fournis ; on recalcule plus
-        // bas si besoin).
-        let zoom_gmp = Float::parse(&t.zoom)
-            .map(|p| Float::with_val(prec, p))
-            .unwrap_or_else(|_| {
-                eprintln!("TOML {}: zoom illisible: '{}'", toml_path.display(), t.zoom);
-                std::process::exit(1);
-            });
-        let four = Float::with_val(prec, 4.0);
-        let span_x_gmp = four / &zoom_gmp;
-        let aspect = params.height as f64 / params.width as f64;
-        let span_y_gmp = Float::with_val(prec, &span_x_gmp * aspect);
-        params.span_x_hp = Some(span_x_gmp.to_string());
-        params.span_y_hp = Some(span_y_gmp.to_string());
-        params.span_x = span_x_gmp.to_f64();
-        params.span_y = span_y_gmp.to_f64();
+        let view = ViewHp::from_center_and_zoom(
+            &t.real,
+            &t.imag,
+            &t.zoom,
+            params.width,
+            params.height,
+            1024,
+        )
+        .unwrap_or_else(|| {
+            eprintln!("TOML {}: zoom illisible: '{}'", toml_path.display(), t.zoom);
+            std::process::exit(1);
+        });
+        view.write_to_params(&mut params);
 
         // Phases hybrides du TOML (G4 jalon 5e) — un --phases CLI explicite
         // reste prioritaire (déjà appliqué plus haut).
@@ -664,14 +698,15 @@ fn main() {
     // Override des coordonnées si demandé (bornes xmin/xmax/ymin/ymax).
     // Les bornes CLI sont converties en centre + span.
     // Utiliser center+span comme source de vérité au lieu de xmin/xmax/ymin/ymax
-    let has_bounds = cli.xmin.is_some() || cli.xmax.is_some() || cli.ymin.is_some() || cli.ymax.is_some();
+    let has_bounds =
+        cli.xmin.is_some() || cli.xmax.is_some() || cli.ymin.is_some() || cli.ymax.is_some();
     if has_bounds {
         // Calculer les bornes depuis center+span pour les valeurs par défaut
         let default_xmin = params.center_x - params.span_x * 0.5;
         let default_xmax = params.center_x + params.span_x * 0.5;
         let default_ymin = params.center_y - params.span_y * 0.5;
         let default_ymax = params.center_y + params.span_y * 0.5;
-        
+
         let xmin = cli.xmin.unwrap_or(default_xmin);
         let xmax = cli.xmax.unwrap_or(default_xmax);
         let ymin = cli.ymin.unwrap_or(default_ymin);
@@ -714,24 +749,21 @@ fn main() {
 
     // Zoom -> span HP conversion.
     if let Some(ref zoom_str) = cli.zoom {
-        // Parse zoom with GMP arbitrary precision
-        let prec = 1024u32;
-        let zoom_gmp = Float::parse(zoom_str)
-            .map(|parsed| Float::with_val(prec, parsed))
-            .unwrap_or_else(|_| {
-                eprintln!("Impossible de parser le zoom: '{}'", zoom_str);
-                std::process::exit(1);
-            });
-        let four = Float::with_val(prec, 4.0);
-        let span_x_gmp = four / &zoom_gmp;
-        let aspect = params.height as f64 / params.width as f64;
-        let span_y_gmp = Float::with_val(prec, &span_x_gmp * aspect);
-
-        params.span_x_hp = Some(span_x_gmp.to_string());
-        params.span_y_hp = Some(span_y_gmp.to_string());
-        // Approximation f64 (sera 0.0 pour deep zooms, mais HP est utilisé)
-        params.span_x = span_x_gmp.to_f64();
-        params.span_y = span_y_gmp.to_f64();
+        let cx = params
+            .center_x_hp
+            .clone()
+            .unwrap_or_else(|| params.center_x.to_string());
+        let cy = params
+            .center_y_hp
+            .clone()
+            .unwrap_or_else(|| params.center_y.to_string());
+        let view =
+            ViewHp::from_center_and_zoom(&cx, &cy, zoom_str, params.width, params.height, 1024)
+                .unwrap_or_else(|| {
+                    eprintln!("Impossible de parser le zoom: '{}'", zoom_str);
+                    std::process::exit(1);
+                });
+        view.write_to_params(&mut params);
     }
 
     // Override des itérations si fourni.
@@ -837,7 +869,7 @@ fn main() {
     } else if cli.gpu {
         true
     } else {
-        fractal::wisdom::auto_plan(&params, true).device == fractal::wisdom::Device::Gpu
+        render::RenderPlan::auto(&params, true).wisdom().device == fractal::wisdom::Device::Gpu
     };
 
     let aa_samples = cli.aa_samples.max(1);
@@ -893,8 +925,7 @@ fn main() {
     // Couplage mode → canaux (parité GUI) : les modes Distance*/OrbitTraps/
     // Wings requièrent leur canal — la colorisation vérifiée (G5
     // `RenderOutput`) refuse un canal absent au lieu de retomber sur Smooth.
-    params.enable_distance_estimation |=
-        params.out_coloring_mode.requires_distance_channel();
+    params.enable_distance_estimation |= params.out_coloring_mode.requires_distance_channel();
     params.enable_orbit_traps |= params.out_coloring_mode.requires_orbit_channel();
 
     // Transformation du plan (XaoS-style).
@@ -926,46 +957,48 @@ fn main() {
     // Sortie TYPÉE du dispatcher (G5 `RenderOutput`) : les canaux annexes
     // (distances/orbites) voyagent avec iterations/zs jusqu'à la colorisation
     // vérifiée et --output-map — plus de tuple partiel qui les jette.
-    let out: render::RenderOutput = if use_gpu {
-        match GpuRenderer::new() {
-            Some(gpu) => {
-                println!("GPU initialisé ({})", gpu.precision_label());
-                // Dispatch GPU partagé avec la GUI (cf. `GpuRenderer::render_dispatch`).
-                match gpu.render_dispatch(&params, &cancel, None, None) {
-                    Some(r) => {
-                        println!(
-                            "Mode: GPU {}",
-                            if r.used_perturbation { "perturbation" } else { "standard" }
-                        );
-                        render::RenderOutput::without_extras(r.iterations, r.zs)
-                    }
-                    None => {
-                        println!("Type {:?} non rendu par le GPU → fallback CPU...", params.fractal_type);
-                        render_escape_time(&params)
-                    }
-                }
-            }
-            None => {
-                eprintln!("GPU non disponible, fallback CPU");
-                render_escape_time(&params)
-            }
-        }
+    let final_plan = if cli.no_gpu {
+        render::RenderPlan::for_device(&params, fractal::wisdom::Device::Cpu)
+    } else if cli.gpu {
+        render::RenderPlan::for_device(&params, fractal::wisdom::Device::Gpu)
     } else {
-        // Même dispatcher unique que `render_escape_time`, version annulable.
-        let mut orbit_cache = None;
-        match render::render_escape_time_cancellable_with_reuse(
-            &params,
-            &cancel,
-            None,
-            &mut orbit_cache,
-            None,
-            None,
-        ) {
-            Some(out) => out,
-            None => {
-                eprintln!("Erreur : rendu interrompu ou type non supporté par le dispatcher");
-                std::process::exit(1);
+        // Replanification sur les paramètres FINALS (canaux, transform et
+        // formule ont pu changer depuis l'analyse initiale des options).
+        render::RenderPlan::auto(&params, true)
+    };
+    let gpu_renderer = if final_plan.wisdom().device == fractal::wisdom::Device::Gpu {
+        GpuRenderer::new()
+    } else {
+        None
+    };
+    if let Some(gpu) = gpu_renderer.as_ref() {
+        println!("GPU initialisé ({})", gpu.precision_label());
+    }
+    let mut orbit_cache = None;
+    let planned = render::render_planned(
+        render::PlannedRenderRequest::new(final_plan, render::RenderRequest::new(&params, &cancel)),
+        gpu_renderer.as_ref(),
+        &mut orbit_cache,
+    );
+    let (out, rendered_on_gpu): (render::RenderOutput, bool) = match planned {
+        Some(result) => {
+            if result.fell_back_to_cpu {
+                eprintln!("GPU indisponible ou incompatible, fallback CPU");
+            } else if result.device == fractal::wisdom::Device::Gpu {
+                println!(
+                    "Mode: GPU {}",
+                    if result.used_perturbation {
+                        "perturbation"
+                    } else {
+                        "standard"
+                    }
+                );
             }
+            (result.output, result.device == fractal::wisdom::Device::Gpu)
+        }
+        None => {
+            eprintln!("Erreur : rendu interrompu ou type non supporté par le dispatcher");
+            std::process::exit(1);
         }
     };
 
@@ -1013,11 +1046,23 @@ fn main() {
     // Export PNG avec métadonnées.
     let save_start = std::time::Instant::now();
     // Utiliser les strings HP si disponibles, sinon convertir f64
-    let center_x_hp = params.center_x_hp.clone().unwrap_or_else(|| params.center_x.to_string());
-    let center_y_hp = params.center_y_hp.clone().unwrap_or_else(|| params.center_y.to_string());
-    let span_x_hp = params.span_x_hp.clone().unwrap_or_else(|| params.span_x.to_string());
-    let span_y_hp = params.span_y_hp.clone().unwrap_or_else(|| params.span_y.to_string());
-    let png_result = if aa_samples > 1 && !use_gpu {
+    let center_x_hp = params
+        .center_x_hp
+        .clone()
+        .unwrap_or_else(|| params.center_x.to_string());
+    let center_y_hp = params
+        .center_y_hp
+        .clone()
+        .unwrap_or_else(|| params.center_y.to_string());
+    let span_x_hp = params
+        .span_x_hp
+        .clone()
+        .unwrap_or_else(|| params.span_x.to_string());
+    let span_y_hp = params
+        .span_y_hp
+        .clone()
+        .unwrap_or_else(|| params.span_y.to_string());
+    let png_result = if aa_samples > 1 && !rendered_on_gpu {
         // Anti-aliasing multi-sample (per-frame jitter) : sample 0 = le rendu de
         // base déjà calculé (offset (0,0)), samples 1..N re-rendus avec un offset
         // sous-pixel low-discrepancy, puis moyenne en espace RGB.
@@ -1039,9 +1084,9 @@ fn main() {
             // les modes Distance*/OrbitTraps/Wings (sinon retombée silencieuse
             // sur Smooth — classe « colorisation unique », cf. CLAUDE.md).
             let mut aa_cache = None;
-            let Some(sample) = render::render_escape_time_cancellable_with_reuse(
-                &p, &cancel, None, &mut aa_cache, None, None,
-            ) else {
+            let Some(sample) =
+                render::render_request(render::RenderRequest::new(&p, &cancel), &mut aa_cache)
+            else {
                 eprintln!("Erreur : rendu AA interrompu (sample {})", k + 1);
                 std::process::exit(1);
             };
@@ -1097,7 +1142,7 @@ fn main() {
 
     // Map .fmap (G12 jalon 1) : buffers bruts recolorisables sans recalcul.
     if let Some(ref map_path) = cli.output_map {
-        if aa_samples > 1 && !use_gpu {
+        if aa_samples > 1 && !rendered_on_gpu {
             eprintln!(
                 "[MAP] --output-map ignoré avec --aa-samples > 1 (sortie AA = moyenne RGB, pas des canaux itération)"
             );
@@ -1133,7 +1178,6 @@ fn main() {
         save_time.as_secs_f64()
     );
 }
-
 
 /// Nom du premier paramètre f64 non fini, s'il y en a un.
 fn non_finite_param(p: &fractal::FractalParams) -> Option<&'static str> {

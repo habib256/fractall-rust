@@ -41,9 +41,10 @@
 use std::sync::Arc;
 
 use num_complex::Complex64;
+#[cfg(test)]
 use rug::Float;
 
-use crate::fractal::{FractalParams, OutColoringMode};
+use crate::fractal::{FractalParams, OutColoringMode, ViewHp};
 
 /// Tolérance de matching, en unités de pixel de la frame CIBLE. 0.5 = accepte
 /// tout décalage sous-pixel (pan fluide, zoom molette ≈ écho nearest-neighbor
@@ -143,9 +144,9 @@ impl XaosSourceFrame {
 
     /// Erreur de position max (px) sur la frame.
     pub fn max_abs_err(&self) -> f64 {
-        self.err
-            .iter()
-            .fold(0.0f64, |m, e| m.max(e[0].abs() as f64).max(e[1].abs() as f64))
+        self.err.iter().fold(0.0f64, |m, e| {
+            m.max(e[0].abs() as f64).max(e[1].abs() as f64)
+        })
     }
 }
 
@@ -347,40 +348,13 @@ pub fn view_strings(params: &FractalParams) -> (String, String, String, String) 
     )
 }
 
-/// Bits de précision pour résoudre un centre à ~2⁻⁹⁶ du span `s` (plancher
-/// `TRANSFORM_PRECISION_BITS`).
-fn transform_precision(span: &str) -> u32 {
-    Float::parse(span)
-        .ok()
-        .and_then(|p| Float::with_val(64, p).get_exp())
-        .map(|e| ((-(e as i64)).max(0) + 96).clamp(TRANSFORM_PRECISION_BITS as i64, u32::MAX as i64) as u32)
-        .unwrap_or(TRANSFORM_PRECISION_BITS)
-}
-
 /// Transformée 1D frame source → cible : `x_old = a·(x_new + 0.5) + B` avec
 /// `a = (span_new/span_old)·(n_old/n_new)`, `B = n_old·(0.5 + Δc/span_old −
-/// r/2) − 0.5`. Ratios en HP (256 b) puis f64. `None` si dégénérée.
-fn axis_transform(
-    c_old: &str,
-    s_old: &str,
-    c_new: &str,
-    s_new: &str,
-    n_old: u32,
-    n_new: u32,
-) -> Option<(f64, f64)> {
-    // Précision DYNAMIQUE : les centres doivent être résolus à une fraction
-    // de pixel du span (−log2(span) + marge), comme `hp_arith_precision` de
-    // la GUI. À 256 b fixes, au-delà de ~1e74 les deux centres d'un zoom
-    // ancré s'arrondissaient à la MÊME valeur → Δc = 0 → le map croyait le
-    // zoom centré → colonnes copiées décalées jusqu'à ~80 px (bug 2026-08-23).
-    let prec = transform_precision(s_old).max(transform_precision(s_new));
-    let f = |s: &str| Float::parse(s).ok().map(|p| Float::with_val(prec, p));
-    let (co, so, cn, sn) = (f(c_old)?, f(s_old)?, f(c_new)?, f(s_new)?);
-    if so.is_zero() || n_old == 0 || n_new == 0 {
+/// r/2) − 0.5`. Les ratios viennent de [`ViewHp::transform_to`].
+fn axis_transform_from_ratios(dc: f64, r: f64, n_old: u32, n_new: u32) -> Option<(f64, f64)> {
+    if n_old == 0 || n_new == 0 {
         return None;
     }
-    let dc = (Float::with_val(prec, &cn - &co) / &so).to_f64();
-    let r = Float::with_val(prec, &sn / &so).to_f64();
     if !dc.is_finite() || !r.is_finite() || r <= 0.0 {
         return None;
     }
@@ -418,7 +392,14 @@ pub struct AxisMap {
 /// garantit du travail frais en zoom-in, no-op en pan/zoom-out). La décision
 /// finale de copie est PAR PIXEL (`XaosMap::source_index`), sur l'erreur
 /// vraie du pixel source.
-pub fn build_axis_map(n_new: usize, n_old: usize, a: f64, b: f64, err_hint: &[f64], tol: f64) -> AxisMap {
+pub fn build_axis_map(
+    n_new: usize,
+    n_old: usize,
+    a: f64,
+    b: f64,
+    err_hint: &[f64],
+    tol: f64,
+) -> AxisMap {
     let mut out = AxisMap {
         src: vec![-1i32; n_new],
         src2: vec![-1i32; n_new],
@@ -557,8 +538,37 @@ pub fn build_map_with_tolerance(
         return None;
     }
     let (cx, cy, sx, sy) = view_strings(params);
-    let (ax, bx) = axis_transform(&src.cx, &src.sx, &cx, &sx, src.width, params.width)?;
-    let (ay, by) = axis_transform(&src.cy, &src.sy, &cy, &sy, src.height, params.height)?;
+    let old_view = ViewHp::from_decimal_parts(
+        &src.cx,
+        &src.cy,
+        &src.sx,
+        &src.sy,
+        src.width,
+        src.height,
+        TRANSFORM_PRECISION_BITS,
+    )?;
+    let new_view = ViewHp::from_decimal_parts(
+        &cx,
+        &cy,
+        &sx,
+        &sy,
+        params.width,
+        params.height,
+        TRANSFORM_PRECISION_BITS,
+    )?;
+    let transform = old_view.transform_to(&new_view);
+    let (ax, bx) = axis_transform_from_ratios(
+        transform.offset_x,
+        transform.scale_x,
+        src.width,
+        params.width,
+    )?;
+    let (ay, by) = axis_transform_from_ratios(
+        transform.offset_y,
+        transform.scale_y,
+        src.height,
+        params.height,
+    )?;
     let (w, h) = (params.width as usize, params.height as usize);
     let cols = build_axis_map(w, src.width as usize, ax, bx, &src.col_err, tol);
     let rows = build_axis_map(h, src.height as usize, ay, by, &src.row_err, tol);
@@ -605,7 +615,28 @@ pub fn build_refine_map(src: &XaosSourceFrame, params: &FractalParams) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fractal::perturbation::ReferenceOrbitCache;
     use crate::fractal::{default_params_for_type, FractalType};
+    use crate::render::{render_request, ProgressiveReuse, RenderOutput, RenderRequest};
+    use std::sync::atomic::AtomicBool;
+
+    fn render<'a>(
+        params: &'a FractalParams,
+        cancel: &'a Arc<AtomicBool>,
+        reuse: Option<(&'a [u32], &'a [Complex64], u32, u32)>,
+        cache: &mut Option<Arc<ReferenceOrbitCache>>,
+        xaos: Option<&'a XaosMap>,
+        _tiles: Option<&crate::render::tiles::TileOpts<'a>>,
+    ) -> Option<RenderOutput> {
+        let mut request = RenderRequest::new(params, cancel);
+        if let Some(previous) = reuse {
+            request = request.with_progressive_reuse(ProgressiveReuse::from(previous));
+        }
+        if let Some(map) = xaos {
+            request = request.with_xaos(map);
+        }
+        render_request(request, cache)
+    }
 
     fn frame_for(params: &FractalParams, iters: Vec<u32>) -> XaosSourceFrame {
         let n = (params.width * params.height) as usize;
@@ -629,7 +660,12 @@ mod tests {
 
     /// Frame produite par une passe avec `map` (même règle que la GUI :
     /// erreurs par pixel héritées du mapping).
-    fn frame_from_map(params: &FractalParams, iters: Vec<u32>, zs: Vec<Complex64>, map: &XaosMap) -> XaosSourceFrame {
+    fn frame_from_map(
+        params: &FractalParams,
+        iters: Vec<u32>,
+        zs: Vec<Complex64>,
+        map: &XaosMap,
+    ) -> XaosSourceFrame {
         let (cx, cy, sx, sy) = view_strings(params);
         XaosSourceFrame::from_map(
             Arc::new(iters),
@@ -691,7 +727,11 @@ mod tests {
         // Toutes les colonnes matchent (0.3 ≤ tol), y compris la dernière (0.3 px hors champ).
         assert_eq!(map.reused_cols, 64);
         // Donnée vraie à −0.3 px de la grille cible (le contenu a glissé).
-        assert!((map.col_err[5] + 0.3).abs() < 1e-9, "err = {}", map.col_err[5]);
+        assert!(
+            (map.col_err[5] + 0.3).abs() < 1e-9,
+            "err = {}",
+            map.col_err[5]
+        );
     }
 
     #[test]
@@ -710,7 +750,12 @@ mod tests {
         let map_ab = build_map(&src_a, &pb).expect("A→B");
 
         // Frame B stockée avec ses erreurs vraies.
-        let src_b = frame_from_map(&pb, vec![1; 64 * 64], vec![Complex64::new(0.0, 0.0); 64 * 64], &map_ab);
+        let src_b = frame_from_map(
+            &pb,
+            vec![1; 64 * 64],
+            vec![Complex64::new(0.0, 0.0); 64 * 64],
+            &map_ab,
+        );
 
         let mut pc = pb.clone();
         pc.center_x += step;
@@ -727,10 +772,16 @@ mod tests {
                 assert_eq!(sidx % 64, x + 1, "colonne source de {x}");
                 let e = err_c[10 * 64 + x];
                 assert!((e[0] - 0.4).abs() < 1e-6, "err produite = {}", e[0]);
-                assert!(e[0].abs() as f64 <= XAOS_TOLERANCE_PX + 1e-9, "dérive non bornée");
+                assert!(
+                    e[0].abs() as f64 <= XAOS_TOLERANCE_PX + 1e-9,
+                    "dérive non bornée"
+                );
             }
         }
-        assert_eq!(copied, 63, "toutes les colonnes sauf la dernière (x+1 = 64 hors champ)");
+        assert_eq!(
+            copied, 63,
+            "toutes les colonnes sauf la dernière (x+1 = 64 hors champ)"
+        );
         assert!(map_bc.max_abs_err() <= XAOS_TOLERANCE_PX + 1e-9);
     }
 
@@ -751,7 +802,9 @@ mod tests {
         // Frame exacte initiale : zs = coordonnée vraie du pixel.
         let mut p = base_params(w, h);
         let n = (w * h) as usize;
-        let zs: Vec<Complex64> = (0..n).map(|k| coord(&p, k % w as usize, k / w as usize)).collect();
+        let zs: Vec<Complex64> = (0..n)
+            .map(|k| coord(&p, k % w as usize, k / w as usize))
+            .collect();
         let mut frame = frame_for(&p, vec![1; n]);
         frame.zs = Arc::new(zs);
         let (rx, ry) = (0.3, 0.7);
@@ -846,12 +899,7 @@ mod tests {
 
         // Params depuis l'état HP. Hors deep : état QUANTIFIÉ f64 (le path
         // strings `%.17e` de `view_strings` est alors exactement l'état).
-        let make_params = |cx: &Float,
-                           cy: &Float,
-                           sx: &Float,
-                           sy: &Float,
-                           w: u32,
-                           h: u32| {
+        let make_params = |cx: &Float, cy: &Float, sx: &Float, sy: &Float, w: u32, h: u32| {
             let mut p = base_params(w, h);
             p.center_x = cx.to_f64();
             p.center_y = cy.to_f64();
@@ -884,7 +932,8 @@ mod tests {
         let mut copied_total = 0usize;
 
         for step in 0..10 {
-            let (mut cx2, mut cy2, mut sx2, mut sy2) = (cx.clone(), cy.clone(), sx.clone(), sy.clone());
+            let (mut cx2, mut cy2, mut sx2, mut sy2) =
+                (cx.clone(), cy.clone(), sx.clone(), sy.clone());
             let (mut w2, mut h2) = (w, h);
             let op = rng.unit();
             if op < 0.40 {
@@ -1066,7 +1115,10 @@ mod tests {
                 map.reused_cols
             );
             assert!(!map.is_pure_copy(64, 64), "×{factor} : écho pur interdit");
-            assert!(map.any_reuse(), "×{factor} : l'écho doit copier quelque chose");
+            assert!(
+                map.any_reuse(),
+                "×{factor} : l'écho doit copier quelque chose"
+            );
         }
     }
 
@@ -1083,8 +1135,16 @@ mod tests {
         let echo = build_map(&src, &moved).expect("écho");
         assert_eq!(echo.reused_cols, 64, "pan 0.3 px : tout copié");
         // Frame résultat du pan : positions vraies −0.3 sur TOUS les pixels.
-        let frame_b = frame_from_map(&moved, vec![1; 64 * 64], vec![Complex64::new(0.0, 0.0); 64 * 64], &echo);
-        assert!(frame_b.err.iter().all(|e| (e[0] + 0.3).abs() < 1e-6 && e[1].abs() < 1e-6));
+        let frame_b = frame_from_map(
+            &moved,
+            vec![1; 64 * 64],
+            vec![Complex64::new(0.0, 0.0); 64 * 64],
+            &echo,
+        );
+        assert!(frame_b
+            .err
+            .iter()
+            .all(|e| (e[0] + 0.3).abs() < 1e-6 && e[1].abs() < 1e-6));
         assert!(
             build_refine_map(&frame_b, &moved).is_none(),
             "tout est approximé : le refine doit tout recalculer"
@@ -1105,14 +1165,25 @@ mod tests {
             }
         }
         src.err = Arc::new(err);
-        let map =
-            build_map_with_tolerance(&src, &p, XAOS_EXACT_TOLERANCE_PX).expect("map refine");
-        assert_eq!(map.copied, 32 * 64, "seules les colonnes exactes sont conservées");
+        let map = build_map_with_tolerance(&src, &p, XAOS_EXACT_TOLERANCE_PX).expect("map refine");
+        assert_eq!(
+            map.copied,
+            32 * 64,
+            "seules les colonnes exactes sont conservées"
+        );
         for x in 0..64usize {
             if x % 2 == 0 {
-                assert_eq!(map.source_index(x, 7), Some(7 * 64 + x), "colonne exacte conservée");
+                assert_eq!(
+                    map.source_index(x, 7),
+                    Some(7 * 64 + x),
+                    "colonne exacte conservée"
+                );
             } else {
-                assert_eq!(map.source_index(x, 7), None, "colonne approximée recalculée");
+                assert_eq!(
+                    map.source_index(x, 7),
+                    None,
+                    "colonne approximée recalculée"
+                );
             }
         }
         assert!(map.max_abs_err() <= XAOS_EXACT_TOLERANCE_PX);
@@ -1187,10 +1258,16 @@ mod tests {
         let src = frame_for(&p, vec![1; 64 * 64]);
         let mut other = p.clone();
         other.iteration_max += 100;
-        assert!(build_map(&src, &other).is_none(), "iteration_max ≠ → pas de reuse");
+        assert!(
+            build_map(&src, &other).is_none(),
+            "iteration_max ≠ → pas de reuse"
+        );
         let mut geom = p.clone();
         geom.center_x += 0.01;
-        assert!(build_map(&src, &geom).is_some(), "géométrie seule ≠ → reuse OK");
+        assert!(
+            build_map(&src, &geom).is_some(),
+            "géométrie seule ≠ → reuse OK"
+        );
     }
 
     #[test]
@@ -1218,9 +1295,6 @@ mod tests {
     /// mapping XaoS → identique pixel à pixel au rendu frais de la nouvelle
     /// vue (pan entier ⇒ les pixels copiés portent exactement le même `c`).
     fn assert_integer_pan_roundtrip(mut params: FractalParams) {
-        use std::sync::atomic::AtomicBool;
-        use crate::render::render_escape_time_cancellable_with_reuse as render;
-
         params.use_bytecode_engine = true;
         let cancel = Arc::new(AtomicBool::new(false));
         let __out = render(&params, &cancel, None, &mut None, None, None).expect("A");
@@ -1307,9 +1381,6 @@ mod tests {
     /// Verrouille le cycle interactif complet du zoom (écho → refine).
     #[test]
     fn zoom_then_exact_refine_matches_fresh_render() {
-        use std::sync::atomic::AtomicBool;
-        use crate::render::render_escape_time_cancellable_with_reuse as render;
-
         let mut p = base_params(64, 48);
         p.center_x = -0.6;
         p.center_y = 0.3;
@@ -1348,7 +1419,10 @@ mod tests {
         let src_b = frame_from_map(&z, it_b, zs_b, &map);
         let refine_map = build_refine_map(&src_b, &z).expect("map refine");
         assert!(refine_map.max_abs_err() <= XAOS_EXACT_TOLERANCE_PX);
-        assert!(refine_map.any_reuse(), "le refine doit garder les pixels frais de B");
+        assert!(
+            refine_map.any_reuse(),
+            "le refine doit garder les pixels frais de B"
+        );
         // L'union garde STRICTEMENT plus que le produit : tout pixel calculé
         // frais à l'écho (colonne OU ligne fraîche) est conservé.
         let kept = refine_map.reused_fraction(64, 48);
@@ -1358,7 +1432,8 @@ mod tests {
             "union ({kept:.3}) doit couvrir au moins les pixels frais de l'écho ({echo_fresh:.3})"
         );
 
-        let __out = render(&z, &cancel, None, &mut None, Some(&refine_map), None).expect("C refine");
+        let __out =
+            render(&z, &cancel, None, &mut None, Some(&refine_map), None).expect("C refine");
         let (it_c, zs_c) = (__out.iterations, __out.zs);
         let __out = render(&z, &cancel, None, &mut None, None, None).expect("frais");
         let (it_f, zs_f) = (__out.iterations, __out.zs);
@@ -1379,9 +1454,6 @@ mod tests {
     /// On rend avec un buffer reuse EMPOISONNÉ : aucune valeur ne doit fuiter.
     #[test]
     fn echo_pass_ignores_coarse_pass_reuse() {
-        use std::sync::atomic::AtomicBool;
-        use crate::render::render_escape_time_cancellable_with_reuse as render;
-
         let mut p = base_params(64, 48);
         p.center_x = -0.6;
         p.center_y = 0.3;
@@ -1406,7 +1478,8 @@ mod tests {
         let poison_zs = vec![Complex64::new(1e300, -1e300); 32 * 24];
         let poisoned = Some((poison_it.as_slice(), poison_zs.as_slice(), 32u32, 24u32));
 
-        let __out = render(&z, &cancel, poisoned, &mut None, Some(&map), None).expect("écho+poison");
+        let __out =
+            render(&z, &cancel, poisoned, &mut None, Some(&map), None).expect("écho+poison");
         let (it_poison, zs_poison) = (__out.iterations, __out.zs);
         assert!(
             !it_poison.iter().any(|&it| it == u32::MAX),
@@ -1416,7 +1489,11 @@ mod tests {
         let (it_clean, zs_clean) = (__out.iterations, __out.zs);
         assert_eq!(it_poison, it_clean, "écho+reuse == écho seul (itérations)");
         assert_eq!(
-            zs_poison.iter().zip(&zs_clean).filter(|(a, b)| a != b).count(),
+            zs_poison
+                .iter()
+                .zip(&zs_clean)
+                .filter(|(a, b)| a != b)
+                .count(),
             0,
             "écho+reuse == écho seul (zs)"
         );
@@ -1434,9 +1511,7 @@ mod tests {
     #[test]
     #[ignore]
     fn xaos_pan_speedup_diagnostic() {
-        use std::sync::atomic::AtomicBool;
         use std::time::Instant;
-        use crate::render::render_escape_time_cancellable_with_reuse as render;
 
         let mut p = base_params(1024, 768);
         p.center_x = -0.743643135;
@@ -1466,7 +1541,9 @@ mod tests {
         let t_xaos = t2.elapsed();
         println!(
             "full={:?} xaos={:?} (map build {:?}) — pixels copiés {:.1}% — speedup ×{:.1}",
-            t_full, t_xaos, t_map,
+            t_full,
+            t_xaos,
+            t_map,
             100.0 * reused_px / total_px,
             t_full.as_secs_f64() / t_xaos.as_secs_f64().max(1e-9),
         );
@@ -1478,9 +1555,7 @@ mod tests {
     #[test]
     #[ignore]
     fn xaos_zoom_cycle_diagnostic() {
-        use std::sync::atomic::AtomicBool;
         use std::time::Instant;
-        use crate::render::render_escape_time_cancellable_with_reuse as render;
 
         let mut p = base_params(1024, 768);
         p.center_x = -0.743643135;

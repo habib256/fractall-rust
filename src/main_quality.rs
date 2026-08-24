@@ -2,13 +2,15 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use fractall_cli::{fractal, gpu, quality};
+use fractall_cli::{fractal, gpu, quality, render};
 
 use fractal::FractalType;
-use quality::{apply_zoom, compare, compare_gpu, params_from_preset, ComparisonOptions};
 use quality::metrics::Thresholds;
 use quality::presets;
-use quality::report::{write_report, write_suite_summary, write_suite_summary_json, print_summary_line, ReportInputs};
+use quality::report::{
+    print_summary_line, write_report, write_suite_summary, write_suite_summary_json, ReportInputs,
+};
+use quality::{apply_zoom, compare, compare_gpu, params_from_preset, ComparisonOptions};
 
 /// Compare the perturbation pipeline against a pure-GMP reference render,
 /// producing per-pixel metrics and PNG diff heatmaps for regression diagnostics.
@@ -16,7 +18,7 @@ use quality::report::{write_report, write_suite_summary, write_suite_summary_jso
 #[command(
     name = "fractall-quality",
     about = "Qualité/régression perturbation vs GMP pur",
-    version,
+    version
 )]
 struct Cli {
     #[arg(long, default_value_t = 256, global = true)]
@@ -61,9 +63,7 @@ enum Command {
     /// Lister les presets disponibles.
     List,
     /// Exécuter un preset par nom.
-    Preset {
-        name: String,
-    },
+    Preset { name: String },
     /// Exécuter toute la suite.
     Suite,
     /// Exécuter une scène personnalisée.
@@ -118,7 +118,13 @@ fn gpu_render_closure(
     move |params| {
         let cancel = std::sync::atomic::AtomicBool::new(false);
         renderer
-            .render_dispatch(params, &cancel, None, None)
+            .render_dispatch(
+                render::GpuRenderPlan::for_params(params),
+                params,
+                &cancel,
+                None,
+                None,
+            )
             .map(|r| (r.iterations, r.zs))
     }
 }
@@ -154,8 +160,10 @@ fn main() {
         Command::List => {
             println!("Presets disponibles:");
             for p in presets::PRESETS {
-                println!("  {:<30} {:?} zoom={} iter={}",
-                    p.name, p.fractal_type, p.zoom, p.iterations);
+                println!(
+                    "  {:<30} {:?} zoom={} iter={}",
+                    p.name, p.fractal_type, p.zoom, p.iterations
+                );
                 println!("    {}", p.description);
             }
         }
@@ -181,7 +189,11 @@ fn main() {
                         eprintln!("Erreur écriture rapport: {e}");
                         std::process::exit(1);
                     }
-                    println!("Rapport: {}/{}/report.md", cli.output_dir.display(), preset.name);
+                    println!(
+                        "Rapport: {}/{}/report.md",
+                        cli.output_dir.display(),
+                        preset.name
+                    );
                 }
                 Err(e) => {
                     eprintln!("Erreur compare: {e}");
@@ -226,9 +238,20 @@ fn main() {
                 eprintln!("Erreur écriture summary JSON: {e}");
                 std::process::exit(1);
             }
-            println!("\nSuite summary: {}/suite-summary.md", cli.output_dir.display());
+            println!(
+                "\nSuite summary: {}/suite-summary.md",
+                cli.output_dir.display()
+            );
         }
-        Command::Compare { fractal_type, center_x_hp, center_y_hp, zoom, julia_re, julia_im, name } => {
+        Command::Compare {
+            fractal_type,
+            center_x_hp,
+            center_y_hp,
+            zoom,
+            julia_re,
+            julia_im,
+            name,
+        } => {
             let ft = FractalType::from_id(fractal_type).unwrap_or_else(|| {
                 eprintln!("Type invalide: {}", fractal_type);
                 std::process::exit(1);
@@ -318,9 +341,20 @@ fn main() {
             if let Err(e) = write_suite_summary_json(&gpu_dir, &rows, &opt.thresholds) {
                 eprintln!("Erreur écriture summary JSON: {e}");
             }
-            println!("\nGPU suite summary: {}/suite-summary.md", gpu_dir.display());
+            println!(
+                "\nGPU suite summary: {}/suite-summary.md",
+                gpu_dir.display()
+            );
         }
-        Command::GpuCompare { fractal_type, center_x_hp, center_y_hp, zoom, julia_re, julia_im, name } => {
+        Command::GpuCompare {
+            fractal_type,
+            center_x_hp,
+            center_y_hp,
+            zoom,
+            julia_re,
+            julia_im,
+            name,
+        } => {
             let renderer = gpu_renderer_or_exit();
             let render_gpu = gpu_render_closure(&renderer);
             let ft = FractalType::from_id(fractal_type).unwrap_or_else(|| {

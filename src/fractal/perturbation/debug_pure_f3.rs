@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn pure_f3_vs_iterate_pixel_no_legacy() {
         use crate::fractal::perturbation::bla::build_bla_table;
-        use crate::fractal::perturbation::delta::iterate_pixel;
+        use crate::fractal::perturbation::delta::{iterate_pixel_with_dd, PerturbPixelRequest};
         use crate::fractal::perturbation::types::ComplexExp;
         use crate::fractal::{default_params_for_type, AlgorithmMode, FractalType};
 
@@ -240,9 +240,9 @@ mod tests {
                 // et dc = ComplexExp du pixel offset
                 let delta0 = ComplexExp::from_complex64(Complex64::new(0.0, 0.0));
                 let dc_exp = ComplexExp::from_complex64(c_pixel_offset);
-                let result = iterate_pixel(
-                    &params, &orbit, &bla_table, None, delta0, dc_exp, None, None,
-                );
+                let result = iterate_pixel_with_dd(PerturbPixelRequest::new(
+                    &params, &orbit, &bla_table, delta0, dc_exp,
+                ));
 
                 let escaped_pure = pure.iteration < iter_max;
                 let escaped_prod = result.iteration < iter_max;

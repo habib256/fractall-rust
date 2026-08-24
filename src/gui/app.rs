@@ -9,14 +9,18 @@ use num_complex::Complex64;
 use rug::Float;
 
 use crate::color::generate_palette_preview;
-use crate::fractal::{AlgorithmMode, apply_lyapunov_preset, default_params_for_type, FractalParams, FractalType, LyapunovPreset, OutColoringMode, PlaneTransform};
 use crate::fractal::perturbation::ReferenceOrbitCache;
 use crate::fractal::xaos::{self, XaosSourceFrame};
-use crate::render::render_escape_time_cancellable_with_reuse;
-use crate::gui::texture::rgb_image_to_color_image;
-use crate::gui::nav;
-use crate::gui::progressive::{ProgressiveConfig, RenderMessage, upscale_nearest};
+use crate::fractal::{
+    apply_lyapunov_preset, default_params_for_type, AlgorithmMode, FractalParams, FractalType,
+    LyapunovPreset, OutColoringMode, PlaneTransform, ViewHp,
+};
 use crate::gpu::GpuRenderer;
+use crate::gui::hq_render_state::{HqRenderEvent, HqRenderResult, HqRenderState};
+use crate::gui::nav;
+use crate::gui::progressive::{upscale_nearest, ProgressiveConfig, RenderMessage};
+use crate::gui::texture::rgb_image_to_color_image;
+use crate::render::{render_request, RenderRequest};
 
 /// Précision par défaut pour les calculs de coordonnées haute précision (en bits).
 const HP_PRECISION: u32 = 256;
@@ -46,22 +50,18 @@ struct ViewSnapshot {
 /// `u = 0.5 + (c_re − centre_re)/span_re` (droite) et
 /// `v = 0.5 + (c_im − centre_im)/span_im` (bas). Un `-dy` briserait cette
 /// symétrie et mal-placerait le warp verticalement sur un zoom ancré hors-centre.
-fn compute_warp_norm(
-    tex: &ViewSnapshot,
-    live: &ViewSnapshot,
-    prec: u32,
-) -> Option<(f64, f64, f64, f64)> {
-    let f = |s: &str| Float::parse(s).ok().map(|p| Float::with_val(prec, p));
-    let (cxt, cyt, sxt, syt) = (f(&tex.cx)?, f(&tex.cy)?, f(&tex.sx)?, f(&tex.sy)?);
-    let (cxl, cyl, sxl, syl) = (f(&live.cx)?, f(&live.cy)?, f(&live.sx)?, f(&live.sy)?);
-    if sxl.is_zero() || syl.is_zero() {
-        return None;
-    }
-    // Ratios O(1) : décalage (Δcentre/span) et échelle (span_tex/span_live).
-    let dx = (Float::with_val(prec, &cxt - &cxl) / &sxl).to_f64();
-    let dy = (Float::with_val(prec, &cyt - &cyl) / &syl).to_f64();
-    let rx = Float::with_val(prec, &sxt / &sxl).to_f64();
-    let ry = Float::with_val(prec, &syt / &syl).to_f64();
+fn compute_warp_norm(tex: &ViewSnapshot, live: &ViewSnapshot) -> Option<(f64, f64, f64, f64)> {
+    let tex = ViewHp::from_decimal_parts(&tex.cx, &tex.cy, &tex.sx, &tex.sy, 1, 1, HP_PRECISION)?;
+    let live =
+        ViewHp::from_decimal_parts(&live.cx, &live.cy, &live.sx, &live.sy, 1, 1, HP_PRECISION)?;
+    // Placement de la texture (cible) dans la vue live (source du repère).
+    let transform = live.transform_to(&tex);
+    let (dx, dy, rx, ry) = (
+        transform.offset_x,
+        transform.offset_y,
+        transform.scale_x,
+        transform.scale_y,
+    );
     if ![dx, dy, rx, ry].iter().all(|v| v.is_finite()) {
         return None;
     }
@@ -92,18 +92,15 @@ fn colorize_buffer(
 }
 
 /// Mode de rendu CPU effectif (pour le label de statut uniquement). Réplique la
-/// décision du dispatcher unifié `render_escape_time_cancellable_with_reuse` :
+/// décision du dispatcher unifié `render_request` :
 /// en Auto, perturbation pour les types escape-time supportés (plan Mu), sinon
 /// GMP reference au-delà de ~1e16, sinon f64 standard.
-fn effective_cpu_mode(params: &FractalParams) -> AlgorithmMode {
+fn effective_cpu_mode(plan: crate::render::CpuRenderPlan) -> AlgorithmMode {
     use crate::fractal::wisdom;
-    match params.algorithm_mode {
-        AlgorithmMode::Auto => match wisdom::plan(params).algorithm {
-            wisdom::Algorithm::Perturbation => AlgorithmMode::Perturbation,
-            wisdom::Algorithm::ReferenceGmp => AlgorithmMode::ReferenceGmp,
-            wisdom::Algorithm::StandardF64 => AlgorithmMode::StandardF64,
-        },
-        m => m,
+    match plan.wisdom().algorithm {
+        wisdom::Algorithm::Perturbation => AlgorithmMode::Perturbation,
+        wisdom::Algorithm::ReferenceGmp => AlgorithmMode::ReferenceGmp,
+        wisdom::Algorithm::StandardF64 => AlgorithmMode::StandardF64,
     }
 }
 
@@ -147,7 +144,7 @@ pub struct FractallApp {
 
     // Cache des textures de prévisualisation des palettes
     palette_preview_textures: [Option<TextureHandle>; 27],
-    
+
     // État UI
     selected_type: FractalType,
     palette_index: u8,
@@ -161,19 +158,13 @@ pub struct FractallApp {
     /// N'a pas encore tenté de créer le GPU (init différée après ouverture de la fenêtre)
     gpu_init_attempted: bool,
     use_gpu: bool,
-    
-    // Coordonnées haute précision (représentation décimale exacte)
-    // Permettent des zooms au-delà de la limite f64 (~1e-15)
-    center_x_hp: String,
-    center_y_hp: String,
-    span_x_hp: String,
-    span_y_hp: String,
-    
+
+    /// Source de vérité géométrique possédée par le contrôleur GUI.
+    view: ViewHp,
+
     // Sélection rectangulaire pour zoom
-    selecting: bool,
-    select_start: Option<egui::Pos2>,
-    select_current: Option<egui::Pos2>,
-    
+    selection: crate::gui::selection::SelectionState,
+
     // Rendu progressif
     rendering: bool,
     render_thread: Option<thread::JoinHandle<()>>,
@@ -192,18 +183,18 @@ pub struct FractallApp {
     /// Couleurs (palette, repeat, mode, espace) figées au lancement du rendu :
     /// les moyennes AA arrivent déjà colorisées avec elles — si l'utilisateur a
     /// recoloré entre-temps, on n'écrase pas sa recolorisation (bug 2026-08-23).
-    render_color_key: (u8, u32, crate::fractal::OutColoringMode, crate::fractal::ColorSpace),
+    render_color_key: (
+        u8,
+        u32,
+        crate::fractal::OutColoringMode,
+        crate::fractal::ColorSpace,
+    ),
 
     // Métriques
     last_render_time: Option<f64>, // en secondes
     render_start_time: Option<Instant>,
     last_render_device_label: Option<String>,
     last_render_method_label: Option<String>,
-
-    // Dimensions de la fenêtre (pour calculer le viewport)
-    window_width: u32,
-    window_height: u32,
-    pending_resize: Option<(u32, u32)>,
 
     // Cache for orbit/BLA to accelerate deep zoom re-renders
     orbit_cache: Option<Arc<ReferenceOrbitCache>>,
@@ -224,10 +215,8 @@ pub struct FractallApp {
     // Fenêtre de rendu haute résolution
     show_render_dialog: bool,
     render_resolution_preset: RenderResolutionPreset,
-    hq_rendering: bool,
-    hq_render_progress: f32,
-    hq_render_receiver: Option<mpsc::Receiver<HqRenderMessage>>,
-    hq_render_result: Option<String>,
+    hq_render_state: HqRenderState,
+    hq_render_receiver: Option<mpsc::Receiver<HqRenderEvent>>,
 
     // Canal dédié pour les recolorisations asynchrones (changement palette/color_repeat)
     // Persiste toute la vie de l'application, contrairement à texture_ready_* qui n'existe que pendant le rendu
@@ -308,13 +297,6 @@ impl RenderResolutionPreset {
     }
 }
 
-/// Message pour le rendu haute qualité asynchrone.
-enum HqRenderMessage {
-    Progress(f32),      // 0.0 à 1.0
-    Done(String),       // Chemin du fichier sauvegardé
-    Error(String),      // Message d'erreur
-}
-
 /// Message envoyé par le thread de colorisation vers l'UI (évite de bloquer le thread principal).
 struct TextureReadyMessage {
     pass_index: u8,
@@ -381,9 +363,8 @@ impl FractallApp {
             texture_view: None,
             rendering_view: None,
             palette_preview_textures: [
-                None, None, None, None, None, None, None, None, None,
-                None, None, None, None, None, None, None, None, None,
-                None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None,
             ],
             selected_type: default_type,
             palette_index: 6, // SmoothPlasma par défaut
@@ -394,14 +375,8 @@ impl FractallApp {
             gpu_renderer,
             gpu_init_attempted,
             use_gpu: use_gpu_default,
-            // Initialiser les coordonnées haute précision depuis les params f64
-            center_x_hp: params.center_x.to_string(),
-            center_y_hp: params.center_y.to_string(),
-            span_x_hp: params.span_x.to_string(),
-            span_y_hp: params.span_y.to_string(),
-            selecting: false,
-            select_start: None,
-            select_current: None,
+            view: ViewHp::from_params(&params),
+            selection: Default::default(),
             rendering: false,
             render_thread: None,
             render_cancel: Arc::new(AtomicBool::new(false)),
@@ -411,24 +386,24 @@ impl FractallApp {
             render_progress: Default::default(),
             is_preview: false,
             aa_samples: 1,
-            render_color_key: (6, 40, crate::fractal::OutColoringMode::Smooth, crate::fractal::ColorSpace::Rgb),
+            render_color_key: (
+                6,
+                40,
+                crate::fractal::OutColoringMode::Smooth,
+                crate::fractal::ColorSpace::Rgb,
+            ),
             last_render_time: None,
             render_start_time: None,
             last_render_device_label: None,
             last_render_method_label: None,
-            window_width: width,
-            window_height: height,
-            pending_resize: None,
             orbit_cache: None,
             xaos: Default::default(),
             hover_norm: None,
             last_render_finished: None,
             show_render_dialog: false,
             render_resolution_preset: RenderResolutionPreset::Res4K,
-            hq_rendering: false,
-            hq_render_progress: 0.0,
+            hq_render_state: Default::default(),
             hq_render_receiver: None,
-            hq_render_result: None,
             recolor_sender: recolor_tx,
             recolor_receiver: recolor_rx,
             recolor_version: Default::default(),
@@ -461,82 +436,31 @@ impl FractallApp {
             ui_frame_events: Vec::new(),
         }
     }
-    
-    /// Synchronise les coordonnées haute précision vers les params f64 et String.
-    /// Appelé après chaque modification des coordonnées HP.
-    /// Stocke les String dans FractalParams pour préserver la précision pour les calculs GMP.
-    fn sync_hp_to_params(&mut self) {
-        // Stocker les String directement dans FractalParams pour préserver la précision
-        self.params.center_x_hp = Some(self.center_x_hp.clone());
-        self.params.center_y_hp = Some(self.center_y_hp.clone());
-        self.params.span_x_hp = Some(self.span_x_hp.clone());
-        self.params.span_y_hp = Some(self.span_y_hp.clone());
-        
-        // Parser les strings HP vers rug::Float puis convertir en f64 pour compatibilité GPU/CPU standard
-        let prec = HP_PRECISION;
-        
-        if let Ok(cx) = Float::parse(&self.center_x_hp) {
-            self.params.center_x = Float::with_val(prec, cx).to_f64();
-        }
-        if let Ok(cy) = Float::parse(&self.center_y_hp) {
-            self.params.center_y = Float::with_val(prec, cy).to_f64();
-        }
-        if let Ok(sx) = Float::parse(&self.span_x_hp) {
-            self.params.span_x = Float::with_val(prec, sx).to_f64();
-        }
-        if let Ok(sy) = Float::parse(&self.span_y_hp) {
-            self.params.span_y = Float::with_val(prec, sy).to_f64();
-        }
-    }
-    
+
     /// Met à jour les coordonnées HP depuis les params f64.
     /// Appelé quand on change de type de fractale ou reset.
     /// IMPORTANT: Utiliser to_string_radix avec précision maximale pour préserver la précision
     /// aux zooms profonds (>e16). format!("{:.20e}") limite à 20 chiffres significatifs.
     fn sync_params_to_hp(&mut self) {
-        let prec = HP_PRECISION;
-        // Convertir f64 → GMP Float → String avec précision maximale
-        // Cela préserve beaucoup plus de précision que format!("{:.20e}")
-        let cx_gmp = Float::with_val(prec, self.params.center_x);
-        let cy_gmp = Float::with_val(prec, self.params.center_y);
-        let sx_gmp = Float::with_val(prec, self.params.span_x);
-        let sy_gmp = Float::with_val(prec, self.params.span_y);
-        
-        // Utiliser to_string_radix(10, None) pour obtenir tous les chiffres significatifs
-        self.center_x_hp = cx_gmp.to_string_radix(10, None);
-        self.center_y_hp = cy_gmp.to_string_radix(10, None);
-        self.span_x_hp = sx_gmp.to_string_radix(10, None);
-        self.span_y_hp = sy_gmp.to_string_radix(10, None);
+        self.view = ViewHp::from_params(&self.params);
+        self.view.write_to_params(&mut self.params);
     }
-    
-    /// Précision (bits) pour l'arithmétique HP du zoom : doit résoudre le centre
-    /// à une fraction du span (~ -log2(span) + marge). Le fixe `HP_PRECISION`
-    /// (256 bits ≈ 77 chiffres) tronquait les deep zooms (> ~1e60) : à zoom
-    /// 1e235 le centre était arrondi à 77 chiffres alors que ~236 sont requis →
-    /// la vue sautait vers une région fausse → **image uniforme** (cf. x.toml).
-    fn hp_arith_precision(&self) -> u32 {
-        let bits = Float::parse(&self.span_x_hp)
-            .ok()
-            .and_then(|p| Float::with_val(128, p).get_exp())
-            .map(|e| (-(e as i64)).max(0) + 96) // -log2(span) + marge 96 bits
-            .unwrap_or(HP_PRECISION as i64);
-        // Aligné sur MAX_PERTURB_PRECISION_BITS = u32::MAX (pas de plafond de
-        // design, parité F3) : un clamp GUI plus bas que le moteur arrondirait
-        // le centre au zoom → vue fausse aux zooms ultra-profonds (e22522,
-        // e52465). La borne haute restante est celle du type rug (prec u32).
-        bits.clamp(
-            HP_PRECISION as i64,
-            crate::fractal::perturbation::MAX_PERTURB_PRECISION_BITS as i64,
-        ) as u32
+
+    /// Modifie la vue canonique puis republie atomiquement ses valeurs HP et
+    /// leurs miroirs f64.
+    fn edit_view_hp(&mut self, edit: impl FnOnce(&mut ViewHp)) {
+        edit(&mut self.view);
+        self.view.write_to_params(&mut self.params);
     }
 
     /// Snapshot de la vue live courante (centre/span HP + axialité).
     fn current_view_snapshot(&self) -> ViewSnapshot {
+        let (cx, cy, sx, sy) = self.view.decimal_parts();
         ViewSnapshot {
-            cx: self.center_x_hp.clone(),
-            cy: self.center_y_hp.clone(),
-            sx: self.span_x_hp.clone(),
-            sy: self.span_y_hp.clone(),
+            cx,
+            cy,
+            sx,
+            sy,
             axis_aligned: self.params.rotation == 0.0 && self.params.transform_k.is_none(),
         }
     }
@@ -560,7 +484,7 @@ impl FractallApp {
         if !tex.axis_aligned || !live.axis_aligned {
             return None;
         }
-        let (n_cx, v_cy, rx, ry) = compute_warp_norm(tex, &live, self.hp_arith_precision())?;
+        let (n_cx, v_cy, rx, ry) = compute_warp_norm(tex, &live)?;
         let w = image_rect.width() as f64;
         let h = image_rect.height() as f64;
         let x0 = image_rect.min.x as f64;
@@ -581,153 +505,25 @@ impl FractallApp {
     /// `ratio_x`, `ratio_y` : position relative dans l'image (0.0-1.0)
     /// `zoom_factor` : facteur de zoom (>1 = zoom in, <1 = zoom out)
     fn zoom_hp(&mut self, ratio_x: f64, ratio_y: f64, zoom_factor: f64) {
-        let prec = self.hp_arith_precision();
-        
-        // Parser les coordonnées actuelles
-        let center_x = Float::parse(&self.center_x_hp)
-            .map(|p| Float::with_val(prec, p))
-            .unwrap_or_else(|_| Float::with_val(prec, self.params.center_x));
-        let center_y = Float::parse(&self.center_y_hp)
-            .map(|p| Float::with_val(prec, p))
-            .unwrap_or_else(|_| Float::with_val(prec, self.params.center_y));
-        let span_x = Float::parse(&self.span_x_hp)
-            .map(|p| Float::with_val(prec, p))
-            .unwrap_or_else(|_| Float::with_val(prec, self.params.span_x));
-        let span_y = Float::parse(&self.span_y_hp)
-            .map(|p| Float::with_val(prec, p))
-            .unwrap_or_else(|_| Float::with_val(prec, self.params.span_y));
-        
-        // Calculer le nouveau centre: center + (ratio - 0.5) * span
-        let offset_x = Float::with_val(prec, ratio_x - 0.5) * &span_x;
-        let offset_y = Float::with_val(prec, ratio_y - 0.5) * &span_y;
-        let new_center_x = center_x + offset_x;
-        let new_center_y = center_y + offset_y;
-        
-        // Nouveaux spans (divisés par le facteur de zoom)
-        let target_aspect = self.params.width as f64 / self.params.height as f64;
-        let new_span_y = span_y / Float::with_val(prec, zoom_factor);
-        let new_span_x = Float::with_val(prec, target_aspect) * &new_span_y;
-        
-        // Sauvegarder en strings avec précision maximale
-        // IMPORTANT: Utiliser to_string_radix(10, None) pour préserver toute la précision GMP
-        // aux zooms profonds (>e16). to_string() peut limiter la précision dans certains cas.
-        self.center_x_hp = new_center_x.to_string_radix(10, None);
-        self.center_y_hp = new_center_y.to_string_radix(10, None);
-        self.span_x_hp = new_span_x.to_string_radix(10, None);
-        self.span_y_hp = new_span_y.to_string_radix(10, None);
-        
-        // Synchroniser vers f64 pour le rendu
-        self.sync_hp_to_params();
+        self.edit_view_hp(|view| view.focus_at(ratio_x, ratio_y, zoom_factor));
     }
-    
+
     /// Zoom ANCRÉ en haute précision : le point à la position relative
     /// (`ratio_x`, `ratio_y`) reste FIXE à l'écran (zoom molette), au lieu
     /// d'être re-centré comme `zoom_hp`. `zoom_factor` > 1 = zoom in.
     /// Géométrie : C' = C + (r − 0.5)·S·(1 − 1/f), S' = S/f.
     fn zoom_anchored_hp(&mut self, ratio_x: f64, ratio_y: f64, zoom_factor: f64) {
-        let prec = self.hp_arith_precision();
-
-        let center_x = Float::parse(&self.center_x_hp)
-            .map(|p| Float::with_val(prec, p))
-            .unwrap_or_else(|_| Float::with_val(prec, self.params.center_x));
-        let center_y = Float::parse(&self.center_y_hp)
-            .map(|p| Float::with_val(prec, p))
-            .unwrap_or_else(|_| Float::with_val(prec, self.params.center_y));
-        let span_x = Float::parse(&self.span_x_hp)
-            .map(|p| Float::with_val(prec, p))
-            .unwrap_or_else(|_| Float::with_val(prec, self.params.span_x));
-        let span_y = Float::parse(&self.span_y_hp)
-            .map(|p| Float::with_val(prec, p))
-            .unwrap_or_else(|_| Float::with_val(prec, self.params.span_y));
-
-        let k = 1.0 - 1.0 / zoom_factor;
-        let offset_x = Float::with_val(prec, (ratio_x - 0.5) * k) * &span_x;
-        let offset_y = Float::with_val(prec, (ratio_y - 0.5) * k) * &span_y;
-        let new_center_x = center_x + offset_x;
-        let new_center_y = center_y + offset_y;
-
-        let target_aspect = self.params.width as f64 / self.params.height as f64;
-        let new_span_y = span_y / Float::with_val(prec, zoom_factor);
-        let new_span_x = Float::with_val(prec, target_aspect) * &new_span_y;
-
-        self.center_x_hp = new_center_x.to_string_radix(10, None);
-        self.center_y_hp = new_center_y.to_string_radix(10, None);
-        self.span_x_hp = new_span_x.to_string_radix(10, None);
-        self.span_y_hp = new_span_y.to_string_radix(10, None);
-
-        self.sync_hp_to_params();
+        self.edit_view_hp(|view| view.zoom_at(ratio_x, ratio_y, zoom_factor));
     }
 
     /// Effectue un zoom rectangulaire en haute précision.
     fn zoom_rect_hp(&mut self, xr1: f64, yr1: f64, xr2: f64, yr2: f64) {
-        let prec = self.hp_arith_precision();
-        
-        // Parser les coordonnées actuelles
-        let center_x = Float::parse(&self.center_x_hp)
-            .map(|p| Float::with_val(prec, p))
-            .unwrap_or_else(|_| Float::with_val(prec, self.params.center_x));
-        let center_y = Float::parse(&self.center_y_hp)
-            .map(|p| Float::with_val(prec, p))
-            .unwrap_or_else(|_| Float::with_val(prec, self.params.center_y));
-        let span_x = Float::parse(&self.span_x_hp)
-            .map(|p| Float::with_val(prec, p))
-            .unwrap_or_else(|_| Float::with_val(prec, self.params.span_x));
-        let span_y = Float::parse(&self.span_y_hp)
-            .map(|p| Float::with_val(prec, p))
-            .unwrap_or_else(|_| Float::with_val(prec, self.params.span_y));
-        
-        // Nouveau centre: center + ((r1+r2)/2 - 0.5) * span
-        let mid_ratio_x = (xr1 + xr2) * 0.5 - 0.5;
-        let mid_ratio_y = (yr1 + yr2) * 0.5 - 0.5;
-        let new_center_x = &center_x + Float::with_val(prec, mid_ratio_x) * &span_x;
-        let new_center_y = &center_y + Float::with_val(prec, mid_ratio_y) * &span_y;
-        
-        // Nouveaux spans: (r2 - r1) * span
-        let selection_span_x = Float::with_val(prec, xr2 - xr1) * &span_x;
-        let selection_span_y = Float::with_val(prec, yr2 - yr1) * &span_y;
-        
-        // Ajuster pour le ratio d'aspect
-        let target_aspect = self.params.width as f64 / self.params.height as f64;
-        let selection_aspect = selection_span_x.to_f64() / selection_span_y.to_f64();
-        
-        let (new_span_x, new_span_y) = if selection_aspect > target_aspect {
-            // Sélection plus large : élargir span_y
-            let sy = &selection_span_x / Float::with_val(prec, target_aspect);
-            (selection_span_x, sy)
-        } else {
-            // Sélection plus haute : élargir span_x
-            let sx = &selection_span_y * Float::with_val(prec, target_aspect);
-            (sx, selection_span_y)
-        };
-        
-        // Sauvegarder en strings avec précision maximale
-        // IMPORTANT: Utiliser to_string_radix(10, None) pour préserver toute la précision GMP
-        self.center_x_hp = new_center_x.to_string_radix(10, None);
-        self.center_y_hp = new_center_y.to_string_radix(10, None);
-        self.span_x_hp = new_span_x.to_string_radix(10, None);
-        self.span_y_hp = new_span_y.to_string_radix(10, None);
-        
-        // Synchroniser vers f64
-        self.sync_hp_to_params();
+        self.edit_view_hp(|view| view.select_rect(xr1, yr1, xr2, yr2));
     }
-    
+
     /// Dézoom en haute précision.
     fn zoom_out_hp(&mut self, factor: f64) {
-        let prec = self.hp_arith_precision();
-        
-        let span_y = Float::parse(&self.span_y_hp)
-            .map(|p| Float::with_val(prec, p))
-            .unwrap_or_else(|_| Float::with_val(prec, self.params.span_y));
-        
-        let target_aspect = self.params.width as f64 / self.params.height as f64;
-        let new_span_y = span_y * Float::with_val(prec, factor);
-        let new_span_x = Float::with_val(prec, target_aspect) * &new_span_y;
-        
-        // IMPORTANT: Utiliser to_string_radix(10, None) pour préserver toute la précision GMP
-        self.span_x_hp = new_span_x.to_string_radix(10, None);
-        self.span_y_hp = new_span_y.to_string_radix(10, None);
-
-        self.sync_hp_to_params();
+        self.edit_view_hp(|view| view.zoom_at(0.5, 0.5, 1.0 / factor));
     }
 
     /// Charge l'état de la fractale depuis un fichier PNG contenant des métadonnées.
@@ -741,12 +537,6 @@ impl FractallApp {
                 self.palette_index = params.color_mode;
                 self.color_repeat = params.color_repeat;
                 self.out_coloring_mode = params.out_coloring_mode;
-
-                // Restaurer les coordonnées HP depuis les params
-                self.center_x_hp = params.center_x_hp.clone().unwrap_or_else(|| params.center_x.to_string());
-                self.center_y_hp = params.center_y_hp.clone().unwrap_or_else(|| params.center_y.to_string());
-                self.span_x_hp = params.span_x_hp.clone().unwrap_or_else(|| params.span_x.to_string());
-                self.span_y_hp = params.span_y_hp.clone().unwrap_or_else(|| params.span_y.to_string());
 
                 // Restaurer les params (mais garder les dimensions actuelles de la fenêtre)
                 let current_width = self.params.width;
@@ -765,14 +555,13 @@ impl FractallApp {
                     self.color_repeat = 8;
                 }
 
-                // Synchroniser HP vers params
-                self.sync_hp_to_params();
+                // Construire la vue canonique depuis les métadonnées chargées.
+                self.sync_params_to_hp();
                 self.iteration_input = self.params.iteration_max.to_string();
 
                 // Invalider le cache et relancer le rendu
                 self.orbit_cache = None;
                 self.start_render();
-
             }
             Err(e) => {
                 eprintln!("Erreur chargement PNG: {}", e);
@@ -818,7 +607,8 @@ impl FractallApp {
                 return;
             }
         };
-        let iterations = table.get("iterations")
+        let iterations = table
+            .get("iterations")
             .and_then(|v| v.as_integer())
             .map(|i| i as u32)
             .unwrap_or(self.params.iteration_max);
@@ -837,11 +627,8 @@ impl FractallApp {
         let aspect = self.params.height as f64 / self.params.width as f64;
         let span_y_gmp = Float::with_val(prec, &span_x_gmp * aspect);
 
-        // Set HP coordinates
-        self.center_x_hp = real_str.clone();
-        self.center_y_hp = imag_str.clone();
-        self.span_x_hp = span_x_gmp.to_string();
-        self.span_y_hp = span_y_gmp.to_string();
+        let span_x_hp = span_x_gmp.to_string();
+        let span_y_hp = span_y_gmp.to_string();
 
         // Set f64 approximations
         self.params.center_x = Float::with_val(prec, Float::parse(&real_str).unwrap()).to_f64();
@@ -852,8 +639,8 @@ impl FractallApp {
         // HP strings in params
         self.params.center_x_hp = Some(real_str);
         self.params.center_y_hp = Some(imag_str);
-        self.params.span_x_hp = Some(self.span_x_hp.clone());
-        self.params.span_y_hp = Some(self.span_y_hp.clone());
+        self.params.span_x_hp = Some(span_x_hp);
+        self.params.span_y_hp = Some(span_y_hp);
 
         // Iterations
         self.params.iteration_max = iterations;
@@ -864,7 +651,7 @@ impl FractallApp {
         self.params.fractal_type = FractalType::Mandelbrot;
 
         // Sync and render
-        self.sync_hp_to_params();
+        self.sync_params_to_hp();
         self.orbit_cache = None;
         self.start_render();
 
@@ -873,10 +660,10 @@ impl FractallApp {
 
     /// Lance un rendu haute résolution asynchrone et sauvegarde le résultat.
     fn render_high_quality(&mut self) {
-        let (render_width, render_height) = self.render_resolution_preset.resolution(
-            self.window_width,
-            self.window_height,
-        );
+        let (window_width, window_height) = self.view.dimensions();
+        let (render_width, render_height) = self
+            .render_resolution_preset
+            .resolution(window_width, window_height);
 
         // Créer les params pour le rendu haute résolution
         let mut render_params = self.params.clone();
@@ -894,25 +681,24 @@ impl FractallApp {
         }
 
         // Copier les coordonnées HP pour le thread
-        let center_x_hp = self.center_x_hp.clone();
-        let center_y_hp = self.center_y_hp.clone();
-        let span_x_hp = self.span_x_hp.clone();
-        let span_y_hp = self.span_y_hp.clone();
+        let (center_x_hp, center_y_hp, span_x_hp, span_y_hp) = self.view.decimal_parts();
 
         // Canal de communication
         let (tx, rx) = mpsc::channel();
         self.hq_render_receiver = Some(rx);
-        self.hq_rendering = true;
-        self.hq_render_progress = 0.0;
-        self.hq_render_result = None;
+        self.hq_render_state.begin();
 
         println!("Rendering at {}x{}...", render_width, render_height);
 
         // Configuration progressive (même logique que le rendu fenêtre)
         let allow_intermediate = !matches!(
             render_params.fractal_type,
-            FractalType::VonKoch | FractalType::Dragon | FractalType::Buddhabrot
-                | FractalType::Nebulabrot | FractalType::AntiBuddhabrot | FractalType::Lyapunov
+            FractalType::VonKoch
+                | FractalType::Dragon
+                | FractalType::Buddhabrot
+                | FractalType::Nebulabrot
+                | FractalType::AntiBuddhabrot
+                | FractalType::Lyapunov
         );
         let render_plan = crate::fractal::wisdom::plan(&render_params);
         let will_use_perturbation = allow_intermediate
@@ -931,12 +717,12 @@ impl FractallApp {
             let total_passes = config.passes.len() as f32;
             let mut previous_pass: Option<(Vec<u32>, Vec<Complex64>, u32, u32)> = None;
             /// Résultat final du rendu HQ : sortie typée du dispatcher (G5).
-type HqFinal = crate::render::RenderOutput;
+            type HqFinal = crate::render::RenderOutput;
             let mut final_result: Option<HqFinal> = None;
 
             for (pass_index, &scale_divisor) in config.passes.iter().enumerate() {
                 if cancel.load(Ordering::Relaxed) {
-                    let _ = tx.send(HqRenderMessage::Error("Render cancelled".to_string()));
+                    let _ = tx.send(HqRenderEvent::Error("Render cancelled".to_string()));
                     return;
                 }
                 let pass_width = (render_width / scale_divisor as u32).max(1);
@@ -952,23 +738,15 @@ type HqFinal = crate::render::RenderOutput;
                 // par défaut). Gain ≤ 6 % pour une sortie inexacte — supprimé
                 // (bug 2026-08-23). Le dispatcher garde le mécanisme pour
                 // d'autres appelants/tests.
-                let reuse: Option<(&[u32], &[Complex64], u32, u32)> = None;
                 let _ = &previous_pass;
-                let result = crate::render::escape_time::render_escape_time_cancellable_with_reuse(
-                    &pass_params,
-                    &cancel,
-                    reuse,
-                    &mut None,
-                    None, // HQ = sortie exacte, pas de réutilisation XaoS
-                    None, // ni streaming tuiles (thread dédié, résultat final seul)
-                );
+                let result = render_request(RenderRequest::new(&pass_params, &cancel), &mut None);
 
                 match result {
                     Some(out) => {
                         // Progression : 5% au début, puis 5–90% répartis sur les passes, 90–95% sauvegarde
                         let pass_progress = (pass_index + 1) as f32 / total_passes * 0.85f32; // 0.85 * (1/5..5/5)
                         let progress = 0.05f32 + pass_progress; // 5% -> 90%
-                        let _ = tx.send(HqRenderMessage::Progress(progress));
+                        let _ = tx.send(HqRenderEvent::Progress(progress));
 
                         if pass_index + 1 == config.passes.len() {
                             // Canaux annexes conservés : sans eux le PNG HQ des
@@ -979,28 +757,31 @@ type HqFinal = crate::render::RenderOutput;
                         previous_pass = Some((out.iterations, out.zs, pass_width, pass_height));
                     }
                     None => {
-                        let _ = tx.send(HqRenderMessage::Error("Render cancelled".to_string()));
+                        let _ = tx.send(HqRenderEvent::Error("Render cancelled".to_string()));
                         return;
                     }
                 }
             }
 
             if let Some(out) = final_result {
-                let _ = tx.send(HqRenderMessage::Progress(0.92));
+                let _ = tx.send(HqRenderEvent::Progress(0.92));
 
                 use std::path::Path;
                 let timestamp = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                let filename = format!("fractal_{}x{}_{}.png", render_width, render_height, timestamp);
+                let filename = format!(
+                    "fractal_{}x{}_{}.png",
+                    render_width, render_height, timestamp
+                );
 
                 // Colorisation VÉRIFIÉE (G5) : un canal requis absent = erreur
                 // affichée, pas un PNG HQ silencieusement retombé sur Smooth.
                 let buffer = match crate::io::png::colorize_output(&render_params, &out) {
                     Ok(rgb) => rgb,
                     Err(e) => {
-                        let _ = tx.send(HqRenderMessage::Error(format!(
+                        let _ = tx.send(HqRenderEvent::Error(format!(
                             "Erreur de colorisation: {e}"
                         )));
                         return;
@@ -1015,11 +796,11 @@ type HqFinal = crate::render::RenderOutput;
                     &span_x_hp,
                     &span_y_hp,
                 ) {
-                    let _ = tx.send(HqRenderMessage::Error(format!("Error saving PNG: {}", e)));
+                    let _ = tx.send(HqRenderEvent::Error(format!("Error saving PNG: {}", e)));
                 } else {
-                    let _ = tx.send(HqRenderMessage::Progress(1.0));
+                    let _ = tx.send(HqRenderEvent::Progress(1.0));
                     println!("High quality render saved: {}", filename);
-                    let _ = tx.send(HqRenderMessage::Done(filename));
+                    let _ = tx.send(HqRenderEvent::Done(filename));
                 }
             }
         });
@@ -1041,14 +822,14 @@ type HqFinal = crate::render::RenderOutput;
         // Annuler tout rendu en cours
         if self.rendering {
             self.render_cancel.store(true, Ordering::Relaxed);
-            
+
             // Vider tous les messages en attente du receiver pour éviter de traiter des messages obsolètes
             if let Some(receiver) = &self.render_receiver {
                 while receiver.try_recv().is_ok() {
                     // Vider tous les messages
                 }
             }
-            
+
             // Nettoyer l'ancien thread et receiver
             if let Some(handle) = self.render_thread.take() {
                 // On ne peut pas attendre le thread ici (bloquerait l'UI), mais on le marque pour nettoyage
@@ -1080,12 +861,9 @@ type HqFinal = crate::render::RenderOutput;
         // arbitre CPU/GPU (benchmark machine + garde-fou correction — même
         // décision que le CLI). Une sélection EXPLICITE du menu CPU/GPU
         // (algorithm_mode ≠ Auto) est un override manuel via `self.use_gpu`.
-        let auto_plan = crate::fractal::wisdom::auto_plan(
-            &self.params,
-            self.gpu_renderer.is_some(),
-        );
+        let auto_plan = crate::render::RenderPlan::auto(&self.params, self.gpu_renderer.is_some());
         let device_want_gpu = if self.params.algorithm_mode == AlgorithmMode::Auto {
-            auto_plan.device == crate::fractal::wisdom::Device::Gpu
+            auto_plan.wisdom().device == crate::fractal::wisdom::Device::Gpu
         } else {
             self.use_gpu
         };
@@ -1101,14 +879,14 @@ type HqFinal = crate::render::RenderOutput;
             crate::fractal::wisdom::Device::Cpu
         };
         let render_plan = if self.params.algorithm_mode == AlgorithmMode::Auto
-            && render_device == auto_plan.device
+            && render_device == auto_plan.wisdom().device
         {
             auto_plan
         } else {
-            crate::fractal::wisdom::plan_for(&self.params, render_device)
+            crate::render::RenderPlan::for_device(&self.params, render_device)
         };
         let will_use_perturbation = allow_intermediate
-            && render_plan.algorithm == crate::fractal::wisdom::Algorithm::Perturbation;
+            && render_plan.wisdom().algorithm == crate::fractal::wisdom::Algorithm::Perturbation;
         // Navigation XaoS (bouton maintenu) : une passe UNIQUE pleine
         // résolution. Les passes basse résolution repeignent l'image flou→net
         // à chaque cycle de rendu — un pulsing perçu comme une saccade — et
@@ -1177,7 +955,8 @@ type HqFinal = crate::render::RenderOutput;
         // Paramètres pour le thread (activer orbit traps / distance selon outcoloring)
         let mut params = self.params.clone();
         match params.out_coloring_mode {
-            crate::fractal::OutColoringMode::OrbitTraps | crate::fractal::OutColoringMode::Wings => {
+            crate::fractal::OutColoringMode::OrbitTraps
+            | crate::fractal::OutColoringMode::Wings => {
                 params.enable_orbit_traps = true;
             }
             _ => {}
@@ -1200,8 +979,12 @@ type HqFinal = crate::render::RenderOutput;
         let aa_samples = if use_gpu { 1 } else { self.aa_samples.max(1) };
         let aa_jitter_scale = 1.0f64;
         self.render_progress.begin(config.passes.len(), aa_samples);
-        self.render_color_key =
-            (params.color_mode, params.color_repeat, params.out_coloring_mode, params.color_space);
+        self.render_color_key = (
+            params.color_mode,
+            params.color_repeat,
+            params.out_coloring_mode,
+            params.color_space,
+        );
 
         // G10.4 : frame source pour la réutilisation pixels inter-frame.
         // Désactivée en mode AA multi-sample (les échantillons doivent être
@@ -1407,74 +1190,56 @@ type HqFinal = crate::render::RenderOutput;
                 // raffinés, propagés par l'écho de zoom en zoom (bug 2026-08-23).
                 let reuse: Option<(&[u32], &[Complex64], u32, u32)> = None;
                 let _ = &previous_pass;
-                let result = if use_gpu {
-                    let gpu = gpu_renderer.as_ref().unwrap();
-                    // Dispatch GPU PARTAGÉ avec le CLI (`GpuRenderer::render_dispatch`) :
-                    // plus de logique perturbation/type dupliquée côté GUI.
-                    let gpu_out = gpu.render_dispatch(
-                        &pass_params,
-                        &cancel,
-                        reuse,
-                        current_orbit_cache.as_ref(),
-                    );
-                    if let Some(r) = gpu_out {
-                        if let Some(cache) = r.orbit_cache {
-                            current_orbit_cache = Some(cache);
-                        }
-                        let effective_mode = if r.used_perturbation {
+                // Le plan global choisit le backend ; sa spécialisation CPU
+                // reste disponible pour le libellé en cas de choix/fallback CPU.
+                let cpu_plan = crate::render::CpuRenderPlan::for_params(&pass_params);
+                let device = if use_gpu {
+                    crate::fractal::wisdom::Device::Gpu
+                } else {
+                    crate::fractal::wisdom::Device::Cpu
+                };
+                let plan = crate::render::RenderPlan::for_device(&pass_params, device);
+                let mut request = RenderRequest::new(&pass_params, &cancel);
+                if let Some(previous) = reuse {
+                    request = request.with_progressive_reuse(previous.into());
+                }
+                if let Some(map) = xaos_map.as_ref() {
+                    request = request.with_xaos(map);
+                }
+                if let Some(tiles) = tile_opts.as_ref() {
+                    request = request.with_tiles(tiles);
+                }
+                let mut cache = current_orbit_cache.take();
+                let result = crate::render::render_planned(
+                    crate::render::PlannedRenderRequest::new(plan, request),
+                    gpu_renderer.as_deref(),
+                    &mut cache,
+                )
+                .map(|rendered| {
+                    let from_gpu = rendered.device == crate::fractal::wisdom::Device::Gpu;
+                    let effective_mode = if from_gpu {
+                        if rendered.used_perturbation {
                             AlgorithmMode::Perturbation
                         } else {
                             AlgorithmMode::StandardF64
-                        };
-                        Some((
-                            // Le GPU ne produit ni distances ni orbites (gate
-                            // wisdom::gpu_lacks_features) : canaux ABSENTS.
-                            crate::render::RenderOutput::without_extras(r.iterations, r.zs),
-                            effective_mode,
-                            format!("GPU {}", gpu.precision_label()),
-                            true, // from_gpu : ne pas stocker comme frame source XaoS
-                        ))
+                        }
                     } else {
-                        // GPU ne peut pas rendre cette config → fallback CPU via le
-                        // MÊME dispatcher unifié que le CLI (perturbation / GMP / f64
-                        // + cache d'orbite).
-                        let mut cache = current_orbit_cache.take();
-                        let r = render_escape_time_cancellable_with_reuse(
-                            &pass_params,
-                            &cancel,
-                            reuse,
-                            &mut cache,
-                            xaos_map.as_ref(),
-                            tile_opts.as_ref(),
-                        );
-                        current_orbit_cache = cache;
-                        r.map(|out| {
-                            let effective_mode = effective_cpu_mode(&pass_params);
-                            let precision_label = cpu_precision_label(&pass_params, effective_mode);
-                            (out, effective_mode, precision_label, false)
-                        })
-                    }
-                } else {
-                    // CPU rendering — CHEMIN DE RENDU UNIQUE : le même dispatcher
-                    // que le CLI (`render_escape_time_cancellable_with_reuse`), qui
-                    // sélectionne perturbation / GMP / f64 et thread l'orbite
-                    // référence via le cache. Plus de dispatch dupliqué côté GUI.
-                    let mut cache = current_orbit_cache.take();
-                    let r = render_escape_time_cancellable_with_reuse(
-                        &pass_params,
-                        &cancel,
-                        reuse,
-                        &mut cache,
-                        xaos_map.as_ref(),
-                        tile_opts.as_ref(),
-                    );
-                    current_orbit_cache = cache;
-                    r.map(|out| {
-                        let effective_mode = effective_cpu_mode(&pass_params);
-                        let precision_label = cpu_precision_label(&pass_params, effective_mode);
-                        (out, effective_mode, precision_label, false)
-                    })
-                };
+                        effective_cpu_mode(cpu_plan)
+                    };
+                    let precision_label = if from_gpu {
+                        format!(
+                            "GPU {}",
+                            gpu_renderer
+                                .as_ref()
+                                .expect("un rendu GPU exige un renderer")
+                                .precision_label()
+                        )
+                    } else {
+                        cpu_precision_label(&pass_params, effective_mode)
+                    };
+                    (rendered.output, effective_mode, precision_label, from_gpu)
+                });
+                current_orbit_cache = cache;
 
                 match result {
                     Some((out, effective_mode, precision_label, from_gpu)) => {
@@ -1491,7 +1256,12 @@ type HqFinal = crate::render::RenderOutput;
                         let iterations = Arc::new(iterations);
                         let zs = Arc::new(zs);
                         if pass_index + 1 < config.passes.len() {
-                            previous_pass = Some((Arc::clone(&iterations), Arc::clone(&zs), pass_width, pass_height));
+                            previous_pass = Some((
+                                Arc::clone(&iterations),
+                                Arc::clone(&zs),
+                                pass_width,
+                                pass_height,
+                            ));
                         } else {
                             previous_pass = None;
                         }
@@ -1505,8 +1275,7 @@ type HqFinal = crate::render::RenderOutput;
                         // exactes (pan entier, refine ε) n'en déclenchent pas.
                         let xaos_approx = match (&xaos_map, from_gpu) {
                             (Some(m), false) => {
-                                m.any_reuse()
-                                    && m.max_abs_err() > xaos::XAOS_EXACT_TOLERANCE_PX
+                                m.any_reuse() && m.max_abs_err() > xaos::XAOS_EXACT_TOLERANCE_PX
                             }
                             _ => false,
                         };
@@ -1514,9 +1283,9 @@ type HqFinal = crate::render::RenderOutput;
                         // information : garder la frame source existante au
                         // lieu de la dégrader en copie de copie (zooms/pans
                         // enchaînés qui annulent les rendus en cours).
-                        let pure_copy = xaos_map
-                            .as_ref()
-                            .is_some_and(|m| m.is_pure_copy(pass_width as usize, pass_height as usize));
+                        let pure_copy = xaos_map.as_ref().is_some_and(|m| {
+                            m.is_pure_copy(pass_width as usize, pass_height as usize)
+                        });
                         let xaos_frame = if from_gpu || pure_copy {
                             None
                         } else {
@@ -1578,7 +1347,7 @@ type HqFinal = crate::render::RenderOutput;
                             xaos_frame,
                             xaos_approx,
                         });
-                        
+
                         // Délai pour laisser l'UI afficher cette passe avant de continuer
                         // Sans ce délai, les passes rapides s'empilent et l'affichage progressif
                         // ne fonctionne pas (ex: passe 3 et 4 quasi simultanées)
@@ -1619,7 +1388,7 @@ type HqFinal = crate::render::RenderOutput;
                     // Même dispatcher unifié que le CLI (cache d'orbite réutilisé
                     // entre samples, même centre).
                     let mut cache = current_orbit_cache.take();
-                    let rendered = render_escape_time_cancellable_with_reuse(&p, &cancel, None, &mut cache, None, None);
+                    let rendered = render_request(RenderRequest::new(&p, &cancel), &mut cache);
                     current_orbit_cache = cache;
                     let Some(sample) = rendered else { break };
                     let rgb = colorize_buffer(
@@ -1650,7 +1419,9 @@ type HqFinal = crate::render::RenderOutput;
                 }
             }
 
-            let _ = sender.send(RenderMessage::AllComplete { orbit_cache: current_orbit_cache });
+            let _ = sender.send(RenderMessage::AllComplete {
+                orbit_cache: current_orbit_cache,
+            });
         });
 
         self.render_thread = Some(handle);
@@ -1759,35 +1530,28 @@ type HqFinal = crate::render::RenderOutput;
                 let total_width = self.params.width;
                 let total_height = self.params.height;
                 thread::spawn(move || {
-                    let (iterations, zs, distances, orbits, disp_w, disp_h, is_preview) = if scale_divisor > 1 {
-                        let (upscaled_iter, upscaled_zs) = upscale_nearest(
-                            &iterations,
-                            &zs,
-                            width,
-                            height,
-                            total_width,
-                            total_height,
-                        );
-                        (
-                            Arc::new(upscaled_iter),
-                            Arc::new(upscaled_zs),
-                            Vec::new(),
-                            Vec::new(),
-                            total_width,
-                            total_height,
-                            true,
-                        )
-                    } else {
-                        (
-                            iterations,
-                            zs,
-                            distances,
-                            orbits,
-                            width,
-                            height,
-                            false,
-                        )
-                    };
+                    let (iterations, zs, distances, orbits, disp_w, disp_h, is_preview) =
+                        if scale_divisor > 1 {
+                            let (upscaled_iter, upscaled_zs) = upscale_nearest(
+                                &iterations,
+                                &zs,
+                                width,
+                                height,
+                                total_width,
+                                total_height,
+                            );
+                            (
+                                Arc::new(upscaled_iter),
+                                Arc::new(upscaled_zs),
+                                Vec::new(),
+                                Vec::new(),
+                                total_width,
+                                total_height,
+                                true,
+                            )
+                        } else {
+                            (iterations, zs, distances, orbits, width, height, false)
+                        };
                     let display_buffer = colorize_buffer(
                         &iterations,
                         &zs,
@@ -1835,7 +1599,11 @@ type HqFinal = crate::render::RenderOutput;
                 let (fw, fh) = (self.params.width, self.params.height);
                 if (width, height) != (fw, fh) && width > 0 && height > 0 {
                     let up = crate::gui::progressive::upscale_rgb_nearest(
-                        &display_buffer, width, height, fw, fh,
+                        &display_buffer,
+                        width,
+                        height,
+                        fw,
+                        fh,
                     );
                     self.load_texture_from_buffer(ctx, &up, fw, fh);
                 } else {
@@ -1935,7 +1703,12 @@ type HqFinal = crate::render::RenderOutput;
                         self.distances = Arc::new(tex.distances);
                         self.orbits = Arc::new(tex.orbits);
                         self.is_preview = tex.is_preview;
-                        self.load_texture_from_buffer(ctx, &tex.display_buffer, tex.width, tex.height);
+                        self.load_texture_from_buffer(
+                            ctx,
+                            &tex.display_buffer,
+                            tex.width,
+                            tex.height,
+                        );
                         ctx.request_repaint();
                     }
                 }
@@ -1961,10 +1734,6 @@ type HqFinal = crate::render::RenderOutput;
                 // G10.4 : point de départ du délai idle avant raffinement.
                 self.last_render_finished = Some(Instant::now());
 
-                // Gérer le redimensionnement en attente
-                if let Some((w, h)) = self.pending_resize.take() {
-                    self.apply_resize(w, h);
-                }
             }
 
             RenderMessage::Cancelled => {
@@ -1985,7 +1754,7 @@ type HqFinal = crate::render::RenderOutput;
         if new_width == 0 || new_height == 0 {
             return;
         }
-        if new_width == self.window_width && new_height == self.window_height {
+        if (new_width, new_height) == self.view.dimensions() {
             return;
         }
         if self.rendering {
@@ -2015,22 +1784,8 @@ type HqFinal = crate::render::RenderOutput;
         // HP (centre inclus) depuis leurs approximations 53 bits : à zoom
         // profond, tout redimensionnement de fenêtre arrondissait le centre →
         // vue fausse / image uniforme (bug 2026-08-23).
-        let prec = self.hp_arith_precision();
-        let sx = Float::parse(&self.span_x_hp)
-            .map(|p| Float::with_val(prec, p))
-            .unwrap_or_else(|_| Float::with_val(prec, self.params.span_x));
-        let sy = Float::parse(&self.span_y_hp)
-            .map(|p| Float::with_val(prec, p))
-            .unwrap_or_else(|_| Float::with_val(prec, self.params.span_y));
-        let (nsx, nsy) = resized_spans_hp(&sx, &sy, new_width, new_height, prec);
-        self.span_x_hp = nsx.to_string_radix(10, None);
-        self.span_y_hp = nsy.to_string_radix(10, None);
-        self.window_width = new_width;
-        self.window_height = new_height;
-        self.params.width = new_width;
-        self.params.height = new_height;
-        // HP → params (chaînes + miroirs f64) ; le centre HP reste exact.
-        self.sync_hp_to_params();
+        self.view.resize(new_width, new_height);
+        self.view.write_to_params(&mut self.params);
         self.iterations = Arc::new(Vec::new());
         self.zs = Arc::new(Vec::new());
         self.orbits = Arc::new(Vec::new());
@@ -2040,10 +1795,20 @@ type HqFinal = crate::render::RenderOutput;
 
     /// Charge une texture depuis un buffer RGB pré-colorisé.
     /// Utilisé pour les passes de rendu (évite de bloquer l'UI).
-    fn load_texture_from_buffer(&mut self, ctx: &Context, rgb_buffer: &[u8], width: u32, height: u32) {
+    fn load_texture_from_buffer(
+        &mut self,
+        ctx: &Context,
+        rgb_buffer: &[u8],
+        width: u32,
+        height: u32,
+    ) {
         let expected_size = (width as usize) * (height as usize) * 3;
         if rgb_buffer.len() != expected_size {
-            eprintln!("Warning: RGB buffer size mismatch: got {}, expected {}", rgb_buffer.len(), expected_size);
+            eprintln!(
+                "Warning: RGB buffer size mismatch: got {}, expected {}",
+                rgb_buffer.len(),
+                expected_size
+            );
             return;
         }
         let Some(img) = RgbImage::from_raw(width, height, rgb_buffer.to_vec()) else {
@@ -2181,7 +1946,7 @@ type HqFinal = crate::render::RenderOutput;
                 return;
             }
 
-            let result = render_escape_time_cancellable_with_reuse(&params, &cancel, None, &mut None, None, None);
+            let result = render_request(RenderRequest::new(&params, &cancel), &mut None);
 
             if cancel.load(Ordering::Relaxed) {
                 return;
@@ -2245,19 +2010,25 @@ type HqFinal = crate::render::RenderOutput;
 
     /// Calcule les coordonnées complexes (f64) depuis les coordonnées pixel.
     /// Réservé aux usages f64 (seed Julia) — PAS au zoom (cf. `zoom_at_ratio`).
-    fn pixel_to_complex(&self, pixel_x: f32, pixel_y: f32, viewport_width: f32, viewport_height: f32) -> Complex64 {
+    fn pixel_to_complex(
+        &self,
+        pixel_x: f32,
+        pixel_y: f32,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> Complex64 {
         let x_ratio = pixel_x as f64 / viewport_width as f64;
         let y_ratio = pixel_y as f64 / viewport_height as f64;
-        
+
         // Utiliser center+span directement pour éviter les problèmes de précision
         // x = center_x + (ratio - 0.5) * span_x
         let x = self.params.center_x + (x_ratio - 0.5) * self.params.span_x;
         // y = center_y + (ratio - 0.5) * span_y (même convention que le rendu)
         let y = self.params.center_y + (y_ratio - 0.5) * self.params.span_y;
-        
+
         Complex64::new(x, y)
     }
-    
+
     /// Zoom au point spécifié par son RATIO dans l'image ([0,1]², 0.5 = centre)
     /// avec un facteur donné.
     ///
@@ -2278,32 +2049,45 @@ type HqFinal = crate::render::RenderOutput;
 
         self.start_render();
     }
-    
+
     /// Zoom sur une zone rectangulaire sélectionnée.
     /// Les coordonnées sont en pixels dans l'image affichée.
     /// L'image affichée représente déjà une zone zoomée définie par center+span.
-    fn zoom_to_rectangle(&mut self, rect_min: egui::Pos2, rect_max: egui::Pos2, image_rect: egui::Rect) {
+    fn zoom_to_rectangle(
+        &mut self,
+        rect_min: egui::Pos2,
+        rect_max: egui::Pos2,
+        image_rect: egui::Rect,
+    ) {
         // Calculer les ratios relatifs dans l'image affichée (0.0 à 1.0)
         let x_ratio1 = ((rect_min.x - image_rect.min.x) / image_rect.width()) as f64;
         let y_ratio1 = ((rect_min.y - image_rect.min.y) / image_rect.height()) as f64;
         let x_ratio2 = ((rect_max.x - image_rect.min.x) / image_rect.width()) as f64;
         let y_ratio2 = ((rect_max.y - image_rect.min.y) / image_rect.height()) as f64;
-        
+
         // Clamper les ratios entre 0.0 et 1.0
         let x_ratio1 = x_ratio1.clamp(0.0, 1.0);
         let y_ratio1 = y_ratio1.clamp(0.0, 1.0);
         let x_ratio2 = x_ratio2.clamp(0.0, 1.0);
         let y_ratio2 = y_ratio2.clamp(0.0, 1.0);
-        
+
         // S'assurer que r1 < r2
-        let (xr1, xr2) = if x_ratio1 < x_ratio2 { (x_ratio1, x_ratio2) } else { (x_ratio2, x_ratio1) };
-        let (yr1, yr2) = if y_ratio1 < y_ratio2 { (y_ratio1, y_ratio2) } else { (y_ratio2, y_ratio1) };
-        
+        let (xr1, xr2) = if x_ratio1 < x_ratio2 {
+            (x_ratio1, x_ratio2)
+        } else {
+            (x_ratio2, x_ratio1)
+        };
+        let (yr1, yr2) = if y_ratio1 < y_ratio2 {
+            (y_ratio1, y_ratio2)
+        } else {
+            (y_ratio2, y_ratio1)
+        };
+
         // Vérifier que le rectangle a une taille minimale
         if (xr2 - xr1) < 0.01 || (yr2 - yr1) < 0.01 {
             return; // Rectangle trop petit (moins de 1% de l'image)
         }
-        
+
         // Utiliser le zoom rectangulaire haute précision
         self.zoom_rect_hp(xr1, yr1, xr2, yr2);
 
@@ -2312,13 +2096,13 @@ type HqFinal = crate::render::RenderOutput;
 
         self.start_render();
     }
-    
+
     /// Dézoom avec un facteur donné.
     fn zoom_out(&mut self, factor: f64) {
         self.zoom_out_hp(factor);
         self.start_render();
     }
-    
+
     /// Dézoom au point spécifié : symétrique de `zoom_at_ratio` (re-centre sur le
     /// point sous le curseur puis élargit le span). Avant, `_point` était ignoré
     /// → le dézoom se faisait toujours au centre (asymétrie avec le clic gauche).
@@ -2329,7 +2113,7 @@ type HqFinal = crate::render::RenderOutput;
         self.orbit_cache = None;
         self.start_render();
     }
-    
+
     /// Change le preset Lyapunov.
     fn change_lyapunov_preset(&mut self, preset: LyapunovPreset) {
         if self.selected_lyapunov_preset == preset && self.selected_type == FractalType::Lyapunov {
@@ -2461,8 +2245,12 @@ type HqFinal = crate::render::RenderOutput;
             AlgorithmMode::Auto => {
                 if !matches!(
                     self.selected_type,
-                    FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn
-                ) || self.params.width == 0 {
+                    FractalType::Mandelbrot
+                        | FractalType::Julia
+                        | FractalType::BurningShip
+                        | FractalType::Tricorn
+                ) || self.params.width == 0
+                {
                     return AlgorithmMode::StandardF64;
                 }
                 // Use appropriate threshold based on GPU/CPU mode
@@ -2525,7 +2313,10 @@ impl eframe::App for FractallApp {
         // copiés (approximés ≤ 0.5 px) ; après ~400 ms sans nouveau rendu,
         // relancer un rendu exact (passe unique, XaoS off) qui remplace
         // silencieusement l'image. Toute interaction (pan/zoom) le supplante.
-        if self.xaos.refine_pending() && !self.rendering && !self.hq_rendering {
+        if self.xaos.refine_pending()
+            && !self.rendering
+            && !self.hq_render_state.is_running()
+        {
             const XAOS_REFINE_IDLE: Duration = Duration::from_millis(400);
             let idle_for = self
                 .last_render_finished
@@ -2586,7 +2377,7 @@ impl eframe::App for FractallApp {
                     }
                 }
             }
-            
+
             // C pour cycle palette
             if i.key_pressed(egui::Key::C) {
                 self.palette_index = (self.palette_index + 1) % 27;
@@ -2597,7 +2388,7 @@ impl eframe::App for FractallApp {
                     self.update_texture(ctx);
                 }
             }
-            
+
             // R pour color_repeat (1-120 ou 1-8 pour densité)
             if i.key_pressed(egui::Key::R) {
                 let max_repeat = if matches!(
@@ -2608,7 +2399,11 @@ impl eframe::App for FractallApp {
                 } else {
                     120
                 };
-                self.color_repeat = if self.color_repeat >= max_repeat { 1 } else { self.color_repeat + 1 };
+                self.color_repeat = if self.color_repeat >= max_repeat {
+                    1
+                } else {
+                    self.color_repeat + 1
+                };
                 self.params.color_repeat = self.color_repeat;
                 if !self.iterations.is_empty() {
                     self.update_texture(ctx);
@@ -2658,6 +2453,8 @@ impl eframe::App for FractallApp {
                     .unwrap_or_default()
                     .as_secs();
                 let filename = format!("fractal_{}.png", timestamp);
+                let (center_x_hp, center_y_hp, span_x_hp, span_y_hp) =
+                    self.view.decimal_parts();
                 // Mêmes canaux annexes que l'affichage : le screenshot doit
                 // reproduire l'écran (Distance*/OrbitTraps/Wings inclus).
                 let buffer = colorize_to_rgb_with_extras(
@@ -2671,25 +2468,26 @@ impl eframe::App for FractallApp {
                     &self.params,
                     &buffer,
                     Path::new(&filename),
-                    &self.center_x_hp,
-                    &self.center_y_hp,
-                    &self.span_x_hp,
-                    &self.span_y_hp,
+                    &center_x_hp,
+                    &center_y_hp,
+                    &span_x_hp,
+                    &span_y_hp,
                 ) {
                     eprintln!("Erreur export PNG: {}", e);
                 } else {
                     println!("Screenshot sauvegardé avec métadonnées: {}", filename);
                 }
             }
-            
+
             // Désactiver les raccourcis de zoom en mode Julia preview
             let julia_mode = self.selected_type.has_julia_variant() && self.julia_preview_enabled;
 
             // + ou = pour zoom au centre (désactivé en mode Julia)
             if !julia_mode {
-                let zoom_in_pressed = i.events.iter().any(|e| {
-                    matches!(e, egui::Event::Text(text) if text == "+" || text == "=")
-                });
+                let zoom_in_pressed = i
+                    .events
+                    .iter()
+                    .any(|e| matches!(e, egui::Event::Text(text) if text == "+" || text == "="));
                 if zoom_in_pressed {
                     self.zoom_at_ratio(0.5, 0.5, 1.5);
                 }
@@ -2719,7 +2517,7 @@ impl eframe::App for FractallApp {
                 self.start_render();
             }
         });
-        
+
         // Panneau de contrôle en haut
         egui::TopBottomPanel::top("controls").show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -2963,9 +2761,7 @@ impl eframe::App for FractallApp {
                         self.xaos_nav_last_tick = None;
                         self.xaos_nav_dragging = false;
                         self.nav.reset();
-                        self.selecting = false;
-                        self.select_start = None;
-                        self.select_current = None;
+                        self.selection.cancel();
                     }
 
                     ui.separator();
@@ -3266,41 +3062,31 @@ impl eframe::App for FractallApp {
         // Traiter les messages du rendu HQ en cours
         if let Some(ref receiver) = self.hq_render_receiver {
             while let Ok(msg) = receiver.try_recv() {
-                match msg {
-                    HqRenderMessage::Progress(p) => {
-                        self.hq_render_progress = p;
-                    }
-                    HqRenderMessage::Done(filename) => {
-                        self.hq_rendering = false;
-                        self.hq_render_progress = 1.0;
-                        self.hq_render_result = Some(format!("✓ Saved: {}", filename));
-                    }
-                    HqRenderMessage::Error(err) => {
-                        self.hq_rendering = false;
-                        self.hq_render_result = Some(format!("✗ {}", err));
-                    }
-                }
+                self.hq_render_state.apply(msg);
             }
         }
 
         // Fenêtre de configuration du rendu haute résolution
         if self.show_render_dialog {
+            let (window_width, window_height) = self.view.dimensions();
             egui::Window::new("🎬 High Quality Render")
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
-                    if self.hq_rendering {
+                    if self.hq_render_state.is_running() {
                         // Afficher la barre de progression pendant le rendu
                         let resolution_label = match self.render_resolution_preset {
-                            RenderResolutionPreset::Window => format!("{}×{}", self.window_width, self.window_height),
+                            RenderResolutionPreset::Window => {
+                                format!("{}×{}", window_width, window_height)
+                            }
                             RenderResolutionPreset::Res4K => "4K".to_string(),
                             RenderResolutionPreset::Res8K => "8K".to_string(),
                         };
                         ui.heading(format!("Rendering with {} precision...", resolution_label));
                         ui.add_space(10.0);
 
-                        let progress_bar = egui::ProgressBar::new(self.hq_render_progress)
+                        let progress_bar = egui::ProgressBar::new(self.hq_render_state.progress())
                             .show_percentage()
                             .animate(true);
                         ui.add(progress_bar);
@@ -3310,16 +3096,23 @@ impl eframe::App for FractallApp {
 
                         // Demander un repaint pour mettre à jour la barre
                         ctx.request_repaint();
-                    } else if let Some(ref result) = self.hq_render_result {
+                    } else if let Some(result) = self.hq_render_state.result() {
                         // Afficher le résultat
                         ui.heading("Complete");
                         ui.add_space(10.0);
-                        ui.label(result.as_str());
+                        match result {
+                            HqRenderResult::Saved(filename) => {
+                                ui.label(format!("✓ Saved: {filename}"));
+                            }
+                            HqRenderResult::Error(error) => {
+                                ui.label(format!("✗ {error}"));
+                            }
+                        }
                         ui.add_space(20.0);
 
                         if ui.button("Close").clicked() {
                             self.show_render_dialog = false;
-                            self.hq_render_result = None;
+                            self.hq_render_state.clear();
                             self.hq_render_receiver = None;
                         }
                     } else {
@@ -3332,14 +3125,22 @@ impl eframe::App for FractallApp {
                             ui.selectable_value(
                                 &mut self.render_resolution_preset,
                                 RenderResolutionPreset::Window,
-                                format!("Window ({}×{})", self.window_width, self.window_height)
+                                format!("Window ({}×{})", window_width, window_height),
                             );
                         });
                         ui.horizontal(|ui| {
-                            ui.selectable_value(&mut self.render_resolution_preset, RenderResolutionPreset::Res4K, "4K (3840×2160)");
+                            ui.selectable_value(
+                                &mut self.render_resolution_preset,
+                                RenderResolutionPreset::Res4K,
+                                "4K (3840×2160)",
+                            );
                         });
                         ui.horizontal(|ui| {
-                            ui.selectable_value(&mut self.render_resolution_preset, RenderResolutionPreset::Res8K, "8K (7680×4320)");
+                            ui.selectable_value(
+                                &mut self.render_resolution_preset,
+                                RenderResolutionPreset::Res8K,
+                                "8K (7680×4320)",
+                            );
                         });
 
                         ui.add_space(20.0);
@@ -3369,637 +3170,656 @@ impl eframe::App for FractallApp {
             .show(ctx, |ui| {
                 // Désactiver la sélection de texte dans cette zone
                 ui.style_mut().interaction.selectable_labels = false;
-            ui.vertical_centered(|ui| {
-                let available_size = ui.available_size();
-                let target_width = available_size.x.max(1.0).floor() as u32;
-                let target_height = available_size.y.max(1.0).floor() as u32;
-                self.queue_resize(target_width, target_height);
+                ui.vertical_centered(|ui| {
+                    let available_size = ui.available_size();
+                    let target_width = available_size.x.max(1.0).floor() as u32;
+                    let target_height = available_size.y.max(1.0).floor() as u32;
+                    self.queue_resize(target_width, target_height);
 
-                // Afficher la texture si elle existe (même pendant le rendu progressif)
-                if let Some(texture) = &self.texture {
-                    // Utiliser la taille réelle de la texture pour préserver le ratio et éviter toute déformation
-                    let image_size = texture.size_vec2();
-                    
-                    // Ajuster pour tenir dans l'espace disponible, sans jamais agrandir au-delà de la résolution (évite le pixelisé)
-                    let scale = (available_size.x / image_size.x)
-                        .min(available_size.y / image_size.y)
-                        .min(1.0);
-                    let display_size = image_size * scale;
-                    
-                    // Gestion des interactions sur l'image
-                    // Désactiver la sélection de texte pour forcer le curseur à rester une flèche.
-                    // On alloue le rect d'interaction et on peint la texture à la main (au lieu du
-                    // widget Image) pour pouvoir la WARPER (G10.1) pendant un rendu : la texture
-                    // affichée est encore l'ancienne vue, on la transforme vers la vue live.
-                    let (image_rect, response) =
-                        ui.allocate_exact_size(display_size, egui::Sense::click_and_drag());
-                    let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-                    // G10.1 : la texture affichée représente `texture_view` ; dès
-                    // qu'elle diffère de la vue live, on la WARPE — que le rendu
-                    // soit en cours ou non. Gater sur `self.rendering` repeignait
-                    // l'image NON transformée sur les frames sans rendu actif
-                    // (juste après la fin d'un rendu, avant le suivant) : en
-                    // navigation continue la vue live a déjà avancé → saut en
-                    // arrière d'un rendu complet, puis saut en avant à la frame
-                    // suivante = saccade à la cadence de rendu. `compute_warp_rect`
-                    // renvoie déjà `None` quand les vues sont identiques (statique
-                    // inchangé, affichage bit-identique).
-                    let warp = self.compute_warp_rect(image_rect);
-                    match warp {
-                        // Warp actif : le zoom-in fait déborder l'ancienne image → clip au rect.
-                        Some(r) => ui
-                            .painter()
-                            .with_clip_rect(image_rect)
-                            .image(texture.id(), r, uv, egui::Color32::WHITE),
-                        None => ui
-                            .painter()
-                            .image(texture.id(), image_rect, uv, egui::Color32::WHITE),
-                    };
+                    // Afficher la texture si elle existe (même pendant le rendu progressif)
+                    if let Some(texture) = &self.texture {
+                        // Utiliser la taille réelle de la texture pour préserver le ratio et éviter toute déformation
+                        let image_size = texture.size_vec2();
 
-                    // Overlay partiel de navigation PAR-DESSUS : ses pixels déjà
-                    // calculés (alpha 255) recouvrent le warp, les autres le
-                    // laissent transparaître — c'est le remplissage, équivalent
-                    // de la duplication de lignes de XaoS (« reducing
-                    // resolution »). Warpé lui aussi : la vue a pu avancer
-                    // depuis sa publication.
-                    if let Some(overlay) = &self.nav_overlay_texture {
-                        let rect = self
-                            .nav_overlay_view
-                            .as_ref()
-                            .and_then(|v| self.warp_rect_for(v, image_rect))
-                            .unwrap_or(image_rect);
-                        ui.painter()
-                            .with_clip_rect(image_rect)
-                            .image(overlay.id(), rect, uv, egui::Color32::WHITE);
-                    }
+                        // Ajuster pour tenir dans l'espace disponible, sans jamais agrandir au-delà de la résolution (évite le pixelisé)
+                        let scale = (available_size.x / image_size.x)
+                            .min(available_size.y / image_size.y)
+                            .min(1.0);
+                        let display_size = image_size * scale;
 
-                    // Forcer le curseur à être une flèche quand on survole l'image
-                    // IMPORTANT: Toujours afficher une flèche (Default) et non un curseur de texte ou autre
-                    if response.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
+                        // Gestion des interactions sur l'image
+                        // Désactiver la sélection de texte pour forcer le curseur à rester une flèche.
+                        // On alloue le rect d'interaction et on peint la texture à la main (au lieu du
+                        // widget Image) pour pouvoir la WARPER (G10.1) pendant un rendu : la texture
+                        // affichée est encore l'ancienne vue, on la transforme vers la vue live.
+                        let (image_rect, response) =
+                            ui.allocate_exact_size(display_size, egui::Sense::click_and_drag());
+                        let uv =
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                        // G10.1 : la texture affichée représente `texture_view` ; dès
+                        // qu'elle diffère de la vue live, on la WARPE — que le rendu
+                        // soit en cours ou non. Gater sur `self.rendering` repeignait
+                        // l'image NON transformée sur les frames sans rendu actif
+                        // (juste après la fin d'un rendu, avant le suivant) : en
+                        // navigation continue la vue live a déjà avancé → saut en
+                        // arrière d'un rendu complet, puis saut en avant à la frame
+                        // suivante = saccade à la cadence de rendu. `compute_warp_rect`
+                        // renvoie déjà `None` quand les vues sont identiques (statique
+                        // inchangé, affichage bit-identique).
+                        let warp = self.compute_warp_rect(image_rect);
+                        match warp {
+                            // Warp actif : le zoom-in fait déborder l'ancienne image → clip au rect.
+                            Some(r) => ui.painter().with_clip_rect(image_rect).image(
+                                texture.id(),
+                                r,
+                                uv,
+                                egui::Color32::WHITE,
+                            ),
+                            None => ui.painter().image(
+                                texture.id(),
+                                image_rect,
+                                uv,
+                                egui::Color32::WHITE,
+                            ),
+                        };
 
-                        // G10.5 : mémoriser la position normalisée du curseur —
-                        // point de priorité de la file de tuiles au prochain rendu.
-                        if let Some(pos) = ui.ctx().pointer_hover_pos() {
-                            if image_rect.contains(pos) {
-                                let local = pos - image_rect.min;
-                                self.hover_norm = Some((
-                                    local.x / image_rect.width(),
-                                    local.y / image_rect.height(),
-                                ));
-                            }
+                        // Overlay partiel de navigation PAR-DESSUS : ses pixels déjà
+                        // calculés (alpha 255) recouvrent le warp, les autres le
+                        // laissent transparaître — c'est le remplissage, équivalent
+                        // de la duplication de lignes de XaoS (« reducing
+                        // resolution »). Warpé lui aussi : la vue a pu avancer
+                        // depuis sa publication.
+                        if let Some(overlay) = &self.nav_overlay_texture {
+                            let rect = self
+                                .nav_overlay_view
+                                .as_ref()
+                                .and_then(|v| self.warp_rect_for(v, image_rect))
+                                .unwrap_or(image_rect);
+                            ui.painter().with_clip_rect(image_rect).image(
+                                overlay.id(),
+                                rect,
+                                uv,
+                                egui::Color32::WHITE,
+                            );
                         }
 
-                        // Track mouse position for Julia preview (on Mandelbrot-like types)
-                        if self.selected_type.has_julia_variant()
-                            && self.julia_preview_enabled
-                            && !self.selecting
-                        {
+                        // Forcer le curseur à être une flèche quand on survole l'image
+                        // IMPORTANT: Toujours afficher une flèche (Default) et non un curseur de texte ou autre
+                        if response.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
+
+                            // G10.5 : mémoriser la position normalisée du curseur —
+                            // point de priorité de la file de tuiles au prochain rendu.
                             if let Some(pos) = ui.ctx().pointer_hover_pos() {
                                 if image_rect.contains(pos) {
-                                    let local_pos = pos - image_rect.min;
-                                    let pixel_x = (local_pos.x / image_rect.width()) * self.params.width as f32;
-                                    let pixel_y = (local_pos.y / image_rect.height()) * self.params.height as f32;
-                                    let seed = self.pixel_to_complex(
-                                        pixel_x,
-                                        pixel_y,
-                                        self.params.width as f32,
-                                        self.params.height as f32,
-                                    );
-                                    self.request_julia_preview(seed);
-                                }
-                            }
-                        }
-                    }
-
-                    // Détecter le début d'une sélection rectangulaire (drag avec bouton gauche)
-                    // Désactivé en mode Julia preview
-                    let julia_mode = self.selected_type.has_julia_variant() && self.julia_preview_enabled;
-
-                    // Molette : zoom continu ANCRÉ au curseur (le point sous le
-                    // curseur reste fixe). Les petits incréments maximisent la
-                    // réutilisation XaoS inter-frame (écho immédiat, raffinement
-                    // exact à l'idle) — c'est le chemin de zoom fluide.
-                    if !julia_mode && response.hovered() && !self.selecting {
-                        let scroll_y = ctx.input(|i| i.smooth_scroll_delta.y);
-                        if scroll_y.abs() > 0.5 {
-                            if let Some(pos) = ctx.pointer_hover_pos() {
-                                if image_rect.contains(pos) {
                                     let local = pos - image_rect.min;
-                                    let rx = (local.x / image_rect.width()) as f64;
-                                    let ry = (local.y / image_rect.height()) as f64;
-                                    // ≈ ×1.2 par cran (50 px), borné (trackpads rapides).
-                                    let factor =
-                                        1.2f64.powf((scroll_y as f64 / 50.0).clamp(-3.0, 3.0));
-                                    self.zoom_anchored_hp(rx, ry, factor);
-                                    self.start_render();
+                                    self.hover_norm = Some((
+                                        local.x / image_rect.width(),
+                                        local.y / image_rect.height(),
+                                    ));
+                                }
+                            }
+
+                            // Track mouse position for Julia preview (on Mandelbrot-like types)
+                            if self.selected_type.has_julia_variant()
+                                && self.julia_preview_enabled
+                                && !self.selection.is_active()
+                            {
+                                if let Some(pos) = ui.ctx().pointer_hover_pos() {
+                                    if image_rect.contains(pos) {
+                                        let local_pos = pos - image_rect.min;
+                                        let pixel_x = (local_pos.x / image_rect.width())
+                                            * self.params.width as f32;
+                                        let pixel_y = (local_pos.y / image_rect.height())
+                                            * self.params.height as f32;
+                                        let seed = self.pixel_to_complex(
+                                            pixel_x,
+                                            pixel_y,
+                                            self.params.width as f32,
+                                            self.params.height as f32,
+                                        );
+                                        self.request_julia_preview(seed);
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    // Navigation XaoS : bouton MAINTENU = zoom continu ancré au
-                    // curseur (gauche = in, droit = out), cadence indépendante du
-                    // framerate. Le clic ×2 et la sélection rectangle sont
-                    // désactivés dans ce mode.
-                    //
-                    // Découplage géométrie / rendu (clé de la fluidité) : la vue
-                    // avance à CHAQUE frame (60 Hz), le rendu ne redémarre que
-                    // quand le précédent est fini ET qu'au moins
-                    // XAOS_NAV_MIN_RENDER_INTERVAL s'est écoulé. Entre deux, le
-                    // warp G10.1 transporte la texture vers la vue live → mouvement
-                    // continu ; la réutilisation pixels G10.4 rend chaque rendu
-                    // quasi gratuit (petit incrément).
-                    if self.xaos_nav_mode && !julia_mode {
-                        let (dir, pointer_pos) = ctx.input(|i| {
-                            let d = if i.pointer.primary_down() {
-                                1.0
-                            } else if i.pointer.secondary_down() {
-                                -1.0
-                            } else {
-                                0.0
-                            };
-                            // Le geste ne compte que s'il a COMMENCÉ sur l'image :
-                            // `primary_down()` est global, donc sans ce garde un
-                            // appui dans la barre de menus (ou tout autre panneau)
-                            // pilotait le zoom via le dernier ancrage mémorisé.
-                            // `press_origin` = position de l'appui en cours, tous
-                            // boutons confondus ; `None` au relâchement, ce qui
-                            // laisse la décélération se poursuivre normalement.
-                            let started_on_image = i
-                                .pointer
-                                .press_origin()
-                                .is_some_and(|p| image_rect.contains(p));
-                            let d = if started_on_image { d } else { 0.0 };
-                            (d, i.pointer.interact_pos())
-                        });
-                        // Ancrage : position courante si le curseur est sur
-                        // l'image ; `None` conserve le dernier ancrage connu
-                        // (le zoom reste ancré pendant la décélération, même
-                        // curseur sorti de l'image).
-                        let anchor = pointer_pos
-                            .filter(|p| image_rect.contains(*p))
-                            .map(|p| {
+                        // Détecter le début d'une sélection rectangulaire (drag avec bouton gauche)
+                        // Désactivé en mode Julia preview
+                        let julia_mode =
+                            self.selected_type.has_julia_variant() && self.julia_preview_enabled;
+
+                        // Molette : zoom continu ANCRÉ au curseur (le point sous le
+                        // curseur reste fixe). Les petits incréments maximisent la
+                        // réutilisation XaoS inter-frame (écho immédiat, raffinement
+                        // exact à l'idle) — c'est le chemin de zoom fluide.
+                        if !julia_mode && response.hovered() && !self.selection.is_active() {
+                            let scroll_y = ctx.input(|i| i.smooth_scroll_delta.y);
+                            if scroll_y.abs() > 0.5 {
+                                if let Some(pos) = ctx.pointer_hover_pos() {
+                                    if image_rect.contains(pos) {
+                                        let local = pos - image_rect.min;
+                                        let rx = (local.x / image_rect.width()) as f64;
+                                        let ry = (local.y / image_rect.height()) as f64;
+                                        // ≈ ×1.2 par cran (50 px), borné (trackpads rapides).
+                                        let factor =
+                                            1.2f64.powf((scroll_y as f64 / 50.0).clamp(-3.0, 3.0));
+                                        self.zoom_anchored_hp(rx, ry, factor);
+                                        self.start_render();
+                                    }
+                                }
+                            }
+                        }
+
+                        // Navigation XaoS : bouton MAINTENU = zoom continu ancré au
+                        // curseur (gauche = in, droit = out), cadence indépendante du
+                        // framerate. Le clic ×2 et la sélection rectangle sont
+                        // désactivés dans ce mode.
+                        //
+                        // Découplage géométrie / rendu (clé de la fluidité) : la vue
+                        // avance à CHAQUE frame (60 Hz), le rendu ne redémarre que
+                        // quand le précédent est fini ET qu'au moins
+                        // XAOS_NAV_MIN_RENDER_INTERVAL s'est écoulé. Entre deux, le
+                        // warp G10.1 transporte la texture vers la vue live → mouvement
+                        // continu ; la réutilisation pixels G10.4 rend chaque rendu
+                        // quasi gratuit (petit incrément).
+                        if self.xaos_nav_mode && !julia_mode {
+                            let (dir, pointer_pos) = ctx.input(|i| {
+                                let d = if i.pointer.primary_down() {
+                                    1.0
+                                } else if i.pointer.secondary_down() {
+                                    -1.0
+                                } else {
+                                    0.0
+                                };
+                                // Le geste ne compte que s'il a COMMENCÉ sur l'image :
+                                // `primary_down()` est global, donc sans ce garde un
+                                // appui dans la barre de menus (ou tout autre panneau)
+                                // pilotait le zoom via le dernier ancrage mémorisé.
+                                // `press_origin` = position de l'appui en cours, tous
+                                // boutons confondus ; `None` au relâchement, ce qui
+                                // laisse la décélération se poursuivre normalement.
+                                let started_on_image = i
+                                    .pointer
+                                    .press_origin()
+                                    .is_some_and(|p| image_rect.contains(p));
+                                let d = if started_on_image { d } else { 0.0 };
+                                (d, i.pointer.interact_pos())
+                            });
+                            // Ancrage : position courante si le curseur est sur
+                            // l'image ; `None` conserve le dernier ancrage connu
+                            // (le zoom reste ancré pendant la décélération, même
+                            // curseur sorti de l'image).
+                            let anchor = pointer_pos.filter(|p| image_rect.contains(*p)).map(|p| {
                                 let local = p - image_rect.min;
-                                (
-                                    local.x / image_rect.width(),
-                                    local.y / image_rect.height(),
-                                )
+                                (local.x / image_rect.width(), local.y / image_rect.height())
                             });
 
-                        let now = Instant::now();
-                        let dt = self
-                            .xaos_nav_last_tick
-                            .map(|t| now.duration_since(t).as_secs_f64())
-                            .unwrap_or(0.0);
+                            let now = Instant::now();
+                            let dt = self
+                                .xaos_nav_last_tick
+                                .map(|t| now.duration_since(t).as_secs_f64())
+                                .unwrap_or(0.0);
 
-                        // Toute la décision (rampe de vitesse, ancrage, cadence
-                        // de rendu, stabilisation) vit dans `gui::nav`, testée
-                        // sans fenêtre. Ici on ne fait qu'EXÉCUTER la sortie.
-                        let outcome = self.nav.tick(nav::NavInput {
-                            dir,
-                            dt,
-                            anchor,
-                            cruise: nav::cruise_rate(self.last_render_time),
-                            rendering: self.rendering,
-                        });
-                        self.xaos_nav_last_tick = self.nav.is_active().then_some(now);
+                            // Toute la décision (rampe de vitesse, ancrage, cadence
+                            // de rendu, stabilisation) vit dans `gui::nav`, testée
+                            // sans fenêtre. Ici on ne fait qu'EXÉCUTER la sortie.
+                            let outcome = self.nav.tick(nav::NavInput {
+                                dir,
+                                dt,
+                                anchor,
+                                cruise: nav::cruise_rate(self.last_render_time),
+                                rendering: self.rendering,
+                            });
+                            self.xaos_nav_last_tick = self.nav.is_active().then_some(now);
 
-                        if let Some((rx, ry, factor)) = outcome.zoom {
-                            self.zoom_anchored_hp(rx as f64, ry as f64, factor);
-                        }
-                        match outcome.render {
-                            nav::NavRender::Moving => {
-                                self.xaos_nav_dragging = true;
-                                self.start_render();
+                            if let Some((rx, ry, factor)) = outcome.zoom {
+                                self.zoom_anchored_hp(rx as f64, ry as f64, factor);
                             }
-                            nav::NavRender::Settle => {
-                                // `dragging` reste vrai pour la config de rendu
-                                // (passe unique + streaming partiel, pas de
-                                // retour au flou d'une passe 1/16) ; `settle`
-                                // force la PLEINE résolution, la résolution
-                                // dynamique ne servant que pendant le mouvement.
-                                self.xaos_nav_dragging = true;
-                                self.xaos_nav_settle = true;
-                                self.start_render();
-                                self.xaos_nav_settle = false;
-                                self.xaos_nav_dragging = false;
+                            match outcome.render {
+                                nav::NavRender::Moving => {
+                                    self.xaos_nav_dragging = true;
+                                    self.start_render();
+                                }
+                                nav::NavRender::Settle => {
+                                    // `dragging` reste vrai pour la config de rendu
+                                    // (passe unique + streaming partiel, pas de
+                                    // retour au flou d'une passe 1/16) ; `settle`
+                                    // force la PLEINE résolution, la résolution
+                                    // dynamique ne servant que pendant le mouvement.
+                                    self.xaos_nav_dragging = true;
+                                    self.xaos_nav_settle = true;
+                                    self.start_render();
+                                    self.xaos_nav_settle = false;
+                                    self.xaos_nav_dragging = false;
+                                }
+                                nav::NavRender::None => {}
                             }
-                            nav::NavRender::None => {}
+                            if outcome.repaint {
+                                ctx.request_repaint();
+                            }
                         }
-                        if outcome.repaint {
-                            ctx.request_repaint();
-                        }
-                    }
 
-                    if !julia_mode && !self.xaos_nav_mode {
-                        ctx.input(|i| {
-                            // Vérifier si le bouton gauche est pressé et si on est dans la zone de l'image
-                            if i.pointer.primary_down() {
-                                if let Some(pointer_pos) = i.pointer.interact_pos() {
-                                    if image_rect.contains(pointer_pos) {
-                                        if !self.selecting {
-                                            // Commencer une nouvelle sélection
-                                            self.selecting = true;
-                                            self.select_start = Some(pointer_pos);
-                                            self.select_current = Some(pointer_pos);
-                                        } else {
-                                            // Mettre à jour la position actuelle
-                                            let clamped_pos = egui::Pos2::new(
-                                                pointer_pos.x.max(image_rect.min.x).min(image_rect.max.x),
-                                                pointer_pos.y.max(image_rect.min.y).min(image_rect.max.y),
-                                            );
-                                            self.select_current = Some(clamped_pos);
+                        if !julia_mode && !self.xaos_nav_mode {
+                            ctx.input(|i| {
+                                // Vérifier si le bouton gauche est pressé et si on est dans la zone de l'image
+                                if i.pointer.primary_down() {
+                                    if let Some(pointer_pos) = i.pointer.interact_pos() {
+                                        if image_rect.contains(pointer_pos) {
+                                            if !self.selection.is_active() {
+                                                // Commencer une nouvelle sélection
+                                                self.selection.begin(pointer_pos);
+                                            } else {
+                                                // Mettre à jour la position actuelle
+                                                let clamped_pos = egui::Pos2::new(
+                                                    pointer_pos
+                                                        .x
+                                                        .max(image_rect.min.x)
+                                                        .min(image_rect.max.x),
+                                                    pointer_pos
+                                                        .y
+                                                        .max(image_rect.min.y)
+                                                        .min(image_rect.max.y),
+                                                );
+                                                self.selection.update(clamped_pos);
+                                            }
+                                        }
+                                    }
+                                } else if self.selection.is_active() && i.pointer.primary_released()
+                                {
+                                    // Le bouton a été relâché, terminer la sélection
+                                    if let Some(rect) = self.selection.finish() {
+                                        // Vérifier que le rectangle est dans l'image et a une taille minimale
+                                        if image_rect.contains(rect.min)
+                                            && image_rect.contains(rect.max)
+                                        {
+                                            if rect.width() > 5.0 && rect.height() > 5.0 {
+                                                self.zoom_to_rectangle(
+                                                    rect.min, rect.max, image_rect,
+                                                );
+                                            }
                                         }
                                     }
                                 }
-                            } else if self.selecting && i.pointer.primary_released() {
-                                // Le bouton a été relâché, terminer la sélection
-                                if let (Some(start), Some(current)) = (self.select_start, self.select_current) {
-                                    let rect_min = egui::Pos2::new(
-                                        start.x.min(current.x),
-                                        start.y.min(current.y),
-                                    );
-                                    let rect_max = egui::Pos2::new(
-                                        start.x.max(current.x),
-                                        start.y.max(current.y),
-                                    );
+                            });
+                        }
 
-                                    // Vérifier que le rectangle est dans l'image et a une taille minimale
-                                    if image_rect.contains(rect_min) && image_rect.contains(rect_max) {
-                                        let width = rect_max.x - rect_min.x;
-                                        let height = rect_max.y - rect_min.y;
-
-                                        if width > 5.0 && height > 5.0 {
-                                            self.zoom_to_rectangle(rect_min, rect_max, image_rect);
-                                        }
-                                    }
-                                }
-
-                                self.selecting = false;
-                                self.select_start = None;
-                                self.select_current = None;
-                            }
-                        });
-                    }
-                    
-                    // Dessiner le rectangle de sélection par-dessus l'image
-                    if self.selecting {
-                        if let (Some(start), Some(current)) = (self.select_start, self.select_current) {
-                            let rect = egui::Rect::from_two_pos(start, current);
-                            
+                        // Dessiner le rectangle de sélection par-dessus l'image
+                        if let Some(rect) = self.selection.rect() {
                             // Fond semi-transparent pour mieux voir la sélection
                             ui.painter().rect_filled(
                                 rect,
                                 0.0,
                                 egui::Color32::from_rgba_unmultiplied(255, 255, 0, 30), // Jaune très transparent
                             );
-                            
+
                             // Rectangle extérieur jaune épais
                             ui.painter().rect_stroke(
                                 rect,
                                 0.0,
-                                egui::Stroke::new(
-                                    3.0_f32,
-                                    egui::Color32::from_rgb(255, 255, 0),
-                                ),
+                                egui::Stroke::new(3.0_f32, egui::Color32::from_rgb(255, 255, 0)),
                                 egui::StrokeKind::Middle,
                             );
                             // Rectangle intérieur pour meilleure visibilité
                             ui.painter().rect_stroke(
                                 rect.expand(-1.0),
                                 0.0,
-                                egui::Stroke::new(
-                                    1.0_f32,
-                                    egui::Color32::from_rgb(0, 0, 0),
-                                ), // Bordure noire intérieure
+                                egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0, 0, 0)), // Bordure noire intérieure
                                 egui::StrokeKind::Middle,
                             );
-                            
+
                             // Demander un re-rendu pour mettre à jour le rectangle en temps réel
                             ctx.request_repaint();
                         }
-                    }
-                    
-                    // Clic simple (sans drag) : zoom au point
-                    // Seulement si on n'a pas fait de sélection et pas en mode Julia
-                    if response.clicked() && !self.selecting && !julia_mode && !self.xaos_nav_mode {
-                        if let Some(pos) = response.interact_pointer_pos() {
-                            let local_pos = pos - image_rect.min;
-                            let pixel_x = (local_pos.x / image_rect.width()) * self.params.width as f32;
-                            let pixel_y = (local_pos.y / image_rect.height()) * self.params.height as f32;
-                            let (rx, ry) = self.pixel_to_ratio(pixel_x, pixel_y);
-                            self.zoom_at_ratio(rx, ry, 2.0);
-                        }
-                    }
 
-                    // Clic droit : dézoom centré sur la position de la souris
-                    // (désactivé en mode Julia et en navigation XaoS — là le
-                    // bouton droit maintenu fait le dézoom continu)
-                    if !julia_mode && !self.xaos_nav_mode {
-                        if response.secondary_clicked() {
+                        // Clic simple (sans drag) : zoom au point
+                        // Seulement si on n'a pas fait de sélection et pas en mode Julia
+                        if response.clicked()
+                            && !self.selection.is_active()
+                            && !julia_mode
+                            && !self.xaos_nav_mode
+                        {
                             if let Some(pos) = response.interact_pointer_pos() {
                                 let local_pos = pos - image_rect.min;
-                                let pixel_x = (local_pos.x / image_rect.width()) * self.params.width as f32;
-                                let pixel_y = (local_pos.y / image_rect.height()) * self.params.height as f32;
+                                let pixel_x =
+                                    (local_pos.x / image_rect.width()) * self.params.width as f32;
+                                let pixel_y =
+                                    (local_pos.y / image_rect.height()) * self.params.height as f32;
                                 let (rx, ry) = self.pixel_to_ratio(pixel_x, pixel_y);
-                                self.zoom_out_at_ratio(rx, ry, 2.0);
-                            } else {
-                                // Fallback si pas de position : dézoom au centre
-                                self.zoom_out(2.0);
+                                self.zoom_at_ratio(rx, ry, 2.0);
                             }
-                        } else {
-                            ctx.input(|i| {
-                                if i.pointer.secondary_clicked() {
-                                    if let Some(pos) = i.pointer.interact_pos() {
-                                        if image_rect.contains(pos) {
-                                            let local_pos = pos - image_rect.min;
-                                            let pixel_x = (local_pos.x / image_rect.width()) * self.params.width as f32;
-                                            let pixel_y = (local_pos.y / image_rect.height()) * self.params.height as f32;
-                                            let (rx, ry) = self.pixel_to_ratio(pixel_x, pixel_y);
-                                            self.zoom_out_at_ratio(rx, ry, 2.0);
+                        }
+
+                        // Clic droit : dézoom centré sur la position de la souris
+                        // (désactivé en mode Julia et en navigation XaoS — là le
+                        // bouton droit maintenu fait le dézoom continu)
+                        if !julia_mode && !self.xaos_nav_mode {
+                            if response.secondary_clicked() {
+                                if let Some(pos) = response.interact_pointer_pos() {
+                                    let local_pos = pos - image_rect.min;
+                                    let pixel_x = (local_pos.x / image_rect.width())
+                                        * self.params.width as f32;
+                                    let pixel_y = (local_pos.y / image_rect.height())
+                                        * self.params.height as f32;
+                                    let (rx, ry) = self.pixel_to_ratio(pixel_x, pixel_y);
+                                    self.zoom_out_at_ratio(rx, ry, 2.0);
+                                } else {
+                                    // Fallback si pas de position : dézoom au centre
+                                    self.zoom_out(2.0);
+                                }
+                            } else {
+                                ctx.input(|i| {
+                                    if i.pointer.secondary_clicked() {
+                                        if let Some(pos) = i.pointer.interact_pos() {
+                                            if image_rect.contains(pos) {
+                                                let local_pos = pos - image_rect.min;
+                                                let pixel_x = (local_pos.x / image_rect.width())
+                                                    * self.params.width as f32;
+                                                let pixel_y = (local_pos.y / image_rect.height())
+                                                    * self.params.height as f32;
+                                                let (rx, ry) =
+                                                    self.pixel_to_ratio(pixel_x, pixel_y);
+                                                self.zoom_out_at_ratio(rx, ry, 2.0);
+                                            }
                                         }
                                     }
-                                }
-                            });
+                                });
+                            }
                         }
-                    }
 
-                    // Overlay Julia preview (en mode Julia sur Mandelbrot)
-                    if julia_mode {
-                        // Taille et position de l'overlay (coin supérieur droit)
-                        let preview_width = 200.0;
-                        let preview_height = 150.0;
-                        let margin = 10.0;
-                        let overlay_pos = egui::Pos2::new(
-                            image_rect.max.x - preview_width - margin,
-                            image_rect.min.y + margin,
-                        );
-                        let overlay_rect = egui::Rect::from_min_size(overlay_pos, egui::Vec2::new(preview_width, preview_height));
-
-                        // Fond semi-transparent
-                        ui.painter().rect_filled(
-                            overlay_rect,
-                            4.0,
-                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
-                        );
-
-                        // Bordure
-                        ui.painter().rect_stroke(
-                            overlay_rect,
-                            4.0,
-                            egui::Stroke::new(
-                                2.0_f32,
-                                egui::Color32::from_rgb(100, 100, 100),
-                            ),
-                            egui::StrokeKind::Middle,
-                        );
-
-                        // Afficher la preview Julia ou un spinner
-                        if let Some(ref texture) = self.julia_preview_texture {
-                            let tex_rect = egui::Rect::from_min_size(
-                                egui::Pos2::new(overlay_pos.x + 20.0, overlay_pos.y + 5.0),
-                                egui::Vec2::new(160.0, 120.0),
+                        // Overlay Julia preview (en mode Julia sur Mandelbrot)
+                        if julia_mode {
+                            // Taille et position de l'overlay (coin supérieur droit)
+                            let preview_width = 200.0;
+                            let preview_height = 150.0;
+                            let margin = 10.0;
+                            let overlay_pos = egui::Pos2::new(
+                                image_rect.max.x - preview_width - margin,
+                                image_rect.min.y + margin,
                             );
-                            ui.painter().image(
-                                texture.id(),
-                                tex_rect,
-                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                egui::Color32::WHITE,
+                            let overlay_rect = egui::Rect::from_min_size(
+                                overlay_pos,
+                                egui::Vec2::new(preview_width, preview_height),
                             );
-                        } else if self.julia_preview_rendering {
-                            // Indicateur de chargement (simple texte)
+
+                            // Fond semi-transparent
+                            ui.painter().rect_filled(
+                                overlay_rect,
+                                4.0,
+                                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
+                            );
+
+                            // Bordure
+                            ui.painter().rect_stroke(
+                                overlay_rect,
+                                4.0,
+                                egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(100, 100, 100)),
+                                egui::StrokeKind::Middle,
+                            );
+
+                            // Afficher la preview Julia ou un spinner
+                            if let Some(ref texture) = self.julia_preview_texture {
+                                let tex_rect = egui::Rect::from_min_size(
+                                    egui::Pos2::new(overlay_pos.x + 20.0, overlay_pos.y + 5.0),
+                                    egui::Vec2::new(160.0, 120.0),
+                                );
+                                ui.painter().image(
+                                    texture.id(),
+                                    tex_rect,
+                                    egui::Rect::from_min_max(
+                                        egui::pos2(0.0, 0.0),
+                                        egui::pos2(1.0, 1.0),
+                                    ),
+                                    egui::Color32::WHITE,
+                                );
+                            } else if self.julia_preview_rendering {
+                                // Indicateur de chargement (simple texte)
+                                ui.painter().text(
+                                    overlay_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    "Loading...",
+                                    egui::FontId::default(),
+                                    egui::Color32::WHITE,
+                                );
+                            } else {
+                                ui.painter().text(
+                                    overlay_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    "Move mouse",
+                                    egui::FontId::default(),
+                                    egui::Color32::GRAY,
+                                );
+                            }
+
+                            // Afficher les coordonnées du seed et l'aide
+                            if let Some(seed) = self.julia_preview_last_seed {
+                                let text = format!("c = {:.4} + {:.4}i", seed.re, seed.im);
+                                ui.painter().text(
+                                    egui::Pos2::new(
+                                        overlay_pos.x + preview_width / 2.0,
+                                        overlay_pos.y + preview_height - 20.0,
+                                    ),
+                                    egui::Align2::CENTER_CENTER,
+                                    text,
+                                    egui::FontId::proportional(11.0),
+                                    egui::Color32::WHITE,
+                                );
+                            }
                             ui.painter().text(
-                                overlay_rect.center(),
+                                egui::Pos2::new(
+                                    overlay_pos.x + preview_width / 2.0,
+                                    overlay_pos.y + preview_height - 8.0,
+                                ),
                                 egui::Align2::CENTER_CENTER,
-                                "Loading...",
-                                egui::FontId::default(),
-                                egui::Color32::WHITE,
-                            );
-                        } else {
-                            ui.painter().text(
-                                overlay_rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                "Move mouse",
-                                egui::FontId::default(),
+                                "Press J to switch",
+                                egui::FontId::proportional(10.0),
                                 egui::Color32::GRAY,
                             );
                         }
-
-                        // Afficher les coordonnées du seed et l'aide
-                        if let Some(seed) = self.julia_preview_last_seed {
-                            let text = format!("c = {:.4} + {:.4}i", seed.re, seed.im);
-                            ui.painter().text(
-                                egui::Pos2::new(overlay_pos.x + preview_width / 2.0, overlay_pos.y + preview_height - 20.0),
-                                egui::Align2::CENTER_CENTER,
-                                text,
-                                egui::FontId::proportional(11.0),
-                                egui::Color32::WHITE,
-                            );
-                        }
-                        ui.painter().text(
-                            egui::Pos2::new(overlay_pos.x + preview_width / 2.0, overlay_pos.y + preview_height - 8.0),
-                            egui::Align2::CENTER_CENTER,
-                            "Press J to switch",
-                            egui::FontId::proportional(10.0),
-                            egui::Color32::GRAY,
-                        );
+                    } else if self.rendering {
+                        // Pas encore de texture, afficher le spinner
+                        ui.spinner();
+                        ui.label("Rendu en cours...");
+                    } else {
+                        // Premier rendu
+                        self.start_render();
                     }
-                } else if self.rendering {
-                    // Pas encore de texture, afficher le spinner
-                    ui.spinner();
-                    ui.label("Rendu en cours...");
-                } else {
-                    // Premier rendu
-                    self.start_render();
-                }
+                });
             });
-        });
-        
+
         // Barre d'état en bas
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    // Centre, itérations, zoom
-                    let center_text = if self.params.center_x.abs() < 1e-6 && self.params.center_y.abs() < 1e-6 {
-                        format!("Centre: ({:.6}, {:.6})", self.params.center_x, self.params.center_y)
+            ui.horizontal(|ui| {
+                // Centre, itérations, zoom
+                let center_text =
+                    if self.params.center_x.abs() < 1e-6 && self.params.center_y.abs() < 1e-6 {
+                        format!(
+                            "Centre: ({:.6}, {:.6})",
+                            self.params.center_x, self.params.center_y
+                        )
                     } else if self.params.center_x.abs() > 1e3 || self.params.center_y.abs() > 1e3 {
-                        format!("Centre: ({:.2e}, {:.2e})", self.params.center_x, self.params.center_y)
+                        format!(
+                            "Centre: ({:.2e}, {:.2e})",
+                            self.params.center_x, self.params.center_y
+                        )
                     } else {
-                        format!("Centre: ({:.6}, {:.6})", self.params.center_x, self.params.center_y)
+                        format!(
+                            "Centre: ({:.6}, {:.6})",
+                            self.params.center_x, self.params.center_y
+                        )
                     };
-                    ui.label(center_text);
-                    ui.separator();
-                    ui.label(format!("Iter.: {}", self.params.iteration_max));
-                    ui.separator();
-                    let base_range = 4.0;
-                    let pixel_size = if self.params.width > 0 && self.params.height > 0 {
-                        self.params.span_x.abs().max(self.params.span_y.abs()) / self.params.width as f64
-                    } else {
-                        0.0
-                    };
-                    let zoom = if pixel_size > 0.0 && pixel_size.is_finite() {
-                        base_range / pixel_size
-                    } else {
-                        1.0
-                    };
-                    let zoom_text = if zoom >= 1e6 {
-                        format!("Zoom: {:.2e}", zoom)
-                    } else {
-                        format!("Zoom: {:.2}", zoom)
-                    };
-                    ui.label(zoom_text);
-                    ui.separator();
+                ui.label(center_text);
+                ui.separator();
+                ui.label(format!("Iter.: {}", self.params.iteration_max));
+                ui.separator();
+                let base_range = 4.0;
+                let pixel_size = if self.params.width > 0 && self.params.height > 0 {
+                    self.params.span_x.abs().max(self.params.span_y.abs())
+                        / self.params.width as f64
+                } else {
+                    0.0
+                };
+                let zoom = if pixel_size > 0.0 && pixel_size.is_finite() {
+                    base_range / pixel_size
+                } else {
+                    1.0
+                };
+                let zoom_text = if zoom >= 1e6 {
+                    format!("Zoom: {:.2e}", zoom)
+                } else {
+                    format!("Zoom: {:.2}", zoom)
+                };
+                ui.label(zoom_text);
+                ui.separator();
 
-                    // ═══════════════════════════════════════════════════════════════
-                    // Affichage du mode de calcul effectif
-                    // Format: [Device] [Precision] [Algorithme]
-                    // Ex: "GPU f32 Perturbation" ou "CPU f64 Standard"
-                    // ═══════════════════════════════════════════════════════════════
-                    
-                    let effective_mode = self.effective_algorithm_mode();
-                    let gpu_active = self.use_gpu && self.gpu_renderer.is_some();
-                    
-                    let mode_display = if let (Some(device_label), Some(method_label)) =
-                        (&self.last_render_device_label, &self.last_render_method_label)
-                    {
-                        if method_label.is_empty() {
-                            device_label.clone()
-                        } else {
-                            format!("{} {}", device_label, method_label)
-                        }
-                    } else {
-                        let device = if gpu_active { "GPU" } else { "CPU" };
-                        
-                        let (precision, algo) = match (gpu_active, effective_mode) {
-                            // GPU modes
-                            (true, AlgorithmMode::Perturbation) => ("f32", "Perturbation"),
-                            (true, AlgorithmMode::StandardF64) => ("f32", "Standard"),
-                            (true, _) => ("f32", "Standard"), // Fallback GPU
-                            
-                            // CPU modes
-                            (false, AlgorithmMode::ReferenceGmp) => {
-                                // GMP avec bits affichés séparément plus bas
-                                ("GMP", "")
-                            }
-                            (false, AlgorithmMode::Perturbation) => ("f64", "Perturbation"),
-                            (false, AlgorithmMode::StandardF64) => ("f64", "Standard"),
-                            (false, AlgorithmMode::Auto) => ("f64", "Standard"),
-                        };
-                        
-                        // Cas spécial pour GMP: afficher les bits (précision effective selon le zoom)
-                        if effective_mode == AlgorithmMode::ReferenceGmp && !gpu_active {
-                            let effective_prec = crate::fractal::perturbation::compute_perturbation_precision_bits(&self.params);
-                            format!("{} GMP {}b", device, effective_prec)
-                        } else {
-                            format!("{} {} {}", device, precision, algo)
-                        }
-                    };
-                    
-                    ui.label(mode_display);
+                // ═══════════════════════════════════════════════════════════════
+                // Affichage du mode de calcul effectif
+                // Format: [Device] [Precision] [Algorithme]
+                // Ex: "GPU f32 Perturbation" ou "CPU f64 Standard"
+                // ═══════════════════════════════════════════════════════════════
 
-                    // Afficher la précision GMP effective pour le mode perturbation
-                    if effective_mode == AlgorithmMode::Perturbation {
-                        let effective_prec = crate::fractal::perturbation::compute_perturbation_precision_bits(&self.params);
-                        ui.separator();
-                        ui.label(format!("GMP: {}b", effective_prec));
+                let effective_mode = self.effective_algorithm_mode();
+                let gpu_active = self.use_gpu && self.gpu_renderer.is_some();
+
+                let mode_display = if let (Some(device_label), Some(method_label)) = (
+                    &self.last_render_device_label,
+                    &self.last_render_method_label,
+                ) {
+                    if method_label.is_empty() {
+                        device_label.clone()
+                    } else {
+                        format!("{} {}", device_label, method_label)
                     }
+                } else {
+                    let device = if gpu_active { "GPU" } else { "CPU" };
 
-                    // Statut du rendu progressif.
-                    //
-                    // En navigation XaoS les rendus s'enchaînent à ~30 Hz : la
-                    // barre animée, son pourcentage et le temps écoulé
-                    // apparaissent/disparaissent à cette cadence — clignotement
-                    // bleu en bas à droite, et largeur de la barre d'état qui
-                    // saute. On affiche un état STABLE pendant tout le geste
-                    // (y compris entre deux rendus, sinon le label lui-même
-                    // clignoterait avec `self.rendering`). Le rendu de
-                    // stabilisation, lui, retrouve la barre normale : c'est un
-                    // calcul unique dont la progression intéresse l'utilisateur.
-                    let nav_active = self.xaos_nav_mode && self.nav.is_active();
-                    if nav_active {
-                        ui.separator();
-                        ui.label("Navigation XaoS");
-                    } else if self.rendering {
-                        ui.separator();
-                        let progress = self.render_progress.fraction();
-                        let (current_pass, total_passes) = self.render_progress.passes();
-                        let progress_bar = egui::ProgressBar::new(progress)
-                            .show_percentage()
-                            .animate(true);
-                        ui.add(progress_bar);
-                        let aa_suffix = match self.render_progress.aa() {
-                            Some((s, t)) if t > 1 && s > 0 => format!(" - AA {s}/{t}"),
-                            _ => String::new(),
+                    let (precision, algo) = match (gpu_active, effective_mode) {
+                        // GPU modes
+                        (true, AlgorithmMode::Perturbation) => ("f32", "Perturbation"),
+                        (true, AlgorithmMode::StandardF64) => ("f32", "Standard"),
+                        (true, _) => ("f32", "Standard"), // Fallback GPU
+
+                        // CPU modes
+                        (false, AlgorithmMode::ReferenceGmp) => {
+                            // GMP avec bits affichés séparément plus bas
+                            ("GMP", "")
+                        }
+                        (false, AlgorithmMode::Perturbation) => ("f64", "Perturbation"),
+                        (false, AlgorithmMode::StandardF64) => ("f64", "Standard"),
+                        (false, AlgorithmMode::Auto) => ("f64", "Standard"),
+                    };
+
+                    // Cas spécial pour GMP: afficher les bits (précision effective selon le zoom)
+                    if effective_mode == AlgorithmMode::ReferenceGmp && !gpu_active {
+                        let effective_prec =
+                            crate::fractal::perturbation::compute_perturbation_precision_bits(
+                                &self.params,
+                            );
+                        format!("{} GMP {}b", device, effective_prec)
+                    } else {
+                        format!("{} {} {}", device, precision, algo)
+                    }
+                };
+
+                ui.label(mode_display);
+
+                // Afficher la précision GMP effective pour le mode perturbation
+                if effective_mode == AlgorithmMode::Perturbation {
+                    let effective_prec =
+                        crate::fractal::perturbation::compute_perturbation_precision_bits(
+                            &self.params,
+                        );
+                    ui.separator();
+                    ui.label(format!("GMP: {}b", effective_prec));
+                }
+
+                // Statut du rendu progressif.
+                //
+                // En navigation XaoS les rendus s'enchaînent à ~30 Hz : la
+                // barre animée, son pourcentage et le temps écoulé
+                // apparaissent/disparaissent à cette cadence — clignotement
+                // bleu en bas à droite, et largeur de la barre d'état qui
+                // saute. On affiche un état STABLE pendant tout le geste
+                // (y compris entre deux rendus, sinon le label lui-même
+                // clignoterait avec `self.rendering`). Le rendu de
+                // stabilisation, lui, retrouve la barre normale : c'est un
+                // calcul unique dont la progression intéresse l'utilisateur.
+                let nav_active = self.xaos_nav_mode && self.nav.is_active();
+                if nav_active {
+                    ui.separator();
+                    ui.label("Navigation XaoS");
+                } else if self.rendering {
+                    ui.separator();
+                    let progress = self.render_progress.fraction();
+                    let (current_pass, total_passes) = self.render_progress.passes();
+                    let progress_bar = egui::ProgressBar::new(progress)
+                        .show_percentage()
+                        .animate(true);
+                    ui.add(progress_bar);
+                    let aa_suffix = match self.render_progress.aa() {
+                        Some((s, t)) if t > 1 && s > 0 => format!(" - AA {s}/{t}"),
+                        _ => String::new(),
+                    };
+                    if let Some(start) = self.render_start_time {
+                        let elapsed = start.elapsed().as_secs_f64();
+                        let time_str = if elapsed < 60.0 {
+                            format!("{:.1}s", elapsed)
+                        } else {
+                            let mins = (elapsed / 60.0).floor() as u32;
+                            let secs = elapsed % 60.0;
+                            format!("{}m {:.0}s", mins, secs)
                         };
+                        ui.label(format!(
+                            "Calcul en cours... ({}) - Passe {}/{}{}",
+                            time_str, current_pass, total_passes, aa_suffix
+                        ));
+                    } else {
+                        ui.label(format!(
+                            "Calcul en cours... - Passe {}/{}{}",
+                            current_pass, total_passes, aa_suffix
+                        ));
+                    }
+                } else if self.is_preview {
+                    ui.separator();
+                    ui.label("Preview");
+                }
+
+                // ═══════════════════════════════════════════════════════════════
+                // Temps de rendu aligné à droite
+                // ═══════════════════════════════════════════════════════════════
+
+                // Espace flexible pour pousser le temps à droite
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(render_time) = self.last_render_time {
+                        let time_str = if render_time < 1.0 {
+                            format!("{:.0} ms", render_time * 1000.0)
+                        } else if render_time < 60.0 {
+                            format!("{:.2} s", render_time)
+                        } else {
+                            let mins = (render_time / 60.0).floor() as u32;
+                            let secs = render_time % 60.0;
+                            format!("{}m {:.1}s", mins, secs)
+                        };
+                        ui.label(format!("⏱ {}", time_str));
+                    } else if self.rendering {
                         if let Some(start) = self.render_start_time {
                             let elapsed = start.elapsed().as_secs_f64();
-                            let time_str = if elapsed < 60.0 {
-                                format!("{:.1}s", elapsed)
+                            let time_str = if elapsed < 1.0 {
+                                format!("{:.0} ms", elapsed * 1000.0)
                             } else {
-                                let mins = (elapsed / 60.0).floor() as u32;
-                                let secs = elapsed % 60.0;
-                                format!("{}m {:.0}s", mins, secs)
+                                format!("{:.1} s", elapsed)
                             };
-                            ui.label(format!("Calcul en cours... ({}) - Passe {}/{}{}", time_str, current_pass, total_passes, aa_suffix));
-                        } else {
-                            ui.label(format!("Calcul en cours... - Passe {}/{}{}", current_pass, total_passes, aa_suffix));
+                            ui.label(format!("⏱ {}...", time_str));
                         }
-                    } else if self.is_preview {
-                        ui.separator();
-                        ui.label("Preview");
                     }
-
-                    // ═══════════════════════════════════════════════════════════════
-                    // Temps de rendu aligné à droite
-                    // ═══════════════════════════════════════════════════════════════
-                    
-                    // Espace flexible pour pousser le temps à droite
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if let Some(render_time) = self.last_render_time {
-                            let time_str = if render_time < 1.0 {
-                                format!("{:.0} ms", render_time * 1000.0)
-                            } else if render_time < 60.0 {
-                                format!("{:.2} s", render_time)
-                            } else {
-                                let mins = (render_time / 60.0).floor() as u32;
-                                let secs = render_time % 60.0;
-                                format!("{}m {:.1}s", mins, secs)
-                            };
-                            ui.label(format!("⏱ {}", time_str));
-                        } else if self.rendering {
-                            if let Some(start) = self.render_start_time {
-                                let elapsed = start.elapsed().as_secs_f64();
-                                let time_str = if elapsed < 1.0 {
-                                    format!("{:.0} ms", elapsed * 1000.0)
-                                } else {
-                                    format!("{:.1} s", elapsed)
-                                };
-                                ui.label(format!("⏱ {}...", time_str));
-                            }
-                        }
-                    });
                 });
+            });
         });
-        
+
         // Demander un re-rendu seulement si un rendu est en cours
-        if self.rendering || self.hq_rendering {
+        if self.rendering || self.hq_render_state.is_running() {
             ctx.request_repaint();
         }
-    }
-}
-
-/// Spans après redimensionnement de la surface `w×h`, en HP : on conserve la
-/// dimension contraignante et on élargit l'autre pour garder l'aspect pixel
-/// carré sans déformation (même règle que l'ancienne version f64).
-pub(crate) fn resized_spans_hp(sx: &Float, sy: &Float, w: u32, h: u32, prec: u32) -> (Float, Float) {
-    let target_aspect = Float::with_val(prec, w.max(1)) / Float::with_val(prec, h.max(1));
-    let current_aspect = Float::with_val(prec, sx / sy);
-    if current_aspect > target_aspect {
-        // Élargir la hauteur.
-        (sx.clone(), Float::with_val(prec, sx / &target_aspect))
-    } else {
-        // Élargir la largeur.
-        (Float::with_val(prec, sy * &target_aspect), sy.clone())
     }
 }
 
@@ -4020,7 +3840,7 @@ mod warp_tests {
     #[test]
     fn identity_view_no_warp() {
         let a = v("0", "0", "4", "3");
-        assert!(compute_warp_norm(&a, &a, 256).is_none());
+        assert!(compute_warp_norm(&a, &a).is_none());
     }
 
     #[test]
@@ -4029,7 +3849,7 @@ mod warp_tests {
         // magnifiée ×2, centrée.
         let tex = v("0", "0", "4", "4");
         let live = v("0", "0", "2", "2");
-        let (n_cx, v_cy, rx, ry) = compute_warp_norm(&tex, &live, 256).unwrap();
+        let (n_cx, v_cy, rx, ry) = compute_warp_norm(&tex, &live).unwrap();
         assert!((n_cx - 0.5).abs() < 1e-9);
         assert!((v_cy - 0.5).abs() < 1e-9);
         assert!((rx - 2.0).abs() < 1e-9);
@@ -4041,7 +3861,7 @@ mod warp_tests {
         // Vue déplacée vers +réel d'un demi-span → l'ancien contenu va à GAUCHE.
         let tex = v("0", "0", "4", "4");
         let live = v("2", "0", "4", "4"); // cx_live = cx_tex + sx/2
-        let (n_cx, _v_cy, rx, _ry) = compute_warp_norm(&tex, &live, 256).unwrap();
+        let (n_cx, _v_cy, rx, _ry) = compute_warp_norm(&tex, &live).unwrap();
         assert!((n_cx - 0.0).abs() < 1e-9, "n_cx={n_cx}");
         assert!((rx - 1.0).abs() < 1e-9);
     }
@@ -4055,7 +3875,7 @@ mod warp_tests {
         // vertical du warp sur zoom molette hors-centre.
         let tex = v("0", "0", "4", "4");
         let live = v("0", "2", "4", "4"); // cy_live = cy_tex + sy/2
-        let (_n_cx, v_cy, _rx, ry) = compute_warp_norm(&tex, &live, 256).unwrap();
+        let (_n_cx, v_cy, _rx, ry) = compute_warp_norm(&tex, &live).unwrap();
         assert!((v_cy - 0.0).abs() < 1e-9, "v_cy={v_cy}");
         assert!((ry - 1.0).abs() < 1e-9);
     }
@@ -4071,8 +3891,11 @@ mod warp_tests {
             "2e-40",
             "2e-40",
         );
-        let (n_cx, _v_cy, rx, _ry) = compute_warp_norm(&tex, &live, 512).unwrap();
-        assert!((n_cx - 0.0).abs() < 1e-6, "n_cx={n_cx} (HP requis, pas f64)");
+        let (n_cx, _v_cy, rx, _ry) = compute_warp_norm(&tex, &live).unwrap();
+        assert!(
+            (n_cx - 0.0).abs() < 1e-6,
+            "n_cx={n_cx} (HP requis, pas f64)"
+        );
         assert!((rx - 1.0).abs() < 1e-9);
     }
 
@@ -4080,32 +3903,6 @@ mod warp_tests {
     fn zero_span_live_is_none() {
         let tex = v("0", "0", "4", "4");
         let live = v("0", "0", "0", "4");
-        assert!(compute_warp_norm(&tex, &live, 256).is_none());
-    }
-}
-
-#[cfg(test)]
-mod resize_tests {
-    use super::resized_spans_hp;
-    use rug::Float;
-
-    /// Verrou bug 2026-08-23 : le resize se calcule en HP — un span 1e-30
-    /// (sous l'ulp f64 du centre) garde sa valeur exacte et l'aspect cible,
-    /// sans passer par f64.
-    #[test]
-    fn resized_spans_keep_hp_precision_and_aspect() {
-        let prec = 256;
-        let sx = Float::with_val(prec, Float::parse("4e-30").unwrap());
-        let sy = Float::with_val(prec, Float::parse("3e-30").unwrap());
-        // 4:3 → 16:9 : la vue tient en hauteur → hauteur conservée, largeur élargie.
-        let (nx, ny) = resized_spans_hp(&sx, &sy, 1600, 900, prec);
-        assert_eq!(ny, sy);
-        let aspect = Float::with_val(prec, &nx / &ny);
-        let want = Float::with_val(prec, 16) / Float::with_val(prec, 9);
-        assert!((aspect - want).abs() < 1e-60);
-        // 4:3 → 1:1 : la vue tient en largeur → largeur conservée, hauteur élargie.
-        let (nx, ny) = resized_spans_hp(&sx, &sy, 500, 500, prec);
-        assert_eq!(nx, sx);
-        assert_eq!(ny, sx);
+        assert!(compute_warp_norm(&tex, &live).is_none());
     }
 }

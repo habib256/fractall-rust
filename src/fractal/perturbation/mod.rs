@@ -92,9 +92,7 @@ use crate::fractal::bytecode::compile_formula;
 use crate::fractal::bytecode::pixel_loop_gmp::iterate_pixel_gmp;
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
 use crate::fractal::perturbation::compress::strip_orbit_arrays_for_compress;
-use crate::fractal::perturbation::delta::{
-    bytecode_path_label, iterate_pixel, iterate_pixel_with_dd,
-};
+use crate::fractal::perturbation::delta::{bytecode_path_label, iterate_pixel_with_dd};
 use crate::fractal::perturbation::orbit::{
     compute_reference_orbit, compute_reference_orbit_cached,
 };
@@ -137,7 +135,7 @@ pub use orbit::{HybridBlaReferences, ReferenceOrbitCache};
 pub use precision::should_use_full_gmp_perturbation;
 pub(crate) use precision::{
     compute_perturbation_precision_bits, effective_pixel_size, effective_spans_dd,
-    effective_spans_fexp, log2_zoom, MAX_PERTURB_PRECISION_BITS,
+    effective_spans_fexp, log2_zoom,
 };
 pub(crate) use progress::{
     perf_enabled, print_fractall_summary, spawn_progress_reporter, ProgressState,
@@ -164,15 +162,15 @@ fn iterate_pixel_hybrid_bla(
 
     if hybrid_refs.cycle_period == 0 {
         // No cycle detected: use primary reference (single reference)
-        return iterate_pixel(
-            params,
-            &hybrid_refs.primary,
-            &hybrid_refs.primary_bla,
-            series_table,
-            delta0,
-            dc,
-            None, // No phase change for single reference
-            None, // No hybrid refs for single reference
+        return iterate_pixel_with_dd(
+            delta::PerturbPixelRequest::new(
+                params,
+                &hybrid_refs.primary,
+                &hybrid_refs.primary_bla,
+                delta0,
+                dc,
+            )
+            .with_series(series_table),
         );
     }
 
@@ -197,15 +195,10 @@ fn iterate_pixel_hybrid_bla(
 
         // Iterate with current phase reference
         // Pass current_phase and hybrid_refs to iterate_pixel() so it can update phase on rebasing
-        let result = iterate_pixel(
-            &phase_params,
-            ref_orbit,
-            bla_table,
-            series_table,
-            delta,
-            dc,
-            Some(&mut current_phase),
-            Some(hybrid_refs),
+        let result = iterate_pixel_with_dd(
+            delta::PerturbPixelRequest::new(&phase_params, ref_orbit, bla_table, delta, dc)
+                .with_series(series_table)
+                .with_hybrid_state(&mut current_phase, hybrid_refs),
         );
 
         total_iterations += result.iteration;
@@ -262,15 +255,15 @@ fn iterate_pixel_hybrid_bla(
     }
 
     // Fallback: use primary reference
-    iterate_pixel(
-        params,
-        &hybrid_refs.primary,
-        &hybrid_refs.primary_bla,
-        series_table,
-        delta0,
-        dc,
-        None, // No phase change for fallback
-        None, // No hybrid refs for fallback
+    iterate_pixel_with_dd(
+        delta::PerturbPixelRequest::new(
+            params,
+            &hybrid_refs.primary,
+            &hybrid_refs.primary_bla,
+            delta0,
+            dc,
+        )
+        .with_series(series_table),
     )
 }
 
@@ -755,17 +748,17 @@ pub fn render_perturbation_with_cache(
                             dc_term,
                         )
                     } else {
-                        iterate_pixel_with_dd(
+                        iterate_pixel_with_dd(delta::PerturbPixelRequest {
                             params,
-                            &cache_ref.orbit,
-                            &cache_ref.bla_table,
-                            cache_ref.series_table.as_ref(),
+                            ref_orbit: &cache_ref.orbit,
+                            bla_table: &cache_ref.bla_table,
+                            series_table: cache_ref.series_table.as_ref(),
                             delta0,
-                            dc_term,
+                            dc: dc_term,
                             dc_dd,
-                            None,
-                            None,
-                        )
+                            current_phase: None,
+                            hybrid_refs: None,
+                        })
                     };
 
                     // Use distance estimation and interior detection results
@@ -975,15 +968,11 @@ pub fn render_perturbation_with_cache(
                                 (ComplexExp::zero(), dc)
                             };
 
-                            let result = iterate_pixel(
-                                params,
-                                &sec_orbit,
-                                &sec_bla,
-                                sec_series.as_ref(),
-                                delta0,
-                                dc_term,
-                                None,
-                                None,
+                            let result = iterate_pixel_with_dd(
+                                delta::PerturbPixelRequest::new(
+                                    params, &sec_orbit, &sec_bla, delta0, dc_term,
+                                )
+                                .with_series(sec_series.as_ref()),
                             );
                             (idx, result)
                         })
@@ -1137,9 +1126,9 @@ pub fn render_perturbation_with_cache(
                                 (ComplexExp::zero(), dc)
                             };
 
-                            let result = iterate_pixel(
-                                params, &sec_orbit, &sec_bla, None, delta0, dc_term, None, None,
-                            );
+                            let result = iterate_pixel_with_dd(delta::PerturbPixelRequest::new(
+                                params, &sec_orbit, &sec_bla, delta0, dc_term,
+                            ));
                             (idx, result)
                         })
                         .collect();
@@ -1315,7 +1304,14 @@ pub fn render_perturbation_with_cache(
                     let i = (idx as u32 % width_u32) as usize;
                     let j = (idx as u32 / width_u32) as usize;
                     let dc_gmp = dc_ctx.compute_dc_ref(i, j);
-                    let result = iterate_pixel_gmp(params, gmp_orbit, &dc_gmp, prec);
+                    let result = iterate_pixel_gmp(
+                        crate::fractal::bytecode::pixel_loop_gmp::GmpPixelRequest {
+                            params,
+                            ref_orbit: gmp_orbit,
+                            dc: &dc_gmp,
+                            precision: prec,
+                        },
+                    );
                     (idx, result.iteration, result.z_final, result.glitched)
                 })
                 .collect();
@@ -1618,7 +1614,14 @@ fn render_perturbation_gmp_path(
                     let dc_gmp = dc_ctx.compute_dc_ref(i, j);
 
                     // Iterate pixel with full GMP precision
-                    let result = iterate_pixel_gmp(params, &cache_ref.orbit, &dc_gmp, prec);
+                    let result = iterate_pixel_gmp(
+                        crate::fractal::bytecode::pixel_loop_gmp::GmpPixelRequest {
+                            params,
+                            ref_orbit: &cache_ref.orbit,
+                            dc: &dc_gmp,
+                            precision: prec,
+                        },
+                    );
 
                     *iter = result.iteration;
                     *z = result.z_final;

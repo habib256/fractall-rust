@@ -2,8 +2,8 @@
 mod bytecode_kernel_test;
 
 use std::num::NonZeroU64;
-use std::sync::Arc;
 use std::sync::mpsc::RecvTimeoutError;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
@@ -13,10 +13,12 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 use wgpu::util::DeviceExt;
 
-use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
-use crate::fractal::perturbation::{compute_perturbation_precision_bits, DcGmpContext, mark_neighbor_glitches};
 use crate::fractal::perturbation::orbit::{compute_reference_orbit_cached, ReferenceOrbitCache};
+use crate::fractal::perturbation::{
+    compute_perturbation_precision_bits, mark_neighbor_glitches, DcGmpContext,
+};
+use crate::fractal::{FractalParams, FractalType};
 
 const WORKGROUP_SIZE: u32 = 16;
 const MAX_LEVELS: usize = 17;
@@ -37,13 +39,16 @@ pub struct GpuDispatchResult {
 
 fn env_flag(name: &str) -> bool {
     match std::env::var(name) {
-        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        Ok(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
         Err(_) => false,
     }
 }
 
 /// Sélectionne les backends wgpu appropriés selon l'OS détecté.
-/// 
+///
 /// - macOS : Metal (requis pour macOS)
 /// - Linux : Vulkan et OpenGL (Vulkan prioritaire pour NVIDIA)
 /// - Windows : DirectX12 et Vulkan
@@ -75,10 +80,7 @@ impl PerturbationBufferCache {
     fn generate_orbit_id(cache: &ReferenceOrbitCache) -> String {
         format!(
             "{}_{}_{}_{:?}",
-            cache.center_x_gmp,
-            cache.center_y_gmp,
-            cache.iteration_max,
-            cache.fractal_type
+            cache.center_x_gmp, cache.center_y_gmp, cache.iteration_max, cache.fractal_type
         )
     }
 }
@@ -116,317 +118,331 @@ impl GpuRenderer {
         // pour permettre à l'application de démarrer sans GPU
         std::panic::catch_unwind(|| {
             pollster::block_on(async {
-            // Sélectionner les backends appropriés selon l'OS
-            let backends = select_backends_for_platform();
-            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-                backends,
-                flags: wgpu::InstanceFlags::default(),
-                memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
-                backend_options: wgpu::BackendOptions::default(),
-                display: None,
-            });
-            let adapter = instance
-                .request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::HighPerformance,
-                    compatible_surface: None,
-                    force_fallback_adapter: false,
+                // Sélectionner les backends appropriés selon l'OS
+                let backends = select_backends_for_platform();
+                let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                    backends,
+                    flags: wgpu::InstanceFlags::default(),
+                    memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+                    backend_options: wgpu::BackendOptions::default(),
+                    display: None,
+                });
+                let adapter = instance
+                    .request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::HighPerformance,
+                        compatible_surface: None,
+                        force_fallback_adapter: false,
+                    })
+                    .await
+                    .ok()?;
+
+                // Afficher les infos de l'adaptateur GPU
+                let info = adapter.get_info();
+                // Sur Apple Silicon, info.name contient le CPU/GPU unifié (ex: "Apple M1")
+                // et info.backend contient le backend (Metal)
+                eprintln!("[GPU] {} ({:?})", info.name, info.backend);
+
+                // SHADER_F64 requis par le kernel perturbation (f64 natif — le
+                // double-float 2×f32 est non-sound sur la stack WGSL→SPIR-V,
+                // cf. perturbation.wgsl + `df64_gpu_probe`). Absent (ex. Metal) →
+                // pipeline perturbation non créée → fallback CPU. Les shaders
+                // std f32 restent inconditionnels.
+                let supports_f64 = adapter.features().contains(wgpu::Features::SHADER_F64);
+                let required_features = if supports_f64 {
+                    wgpu::Features::SHADER_F64
+                } else {
+                    wgpu::Features::empty()
+                };
+
+                let (device, queue) = adapter
+                    .request_device(&wgpu::DeviceDescriptor {
+                        label: Some("gpu-device"),
+                        required_features,
+                        required_limits: wgpu::Limits::default(),
+                        experimental_features: wgpu::ExperimentalFeatures::default(),
+                        memory_hints: wgpu::MemoryHints::default(),
+                        trace: wgpu::Trace::Off,
+                    })
+                    .await
+                    .ok()?;
+
+                let bind_group_layout =
+                    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("mandelbrot-bind-group-layout"),
+                        entries: &[
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 0,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Uniform,
+                                    has_dynamic_offset: false,
+                                    min_binding_size: NonZeroU64::new(
+                                        std::mem::size_of::<ParamsF32>() as u64,
+                                    ),
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 1,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                        ],
+                    });
+
+                let pipeline_layout =
+                    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("mandelbrot-pipeline-layout"),
+                        bind_group_layouts: &[Some(&bind_group_layout)],
+                        immediate_size: 0,
+                    });
+
+                // Ne plus créer les layouts f64 car on utilise uniquement f32
+                let bind_group_layout_f64: Option<wgpu::BindGroupLayout> = None;
+                let _pipeline_layout_f64: Option<wgpu::PipelineLayout> = None;
+
+                let shader_f32 = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("mandelbrot-f32"),
+                    source: wgpu::ShaderSource::Wgsl(include_str!("mandelbrot_f32.wgsl").into()),
+                });
+
+                let pipeline_f32 =
+                    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                        label: Some("mandelbrot-pipeline-f32"),
+                        layout: Some(&pipeline_layout),
+                        module: &shader_f32,
+                        entry_point: Some("main"),
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        cache: None,
+                    });
+
+                let shader_julia_f32 = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("julia-f32"),
+                    source: wgpu::ShaderSource::Wgsl(include_str!("julia_f32.wgsl").into()),
+                });
+
+                let pipeline_julia_f32 =
+                    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                        label: Some("julia-pipeline-f32"),
+                        layout: Some(&pipeline_layout),
+                        module: &shader_julia_f32,
+                        entry_point: Some("main"),
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        cache: None,
+                    });
+
+                let shader_burning_ship_f32 =
+                    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                        label: Some("burning-ship-f32"),
+                        source: wgpu::ShaderSource::Wgsl(
+                            include_str!("burning_ship_f32.wgsl").into(),
+                        ),
+                    });
+
+                let pipeline_burning_ship_f32 =
+                    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                        label: Some("burning-ship-pipeline-f32"),
+                        layout: Some(&pipeline_layout),
+                        module: &shader_burning_ship_f32,
+                        entry_point: Some("main"),
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        cache: None,
+                    });
+
+                // Ne plus créer les pipelines f64 car on utilise uniquement f32
+                let pipeline_f64: Option<PipelinesF64> = None;
+
+                let bind_group_layout_perturb =
+                    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("perturbation-bind-group-layout"),
+                        entries: &[
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 0,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Uniform,
+                                    has_dynamic_offset: false,
+                                    min_binding_size: NonZeroU64::new(std::mem::size_of::<
+                                        PerturbParams,
+                                    >(
+                                    )
+                                        as u64),
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 1,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 2,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 3,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 4,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 5,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                        ],
+                    });
+
+                let pipeline_layout_perturb =
+                    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("perturbation-pipeline-layout"),
+                        bind_group_layouts: &[Some(&bind_group_layout_perturb)],
+                        immediate_size: 0,
+                    });
+
+                // Kernel f64 natif : compilable uniquement avec SHADER_F64
+                // (sinon None → render_perturbation_with_cache renvoie None →
+                // fallback CPU via le dispatcher unique).
+                let pipeline_perturbation = if supports_f64 {
+                    let shader_perturb =
+                        device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                            label: Some("perturbation-shader"),
+                            source: wgpu::ShaderSource::Wgsl(
+                                include_str!("perturbation.wgsl").into(),
+                            ),
+                        });
+                    Some(
+                        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                            label: Some("perturbation-pipeline"),
+                            layout: Some(&pipeline_layout_perturb),
+                            module: &shader_perturb,
+                            entry_point: Some("main"),
+                            compilation_options: wgpu::PipelineCompilationOptions::default(),
+                            cache: None,
+                        }),
+                    )
+                } else {
+                    None
+                };
+
+                // Pipeline bytecode unifié (P3.1 #7).
+                // Layout : 3 bindings — uniform Params, storage out_pixels,
+                // storage bytecode (u32 array).
+                let bind_group_layout_bytecode =
+                    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("bytecode-bind-group-layout"),
+                        entries: &[
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 0,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Uniform,
+                                    has_dynamic_offset: false,
+                                    min_binding_size: NonZeroU64::new(std::mem::size_of::<
+                                        ParamsBytecode,
+                                    >(
+                                    )
+                                        as u64),
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 1,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 2,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                        ],
+                    });
+                let pipeline_layout_bytecode =
+                    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("bytecode-pipeline-layout"),
+                        bind_group_layouts: &[Some(&bind_group_layout_bytecode)],
+                        immediate_size: 0,
+                    });
+                let shader_bytecode = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("bytecode-kernel"),
+                    source: wgpu::ShaderSource::Wgsl(include_str!("bytecode_kernel.wgsl").into()),
+                });
+                let pipeline_bytecode =
+                    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                        label: Some("bytecode-pipeline"),
+                        layout: Some(&pipeline_layout_bytecode),
+                        module: &shader_bytecode,
+                        entry_point: Some("main"),
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        cache: None,
+                    });
+
+                Some(Self {
+                    device,
+                    queue,
+                    pipeline_f32,
+                    pipeline_f64,
+                    pipeline_julia_f32,
+                    pipeline_burning_ship_f32,
+                    pipeline_perturbation,
+                    pipeline_bytecode,
+                    bind_group_layout,
+                    bind_group_layout_f64,
+                    bind_group_layout_perturb,
+                    bind_group_layout_bytecode,
+                    supports_f64,
+                    perturbation_cache: Mutex::new(None),
                 })
-                .await
-                .ok()?;
-
-            // Afficher les infos de l'adaptateur GPU
-            let info = adapter.get_info();
-            // Sur Apple Silicon, info.name contient le CPU/GPU unifié (ex: "Apple M1")
-            // et info.backend contient le backend (Metal)
-            eprintln!("[GPU] {} ({:?})", info.name, info.backend);
-
-            // SHADER_F64 requis par le kernel perturbation (f64 natif — le
-            // double-float 2×f32 est non-sound sur la stack WGSL→SPIR-V,
-            // cf. perturbation.wgsl + `df64_gpu_probe`). Absent (ex. Metal) →
-            // pipeline perturbation non créée → fallback CPU. Les shaders
-            // std f32 restent inconditionnels.
-            let supports_f64 = adapter.features().contains(wgpu::Features::SHADER_F64);
-            let required_features = if supports_f64 {
-                wgpu::Features::SHADER_F64
-            } else {
-                wgpu::Features::empty()
-            };
-
-            let (device, queue) = adapter
-                .request_device(&wgpu::DeviceDescriptor {
-                    label: Some("gpu-device"),
-                    required_features,
-                    required_limits: wgpu::Limits::default(),
-                    experimental_features: wgpu::ExperimentalFeatures::default(),
-                    memory_hints: wgpu::MemoryHints::default(),
-                    trace: wgpu::Trace::Off,
-                })
-                .await
-                .ok()?;
-
-            let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("mandelbrot-bind-group-layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: NonZeroU64::new(std::mem::size_of::<ParamsF32>() as u64),
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            });
-
-            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("mandelbrot-pipeline-layout"),
-                bind_group_layouts: &[Some(&bind_group_layout)],
-                immediate_size: 0,
-            });
-
-            // Ne plus créer les layouts f64 car on utilise uniquement f32
-            let bind_group_layout_f64: Option<wgpu::BindGroupLayout> = None;
-            let _pipeline_layout_f64: Option<wgpu::PipelineLayout> = None;
-
-            let shader_f32 = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("mandelbrot-f32"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("mandelbrot_f32.wgsl").into()),
-            });
-
-            let pipeline_f32 = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("mandelbrot-pipeline-f32"),
-                layout: Some(&pipeline_layout),
-                module: &shader_f32,
-                entry_point: Some("main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: None,
-            });
-
-            let shader_julia_f32 = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("julia-f32"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("julia_f32.wgsl").into()),
-            });
-
-            let pipeline_julia_f32 = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("julia-pipeline-f32"),
-                layout: Some(&pipeline_layout),
-                module: &shader_julia_f32,
-                entry_point: Some("main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: None,
-            });
-
-            let shader_burning_ship_f32 =
-                device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("burning-ship-f32"),
-                    source: wgpu::ShaderSource::Wgsl(
-                        include_str!("burning_ship_f32.wgsl").into(),
-                    ),
-                });
-
-            let pipeline_burning_ship_f32 =
-                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("burning-ship-pipeline-f32"),
-                    layout: Some(&pipeline_layout),
-                    module: &shader_burning_ship_f32,
-                    entry_point: Some("main"),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    cache: None,
-                });
-
-            // Ne plus créer les pipelines f64 car on utilise uniquement f32
-            let pipeline_f64: Option<PipelinesF64> = None;
-
-            let bind_group_layout_perturb =
-                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("perturbation-bind-group-layout"),
-                    entries: &[
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Uniform,
-                                has_dynamic_offset: false,
-                                min_binding_size: NonZeroU64::new(
-                                    std::mem::size_of::<PerturbParams>() as u64,
-                                ),
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: false },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 2,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 3,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 4,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 5,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                    ],
-                });
-
-            let pipeline_layout_perturb =
-                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("perturbation-pipeline-layout"),
-                    bind_group_layouts: &[Some(&bind_group_layout_perturb)],
-                    immediate_size: 0,
-                });
-
-            // Kernel f64 natif : compilable uniquement avec SHADER_F64
-            // (sinon None → render_perturbation_with_cache renvoie None →
-            // fallback CPU via le dispatcher unique).
-            let pipeline_perturbation = if supports_f64 {
-                let shader_perturb = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("perturbation-shader"),
-                    source: wgpu::ShaderSource::Wgsl(include_str!("perturbation.wgsl").into()),
-                });
-                Some(device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("perturbation-pipeline"),
-                    layout: Some(&pipeline_layout_perturb),
-                    module: &shader_perturb,
-                    entry_point: Some("main"),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    cache: None,
-                }))
-            } else {
-                None
-            };
-
-            // Pipeline bytecode unifié (P3.1 #7).
-            // Layout : 3 bindings — uniform Params, storage out_pixels,
-            // storage bytecode (u32 array).
-            let bind_group_layout_bytecode = device.create_bind_group_layout(
-                &wgpu::BindGroupLayoutDescriptor {
-                    label: Some("bytecode-bind-group-layout"),
-                    entries: &[
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Uniform,
-                                has_dynamic_offset: false,
-                                min_binding_size: NonZeroU64::new(
-                                    std::mem::size_of::<ParamsBytecode>() as u64,
-                                ),
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: false },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 2,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                    ],
-                },
-            );
-            let pipeline_layout_bytecode = device.create_pipeline_layout(
-                &wgpu::PipelineLayoutDescriptor {
-                    label: Some("bytecode-pipeline-layout"),
-                    bind_group_layouts: &[Some(&bind_group_layout_bytecode)],
-                    immediate_size: 0,
-                },
-            );
-            let shader_bytecode = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("bytecode-kernel"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("bytecode_kernel.wgsl").into()),
-            });
-            let pipeline_bytecode = device.create_compute_pipeline(
-                &wgpu::ComputePipelineDescriptor {
-                    label: Some("bytecode-pipeline"),
-                    layout: Some(&pipeline_layout_bytecode),
-                    module: &shader_bytecode,
-                    entry_point: Some("main"),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    cache: None,
-                },
-            );
-
-            Some(Self {
-                device,
-                queue,
-                pipeline_f32,
-                pipeline_f64,
-                pipeline_julia_f32,
-                pipeline_burning_ship_f32,
-                pipeline_perturbation,
-                pipeline_bytecode,
-                bind_group_layout,
-                bind_group_layout_f64,
-                bind_group_layout_perturb,
-                bind_group_layout_bytecode,
-                supports_f64,
-                perturbation_cache: Mutex::new(None),
             })
         })
-        }).ok().flatten()
+        .ok()
+        .flatten()
     }
 
     pub fn render_mandelbrot(
@@ -440,7 +456,6 @@ impl GpuRenderer {
         // Toujours utiliser f32 en mode GPU
         self.render_mandelbrot_f32(params, cancel)
     }
-
 
     pub fn render_julia(
         &self,
@@ -475,20 +490,21 @@ impl GpuRenderer {
 
     /// Dispatch GPU unifié — point d'entrée unique partagé par le CLI (`main.rs`)
     /// et le thread de rendu GUI (avant : logique dupliquée des deux côtés).
-    /// Choisit perturbation vs shader f32 standard selon `algorithm_mode` + type
-    /// + plane transform, et thread l'orbite référence (`reuse`/`orbit_cache`)
-    /// sur le path perturbation. Renvoie `None` quand le GPU ne peut pas rendre
+    /// Consomme le plan GPU déjà résolu, puis thread l'orbite référence
+    /// (`reuse`/`orbit_cache`) sur le path perturbation. Renvoie `None` quand
+    /// le GPU ne peut pas rendre
     /// cette config (type non supporté, etc.) → le caller fait le fallback CPU
     /// via le dispatcher unique (`render_escape_time*`).
     pub fn render_dispatch(
         &self,
+        plan: crate::render::GpuRenderPlan,
         params: &FractalParams,
         cancel: &std::sync::atomic::AtomicBool,
         reuse: Option<(&[u32], &[Complex64], u32, u32)>,
         orbit_cache: Option<&Arc<ReferenceOrbitCache>>,
     ) -> Option<GpuDispatchResult> {
         use crate::fractal::wisdom;
-        let render_plan = wisdom::plan_for(params, wisdom::Device::Gpu);
+        let render_plan = plan.wisdom();
         // G4 jalon 2 : le GPU ne cycle pas les phases (shaders/kernel mono-
         // formule) → aucun path GPU pour un hybride. `None` → fallback CPU
         // (f64 standard, seul path multi-phase). Empêche `--gpu`/GUI de rendre
@@ -589,10 +605,14 @@ impl GpuRenderer {
 
         // Use cached orbit/BLA or compute fresh
         let t_ref = Instant::now();
-        let cache = compute_reference_orbit_cached(&orbit_params, Some(cancel), orbit_cache, None, false)?;
+        let cache =
+            compute_reference_orbit_cached(&orbit_params, Some(cancel), orbit_cache, None, false)?;
         let dt_ref = t_ref.elapsed();
         let ref_orbit = &cache.orbit;
-        let supports_bla = matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia);
+        let supports_bla = matches!(
+            params.fractal_type,
+            FractalType::Mandelbrot | FractalType::Julia
+        );
         // Le path CPU bytecode saute la BlaTable conformale au-delà de ~1 M
         // itérations (mémoire, cf. `compute_reference_orbit_cached`). Le shader
         // perturbation GPU (legacy) en a besoin : si la table cachée est vide
@@ -628,13 +648,17 @@ impl GpuRenderer {
             level_offsets[idx] = bla_table.level_offsets[idx] as u32;
             level_lengths[idx] = bla_table.level_lengths[idx] as u32;
         }
-        let flattened: Vec<BlaNode> = bla_table.nodes.iter().map(|node| BlaNode {
-            a: [node.a.re, node.a.im],
-            b: [node.b.re, node.b.im],
-            c: [node.c.re, node.c.im],
-            validity: node.validity_radius,
-            _pad: 0.0,
-        }).collect();
+        let flattened: Vec<BlaNode> = bla_table
+            .nodes
+            .iter()
+            .map(|node| BlaNode {
+                a: [node.a.re, node.a.im],
+                b: [node.b.re, node.b.im],
+                c: [node.c.re, node.c.im],
+                validity: node.validity_radius,
+                _pad: 0.0,
+            })
+            .collect();
 
         let z_ref_data: Vec<ZRef> = ref_orbit
             .z_ref_f64
@@ -644,20 +668,26 @@ impl GpuRenderer {
 
         // Access the cache with interior mutability via Mutex.
         // Recover from poison if another thread panicked (e.g. device lost) to avoid double panic.
-        let mut cache_guard = self.perturbation_cache.lock().unwrap_or_else(|e| e.into_inner());
-        
+        let mut cache_guard = self
+            .perturbation_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
         // Check if we can reuse existing buffers
-        let can_reuse = cache_guard.as_ref()
+        let can_reuse = cache_guard
+            .as_ref()
             .map(|c| c.orbit_id == current_orbit_id)
             .unwrap_or(false);
-        
+
         if !can_reuse {
             // Need to create new buffers
-            let zref_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("perturb-zref-cached"),
-                contents: bytemuck::cast_slice(&z_ref_data),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
+            let zref_buffer = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("perturb-zref-cached"),
+                    contents: bytemuck::cast_slice(&z_ref_data),
+                    usage: wgpu::BufferUsages::STORAGE,
+                });
 
             // wgpu n'accepte pas les buffers de taille zéro dans un bind group
             let bla_contents: Vec<BlaNode> = if flattened.is_empty() {
@@ -665,21 +695,25 @@ impl GpuRenderer {
             } else {
                 flattened
             };
-            let bla_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("perturb-bla-nodes-cached"),
-                contents: bytemuck::cast_slice(&bla_contents),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
+            let bla_buffer = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("perturb-bla-nodes-cached"),
+                    contents: bytemuck::cast_slice(&bla_contents),
+                    usage: wgpu::BufferUsages::STORAGE,
+                });
 
-            let meta_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("perturb-bla-meta-cached"),
-                contents: bytemuck::bytes_of(&BlaMeta {
-                    level_offsets,
-                    level_lengths,
-                    _pad: [0; 2],
-                }),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
+            let meta_buffer = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("perturb-bla-meta-cached"),
+                    contents: bytemuck::bytes_of(&BlaMeta {
+                        level_offsets,
+                        level_lengths,
+                        _pad: [0; 2],
+                    }),
+                    usage: wgpu::BufferUsages::STORAGE,
+                });
 
             // Store in cache for next frame
             *cache_guard = Some(PerturbationBufferCache {
@@ -689,7 +723,7 @@ impl GpuRenderer {
                 orbit_id: current_orbit_id,
             });
         }
-        
+
         // Get references to cached buffers
         let cached = cache_guard.as_ref().unwrap();
         let zref_buffer = &cached.zref_buffer;
@@ -787,11 +821,13 @@ impl GpuRenderer {
             );
         }
 
-        let output_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("perturb-output"),
-            contents: bytemuck::cast_slice(&initial_output),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        });
+        let output_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("perturb-output"),
+                contents: bytemuck::cast_slice(&initial_output),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            });
 
         let readback_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("perturb-readback"),
@@ -805,49 +841,53 @@ impl GpuRenderer {
         let center_x = params.center_x;
         let center_y = params.center_y;
 
-        let params_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("perturb-params"),
-            contents: bytemuck::bytes_of(&{
-                let (offset_x_hi, offset_x_lo) = df_split(center_x - ref_orbit.cref.re);
-                let (offset_y_hi, offset_y_lo) = df_split(center_y - ref_orbit.cref.im);
-                let (span_x_hi, span_x_lo) = df_split(span_x);
-                let (span_y_hi, span_y_lo) = df_split(span_y);
-                PerturbParams {
-                    offset_x_hi,
-                    offset_x_lo,
-                    offset_y_hi,
-                    offset_y_lo,
-                    span_x_hi,
-                    span_x_lo,
-                    span_y_hi,
-                    span_y_lo,
-                    width: params.width,
-                    height: params.height,
-                    iter_max,
-                    bailout: params.bailout as f32,
-                    bla_levels: bla_levels as u32,
-                    fractal_kind: match params.fractal_type {
-                        FractalType::Mandelbrot => 0,
-                        FractalType::Julia => 1,
-                        FractalType::BurningShip => 2,
-                        _ => 0,
-                    },
-                    ref_len,
-                    series_order: params.series_order as u32,
-                    series_threshold: params.series_threshold as f32,
-                    cycle_start: ref_orbit.cycle_start,
-                    cycle_period: ref_orbit.cycle_period,
-                    atom_truncated: ref_orbit.atom_truncated as u32,
-                }
-            }),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let params_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("perturb-params"),
+                contents: bytemuck::bytes_of(&{
+                    let (offset_x_hi, offset_x_lo) = df_split(center_x - ref_orbit.cref.re);
+                    let (offset_y_hi, offset_y_lo) = df_split(center_y - ref_orbit.cref.im);
+                    let (span_x_hi, span_x_lo) = df_split(span_x);
+                    let (span_y_hi, span_y_lo) = df_split(span_y);
+                    PerturbParams {
+                        offset_x_hi,
+                        offset_x_lo,
+                        offset_y_hi,
+                        offset_y_lo,
+                        span_x_hi,
+                        span_x_lo,
+                        span_y_hi,
+                        span_y_lo,
+                        width: params.width,
+                        height: params.height,
+                        iter_max,
+                        bailout: params.bailout as f32,
+                        bla_levels: bla_levels as u32,
+                        fractal_kind: match params.fractal_type {
+                            FractalType::Mandelbrot => 0,
+                            FractalType::Julia => 1,
+                            FractalType::BurningShip => 2,
+                            _ => 0,
+                        },
+                        ref_len,
+                        series_order: params.series_order as u32,
+                        series_threshold: params.series_threshold as f32,
+                        cycle_start: ref_orbit.cycle_start,
+                        cycle_period: ref_orbit.cycle_period,
+                        atom_truncated: ref_orbit.atom_truncated as u32,
+                    }
+                }),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
 
-        let mask_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("perturb-reuse-mask"),
-            contents: bytemuck::cast_slice(&mask),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let mask_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("perturb-reuse-mask"),
+                contents: bytemuck::cast_slice(&mask),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
 
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("perturb-bind-group"),
@@ -885,11 +925,11 @@ impl GpuRenderer {
         }
 
         let t_gpu = Instant::now();
-        let mut encoder =
-            self.device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("perturb-encoder"),
-                });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("perturb-encoder"),
+            });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("perturb-pass"),
@@ -950,18 +990,24 @@ impl GpuRenderer {
 
         // Échantillonner quelques pixels pour vérifier la variation
         let sample_indices = if stats && output_count > 100 {
-            vec![0, output_count / 4, output_count / 2, 3 * output_count / 4, output_count - 1]
+            vec![
+                0,
+                output_count / 4,
+                output_count / 2,
+                3 * output_count / 4,
+                output_count - 1,
+            ]
         } else {
             vec![]
         };
-        
+
         for (idx, p) in pixels.iter().enumerate() {
             if p.flags != 0 {
                 glitch_mask[idx] = true;
             }
             iterations.push(p.iter);
             zs.push(Complex64::new(p.z_re as f64, p.z_im as f64));
-            
+
             if stats && sample_indices.contains(&idx) {
                 let x = idx % width;
                 let y = idx / width;
@@ -1003,19 +1049,32 @@ impl GpuRenderer {
                 *iter_counts.entry(iter_val).or_insert(0) += 1;
             }
             let max_iter_count = iter_counts.values().max().copied().unwrap_or(0);
-            let most_common_iter = iter_counts.iter()
+            let most_common_iter = iter_counts
+                .iter()
                 .max_by_key(|(_, &count)| count)
                 .map(|(iter, _)| *iter)
                 .unwrap_or(0);
-            
+
             // Échantillonner quelques pixels au centre pour voir leurs valeurs
             let center_x = width / 2;
             let center_y = height / 2;
             let center_idx = center_y * width + center_x;
-            let center_iter = if center_idx < iterations.len() { iterations[center_idx] } else { 0 };
-            let center_z_re = if center_idx < zs.len() { zs[center_idx].re } else { 0.0 };
-            let center_z_im = if center_idx < zs.len() { zs[center_idx].im } else { 0.0 };
-            
+            let center_iter = if center_idx < iterations.len() {
+                iterations[center_idx]
+            } else {
+                0
+            };
+            let center_z_re = if center_idx < zs.len() {
+                zs[center_idx].re
+            } else {
+                0.0
+            };
+            let center_z_im = if center_idx < zs.len() {
+                zs[center_idx].im
+            } else {
+                0.0
+            };
+
             eprintln!(
                 "[GPU PERTURB] {}x{} reuse={} ref={:.3}s gpu+readback={:.3}s iter0={} flags!=0={} z0={} unwritten={} bbox=({},{})-({},{}) total={:.3}s",
                 params.width,
@@ -1044,8 +1103,12 @@ impl GpuRenderer {
         let small_image = params.width.max(params.height) <= 512;
         if !small_image && params.glitch_neighbor_pass {
             let neighbor_threshold = (params.iteration_max / 50).max(8);
-            let neighbor_mask =
-                mark_neighbor_glitches(&iterations, params.width, params.height, neighbor_threshold);
+            let neighbor_mask = mark_neighbor_glitches(
+                &iterations,
+                params.width,
+                params.height,
+                neighbor_threshold,
+            );
             for (idx, flagged) in neighbor_mask.into_iter().enumerate() {
                 if flagged {
                     glitch_mask[idx] = true;
@@ -1071,7 +1134,7 @@ impl GpuRenderer {
             let gmp_params = MpcParams::from_params(&orbit_params);
             let prec = compute_perturbation_precision_bits(params);
             let width_u32 = params.width;
-            
+
             // Pre-compute shared GMP constants for dc computation
             let center_x_gmp = if let Some(ref cx_hp) = params.center_x_hp {
                 match rug::Float::parse(cx_hp) {
@@ -1101,32 +1164,32 @@ impl GpuRenderer {
 
                     // Calculer dc en GMP directement
                     let dc_gmp = dc_ctx.compute_dc(i, j);
-                    
+
                     // Calculer le point pixel = center + dc en GMP
                     let mut z_pixel_re = center_x_gmp.clone();
                     z_pixel_re += dc_gmp.real();
                     let mut z_pixel_im = center_y_gmp.clone();
                     z_pixel_im += dc_gmp.imag();
                     let z_pixel = complex_from_xy(prec, z_pixel_re, z_pixel_im);
-                    
+
                     let (iter_val, z_final) = iterate_point_mpc(&gmp_params, &z_pixel);
                     (idx, iter_val, complex_to_complex64(&z_final))
                 })
                 .collect();
-            
+
             // Remplacer tous les résultats
             for (idx, iter_val, z_final) in all_corrections {
                 iterations[idx] = iter_val;
                 zs[idx] = z_final;
             }
-            
+
             if stats {
                 eprintln!(
                     "[GPU PERTURB] fallback_gmp: glitch_ratio={:.3} > {:.3}, recalculé {} pixels",
                     glitch_ratio, GLITCH_FALLBACK_THRESHOLD, output_count
                 );
             }
-            
+
             return Some(((iterations, zs), cache));
         }
 
@@ -1487,11 +1550,13 @@ impl GpuRenderer {
             mapped_at_creation: false,
         });
 
-        let params_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("{label}-params-f32")),
-            contents: bytemuck::bytes_of(&params_value),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let params_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("{label}-params-f32")),
+                contents: bytemuck::bytes_of(&params_value),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
 
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(&format!("{label}-bind-group-f32")),
@@ -1512,11 +1577,11 @@ impl GpuRenderer {
             return None;
         }
 
-        let mut encoder =
-            self.device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some(&format!("{label}-encoder-f32")),
-                });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some(&format!("{label}-encoder-f32")),
+            });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some(&format!("{label}-pass-f32")),
@@ -1604,11 +1669,13 @@ impl GpuRenderer {
             mapped_at_creation: false,
         });
 
-        let params_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("{label}-params-f64")),
-            contents: bytemuck::bytes_of(&params_value),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let params_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("{label}-params-f64")),
+                contents: bytemuck::bytes_of(&params_value),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
 
         let bind_group_layout_f64 = self.bind_group_layout_f64.as_ref()?;
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1630,11 +1697,11 @@ impl GpuRenderer {
             return None;
         }
 
-        let mut encoder =
-            self.device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some(&format!("{label}-encoder-f64")),
-                });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some(&format!("{label}-encoder-f64")),
+            });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some(&format!("{label}-pass-f64")),

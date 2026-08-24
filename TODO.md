@@ -1742,8 +1742,55 @@ v0.8.2 — chaque chantier ferme LA CLASSE dont plusieurs bugs sont issus)** :
    unique de planification du rendu.
 3. [ ] Unifier les contrats des pixel loops sans nécessairement fusionner leurs
    implémentations optimisées.
+   - **Jalon 1 `[2026-08-24]`** : `PixelLoopLimits` regroupe les quatre bornes
+     communes (`iteration_max`, bailout, caps perturbation/BLA) et remplace leur
+     passage positionnel dans les backends ComplexExp et double-double. Le
+   dispatcher les construit atomiquement depuis `FractalParams`; impossible
+     désormais d'intervertir deux caps de même type sur ces chemins.
+   - **Jalon 2 `[2026-08-24]`** : le fast path f64 Mandelbrot, y compris sa
+     variante à référence compressée et les comparaisons Harmonic LA, consomme
+     le même `PixelLoopLimits`. `uncapped()` rend explicites les tests sans caps
+     et les tests de troncature ne modifient que le champ nommé concerné.
+     Extension au généraliste f64 multi-formule et au contrat GMP restante.
+   - **Jalon 3 `[2026-08-24]`** : le généraliste bytecode f64 complet
+     (mono/multi-phase, distance, intérieur et orbit traps) reçoit désormais
+     `PixelLoopLimits`. Les caps ont été retirés de `UnifiedOptions`, qui ne
+     porte plus que les fonctionnalités de sortie : une seule source de vérité
+     gouverne donc les bornes sur f64/exp/dd. Le correcteur GMP reste à typer
+     séparément car il ignore volontairement les caps d'accélération pour
+     produire l'oracle exact.
+   - **Jalon 4 `[2026-08-24]`** : `GmpPixelRequest` donne au correcteur GMP son
+     contrat nommé propre (params, référence, dc MPFR, précision), sans caps
+     BLA/perturbation par construction. Les deux chemins de correction utilisent
+     cette requête ; l'oracle continue donc jusqu'à `iteration_max` sans pouvoir
+     recevoir accidentellement une limite d'accélération.
+   - **Jalon 5 `[2026-08-24]`** : `PerturbPixelRequest` remplace les neuf
+     arguments de la boucle legacy/dispatch dd par des champs nommés (référence,
+     BLA, séries, deltas exp/dd et état hybride mutable). Le chemin production
+     dd et le wrapper compatible construisent désormais ce contrat ; reste à
+     migrer les appelants du wrapper historique puis à le retirer.
+   - **Jalon 6 `[2026-08-24]`** : tous les appelants legacy/hybrides et le test
+     F3-pur construisent `PerturbPixelRequest`; le wrapper positionnel
+     `iterate_pixel` est supprimé. Les frontières pixel production sont donc
+     nommées pour f64/exp/dd et GMP, sans fusionner leurs boucles optimisées.
 4. [ ] Séparer complètement la GUI en contrôleur, état de navigation, état de
    rendu et panneaux.
+   - **Jalon 1 `[2026-08-24]`** : `gui/selection.rs` extrait du contrôleur le
+     cycle de vie complet de la sélection rectangulaire (début, mise à jour,
+     rectangle normalisé, fin et annulation). Le passage en mode XaoS annule
+     désormais cet état atomiquement et trois tests purs verrouillent l'absence
+     de coordonnées périmées. Restent les panneaux et les autres états UI
+   encore directement possédés par `FractallApp`.
+   - **Jalon 2 `[2026-08-24]`** : `gui/hq_render_state.rs` porte le cycle du
+     rendu haute qualité (démarrage, progression, succès/erreur et fermeture).
+   La progression est monotone et bornée, et tout message worker postérieur
+   à un résultat terminal est rejeté. Le contrôleur ne conserve que le canal
+   et la présentation de la fenêtre.
+   - **Jalon 3 `[2026-08-24]`** : suppression de `window_width`,
+     `window_height` et `pending_resize` dans `FractallApp`. Le dernier était
+     un état mort (jamais alimenté), tandis que les deux dimensions dupliquaient
+     `ViewHp`. Resize, rendu HQ et libellés lisent désormais tous la taille
+     canonique de la vue.
 5. [ ] Réduire les champs historiques de `FractalParams` en sous-structures
    cohérentes.
 6. [ ] Ajouter des tests end-to-end de navigation profonde, notamment pour
@@ -1760,6 +1807,118 @@ v0.8.2 — chaque chantier ferme LA CLASSE dont plusieurs bugs sont issus)** :
   par f64 (> 1e15), transformée XaoS à 256 b fixes (> 1e74), HP périmées après
   `--toml` — 4 bugs de la même famille « conversion f64 / précision fixe d'une
   vue HP ».
+  - **Jalon 1 `[2026-08-24]`** : introduction de `ViewHp`, représentation MPFR
+    canonique avec précision dynamique dérivée du span, dimensions attachées,
+    `zoom_at`, `resize`, `transform_to` et écriture atomique des chaînes HP +
+    miroirs f64. Le resize GUI consomme désormais ce type au lieu de
+    réimplémenter son arithmétique. Les invariants deep zoom, aspect et
+    cohérence des miroirs sont couverts. Reste à migrer zoom/pan/XaoS et à
+    remplacer les champs géométriques parallèles de `FractalParams`.
+  - **Jalon 2 `[2026-08-24]`** : les quatre mutations de navigation GUI
+    (`zoom` recentré, zoom ancré/molette, sélection rectangulaire et dézoom),
+    ainsi que le resize, passent toutes par `ViewHp`. La sélection d'un cadre
+    compare désormais ses ratios en MPFR, sans conversion f64 intermédiaire.
+    Un adaptateur unique republie atomiquement chaînes HP et miroirs f64 après
+    chaque mutation. Reste le pan/warp XaoS puis la suppression des champs de
+    vue parallèles dans l'état GUI et `FractalParams`.
+  - **Jalon 3 `[2026-08-24]`** : le warp d'affichage GUI et le mapping de
+    réutilisation XaoS partagent désormais `ViewHp::transform_to`. Les deux
+    politiques locales de précision dynamique et les calculs séparés
+    `Δcentre/span` + `span_cible/span_source` sont supprimés. La construction
+    stricte depuis snapshots décimaux refuse chaînes invalides, spans nuls ou
+    non finis. Les verrous pan/zoom, deep zoom > e80, erreur par pixel et
+    navigation aléatoire restent verts. Reste à faire de `ViewHp` un champ
+    possédé par l'état GUI puis à réduire la géométrie parallèle des params.
+  - **Jalon 4 `[2026-08-24]`** : l'état GUI possède désormais son `ViewHp` ;
+    zoom, sélection, resize et snapshots de warp mutent/lisent directement cet
+    objet. Les quatre chaînes restantes sont explicitement cantonnées aux
+    buffers d'édition texte et sont resynchronisées depuis la vue après chaque
+    validation. `FractalParams` devient un miroir de sérialisation/rendu, plus
+    le propriétaire de la navigation. Reste à encapsuler ces buffers dans le
+    panneau d'édition puis à remplacer la géométrie parallèle de `FractalParams`.
+  - **Jalon 5 `[2026-08-24]`** : la navigation du studio vidéo ne réimplémente
+    plus parsing MPFR, précision dynamique, zoom ancré et pan. Son format public
+    compact `cx/cy/sx` est adapté vers `ViewHp` via
+    `from_horizontal_span` (span Y dérivé de l'aspect), puis reconverti sans
+    changer les manifests. Le verrou d'invariance sous curseur couvre désormais
+    aussi e80. Reste la frontière CLI/qualité et la géométrie sérialisée dans
+    `FractalParams`.
+  - **Jalon 6 `[2026-08-24]`** : chargement TOML et override `--zoom` du CLI
+    matérialisent désormais centre, spans, dimensions et miroirs via
+    `ViewHp::from_center_and_zoom`, au lieu de deux blocs GMP parallèles à
+    précision fixe 1024. La précision de construction est dérivée de
+    l'exposant du zoom avant la division `4/zoom`; le contrat est verrouillé à
+    e80 avec aspect 16:9 et rejet explicite des zooms nuls. Reste à faire
+    consommer une vue typée aux plans qualité/vidéo et à réduire les champs
+    sérialisés historiques.
+  - **Jalon 7 `[2026-08-24]`** : `fractall-quality` construit désormais ses
+    vues de preset via le même `ViewHp::from_center_and_zoom` que le CLI. Le
+    dernier calcul QA `4/zoom` à précision fixe et ses miroirs manuels sont
+    supprimés ; le fallback historique sur zoom 1 reste explicite. Verrous :
+    centre ultra-deep préservé à e80, aspect exact 16:9 et fallback invalide
+    4×3. Reste le générateur de keyframes vidéo, dont l'expansion décimale
+    exacte des puissances de deux impose un contrat de sérialisation distinct.
+  - **Jalon 8 `[2026-08-24]`** : la conversion inverse vidéo
+    `span_x → magnification` délègue à `ViewHp::zoom_string`; sa troisième
+    politique locale de précision (`-log2(span)+96`) est supprimée. La
+    progression dyadique exacte des keyframes reste volontairement spécialisée
+    pour préserver son expansion décimale finie dans les `.fmap`.
+  - **Jalon 9 `[2026-08-24]`** : les quatre chaînes HP parallèles ont été
+    retirées de `FractallApp`. Imports PNG/TOML reconstruisent la vue canonique,
+    et screenshots/rendus HQ demandent ses décimales au moment de l'export.
+    Plus aucun miroir géométrique mutable ne subsiste dans l'état GUI ; reste
+    la géométrie sérialisée historique de `FractalParams`.
+- [ ] **`RenderRequest` typé comme frontière unique du dispatcher** : remplacer
+  les arguments positionnels params/cancel/reuse/cache/XaoS/tiles et y rattacher
+  progressivement le `RenderPlan` résolu.
+  - **Jalon 1 `[2026-08-24]`** : `RenderRequest` porte params, annulation,
+    `ProgressiveReuse`, mapping XaoS et options de tuiles par champs nommés ;
+    `render_request` est désormais le cœur effectif. L'ancienne fonction à six
+    arguments n'est plus qu'un adaptateur compatible pendant la migration des
+    appelants. Le cache d'orbite reste explicitement séparé comme état in/out.
+    Identité de sortie typée ↔ adaptateur verrouillée sur une scène mixte.
+  - **Jalon 2 `[2026-08-24]`** : tous les appelants de production CPU (CLI,
+    GUI progressive/HQ/AA/mini-Julia, quality, vidéo batch et studio) utilisent
+    `render_request`. La GUI exprime désormais explicitement les trois options
+    de réutilisation via les builders nommés. L'adaptateur positionnel ne reste
+    consommé que par les tests de compatibilité/XaoS et peut être retiré après
+    migration de ces fixtures.
+  - **Jalon 3 `[2026-08-24]`** : fixtures XaoS et helpers de tuiles migrés ;
+    l'adaptateur à six arguments est supprimé ainsi que sa réexport publique.
+    `render_request` est désormais l'unique entrée CPU dans tout le crate.
+  - **Jalon 4 `[2026-08-24]`** : `RenderRequest` porte facultativement le
+    `WisdomPlan` CPU déjà résolu. Le dispatcher le consomme, ou le calcule une
+    seule fois s'il est absent, avec garde explicite contre un plan GPU. La GUI
+    progressive partage désormais exactement le même plan entre dispatch CPU
+    (y compris fallback GPU) et libellé de statut : plus de seconde décision
+    Wisdom susceptible de diverger.
+  - **Jalon 5 `[2026-08-24]`** : un newtype `RenderPlan` matérialise le plan
+    d'exécution CPU à la frontière du renderer. Première étape ensuite corrigée
+    par le jalon 6 pour ne pas figer le contrat global sur ce seul device.
+  - **Jalon 6 `[2026-08-24]`** : `RenderPlan` redevient le contrat global issu
+    de `auto(params, gpu_available)` ou `for_device`; il conserve le device
+    choisi puis se spécialise explicitement en `CpuRenderPlan` ou
+    `GpuRenderPlan`. Les deux dispatchers exigent désormais leur type dédié :
+    aucun backend n'est bloqué, et croiser les plans CPU/GPU ne compile pas.
+    CLI et GUI passent par le plan global pour l'arbitrage automatique.
+  - **Jalon 7 `[2026-08-24]`** : `render_planned` devient la première frontière
+    device-agnostique : elle spécialise le plan, exécute le GPU choisi et
+    centralise le fallback CPU avec le device réellement utilisé dans la
+    sortie. La CLI ne duplique plus le branchement des backends et replannifie
+    après application de TOUS les paramètres (formule, transform et canaux),
+    supprimant une décision GPU prématurée. Migration GUI progressive restante.
+  - **Jalon 8 `[2026-08-24]`** : la boucle progressive GUI consomme à son tour
+    `render_planned`; son double dispatch GPU/CPU et son fallback local sont
+    supprimés. Réutilisation inter-passes, cache d'orbite, XaoS et streaming de
+    tuiles restent attachés à la requête CPU de fallback, tandis que le statut
+    reflète le device réellement exécuté. Les seuls appels GPU directs restants
+    sont les outils de benchmark/quality, où le backend est précisément la
+    cible mesurée et aucun arbitrage automatique n'est souhaité.
+  - **Jalon 9 `[2026-08-24]`** : le routeur consomme sans recalcul le
+    `CpuRenderPlan` issu du plan global lorsque CPU était choisi ; seul un vrai
+    fallback GPU→CPU résout légitimement un nouveau plan pour l'autre device.
+    `PlannedRenderOutput.used_perturbation` décrit désormais aussi fidèlement
+    les exécutions CPU, pas seulement GPU.
 - [x] **✅ `RenderOutput` typé `[2026-08-24]`** : struct à champs nommés
   (`render/output.rs`) remplace le tuple `(iterations, zs, orbits, distances)`
   dans TOUT le crate (dispatcher, CLI, GUI, vidéo, quality, studio) — jeter un

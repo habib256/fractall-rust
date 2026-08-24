@@ -21,8 +21,7 @@ mod tests {
     #[test]
     fn bytecode_kernel_wgsl_validates() {
         let source = include_str!("bytecode_kernel.wgsl");
-        let module = naga::front::wgsl::parse_str(source)
-            .expect("parse failed");
+        let module = naga::front::wgsl::parse_str(source).expect("parse failed");
         let mut validator = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::default(),
@@ -40,8 +39,7 @@ mod tests {
     #[test]
     fn perturbation_wgsl_validates() {
         let source = include_str!("perturbation.wgsl");
-        let module = naga::front::wgsl::parse_str(source)
-            .expect("perturbation.wgsl ne parse pas");
+        let module = naga::front::wgsl::parse_str(source).expect("perturbation.wgsl ne parse pas");
         let mut validator = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::default() | naga::valid::Capabilities::FLOAT64,

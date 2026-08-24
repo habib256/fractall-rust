@@ -4,11 +4,11 @@
 //! progressivement: d'abord une vue basse résolution, puis des passes
 //! de plus en plus détaillées.
 
-use std::sync::Arc;
 use num_complex::Complex64;
+use std::sync::Arc;
 
-use crate::fractal::perturbation::ReferenceOrbitCache;
 use crate::fractal::orbit_traps::OrbitData;
+use crate::fractal::perturbation::ReferenceOrbitCache;
 use crate::fractal::xaos::XaosSourceFrame;
 
 /// Message envoyé du thread de rendu vers le GUI.
@@ -98,29 +98,39 @@ impl ProgressiveConfig {
     /// Configuration standard: 5 passes (1/16 → 1/8 → 1/4 → 1/2 → pleine résolution).
     /// Progression très progressive pour un feedback visuel fluide.
     pub fn standard() -> Self {
-        Self { passes: vec![16, 8, 4, 2, 1] }
+        Self {
+            passes: vec![16, 8, 4, 2, 1],
+        }
     }
 
     /// Configuration standard avec moins de passes (1/16, 1/4, pleine résolution).
     pub fn standard_basic() -> Self {
-        Self { passes: vec![16, 4, 1] }
+        Self {
+            passes: vec![16, 4, 1],
+        }
     }
 
     /// Configuration pour GMP (3 passes: 1/16, 1/8, pleine — déjà lent).
     pub fn gmp_mode() -> Self {
-        Self { passes: vec![16, 8, 1] }
+        Self {
+            passes: vec![16, 8, 1],
+        }
     }
 
     /// Configuration pour perturbation (3 passes: 1/16, 1/4, pleine).
     /// La perturbation a un overhead par passe (détection glitchs, références secondaires),
     /// donc moins de passes réduit le coût total tout en offrant un aperçu progressif.
     pub fn perturbation_mode() -> Self {
-        Self { passes: vec![16, 4, 1] }
+        Self {
+            passes: vec![16, 4, 1],
+        }
     }
 
     /// Configuration pour petites images (<256px): 4 passes progressives.
     pub fn fast() -> Self {
-        Self { passes: vec![8, 4, 2, 1] }
+        Self {
+            passes: vec![8, 4, 2, 1],
+        }
     }
 
     /// Configuration rapide sans passe intermédiaire.

@@ -7,10 +7,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use num_complex::Complex64;
-use rug::Float;
-
-use crate::fractal::{AlgorithmMode, FractalParams, FractalType};
-use crate::render::render_escape_time_cancellable_with_reuse;
+use crate::fractal::{AlgorithmMode, FractalParams, FractalType, ViewHp};
+use crate::render::{render_request, RenderRequest};
 
 use metrics::{QualityMetrics, Thresholds};
 use presets::Preset;
@@ -88,7 +86,7 @@ pub fn compare(params: &FractalParams, opt: &ComparisonOptions) -> Result<Compar
         pert_params.iteration_max, pert_params.precision_bits,
     );
     let t0 = Instant::now();
-    let pert_out = render_escape_time_cancellable_with_reuse(&pert_params, &cancel, None, &mut None, None, None)
+    let pert_out = render_request(RenderRequest::new(&pert_params, &cancel), &mut None)
         .ok_or_else(|| "Perturbation render cancelled or failed".to_string())?;
     let (pert_iters, pert_zs) = (pert_out.iterations, pert_out.zs);
     let perturb_time_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -106,7 +104,7 @@ pub fn compare(params: &FractalParams, opt: &ComparisonOptions) -> Result<Compar
         crate::fractal::perturbation::compute_perturbation_precision_bits(&gmp_params),
     );
     let t1 = Instant::now();
-    let gmp_out = render_escape_time_cancellable_with_reuse(&gmp_params, &cancel, None, &mut None, None, None)
+    let gmp_out = render_request(RenderRequest::new(&gmp_params, &cancel), &mut None)
         .ok_or_else(|| "GMP reference render cancelled or failed".to_string())?;
     let (gmp_iters, gmp_zs) = (gmp_out.iterations, gmp_out.zs);
     let gmp_time_ms = t1.elapsed().as_secs_f64() * 1000.0;
@@ -175,8 +173,7 @@ pub fn compare_gpu(
         cpu_params.width, cpu_params.height,
     );
     let t1 = Instant::now();
-    let cpu_out =
-        render_escape_time_cancellable_with_reuse(&cpu_params, &cancel, None, &mut None, None, None)
+    let cpu_out = render_request(RenderRequest::new(&cpu_params, &cancel), &mut None)
             .ok_or_else(|| "GMP judge render cancelled or failed".to_string())?;
     let (cpu_iters, cpu_zs) = (cpu_out.iterations, cpu_out.zs);
     let cpu_time_ms = t1.elapsed().as_secs_f64() * 1000.0;
@@ -266,20 +263,63 @@ pub fn params_from_preset(preset: &Preset, opt: &ComparisonOptions) -> FractalPa
 
 /// Apply --zoom (notation scientifique) to params.span_x_hp / span_y_hp, matching src/main.rs:215.
 pub fn apply_zoom(params: &mut FractalParams, zoom_str: &str) {
-    let prec = 1024u32;
-    let zoom_gmp = match Float::parse(zoom_str) {
-        Ok(parsed) => Float::with_val(prec, parsed),
-        Err(_) => {
-            eprintln!("[quality] cannot parse zoom '{}', using 1.0", zoom_str);
-            Float::with_val(prec, 1.0)
-        }
-    };
-    let four = Float::with_val(prec, 4.0);
-    let span_x_gmp = four / &zoom_gmp;
-    let aspect = params.height as f64 / params.width as f64;
-    let span_y_gmp = Float::with_val(prec, &span_x_gmp * aspect);
-    params.span_x = span_x_gmp.to_f64();
-    params.span_y = span_y_gmp.to_f64();
-    params.span_x_hp = Some(span_x_gmp.to_string());
-    params.span_y_hp = Some(span_y_gmp.to_string());
+    let cx = params
+        .center_x_hp
+        .clone()
+        .unwrap_or_else(|| params.center_x.to_string());
+    let cy = params
+        .center_y_hp
+        .clone()
+        .unwrap_or_else(|| params.center_y.to_string());
+    let view = ViewHp::from_center_and_zoom(
+        &cx,
+        &cy,
+        zoom_str,
+        params.width,
+        params.height,
+        1024,
+    )
+    .or_else(|| {
+        eprintln!("[quality] cannot parse zoom '{}', using 1.0", zoom_str);
+        ViewHp::from_center_and_zoom(
+            &cx,
+            &cy,
+            "1",
+            params.width,
+            params.height,
+            1024,
+        )
+    })
+    .expect("la vue de fallback zoom=1 est valide");
+    view.write_to_params(params);
+}
+
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+    use rug::Float;
+
+    #[test]
+    fn quality_zoom_uses_canonical_deep_view() {
+        let mut params = crate::fractal::default_params_for_type(FractalType::Mandelbrot, 160, 90);
+        let center = "-0.74364388703715100000000000000000000000000000000000000000000000000000000000000000001";
+        params.center_x_hp = Some(center.into());
+        apply_zoom(&mut params, "4e80");
+        let cx_before = Float::with_val(512, Float::parse(center).unwrap());
+        let cx_after = Float::with_val(512, Float::parse(params.center_x_hp.as_ref().unwrap()).unwrap());
+        assert!((cx_before - cx_after).abs() < 1e-120);
+        let sx = Float::with_val(512, Float::parse(params.span_x_hp.as_ref().unwrap()).unwrap());
+        let sy = Float::with_val(512, Float::parse(params.span_y_hp.as_ref().unwrap()).unwrap());
+        let aspect = Float::with_val(512, sx / sy);
+        let expected = Float::with_val(512, 16) / Float::with_val(512, 9);
+        assert!((aspect - expected).abs() < 1e-100);
+    }
+
+    #[test]
+    fn invalid_quality_zoom_falls_back_to_one() {
+        let mut params = crate::fractal::default_params_for_type(FractalType::Mandelbrot, 4, 3);
+        apply_zoom(&mut params, "invalid");
+        assert_eq!(params.span_x, 4.0);
+        assert_eq!(params.span_y, 3.0);
+    }
 }

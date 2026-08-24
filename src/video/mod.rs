@@ -7,7 +7,7 @@
 //! 1. `plan`     — écrit le manifest (géométrie des keyframes dérivée du zoom
 //!                 final, spans en progression ×2 calculés en GMP) ;
 //! 2. `render`   — calcule les keyframes manquantes via le **dispatcher
-//!                 unique** (`render_escape_time_cancellable_with_reuse`,
+//!                 unique** (`render_request`,
 //!                 `cache/xaos/tiles = None`, sémantique single-shot) et les
 //!                 persiste en `.fmap` ; reprise = skip des maps valides ;
 //! 3. `assemble` — colorise les keyframes et interpole les frames
@@ -33,7 +33,7 @@ use crate::fractal::{
     default_params_for_type, ColorSpace, FractalParams, FractalType, OutColoringMode,
 };
 use crate::io::fmap::{load_fmap, save_fmap, FractalMap};
-use crate::render::render_escape_time_cancellable_with_reuse;
+use crate::render::{render_request, RenderRequest};
 
 /// Convention CLI : magnification 1 ⇔ span_x = 4 (cf. main.rs `--zoom`).
 const SPAN_AT_ZOOM_1: f64 = 4.0;
@@ -564,9 +564,7 @@ pub fn render_project_with_progress_ordered(
         progress(KeyframeEvent::Started { k, n });
         let t0 = std::time::Instant::now();
         let mut orbit_cache = None; // single-shot : pas de réutilisation inter-échelle
-        let Some(out) = render_escape_time_cancellable_with_reuse(
-            &params, cancel, None, &mut orbit_cache, None, None,
-        ) else {
+        let Some(out) = render_request(RenderRequest::new(&params, cancel), &mut orbit_cache) else {
             return Ok(RenderOutcome::Cancelled { rendered, skipped });
         };
         let map = FractalMap {
@@ -587,17 +585,17 @@ pub fn render_project_with_progress_ordered(
 /// (qui est `4·width/span`, par pixel). Calcul rug à précision
 /// `-log2(span) + 96` bits (plancher 256), sérialisation `to_string_radix`.
 pub fn zoom_from_span_x(span_x_hp: &str) -> Result<String, String> {
-    let probe = Float::parse(span_x_hp)
-        .map(|p| Float::with_val(128, p))
-        .map_err(|e| format!("span illisible '{span_x_hp}': {e}"))?;
-    if !probe.is_finite() || probe <= 0.0 {
-        return Err(format!("span invalide '{span_x_hp}' (doit être fini et > 0)"));
-    }
-    let exp = probe.get_exp().unwrap_or(0) as i64;
-    let prec = (((-exp).max(0) as u32).saturating_add(96)).max(256);
-    let span = Float::with_val(prec, Float::parse(span_x_hp).expect("déjà parsé"));
-    let zoom = Float::with_val(prec, SPAN_AT_ZOOM_1) / span;
-    Ok(zoom.to_string_radix(10, None))
+    crate::fractal::ViewHp::from_decimal_parts(
+        "0",
+        "0",
+        span_x_hp,
+        span_x_hp,
+        1,
+        1,
+        256,
+    )
+    .map(|view| view.zoom_string())
+    .ok_or_else(|| format!("span invalide '{span_x_hp}' (doit être fini et > 0)"))
 }
 
 #[cfg(test)]

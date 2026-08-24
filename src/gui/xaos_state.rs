@@ -25,9 +25,10 @@ impl XaosLifecycle {
     pub fn accept_pass(&mut self, frame: Option<XaosSourceFrame>, approximate: bool) {
         if let Some(frame) = frame {
             let new_pixels = frame.width as u64 * frame.height as u64;
-            let keep_existing = self.source.as_ref().is_some_and(|old| {
-                old.width as u64 * old.height as u64 > new_pixels
-            });
+            let keep_existing = self
+                .source
+                .as_ref()
+                .is_some_and(|old| old.width as u64 * old.height as u64 > new_pixels);
             if !keep_existing {
                 self.source = Some(frame);
             }

@@ -9,6 +9,7 @@ pub mod vectorial;
 pub mod buddhabrot;
 pub mod perturbation;
 pub mod wisdom;
+pub mod view;
 // G10.4 : réutilisation pixels inter-frame XaoS. Consommé par la GUI (build du
 // mapping) et les boucles pixel CPU ; dead-code partiel dans les autres bins.
 #[allow(dead_code)]
@@ -20,6 +21,7 @@ pub mod wisdom_bench;
 pub mod orbit_traps;
 
 pub use types::{AlgorithmMode, FractalParams, FractalResult, FractalType, OutColoringMode, PlaneTransform, ColorSpace};
+pub use view::{ViewHp, ViewTransform};
 // `apply_lyapunov_preset` et `LyapunovPreset` ne sont pas consommés par
 // `fractall-quality` (qui ne touche pas Lyapunov) ; les autres binaires les
 // utilisent. Silenciation locale du warning unused_imports pour ce binaire.

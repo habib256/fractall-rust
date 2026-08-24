@@ -81,11 +81,14 @@ pub fn iterate_pixel_unified_exp(
     c_ref: Complex64,
     dc: ComplexExp,
     delta_initial: ComplexExp,
-    iteration_max: u32,
-    bailout: f64,
-    max_perturb_iterations: u32,
-    max_bla_steps: u32,
+    limits: crate::fractal::bytecode::pixel_loop::PixelLoopLimits,
 ) -> UnifiedPixelResultExp {
+    let crate::fractal::bytecode::pixel_loop::PixelLoopLimits {
+        iteration_max,
+        bailout,
+        max_perturb_iterations,
+        max_bla_steps,
+    } = limits;
     // G4 jalon 4 : hybrides multi-phase deep (> 1e13, ComplexExp). Pas de BLA
     // (table construite pour UNE phase précise, pas applicable au mélange —
     // mirror du path f64 `iterate_pixel_unified_multi_phase`), rebasing F3 en
@@ -1013,10 +1016,12 @@ mod tests {
                     orbit.cref,
                     dc_exp,
                     ComplexExp::zero(),
-                    iter_max,
-                    4.0,
-                    0,
-                    0,
+                    crate::fractal::bytecode::pixel_loop::PixelLoopLimits {
+                        iteration_max: iter_max,
+                        bailout: 4.0,
+                        max_perturb_iterations: 0,
+                        max_bla_steps: 0,
+                    },
                 );
                 let escaped_exp = res.iteration < iter_max;
 
@@ -1079,10 +1084,12 @@ mod tests {
             orbit.cref,
             dc_exp,
             ComplexExp::zero(),
-            iter_max,
-            4.0,
-            0,
-            0,
+            crate::fractal::bytecode::pixel_loop::PixelLoopLimits {
+                iteration_max: iter_max,
+                bailout: 4.0,
+                max_perturb_iterations: 0,
+                max_bla_steps: 0,
+            },
         );
         // Pas de NaN, pas d'Inf.
         assert!(res.z_final.re.is_finite() && res.z_final.im.is_finite());
@@ -1168,10 +1175,12 @@ mod tests {
                     seed,
                     ComplexExp::zero(),
                     delta_init,
-                    iter_max,
-                    bailout,
-                    0,
-                    0,
+                    crate::fractal::bytecode::pixel_loop::PixelLoopLimits {
+                        iteration_max: iter_max,
+                        bailout,
+                        max_perturb_iterations: 0,
+                        max_bla_steps: 0,
+                    },
                 );
                 if let Some(plain) = plain_escape(dx, dy) {
                     if res.iteration < iter_max {

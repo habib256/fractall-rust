@@ -229,7 +229,9 @@ impl NavState {
             // Un rendu ne démarre que si la vue a bougé, qu'aucun rendu n'est en
             // cours et que le plancher de cadence est franchi. Entre deux, le
             // warp transporte la texture vers la vue live.
-            let render = if zoom.is_some() && !input.rendering && self.since_render >= MIN_RENDER_INTERVAL_SECS
+            let render = if zoom.is_some()
+                && !input.rendering
+                && self.since_render >= MIN_RENDER_INTERVAL_SECS
             {
                 self.since_render = 0.0;
                 NavRender::Moving
@@ -280,7 +282,10 @@ mod tests {
     fn ramp_starts_from_rest() {
         let mut s = NavState::new();
         let first = s.tick(input(1.0, 0.0));
-        assert!(first.repaint, "le 1er tick doit marquer la navigation active");
+        assert!(
+            first.repaint,
+            "le 1er tick doit marquer la navigation active"
+        );
         assert!(s.is_active());
 
         let second = s.tick(input(1.0, 1.0 / 60.0));

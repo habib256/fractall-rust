@@ -52,11 +52,14 @@ pub fn iterate_pixel_unified_ddexp_mandelbrot(
     bla: Option<&BlaTableDd>,
     dc: ComplexDDExp,
     delta_initial: ComplexDDExp,
-    iteration_max: u32,
-    bailout: f64,
-    max_perturb_iterations: u32,
-    max_bla_steps: u32,
+    limits: crate::fractal::bytecode::pixel_loop::PixelLoopLimits,
 ) -> UnifiedPixelResultExp {
+    let crate::fractal::bytecode::pixel_loop::PixelLoopLimits {
+        iteration_max,
+        bailout,
+        max_perturb_iterations,
+        max_bla_steps,
+    } = limits;
     let ref_len = ref_orbit.z_ref_dd.len();
     // Garde : le tier dd exige une orbite dd non vide et de longueur cohérente.
     if ref_len < 2 {
@@ -229,10 +232,12 @@ mod tests {
             None,
             dc,
             ComplexDDExp::ZERO,
-            500,
-            25.0,
-            0,
-            0,
+            crate::fractal::bytecode::pixel_loop::PixelLoopLimits {
+                iteration_max: 500,
+                bailout: 25.0,
+                max_perturb_iterations: 0,
+                max_bla_steps: 0,
+            },
         );
         assert!(res.z_final.re.is_finite() && res.z_final.im.is_finite());
         assert!(res.iteration <= 500);

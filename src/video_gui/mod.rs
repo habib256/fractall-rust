@@ -36,7 +36,7 @@ use crate::fractal::{
 };
 use crate::io::fmap::load_fmap;
 use crate::io::png::{colorize_buffers, load_png_metadata};
-use crate::render::render_escape_time_cancellable_with_reuse;
+use crate::render::{render_request, RenderRequest};
 use crate::video::spline::Dynamic;
 use crate::video::zoom_from_span_x;
 use job::{ScrubReply, ScrubRequest, StudioSettings, TargetView, VideoJobMsg};
@@ -361,9 +361,7 @@ impl VideoStudioApp {
                 p.width = (params.width / div).max(64);
                 p.height = (params.height / div).max(48);
                 let mut oc = cache.clone();
-                let Some(out) = render_escape_time_cancellable_with_reuse(
-                    &p, &cancel, None, &mut oc, None, None,
-                ) else {
+                let Some(out) = render_request(RenderRequest::new(&p, &cancel), &mut oc) else {
                     return;
                 };
                 cache = oc;

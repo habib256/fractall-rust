@@ -18,6 +18,7 @@ use rug::Float;
 
 use crate::fractal::{default_params_for_type, ColorSpace, FractalParams, FractalType};
 use crate::io::fmap::load_fmap;
+use crate::render::{render_request, RenderRequest};
 use crate::video::assemble::{
     assemble_project_with_progress, colorize_keyframe, interpolate_frame, timeline,
     AssembleOptions, AssembleOutcome,
@@ -451,9 +452,7 @@ pub fn spawn_first_thumb(params: FractalParams, cancel: Arc<AtomicBool>) -> mpsc
         let mut cache = None;
         // Miniature : seuls iterations/zs sont consommés (thumb_channels) —
         // choix EXPLICITE, pas un canal jeté par un tuple partiel (G5).
-        let Some(out) = crate::render::render_escape_time_cancellable_with_reuse(
-            &params, &cancel, None, &mut cache, None, None,
-        ) else {
+        let Some(out) = render_request(RenderRequest::new(&params, &cancel), &mut cache) else {
             return; // annulé (clé périmée)
         };
         let (iterations, zs) = (out.iterations, out.zs);

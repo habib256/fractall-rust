@@ -12,25 +12,34 @@ use crate::fractal::perturbation::pixel_math::{
 use crate::fractal::perturbation::types::DeltaResult;
 use crate::fractal::{FractalParams, FractalType};
 
+/// Contrat d'un pixel de correction GMP. Contrairement à `PixelLoopLimits`,
+/// il ne porte aucun cap d'accélération : ce chemin doit produire l'oracle
+/// exact jusqu'à `params.iteration_max`.
+pub struct GmpPixelRequest<'a> {
+    pub params: &'a FractalParams,
+    pub ref_orbit: &'a ReferenceOrbit,
+    pub dc: &'a Complex,
+    pub precision: u32,
+}
+
 /// Iterate a pixel using perturbation theory with full GMP precision.
 /// This function is used for very deep zooms (>10^15) where f64/ComplexExp precision is insufficient.
 ///
 /// # Arguments
 ///
-/// * `params` - Paramètres de la fractale
-/// * `ref_orbit` - Orbite de référence haute précision calculée au centre (avec z_ref_gmp)
-/// * `dc_gmp` - Offset du pixel par rapport au centre en GMP (`c` dans la formule)
-/// * `prec` - Précision GMP à utiliser
+/// La requête nommée porte paramètres, orbite de référence, offset GMP et
+/// précision de calcul.
 ///
 /// # Returns
 ///
 /// DeltaResult avec le nombre d'itérations et la valeur finale de z
-pub fn iterate_pixel_gmp(
-    params: &FractalParams,
-    ref_orbit: &ReferenceOrbit,
-    dc_gmp: &Complex,
-    prec: u32,
-) -> DeltaResult {
+pub fn iterate_pixel_gmp(request: GmpPixelRequest<'_>) -> DeltaResult {
+    let GmpPixelRequest {
+        params,
+        ref_orbit,
+        dc: dc_gmp,
+        precision: prec,
+    } = request;
     // Compteur COMMUN (G5 `PixelCounter`) : `n` = itération ABSOLUE (compte
     // renvoyé, borne de boucle), `m` = index dans l'orbite de référence
     // (remis à 0 au rebase). Avant 2026-08-23 un seul compteur servait aux

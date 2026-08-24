@@ -79,7 +79,8 @@ impl TileGrid {
         let dist2 = |id: usize| -> f64 {
             let bx = id % nx;
             let by = id / nx;
-            let cx = ((bx * tile) as f64 + (((bx * tile + tile).min(width) - bx * tile) as f64) / 2.0)
+            let cx = ((bx * tile) as f64
+                + (((bx * tile + tile).min(width) - bx * tile) as f64) / 2.0)
                 - px;
             let cy = ((by * tile) as f64
                 + (((by * tile + tile).min(height) - by * tile) as f64) / 2.0)
@@ -197,7 +198,10 @@ mod tests {
                     }
                 }
             }
-            assert!(seen.iter().all(|&c| c == 1), "couverture non exacte {w}x{h}");
+            assert!(
+                seen.iter().all(|&c| c == 1),
+                "couverture non exacte {w}x{h}"
+            );
             assert_eq!(grid.order.len(), grid.nx * grid.ny);
             let mut sorted = grid.order.clone();
             sorted.sort_unstable();
@@ -220,7 +224,10 @@ mod tests {
             // La première tuile contient le point de priorité.
             let (x0, y0, tw, th) = grid.rect(grid.order[0]);
             assert!(
-                px >= x0 as f64 && px <= (x0 + tw) as f64 && py >= y0 as f64 && py <= (y0 + th) as f64,
+                px >= x0 as f64
+                    && px <= (x0 + tw) as f64
+                    && py >= y0 as f64
+                    && py <= (y0 + th) as f64,
                 "première tuile {:?} ne contient pas le point ({px}, {py})",
                 grid.rect(grid.order[0])
             );

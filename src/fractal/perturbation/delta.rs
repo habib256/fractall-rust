@@ -635,10 +635,7 @@ fn try_bytecode_unified_path(
                     entry.dd_table.as_ref(),
                     dc_dd,
                     delta0_dd,
-                    params.iteration_max,
-                    params.bailout,
-                    params.max_perturb_iterations,
-                    params.max_bla_steps,
+                    crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
                 );
             return Some(crate::fractal::bytecode::pixel_loop::UnifiedPixelResult {
                 iteration: res_dd.iteration,
@@ -674,10 +671,7 @@ fn try_bytecode_unified_path(
                 c_for_add,
                 dc_for_add_exp,
                 *delta0,
-                params.iteration_max,
-                params.bailout,
-                params.max_perturb_iterations,
-                params.max_bla_steps,
+                crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
             );
             // Conversion vers UnifiedPixelResult (même shape, juste typage).
             return Some(crate::fractal::bytecode::pixel_loop::UnifiedPixelResult {
@@ -747,10 +741,7 @@ fn try_bytecode_unified_path(
                 c_ref,
                 dc_approx,
                 delta_init,
-                params.iteration_max,
-                params.bailout,
-                params.max_perturb_iterations,
-                params.max_bla_steps,
+                crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
             );
             return Some(res);
         }
@@ -769,10 +760,7 @@ fn try_bytecode_unified_path(
                     ref_orbit,
                     bla,
                     dc_approx,
-                    params.iteration_max,
-                    params.bailout,
-                    params.max_perturb_iterations,
-                    params.max_bla_steps,
+                    crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
                 ),
             );
         }
@@ -823,8 +811,6 @@ fn try_bytecode_unified_path(
             enable_interior: params.enable_interior_detection,
             interior_threshold: params.interior_threshold,
             is_julia,
-            max_perturb_iterations: params.max_perturb_iterations,
-            max_bla_steps: params.max_bla_steps,
         };
         let pixel_result = crate::fractal::bytecode::pixel_loop::iterate_pixel_unified_full(
             ref_orbit,
@@ -833,8 +819,7 @@ fn try_bytecode_unified_path(
             c_for_add,
             dc_for_add,
             delta_init,
-            params.iteration_max,
-            params.bailout,
+            crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
             options,
         );
 
@@ -1798,46 +1783,72 @@ fn fast_multibrot_batch_f64(
 ///
 /// * `current_phase` - Current phase (for Hybrid BLA). Updated when rebasing occurs.
 /// * `hybrid_refs` - Hybrid BLA references (for Hybrid BLA). Used to calculate new phase on rebasing.
-pub fn iterate_pixel(
-    params: &FractalParams,
-    ref_orbit: &ReferenceOrbit,
-    bla_table: &BlaTable,
-    series_table: Option<&SeriesTable>,
-    delta0: ComplexExp,
-    dc: ComplexExp,
-    current_phase: Option<&mut u32>,
-    hybrid_refs: Option<&HybridBlaReferences>,
-) -> DeltaResult {
-    iterate_pixel_with_dd(
+/// Variante de `iterate_pixel` acceptant un `dc` **double-double** optionnel
+/// (`dc_dd`), utilisé UNIQUEMENT par le tier dd (`use_dd_tier`) pour porter le
+/// dc du pixel à ~106 bits (le `dc` ComplexExp est 53 b — plancher résiduel des
+/// pixels de bord à grand |dc|, cf. TODO G2). `None` = comportement identique à
+/// `iterate_pixel`.
+pub struct PerturbPixelRequest<'a> {
+    pub params: &'a FractalParams,
+    pub ref_orbit: &'a ReferenceOrbit,
+    pub bla_table: &'a BlaTable,
+    pub series_table: Option<&'a SeriesTable>,
+    pub delta0: ComplexExp,
+    pub dc: ComplexExp,
+    pub dc_dd: Option<crate::fractal::perturbation::dd::ComplexDDExp>,
+    pub current_phase: Option<&'a mut u32>,
+    pub hybrid_refs: Option<&'a HybridBlaReferences>,
+}
+
+impl<'a> PerturbPixelRequest<'a> {
+    pub fn new(
+        params: &'a FractalParams,
+        ref_orbit: &'a ReferenceOrbit,
+        bla_table: &'a BlaTable,
+        delta0: ComplexExp,
+        dc: ComplexExp,
+    ) -> Self {
+        Self {
+            params,
+            ref_orbit,
+            bla_table,
+            series_table: None,
+            delta0,
+            dc,
+            dc_dd: None,
+            current_phase: None,
+            hybrid_refs: None,
+        }
+    }
+
+    pub fn with_series(mut self, series_table: Option<&'a SeriesTable>) -> Self {
+        self.series_table = series_table;
+        self
+    }
+
+    pub fn with_hybrid_state(
+        mut self,
+        current_phase: &'a mut u32,
+        hybrid_refs: &'a HybridBlaReferences,
+    ) -> Self {
+        self.current_phase = Some(current_phase);
+        self.hybrid_refs = Some(hybrid_refs);
+        self
+    }
+}
+
+pub fn iterate_pixel_with_dd(request: PerturbPixelRequest<'_>) -> DeltaResult {
+    let PerturbPixelRequest {
         params,
         ref_orbit,
         bla_table,
         series_table,
         delta0,
         dc,
-        None,
-        current_phase,
+        dc_dd,
+        mut current_phase,
         hybrid_refs,
-    )
-}
-
-/// Variante de `iterate_pixel` acceptant un `dc` **double-double** optionnel
-/// (`dc_dd`), utilisé UNIQUEMENT par le tier dd (`use_dd_tier`) pour porter le
-/// dc du pixel à ~106 bits (le `dc` ComplexExp est 53 b — plancher résiduel des
-/// pixels de bord à grand |dc|, cf. TODO G2). `None` = comportement identique à
-/// `iterate_pixel`.
-#[allow(clippy::too_many_arguments)]
-pub fn iterate_pixel_with_dd(
-    params: &FractalParams,
-    ref_orbit: &ReferenceOrbit,
-    bla_table: &BlaTable,
-    series_table: Option<&SeriesTable>,
-    delta0: ComplexExp,
-    dc: ComplexExp,
-    dc_dd: Option<crate::fractal::perturbation::dd::ComplexDDExp>,
-    mut current_phase: Option<&mut u32>,
-    hybrid_refs: Option<&HybridBlaReferences>,
-) -> DeltaResult {
+    } = request;
     let rebase_stride = rebase_stride();
 
     // P3.1 : path bytecode unifié (BLA mat2 + delta-form + rebasing F3).

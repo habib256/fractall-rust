@@ -41,12 +41,12 @@
 use std::sync::OnceLock;
 
 use crate::fractal::bytecode::harmonic_mla::{harmonic_variant, HarmonicVariant};
-use crate::fractal::types::{FractalParams, FractalType, PlaneTransform};
+use crate::fractal::perturbation::compress::compress_enabled;
+use crate::fractal::perturbation::delta::pixel_size_exp_threshold;
 use crate::fractal::perturbation::{
     compute_perturbation_precision_bits, effective_pixel_size, log2_zoom,
 };
-use crate::fractal::perturbation::compress::compress_enabled;
-use crate::fractal::perturbation::delta::pixel_size_exp_threshold;
+use crate::fractal::types::{FractalParams, FractalType, PlaneTransform};
 use crate::render::escape_time::{should_use_gmp_reference, should_use_perturbation};
 use crate::render::output::{required_channels, ChannelRequirements};
 
@@ -137,8 +137,8 @@ impl NumberTier {
 }
 
 /// Plan complet inspectable pour une frame : algorithme + tier + les grandeurs
-/// F3 qui les justifient. Produit par [`plan`]. Purement descriptif — n'altère
-/// aucun rendu (les call-sites consomment [`number_tier`]/[`dd_requested`]).
+/// F3 qui les justifient. Produit par [`plan`] puis consommé par les frontières
+/// CPU/GPU ; ses champs inspectables alimentent aussi diagnostics et statut GUI.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WisdomPlan {
     /// Device d'exécution (INPUT du plan aujourd'hui, cf. [`Device`]).
@@ -281,8 +281,8 @@ pub fn select_algorithm(params: &FractalParams, device: Device) -> Algorithm {
     // Perturbation viable : famille escape-time supportée + plan Mu (le delta
     // ne commute pas avec les transformations de plan). Miroir exact de l'ancien
     // inline du dispatcher CPU.
-    let perturbation_viable = perturbation_family(params.fractal_type)
-        && params.plane_transform == PlaneTransform::Mu;
+    let perturbation_viable =
+        perturbation_family(params.fractal_type) && params.plane_transform == PlaneTransform::Mu;
     match params.algorithm_mode {
         AlgorithmMode::ReferenceGmp => Algorithm::ReferenceGmp,
         AlgorithmMode::StandardF64 => Algorithm::StandardF64,
@@ -513,8 +513,8 @@ pub fn auto_plan(params: &FractalParams, gpu_available: bool) -> WisdomPlan {
 
 /// Calcule le [`WisdomPlan`] complet pour une frame sur un device donné —
 /// device, algorithme, tier, variantes et les grandeurs F3 (exposant/précision
-/// requis, précision GMP orbite). Descriptif : aucun effet de bord sur le rendu
-/// (les dispatchers consomment [`select_algorithm`]/[`number_tier`]/[`variants`]).
+/// requis, précision GMP orbite). Le plan est ensuite encapsulé dans les types
+/// de rendu spécialisés et consommé directement par leur dispatcher.
 pub fn plan_for(params: &FractalParams, device: Device) -> WisdomPlan {
     let algorithm = select_algorithm(params, device);
     // Tier et variantes n'ont de sens que sur le path perturbation CPU (le
@@ -547,7 +547,10 @@ pub fn plan_for(params: &FractalParams, device: Device) -> WisdomPlan {
 /// Imprime le plan wisdom sur stderr si `FRACTALL_WISDOM=1` (diagnostic ; ne
 /// remplace pas la ligne `[FRACTALL]` finale). Appelé sur le path perturbation.
 pub fn log_plan_if_enabled(params: &FractalParams) {
-    if !matches!(std::env::var("FRACTALL_WISDOM").as_deref(), Ok("1" | "true")) {
+    if !matches!(
+        std::env::var("FRACTALL_WISDOM").as_deref(),
+        Ok("1" | "true")
+    ) {
         return;
     }
     let p = plan(params);
@@ -694,7 +697,13 @@ mod tests {
         dd.use_dd_tier = true;
         assert!(gpu_lacks_features(&dd));
         assert_eq!(select_device(&dd, true), Device::Cpu);
-        for mode in [M::Distance, M::DistanceAO, M::Distance3D, M::OrbitTraps, M::Wings] {
+        for mode in [
+            M::Distance,
+            M::DistanceAO,
+            M::Distance3D,
+            M::OrbitTraps,
+            M::Wings,
+        ] {
             let mut p = base.clone();
             p.out_coloring_mode = mode;
             assert!(gpu_lacks_features(&p), "{mode:?}");
@@ -719,8 +728,14 @@ mod tests {
         // en std-f64 → comparaison inter-algorithmes invalide → l'auto reste CPU
         // (le CPU-std y est rapide+correct). DÉTERMINISTE : retourne avant tout
         // lookup du wisdom.toml machine (donc indépendant de la machine de test).
-        assert_eq!(select_algorithm(&frame(1e8), Device::Cpu), Algorithm::StandardF64);
-        assert_eq!(select_algorithm(&frame(1e8), Device::Gpu), Algorithm::Perturbation);
+        assert_eq!(
+            select_algorithm(&frame(1e8), Device::Cpu),
+            Algorithm::StandardF64
+        );
+        assert_eq!(
+            select_algorithm(&frame(1e8), Device::Gpu),
+            Algorithm::Perturbation
+        );
         assert_eq!(select_device(&frame(1e8), true), Device::Cpu);
     }
 

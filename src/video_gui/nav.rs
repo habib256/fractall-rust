@@ -15,6 +15,8 @@
 //! moteur fait `y = cy + (v−0.5)·span_y` (la ligne 0 est à cy − span_y/2) —
 //! aucun retournement de signe ici.
 
+use crate::fractal::ViewHp;
+#[cfg(test)]
 use rug::Float;
 
 /// Vue de la preview : centre + span_x en strings HP (vérité absolue).
@@ -27,23 +29,24 @@ pub struct HpView {
 
 impl HpView {
     pub fn new(cx: f64, cy: f64, sx: f64) -> Self {
-        Self { cx: cx.to_string(), cy: cy.to_string(), sx: sx.to_string() }
+        Self {
+            cx: cx.to_string(),
+            cy: cy.to_string(),
+            sx: sx.to_string(),
+        }
     }
 }
 
 /// Précision GMP pour l'arithmétique d'une vue de span `sx` :
 /// `-log2(span) + 96` bits, plancher 256 (règle GUI/`span_precision`).
 pub fn view_precision(sx: &str) -> u32 {
-    let bits = Float::parse(sx)
-        .ok()
-        .map(|p| Float::with_val(128, p))
-        .and_then(|f| f.get_exp())
-        .map(|e| (-(e as i64)).max(0) + 96)
-        .unwrap_or(256);
-    (bits as u32).max(256)
+    ViewHp::from_horizontal_span("0", "0", sx, 1.0, 1, 1, 256)
+        .map(|view| view.precision())
+        .unwrap_or(256)
 }
 
 /// Parse les trois composantes de la vue à la précision donnée.
+#[cfg(test)]
 fn parse_view(v: &HpView, prec: u32) -> Option<(Float, Float, Float)> {
     let cx = Float::parse(&v.cx).ok().map(|p| Float::with_val(prec, p))?;
     let cy = Float::parse(&v.cy).ok().map(|p| Float::with_val(prec, p))?;
@@ -54,12 +57,13 @@ fn parse_view(v: &HpView, prec: u32) -> Option<(Float, Float, Float)> {
     Some((cx, cy, sx))
 }
 
-fn serialize(cx: &Float, cy: &Float, sx: &Float) -> HpView {
-    HpView {
-        cx: cx.to_string_radix(10, None),
-        cy: cy.to_string_radix(10, None),
-        sx: sx.to_string_radix(10, None),
-    }
+fn core_view(v: &HpView, aspect: f64) -> Option<ViewHp> {
+    ViewHp::from_horizontal_span(&v.cx, &v.cy, &v.sx, aspect, 1, 1, 256)
+}
+
+fn from_core(view: &ViewHp) -> HpView {
+    let (cx, cy, sx, _) = view.decimal_parts();
+    HpView { cx, cy, sx }
 }
 
 /// Zoom ancré au curseur : le point du plan sous `cursor` (normalisé image)
@@ -72,18 +76,9 @@ pub fn zoom_anchored(v: &HpView, cursor: (f64, f64), aspect: f64, factor: f64) -
     if !(factor.is_finite() && factor > 0.0 && aspect.is_finite() && aspect > 0.0) {
         return None;
     }
-    // Marge : le nouveau span peut être plus petit (zoom in) → +64 bits.
-    let prec = view_precision(&v.sx) + 64;
-    let (cx, cy, sx) = parse_view(v, prec)?;
-    let sy = Float::with_val(prec, &sx * aspect);
-    let sx_new = Float::with_val(prec, &sx / factor);
-    let sy_new = Float::with_val(prec, &sy / factor);
-
-    let du = cursor.0 - 0.5;
-    let dv = cursor.1 - 0.5;
-    let cx_new = Float::with_val(prec, &cx + du * Float::with_val(prec, &sx - &sx_new));
-    let cy_new = Float::with_val(prec, &cy + dv * Float::with_val(prec, &sy - &sy_new));
-    Some(serialize(&cx_new, &cy_new, &sx_new))
+    let mut view = core_view(v, aspect)?;
+    view.zoom_at(cursor.0, cursor.1, factor);
+    Some(from_core(&view))
 }
 
 /// Pan par glisser : `drag` = déplacement de la souris en fraction d'image.
@@ -92,15 +87,12 @@ pub fn pan(v: &HpView, drag: (f64, f64), aspect: f64) -> Option<HpView> {
     if !(aspect.is_finite() && aspect > 0.0) {
         return None;
     }
-    let prec = view_precision(&v.sx) + 32;
-    let (cx, cy, sx) = parse_view(v, prec)?;
-    let sy = Float::with_val(prec, &sx * aspect);
-    let cx_new = Float::with_val(prec, &cx - drag.0 * sx.clone());
-    let cy_new = Float::with_val(prec, &cy - drag.1 * sy);
+    let mut view = core_view(v, aspect)?;
+    view.pan_by(-drag.0, -drag.1);
     // Le span est INCHANGÉ : on garde la string d'origine telle quelle (un
     // round-trip parse→serialize dériverait la représentation décimale, ex.
     // "0.01" → "1.000…001e-2", et invaliderait les comparaisons d'égalité).
-    let mut out = serialize(&cx_new, &cy_new, &sx);
+    let mut out = from_core(&view);
     out.sx = v.sx.clone();
     Some(out)
 }
@@ -110,7 +102,12 @@ mod tests {
     use super::*;
 
     /// Point du plan sous le curseur, en GMP.
-    fn point_under_cursor(v: &HpView, cursor: (f64, f64), aspect: f64, prec: u32) -> (Float, Float) {
+    fn point_under_cursor(
+        v: &HpView,
+        cursor: (f64, f64),
+        aspect: f64,
+        prec: u32,
+    ) -> (Float, Float) {
         let (cx, cy, sx) = parse_view(v, prec).unwrap();
         let sy = Float::with_val(prec, &sx * aspect);
         (
@@ -131,6 +128,11 @@ mod tests {
                 cy: "0.131825904205311970493132056385139".into(),
                 sx: "1e-30".into(),
             },
+            HpView {
+                cx: "-0.74364388703715100000000000000000000000000000000000000000000000000000000000000000001".into(),
+                cy: "0.13182590420533000000000000000000000000000000000000000000000000000000000000000000001".into(),
+                sx: "1e-80".into(),
+            },
         ];
         let aspect = 0.75;
         for v in &cases {
@@ -145,7 +147,10 @@ mod tests {
                 let tol = Float::with_val(prec, &sx * 1e-20f64);
                 let dx = Float::with_val(prec, &before.0 - &after.0);
                 let dy = Float::with_val(prec, &before.1 - &after.1);
-                assert!(dx.abs() < tol, "dérive X au zoom ancré (factor {factor}, vue {v:?})");
+                assert!(
+                    dx.abs() < tol,
+                    "dérive X au zoom ancré (factor {factor}, vue {v:?})"
+                );
                 assert!(
                     dy.abs() < Float::with_val(prec, &sx * (aspect * 1e-20f64)),
                     "dérive Y au zoom ancré (factor {factor}, vue {v:?})"
@@ -186,7 +191,10 @@ mod tests {
         let (_, _, sx0) = parse_view(&v, prec).unwrap();
         let (_, _, sx1) = parse_view(&out, prec).unwrap();
         let rel = Float::with_val(prec, Float::with_val(prec, &sx0 - &sx1) / &sx0);
-        assert!(rel.clone().abs() < 1e-15, "span non restauré : {sx1} (rel {rel})");
+        assert!(
+            rel.clone().abs() < 1e-15,
+            "span non restauré : {sx1} (rel {rel})"
+        );
         // Zoom centré : le centre ne bouge pas (comparaison en VALEUR).
         let (cx1, cy1, _) = parse_view(&inn, prec).unwrap();
         assert_eq!(cx1, 0);
@@ -199,9 +207,17 @@ mod tests {
         let v = HpView::new(0.0, 0.0, 4.0);
         assert!(zoom_anchored(&v, (0.5, 0.5), 0.75, 0.0).is_none());
         assert!(zoom_anchored(&v, (0.5, 0.5), -1.0, 1.2).is_none());
-        let bad = HpView { cx: "abc".into(), cy: "0".into(), sx: "4".into() };
+        let bad = HpView {
+            cx: "abc".into(),
+            cy: "0".into(),
+            sx: "4".into(),
+        };
         assert!(pan(&bad, (0.1, 0.1), 0.75).is_none());
-        let neg = HpView { cx: "0".into(), cy: "0".into(), sx: "-4".into() };
+        let neg = HpView {
+            cx: "0".into(),
+            cy: "0".into(),
+            sx: "-4".into(),
+        };
         assert!(zoom_anchored(&neg, (0.5, 0.5), 0.75, 1.2).is_none());
     }
 }

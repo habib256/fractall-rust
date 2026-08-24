@@ -1030,7 +1030,17 @@ mod tests {
             let fy = (k / 10) as f64 / 9.0 - 0.5;
             let dc = Complex64::new(fx * span_x, fy * span_y);
 
-            let r_bla = iterate_pixel_unified_mandelbrot(&orbit, bla, dc, iter_max, 25.0, 0, 0);
+            let r_bla = iterate_pixel_unified_mandelbrot(
+                &orbit,
+                bla,
+                dc,
+                crate::fractal::bytecode::pixel_loop::PixelLoopLimits {
+                    iteration_max: iter_max,
+                    bailout: 25.0,
+                    max_perturb_iterations: 0,
+                    max_bla_steps: 0,
+                },
+            );
             let r_hml = iterate_pixel_harmonic_mla(&orbit, &table, dc, iter_max, 25.0, 0);
 
             if r_bla.iteration != r_hml.iteration {
@@ -1144,7 +1154,17 @@ mod tests {
             let fy = (k / 10) as f64 / 9.0 - 0.5;
             let dc = Complex64::new(fx * span_x, fy * span_y);
 
-            let r_bla = iterate_pixel_unified_mandelbrot(&orbit, bla, dc, iter_max, 25.0, 0, 0);
+            let r_bla = iterate_pixel_unified_mandelbrot(
+                &orbit,
+                bla,
+                dc,
+                crate::fractal::bytecode::pixel_loop::PixelLoopLimits {
+                    iteration_max: iter_max,
+                    bailout: 25.0,
+                    max_perturb_iterations: 0,
+                    max_bla_steps: 0,
+                },
+            );
             let r_lla = iterate_pixel_harmonic_mla(&orbit, &table, dc, iter_max, 25.0, 0);
 
             if r_bla.iteration != r_lla.iteration {
