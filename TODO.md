@@ -1636,6 +1636,45 @@ le câblage params/render, + la BLA par phase + le nucleus phase-aware + l'UI.
   contre la sortie non-tournée silencieuse) ; l'appliquer nativement évite le
   fallback sur ces cas niches (plane ≠ Mu, perturbation GPU mid-zoom).
 
+**Chantiers d'architecture (chasse aux bugs 2026-08-23, ~25 bugs corrigés en
+v0.8.2 — chaque chantier ferme LA CLASSE dont plusieurs bugs sont issus)** :
+
+- [ ] **Type `View` HP unique** (centre/span HP + dims + précision attachée),
+  au lieu de 4 `String` + 4 `f64` + précisions dispersées (`HP_PRECISION`,
+  `hp_arith_precision`, `transform_precision`). API : `.transform_to(&other)`,
+  `.resize(w, h)`, `.zoom_at(rx, ry, f)` — tout en HP interne, miroirs f64
+  dérivés. Classe fermée : resize qui écrasait le centre HP, clic-zoom absorbé
+  par f64 (> 1e15), transformée XaoS à 256 b fixes (> 1e74), HP périmées après
+  `--toml` — 4 bugs de la même famille « conversion f64 / précision fixe d'une
+  vue HP ».
+- [ ] **`RenderOutput` typé** au lieu du tuple `(iterations, zs, orbits,
+  distances)` : jeter un canal ne doit plus compiler silencieusement.
+  `required_channels(params)` vérifié au point de colorisation (Err, pas
+  d'image plausible-mais-fausse). Classe fermée : 4 bugs « Smooth silencieux »
+  (copie CLI, boucle AA, pipeline vidéo, auto-GPU).
+- [ ] **Compteur d'itération partagé des boucles pixel** : chaque boucle
+  (f64/exp/dd/GMP/multi-phase) réimplémente n (absolu) / m (réf) à la main —
+  `iterate_pixel_gmp` n'avait QUE m et bouclait à l'infini au rebase d'un
+  pixel intérieur (v0.8.2). Un état commun + `debug_assert!(n <= iter_max)` +
+  un test « pixel intérieur qui rebase termine » PAR boucle.
+- [ ] **`RenderPlan` wisdom complet** : la sélection (device/algo/tier) est
+  centralisée mais les à-côtés (K du nucleus, offset off-center, jitter AA,
+  gates de capacités) étaient recalculés — ou oubliés — par chaque path
+  (K perdue dans un clone local, offset absent du path GMP legacy, jitter
+  absent des corrections GMP). Étendre `wisdom::plan()` pour porter TOUT ce
+  que le path doit honorer, consommé au lieu de recalculé.
+- [ ] **Property tests XaoS** : le bug de dérive (0,5 → 1,5 px en molette
+  continue) n'était détectable que par simulation avec oracle (coordonnée
+  vraie dans `zs`). Généraliser `continuous_anchored_zoom_keeps_true_error_
+  bounded` : séquences ALÉATOIRES pan/zoom/zoom-out/resize, invariant
+  « écart vrai ≤ tol ∧ erreur déclarée == vraie » ; paramétrer les tests HP
+  jusqu'à 1e-300 (le trou 1e-30 → 1e-74 a caché le bug de précision).
+- [ ] **Extraire les machines d'état GUI en modules purs testables** (comme
+  `video_gui/nav.rs`) : versioning render/recolor/AA, cycle de vie de la
+  frame source XaoS, provisoires timeline — quasi tous les bugs GUI de la
+  chasse étaient dans `gui/app.rs` / `video_gui/mod.rs`, qui n'ont aucun
+  test. Recouvre le « Découper les gros fichiers » ci-dessus.
+
 ### G6 — Robustesse & infra qualité · `[P1]`
 
 - [x] **✅ Durcissement couverture >512² `[2026-07-17]`** — le path de correction
