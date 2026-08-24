@@ -105,6 +105,39 @@ pub fn colorize_buffers(
     out
 }
 
+/// Colorisation VÉRIFIÉE d'un `RenderOutput` complet (chantier G5).
+///
+/// Point d'entrée à privilégier dès qu'on colorise la sortie du dispatcher :
+/// vérifie que les canaux requis par `params.out_coloring_mode` sont présents
+/// (`RenderOutput::validate_channels`) et renvoie `Err` sinon — au lieu de
+/// l'image plausible-mais-fausse (retombée silencieuse sur Smooth) qui a valu
+/// 4 bugs à la chasse 2026-08-23 (copie CLI, boucle AA, vidéo, auto-GPU).
+pub fn colorize_output(
+    params: &FractalParams,
+    out: &crate::render::output::RenderOutput,
+) -> Result<Vec<u8>, String> {
+    out.validate_channels(params)?;
+    let n = params.width as usize * params.height as usize;
+    if out.iterations.len() != n || out.zs.len() != n {
+        return Err(format!(
+            "buffers de rendu incomplets : {} itérations / {} zs pour {}×{} px",
+            out.iterations.len(),
+            out.zs.len(),
+            params.width,
+            params.height
+        ));
+    }
+    Ok(colorize_buffers(
+        params,
+        &out.iterations,
+        &out.zs,
+        &out.distances,
+        &out.orbits,
+        params.width,
+        params.height,
+    ))
+}
+
 /// Colorise les buffers bruts (itérations + z final) en RGB entrelacé
 /// (3 octets/pixel, row-major). Factorisé pour être réutilisé par la
 /// sauvegarde PNG ET par l'accumulation anti-aliasing multi-sample, qui
@@ -283,6 +316,47 @@ mod tests {
             &[0u8, 0, 0],
             "densité maximale colorisée en noir = ancien bug escape-time"
         );
+    }
+
+    /// G5 `RenderOutput` : la colorisation VÉRIFIÉE refuse un canal requis
+    /// absent (classe « Smooth silencieux ») et reste bit-identique à
+    /// `colorize_buffers` quand les canaux sont là.
+    #[test]
+    fn colorize_output_refuses_dropped_required_channel() {
+        let (w, h) = (8u32, 6u32);
+        let n = (w * h) as usize;
+        let mut params = default_params_for_type(FractalType::Mandelbrot, w, h);
+        params.out_coloring_mode = OutColoringMode::Distance;
+
+        let bare = crate::render::RenderOutput::without_extras(
+            vec![1; n],
+            vec![Complex64::new(5.0, 1.0); n],
+        );
+        assert!(
+            colorize_output(&params, &bare).is_err(),
+            "mode Distance sans canal distances doit être une ERREUR"
+        );
+
+        let mut with = bare.clone();
+        with.distances = vec![1e-6; n];
+        let rgb = colorize_output(&params, &with).expect("canal présent");
+        assert_eq!(
+            rgb,
+            colorize_buffers(&params, &with.iterations, &with.zs, &with.distances, &with.orbits, w, h),
+            "colorize_output == colorize_buffers (mêmes canaux)"
+        );
+
+        // OrbitTraps : même contrat sur le canal orbits.
+        params.out_coloring_mode = OutColoringMode::Wings;
+        assert!(colorize_output(&params, &bare).is_err());
+
+        // Smooth : aucun canal requis → OK sans extras.
+        params.out_coloring_mode = OutColoringMode::Smooth;
+        assert!(colorize_output(&params, &bare).is_ok());
+
+        // Buffers incomplets (iterations tronquées) refusés aussi.
+        let short = crate::render::RenderOutput::without_extras(vec![1; n / 2], vec![Complex64::new(0.0, 0.0); n / 2]);
+        assert!(colorize_output(&params, &short).is_err());
     }
 
     /// Régression : les modes Distance* consomment le canal `distances`. Sans

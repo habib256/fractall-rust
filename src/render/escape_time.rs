@@ -23,14 +23,16 @@ use crate::fractal::perturbation::{
     render_perturbation_with_cache, ReferenceOrbitCache,
 };
 use crate::fractal::xaos::XaosMap;
+use crate::render::output::RenderOutput;
 use crate::render::tiles::{self, TileGrid, TileOpts, TileUpdate};
 
 /// Calcule la matrice d'itérations et la matrice des valeurs finales de z
 /// pour une fractale escape-time (ou algorithme spécial).
 ///
-/// Retourne un tuple (iterations, zs) où :
-/// - `iterations.len() == width * height`
-/// - `zs.len() == width * height`
+/// Retourne un `RenderOutput` complet (iterations, zs + canaux annexes
+/// orbits/distances quand le path les produit) — ne JAMAIS re-projeter sur un
+/// tuple partiel : jeter un canal fait retomber les modes
+/// Distance*/OrbitTraps/Wings silencieusement sur Smooth (classe G5).
 ///
 /// Le calcul est parallélisé sur plusieurs cœurs CPU avec rayon.
 ///
@@ -41,7 +43,7 @@ use crate::render::tiles::{self, TileGrid, TileOpts, TileUpdate};
 /// plein cadre (pas de cancel, pas de reuse, pas de cache). Cf. CLAUDE.md
 /// §« Chemin de rendu unique CLI ↔ GUI ».
 #[allow(dead_code)] // utilisé par le bin fractall-cli (main.rs), pas par gui/quality
-pub fn render_escape_time(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
+pub fn render_escape_time(params: &FractalParams) -> RenderOutput {
     let mut orbit_cache: Option<Arc<ReferenceOrbitCache>> = None;
     render_escape_time_cancellable_with_reuse(
         params,
@@ -51,8 +53,7 @@ pub fn render_escape_time(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) 
         None,
         None,
     )
-    .map(|(i, z, _orbits, _distances)| (i, z))
-    .unwrap_or_else(|| (Vec::new(), Vec::new()))
+    .unwrap_or_default()
 }
 
 struct ReuseData<'a> {
@@ -100,30 +101,12 @@ fn build_reuse<'a>(
     })
 }
 
-/// Version annulable du rendu escape-time.
-/// Retourne None si annulé, Some(iterations, zs) sinon (orbites/distances ignorés pour compatibilité).
-#[allow(dead_code)]
-pub fn render_escape_time_cancellable(
-    params: &FractalParams,
-    cancel: &Arc<AtomicBool>,
-) -> Option<(Vec<u32>, Vec<Complex64>)> {
-    let mut orbit_cache: Option<Arc<ReferenceOrbitCache>> = None;
-    render_escape_time_cancellable_with_reuse(params, cancel, None, &mut orbit_cache, None, None)
-        .map(|(i, z, _o, _d)| (i, z))
-}
-
-/// Résultat du rendu escape-time (iterations, zs, orbites optionnelles, distances optionnelles).
-pub type EscapeTimeResult = (
-    Vec<u32>,
-    Vec<Complex64>,
-    Vec<Option<OrbitData>>,
-    Vec<f64>,
-);
-
 /// Version annulable du rendu escape-time avec réutilisation d'une passe précédente.
 /// Les points déjà calculés sont réutilisés quand les résolutions s'alignent.
-/// Retourne (iterations, zs, orbits, distances) : orbits remplies pour f64 si enable_orbit_traps,
-/// distances remplies pour perturbation si enable_distance_estimation.
+/// Retourne un `RenderOutput` : `orbits` rempli par le path f64 si
+/// `enable_orbit_traps`, `distances` par les paths f64/perturbation si
+/// `enable_distance_estimation` — un canal non produit est un Vec VIDE
+/// (cf. `render::output`, la colorisation vérifiée en dépend).
 ///
 /// **Dispatcher de rendu UNIQUE** partagé par le CLI (`render_escape_time`) et la
 /// GUI (chaque passe progressive). Toute sélection type→algorithme passe par ici
@@ -149,7 +132,7 @@ pub fn render_escape_time_cancellable_with_reuse(
     orbit_cache: &mut Option<Arc<ReferenceOrbitCache>>,
     xaos: Option<&XaosMap>,
     tiles: Option<&TileOpts>,
-) -> Option<EscapeTimeResult> {
+) -> Option<RenderOutput> {
     // Garde-fou : un mapping construit pour d'autres dimensions serait indexé
     // hors bornes par les boucles pixel → on l'ignore (rendu complet).
     let xaos = xaos.filter(|m| {
@@ -176,78 +159,54 @@ pub fn render_escape_time_cancellable_with_reuse(
             tiles,
         )?;
         *orbit_cache = Some(cache);
-        Some((res.0, res.1, Vec::new(), res.2))
+        Some(RenderOutput {
+            iterations: res.0,
+            zs: res.1,
+            orbits: Vec::new(),
+            distances: res.2,
+        })
     };
     // Vérifier l'annulation avant de commencer
     if cancel.load(Ordering::Relaxed) {
         return None;
     }
 
-    // Dispatch vers les algorithmes spéciaux (pas d'orbites ni distances)
-    let empty_orbits_distances = |n: usize| -> (Vec<Option<OrbitData>>, Vec<f64>) {
-        (vec![None; n], vec![])
-    };
+    // Dispatch vers les algorithmes spéciaux (pas d'orbites ni distances).
     match params.fractal_type {
         FractalType::VonKoch => {
             let (i, z) = render_von_koch(params);
-            let n = i.len();
-            return Some((i, z, empty_orbits_distances(n).0, vec![]));
+            return Some(RenderOutput::without_extras(i, z));
         }
         FractalType::Dragon => {
             let (i, z) = render_dragon(params);
-            let n = i.len();
-            return Some((i, z, empty_orbits_distances(n).0, vec![]));
+            return Some(RenderOutput::without_extras(i, z));
         }
         FractalType::Buddhabrot => {
             return if params.use_gmp {
-                render_buddhabrot_mpc_cancellable(params, cancel).map(|(i, z)| {
-                    let n = i.len();
-                    (i, z, empty_orbits_distances(n).0, vec![])
-                })
+                render_buddhabrot_mpc_cancellable(params, cancel).map(|(i, z)| RenderOutput::without_extras(i, z))
             } else {
-                render_buddhabrot_cancellable(params, cancel).map(|(i, z)| {
-                    let n = i.len();
-                    (i, z, empty_orbits_distances(n).0, vec![])
-                })
+                render_buddhabrot_cancellable(params, cancel).map(|(i, z)| RenderOutput::without_extras(i, z))
             };
         }
         FractalType::Lyapunov => {
             return if params.use_gmp {
-                render_lyapunov_mpc_cancellable(params, cancel).map(|(i, z)| {
-                    let n = i.len();
-                    (i, z, empty_orbits_distances(n).0, vec![])
-                })
+                render_lyapunov_mpc_cancellable(params, cancel).map(|(i, z)| RenderOutput::without_extras(i, z))
             } else {
-                render_lyapunov_cancellable(params, cancel).map(|(i, z)| {
-                    let n = i.len();
-                    (i, z, empty_orbits_distances(n).0, vec![])
-                })
+                render_lyapunov_cancellable(params, cancel).map(|(i, z)| RenderOutput::without_extras(i, z))
             };
         }
         FractalType::Nebulabrot => {
             return if params.use_gmp {
-                render_nebulabrot_mpc_cancellable(params, cancel).map(|(i, z)| {
-                    let n = i.len();
-                    (i, z, empty_orbits_distances(n).0, vec![])
-                })
+                render_nebulabrot_mpc_cancellable(params, cancel).map(|(i, z)| RenderOutput::without_extras(i, z))
             } else {
-                render_nebulabrot_cancellable(params, cancel).map(|(i, z)| {
-                    let n = i.len();
-                    (i, z, empty_orbits_distances(n).0, vec![])
-                })
+                render_nebulabrot_cancellable(params, cancel).map(|(i, z)| RenderOutput::without_extras(i, z))
             };
         }
         FractalType::AntiBuddhabrot => {
             return if params.use_gmp {
-                render_antibuddhabrot_mpc_cancellable(params, cancel).map(|(i, z)| {
-                    let n = i.len();
-                    (i, z, empty_orbits_distances(n).0, vec![])
-                })
+                render_antibuddhabrot_mpc_cancellable(params, cancel).map(|(i, z)| RenderOutput::without_extras(i, z))
             } else {
-                render_antibuddhabrot_cancellable(params, cancel).map(|(i, z)| {
-                    let n = i.len();
-                    (i, z, empty_orbits_distances(n).0, vec![])
-                })
+                render_antibuddhabrot_cancellable(params, cancel).map(|(i, z)| RenderOutput::without_extras(i, z))
             };
         }
         _ => {}
@@ -353,7 +312,7 @@ pub fn should_use_perturbation(params: &FractalParams, gpu_f32: bool) -> bool {
 fn render_escape_time_f64_cancellable(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
-) -> Option<EscapeTimeResult> {
+) -> Option<RenderOutput> {
     render_escape_time_f64_cancellable_with_reuse(params, cancel, None, None, None)
 }
 
@@ -363,7 +322,7 @@ fn render_escape_time_f64_cancellable_with_reuse(
     reuse: Option<ReuseData<'_>>,
     xaos: Option<&XaosMap>,
     tiles: Option<&TileOpts>,
-) -> Option<EscapeTimeResult> {
+) -> Option<RenderOutput> {
     let width = params.width as usize;
     let height = params.height as usize;
     let n = width * height;
@@ -373,7 +332,7 @@ fn render_escape_time_f64_cancellable_with_reuse(
     let mut distances: Vec<f64> = vec![f64::INFINITY; n]; // INFINITY = pas d'estimation
 
     if width == 0 || height == 0 {
-        return Some((iterations, zs, orbits, distances));
+        return Some(RenderOutput::without_extras(iterations, zs));
     }
 
     let need_orbits = params.enable_orbit_traps;
@@ -497,7 +456,20 @@ fn render_escape_time_f64_cancellable_with_reuse(
     if !completed {
         None
     } else {
-        Some((iterations, zs, orbits, distances))
+        // Canal non demandé = canal ABSENT (Vec vide) : la colorisation
+        // vérifiée (`render::output`) distingue « produit » de « jeté ».
+        if !need_orbits {
+            orbits = Vec::new();
+        }
+        if !need_distances {
+            distances = Vec::new();
+        }
+        Some(RenderOutput {
+            iterations,
+            zs,
+            orbits,
+            distances,
+        })
     }
 }
 
@@ -505,7 +477,7 @@ fn render_escape_time_f64_cancellable_with_reuse(
 fn render_escape_time_gmp_cancellable(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
-) -> Option<EscapeTimeResult> {
+) -> Option<RenderOutput> {
     render_escape_time_gmp_cancellable_with_reuse(params, cancel, None, None, None)
 }
 
@@ -515,7 +487,7 @@ fn render_escape_time_gmp_cancellable_with_reuse(
     reuse: Option<ReuseData<'_>>,
     xaos: Option<&XaosMap>,
     tiles: Option<&TileOpts>,
-) -> Option<EscapeTimeResult> {
+) -> Option<RenderOutput> {
     let width = params.width as usize;
     let height = params.height as usize;
     let n = width * height;
@@ -523,7 +495,7 @@ fn render_escape_time_gmp_cancellable_with_reuse(
     let mut zs = vec![Complex64::new(0.0, 0.0); n];
 
     if width == 0 || height == 0 {
-        return Some((iterations, zs, vec![], vec![]));
+        return Some(RenderOutput::without_extras(iterations, zs));
     }
 
     let gmp = MpcParams::from_params(params);
@@ -723,7 +695,8 @@ fn render_escape_time_gmp_cancellable_with_reuse(
     if !completed || cancel.load(Ordering::Relaxed) {
         None
     } else {
-        Some((iterations, zs, vec![None; n], vec![]))
+        // Le path GMP par-pixel ne produit ni orbites ni distances.
+        Some(RenderOutput::without_extras(iterations, zs))
     }
 }
 
@@ -746,11 +719,33 @@ mod tests {
     fn render_with_tiles(
         params: &FractalParams,
         tiles: Option<&TileOpts>,
-    ) -> EscapeTimeResult {
+    ) -> RenderOutput {
         let cancel = Arc::new(AtomicBool::new(false));
         let mut cache: Option<Arc<ReferenceOrbitCache>> = None;
         render_escape_time_cancellable_with_reuse(params, &cancel, None, &mut cache, None, tiles)
             .expect("rendu non annulé")
+    }
+
+    /// G5 `RenderOutput` : sémantique des canaux — un canal non demandé est
+    /// ABSENT (Vec vide, « non produit »), un canal demandé a exactement
+    /// width×height entrées. La colorisation vérifiée
+    /// (`io::png::colorize_output`) distingue « produit » de « jeté » sur ce
+    /// contrat.
+    #[test]
+    fn channels_absent_unless_produced() {
+        let mut p = small_mandelbrot(24, 16);
+        let n = 24 * 16;
+        let out = render_with_tiles(&p, None);
+        assert_eq!(out.iterations.len(), n);
+        assert_eq!(out.zs.len(), n);
+        assert!(out.orbits.is_empty(), "orbits non demandées ⇒ canal absent");
+        assert!(out.distances.is_empty(), "distances non demandées ⇒ canal absent");
+
+        p.enable_orbit_traps = true;
+        p.enable_distance_estimation = true;
+        let out = render_with_tiles(&p, None);
+        assert_eq!(out.orbits.len(), n, "orbits demandées ⇒ canal complet");
+        assert_eq!(out.distances.len(), n, "distances demandées ⇒ canal complet");
     }
 
     /// G10.5 : l'ordre des tuiles ne change pas les pixels — un rendu avec
@@ -766,8 +761,8 @@ mod tests {
                 sink: None,
             };
             let r = render_with_tiles(&params, Some(&opts));
-            assert_eq!(base.0, r.0, "iterations divergent (priorité {prio:?})");
-            assert_eq!(base.1, r.1, "zs divergent (priorité {prio:?})");
+            assert_eq!(base.iterations, r.iterations, "iterations divergent (priorité {prio:?})");
+            assert_eq!(base.zs, r.zs, "zs divergent (priorité {prio:?})");
         }
     }
 
@@ -788,11 +783,11 @@ mod tests {
         p.aa_jitter = Some((1, 1.0));
         let a = render_with_tiles(&p, None);
         let a2 = render_with_tiles(&p, None);
-        assert_eq!(a.0, a2.0, "AA par pixel non déterministe (iterations)");
-        assert_eq!(a.1, a2.1, "AA par pixel non déterministe (zs)");
+        assert_eq!(a.iterations, a2.iterations, "AA par pixel non déterministe (iterations)");
+        assert_eq!(a.zs, a2.zs, "AA par pixel non déterministe (zs)");
 
         // L'offset décale l'échantillonnage → diffère du rendu non-jitteré.
-        assert_ne!(base.0, a.0, "aa_jitter n'a rien décalé (offset ignoré ?)");
+        assert_ne!(base.iterations, a.iterations, "aa_jitter n'a rien décalé (offset ignoré ?)");
 
         // Décorrélation spatiale : un offset UNIFORME de grille (aa_subpixel_offset)
         // décalerait tous les pixels du même vecteur ; la version par pixel produit
@@ -802,7 +797,7 @@ mod tests {
         u.aa_subpixel_offset = [ux, uy];
         let uniform = render_with_tiles(&u, None);
         assert_ne!(
-            uniform.0, a.0,
+            uniform.iterations, a.iterations,
             "AA par pixel identique à un offset uniforme (décorrélation absente ?)"
         );
 
@@ -810,7 +805,7 @@ mod tests {
         let mut p2 = base_p.clone();
         p2.aa_jitter = Some((2, 1.0));
         let b = render_with_tiles(&p2, None);
-        assert_ne!(a.0, b.0, "samples k=1 et k=2 identiques (k ignoré ?)");
+        assert_ne!(a.iterations, b.iterations, "samples k=1 et k=2 identiques (k ignoré ?)");
     }
 
     /// G10.5 : le sink reçoit chaque pixel exactement une fois, avec les mêmes
@@ -827,7 +822,8 @@ mod tests {
             priority: (0.5, 0.5),
             sink: Some(&sink),
         };
-        let (iters, zs, _, _) = render_with_tiles(&params, Some(&opts));
+        let out = render_with_tiles(&params, Some(&opts));
+        let (iters, zs) = (out.iterations, out.zs);
 
         let mut seen = vec![0u8; n];
         let w = params.width as usize;

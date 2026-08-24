@@ -27,7 +27,8 @@ fn main() {
         p.iteration_max = 1000;
         p.out_coloring_mode = OutColoringMode::Smooth;
         let t0 = Instant::now();
-        let (it, zs) = render_escape_time(&p);
+        let out = render_escape_time(&p);
+        let (it, zs) = (out.iterations, out.zs);
         let render_s = t0.elapsed().as_secs_f64();
 
         // Colorisation complète, répétée (mesure stable).

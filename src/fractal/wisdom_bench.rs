@@ -245,7 +245,7 @@ fn measure_cpu(key: BenchKey, target_seconds: f64) -> Option<BenchEntry> {
     loop {
         let params = bench_frame(key, size);
         let t = Instant::now();
-        let (iters, _zs) = crate::render::escape_time::render_escape_time(&params);
+        let iters = crate::render::escape_time::render_escape_time(&params).iterations;
         let seconds = t.elapsed().as_secs_f64();
         if iters.is_empty() {
             return best;

@@ -938,12 +938,8 @@ impl FractallApp {
             let cancel = Arc::new(AtomicBool::new(false));
             let total_passes = config.passes.len() as f32;
             let mut previous_pass: Option<(Vec<u32>, Vec<Complex64>, u32, u32)> = None;
-            type HqFinal = (
-                Vec<u32>,
-                Vec<Complex64>,
-                Vec<Option<crate::fractal::orbit_traps::OrbitData>>,
-                Vec<f64>,
-            );
+            /// Résultat final du rendu HQ : sortie typée du dispatcher (G5).
+type HqFinal = crate::render::RenderOutput;
             let mut final_result: Option<HqFinal> = None;
 
             for (pass_index, &scale_divisor) in config.passes.iter().enumerate() {
@@ -976,7 +972,7 @@ impl FractallApp {
                 );
 
                 match result {
-                    Some((iterations, zs, orbits, distances)) => {
+                    Some(out) => {
                         // Progression : 5% au début, puis 5–90% répartis sur les passes, 90–95% sauvegarde
                         let pass_progress = (pass_index + 1) as f32 / total_passes * 0.85f32; // 0.85 * (1/5..5/5)
                         let progress = 0.05f32 + pass_progress; // 5% -> 90%
@@ -985,10 +981,10 @@ impl FractallApp {
                         if pass_index + 1 == config.passes.len() {
                             // Canaux annexes conservés : sans eux le PNG HQ des
                             // modes Distance*/OrbitTraps/Wings retombe sur Smooth.
-                            final_result = Some((iterations, zs, orbits, distances));
+                            final_result = Some(out);
                             break;
                         }
-                        previous_pass = Some((iterations, zs, pass_width, pass_height));
+                        previous_pass = Some((out.iterations, out.zs, pass_width, pass_height));
                     }
                     None => {
                         let _ = tx.send(HqRenderMessage::Error("Render cancelled".to_string()));
@@ -997,7 +993,7 @@ impl FractallApp {
                 }
             }
 
-            if let Some((iterations, zs, orbits, distances)) = final_result {
+            if let Some(out) = final_result {
                 let _ = tx.send(HqRenderMessage::Progress(0.92));
 
                 use std::path::Path;
@@ -1007,13 +1003,17 @@ impl FractallApp {
                     .as_secs();
                 let filename = format!("fractal_{}x{}_{}.png", render_width, render_height, timestamp);
 
-                let buffer = crate::io::png::colorize_to_rgb_with_extras(
-                    &render_params,
-                    &iterations,
-                    &zs,
-                    &distances,
-                    &orbits,
-                );
+                // Colorisation VÉRIFIÉE (G5) : un canal requis absent = erreur
+                // affichée, pas un PNG HQ silencieusement retombé sur Smooth.
+                let buffer = match crate::io::png::colorize_output(&render_params, &out) {
+                    Ok(rgb) => rgb,
+                    Err(e) => {
+                        let _ = tx.send(HqRenderMessage::Error(format!(
+                            "Erreur de colorisation: {e}"
+                        )));
+                        return;
+                    }
+                };
                 if let Err(e) = crate::io::png::save_png_rgb_with_metadata(
                     &render_params,
                     &buffer,
@@ -1427,14 +1427,15 @@ impl FractallApp {
                         if let Some(cache) = r.orbit_cache {
                             current_orbit_cache = Some(cache);
                         }
-                        let n = r.iterations.len();
                         let effective_mode = if r.used_perturbation {
                             AlgorithmMode::Perturbation
                         } else {
                             AlgorithmMode::StandardF64
                         };
                         Some((
-                            (r.iterations, r.zs, Vec::new(), vec![None; n]),
+                            // Le GPU ne produit ni distances ni orbites (gate
+                            // wisdom::gpu_lacks_features) : canaux ABSENTS.
+                            crate::render::RenderOutput::without_extras(r.iterations, r.zs),
                             effective_mode,
                             format!("GPU {}", gpu.precision_label()),
                             true, // from_gpu : ne pas stocker comme frame source XaoS
@@ -1453,10 +1454,10 @@ impl FractallApp {
                             tile_opts.as_ref(),
                         );
                         current_orbit_cache = cache;
-                        r.map(|(iterations, zs, orbits, distances)| {
+                        r.map(|out| {
                             let effective_mode = effective_cpu_mode(&pass_params);
                             let precision_label = cpu_precision_label(&pass_params, effective_mode);
-                            ((iterations, zs, distances, orbits), effective_mode, precision_label, false)
+                            (out, effective_mode, precision_label, false)
                         })
                     }
                 } else {
@@ -1474,15 +1475,23 @@ impl FractallApp {
                         tile_opts.as_ref(),
                     );
                     current_orbit_cache = cache;
-                    r.map(|(iterations, zs, orbits, distances)| {
+                    r.map(|out| {
                         let effective_mode = effective_cpu_mode(&pass_params);
                         let precision_label = cpu_precision_label(&pass_params, effective_mode);
-                        ((iterations, zs, distances, orbits), effective_mode, precision_label, false)
+                        (out, effective_mode, precision_label, false)
                     })
                 };
 
                 match result {
-                    Some(((iterations, zs, distances, orbits), effective_mode, precision_label, from_gpu)) => {
+                    Some((out, effective_mode, precision_label, from_gpu)) => {
+                        // Sortie typée (G5) : les canaux annexes suivent
+                        // iterations/zs jusqu'à la colorisation et l'état app.
+                        let crate::render::RenderOutput {
+                            iterations,
+                            zs,
+                            orbits,
+                            distances,
+                        } = out;
                         // Buffers bruts en Arc : partagés (sans memcpy) entre la
                         // passe suivante, la frame source XaoS et l'état de l'app.
                         let iterations = Arc::new(iterations);
@@ -1616,11 +1625,18 @@ impl FractallApp {
                     // Même dispatcher unifié que le CLI (cache d'orbite réutilisé
                     // entre samples, même centre).
                     let mut cache = current_orbit_cache.take();
-                    let rendered = render_escape_time_cancellable_with_reuse(&p, &cancel, None, &mut cache, None, None)
-                        .map(|(it, zz, orb, dist)| (it, zz, dist, orb));
+                    let rendered = render_escape_time_cancellable_with_reuse(&p, &cancel, None, &mut cache, None, None);
                     current_orbit_cache = cache;
-                    let Some((it, zz, dist, orb)) = rendered else { break };
-                    let rgb = colorize_buffer(&it, &zz, &dist, &orb, &p, w, h);
+                    let Some(sample) = rendered else { break };
+                    let rgb = colorize_buffer(
+                        &sample.iterations,
+                        &sample.zs,
+                        &sample.distances,
+                        &sample.orbits,
+                        &p,
+                        w,
+                        h,
+                    );
                     for (a, &c) in accum.iter_mut().zip(rgb.iter()) {
                         *a += c as f64;
                     }
@@ -2188,12 +2204,12 @@ impl FractallApp {
                 return;
             }
 
-            if let Some((iterations, zs, orbits, distances)) = result {
+            if let Some(out) = result {
                 let display_buffer = colorize_buffer(
-                    &iterations,
-                    &zs,
-                    &distances,
-                    &orbits,
+                    &out.iterations,
+                    &out.zs,
+                    &out.distances,
+                    &out.orbits,
                     &params,
                     preview_width,
                     preview_height,

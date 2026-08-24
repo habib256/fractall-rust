@@ -449,11 +449,14 @@ pub fn spawn_first_thumb(params: FractalParams, cancel: Arc<AtomicBool>) -> mpsc
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut cache = None;
-        let Some((iterations, zs, _, _)) = crate::render::render_escape_time_cancellable_with_reuse(
+        // Miniature : seuls iterations/zs sont consommés (thumb_channels) —
+        // choix EXPLICITE, pas un canal jeté par un tuple partiel (G5).
+        let Some(out) = crate::render::render_escape_time_cancellable_with_reuse(
             &params, &cancel, None, &mut cache, None, None,
         ) else {
             return; // annulé (clé périmée)
         };
+        let (iterations, zs) = (out.iterations, out.zs);
         if iterations.len() == (params.width * params.height) as usize {
             let _ = tx.send(VideoJobMsg::Thumb {
                 k: 0,

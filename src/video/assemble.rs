@@ -253,14 +253,23 @@ pub fn colorize_keyframe(map: &FractalMap, manifest: &Manifest, palette_offset: 
     p.out_coloring_mode = video_outcoloring(&manifest.color.outcoloring)?;
     p.color_offset = palette_offset;
     // Le canal `distances` de la map (rendu avec `[fractal] distance_estimation`)
-    // alimente les modes Distance*/DistanceAO/Distance3D — sans lui, le
-    // manifest pourrait activer l'estimation de distance et le rendu retomber
-    // silencieusement sur Smooth.
+    // alimente les modes Distance*/DistanceAO/Distance3D. Vérification G5 :
+    // un mode Distance sur des maps SANS canal (manifest sans
+    // `distance_estimation = true`) est une ERREUR — pas une vidéo
+    // silencieusement retombée sur Smooth.
+    let distances = map.distances.as_deref().unwrap_or(&[]);
+    crate::render::required_channels(&p)
+        .validate(map.iterations.len(), distances, &[])
+        .map_err(|e| {
+            format!(
+                "keyframe non colorisable ({e}) — re-rendre avec [fractal] distance_estimation = true"
+            )
+        })?;
     let mut rgb = colorize_to_rgb_with_extras(
         &p,
         &map.iterations,
         &map.zs,
-        map.distances.as_deref().unwrap_or(&[]),
+        distances,
         &[],
     );
     if manifest.lighting.enable {

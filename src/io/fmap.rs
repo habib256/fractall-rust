@@ -362,7 +362,8 @@ mod tests {
     #[test]
     fn fmap_recolor_matches_direct_render() {
         let params = default_params_for_type(FractalType::Mandelbrot, 48, 36);
-        let (iterations, zs) = render_escape_time(&params);
+        let out = render_escape_time(&params);
+        let (iterations, zs) = (out.iterations, out.zs);
         let direct_rgb = colorize_to_rgb(&params, &iterations, &zs);
 
         let path = tmp_path("recolor");
@@ -383,7 +384,8 @@ mod tests {
         direct_params.color_mode = recolor_params.color_mode;
 
         let from_map = colorize_to_rgb(&recolor_params, &loaded.iterations, &loaded.zs);
-        let (it2, zs2) = render_escape_time(&direct_params);
+        let d2 = render_escape_time(&direct_params);
+        let (it2, zs2) = (d2.iterations, d2.zs);
         let direct2 = colorize_to_rgb(&direct_params, &it2, &zs2);
         assert_eq!(from_map, direct2, "recolor from map doit être pixel-exact");
 

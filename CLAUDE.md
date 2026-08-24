@@ -22,7 +22,7 @@ Prérequis natifs : GMP / MPFR / MPC (pour `rug`).
 
 ## Tests
 
-- **Unit tests** : `cargo test --release --lib` (~312 tests). ⚠️ Cible **lib**
+- **Unit tests** : `cargo test --release --lib` (~400 tests). ⚠️ Cible **lib**
   (`src/lib.rs`) : les binaires ne sont que des enveloppes, les tests des
   modules ne tournent plus en triple sous `--bin`.
   Couvre `perturbation/{bla,delta,series,nonconformal,distance,interior,
@@ -310,6 +310,14 @@ réutilisation inter-frame et de scheduling par tuiles — `None` partout ailleu
 
 Le path perturbation passe par `render_perturbation_with_cache` (cœur commun) ;
 le cache est géré DANS le dispatcher, pas par un appel parallèle côté GUI.
+
+**Sortie TYPÉE `RenderOutput`** (G5, 2026-08-24, `render/output.rs`) : le
+dispatcher renvoie une struct à champs nommés `{iterations, zs, orbits,
+distances}` — plus de tuple dont on jette un canal sans s'en rendre compte.
+Sémantique : canal non produit = Vec **VIDE** ; canal produit = width×height
+entrées (verrou `channels_absent_unless_produced`). `orbits` : path f64 si
+`enable_orbit_traps` ; `distances` : paths f64/perturbation si
+`enable_distance_estimation` ; GMP/GPU/spéciaux : aucun.
 
 **Ne JAMAIS** réintroduire une logique de dispatch dans `gui/app.rs` ou
 dupliquer `render_escape_time*` : une divergence GUI/CLI = bug.
@@ -652,11 +660,25 @@ plausible mais fausse) : c'était le bug de la copie CLI, qui passait
 `is_buddhabrot` côté CLI → colorisé comme un escape-time (densité maximale
 ⇒ `iter == iteration_max` ⇒ noir).
 
+**Colorisation VÉRIFIÉE** (G5, 2026-08-24) : `io::png::colorize_output(
+params, &RenderOutput) -> Result<Vec<u8>, String>` est le point d'entrée à
+privilégier pour une sortie plein cadre — il vérifie via
+`render::output::required_channels` que les canaux requis par
+`out_coloring_mode` (Distance* → `distances`, OrbitTraps/Wings → `orbits`)
+sont PRÉSENTS, et renvoie **Err** sinon (au lieu de l'image
+plausible-mais-fausse). Câblé : CLI (PNG final + samples AA + `--from-map`),
+HQ GUI, `colorize_keyframe` vidéo (+ refus au PLAN d'un manifest
+`outcoloring distance` sans `distance_estimation`). Le CLI couple
+mode→flags (`--outcoloring distance` ⇒ `enable_distance_estimation`, parité
+GUI). Les paths d'affichage GUI (tuiles, recolor, previews) restent sur
+`colorize_buffers` non-vérifié (tolérance interactive).
+
 **Ne JAMAIS** réécrire une boucle de colorisation ailleurs ni appeler
 `color_for_pixel_with_lut` directement depuis un path de sortie : une
 divergence colorisation = un PNG qui ne ressemble pas à l'écran. Verrous :
 `io::png::tests::{antibuddhabrot_colorizes_as_density_like_buddhabrot,
-distance_channel_changes_distance_mode_output}`.
+distance_channel_changes_distance_mode_output,
+colorize_output_refuses_dropped_required_channel}`.
 
 ## Transformations de plan (XaoS-style)
 

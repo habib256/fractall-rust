@@ -454,12 +454,22 @@ fn run_from_map(cli: &Cli, map_path: &std::path::Path, output_path: &std::path::
     let span_x_hp = params.span_x_hp.clone().unwrap_or_else(|| params.span_x.to_string());
     let span_y_hp = params.span_y_hp.clone().unwrap_or_else(|| params.span_y.to_string());
     // Le canal `distances` de la map alimente les modes Distance*/DistanceAO/
-    // Distance3D — sans lui, ces modes retombent silencieusement sur Smooth.
+    // Distance3D. Vérification G5 : un mode qui requiert un canal absent de
+    // la map est une ERREUR (le .fmap ne persiste jamais `orbits`, et
+    // `distances` seulement si le rendu l'a produit) — pas une retombée
+    // silencieuse sur Smooth.
+    let distances = map.distances.as_deref().unwrap_or(&[]);
+    if let Err(e) =
+        render::required_channels(&params).validate(map.iterations.len(), distances, &[])
+    {
+        eprintln!("Erreur : recolorisation impossible depuis cette map — {e}");
+        std::process::exit(1);
+    }
     let buffer = io::png::colorize_to_rgb_with_extras(
         &params,
         &map.iterations,
         &map.zs,
-        map.distances.as_deref().unwrap_or(&[]),
+        distances,
         &[],
     );
     if let Err(e) = save_png_rgb_with_metadata(
@@ -880,6 +890,13 @@ fn main() {
         }
     }
 
+    // Couplage mode → canaux (parité GUI) : les modes Distance*/OrbitTraps/
+    // Wings requièrent leur canal — la colorisation vérifiée (G5
+    // `RenderOutput`) refuse un canal absent au lieu de retomber sur Smooth.
+    params.enable_distance_estimation |=
+        params.out_coloring_mode.requires_distance_channel();
+    params.enable_orbit_traps |= params.out_coloring_mode.requires_orbit_channel();
+
     // Transformation du plan (XaoS-style).
     match PlaneTransform::from_cli_name(&cli.plane) {
         Some(plane) => {
@@ -906,13 +923,10 @@ fn main() {
     let start_time = std::time::Instant::now();
     let cancel = Arc::new(AtomicBool::new(false));
 
-    // Canaux annexes du dispatcher, capturés pour la COLORISATION (modes
-    // Distance*/OrbitTraps/Wings) et pour --output-map : distances (path
-    // perturbation avec enable_distance_estimation) et orbites (path f64 avec
-    // orbit traps). Vides quand le path ne les produit pas.
-    let mut map_distances: Vec<f64> = Vec::new();
-    let mut map_orbits: Vec<Option<fractal::orbit_traps::OrbitData>> = Vec::new();
-    let (iterations, zs) = if use_gpu {
+    // Sortie TYPÉE du dispatcher (G5 `RenderOutput`) : les canaux annexes
+    // (distances/orbites) voyagent avec iterations/zs jusqu'à la colorisation
+    // vérifiée et --output-map — plus de tuple partiel qui les jette.
+    let out: render::RenderOutput = if use_gpu {
         match GpuRenderer::new() {
             Some(gpu) => {
                 println!("GPU initialisé ({})", gpu.precision_label());
@@ -923,7 +937,7 @@ fn main() {
                             "Mode: GPU {}",
                             if r.used_perturbation { "perturbation" } else { "standard" }
                         );
-                        (r.iterations, r.zs)
+                        render::RenderOutput::without_extras(r.iterations, r.zs)
                     }
                     None => {
                         println!("Type {:?} non rendu par le GPU → fallback CPU...", params.fractal_type);
@@ -937,8 +951,7 @@ fn main() {
             }
         }
     } else {
-        // Même dispatcher unique que `render_escape_time`, version complète
-        // pour capturer les distances (consommées par --output-map).
+        // Même dispatcher unique que `render_escape_time`, version annulable.
         let mut orbit_cache = None;
         match render::render_escape_time_cancellable_with_reuse(
             &params,
@@ -948,11 +961,7 @@ fn main() {
             None,
             None,
         ) {
-            Some((i, z, orbits, d)) => {
-                map_distances = d;
-                map_orbits = orbits;
-                (i, z)
-            }
+            Some(out) => out,
             None => {
                 eprintln!("Erreur : rendu interrompu ou type non supporté par le dispatcher");
                 std::process::exit(1);
@@ -987,8 +996,8 @@ fn main() {
             exr_path,
             params.width as usize,
             params.height as usize,
-            &iterations,
-            &zs,
+            &out.iterations,
+            &out.zs,
             params.iteration_max,
             bailout_sq,
             degree,
@@ -1030,16 +1039,20 @@ fn main() {
             // les modes Distance*/OrbitTraps/Wings (sinon retombée silencieuse
             // sur Smooth — classe « colorisation unique », cf. CLAUDE.md).
             let mut aa_cache = None;
-            let Some((it, zz, orbits, dists)) = render::render_escape_time_cancellable_with_reuse(
+            let Some(sample) = render::render_escape_time_cancellable_with_reuse(
                 &p, &cancel, None, &mut aa_cache, None, None,
             ) else {
                 eprintln!("Erreur : rendu AA interrompu (sample {})", k + 1);
                 std::process::exit(1);
             };
-            accumulate(
-                &mut accum,
-                &io::png::colorize_to_rgb_with_extras(&p, &it, &zz, &dists, &orbits),
-            );
+            let rgb = match io::png::colorize_output(&p, &sample) {
+                Ok(rgb) => rgb,
+                Err(e) => {
+                    eprintln!("Erreur de colorisation (sample {}): {e}", k + 1);
+                    std::process::exit(1);
+                }
+            };
+            accumulate(&mut accum, &rgb);
             println!("[AA] sample {}/{}", k + 1, aa_samples);
         }
         let inv_n = 1.0 / aa_samples as f64;
@@ -1057,16 +1070,16 @@ fn main() {
             &span_y_hp,
         )
     } else {
-        // Colorisation AVEC les canaux annexes du dispatcher : sans eux les
-        // modes Distance*/OrbitTraps/Wings retombent silencieusement sur
-        // Smooth (le PNG du CLI divergeait de l'affichage GUI).
-        let buffer = io::png::colorize_to_rgb_with_extras(
-            &params,
-            &iterations,
-            &zs,
-            &map_distances,
-            &map_orbits,
-        );
+        // Colorisation VÉRIFIÉE (G5) : les canaux annexes voyagent avec le
+        // rendu, et un canal requis absent est une ERREUR — pas une retombée
+        // silencieuse sur Smooth (le PNG du CLI divergeait de l'affichage GUI).
+        let buffer = match io::png::colorize_output(&params, &out) {
+            Ok(rgb) => rgb,
+            Err(e) => {
+                eprintln!("Erreur de colorisation: {e}");
+                std::process::exit(1);
+            }
+        };
         save_png_rgb_with_metadata(
             &params,
             &buffer,
@@ -1096,9 +1109,9 @@ fn main() {
             params_to_save.span_y_hp = Some(span_y_hp.clone());
             let map = io::fmap::FractalMap {
                 params: params_to_save,
-                iterations: iterations.clone(),
-                zs: zs.clone(),
-                distances: (!map_distances.is_empty()).then(|| std::mem::take(&mut map_distances)),
+                iterations: out.iterations.clone(),
+                zs: out.zs.clone(),
+                distances: (!out.distances.is_empty()).then(|| out.distances.clone()),
             };
             match io::fmap::save_fmap(&map, map_path) {
                 Ok(()) => println!("Map écrite: {}", map_path.display()),

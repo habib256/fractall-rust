@@ -1647,11 +1647,26 @@ v0.8.2 — chaque chantier ferme LA CLASSE dont plusieurs bugs sont issus)** :
   par f64 (> 1e15), transformée XaoS à 256 b fixes (> 1e74), HP périmées après
   `--toml` — 4 bugs de la même famille « conversion f64 / précision fixe d'une
   vue HP ».
-- [ ] **`RenderOutput` typé** au lieu du tuple `(iterations, zs, orbits,
-  distances)` : jeter un canal ne doit plus compiler silencieusement.
-  `required_channels(params)` vérifié au point de colorisation (Err, pas
-  d'image plausible-mais-fausse). Classe fermée : 4 bugs « Smooth silencieux »
-  (copie CLI, boucle AA, pipeline vidéo, auto-GPU).
+- [x] **✅ `RenderOutput` typé `[2026-08-24]`** : struct à champs nommés
+  (`render/output.rs`) remplace le tuple `(iterations, zs, orbits, distances)`
+  dans TOUT le crate (dispatcher, CLI, GUI, vidéo, quality, studio) — jeter un
+  canal ne compile plus silencieusement. Sémantique : canal non produit = Vec
+  VIDE ; canal produit = width×height entrées (verrou
+  `channels_absent_unless_produced`). `required_channels(params)` +
+  `ChannelRequirements::validate` vérifiés au point de colorisation :
+  `io::png::colorize_output` (CLI final + AA + HQ GUI) et `--from-map` /
+  `colorize_keyframe` vidéo renvoient **Err** au lieu d'une image
+  plausible-mais-fausse (verrou `colorize_output_refuses_dropped_required_
+  channel`). À-côtés fermés dans la foulée : le CLI couple mode→flags
+  (`--outcoloring distance` active l'estimation, parité GUI) ; le fallback
+  GPU→CPU du CLI passait par l'enveloppe 2-tuple (canaux perdus, supprimée —
+  `render_escape_time` renvoie le RenderOutput complet) ; la preview du studio
+  vidéo jetait distances/orbites (Smooth silencieux, corrigé) ; le plan vidéo
+  refuse `outcoloring distance` sans `[fractal] distance_estimation`
+  (verrou `plan_rejects_distance_mode_without_distance_channel`). Classe
+  fermée : 4 bugs « Smooth silencieux » (copie CLI, boucle AA, pipeline
+  vidéo, auto-GPU). 399 unit + 24 goldens verts, e2e vérifié (Distance ≠
+  Smooth ; OrbitTraps deep = erreur explicite exit 1).
 - [ ] **Compteur d'itération partagé des boucles pixel** : chaque boucle
   (f64/exp/dd/GMP/multi-phase) réimplémente n (absolu) / m (réf) à la main —
   `iterate_pixel_gmp` n'avait QUE m et bouclait à l'infini au rebase d'un

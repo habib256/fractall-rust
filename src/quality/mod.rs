@@ -88,8 +88,9 @@ pub fn compare(params: &FractalParams, opt: &ComparisonOptions) -> Result<Compar
         pert_params.iteration_max, pert_params.precision_bits,
     );
     let t0 = Instant::now();
-    let (pert_iters, pert_zs, _, _) = render_escape_time_cancellable_with_reuse(&pert_params, &cancel, None, &mut None, None, None)
+    let pert_out = render_escape_time_cancellable_with_reuse(&pert_params, &cancel, None, &mut None, None, None)
         .ok_or_else(|| "Perturbation render cancelled or failed".to_string())?;
+    let (pert_iters, pert_zs) = (pert_out.iterations, pert_out.zs);
     let perturb_time_ms = t0.elapsed().as_secs_f64() * 1000.0;
     println!("[quality] perturbation done in {:.0} ms", perturb_time_ms);
 
@@ -105,8 +106,9 @@ pub fn compare(params: &FractalParams, opt: &ComparisonOptions) -> Result<Compar
         crate::fractal::perturbation::compute_perturbation_precision_bits(&gmp_params),
     );
     let t1 = Instant::now();
-    let (gmp_iters, gmp_zs, _, _) = render_escape_time_cancellable_with_reuse(&gmp_params, &cancel, None, &mut None, None, None)
+    let gmp_out = render_escape_time_cancellable_with_reuse(&gmp_params, &cancel, None, &mut None, None, None)
         .ok_or_else(|| "GMP reference render cancelled or failed".to_string())?;
+    let (gmp_iters, gmp_zs) = (gmp_out.iterations, gmp_out.zs);
     let gmp_time_ms = t1.elapsed().as_secs_f64() * 1000.0;
     println!("[quality] GMP done in {:.0} ms", gmp_time_ms);
 
@@ -173,9 +175,10 @@ pub fn compare_gpu(
         cpu_params.width, cpu_params.height,
     );
     let t1 = Instant::now();
-    let (cpu_iters, cpu_zs, _, _) =
+    let cpu_out =
         render_escape_time_cancellable_with_reuse(&cpu_params, &cancel, None, &mut None, None, None)
             .ok_or_else(|| "GMP judge render cancelled or failed".to_string())?;
+    let (cpu_iters, cpu_zs) = (cpu_out.iterations, cpu_out.zs);
     let cpu_time_ms = t1.elapsed().as_secs_f64() * 1000.0;
     println!("[quality] GMP judge done in {:.0} ms", cpu_time_ms);
 

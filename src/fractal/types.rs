@@ -363,6 +363,21 @@ pub enum OutColoringMode {
 }
 
 impl OutColoringMode {
+    /// Le mode consomme le canal `distances` du dispatcher (estimation de
+    /// distance). Sans ce canal la colorisation retombe pixel par pixel sur
+    /// Smooth — la classe de bug « Smooth silencieux » (G5 RenderOutput).
+    pub fn requires_distance_channel(self) -> bool {
+        matches!(
+            self,
+            OutColoringMode::Distance | OutColoringMode::DistanceAO | OutColoringMode::Distance3D
+        )
+    }
+
+    /// Le mode consomme le canal `orbits` (orbit traps) du dispatcher.
+    pub fn requires_orbit_channel(self) -> bool {
+        matches!(self, OutColoringMode::OrbitTraps | OutColoringMode::Wings)
+    }
+
     /// Returns all available outcoloring modes.
     #[allow(dead_code)]
     pub fn all() -> &'static [OutColoringMode] {

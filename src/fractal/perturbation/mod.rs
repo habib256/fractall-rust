@@ -2801,7 +2801,7 @@ mod tests {
         use crate::render::escape_time::render_escape_time;
         let mut params = base.clone();
         params.algorithm_mode = AlgorithmMode::Perturbation;
-        let (iters, _zs) = render_escape_time(&params);
+        let iters = render_escape_time(&params).iterations;
         for &(x, y) in indices {
             let idx = (y * params.width + x) as usize;
             let x_ratio = (x as f64 + 0.5) / params.width as f64;

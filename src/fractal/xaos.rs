@@ -1015,7 +1015,8 @@ mod tests {
 
         params.use_bytecode_engine = true;
         let cancel = Arc::new(AtomicBool::new(false));
-        let (it_a, zs_a, _, _) = render(&params, &cancel, None, &mut None, None, None).expect("A");
+        let __out = render(&params, &cancel, None, &mut None, None, None).expect("A");
+        let (it_a, zs_a) = (__out.iterations, __out.zs);
 
         // Pan +8 px en x, +3 px en y (via strings HP si présentes, sinon f64).
         let mut moved = params.clone();
@@ -1049,10 +1050,10 @@ mod tests {
             assert!(e.abs() < 1e-9, "pan entier ⇒ copies exactes, err={e}");
         }
 
-        let (it_xaos, zs_xaos, _, _) =
-            render(&moved, &cancel, None, &mut None, Some(&map), None).expect("B xaos");
-        let (it_fresh, zs_fresh, _, _) =
-            render(&moved, &cancel, None, &mut None, None, None).expect("B fresh");
+        let __out = render(&moved, &cancel, None, &mut None, Some(&map), None).expect("B xaos");
+        let (it_xaos, zs_xaos) = (__out.iterations, __out.zs);
+        let __out = render(&moved, &cancel, None, &mut None, None, None).expect("B fresh");
+        let (it_fresh, zs_fresh) = (__out.iterations, __out.zs);
         assert_eq!(it_xaos, it_fresh, "itérations : XaoS == frais (pan entier)");
         let zdiff = zs_xaos
             .iter()
@@ -1109,7 +1110,8 @@ mod tests {
         p.iteration_max = 300;
         p.use_bytecode_engine = true;
         let cancel = Arc::new(AtomicBool::new(false));
-        let (it_a, zs_a, _, _) = render(&p, &cancel, None, &mut None, None, None).expect("A");
+        let __out = render(&p, &cancel, None, &mut None, None, None).expect("A");
+        let (it_a, zs_a) = (__out.iterations, __out.zs);
 
         // Zoom ×2 centré : cas historiquement dégénéré (100 % d'écho, 0 pixel
         // frais avant l'injectivité).
@@ -1129,8 +1131,8 @@ mod tests {
             "le zoom doit laisser du travail frais (injectivité)"
         );
         assert!(copied < total);
-        let (it_b, zs_b, _, _) =
-            render(&z, &cancel, None, &mut None, Some(&map), None).expect("B écho");
+        let __out = render(&z, &cancel, None, &mut None, Some(&map), None).expect("B écho");
+        let (it_b, zs_b) = (__out.iterations, __out.zs);
 
         // Frame B avec ses erreurs héritées → map de raffinement UNION :
         // conserve tout pixel dont un axe est frais (calculé à l'écho),
@@ -1148,9 +1150,10 @@ mod tests {
             "union ({kept:.3}) doit couvrir au moins les pixels frais de l'écho ({echo_fresh:.3})"
         );
 
-        let (it_c, zs_c, _, _) =
-            render(&z, &cancel, None, &mut None, Some(&refine_map), None).expect("C refine");
-        let (it_f, zs_f, _, _) = render(&z, &cancel, None, &mut None, None, None).expect("frais");
+        let __out = render(&z, &cancel, None, &mut None, Some(&refine_map), None).expect("C refine");
+        let (it_c, zs_c) = (__out.iterations, __out.zs);
+        let __out = render(&z, &cancel, None, &mut None, None, None).expect("frais");
+        let (it_f, zs_f) = (__out.iterations, __out.zs);
         assert_eq!(it_c, it_f, "refine ε == rendu frais (itérations)");
         let zdiff = zs_c
             .iter()
@@ -1179,7 +1182,8 @@ mod tests {
         p.iteration_max = 300;
         p.use_bytecode_engine = true;
         let cancel = Arc::new(AtomicBool::new(false));
-        let (it_a, zs_a, _, _) = render(&p, &cancel, None, &mut None, None, None).expect("A");
+        let __out = render(&p, &cancel, None, &mut None, None, None).expect("A");
+        let (it_a, zs_a) = (__out.iterations, __out.zs);
 
         let mut z = p.clone();
         z.span_x = p.span_x / 2.0;
@@ -1194,14 +1198,14 @@ mod tests {
         let poison_zs = vec![Complex64::new(1e300, -1e300); 32 * 24];
         let poisoned = Some((poison_it.as_slice(), poison_zs.as_slice(), 32u32, 24u32));
 
-        let (it_poison, zs_poison, _, _) =
-            render(&z, &cancel, poisoned, &mut None, Some(&map), None).expect("écho+poison");
+        let __out = render(&z, &cancel, poisoned, &mut None, Some(&map), None).expect("écho+poison");
+        let (it_poison, zs_poison) = (__out.iterations, __out.zs);
         assert!(
             !it_poison.iter().any(|&it| it == u32::MAX),
             "le reuse basse-résolution a fuité dans un rendu avec map XaoS"
         );
-        let (it_clean, zs_clean, _, _) =
-            render(&z, &cancel, None, &mut None, Some(&map), None).expect("écho seul");
+        let __out = render(&z, &cancel, None, &mut None, Some(&map), None).expect("écho seul");
+        let (it_clean, zs_clean) = (__out.iterations, __out.zs);
         assert_eq!(it_poison, it_clean, "écho+reuse == écho seul (itérations)");
         assert_eq!(
             zs_poison.iter().zip(&zs_clean).filter(|(a, b)| a != b).count(),
@@ -1209,8 +1213,8 @@ mod tests {
             "écho+reuse == écho seul (zs)"
         );
         // Sans map, le reuse reste actif (comportement progressif inchangé).
-        let (it_no_map, _, _, _) =
-            render(&z, &cancel, poisoned, &mut None, None, None).expect("reuse seul");
+        let __out = render(&z, &cancel, poisoned, &mut None, None, None).expect("reuse seul");
+        let (it_no_map, _) = (__out.iterations, __out.zs);
         assert!(
             it_no_map.iter().any(|&it| it == u32::MAX),
             "sans map XaoS le reuse doit rester actif (grille alignée copiée)"
@@ -1234,7 +1238,8 @@ mod tests {
         p.iteration_max = 20000;
         let cancel = Arc::new(AtomicBool::new(false));
         let t0 = Instant::now();
-        let (it_a, zs_a, _, _) = render(&p, &cancel, None, &mut None, None, None).expect("A");
+        let __out = render(&p, &cancel, None, &mut None, None, None).expect("A");
+        let (it_a, zs_a) = (__out.iterations, __out.zs);
         let t_full = t0.elapsed();
 
         let mut moved = p.clone();
@@ -1276,13 +1281,15 @@ mod tests {
         p.span_y = 1.5e-7;
         p.iteration_max = 20000;
         let cancel = Arc::new(AtomicBool::new(false));
-        let (it_a, zs_a, _, _) = render(&p, &cancel, None, &mut None, None, None).expect("A");
+        let __out = render(&p, &cancel, None, &mut None, None, None).expect("A");
+        let (it_a, zs_a) = (__out.iterations, __out.zs);
 
         let mut z = p.clone();
         z.span_x = p.span_x / 2.0;
         z.span_y = p.span_y / 2.0;
         let t0 = Instant::now();
-        let (it_f, _, _, _) = render(&z, &cancel, None, &mut None, None, None).expect("frais");
+        let __out = render(&z, &cancel, None, &mut None, None, None).expect("frais");
+        let (it_f, _) = (__out.iterations, __out.zs);
         let t_full = t0.elapsed();
 
         let (cx, cy, sx, sy) = view_strings(&p);
@@ -1296,15 +1303,16 @@ mod tests {
         let map = build_map(&src, &z).expect("map écho");
         let copied = map.copied;
         let t1 = Instant::now();
-        let (it_b, zs_b, _, _) = render(&z, &cancel, None, &mut None, Some(&map), None).expect("B");
+        let __out = render(&z, &cancel, None, &mut None, Some(&map), None).expect("B");
+        let (it_b, zs_b) = (__out.iterations, __out.zs);
         let t_echo = t1.elapsed();
 
         let src_b = frame_from_map(&z, it_b, zs_b, &map);
         let refine_map = build_refine_map(&src_b, &z).expect("map refine");
         let kept = (refine_map.reused_fraction(1024, 768) * 1024.0 * 768.0) as usize;
         let t2 = Instant::now();
-        let (it_c, _, _, _) =
-            render(&z, &cancel, None, &mut None, Some(&refine_map), None).expect("C");
+        let __out = render(&z, &cancel, None, &mut None, Some(&refine_map), None).expect("C");
+        let (it_c, _) = (__out.iterations, __out.zs);
         let t_refine = t2.elapsed();
         assert_eq!(it_c, it_f, "cycle écho+refine == rendu frais");
 

@@ -34,7 +34,7 @@ use crate::fractal::{
     default_params_for_type, ColorSpace, FractalParams, FractalType, OutColoringMode,
 };
 use crate::io::fmap::load_fmap;
-use crate::io::png::{colorize_buffers, colorize_to_rgb, load_png_metadata};
+use crate::io::png::{colorize_buffers, load_png_metadata};
 use crate::render::render_escape_time_cancellable_with_reuse;
 use crate::video::spline::Dynamic;
 use crate::video::zoom_from_span_x;
@@ -365,13 +365,17 @@ impl VideoStudioApp {
                 p.width = (params.width / div).max(64);
                 p.height = (params.height / div).max(48);
                 let mut oc = cache.clone();
-                let Some((it, zs, _orbits, _dist)) = render_escape_time_cancellable_with_reuse(
+                let Some(out) = render_escape_time_cancellable_with_reuse(
                     &p, &cancel, None, &mut oc, None, None,
                 ) else {
                     return;
                 };
                 cache = oc;
-                let rgb = colorize_to_rgb(&p, &it, &zs);
+                // Canaux annexes transmis : sans eux la preview des modes
+                // Distance*/OrbitTraps retombait silencieusement sur Smooth (G5).
+                let rgb = crate::io::png::colorize_to_rgb_with_extras(
+                    &p, &out.iterations, &out.zs, &out.distances, &out.orbits,
+                );
                 let pass = PreviewPass { rgb, w: p.width, h: p.height, is_final, cache: cache.clone(), version };
                 if tx.send(pass).is_err() {
                     return;

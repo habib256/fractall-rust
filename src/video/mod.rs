@@ -402,8 +402,18 @@ pub fn plan_from_manifest(m: &Manifest, project: &Path) -> Result<Manifest, Box<
     // Valide la géométrie tôt (types/outcoloring invalides = erreur au plan,
     // pas au 30e keyframe du render).
     keyframe_params(&m, 0).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-    assemble::video_outcoloring(&m.color.outcoloring)
+    let oc_mode = assemble::video_outcoloring(&m.color.outcoloring)
         .map_err(|e| -> Box<dyn std::error::Error> { format!("color.outcoloring: {e}").into() })?;
+    // G5 : un mode Distance* exige le canal `distances` dans les .fmap, donc
+    // `[fractal] distance_estimation = true` — refusé au plan, pas au 30e
+    // keyframe (ni, pire, à l'assemblage en Smooth silencieux).
+    if oc_mode.requires_distance_channel() && !m.fractal.distance_estimation {
+        return Err(format!(
+            "color.outcoloring '{}' requiert [fractal] distance_estimation = true              (le canal distances doit être rendu dans les .fmap)",
+            m.color.outcoloring
+        )
+        .into());
+    }
     let velocity = spline::Dynamic::parse(&m.video.velocity)
         .map_err(|e| format!("video.velocity: {e}"))?;
     assemble::timeline_sample_count(m.video.keyframes, m.video.fps, &velocity)
@@ -554,16 +564,16 @@ pub fn render_project_with_progress_ordered(
         progress(KeyframeEvent::Started { k, n });
         let t0 = std::time::Instant::now();
         let mut orbit_cache = None; // single-shot : pas de réutilisation inter-échelle
-        let Some((iterations, zs, _orbits, distances)) = render_escape_time_cancellable_with_reuse(
+        let Some(out) = render_escape_time_cancellable_with_reuse(
             &params, cancel, None, &mut orbit_cache, None, None,
         ) else {
             return Ok(RenderOutcome::Cancelled { rendered, skipped });
         };
         let map = FractalMap {
             params,
-            iterations,
-            zs,
-            distances: (!distances.is_empty()).then_some(distances),
+            iterations: out.iterations,
+            zs: out.zs,
+            distances: (!out.distances.is_empty()).then_some(out.distances),
         };
         save_fmap(&map, &path)?;
         rendered += 1;
@@ -639,6 +649,26 @@ mod tests {
         m.save(&dir.join("manifest.toml")).unwrap();
         let err = render_project(&dir).unwrap_err().to_string();
         assert!(err.contains("attendu 3"), "erreur explicite: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// G5 : un manifest `outcoloring = "distance"` sans
+    /// `[fractal] distance_estimation = true` est refusé AU PLAN — les .fmap
+    /// n'auraient pas le canal et l'assemblage retomberait sur Smooth.
+    #[test]
+    fn plan_rejects_distance_mode_without_distance_channel() {
+        let dir = tmp_project("distgate");
+        let mut m = Manifest::default();
+        m.location.zoom = "8".into();
+        m.color.outcoloring = "distance".into();
+        m.fractal.distance_estimation = false;
+        let err = plan_from_manifest(&m, &dir).unwrap_err().to_string();
+        assert!(
+            err.contains("distance_estimation"),
+            "erreur explicite au plan: {err}"
+        );
+        m.fractal.distance_estimation = true;
+        plan_from_manifest(&m, &dir).expect("avec le canal, le plan passe");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -734,7 +764,8 @@ mod tests {
         let k = 6; // span = 4/64 = 0.0625, path f64 standard
 
         let kp = keyframe_params(&m, k).unwrap();
-        let (it_kf, zs_kf) = render_escape_time(&kp);
+        let kf = render_escape_time(&kp);
+        let (it_kf, zs_kf) = (kf.iterations, kf.zs);
 
         // Construction indépendante « à la CLI » : center f64 + span f64
         // directs (4/2^6 est exact en f64).
@@ -746,7 +777,8 @@ mod tests {
         direct.iteration_max = 300;
         direct.max_perturb_iterations = 300;
         direct.max_bla_steps = 300;
-        let (it_direct, zs_direct) = render_escape_time(&direct);
+        let d = render_escape_time(&direct);
+        let (it_direct, zs_direct) = (d.iterations, d.zs);
 
         assert_eq!(it_kf, it_direct, "itérations keyframe == rendu direct");
         assert_eq!(zs_kf, zs_direct, "zs keyframe == rendu direct");
