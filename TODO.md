@@ -1678,12 +1678,17 @@ v0.8.2 — chaque chantier ferme LA CLASSE dont plusieurs bugs sont issus)** :
   (K perdue dans un clone local, offset absent du path GMP legacy, jitter
   absent des corrections GMP). Étendre `wisdom::plan()` pour porter TOUT ce
   que le path doit honorer, consommé au lieu de recalculé.
-- [ ] **Property tests XaoS** : le bug de dérive (0,5 → 1,5 px en molette
-  continue) n'était détectable que par simulation avec oracle (coordonnée
-  vraie dans `zs`). Généraliser `continuous_anchored_zoom_keeps_true_error_
-  bounded` : séquences ALÉATOIRES pan/zoom/zoom-out/resize, invariant
-  « écart vrai ≤ tol ∧ erreur déclarée == vraie » ; paramétrer les tests HP
-  jusqu'à 1e-300 (le trou 1e-30 → 1e-74 a caché le bug de précision).
+- [x] **✅ Property tests XaoS `[2026-08-24]`** : verrou
+  `random_navigation_sequences_keep_declared_error_true` (`xaos.rs`) —
+  séquences ALÉATOIRES pan (entier/fractionnaire) / zoom-in ancré /
+  zoom-out / resize (xorshift déterministe, 3 seeds), oracle en précision
+  arbitraire (état de vue `rug::Float`, position vraie par pixel propagée
+  en fractions de span — représentable en f64 à tout zoom), invariant à
+  chaque pas « écart vrai ≤ tol ∧ erreur déclarée == vraie », paramétré du
+  plan f64 (span 4, path strings `%.17e`) jusqu'à **1e-300** (le trou
+  1e-30 → 1e-74 avait caché le bug de précision fixe). Mutation-testé : la
+  transformée regelée à 256 b fixes fait ÉCHOUER le test (bug 2026-08-23
+  reproduit), la version dynamique passe.
 - [ ] **Extraire les machines d'état GUI en modules purs testables** (comme
   `video_gui/nav.rs`) : versioning render/recolor/AA, cycle de vie de la
   frame source XaoS, provisoires timeline — quasi tous les bugs GUI de la

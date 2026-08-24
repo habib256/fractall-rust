@@ -810,6 +810,214 @@ mod tests {
         }
     }
 
+    /// G5 property test — généralisation de
+    /// `continuous_anchored_zoom_keeps_true_error_bounded` : séquences
+    /// ALÉATOIRES pan / zoom-in ancré / zoom-out / resize, avec un oracle en
+    /// précision arbitraire (l'état de vue vit en `rug::Float`, la position
+    /// vraie de chaque pixel est propagée en fractions de span). Invariant à
+    /// CHAQUE pas : « écart vrai ≤ tolérance ∧ erreur déclarée == vraie ».
+    /// Paramétré en profondeur jusqu'à 1e-300 : le trou de couverture
+    /// 1e-30 → 1e-74 avait caché le bug de la transformée à 256 b fixes
+    /// (Δcentre d'un zoom ancré arrondi à zéro, 2026-08-23).
+    struct XorShift(u64);
+    impl XorShift {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+        /// Uniforme dans [0, 1).
+        fn unit(&mut self) -> f64 {
+            (self.next() >> 11) as f64 / (1u64 << 53) as f64
+        }
+    }
+
+    fn run_random_navigation(span0: &str, prec: u32, seed: u64) {
+        let deep = span0 != "4.0";
+        let mut rng = XorShift(seed.wrapping_mul(0x9E3779B97F4A7C15) | 1);
+        let (mut w, mut h) = (72u32, 56u32);
+        let mut cx = Float::with_val(prec, Float::parse("-0.7436").unwrap());
+        let mut cy = Float::with_val(prec, Float::parse("0.1318").unwrap());
+        let mut sx = Float::with_val(prec, Float::parse(span0).unwrap());
+        let mut sy = Float::with_val(prec, &sx * (h as f64 / w as f64));
+
+        // Params depuis l'état HP. Hors deep : état QUANTIFIÉ f64 (le path
+        // strings `%.17e` de `view_strings` est alors exactement l'état).
+        let make_params = |cx: &Float,
+                           cy: &Float,
+                           sx: &Float,
+                           sy: &Float,
+                           w: u32,
+                           h: u32| {
+            let mut p = base_params(w, h);
+            p.center_x = cx.to_f64();
+            p.center_y = cy.to_f64();
+            p.span_x = sx.to_f64();
+            p.span_y = sy.to_f64();
+            if deep {
+                p.center_x_hp = Some(cx.to_string_radix(10, None));
+                p.center_y_hp = Some(cy.to_string_radix(10, None));
+                p.span_x_hp = Some(sx.to_string_radix(10, None));
+                p.span_y_hp = Some(sy.to_string_radix(10, None));
+            }
+            p
+        };
+        let quantize = |v: &mut Float| {
+            if !deep {
+                let f = v.to_f64();
+                *v = Float::with_val(prec, f);
+            }
+        };
+
+        let mut p = make_params(&cx, &cy, &sx, &sy, w, h);
+        let nom = |k: usize, n: u32| (k as f64 + 0.5) / n as f64 - 0.5;
+        let n0 = (w * h) as usize;
+        // Oracle : position vraie de chaque pixel en FRACTION du span courant
+        // (u = (coord − centre)/span) — représentable en f64 quel que soit le
+        // zoom, mise à jour par la transformée HP exacte à chaque pas.
+        let mut ux: Vec<f64> = (0..n0).map(|k| nom(k % w as usize, w)).collect();
+        let mut uy: Vec<f64> = (0..n0).map(|k| nom(k / w as usize, h)).collect();
+        let mut frame = frame_for(&p, vec![1; n0]);
+        let mut copied_total = 0usize;
+
+        for step in 0..10 {
+            let (mut cx2, mut cy2, mut sx2, mut sy2) = (cx.clone(), cy.clone(), sx.clone(), sy.clone());
+            let (mut w2, mut h2) = (w, h);
+            let op = rng.unit();
+            if op < 0.40 {
+                // Zoom-in ancré (rx, ry) : le point sous le curseur est fixe.
+                let f = 1.05 + 0.85 * rng.unit();
+                let (rx, ry) = (0.1 + 0.8 * rng.unit(), 0.1 + 0.8 * rng.unit());
+                cx2 += Float::with_val(prec, &sx * ((rx - 0.5) * (1.0 - 1.0 / f)));
+                cy2 += Float::with_val(prec, &sy * ((ry - 0.5) * (1.0 - 1.0 / f)));
+                sx2 /= f;
+                sy2 /= f;
+            } else if op < 0.70 {
+                // Pan en pixels (fractionnaire une fois sur deux).
+                let mut dx = 16.0 * rng.unit() - 8.0;
+                let mut dy = 16.0 * rng.unit() - 8.0;
+                if rng.unit() < 0.5 {
+                    dx = dx.round();
+                    dy = dy.round();
+                }
+                cx2 += Float::with_val(prec, &sx * (dx / w as f64));
+                cy2 += Float::with_val(prec, &sy * (dy / h as f64));
+            } else if op < 0.85 {
+                // Zoom-out centré.
+                let f = 1.05 + 0.85 * rng.unit();
+                sx2 *= f;
+                sy2 *= f;
+            } else {
+                // Resize fenêtre (mêmes centre/span x ; span y suit le ratio).
+                w2 = 48 + (rng.next() % 64) as u32;
+                h2 = 48 + (rng.next() % 64) as u32;
+                sy2 = Float::with_val(prec, &sx2 * (h2 as f64 / w2 as f64));
+            }
+            quantize(&mut cx2);
+            quantize(&mut cy2);
+            quantize(&mut sx2);
+            quantize(&mut sy2);
+
+            let p2 = make_params(&cx2, &cy2, &sx2, &sy2, w2, h2);
+            let n2 = (w2 * h2) as usize;
+
+            // Transformée HP de l'oracle : u' = u·(s/s') + (c − c')/s'.
+            let rx_o = Float::with_val(prec, &sx / &sx2).to_f64();
+            let dx_o = (Float::with_val(prec, &cx - &cx2) / &sx2).to_f64();
+            let ry_o = Float::with_val(prec, &sy / &sy2).to_f64();
+            let dy_o = (Float::with_val(prec, &cy - &cy2) / &sy2).to_f64();
+
+            let map = build_map(&frame, &p2);
+            let mut ux2 = vec![0.0f64; n2];
+            let mut uy2 = vec![0.0f64; n2];
+            match &map {
+                Some(m) => {
+                    let produced = m.produced_err(w2 as usize, h2 as usize);
+                    let mut worst = 0.0f64;
+                    for j in 0..h2 as usize {
+                        for i in 0..w2 as usize {
+                            let idx = j * w2 as usize + i;
+                            match m.source_index(i, j) {
+                                Some(sidx) => {
+                                    copied_total += 1;
+                                    ux2[idx] = ux[sidx] * rx_o + dx_o;
+                                    uy2[idx] = uy[sidx] * ry_o + dy_o;
+                                }
+                                None => {
+                                    ux2[idx] = nom(i, w2);
+                                    uy2[idx] = nom(j, h2);
+                                }
+                            }
+                            // Écart vrai (px cible) vs tolérance ET vs erreur
+                            // déclarée de la frame produite.
+                            let ex = (ux2[idx] - nom(i, w2)) * w2 as f64;
+                            let ey = (uy2[idx] - nom(j, h2)) * h2 as f64;
+                            worst = worst.max(ex.abs()).max(ey.abs());
+                            assert!(
+                                ex.abs() <= XAOS_TOLERANCE_PX + 1e-6
+                                    && ey.abs() <= XAOS_TOLERANCE_PX + 1e-6,
+                                "span0={span0} seed={seed} pas {step} px ({i},{j}) : \
+                                 écart vrai ({ex:.4},{ey:.4}) px > tolérance"
+                            );
+                            assert!(
+                                (produced[idx][0] as f64 - ex).abs() < 2e-3
+                                    && (produced[idx][1] as f64 - ey).abs() < 2e-3,
+                                "span0={span0} seed={seed} pas {step} px ({i},{j}) : \
+                                 err déclarée {:?} ≠ vraie ({ex:.4},{ey:.4})",
+                                produced[idx]
+                            );
+                        }
+                    }
+                    let _ = worst;
+                    frame = frame_from_map(&p2, vec![1; n2], vec![Complex64::new(0.0, 0.0); n2], m);
+                }
+                None => {
+                    // Pas de réutilisation possible → rendu frais complet.
+                    for j in 0..h2 as usize {
+                        for i in 0..w2 as usize {
+                            let idx = j * w2 as usize + i;
+                            ux2[idx] = nom(i, w2);
+                            uy2[idx] = nom(j, h2);
+                        }
+                    }
+                    frame = frame_for(&p2, vec![1; n2]);
+                }
+            }
+
+            ux = ux2;
+            uy = uy2;
+            (cx, cy, sx, sy) = (cx2, cy2, sx2, sy2);
+            (w, h) = (w2, h2);
+            p = p2;
+            let _ = &p;
+        }
+        assert!(
+            copied_total > 0,
+            "span0={span0} seed={seed} : aucune copie sur toute la séquence (gates trop stricts ?)"
+        );
+    }
+
+    /// G5 : property test des séquences de navigation, du plan f64 au deep
+    /// 1e-300 (précision de l'oracle ≈ −log2(span) + large marge).
+    #[test]
+    fn random_navigation_sequences_keep_declared_error_true() {
+        for (span0, prec) in [
+            ("4.0", 256u32),
+            ("1e-20", 384),
+            ("1e-40", 512),
+            ("1e-80", 768),
+            ("1e-150", 1024),
+            ("1e-300", 1536),
+        ] {
+            for seed in [1u64, 42, 20260824] {
+                run_random_navigation(span0, prec, seed);
+            }
+        }
+    }
+
     #[test]
     fn zoom_in_2x_maps_center_half_injectively() {
         let p = base_params(64, 64);
