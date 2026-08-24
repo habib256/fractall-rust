@@ -8,6 +8,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # `.cargo/config.toml` optimise les builds locaux pour le CPU hôte. Sur les
+  # runners GitHub, le job peut être compilé et exécuté sur des CPU virtuels
+  # exposant des jeux d'instructions différents, ce qui provoque un SIGILL.
+  RUSTFLAGS: -C target-cpu=x86-64
 
 jobs:
   test:
