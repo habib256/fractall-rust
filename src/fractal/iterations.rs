@@ -215,18 +215,12 @@ pub fn iterate_point(params: &FractalParams, z_pixel: Complex64) -> FractalResul
         FractalType::PerpendicularBurningShipJulia => perpendicular_burning_ship_julia(params, z_pixel),
         FractalType::AlphaMandelbrotJulia => alpha_mandelbrot_julia(params, z_pixel),
         FractalType::MandelbrotSin => mandelbrot_sin(params, z_pixel),
-        FractalType::Buddhabrot => {
-            panic!("Buddhabrot doit être rendu via render_buddhabrot(), pas iterate_point()")
-        }
-        FractalType::Lyapunov => {
-            panic!("Lyapunov doit être rendu via render_lyapunov(), pas iterate_point()")
-        }
-        FractalType::Nebulabrot => {
-            panic!("Nebulabrot doit être rendu via render_nebulabrot(), pas iterate_point()")
-        }
-        FractalType::AntiBuddhabrot => {
-            panic!("Anti-Buddhabrot doit être rendu via render_antibuddhabrot(), pas iterate_point()")
-        }
+        special @ (FractalType::Buddhabrot
+        | FractalType::Lyapunov
+        | FractalType::Nebulabrot
+        | FractalType::AntiBuddhabrot) => panic!(
+            "{special:?} doit être rendu via le dispatcher cancellable, pas iterate_point()"
+        ),
     }
 }
 

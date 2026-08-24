@@ -90,8 +90,8 @@ impl DeltaState {
         // début : si dc est 0 alors c'est Julia (caller passe dc=0). Sinon
         // Mandelbrot. Cette heuristique est cohérente avec how iterate_pixel_unified
         // configure dc_for_add (Julia=0, Mandelbrot=dc).
-        let dc_contributes = dc.norm_sqr() > 0.0
-            || (self.delta.norm_sqr() == 0.0 && self.ddelta.norm_sqr() == 0.0);
+        let dc_contributes =
+            dc.norm_sqr() > 0.0 || (self.delta.norm_sqr() == 0.0 && self.ddelta.norm_sqr() == 0.0);
         self.step_with_julia(phase, c_ref, dc, !dc_contributes)
     }
 
@@ -177,7 +177,10 @@ impl DeltaState {
                     }
                     self.z_ref += c_ref;
                 }
-                Op::Rot { cos_theta, sin_theta } => {
+                Op::Rot {
+                    cos_theta,
+                    sin_theta,
+                } => {
                     // z := z * (cos + sin·i) — linéaire, donc :
                     //   Z'      = Z      · r
                     //   δ'      = δ      · r
@@ -282,7 +285,10 @@ impl DeltaStateExp {
                     self.delta = self.delta.add(dc);
                     self.z_ref += c_ref;
                 }
-                Op::Rot { cos_theta, sin_theta } => {
+                Op::Rot {
+                    cos_theta,
+                    sin_theta,
+                } => {
                     // z := z * (cos + sin·i). Mirror du path f64 mais avec
                     // ComplexExp pour δ. Multiplication complexe explicite :
                     //   (δ.re + δ.im·i) · (c + s·i)
@@ -291,7 +297,10 @@ impl DeltaStateExp {
                     let s = *sin_theta;
                     let new_re = self.delta.re * c + self.delta.im * (-s);
                     let new_im = self.delta.re * s + self.delta.im * c;
-                    self.delta = ComplexExp { re: new_re, im: new_im };
+                    self.delta = ComplexExp {
+                        re: new_re,
+                        im: new_im,
+                    };
                     self.z_ref = self.z_ref * Complex64::new(c, s);
                 }
             }
@@ -368,7 +377,10 @@ mod tests {
                 Op::NegX => z_abs = Complex64::new(-z_abs.re, z_abs.im),
                 Op::NegY => z_abs = Complex64::new(z_abs.re, -z_abs.im),
                 Op::Add => z_abs += c_pixel,
-                Op::Rot { cos_theta, sin_theta } => {
+                Op::Rot {
+                    cos_theta,
+                    sin_theta,
+                } => {
                     z_abs = z_abs * Complex64::new(*cos_theta, *sin_theta);
                 }
             }
@@ -420,7 +432,10 @@ mod tests {
                 Op::NegX => z_abs = Complex64::new(-z_abs.re, z_abs.im),
                 Op::NegY => z_abs = Complex64::new(z_abs.re, -z_abs.im),
                 Op::Add => z_abs += c_pixel,
-                Op::Rot { cos_theta, sin_theta } => {
+                Op::Rot {
+                    cos_theta,
+                    sin_theta,
+                } => {
                     z_abs = z_abs * Complex64::new(*cos_theta, *sin_theta);
                 }
             }
@@ -502,7 +517,10 @@ mod tests {
         // Conversion: la magnitude réelle est ~1e-90, qui underflow f64
         // (qui s'arrête à ~1e-308). Donc norm_sqr_approx → 0.0.
         // Mais l'invariant interne (mantissa/exponent) doit rester valide.
-        assert!(state.delta.re.exponent < -200, "exponent doit rester très négatif");
+        assert!(
+            state.delta.re.exponent < -200,
+            "exponent doit rester très négatif"
+        );
         let _ = mag;
     }
 
@@ -637,7 +655,14 @@ mod tests {
 
         let theta = 0.7_f64; // ~40°
         let (s, c) = theta.sin_cos();
-        let phase = Phase::new(vec![Op::Sqr, Op::Rot { cos_theta: c, sin_theta: s }, Op::Add]);
+        let phase = Phase::new(vec![
+            Op::Sqr,
+            Op::Rot {
+                cos_theta: c,
+                sin_theta: s,
+            },
+            Op::Add,
+        ]);
 
         let z_ref = Complex64::new(0.3, 0.4);
         let delta_init = Complex64::new(1e-4, -1e-4);
@@ -652,9 +677,9 @@ mod tests {
         // Path absolu : z = (Sqr -> Rot -> Add)(Z + δ).
         let c_pixel = c_ref + dc;
         let mut z_abs = z_ref + delta_init;
-        z_abs = z_abs * z_abs;                  // Sqr
-        z_abs = z_abs * Complex64::new(c, s);   // Rot
-        z_abs += c_pixel;                        // Add
+        z_abs = z_abs * z_abs; // Sqr
+        z_abs = z_abs * Complex64::new(c, s); // Rot
+        z_abs += c_pixel; // Add
 
         let diff = (z_plus_delta_after - z_abs).norm();
         assert!(
@@ -672,7 +697,14 @@ mod tests {
 
         let theta = -1.2_f64; // ~ -69°
         let (s, c) = theta.sin_cos();
-        let phase = Phase::new(vec![Op::Sqr, Op::Rot { cos_theta: c, sin_theta: s }, Op::Add]);
+        let phase = Phase::new(vec![
+            Op::Sqr,
+            Op::Rot {
+                cos_theta: c,
+                sin_theta: s,
+            },
+            Op::Add,
+        ]);
 
         let z_ref = Complex64::new(0.3, 0.4);
         let delta_init_f64 = Complex64::new(1e-15, -1e-15);

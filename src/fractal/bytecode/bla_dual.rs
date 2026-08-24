@@ -26,9 +26,12 @@ pub struct Mat2 {
 }
 
 impl Mat2 {
-    #[allow(dead_code)]
-    pub const ZERO: Self = Self { m00: 0.0, m01: 0.0, m10: 0.0, m11: 0.0 };
-    pub const IDENTITY: Self = Self { m00: 1.0, m01: 0.0, m10: 0.0, m11: 1.0 };
+    pub const IDENTITY: Self = Self {
+        m00: 1.0,
+        m01: 0.0,
+        m10: 0.0,
+        m11: 1.0,
+    };
 
     /// Multiplication matricielle `self · rhs`.
     pub fn mul(self, rhs: Self) -> Self {
@@ -74,7 +77,11 @@ pub struct DualComplex2 {
 impl DualComplex2 {
     /// Initialise comme `z = z0 + δ` (jac = I).
     pub fn from_value(z0_x: f64, z0_y: f64) -> Self {
-        Self { value_x: z0_x, value_y: z0_y, jac: Mat2::IDENTITY }
+        Self {
+            value_x: z0_x,
+            value_y: z0_y,
+            jac: Mat2::IDENTITY,
+        }
     }
 
     /// `z := z²` (multiplication complexe).
@@ -83,7 +90,13 @@ impl DualComplex2 {
     fn sqr(&mut self) {
         let x = self.value_x;
         let y = self.value_y;
-        let m = Mat2 { m00: x, m01: -y, m10: y, m11: x }.scale(2.0);
+        let m = Mat2 {
+            m00: x,
+            m01: -y,
+            m10: y,
+            m11: x,
+        }
+        .scale(2.0);
         self.jac = m.mul(self.jac);
         // value := value²
         let new_x = x * x - y * y;
@@ -101,8 +114,18 @@ impl DualComplex2 {
         let zy = self.value_y;
         let sx = stored.value_x;
         let sy = stored.value_y;
-        let ms = Mat2 { m00: sx, m01: -sy, m10: sy, m11: sx };
-        let mz = Mat2 { m00: zx, m01: -zy, m10: zy, m11: zx };
+        let ms = Mat2 {
+            m00: sx,
+            m01: -sy,
+            m10: sy,
+            m11: sx,
+        };
+        let mz = Mat2 {
+            m00: zx,
+            m01: -zy,
+            m10: zy,
+            m11: zx,
+        };
         // Σ : jac' = ms · jac + mz · stored.jac
         let jac_a = ms.mul(self.jac);
         let jac_b = mz.mul(stored.jac);
@@ -263,7 +286,10 @@ pub fn build_bla_single_step(
                     r2: r_clamped * r_clamped,
                 };
             }
-            Op::Rot { cos_theta, sin_theta } => {
+            Op::Rot {
+                cos_theta,
+                sin_theta,
+            } => {
                 // Pas de contrainte ajoutée sur le rayon (rotation isométrique).
                 w.rot(*cos_theta, *sin_theta);
             }
@@ -271,10 +297,7 @@ pub fn build_bla_single_step(
     }
 
     // Si pas d'Op::Add (bytecode mal formé), on retourne quand même.
-    BlaSingleStep {
-        a: w.jac,
-        r2: 0.0,
-    }
+    BlaSingleStep { a: w.jac, r2: 0.0 }
 }
 
 /// BLA multi-step : A·δ + B·c, valide pour `|δ|² < r2`, saute `l` itérations.
@@ -730,8 +753,8 @@ mod tests {
         let (zx, zy) = (-2.0, 3.0);
         let bla = build_bla_single_step(zx, zy, &formula.phases[0], 1e-6);
         let expected = Mat2 {
-            m00: 2.0 * zx,         // -4
-            m01: -2.0 * zy,        // -6
+            m00: 2.0 * zx,                // -4
+            m01: -2.0 * zy,               // -6
             m10: 2.0 * (-1.0) * zy.abs(), // -6
             m11: 2.0 * zx.abs() * 1.0,    //  4
         };
@@ -888,7 +911,10 @@ mod tests {
         let (s, c) = theta.sin_cos();
         let phase = Phase::new(vec![
             Op::Sqr,
-            Op::Rot { cos_theta: c, sin_theta: s },
+            Op::Rot {
+                cos_theta: c,
+                sin_theta: s,
+            },
             Op::Add,
         ]);
         let (zx, zy) = (0.3, -0.4);
@@ -902,7 +928,12 @@ mod tests {
             m11: 2.0 * zx,
         };
         // R = [[c, -s], [s, c]]
-        let r = Mat2 { m00: c, m01: -s, m10: s, m11: c };
+        let r = Mat2 {
+            m00: c,
+            m01: -s,
+            m10: s,
+            m11: c,
+        };
         // Composition : R · J_sqr.
         let expected = Mat2 {
             m00: r.m00 * j_sqr.m00 + r.m01 * j_sqr.m10,
@@ -916,7 +947,10 @@ mod tests {
             bla.a,
             expected
         );
-        assert!(bla.r2 > 0.0, "rotation ne doit pas annuler le rayon de validité");
+        assert!(
+            bla.r2 > 0.0,
+            "rotation ne doit pas annuler le rayon de validité"
+        );
     }
 
     #[test]
@@ -989,7 +1023,9 @@ mod tests {
         let formula = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
         let phase = &formula.phases[0];
         // 9 entrées d'orbite → M = 8 single-steps possibles.
-        let orbit: Vec<Complex64> = (0..9).map(|i| Complex64::new(i as f64 * 0.1, 0.0)).collect();
+        let orbit: Vec<Complex64> = (0..9)
+            .map(|i| Complex64::new(i as f64 * 0.1, 0.0))
+            .collect();
         let table = BlaTableUnified::build(&orbit, phase, 0.5, 1e-6);
 
         // M=8 → 4 niveaux : 8, 4, 2, 1 ; les niveaux < BLA_SKIP_LEVELS vidés.

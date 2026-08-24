@@ -725,9 +725,7 @@ pub fn iterate_pixel_harmonic_mla(
                 let new_dz = dz * (step.z + z);
 
                 // 1 check de validité par segment (chebyshev, mirror).
-                if chebyshev_norm(new_dz) > step.valid_radius
-                    || norm_dc > step.valid_radius_c
-                {
+                if chebyshev_norm(new_dz) > step.valid_radius || norm_dc > step.valid_radius_c {
                     j = step.next_stage_la_index as usize;
                     break;
                 }
@@ -1032,19 +1030,15 @@ mod tests {
             let fy = (k / 10) as f64 / 9.0 - 0.5;
             let dc = Complex64::new(fx * span_x, fy * span_y);
 
-            let r_bla =
-                iterate_pixel_unified_mandelbrot(&orbit, bla, dc, iter_max, 25.0, 0, 0);
-            let r_hml =
-                iterate_pixel_harmonic_mla(&orbit, &table, dc, iter_max, 25.0, 0);
+            let r_bla = iterate_pixel_unified_mandelbrot(&orbit, bla, dc, iter_max, 25.0, 0, 0);
+            let r_hml = iterate_pixel_harmonic_mla(&orbit, &table, dc, iter_max, 25.0, 0);
 
             if r_bla.iteration != r_hml.iteration {
                 mismatches += 1;
                 max_diff = max_diff.max(r_bla.iteration.abs_diff(r_hml.iteration));
             }
         }
-        eprintln!(
-            "[HARMONIC TEST] mismatches={mismatches}/{total} max_iter_diff={max_diff}"
-        );
+        eprintln!("[HARMONIC TEST] mismatches={mismatches}/{total} max_iter_diff={max_diff}");
         assert!(
             mismatches <= 1,
             "≥ 99 % attendu : {mismatches}/{total} divergents (max diff {max_diff})"
@@ -1150,19 +1144,15 @@ mod tests {
             let fy = (k / 10) as f64 / 9.0 - 0.5;
             let dc = Complex64::new(fx * span_x, fy * span_y);
 
-            let r_bla =
-                iterate_pixel_unified_mandelbrot(&orbit, bla, dc, iter_max, 25.0, 0, 0);
-            let r_lla =
-                iterate_pixel_harmonic_mla(&orbit, &table, dc, iter_max, 25.0, 0);
+            let r_bla = iterate_pixel_unified_mandelbrot(&orbit, bla, dc, iter_max, 25.0, 0, 0);
+            let r_lla = iterate_pixel_harmonic_mla(&orbit, &table, dc, iter_max, 25.0, 0);
 
             if r_bla.iteration != r_lla.iteration {
                 mismatches += 1;
                 max_diff = max_diff.max(r_bla.iteration.abs_diff(r_lla.iteration));
             }
         }
-        eprintln!(
-            "[HARMONIC LLA TEST] mismatches={mismatches}/{total} max_iter_diff={max_diff}"
-        );
+        eprintln!("[HARMONIC LLA TEST] mismatches={mismatches}/{total} max_iter_diff={max_diff}");
         assert!(
             mismatches <= 1,
             "≥ 99 % attendu : {mismatches}/{total} divergents (max diff {max_diff})"

@@ -5,12 +5,15 @@ use std::time::Instant;
 use num_complex::Complex64;
 use rug::{Assign, Complex, Float};
 
-use crate::fractal::{FractalParams, FractalType};
-use crate::fractal::bytecode::{GmpInterpState, Formula};
+use crate::fractal::bytecode::{Formula, GmpInterpState};
 use crate::fractal::gmp::{complex_to_complex64, pow_f64_mpc};
-use crate::fractal::perturbation::bla::{BlaTable, build_bla_table};
+use crate::fractal::perturbation::bla::{build_bla_table, BlaTable};
+use crate::fractal::perturbation::series::{
+    build_series_table_ho, compute_adaptive_series_order, validate_series_with_probes_tiled,
+    SeriesTable,
+};
 use crate::fractal::perturbation::types::{ComplexExp, FloatExp};
-use crate::fractal::perturbation::series::{SeriesTable, build_series_table_ho, validate_series_with_probes_tiled, compute_adaptive_series_order};
+use crate::fractal::{FractalParams, FractalType};
 
 /// Convertit `z` (Complex GMP borné de l'orbite référence) en `ComplexExp`, en
 /// évitant les 2 clones GMP 676 b de `ComplexExp::from_gmp` dans le cas dominant.
@@ -72,14 +75,21 @@ fn dd_reference_orbit(
     iteration_max: u32,
     cancel: Option<&AtomicBool>,
     build_dd: bool,
-) -> Option<(Vec<ComplexExp>, Vec<Complex64>, Vec<super::dd::ComplexDDExp>)> {
+) -> Option<(
+    Vec<ComplexExp>,
+    Vec<Complex64>,
+    Vec<super::dd::ComplexDDExp>,
+)> {
     let mut z = z0;
     let mut z_ref = Vec::with_capacity(orbit_reserve(iteration_max as usize + 1));
     let mut z_ref_f64 = Vec::with_capacity(orbit_reserve(iteration_max as usize + 1));
     // `z_ref_dd` : la trajectoire dd COMPLÈTE (Z à 106 bits) — nécessaire au
     // tier dd où Z entre non-arrondi dans `2·Z·δ`. Vide si `!build_dd`.
-    let mut z_ref_dd =
-        Vec::with_capacity(if build_dd { orbit_reserve(iteration_max as usize + 1) } else { 0 });
+    let mut z_ref_dd = Vec::with_capacity(if build_dd {
+        orbit_reserve(iteration_max as usize + 1)
+    } else {
+        0
+    });
     let mut zf = z.to_complex64_approx();
     z_ref.push(ComplexExp::from_complex64(zf));
     z_ref_f64.push(zf);
@@ -205,51 +215,6 @@ impl HybridBlaReferences {
     }
 }
 
-/// Detect periodic cycles in the reference orbit.
-/// Returns (cycle_start, cycle_period) if a cycle is detected, None otherwise.
-/// A cycle is detected when z_ref[i] ≈ z_ref[j] for i < j within tolerance.
-#[allow(dead_code)]
-fn detect_cycle(z_ref: &[Complex64], tolerance: f64) -> Option<(u32, u32)> {
-    if z_ref.len() < 10 {
-        return None;
-    }
-
-    let tolerance_sqr = tolerance * tolerance;
-    let min_cycle_length = 2u32;
-    let max_cycle_length = (z_ref.len() / 2).min(1000) as u32;
-
-    // Look for cycles: z[i] ≈ z[i+period] for multiple consecutive iterations
-    for period in min_cycle_length..=max_cycle_length {
-        let period_usize = period as usize;
-        if period_usize * 2 >= z_ref.len() {
-            continue;
-        }
-
-        // Check if we have a cycle starting at some point
-        for start in 0..(z_ref.len() - period_usize * 2) {
-            let mut cycle_valid = true;
-            let check_length = period_usize.min(z_ref.len() - start - period_usize);
-
-            // Verify that z[start+k] ≈ z[start+period+k] for k in [0, check_length)
-            for k in 0..check_length {
-                let z1 = z_ref[start + k];
-                let z2 = z_ref[start + period_usize + k];
-                let diff_sqr = (z1 - z2).norm_sqr();
-                if diff_sqr > tolerance_sqr {
-                    cycle_valid = false;
-                    break;
-                }
-            }
-
-            if cycle_valid && check_length >= period_usize.min(3) {
-                return Some((start as u32, period));
-            }
-        }
-    }
-
-    None
-}
-
 #[derive(Clone, Debug)]
 pub struct ReferenceOrbit {
     pub cref: Complex64,
@@ -351,7 +316,9 @@ impl ReferenceOrbit {
 
     /// Get the effective length of the reference orbit for this phase
     pub fn effective_len(&self) -> usize {
-        self.z_ref_f64.len().saturating_sub(self.phase_offset as usize)
+        self.z_ref_f64
+            .len()
+            .saturating_sub(self.phase_offset as usize)
     }
 
     /// Renvoie l'index `m` cyclé dans `[cycle_start, cycle_start + cycle_period)` quand
@@ -402,16 +369,19 @@ impl ReferenceOrbit {
         *new_c.mut_imag() += &ref_delta_im;
 
         // New z = z_ref[iteration] + current_delta
-        let mut z = Complex::with_val(prec, (self.z_ref_gmp[iter_idx].real(), self.z_ref_gmp[iter_idx].imag()));
+        let mut z = Complex::with_val(
+            prec,
+            (
+                self.z_ref_gmp[iter_idx].real(),
+                self.z_ref_gmp[iter_idx].imag(),
+            ),
+        );
         let cur_delta_re = Float::with_val(prec, current_delta_re);
         let cur_delta_im = Float::with_val(prec, current_delta_im);
         *z.mut_real() += &cur_delta_re;
         *z.mut_imag() += &cur_delta_im;
 
-        let cref_f64 = Complex64::new(
-            new_c.real().to_f64(),
-            new_c.imag().to_f64(),
-        );
+        let cref_f64 = Complex64::new(new_c.real().to_f64(), new_c.imag().to_f64());
 
         // Reference orbit uses the F3-style fixed bailout (1e10 squared norm),
         // not the per-pixel bailout. See REFERENCE_BAILOUT_SQR doc.
@@ -439,8 +409,10 @@ impl ReferenceOrbit {
             let z_norm_sqr = {
                 let re = Float::with_val(prec, z.real());
                 let im = Float::with_val(prec, z.imag());
-                let mut re2 = re.clone(); re2 *= &re;
-                let mut im2 = im.clone(); im2 *= &im;
+                let mut re2 = re.clone();
+                re2 *= &re;
+                let mut im2 = im.clone();
+                im2 *= &im;
                 re2 += &im2;
                 re2
             };
@@ -514,7 +486,6 @@ impl ReferenceOrbit {
             hybrid_phase_refs: Vec::new(),
         })
     }
-
 }
 
 /// Cache for reference orbit and BLA table to avoid recomputation between frames.
@@ -604,9 +575,10 @@ impl ReferenceOrbitCache {
         else {
             return true; // spans illisibles → conservateur : rebuild
         };
-        let (Some(sx_new), Some(sy_new)) =
-            (hp(&params.span_x_hp, params.span_x), hp(&params.span_y_hp, params.span_y))
-        else {
+        let (Some(sx_new), Some(sy_new)) = (
+            hp(&params.span_x_hp, params.span_x),
+            hp(&params.span_y_hp, params.span_y),
+        ) else {
             return true;
         };
         // Incompatible si l'échelle diffère de plus de ±1/16 (l'un ou l'autre
@@ -650,7 +622,7 @@ impl ReferenceOrbitCache {
         let required_prec = compute_perturbation_precision_bits(params);
         // Utiliser la précision maximale entre celle requise et celle du cache pour la comparaison
         let prec = required_prec.max(self.precision_bits);
-        
+
         // Utiliser les String haute précision si disponibles pour la comparaison
         let center_x = if let Some(ref cx_hp) = params.center_x_hp {
             match Float::parse(cx_hp) {
@@ -715,7 +687,7 @@ impl ReferenceOrbitCache {
         // Utiliser la précision calculée au lieu du preset
         use crate::fractal::perturbation::compute_perturbation_precision_bits;
         let computed_precision = compute_perturbation_precision_bits(params);
-        
+
         Self {
             orbit,
             bla_table,
@@ -723,7 +695,7 @@ impl ReferenceOrbitCache {
             center_x_gmp,
             center_y_gmp,
             fractal_type: params.fractal_type,
-            precision_bits: computed_precision,  // Stocker la précision calculée au lieu du preset
+            precision_bits: computed_precision, // Stocker la précision calculée au lieu du preset
             iteration_max: params.iteration_max,
             seed_re: params.seed.re,
             seed_im: params.seed.im,
@@ -821,14 +793,16 @@ impl ReferenceOrbitCache {
         else {
             return false;
         };
-        let (Some(cx_new), Some(cy_new)) =
-            (hp(&params.center_x_hp, params.center_x), hp(&params.center_y_hp, params.center_y))
-        else {
+        let (Some(cx_new), Some(cy_new)) = (
+            hp(&params.center_x_hp, params.center_x),
+            hp(&params.center_y_hp, params.center_y),
+        ) else {
             return false;
         };
-        let (Some(sx_new), Some(sy_new)) =
-            (hp(&params.span_x_hp, params.span_x), hp(&params.span_y_hp, params.span_y))
-        else {
+        let (Some(sx_new), Some(sy_new)) = (
+            hp(&params.span_x_hp, params.span_x),
+            hp(&params.span_y_hp, params.span_y),
+        ) else {
             return false;
         };
         // |Δcentre| + span_new/2 ≤ span_old/2 sur chaque axe (spans supposés > 0).
@@ -901,13 +875,13 @@ fn build_hybrid_bla_references(
                     return None;
                 }
             }
-            
+
             // Create a reference starting at this phase offset
             let phase_offset = cycle_start + phase;
             if phase_offset as usize >= primary_orbit.z_ref_f64.len() {
                 break;
             }
-            
+
             // Create reference orbit with phase offset
             let phase_orbit = ReferenceOrbit {
                 cref: primary_orbit.cref,
@@ -926,16 +900,16 @@ fn build_hybrid_bla_references(
                 // Phases hybrides (cycle détecté) : hors périmètre du routage
                 // compressé (gaté `cycle_period == 0`) — pas de réf compressée.
                 compressed_f64: None,
-            hybrid_phase_refs: Vec::new(),
+                hybrid_phase_refs: Vec::new(),
             };
 
             // Build BLA table for this phase reference (one BLA table per reference)
             let phase_bla = build_bla_table(&phase_orbit.z_ref_f64, params, phase_orbit.cref);
-            
+
             phases.push(phase_orbit);
             phase_bla_tables.push(phase_bla);
         }
-        
+
         Some(HybridBlaReferences {
             primary: primary_orbit.clone(),
             primary_bla: primary_bla.clone(),
@@ -980,9 +954,7 @@ pub fn compute_reference_orbit_cached(
 
     // Check if cache is valid
     if let Some(cached) = cache {
-        if cached.is_valid_for(params)
-            || (allow_subset_reuse && cached.can_subset_reuse(params))
-        {
+        if cached.is_valid_for(params) || (allow_subset_reuse && cached.can_subset_reuse(params)) {
             if perf {
                 let subset = !cached.is_valid_for(params);
                 eprintln!(
@@ -1021,9 +993,8 @@ pub fn compute_reference_orbit_cached(
         // Précision dérivée de la formule perturbation (auto si span HP fournie).
         // À zoom 1e227, params.precision_bits=256 ne suffit pas pour itérer le
         // candidat près du minibrot exact ; il faut ~780 bits.
-        let prec = crate::fractal::perturbation::compute_perturbation_precision_bits(
-            &adjusted_params,
-        );
+        let prec =
+            crate::fractal::perturbation::compute_perturbation_precision_bits(&adjusted_params);
         let cx = if let Some(ref s) = adjusted_params.center_x_hp {
             match rug::Float::parse(s) {
                 Ok(p) => rug::Float::with_val(prec, p),
@@ -1047,7 +1018,11 @@ pub fn compute_reference_orbit_cached(
         let view_scale_fexp = {
             let (sx, sy) = crate::fractal::perturbation::effective_spans_fexp(&adjusted_params);
             // max(sx, sy) via PartialOrd FloatExp
-            if sx > sy { sx } else { sy }
+            if sx > sy {
+                sx
+            } else {
+                sy
+            }
         };
         // view_scale_fexp → Float : reconstruire via shifts pour préserver
         // l'exposant arbitraire (Float::with_val ne supporte que f64).
@@ -1068,19 +1043,26 @@ pub fn compute_reference_orbit_cached(
         // Mandelbrot + hybrid_phases) route vers les variantes formule
         // (Jacobien mat2 GMP par opcode, cf. nucleus.rs GmpDualMat2) ; le
         // single-phase garde le path z²+c historique (bit-identique).
-        let nucleus_hybrid_formula: Option<Formula> = if adjusted_params
-            .is_hybrid_formula()
-        {
+        let nucleus_hybrid_formula: Option<Formula> = if adjusted_params.is_hybrid_formula() {
             crate::fractal::bytecode::formula_for_params(&adjusted_params)
         } else {
             None
         };
         let nucleus_result = match nucleus_hybrid_formula.as_ref() {
             Some(f) => crate::fractal::perturbation::nucleus::find_nucleus_formula(
-                f, &cx, &cy, adjusted_params.iteration_max, &s_gmp, prec,
+                f,
+                &cx,
+                &cy,
+                adjusted_params.iteration_max,
+                &s_gmp,
+                prec,
             ),
             None => crate::fractal::perturbation::nucleus::find_nucleus(
-                &cx, &cy, adjusted_params.iteration_max, &s_gmp, prec,
+                &cx,
+                &cy,
+                adjusted_params.iteration_max,
+                &s_gmp,
+                prec,
             ),
         };
         if let Some(result) = nucleus_result {
@@ -1199,11 +1181,17 @@ pub fn compute_reference_orbit_cached(
     let pixel_count = (params.width as u64).saturating_mul(params.height as u64);
     let small_image = params.width.max(params.height) <= 512;
     let disable_series = match std::env::var("FRACTALL_PERTURB_DISABLE_SERIES") {
-        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        Ok(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
         Err(_) => false,
     };
     let force_series = match std::env::var("FRACTALL_PERTURB_FORCE_SERIES") {
-        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        Ok(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
         Err(_) => false,
     };
     let is_julia = params.fractal_type == FractalType::Julia;
@@ -1220,8 +1208,7 @@ pub fn compute_reference_orbit_cached(
         .ok()
         .map(|v| v != "1" && v.to_lowercase() != "true")
         .unwrap_or(true);
-    let series_will_be_used =
-        auto_adjust_enabled || !super::uses_bytecode_path(params);
+    let series_will_be_used = auto_adjust_enabled || !super::uses_bytecode_path(params);
 
     // GMP dense (`z_ref_gmp`) requis par : (1) le rendu principal full-GMP
     // (`render_perturbation_gmp_path` → `iterate_pixel_gmp` sur TOUS les pixels)
@@ -1229,8 +1216,8 @@ pub fn compute_reference_orbit_cached(
     // legacy (non-bytecode) ; sur le path bytecode nominal (pas full-GMP) on le
     // SAUTE — la pass glitch le recompute à la demande si des pixels glitchent
     // (cf. `compute_reference_orbit` force_dense_gmp + mod.rs glitch pass).
-    let store_dense_gmp = !super::uses_bytecode_path(params)
-        || super::should_use_full_gmp_perturbation(params);
+    let store_dense_gmp =
+        !super::uses_bytecode_path(params) || super::should_use_full_gmp_perturbation(params);
 
     // La table BLA conformale historique (`BlaTable`) est LUE par : (1) le path
     // CPU legacy `iterate_pixel` (fallback quand `try_bytecode_unified_path`
@@ -1253,8 +1240,12 @@ pub fn compute_reference_orbit_cached(
 
     // Compute orbit + BLA + series, potentially re-running with doubled iteration_max
     let t_orbit_first = Instant::now();
-    let (mut orbit, mut center_x_gmp, mut center_y_gmp) =
-        compute_reference_orbit_with_progress(&adjusted_params, cancel, store_dense_gmp, ref_progress)?;
+    let (mut orbit, mut center_x_gmp, mut center_y_gmp) = compute_reference_orbit_with_progress(
+        &adjusted_params,
+        cancel,
+        store_dense_gmp,
+        ref_progress,
+    )?;
     let mut dt_orbit = t_orbit_first.elapsed();
 
     let t_bla_first = Instant::now();
@@ -1273,7 +1264,10 @@ pub fn compute_reference_orbit_cached(
             // Recompute orbit + BLA with adjusted iteration_max
             let t_orbit_start = Instant::now();
             let result = compute_reference_orbit_with_progress(
-                &adjusted_params, cancel, store_dense_gmp, ref_progress,
+                &adjusted_params,
+                cancel,
+                store_dense_gmp,
+                ref_progress,
             )?;
             orbit = result.0;
             center_x_gmp = result.1;
@@ -1301,8 +1295,7 @@ pub fn compute_reference_orbit_cached(
         // série 0.59 s / total 1.98 s (30 %). Les réfs pleines/escape-truncated
         // gardent la série (l'heuristique peut encore firer).
         let series_dead_for_atom = orbit.atom_truncated
-            && crate::fractal::perturbation::delta::bytecode_path_label(&adjusted_params)
-                .is_some();
+            && crate::fractal::perturbation::delta::bytecode_path_label(&adjusted_params).is_some();
         // G4 jalon 5b : la série Taylor est z²+c hardcodée → JAMAIS pour un
         // hybride (coefficients faux pour [M,BS] ; et pour [M,M] son seul
         // usage — l'heuristique auto-adjust — misfire : skip 32 % → doublement
@@ -1314,7 +1307,10 @@ pub fn compute_reference_orbit_cached(
                 || (series_will_be_used
                     && !series_dead_for_atom
                     && adjusted_params.series_standalone
-                    && matches!(adjusted_params.fractal_type, FractalType::Mandelbrot | FractalType::Julia)
+                    && matches!(
+                        adjusted_params.fractal_type,
+                        FractalType::Mandelbrot | FractalType::Julia
+                    )
                     && (!small_image || adjusted_params.iteration_max >= 5000)
                     && (pixel_count >= 16_384 || adjusted_params.iteration_max >= 10_000)));
 
@@ -1328,8 +1324,13 @@ pub fn compute_reference_orbit_cached(
                 adjusted_params.series_order,
             );
             let series_order = adaptive_order.max(4);
-            let interval = if orbit.z_ref_f64.len() > 100_000 { 10 } else { 1 };
-            let mut table = build_series_table_ho(&orbit.z_ref_f64, is_julia, series_order, interval);
+            let interval = if orbit.z_ref_f64.len() > 100_000 {
+                10
+            } else {
+                1
+            };
+            let mut table =
+                build_series_table_ho(&orbit.z_ref_f64, is_julia, series_order, interval);
 
             if pixel_size > 0.0 && pixel_size.is_finite() {
                 let tiled = validate_series_with_probes_tiled(
@@ -1394,7 +1395,8 @@ pub fn compute_reference_orbit_cached(
                     {
                         // Series skips <12.5%: iteration_max may be too high (only reduce
                         // back towards user's original value, never below it)
-                        let new_max = adjusted_params.iteration_max
+                        let new_max = adjusted_params
+                            .iteration_max
                             .min(adjusted_params.iteration_max / 2)
                             .max(params.iteration_max);
                         if new_max < adjusted_params.iteration_max {
@@ -1545,7 +1547,7 @@ fn compute_reference_orbit_phase(
     } else {
         Float::with_val(prec, params.center_x)
     };
-    
+
     let center_y_gmp = if let Some(ref cy_hp) = params.center_y_hp {
         match Float::parse(cy_hp) {
             Ok(parse_result) => Float::with_val(prec, parse_result),
@@ -1557,7 +1559,7 @@ fn compute_reference_orbit_phase(
     } else {
         Float::with_val(prec, params.center_y)
     };
-    
+
     // Référence = centre de vue (standard F3). L'ancien **auto-snap nucleus**
     // (`optimize_reference_center`, inspiré rust-fractal-core) snappait la réf vers
     // le nucleus voisin pour rendre l'orbite périodique (anti-glitch). DÉSACTIVÉ
@@ -1570,26 +1572,29 @@ fn compute_reference_orbit_phase(
     let nucleus_snap_enabled = std::env::var("FRACTALL_NUCLEUS_SNAP")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
-    let (ref_center_x, ref_center_y) = if nucleus_snap_enabled
-        && matches!(params.fractal_type, FractalType::Mandelbrot)
-    {
-        if let Some(nucleus) = optimize_reference_center(
-            &center_x_gmp, &center_y_gmp,
-            params.span_x, params.span_y,
-            prec,
-        ) {
-            let nx = Float::with_val(prec, nucleus.real());
-            let ny = Float::with_val(prec, nucleus.imag());
-            eprintln!("[NUCLEUS] Reference snapped to nucleus at ({}, {})",
-                nx.to_string_radix(10, Some(15)),
-                ny.to_string_radix(10, Some(15)));
-            (nx, ny)
+    let (ref_center_x, ref_center_y) =
+        if nucleus_snap_enabled && matches!(params.fractal_type, FractalType::Mandelbrot) {
+            if let Some(nucleus) = optimize_reference_center(
+                &center_x_gmp,
+                &center_y_gmp,
+                params.span_x,
+                params.span_y,
+                prec,
+            ) {
+                let nx = Float::with_val(prec, nucleus.real());
+                let ny = Float::with_val(prec, nucleus.imag());
+                eprintln!(
+                    "[NUCLEUS] Reference snapped to nucleus at ({}, {})",
+                    nx.to_string_radix(10, Some(15)),
+                    ny.to_string_radix(10, Some(15))
+                );
+                (nx, ny)
+            } else {
+                (center_x_gmp.clone(), center_y_gmp.clone())
+            }
         } else {
             (center_x_gmp.clone(), center_y_gmp.clone())
-        }
-    } else {
-        (center_x_gmp.clone(), center_y_gmp.clone())
-    };
+        };
 
     // Store GMP strings for cache validation (use original center, not nucleus)
     let cx_str = center_x_gmp.to_string_radix(10, None);
@@ -1622,18 +1627,15 @@ fn compute_reference_orbit_phase(
     // Brent) doit être gaté OFF. Sans ce gate, le fast-path dd (~1e13–1e19)
     // bâtissait une référence z²+c pour un [M,BS] → image garbage.
     let is_hybrid = params.is_hybrid_formula();
-    let dd_eligible = !force_dense_gmp
-        && !is_hybrid
-        && dd_type_ok
-        && {
-            let px = super::effective_pixel_size(params);
-            px > 0.0 && px.is_finite() && {
-                let log2_zoom = (4.0 / px).log2();
-                let log2_h = (params.height as f64).max(1.0).log2();
-                let formula_bits = 24.0 + (log2_zoom + log2_h).floor();
-                (0.0..=96.0).contains(&formula_bits)
-            }
-        };
+    let dd_eligible = !force_dense_gmp && !is_hybrid && dd_type_ok && {
+        let px = super::effective_pixel_size(params);
+        px > 0.0 && px.is_finite() && {
+            let log2_zoom = (4.0 / px).log2();
+            let log2_h = (params.height as f64).max(1.0).log2();
+            let formula_bits = 24.0 + (log2_zoom + log2_h).floor();
+            (0.0..=96.0).contains(&formula_bits)
+        }
+    };
     if dd_eligible {
         use super::dd::ComplexDDExp;
         let cref_dd = ComplexDDExp {
@@ -1674,7 +1676,7 @@ fn compute_reference_orbit_phase(
                 // (l'orbite dd est déjà bon marché ; le routage retombe sur le
                 // path plein).
                 compressed_f64: None,
-            hybrid_phase_refs: Vec::new(),
+                hybrid_phase_refs: Vec::new(),
             },
             cx_str,
             cy_str,
@@ -1683,9 +1685,10 @@ fn compute_reference_orbit_phase(
     // ───────────────────────────────────────────────────────────────────────
 
     let mut z = match params.fractal_type {
-        FractalType::Mandelbrot | FractalType::BurningShip | FractalType::Multibrot | FractalType::Tricorn => {
-            Complex::with_val(prec, (params.seed.re, params.seed.im))
-        }
+        FractalType::Mandelbrot
+        | FractalType::BurningShip
+        | FractalType::Multibrot
+        | FractalType::Tricorn => Complex::with_val(prec, (params.seed.re, params.seed.im)),
         FractalType::Julia => cref.clone(),
         _ => return None,
     };
@@ -1726,13 +1729,17 @@ fn compute_reference_orbit_phase(
     // Tier dd (opt-in) : stocke la référence en double-double (~106 b) depuis
     // l'orbite GMP courante — Z à 106 b pour le pas `2·Z·δ` du pixel_loop_dd.
     let build_dd = params.use_dd_tier;
-    let mut z_ref_dd = Vec::with_capacity(
-        if build_dd { orbit_reserve(params.iteration_max as usize + 1) } else { 0 },
-    );
+    let mut z_ref_dd = Vec::with_capacity(if build_dd {
+        orbit_reserve(params.iteration_max as usize + 1)
+    } else {
+        0
+    });
     let store_dense_gmp = force_dense_gmp;
-    let mut z_ref_gmp = Vec::with_capacity(
-        if store_dense_gmp { orbit_reserve(params.iteration_max as usize + 1) } else { 0 },
-    );
+    let mut z_ref_gmp = Vec::with_capacity(if store_dense_gmp {
+        orbit_reserve(params.iteration_max as usize + 1)
+    } else {
+        0
+    });
 
     // Inspired by rust-fractal-core's data_storage_interval:
     // Store high-precision orbit data at intervals to reduce memory usage.
@@ -1744,13 +1751,11 @@ fn compute_reference_orbit_phase(
     } else {
         1
     };
-    let mut high_precision_data = Vec::with_capacity(
-        if store_dense_gmp {
-            orbit_reserve((params.iteration_max as usize / data_storage_interval) + 2)
-        } else {
-            0
-        },
-    );
+    let mut high_precision_data = Vec::with_capacity(if store_dense_gmp {
+        orbit_reserve((params.iteration_max as usize / data_storage_interval) + 2)
+    } else {
+        0
+    });
 
     // Store high-precision, f64, and full GMP versions (cf. `z_ref_complexexp`).
     let z_f64 = complex_to_complex64(&z);
@@ -1871,8 +1876,7 @@ fn compute_reference_orbit_phase(
     let atom_period_enabled = matches!(params.fractal_type, FractalType::Mandelbrot)
         && !is_hybrid
         && super::delta::atom_hp_enabled()
-        && super::effective_pixel_size(params)
-            < super::delta::ATOM_PERIOD_PIXEL_SIZE_THRESHOLD;
+        && super::effective_pixel_size(params) < super::delta::ATOM_PERIOD_PIXEL_SIZE_THRESHOLD;
     // G4 jalon 5d : troncature atom-domain GÉNÉRIQUE pour les hybrides (port F3
     // `hybrid_reference`, `hybrid.cc:81-98` : dZdC est un **mat2** bas-précision,
     // critère `|inv(radius·dZdC)·Z| < 1`). Récurrence par phase entière via les
@@ -1886,16 +1890,24 @@ fn compute_reference_orbit_phase(
     let atom_period_mat2_enabled = is_hybrid
         && bytecode_formula.is_some()
         && super::delta::atom_hp_enabled()
-        && super::effective_pixel_size(params)
-            < super::delta::ATOM_PERIOD_PIXEL_SIZE_THRESHOLD;
+        && super::effective_pixel_size(params) < super::delta::ATOM_PERIOD_PIXEL_SIZE_THRESHOLD;
     let atom_radius_sqr = {
         let (adx, ady) = super::effective_spans_fexp(params);
-        let r = if adx.partial_cmp(&ady) == Some(std::cmp::Ordering::Greater) { adx } else { ady };
+        let r = if adx.partial_cmp(&ady) == Some(std::cmp::Ordering::Greater) {
+            adx
+        } else {
+            ady
+        };
         r.sqr()
     };
     let mut atom_dz = ComplexExp::zero();
     // J = dZ/dC mat2 row-major [j00, j01, j10, j11] en FloatExp (J₀ = 0).
-    let mut atom_j = [FloatExp::zero(), FloatExp::zero(), FloatExp::zero(), FloatExp::zero()];
+    let mut atom_j = [
+        FloatExp::zero(),
+        FloatExp::zero(),
+        FloatExp::zero(),
+        FloatExp::zero(),
+    ];
     let mut atom_truncated = false;
 
     // Compression d'orbite (G8.2, Imagina PTWithCompression) : fantôme f64 en
@@ -1988,9 +2000,11 @@ fn compute_reference_orbit_phase(
             }
         }
 
-        if let (Some(state), Some(formula), Some(c_phase)) =
-            (bytecode_state.as_mut(), bytecode_formula.as_ref(), bytecode_c)
-        {
+        if let (Some(state), Some(formula), Some(c_phase)) = (
+            bytecode_state.as_mut(),
+            bytecode_formula.as_ref(),
+            bytecode_c,
+        ) {
             state.step(formula, c_phase);
             z.assign(&state.z);
         } else {
@@ -2063,7 +2077,10 @@ fn compute_reference_orbit_phase(
         if atom_period_enabled {
             let n = z_ref.len();
             let zi = z_ref[n - 2]; // Z_i (ComplexExp), avant le pas
-            let two_zi = ComplexExp { re: zi.re + zi.re, im: zi.im + zi.im };
+            let two_zi = ComplexExp {
+                re: zi.re + zi.re,
+                im: zi.im + zi.im,
+            };
             atom_dz = atom_dz.mul(two_zi);
             atom_dz.re = atom_dz.re + FloatExp::from_f64(1.0);
             if i > 0 {
@@ -2159,8 +2176,12 @@ fn compute_reference_orbit_phase(
     }
 
     if detected_period > 0 && crate::fractal::perturbation::perf_enabled() {
-        eprintln!("[PERIOD] Detected period {} at iteration {} (orbit len={}). Center is interior.",
-            detected_period, z_ref_f64.len(), z_ref_f64.len());
+        eprintln!(
+            "[PERIOD] Detected period {} at iteration {} (orbit len={}). Center is interior.",
+            detected_period,
+            z_ref_f64.len(),
+            z_ref_f64.len()
+        );
     }
 
     // Track iterations where z_ref is very small (near f64 underflow).
@@ -2175,7 +2196,10 @@ fn compute_reference_orbit_phase(
 
     if std::env::var("FRACTALL_DEBUG_ORBIT").as_deref() == Ok("1") {
         let len = z_ref_f64.len();
-        let max_norm = z_ref_f64.iter().map(|z| z.norm_sqr()).fold(0.0f64, f64::max);
+        let max_norm = z_ref_f64
+            .iter()
+            .map(|z| z.norm_sqr())
+            .fold(0.0f64, f64::max);
         let first_over_pixel_er = z_ref_f64
             .iter()
             .position(|z| z.norm_sqr() > 16.0)
@@ -2325,11 +2349,7 @@ pub fn find_nucleus(
 /// indicates the period of the nearest nucleus.
 ///
 /// Returns the detected period, or None if no period is found within max_period.
-pub fn detect_nucleus_period(
-    center: &Complex,
-    prec: u32,
-    max_period: u32,
-) -> Option<u32> {
+pub fn detect_nucleus_period(center: &Complex, prec: u32, max_period: u32) -> Option<u32> {
     let mut z = Complex::with_val(prec, (0, 0));
     let c = Complex::with_val(prec, (center.real(), center.imag()));
 
@@ -2435,7 +2455,10 @@ mod dd_orbit_tests {
         assert_eq!(orbit_reserve(15_000_001), 15_000_001);
         assert_eq!(orbit_reserve(1025), 1025);
         assert_eq!(orbit_reserve(0), 0);
-        assert!(MAX_ORBIT_RESERVE >= 16_000_000, "doit couvrir les orbites légitimes du corpus");
+        assert!(
+            MAX_ORBIT_RESERVE >= 16_000_000,
+            "doit couvrir les orbites légitimes du corpus"
+        );
     }
 
     /// Verrou Phase 1a : l'orbite référence itérée en double-double (~106 b) doit
@@ -2451,16 +2474,20 @@ mod dd_orbit_tests {
         params.span_y = 1e-12;
         params.iteration_max = 3000;
 
-        let (orbit_gmp, _, _) =
-            compute_reference_orbit(&params, None, true).expect("orbite GMP");
+        let (orbit_gmp, _, _) = compute_reference_orbit(&params, None, true).expect("orbite GMP");
         // Mandelbrot : z0 = seed (=0), constante = cref.
         let cref_dd = ComplexDDExp {
             re: gmp_float_to_ddexp(orbit_gmp.cref_gmp.real()),
             im: gmp_float_to_ddexp(orbit_gmp.cref_gmp.imag()),
         };
-        let (_, dd_f64, _) =
-            dd_reference_orbit(ComplexDDExp::ZERO, cref_dd, params.iteration_max, None, false)
-                .expect("orbite dd");
+        let (_, dd_f64, _) = dd_reference_orbit(
+            ComplexDDExp::ZERO,
+            cref_dd,
+            params.iteration_max,
+            None,
+            false,
+        )
+        .expect("orbite dd");
 
         assert_orbit_close(&orbit_gmp.z_ref_f64, &dd_f64, 1e-9);
     }
@@ -2486,9 +2513,8 @@ mod dd_orbit_tests {
             im: gmp_float_to_ddexp(orbit_gmp.cref_gmp.imag()),
         };
         let seed_dd = ComplexDDExp::from_complex64(params.seed);
-        let (_, dd_f64, _) =
-            dd_reference_orbit(z0, seed_dd, params.iteration_max, None, false)
-                .expect("orbite dd Julia");
+        let (_, dd_f64, _) = dd_reference_orbit(z0, seed_dd, params.iteration_max, None, false)
+            .expect("orbite dd Julia");
 
         assert_orbit_close(&orbit_gmp.z_ref_f64, &dd_f64, 1e-9);
     }
@@ -2504,7 +2530,10 @@ mod dd_orbit_tests {
                 .max((gmp[i].re - dd[i].re).abs())
                 .max((gmp[i].im - dd[i].im).abs());
         }
-        assert!(max_err < tol, "orbite dd diverge de GMP: max_err={max_err:.3e} sur {n} points");
+        assert!(
+            max_err < tol,
+            "orbite dd diverge de GMP: max_err={max_err:.3e} sur {n} points"
+        );
     }
 }
 

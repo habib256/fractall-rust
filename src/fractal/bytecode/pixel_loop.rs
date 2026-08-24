@@ -27,6 +27,7 @@ use super::bla_dual::BlaTableUnified;
 use super::delta_form::DeltaState;
 use super::{Formula, Phase};
 use crate::fractal::orbit_traps::{OrbitData, OrbitTrapType};
+use crate::fractal::perturbation::counter::PixelCounter;
 use crate::fractal::perturbation::orbit::ReferenceOrbit;
 
 /// Résultat d'un pixel via le pixel loop unifié.
@@ -34,15 +35,12 @@ pub struct UnifiedPixelResult {
     pub iteration: u32,
     pub z_final: Complex64,
     /// Nombre de rebases effectués (utile pour stats/debug).
-    #[allow(dead_code)]
     pub rebase_count: u32,
     /// Nombre de pas BLA appliqués (utile pour stats/debug).
-    #[allow(dead_code)]
     pub bla_steps: u32,
     /// Orbit data (uniquement si demandé via param). Stocke les z_abs
     /// traversés pour le calcul de orbit traps (distance min à un point/
     /// ligne/croix/cercle).
-    #[allow(dead_code)]
     pub orbit: Option<OrbitData>,
     /// Distance estimate à la frontière du set (formule 2|z|·ln|z|/|dz|).
     /// `None` si non demandé ou pixel intérieur.
@@ -95,7 +93,6 @@ pub struct UnifiedOptions {
 /// - `c_ref` : constante ajoutée à la reference (cref pour Mandelbrot-like,
 ///   seed pour Julia-like).
 /// - `dc` : offset = c_pixel - c_ref.
-#[allow(dead_code)]
 pub fn iterate_pixel_unified(
     ref_orbit: &ReferenceOrbit,
     bla: &BlaTableUnified,
@@ -107,7 +104,15 @@ pub fn iterate_pixel_unified(
     bailout: f64,
 ) -> UnifiedPixelResult {
     iterate_pixel_unified_with_options(
-        ref_orbit, bla, formula, c_ref, dc, delta_initial, iteration_max, bailout, None,
+        ref_orbit,
+        bla,
+        formula,
+        c_ref,
+        dc,
+        delta_initial,
+        iteration_max,
+        bailout,
+        None,
     )
 }
 
@@ -115,7 +120,6 @@ pub fn iterate_pixel_unified(
 /// (pour tracker chaque z_abs individuel) et construit un `OrbitData` qu'on
 /// retourne dans le résultat. Hook pour `OutColoringMode::OrbitTraps` et
 /// `Wings` qui ont besoin de l'orbite complète.
-#[allow(dead_code)]
 pub fn iterate_pixel_unified_with_options(
     ref_orbit: &ReferenceOrbit,
     bla: &BlaTableUnified,
@@ -240,7 +244,11 @@ pub fn iterate_pixel_unified_multi_phase(
     // AVANT `m := 0`, préservant l'invariant. Sans ça, tout rebase avec
     // `n % N ≠ 0` désynchronise → garbage (prouvé [M,BS] @3e10 uniforme).
     let refs = |p: usize| -> &ReferenceOrbit {
-        if p == 0 { ref_orbit } else { &ref_orbit.hybrid_phase_refs[p - 1] }
+        if p == 0 {
+            ref_orbit
+        } else {
+            &ref_orbit.hybrid_phase_refs[p - 1]
+        }
     };
     // BLA par phase (jalon 5b) : active seulement avec une table par phase.
     let use_bla = tables.len() == n_phases;
@@ -250,18 +258,25 @@ pub fn iterate_pixel_unified_multi_phase(
     // (pas de Vec : la fonction est appelée PAR PIXEL) ; > 64 phases → tout
     // passe par l'interpréteur générique.
     let mb_mask: u64 = if n_phases <= 64 {
-        formula.phases.iter().enumerate().fold(0u64, |acc, (i, ph)| {
-            let is_mb = ph.ops.len() == 2
-                && matches!(ph.ops[0], super::Op::Sqr)
-                && matches!(ph.ops[1], super::Op::Add);
-            if is_mb { acc | (1u64 << i) } else { acc }
-        })
+        formula
+            .phases
+            .iter()
+            .enumerate()
+            .fold(0u64, |acc, (i, ph)| {
+                let is_mb = ph.ops.len() == 2
+                    && matches!(ph.ops[0], super::Op::Sqr)
+                    && matches!(ph.ops[1], super::Op::Add);
+                if is_mb {
+                    acc | (1u64 << i)
+                } else {
+                    acc
+                }
+            })
     } else {
         0
     };
     let mut delta = delta_initial;
-    let mut n = 0u32;
-    let mut m = 0u32;
+    let mut c = PixelCounter::new();
     let mut phase: usize = 0;
     let mut rebase_count = 0u32;
     let mut bla_steps = 0u32;
@@ -276,25 +291,25 @@ pub fn iterate_pixel_unified_multi_phase(
     let mut zr: &[Complex64] = &refs(phase).z_ref_f64;
     let mut ref_len_cur = zr.len();
     let mut atom_truncated_cur = refs(phase).atom_truncated;
-    let mut z_m = zr[m as usize];
+    let mut z_m = zr[c.m_usize()];
     let mut z_abs = z_m + delta;
     let mut z_abs_norm_sqr = z_abs.norm_sqr();
     let mut delta_norm_sqr = delta.norm_sqr();
 
-    while n < iteration_max
+    while c.keep_iterating(iteration_max)
         && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
         && (max_bla_steps == 0 || bla_steps < max_bla_steps)
     {
         if z_abs_norm_sqr >= bailout_sqr {
             return UnifiedPixelResult {
-                iteration: n,
+                iteration: c.n(),
                 z_final: z_abs,
                 rebase_count,
                 bla_steps,
                 orbit: None,
-            distance: None,
-            is_interior: false,
-            ref_exhausted: false,
+                distance: None,
+                is_interior: false,
+                ref_exhausted: false,
             };
         }
 
@@ -304,13 +319,11 @@ pub fn iterate_pixel_unified_multi_phase(
         // phase. Mêmes gardes que le single-phase : bornes, lands_on_ref_end
         // (inerte, atom gaté off hybride — symétrie), anti-over-skip endpoint.
         if use_bla {
-            if let Some(node) = tables[phase].lookup(m as usize, delta_norm_sqr) {
-                let new_n = n.saturating_add(node.l);
-                let new_m = m.saturating_add(node.l);
-                let lands_on_ref_end =
-                    atom_truncated_cur && (new_m as usize) + 1 >= ref_len_cur;
-                if new_n <= iteration_max
-                    && (new_m as usize) < ref_len_cur
+            if let Some(node) = tables[phase].lookup(c.m_usize(), delta_norm_sqr) {
+                let jumped = c.after_jump(node.l);
+                let lands_on_ref_end = atom_truncated_cur && jumped.m_usize() + 1 >= ref_len_cur;
+                if jumped.n() <= iteration_max
+                    && jumped.m_usize() < ref_len_cur
                     && !lands_on_ref_end
                 {
                     let a = node.a;
@@ -319,10 +332,8 @@ pub fn iterate_pixel_unified_multi_phase(
                         a.m00 * delta.re + a.m01 * delta.im,
                         a.m10 * delta.re + a.m11 * delta.im,
                     );
-                    let (b_re, b_im) = (
-                        b.m00 * dc.re + b.m01 * dc.im,
-                        b.m10 * dc.re + b.m11 * dc.im,
-                    );
+                    let (b_re, b_im) =
+                        (b.m00 * dc.re + b.m01 * dc.im, b.m10 * dc.re + b.m11 * dc.im);
                     let cand = Complex64::new(a_re + b_re, a_im + b_im);
                     // `node.z_land` = bit-copie de `refs(phase)[new_m]`
                     // (rempli au build cyclé) : pas d'accès tableau, et le
@@ -333,12 +344,11 @@ pub fn iterate_pixel_unified_multi_phase(
                     let overshoots_escape = node.l >= 2 && z_end_norm_sqr >= bailout_sqr;
                     if !overshoots_escape {
                         delta = cand;
-                        n = new_n;
-                        m = new_m;
+                        c = jumped;
                         bla_steps += 1;
                         if !delta.re.is_finite() || !delta.im.is_finite() {
                             return UnifiedPixelResult {
-                                iteration: n,
+                                iteration: c.n(),
                                 z_final: z_end,
                                 rebase_count,
                                 bla_steps,
@@ -368,7 +378,7 @@ pub fn iterate_pixel_unified_multi_phase(
 
         // Pas perturbation : phase courante = phases[n % n_phases] — cohérent
         // avec le pas de référence grâce à l'invariant (phase + m) ≡ n.
-        let ph_idx = (n as usize) % n_phases;
+        let ph_idx = (c.n() as usize) % n_phases;
         if (mb_mask >> (ph_idx & 63)) & 1 != 0 {
             // Fast-path Mandelbrot (jalon 5g) : δ' = 2·Z·δ + δ² + dc, mêmes
             // opérandes/ordre que DeltaState [Sqr → Add] → bit-identique.
@@ -379,22 +389,21 @@ pub fn iterate_pixel_unified_multi_phase(
             state.step(&formula.phases[ph_idx], c_ref, dc);
             delta = state.delta;
         }
-        n += 1;
-        m += 1;
+        c.step();
         iters_ptb += 1;
 
-        let m_read = (m as usize).min(ref_len_cur - 1);
+        let m_read = c.m_usize().min(ref_len_cur - 1);
         let z_after = zr[m_read];
         if !delta.re.is_finite() || !delta.im.is_finite() {
             return UnifiedPixelResult {
-                iteration: n,
+                iteration: c.n(),
                 z_final: z_after + delta,
                 rebase_count,
                 bla_steps,
                 orbit: None,
-            distance: None,
-            is_interior: false,
-            ref_exhausted: false,
+                distance: None,
+                is_interior: false,
+                ref_exhausted: false,
             };
         }
 
@@ -407,11 +416,11 @@ pub fn iterate_pixel_unified_multi_phase(
         let z_curr = z_after + delta;
         let z_curr_norm_sqr = z_curr.norm_sqr();
         delta_norm_sqr = delta.norm_sqr();
-        let end_of_ref = (m as usize) + 1 >= ref_len_cur;
+        let end_of_ref = c.m_usize() + 1 >= ref_len_cur;
         if end_of_ref || z_curr_norm_sqr < delta_norm_sqr {
             delta = z_curr;
-            phase = (phase + m as usize) % n_phases;
-            m = 0;
+            phase = (phase + c.m_usize()) % n_phases;
+            c.rebase();
             rebase_count += 1;
             // `phase` a changé : recharger la réf de phase (froid — au plus
             // 1×/rebase) + recalculer le cache de tête.
@@ -430,16 +439,16 @@ pub fn iterate_pixel_unified_multi_phase(
             z_abs_norm_sqr = z_curr_norm_sqr;
         }
     }
-    let final_m = (m as usize).min(ref_len_cur - 1);
+    let final_m = c.m_usize().min(ref_len_cur - 1);
     UnifiedPixelResult {
-        iteration: n,
+        iteration: c.n(),
         z_final: zr[final_m] + delta,
         rebase_count,
         bla_steps,
-                orbit: None,
-            distance: None,
-            is_interior: false,
-            ref_exhausted: false,
+        orbit: None,
+        distance: None,
+        is_interior: false,
+        ref_exhausted: false,
     }
 }
 
@@ -461,10 +470,11 @@ fn iterate_pixel_unified_single_phase(
     let is_mandelbrot_phase = phase.ops.len() == 2
         && matches!(phase.ops[0], super::Op::Sqr)
         && matches!(phase.ops[1], super::Op::Add);
-    let no_dual_features = options.orbit_trap.is_none()
-        && !options.enable_distance
-        && !options.enable_interior;
-    if is_mandelbrot_phase && no_dual_features && !options.is_julia
+    let no_dual_features =
+        options.orbit_trap.is_none() && !options.enable_distance && !options.enable_interior;
+    if is_mandelbrot_phase
+        && no_dual_features
+        && !options.is_julia
         && delta_initial.norm_sqr() == 0.0
     {
         let _ = c_ref;
@@ -507,8 +517,7 @@ fn iterate_pixel_unified_single_phase(
     } else {
         Complex64::new(0.0, 0.0)
     };
-    let mut n = 0u32;
-    let mut m = 0u32;
+    let mut c = PixelCounter::new();
     let mut rebase_count = 0u32;
     let mut bla_steps = 0u32;
     let mut iters_ptb = 0u32;
@@ -521,21 +530,21 @@ fn iterate_pixel_unified_single_phase(
         od.add_point(ref_orbit.z_ref_f64[0] + delta, 0);
     }
 
-    while n < iteration_max
+    while c.keep_iterating(iteration_max)
         && (max_ptb == 0 || iters_ptb < max_ptb)
         && (max_bla == 0 || bla_steps < max_bla)
     {
-        let z_m = ref_orbit.z_ref_f64[m as usize];
+        let z_m = ref_orbit.z_ref_f64[c.m_usize()];
         let z_abs = z_m + delta;
         if z_abs.norm_sqr() >= bailout_sqr {
             // Distance estimation à l'évasion.
-            let distance = if options.enable_distance && n > 0 {
+            let distance = if options.enable_distance && c.n() > 0 {
                 compute_distance_from_dz(z_abs, ddelta, options.is_julia)
             } else {
                 None
             };
             return UnifiedPixelResult {
-                iteration: n,
+                iteration: c.n(),
                 z_final: z_abs,
                 rebase_count,
                 bla_steps,
@@ -549,9 +558,8 @@ fn iterate_pixel_unified_single_phase(
         // BLA lookup (skipped when orbit traps demande tracking par itération).
         let delta_norm_sqr = delta.norm_sqr();
         if bla_enabled {
-            if let Some(node) = bla.lookup(m as usize, delta_norm_sqr) {
-                let new_n = n.saturating_add(node.l);
-                let new_m = m.saturating_add(node.l);
+            if let Some(node) = bla.lookup(c.m_usize(), delta_norm_sqr) {
+                let jumped = c.after_jump(node.l);
                 // Réf atom-tronquée : interdire au BLA d'atterrir SUR la dernière
                 // entrée (le graze |Z[end]| ~ atome). Le `continue` BLA saute le
                 // check end-of-ref du bas de boucle → le pas direct suivant
@@ -560,19 +568,16 @@ fn iterate_pixel_unified_single_phase(
                 // identiques → image intérieure uniforme (cf. G2 mid-range atom).
                 // En forçant l'arrivée en fin de réf par pas direct, le check du
                 // bas rebase AVANT le pas de graze (ordre F3 `hybrid.cc:295-308`).
-                let lands_on_ref_end =
-                    ref_orbit.atom_truncated && (new_m as usize) + 1 >= ref_len;
-                if new_n <= iteration_max && (new_m as usize) < ref_len && !lands_on_ref_end {
+                let lands_on_ref_end = ref_orbit.atom_truncated && jumped.m_usize() + 1 >= ref_len;
+                if jumped.n() <= iteration_max && jumped.m_usize() < ref_len && !lands_on_ref_end {
                     let a = node.a;
                     let b = node.b;
                     let (a_re, a_im) = (
                         a.m00 * delta.re + a.m01 * delta.im,
                         a.m10 * delta.re + a.m11 * delta.im,
                     );
-                    let (b_re, b_im) = (
-                        b.m00 * dc.re + b.m01 * dc.im,
-                        b.m10 * dc.re + b.m11 * dc.im,
-                    );
+                    let (b_re, b_im) =
+                        (b.m00 * dc.re + b.m01 * dc.im, b.m10 * dc.re + b.m11 * dc.im);
                     let cand = Complex64::new(a_re + b_re, a_im + b_im);
                     // Garde anti-over-skip BLA : un saut multi-pas (l ≥ 2) est
                     // linéarisé autour de la RÉFÉRENCE, aveugle à la divergence
@@ -584,7 +589,7 @@ fn iterate_pixel_unified_single_phase(
                     // point d'arrivée suffit. On rejette alors le saut et on
                     // single-steppe pour trouver l'itér d'évasion exacte.
                     let overshoots_escape = node.l >= 2 && {
-                        let z_end = ref_orbit.z_ref_f64[new_m as usize] + cand;
+                        let z_end = ref_orbit.z_ref_f64[jumped.m_usize()] + cand;
                         z_end.norm_sqr() >= bailout_sqr
                     };
                     if !overshoots_escape {
@@ -597,14 +602,13 @@ fn iterate_pixel_unified_single_phase(
                             ddelta = Complex64::new(dd_re, dd_im);
                         }
                         delta = cand;
-                        n = new_n;
-                        m = new_m;
+                        c = jumped;
                         bla_steps += 1;
 
                         if !delta.re.is_finite() || !delta.im.is_finite() {
                             return UnifiedPixelResult {
-                                iteration: n,
-                                z_final: ref_orbit.z_ref_f64[m as usize] + delta,
+                                iteration: c.n(),
+                                z_final: ref_orbit.z_ref_f64[c.m_usize()] + delta,
                                 rebase_count,
                                 bla_steps,
                                 orbit: orbit_data,
@@ -635,14 +639,13 @@ fn iterate_pixel_unified_single_phase(
         if track_ddelta {
             ddelta = state.ddelta;
         }
-        n += 1;
-        m += 1;
+        c.step();
         iters_ptb += 1;
 
         if !delta.re.is_finite() || !delta.im.is_finite() {
             return UnifiedPixelResult {
-                iteration: n,
-                z_final: ref_orbit.z_ref_f64[m.min((ref_len - 1) as u32) as usize] + delta,
+                iteration: c.n(),
+                z_final: ref_orbit.z_ref_f64[c.m().min((ref_len - 1) as u32) as usize] + delta,
                 rebase_count,
                 bla_steps,
                 orbit: orbit_data,
@@ -654,12 +657,12 @@ fn iterate_pixel_unified_single_phase(
 
         // Hook orbit traps : ajouter z_abs après le pas perturbation.
         if let Some(ref mut od) = orbit_data {
-            let z_m_new = if (m as usize) < ref_len {
-                ref_orbit.z_ref_f64[m as usize]
+            let z_m_new = if c.m_usize() < ref_len {
+                ref_orbit.z_ref_f64[c.m_usize()]
             } else {
                 ref_orbit.z_ref_f64[ref_len - 1]
             };
-            od.add_point(z_m_new + delta, n);
+            od.add_point(z_m_new + delta, c.n());
         }
 
         // Rebase F3 (ddelta inchangé par rebase : δ_new = Z+δ, d(Z+δ)/d(dc) = d(δ)/d(dc)).
@@ -671,34 +674,34 @@ fn iterate_pixel_unified_single_phase(
         // ou non-périodique), on flag exhaustion : le rebase blind sur
         // z_ref[end] uniformiserait tous les pixels post-escape
         // (cf. e113.toml). Le caller route ces pixels vers `iterate_pixel_gmp`.
-        let end_of_ref = (m as usize) + 1 >= ref_len;
+        let end_of_ref = c.m_usize() + 1 >= ref_len;
         if end_of_ref {
-            if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
-                m = m_wrapped;
+            if let Some(m_wrapped) = ref_orbit.wrap_periodic(c.m()) {
+                c.set_ref_index(m_wrapped);
             } else if ref_orbit.atom_truncated {
-                let z_m_end = ref_orbit.z_ref_f64[(m as usize).min(ref_len - 1)];
+                let z_m_end = ref_orbit.z_ref_f64[c.m_usize().min(ref_len - 1)];
                 delta = z_m_end + delta;
-                m = 0;
+                c.rebase();
                 rebase_count += 1;
             } else {
                 ref_exhausted_flag = true;
                 break;
             }
         } else {
-            let z_m_new = ref_orbit.z_ref_f64[m as usize];
+            let z_m_new = ref_orbit.z_ref_f64[c.m_usize()];
             let z_curr = z_m_new + delta;
             let z_curr_norm_sqr = z_curr.norm_sqr();
             let delta_norm_sqr = delta.norm_sqr();
             if z_curr_norm_sqr < delta_norm_sqr {
                 delta = z_curr;
-                m = 0;
+                c.rebase();
                 rebase_count += 1;
             }
         }
     }
 
     // Pixel intérieur (n == iteration_max) : check interior.
-    let final_m = m.min((ref_len - 1) as u32);
+    let final_m = c.m().min((ref_len - 1) as u32);
     let z_final = ref_orbit.z_ref_f64[final_m as usize] + delta;
     let is_interior = if options.enable_interior {
         let dd_norm = ddelta.norm();
@@ -713,7 +716,7 @@ fn iterate_pixel_unified_single_phase(
         z_final
     };
     UnifiedPixelResult {
-        iteration: n,
+        iteration: c.n(),
         z_final: z_out,
         rebase_count,
         bla_steps,
@@ -827,7 +830,10 @@ impl RefF64Source for CompressedSource<'_> {
     fn wrap(&mut self, m: u32) -> Complex64 {
         // Jamais atteint (routage gaté `cycle_period == 0`) : replay complet
         // correct-mais-lent, par sûreté.
-        debug_assert!(false, "wrap_periodic sur source compressée (gate cycle_period)");
+        debug_assert!(
+            false,
+            "wrap_periodic sur source compressée (gate cycle_period)"
+        );
         let mut z = self.dec.reset();
         for _ in 0..m {
             z = self.dec.next();
@@ -860,7 +866,10 @@ pub fn iterate_pixel_unified_mandelbrot(
     max_bla_steps: u32,
 ) -> UnifiedPixelResult {
     let ref_len = ref_orbit.z_ref_f64.len();
-    let mut src = SliceSource { z: &ref_orbit.z_ref_f64, cursor: 0 };
+    let mut src = SliceSource {
+        z: &ref_orbit.z_ref_f64,
+        cursor: 0,
+    };
     iterate_pixel_unified_mandelbrot_impl(
         ref_orbit,
         &mut src,
@@ -950,8 +959,7 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source>(
     }
 
     let mut delta = Complex64::new(0.0, 0.0);
-    let mut n = 0u32;
-    let mut m = 0u32;
+    let mut c = PixelCounter::new();
     let mut rebase_count = 0u32;
     let mut bla_steps = 0u32;
     let mut iters_ptb = 0u32;
@@ -968,37 +976,35 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source>(
     let mut z_abs_norm_sqr = z_abs.norm_sqr();
     let mut delta_norm_sqr = delta.norm_sqr();
 
-    while n < iteration_max
+    while c.keep_iterating(iteration_max)
         && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
         && (max_bla_steps == 0 || bla_steps < max_bla_steps)
     {
         // Bailout absolu : |Z[m] + δ|² ≥ bailout²
         if z_abs_norm_sqr >= bailout_sqr {
             return UnifiedPixelResult {
-                iteration: n,
+                iteration: c.n(),
                 z_final: z_abs,
                 rebase_count,
                 bla_steps,
                 orbit: None,
-            distance: None,
-            is_interior: false,
-            ref_exhausted: false,
+                distance: None,
+                is_interior: false,
+                ref_exhausted: false,
             };
         }
 
         // Étape 1 : essai BLA
-        if let Some(node) = bla.lookup(m as usize, delta_norm_sqr) {
+        if let Some(node) = bla.lookup(c.m_usize(), delta_norm_sqr) {
             // Vérifier qu'on ne dépasse pas iteration_max ni ref_len. Réf
             // atom-tronquée : le BLA ne doit pas atterrir SUR la dernière entrée
             // (graze) — le `continue` sauterait le check end-of-ref du bas et le
             // pas direct partirait du graze, puis le rebase absorberait δ en f64
             // (image uniforme). Arrivée en fin de réf par pas direct uniquement,
             // pour rebaser AVANT le pas de graze (ordre F3 `hybrid.cc:295-308`).
-            let new_n = n.saturating_add(node.l);
-            let new_m = m.saturating_add(node.l);
-            let lands_on_ref_end =
-                ref_orbit.atom_truncated && (new_m as usize) + 1 >= ref_len;
-            if new_n <= iteration_max && (new_m as usize) < ref_len && !lands_on_ref_end {
+            let jumped = c.after_jump(node.l);
+            let lands_on_ref_end = ref_orbit.atom_truncated && jumped.m_usize() + 1 >= ref_len;
+            if jumped.n() <= iteration_max && jumped.m_usize() < ref_len && !lands_on_ref_end {
                 // δ := A·δ + B·dc
                 let a = node.a;
                 let b = node.b;
@@ -1006,10 +1012,7 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source>(
                     a.m00 * delta.re + a.m01 * delta.im,
                     a.m10 * delta.re + a.m11 * delta.im,
                 );
-                let (b_re, b_im) = (
-                    b.m00 * dc.re + b.m01 * dc.im,
-                    b.m10 * dc.re + b.m11 * dc.im,
-                );
+                let (b_re, b_im) = (b.m00 * dc.re + b.m01 * dc.im, b.m10 * dc.re + b.m11 * dc.im);
                 let cand = Complex64::new(a_re + b_re, a_im + b_im);
                 // Garde anti-over-skip BLA : un saut multi-pas (l ≥ 2) linéarisé
                 // autour de la référence peut sauter par-dessus l'évasion propre
@@ -1029,14 +1032,13 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source>(
                 let overshoots_escape = node.l >= 2 && z_end_norm_sqr >= bailout_sqr;
                 if !overshoots_escape {
                     delta = cand;
-                    n = new_n;
-                    m = new_m;
+                    c = jumped;
                     bla_steps += 1;
 
                     // NaN / Inf protection
                     if !delta.re.is_finite() || !delta.im.is_finite() {
                         return UnifiedPixelResult {
-                            iteration: n,
+                            iteration: c.n(),
                             z_final: z_end,
                             rebase_count,
                             bla_steps,
@@ -1048,7 +1050,7 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source>(
                     }
                     // Saut ACCEPTÉ : téléporter la source au point
                     // d'atterrissage (valeur exacte = z_land).
-                    z_m = src.teleport(new_m, z_new_m);
+                    z_m = src.teleport(jumped.m(), z_new_m);
                     z_abs = z_end;
                     z_abs_norm_sqr = z_end_norm_sqr;
                     delta_norm_sqr = delta.norm_sqr();
@@ -1062,14 +1064,13 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source>(
         // δ_{n+1} = 2·Z[m]·δ + δ² + dc
         let two_zm = z_m * 2.0;
         delta = two_zm * delta + delta * delta + dc;
-        n += 1;
-        m += 1;
+        c.step();
         iters_ptb += 1;
 
         // Avance de la source : `Z[m]` si m est dans l'orbite. `m == ref_len`
         // (possible quand un BLA a atterri sur ref_len-1) ne correspond à
         // aucune valeur → clamp historique `Z[min(m, ref_len-1)]` = end_value.
-        let z_after = if (m as usize) < ref_len {
+        let z_after = if c.m_usize() < ref_len {
             src.advance()
         } else {
             src.end_value()
@@ -1077,14 +1078,14 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source>(
 
         if !delta.re.is_finite() || !delta.im.is_finite() {
             return UnifiedPixelResult {
-                iteration: n,
+                iteration: c.n(),
                 z_final: z_after + delta,
                 rebase_count,
                 bla_steps,
                 orbit: None,
-            distance: None,
-            is_interior: false,
-            ref_exhausted: false,
+                distance: None,
+                is_interior: false,
+                ref_exhausted: false,
             };
         }
 
@@ -1092,15 +1093,15 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source>(
         // tronquée atom-domain (quasi-périodique, `δ := Z[end]+δ, m := 0`,
         // cf. `hybrid.cc:301` + diag G2) ; sinon flag exhaustion
         // (cf. e113.toml : rebase blind = uniformise tous les pixels post-escape).
-        let end_of_ref = (m as usize) + 1 >= ref_len;
+        let end_of_ref = c.m_usize() + 1 >= ref_len;
         if end_of_ref {
-            if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
-                m = m_wrapped;
-                z_m = src.wrap(m);
+            if let Some(m_wrapped) = ref_orbit.wrap_periodic(c.m()) {
+                c.set_ref_index(m_wrapped);
+                z_m = src.wrap(c.m());
             } else if ref_orbit.atom_truncated {
                 // `z_after` == Z[min(m, ref_len-1)] == Z[end] ici (m ≥ ref_len-1).
                 delta = z_after + delta;
-                m = 0;
+                c.rebase();
                 rebase_count += 1;
                 z_m = src.reset();
             } else {
@@ -1120,7 +1121,7 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source>(
             delta_norm_sqr = delta.norm_sqr();
             if z_curr_norm_sqr < delta_norm_sqr {
                 delta = z_curr;
-                m = 0;
+                c.rebase();
                 rebase_count += 1;
                 z_m = src.reset();
                 z_abs = z_m + delta;
@@ -1139,14 +1140,14 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source>(
     // Sortie de boucle (iteration_max / caps / exhaustion) : l'invariant de
     // tête garantit `z_m == Z[min(m, ref_len-1)]` (cf. branche exhaustion).
     UnifiedPixelResult {
-        iteration: n,
+        iteration: c.n(),
         z_final: z_m + delta,
         rebase_count,
         bla_steps,
-                orbit: None,
-            distance: None,
-            is_interior: false,
-            ref_exhausted: ref_exhausted_flag,
+        orbit: None,
+        distance: None,
+        is_interior: false,
+        ref_exhausted: ref_exhausted_flag,
     }
 }
 
@@ -1172,8 +1173,8 @@ mod tests {
         params.span_y = span_x * 100.0 / 160.0;
         params.iteration_max = iter_max;
         params.algorithm_mode = AlgorithmMode::Perturbation;
-        let (orbit, _, _) = compute_reference_orbit(&params, None, true)
-            .expect("compute_reference_orbit failed");
+        let (orbit, _, _) =
+            compute_reference_orbit(&params, None, true).expect("compute_reference_orbit failed");
         orbit
     }
 
@@ -1220,8 +1221,8 @@ mod tests {
         params.hybrid_phases = phases;
         params.hybrid_opcodes = opcodes.map(str::to_string);
 
-        let (orbit, _, _) = compute_reference_orbit(&params, None, false)
-            .expect("compute_reference_orbit failed");
+        let (orbit, _, _) =
+            compute_reference_orbit(&params, None, false).expect("compute_reference_orbit failed");
         let formula = formula_for_params(&params).expect("formula");
         assert_eq!(
             orbit.hybrid_phase_refs.len() + 1,
@@ -1236,7 +1237,11 @@ mod tests {
         let n_phases = formula.phases.len();
         let phase_tables: Vec<BlaTableUnified> = (0..n_phases)
             .map(|p| {
-                let orbit_p = if p == 0 { &orbit } else { &orbit.hybrid_phase_refs[p - 1] };
+                let orbit_p = if p == 0 {
+                    &orbit
+                } else {
+                    &orbit.hybrid_phase_refs[p - 1]
+                };
                 BlaTableUnified::build_cycled(
                     &orbit_p.z_ref_f64,
                     &formula,
@@ -1477,7 +1482,10 @@ mod tests {
             let mut c_px = GmpComplex::with_val(prec, (dx, dy));
             c_px += GmpComplex::with_val(
                 prec,
-                (rug::Float::with_val(prec, cx), rug::Float::with_val(prec, cy)),
+                (
+                    rug::Float::with_val(prec, cx),
+                    rug::Float::with_val(prec, cy),
+                ),
             );
             let mut st = crate::fractal::bytecode::GmpInterpState::new(
                 prec,
@@ -1541,10 +1549,8 @@ mod tests {
             params.span_y = span_y;
             params.iteration_max = iter_max;
             params.algorithm_mode = AlgorithmMode::Perturbation;
-            params.hybrid_phases =
-                Some(vec![FractalType::Mandelbrot, FractalType::BurningShip]);
-            let (orbit, _, _) =
-                compute_reference_orbit(&params, None, false).expect("orbit");
+            params.hybrid_phases = Some(vec![FractalType::Mandelbrot, FractalType::BurningShip]);
+            let (orbit, _, _) = compute_reference_orbit(&params, None, false).expect("orbit");
             (params, orbit)
         };
 
@@ -1563,12 +1569,11 @@ mod tests {
         let (params1, orbit1) = build(cx_hp, cy_hp);
         let (_params2, orbit2) = build(&cx2, &cy2);
         let formula = formula_for_params(&params1).expect("formula");
-        let c_norm =
-            (orbit1.cref.re * orbit1.cref.re + orbit1.cref.im * orbit1.cref.im).sqrt();
-        let t1 = build_bla_table_for_formula(&formula, &orbit1.z_ref_f64, c_norm, 6e-8)
-            .expect("bla1");
-        let t2 = build_bla_table_for_formula(&formula, &orbit2.z_ref_f64, c_norm, 6e-8)
-            .expect("bla2");
+        let c_norm = (orbit1.cref.re * orbit1.cref.re + orbit1.cref.im * orbit1.cref.im).sqrt();
+        let t1 =
+            build_bla_table_for_formula(&formula, &orbit1.z_ref_f64, c_norm, 6e-8).expect("bla1");
+        let t2 =
+            build_bla_table_for_formula(&formula, &orbit2.z_ref_f64, c_norm, 6e-8).expect("bla2");
 
         let bailout_sqr = params1.bailout * params1.bailout;
         let truth = |dx: f64, dy: f64| -> u32 {
@@ -1691,8 +1696,8 @@ mod tests {
                     0.0, // color_offset neutre
                     OutColoringMode::Smooth,
                     crate::fractal::ColorSpace::Rgb,
-                    None, // orbit
-                    None, // distance
+                    None,  // orbit
+                    None,  // distance
                     false, // interior_flag_encoded
                     Some(&palette),
                 );
@@ -2006,8 +2011,7 @@ mod tests {
             params.span_y = span_y;
             params.iteration_max = iter_max;
             params.algorithm_mode = AlgorithmMode::Perturbation;
-            params.hybrid_phases =
-                Some(vec![FractalType::Mandelbrot, FractalType::Mandelbrot]);
+            params.hybrid_phases = Some(vec![FractalType::Mandelbrot, FractalType::Mandelbrot]);
             let (orbit, _, _) = compute_reference_orbit(&params, None, true)
                 .expect("compute_reference_orbit failed");
             orbit

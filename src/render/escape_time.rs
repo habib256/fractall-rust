@@ -4,27 +4,36 @@ use std::sync::Arc;
 use num_complex::Complex64;
 use rug::Float;
 
-use crate::fractal::{FractalParams, FractalResult, FractalType, OutColoringMode, PlaneTransform};
-use crate::fractal::iterations::iterate_point;
-use crate::fractal::wisdom;
-use crate::fractal::orbit_traps::OrbitData;
-use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
-use crate::fractal::{render_von_koch, render_dragon};
-use crate::fractal::lyapunov::{render_lyapunov_cancellable, render_lyapunov_mpc_cancellable};
 use crate::fractal::buddhabrot::{
-    render_buddhabrot_cancellable,
-    render_nebulabrot_cancellable,
-    render_buddhabrot_mpc_cancellable,
-    render_nebulabrot_mpc_cancellable,
-    render_antibuddhabrot_cancellable,
-    render_antibuddhabrot_mpc_cancellable,
+    render_antibuddhabrot_cancellable, render_antibuddhabrot_mpc_cancellable,
+    render_buddhabrot_cancellable, render_buddhabrot_mpc_cancellable,
+    render_nebulabrot_cancellable, render_nebulabrot_mpc_cancellable,
 };
-use crate::fractal::perturbation::{
-    render_perturbation_with_cache, ReferenceOrbitCache,
-};
+use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
+use crate::fractal::iterations::iterate_point;
+use crate::fractal::lyapunov::{render_lyapunov_cancellable, render_lyapunov_mpc_cancellable};
+use crate::fractal::orbit_traps::OrbitData;
+use crate::fractal::perturbation::{render_perturbation_with_cache, ReferenceOrbitCache};
+use crate::fractal::wisdom;
 use crate::fractal::xaos::XaosMap;
+use crate::fractal::{render_dragon, render_von_koch};
+use crate::fractal::{FractalParams, FractalResult, FractalType, OutColoringMode, PlaneTransform};
 use crate::render::output::RenderOutput;
 use crate::render::tiles::{self, TileGrid, TileOpts, TileUpdate};
+
+fn special_view_needs_mpc(params: &FractalParams) -> bool {
+    if params.use_gmp {
+        return true;
+    }
+    let pixel_x = params.span_x / params.width.max(1) as f64;
+    let pixel_y = params.span_y / params.height.max(1) as f64;
+    !pixel_x.is_finite()
+        || !pixel_y.is_finite()
+        || pixel_x == 0.0
+        || pixel_y == 0.0
+        || params.center_x + pixel_x == params.center_x
+        || params.center_y + pixel_y == params.center_y
+}
 
 /// Calcule la matrice d'itérations et la matrice des valeurs finales de z
 /// pour une fractale escape-time (ou algorithme spécial).
@@ -71,8 +80,11 @@ fn build_reuse<'a>(
     // since reused pixels don't carry this data and would create checkerboard artifacts.
     let needs_extra_data = matches!(
         params.out_coloring_mode,
-        OutColoringMode::Distance | OutColoringMode::DistanceAO | OutColoringMode::Distance3D
-        | OutColoringMode::OrbitTraps | OutColoringMode::Wings
+        OutColoringMode::Distance
+            | OutColoringMode::DistanceAO
+            | OutColoringMode::Distance3D
+            | OutColoringMode::OrbitTraps
+            | OutColoringMode::Wings
     );
     if needs_extra_data {
         return None;
@@ -182,31 +194,39 @@ pub fn render_escape_time_cancellable_with_reuse(
             return Some(RenderOutput::without_extras(i, z));
         }
         FractalType::Buddhabrot => {
-            return if params.use_gmp {
-                render_buddhabrot_mpc_cancellable(params, cancel).map(|(i, z)| RenderOutput::without_extras(i, z))
+            return if special_view_needs_mpc(params) {
+                render_buddhabrot_mpc_cancellable(params, cancel)
+                    .map(|(i, z)| RenderOutput::without_extras(i, z))
             } else {
-                render_buddhabrot_cancellable(params, cancel).map(|(i, z)| RenderOutput::without_extras(i, z))
+                render_buddhabrot_cancellable(params, cancel)
+                    .map(|(i, z)| RenderOutput::without_extras(i, z))
             };
         }
         FractalType::Lyapunov => {
-            return if params.use_gmp {
-                render_lyapunov_mpc_cancellable(params, cancel).map(|(i, z)| RenderOutput::without_extras(i, z))
+            return if special_view_needs_mpc(params) {
+                render_lyapunov_mpc_cancellable(params, cancel)
+                    .map(|(i, z)| RenderOutput::without_extras(i, z))
             } else {
-                render_lyapunov_cancellable(params, cancel).map(|(i, z)| RenderOutput::without_extras(i, z))
+                render_lyapunov_cancellable(params, cancel)
+                    .map(|(i, z)| RenderOutput::without_extras(i, z))
             };
         }
         FractalType::Nebulabrot => {
-            return if params.use_gmp {
-                render_nebulabrot_mpc_cancellable(params, cancel).map(|(i, z)| RenderOutput::without_extras(i, z))
+            return if special_view_needs_mpc(params) {
+                render_nebulabrot_mpc_cancellable(params, cancel)
+                    .map(|(i, z)| RenderOutput::without_extras(i, z))
             } else {
-                render_nebulabrot_cancellable(params, cancel).map(|(i, z)| RenderOutput::without_extras(i, z))
+                render_nebulabrot_cancellable(params, cancel)
+                    .map(|(i, z)| RenderOutput::without_extras(i, z))
             };
         }
         FractalType::AntiBuddhabrot => {
-            return if params.use_gmp {
-                render_antibuddhabrot_mpc_cancellable(params, cancel).map(|(i, z)| RenderOutput::without_extras(i, z))
+            return if special_view_needs_mpc(params) {
+                render_antibuddhabrot_mpc_cancellable(params, cancel)
+                    .map(|(i, z)| RenderOutput::without_extras(i, z))
             } else {
-                render_antibuddhabrot_cancellable(params, cancel).map(|(i, z)| RenderOutput::without_extras(i, z))
+                render_antibuddhabrot_cancellable(params, cancel)
+                    .map(|(i, z)| RenderOutput::without_extras(i, z))
             };
         }
         _ => {}
@@ -218,7 +238,7 @@ pub fn render_escape_time_cancellable_with_reuse(
         // (`GpuRenderer::render_dispatch`, device Gpu) et les labels/passes
         // GUI. Couvre les modes forcés, le fallback plane_transform ≠ Mu et
         // l'Auto (perturbation > ~1e12, GMP > 1e16, sinon f64).
-        match wisdom::select_algorithm(params, wisdom::Device::Cpu) {
+        match wisdom::plan(params).algorithm {
             wisdom::Algorithm::Perturbation => {
                 return run_perturbation(reuse);
             }
@@ -251,8 +271,8 @@ fn compute_zoom(params: &FractalParams) -> Option<f64> {
         return None;
     }
     // Use max of both axes to correctly handle non-square images
-    let pixel_size = (params.span_x.abs() / params.width as f64)
-        .max(params.span_y.abs() / params.height as f64);
+    let pixel_size =
+        (params.span_x.abs() / params.width as f64).max(params.span_y.abs() / params.height as f64);
     if !pixel_size.is_finite() || pixel_size <= 0.0 {
         return None;
     }
@@ -287,13 +307,17 @@ pub fn should_use_perturbation(params: &FractalParams, gpu_f32: bool) -> bool {
     }
     if !matches!(
         params.fractal_type,
-        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn | FractalType::Multibrot
+        FractalType::Mandelbrot
+            | FractalType::Julia
+            | FractalType::BurningShip
+            | FractalType::Tricorn
+            | FractalType::Multibrot
     ) {
         return false;
     }
     // Use max of both axes to correctly handle non-square images
-    let pixel_size = (params.span_x.abs() / params.width as f64)
-        .max(params.span_y.abs() / params.height as f64);
+    let pixel_size =
+        (params.span_x.abs() / params.width as f64).max(params.span_y.abs() / params.height as f64);
 
     if gpu_f32 {
         // En mode GPU fp32: basculer sur perturbation pour zoom > e5 (pixel_size < 1e-5)
@@ -364,93 +388,94 @@ fn render_escape_time_f64_cancellable_with_reuse(
         .map(|(((it, z), orb), di)| std::sync::Mutex::new(Some((it, z, orb, di))))
         .collect();
 
-    let completed = tiles::run_prioritized(&grid.order, &slots, cancel.as_ref(), &|id, tile_bufs| {
-        let (mut it_rows, mut z_rows, mut orb_rows, mut dist_rows) = tile_bufs;
-        let (x0, y0, tw, th) = grid.rect(id);
-        for dj in 0..th {
-            let j = y0 + dj;
-            let y_ratio = (j as f64 + 0.5 + aa_dy) / params.height as f64;
-            let dy = (y_ratio - 0.5) * params.span_y;
-            let iter_row = &mut it_rows[dj];
-            let z_row = &mut z_rows[dj];
-            let orbit_row = &mut orb_rows[dj];
-            let dist_row = &mut dist_rows[dj];
-            for di in 0..tw {
-                let i = x0 + di;
-                let iter = &mut iter_row[di];
-                let z = &mut z_row[di];
-                // G10.4 : copie inter-frame XaoS (écho produit ou refine union).
-                if let Some(x) = xaos {
-                    if let Some(sidx) = x.source_index(i, j) {
-                        if let Some(&it) = x.iterations.get(sidx) {
-                            *iter = it;
-                            *z = x.zs[sidx];
-                            continue;
+    let completed =
+        tiles::run_prioritized(&grid.order, &slots, cancel.as_ref(), &|id, tile_bufs| {
+            let (mut it_rows, mut z_rows, mut orb_rows, mut dist_rows) = tile_bufs;
+            let (x0, y0, tw, th) = grid.rect(id);
+            for dj in 0..th {
+                let j = y0 + dj;
+                let y_ratio = (j as f64 + 0.5 + aa_dy) / params.height as f64;
+                let dy = (y_ratio - 0.5) * params.span_y;
+                let iter_row = &mut it_rows[dj];
+                let z_row = &mut z_rows[dj];
+                let orbit_row = &mut orb_rows[dj];
+                let dist_row = &mut dist_rows[dj];
+                for di in 0..tw {
+                    let i = x0 + di;
+                    let iter = &mut iter_row[di];
+                    let z = &mut z_row[di];
+                    // G10.4 : copie inter-frame XaoS (écho produit ou refine union).
+                    if let Some(x) = xaos {
+                        if let Some(sidx) = x.source_index(i, j) {
+                            if let Some(&it) = x.iterations.get(sidx) {
+                                *iter = it;
+                                *z = x.zs[sidx];
+                                continue;
+                            }
                         }
                     }
-                }
-                if let Some(reuse) = reuse.as_ref() {
-                    let ratio = reuse.ratio as usize;
-                    if j % ratio == 0 && i % ratio == 0 {
-                        let src_x = i / ratio;
-                        let src_y = j / ratio;
-                        let src_idx = src_y * reuse.width as usize + src_x;
-                        if src_idx < reuse.iterations.len() {
-                            *iter = reuse.iterations[src_idx];
-                            *z = reuse.zs[src_idx];
-                            continue;
+                    if let Some(reuse) = reuse.as_ref() {
+                        let ratio = reuse.ratio as usize;
+                        if j % ratio == 0 && i % ratio == 0 {
+                            let src_x = i / ratio;
+                            let src_y = j / ratio;
+                            let src_idx = src_y * reuse.width as usize + src_x;
+                            if src_idx < reuse.iterations.len() {
+                                *iter = reuse.iterations[src_idx];
+                                *z = reuse.zs[src_idx];
+                                continue;
+                            }
                         }
                     }
-                }
-                // AA par pixel : recompute dx ET dy avec l'offset décorrélé du
-                // pixel (jy dépend de i aussi → ne peut être sorti de la boucle).
-                let (dx, dy) = if let Some((k, scale)) = aa_jit {
-                    let (jx, jy) = crate::fractal::jitter::pixel_offset(img_w, i, j, k, scale);
-                    let xr = (i as f64 + 0.5 + jx) / params.width as f64;
-                    let yr = (j as f64 + 0.5 + jy) / params.height as f64;
-                    ((xr - 0.5) * params.span_x, (yr - 0.5) * params.span_y)
-                } else {
-                    let x_ratio = (i as f64 + 0.5 + aa_dx) / params.width as f64;
-                    ((x_ratio - 0.5) * params.span_x, dy)
-                };
-                let (dx_r, dy_r) = match rot {
-                    Some((a, b, c, d)) => (a * dx + b * dy, c * dx + d * dy),
-                    None => (dx, dy),
-                };
-                let z_pixel = Complex64::new(params.center_x + dx_r, params.center_y + dy_r);
-                let z_pixel = params.plane_transform.transform(z_pixel);
-                let FractalResult {
-                    iteration,
-                    z: z_final,
-                    orbit,
-                    distance,
-                } = iterate_point(params, z_pixel);
-                *iter = iteration;
-                *z = z_final;
-                if need_orbits {
-                    orbit_row[di] = orbit;
-                }
-                if need_distances {
-                    dist_row[di] = distance.unwrap_or(f64::INFINITY);
+                    // AA par pixel : recompute dx ET dy avec l'offset décorrélé du
+                    // pixel (jy dépend de i aussi → ne peut être sorti de la boucle).
+                    let (dx, dy) = if let Some((k, scale)) = aa_jit {
+                        let (jx, jy) = crate::fractal::jitter::pixel_offset(img_w, i, j, k, scale);
+                        let xr = (i as f64 + 0.5 + jx) / params.width as f64;
+                        let yr = (j as f64 + 0.5 + jy) / params.height as f64;
+                        ((xr - 0.5) * params.span_x, (yr - 0.5) * params.span_y)
+                    } else {
+                        let x_ratio = (i as f64 + 0.5 + aa_dx) / params.width as f64;
+                        ((x_ratio - 0.5) * params.span_x, dy)
+                    };
+                    let (dx_r, dy_r) = match rot {
+                        Some((a, b, c, d)) => (a * dx + b * dy, c * dx + d * dy),
+                        None => (dx, dy),
+                    };
+                    let z_pixel = Complex64::new(params.center_x + dx_r, params.center_y + dy_r);
+                    let z_pixel = params.plane_transform.transform(z_pixel);
+                    let FractalResult {
+                        iteration,
+                        z: z_final,
+                        orbit,
+                        distance,
+                    } = iterate_point(params, z_pixel);
+                    *iter = iteration;
+                    *z = z_final;
+                    if need_orbits {
+                        orbit_row[di] = orbit;
+                    }
+                    if need_distances {
+                        dist_row[di] = distance.unwrap_or(f64::INFINITY);
+                    }
                 }
             }
-        }
-        if let Some(sink) = sink {
-            sink(TileUpdate {
-                x0,
-                y0,
-                w: tw,
-                h: th,
-                iterations: tiles::collect_rows(&it_rows),
-                zs: tiles::collect_rows(&z_rows),
-                distances: if need_distances {
-                    tiles::collect_rows(&dist_rows)
-                } else {
-                    Vec::new()
-                },
-            });
-        }
-    });
+            if let Some(sink) = sink {
+                sink(TileUpdate {
+                    x0,
+                    y0,
+                    w: tw,
+                    h: th,
+                    iterations: tiles::collect_rows(&it_rows),
+                    zs: tiles::collect_rows(&z_rows),
+                    distances: if need_distances {
+                        tiles::collect_rows(&dist_rows)
+                    } else {
+                        Vec::new()
+                    },
+                });
+            }
+        });
     drop(slots);
 
     if !completed {
@@ -514,7 +539,7 @@ fn render_escape_time_gmp_cancellable_with_reuse(
     } else {
         Float::with_val(prec, params.center_x)
     };
-    
+
     let center_y = if let Some(ref cy_hp) = params.center_y_hp {
         match Float::parse(cy_hp) {
             Ok(parse_result) => Float::with_val(prec, parse_result),
@@ -526,7 +551,7 @@ fn render_escape_time_gmp_cancellable_with_reuse(
     } else {
         Float::with_val(prec, params.center_y)
     };
-    
+
     let span_x = if let Some(ref sx_hp) = params.span_x_hp {
         match Float::parse(sx_hp) {
             Ok(parse_result) => Float::with_val(prec, parse_result),
@@ -538,7 +563,7 @@ fn render_escape_time_gmp_cancellable_with_reuse(
     } else {
         Float::with_val(prec, params.span_x)
     };
-    
+
     let span_y = if let Some(ref sy_hp) = params.span_y_hp {
         match Float::parse(sy_hp) {
             Ok(parse_result) => Float::with_val(prec, parse_result),
@@ -576,118 +601,121 @@ fn render_escape_time_gmp_cancellable_with_reuse(
         .map(|(it, z)| std::sync::Mutex::new(Some((it, z))))
         .collect();
 
-    let completed = tiles::run_prioritized(&grid.order, &slots, cancel.as_ref(), &|id, tile_bufs| {
-        let (mut it_rows, mut z_rows) = tile_bufs;
-        let (x0, y0, tw, th) = grid.rect(id);
-        for dj in 0..th {
-            if cancel.load(Ordering::Relaxed) {
-                return;
-            }
-            let j = y0 + dj;
-            let mut j_f = Float::with_val(prec, j as u32);
-            j_f += &half;
-            if aa_dy != 0.0 {
-                j_f += aa_dy;
-            }
-            let mut y_ratio = j_f;
-            y_ratio /= &height_f;
-            y_ratio -= &half;
-            let mut dy = span_y.clone();
-            dy *= &y_ratio;
-            let iter_row = &mut it_rows[dj];
-            let z_row = &mut z_rows[dj];
-            for di in 0..tw {
-                let i = x0 + di;
-                let iter = &mut iter_row[di];
-                let z = &mut z_row[di];
-                // G10.4 : copie inter-frame XaoS (écho produit ou refine union).
-                if let Some(x) = xaos {
-                    if let Some(sidx) = x.source_index(i, j) {
-                        if let Some(&it) = x.iterations.get(sidx) {
-                            *iter = it;
-                            *z = x.zs[sidx];
-                            continue;
+    let completed =
+        tiles::run_prioritized(&grid.order, &slots, cancel.as_ref(), &|id, tile_bufs| {
+            let (mut it_rows, mut z_rows) = tile_bufs;
+            let (x0, y0, tw, th) = grid.rect(id);
+            for dj in 0..th {
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+                let j = y0 + dj;
+                let mut j_f = Float::with_val(prec, j as u32);
+                j_f += &half;
+                if aa_dy != 0.0 {
+                    j_f += aa_dy;
+                }
+                let mut y_ratio = j_f;
+                y_ratio /= &height_f;
+                y_ratio -= &half;
+                let mut dy = span_y.clone();
+                dy *= &y_ratio;
+                let iter_row = &mut it_rows[dj];
+                let z_row = &mut z_rows[dj];
+                for di in 0..tw {
+                    let i = x0 + di;
+                    let iter = &mut iter_row[di];
+                    let z = &mut z_row[di];
+                    // G10.4 : copie inter-frame XaoS (écho produit ou refine union).
+                    if let Some(x) = xaos {
+                        if let Some(sidx) = x.source_index(i, j) {
+                            if let Some(&it) = x.iterations.get(sidx) {
+                                *iter = it;
+                                *z = x.zs[sidx];
+                                continue;
+                            }
                         }
                     }
-                }
-                if let Some(reuse) = reuse.as_ref() {
-                    let ratio = reuse.ratio as usize;
-                    if j % ratio == 0 && i % ratio == 0 {
-                        let src_x = i / ratio;
-                        let src_y = j / ratio;
-                        let src_idx = src_y * reuse.width as usize + src_x;
-                        if src_idx < reuse.iterations.len() {
-                            *iter = reuse.iterations[src_idx];
-                            *z = reuse.zs[src_idx];
-                            continue;
+                    if let Some(reuse) = reuse.as_ref() {
+                        let ratio = reuse.ratio as usize;
+                        if j % ratio == 0 && i % ratio == 0 {
+                            let src_x = i / ratio;
+                            let src_y = j / ratio;
+                            let src_idx = src_y * reuse.width as usize + src_x;
+                            if src_idx < reuse.iterations.len() {
+                                *iter = reuse.iterations[src_idx];
+                                *z = reuse.zs[src_idx];
+                                continue;
+                            }
                         }
                     }
+                    let mut i_f = Float::with_val(prec, i as u32);
+                    i_f += &half;
+                    // AA par pixel : jx sur i_f, dy recomputé (jy dépend de i aussi).
+                    // Hors AA per-pixel, `dy_ref` = le `dy` de la boucle externe →
+                    // arithmétique GMP bit-identique.
+                    let dy_pp;
+                    let dy_ref: &Float = if let Some((k, scale)) = aa_jit {
+                        let (jx, jy) = crate::fractal::jitter::pixel_offset(img_w, i, j, k, scale);
+                        i_f += jx;
+                        let mut jf = Float::with_val(prec, j as u32);
+                        jf += &half;
+                        jf += jy;
+                        jf /= &height_f;
+                        jf -= &half;
+                        let mut d = span_y.clone();
+                        d *= &jf;
+                        dy_pp = d;
+                        &dy_pp
+                    } else {
+                        if aa_dx != 0.0 {
+                            i_f += aa_dx;
+                        }
+                        &dy
+                    };
+                    let mut x_ratio = i_f;
+                    x_ratio /= &width_f;
+                    x_ratio -= &half;
+                    let mut dx = span_x.clone();
+                    dx *= &x_ratio;
+                    let (xg, yg) = match rot {
+                        Some((a, b, c, d)) => {
+                            let dx_r =
+                                Float::with_val(prec, &dx * a) + Float::with_val(prec, dy_ref * b);
+                            let dy_r =
+                                Float::with_val(prec, &dx * c) + Float::with_val(prec, dy_ref * d);
+                            (
+                                Float::with_val(prec, &dx_r + &center_x),
+                                Float::with_val(prec, &dy_r + &center_y),
+                            )
+                        }
+                        None => (
+                            Float::with_val(prec, &dx + &center_x),
+                            Float::with_val(prec, dy_ref + &center_y),
+                        ),
+                    };
+                    // IMPORTANT: Utiliser la version GMP de plane_transform pour éviter la perte de précision
+                    // aux zooms profonds (>e16). La conversion GMP → f64 → GMP perdait toute la précision.
+                    let z_gmp = complex_from_xy(prec, xg, yg);
+                    let z_transformed = params.plane_transform.transform_gmp(&z_gmp, prec);
+                    let z_pixel = z_transformed;
+                    let (iter_val, z_final) = iterate_point_mpc(&gmp, &z_pixel);
+                    *iter = iter_val;
+                    *z = complex_to_complex64(&z_final);
                 }
-                let mut i_f = Float::with_val(prec, i as u32);
-                i_f += &half;
-                // AA par pixel : jx sur i_f, dy recomputé (jy dépend de i aussi).
-                // Hors AA per-pixel, `dy_ref` = le `dy` de la boucle externe →
-                // arithmétique GMP bit-identique.
-                let dy_pp;
-                let dy_ref: &Float = if let Some((k, scale)) = aa_jit {
-                    let (jx, jy) = crate::fractal::jitter::pixel_offset(img_w, i, j, k, scale);
-                    i_f += jx;
-                    let mut jf = Float::with_val(prec, j as u32);
-                    jf += &half;
-                    jf += jy;
-                    jf /= &height_f;
-                    jf -= &half;
-                    let mut d = span_y.clone();
-                    d *= &jf;
-                    dy_pp = d;
-                    &dy_pp
-                } else {
-                    if aa_dx != 0.0 {
-                        i_f += aa_dx;
-                    }
-                    &dy
-                };
-                let mut x_ratio = i_f;
-                x_ratio /= &width_f;
-                x_ratio -= &half;
-                let mut dx = span_x.clone();
-                dx *= &x_ratio;
-                let (xg, yg) = match rot {
-                    Some((a, b, c, d)) => {
-                        let dx_r = Float::with_val(prec, &dx * a) + Float::with_val(prec, dy_ref * b);
-                        let dy_r = Float::with_val(prec, &dx * c) + Float::with_val(prec, dy_ref * d);
-                        (
-                            Float::with_val(prec, &dx_r + &center_x),
-                            Float::with_val(prec, &dy_r + &center_y),
-                        )
-                    }
-                    None => (
-                        Float::with_val(prec, &dx + &center_x),
-                        Float::with_val(prec, dy_ref + &center_y),
-                    ),
-                };
-                // IMPORTANT: Utiliser la version GMP de plane_transform pour éviter la perte de précision
-                // aux zooms profonds (>e16). La conversion GMP → f64 → GMP perdait toute la précision.
-                let z_gmp = complex_from_xy(prec, xg, yg);
-                let z_transformed = params.plane_transform.transform_gmp(&z_gmp, prec);
-                let z_pixel = z_transformed;
-                let (iter_val, z_final) = iterate_point_mpc(&gmp, &z_pixel);
-                *iter = iter_val;
-                *z = complex_to_complex64(&z_final);
             }
-        }
-        if let Some(sink) = sink {
-            sink(TileUpdate {
-                x0,
-                y0,
-                w: tw,
-                h: th,
-                iterations: tiles::collect_rows(&it_rows),
-                zs: tiles::collect_rows(&z_rows),
-                distances: Vec::new(),
-            });
-        }
-    });
+            if let Some(sink) = sink {
+                sink(TileUpdate {
+                    x0,
+                    y0,
+                    w: tw,
+                    h: th,
+                    iterations: tiles::collect_rows(&it_rows),
+                    zs: tiles::collect_rows(&z_rows),
+                    distances: Vec::new(),
+                });
+            }
+        });
     drop(slots);
 
     // Re-check : un cancel observé DANS une tuile (early-return par ligne)
@@ -716,14 +744,30 @@ mod tests {
         p
     }
 
-    fn render_with_tiles(
-        params: &FractalParams,
-        tiles: Option<&TileOpts>,
-    ) -> RenderOutput {
+    fn render_with_tiles(params: &FractalParams, tiles: Option<&TileOpts>) -> RenderOutput {
         let cancel = Arc::new(AtomicBool::new(false));
         let mut cache: Option<Arc<ReferenceOrbitCache>> = None;
         render_escape_time_cancellable_with_reuse(params, &cancel, None, &mut cache, None, tiles)
             .expect("rendu non annulé")
+    }
+
+    /// G5 : les wrappers synchrones MPC morts peuvent disparaître, mais les
+    /// quatre types spéciaux doivent rester routés par le dispatcher GUI/CLI.
+    #[test]
+    fn density_and_lyapunov_types_remain_dispatchable() {
+        for fractal_type in [
+            FractalType::Buddhabrot,
+            FractalType::Nebulabrot,
+            FractalType::AntiBuddhabrot,
+            FractalType::Lyapunov,
+        ] {
+            let mut p = default_params_for_type(fractal_type, 4, 3);
+            p.iteration_max = 8;
+            p.use_gmp = false;
+            let out = render_with_tiles(&p, None);
+            assert_eq!(out.iterations.len(), 12, "{fractal_type:?}");
+            assert_eq!(out.zs.len(), 12, "{fractal_type:?}");
+        }
     }
 
     /// G5 `RenderOutput` : sémantique des canaux — un canal non demandé est
@@ -739,13 +783,20 @@ mod tests {
         assert_eq!(out.iterations.len(), n);
         assert_eq!(out.zs.len(), n);
         assert!(out.orbits.is_empty(), "orbits non demandées ⇒ canal absent");
-        assert!(out.distances.is_empty(), "distances non demandées ⇒ canal absent");
+        assert!(
+            out.distances.is_empty(),
+            "distances non demandées ⇒ canal absent"
+        );
 
         p.enable_orbit_traps = true;
         p.enable_distance_estimation = true;
         let out = render_with_tiles(&p, None);
         assert_eq!(out.orbits.len(), n, "orbits demandées ⇒ canal complet");
-        assert_eq!(out.distances.len(), n, "distances demandées ⇒ canal complet");
+        assert_eq!(
+            out.distances.len(),
+            n,
+            "distances demandées ⇒ canal complet"
+        );
     }
 
     /// G10.5 : l'ordre des tuiles ne change pas les pixels — un rendu avec
@@ -761,7 +812,10 @@ mod tests {
                 sink: None,
             };
             let r = render_with_tiles(&params, Some(&opts));
-            assert_eq!(base.iterations, r.iterations, "iterations divergent (priorité {prio:?})");
+            assert_eq!(
+                base.iterations, r.iterations,
+                "iterations divergent (priorité {prio:?})"
+            );
             assert_eq!(base.zs, r.zs, "zs divergent (priorité {prio:?})");
         }
     }
@@ -783,11 +837,17 @@ mod tests {
         p.aa_jitter = Some((1, 1.0));
         let a = render_with_tiles(&p, None);
         let a2 = render_with_tiles(&p, None);
-        assert_eq!(a.iterations, a2.iterations, "AA par pixel non déterministe (iterations)");
+        assert_eq!(
+            a.iterations, a2.iterations,
+            "AA par pixel non déterministe (iterations)"
+        );
         assert_eq!(a.zs, a2.zs, "AA par pixel non déterministe (zs)");
 
         // L'offset décale l'échantillonnage → diffère du rendu non-jitteré.
-        assert_ne!(base.iterations, a.iterations, "aa_jitter n'a rien décalé (offset ignoré ?)");
+        assert_ne!(
+            base.iterations, a.iterations,
+            "aa_jitter n'a rien décalé (offset ignoré ?)"
+        );
 
         // Décorrélation spatiale : un offset UNIFORME de grille (aa_subpixel_offset)
         // décalerait tous les pixels du même vecteur ; la version par pixel produit
@@ -805,7 +865,10 @@ mod tests {
         let mut p2 = base_p.clone();
         p2.aa_jitter = Some((2, 1.0));
         let b = render_with_tiles(&p2, None);
-        assert_ne!(a.iterations, b.iterations, "samples k=1 et k=2 identiques (k ignoré ?)");
+        assert_ne!(
+            a.iterations, b.iterations,
+            "samples k=1 et k=2 identiques (k ignoré ?)"
+        );
     }
 
     /// G10.5 : le sink reçoit chaque pixel exactement une fois, avec les mêmes
@@ -853,10 +916,11 @@ mod tests {
         let t0 = std::time::Instant::now();
         let events: std::sync::Mutex<Vec<(f64, usize, usize)>> = std::sync::Mutex::new(Vec::new());
         let sink = |u: TileUpdate| {
-            events
-                .lock()
-                .unwrap()
-                .push((t0.elapsed().as_secs_f64(), u.x0 + u.w / 2, u.y0 + u.h / 2));
+            events.lock().unwrap().push((
+                t0.elapsed().as_secs_f64(),
+                u.x0 + u.w / 2,
+                u.y0 + u.h / 2,
+            ));
         };
         let prio = (0.0f64, 0.0f64);
         let opts = TileOpts {

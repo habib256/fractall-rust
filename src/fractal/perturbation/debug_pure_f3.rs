@@ -29,7 +29,6 @@ pub struct PureF3Result {
     /// Nombre total d'itérations (n).
     pub iteration: u32,
     /// Valeur finale du delta.
-    #[allow(dead_code)]
     pub delta_final: Complex64,
     /// Nombre de rebases effectuées.
     pub rebase_count: u32,
@@ -131,8 +130,8 @@ mod tests {
         params.span_y = span_x * 100.0 / 160.0;
         params.iteration_max = iter_max;
         params.algorithm_mode = crate::fractal::AlgorithmMode::Perturbation;
-        let (orbit, _, _) = compute_reference_orbit(&params, None, true)
-            .expect("compute_reference_orbit failed");
+        let (orbit, _, _) =
+            compute_reference_orbit(&params, None, true).expect("compute_reference_orbit failed");
         orbit
     }
 
@@ -198,7 +197,7 @@ mod tests {
         use crate::fractal::perturbation::bla::build_bla_table;
         use crate::fractal::perturbation::delta::iterate_pixel;
         use crate::fractal::perturbation::types::ComplexExp;
-        use crate::fractal::{AlgorithmMode, default_params_for_type, FractalType};
+        use crate::fractal::{default_params_for_type, AlgorithmMode, FractalType};
 
         let iter_max = 1500u32;
         let center_x = -1.7693831791955;
@@ -222,8 +221,8 @@ mod tests {
         // défaut et le champ a été supprimé. Le test reste valide car
         // iterate_pixel est devenu F3-pur via le dispatch bytecode.
 
-        let (orbit, _, _) = compute_reference_orbit(&params, None, true)
-            .expect("compute_reference_orbit failed");
+        let (orbit, _, _) =
+            compute_reference_orbit(&params, None, true).expect("compute_reference_orbit failed");
         let bla_table = build_bla_table(&orbit.z_ref_f64, &params, orbit.cref);
 
         let mut classification_diffs = 0usize;
@@ -235,9 +234,7 @@ mod tests {
                 let dy = ((j as f64 + 0.5) / 100.0 - 0.5) * span_y;
                 let c_pixel_offset = Complex64::new(dx, dy);
 
-                let pure = iterate_pixel_pure_f3_mandelbrot(
-                    &orbit, c_pixel_offset, iter_max, 4.0,
-                );
+                let pure = iterate_pixel_pure_f3_mandelbrot(&orbit, c_pixel_offset, iter_max, 4.0);
 
                 // iterate_pixel attend delta0=ComplexExp::zero() pour Mandelbrot
                 // et dc = ComplexExp du pixel offset
@@ -328,9 +325,7 @@ mod tests {
                 let c_pixel_offset = Complex64::new(dx, dy);
                 let c_abs = Complex64::new(center_x + dx, center_y + dy);
 
-                let pure = iterate_pixel_pure_f3_mandelbrot(
-                    &orbit, c_pixel_offset, iter_max, 4.0,
-                );
+                let pure = iterate_pixel_pure_f3_mandelbrot(&orbit, c_pixel_offset, iter_max, 4.0);
                 let escaped_pure = pure.iteration < iter_max;
 
                 // Itération directe en f64. C'est imprécis à ce zoom mais
@@ -373,9 +368,7 @@ mod tests {
                 let c_pixel_offset = Complex64::new(dx, dy);
                 let c_abs = Complex64::new(center_x + dx, center_y + dy);
 
-                let pure = iterate_pixel_pure_f3_mandelbrot(
-                    &orbit, c_pixel_offset, iter_max, 4.0,
-                );
+                let pure = iterate_pixel_pure_f3_mandelbrot(&orbit, c_pixel_offset, iter_max, 4.0);
                 let mut z = Complex64::new(0.0, 0.0);
                 let mut n = 0u32;
                 while n < iter_max && z.norm_sqr() < 16.0 {
@@ -452,7 +445,14 @@ mod tests {
             } else {
                 eprintln!(
                     "[Mismatch] pixel ({}, {}): pure={} (n={}, rebase={}, m={}), direct={} (n={})",
-                    px, py, escaped_pure, res.iteration, res.rebase_count, res.m_at_exit, escaped_direct, n
+                    px,
+                    py,
+                    escaped_pure,
+                    res.iteration,
+                    res.rebase_count,
+                    res.m_at_exit,
+                    escaped_direct,
+                    n
                 );
             }
             total += 1;

@@ -1627,10 +1627,106 @@ le câblage params/render, + la BLA par phase + le nucleus phase-aware + l'UI.
   perturbation legacy (`max_secondary_refs`, `min_glitch_cluster_size`,
   `glitch_tolerance`, …). Un seul moteur. Retirer aussi les renderers densité
   MPC non-cancellables marqués `#[allow(dead_code)]` (superseded).
+  - **Sous-étape `[2026-08-24]`** : les quatre entrées densité MPC
+    non-cancellables mortes (`Buddhabrot`, `Nebulabrot`, `AntiBuddhabrot`,
+    `Lyapunov`) sont supprimées ; le dispatcher n'expose plus que les variantes
+    cancellables réellement consommées. Les quatre types restent navigables
+    dans la GUI et sont verrouillés par
+    `density_and_lyapunov_types_remain_dispatchable`. Reste la convergence
+    perturbation legacy vers le pixel-loop unique.
+  - **Audit `[2026-08-24]`** : les deux modules restent actifs : clustering
+    spatial ET par itération consommés par le fallback non-bytecode ; matrices
+    non conformes consommées par Burning Ship/Tricorn. Suppression reportée
+    jusqu'au port effectif de ces consommateurs sur le pixel-loop unifié. Deux
+    méthodes sans lecteur ont néanmoins été retirées de `nonconformal` :
+    `Matrix2x2::scale` et `BlaCoefficientsNonConformal::zero`. Le clustering
+    par itération est désormais verrouillé sur ses deux invariants : exclusion
+    des groupes trop petits et choix du pixel de plus petit `|z|` comme centre ;
+    les buffers désalignés restent rejetés sans rendu partiel.
+  - **Audit dead-code `[2026-08-24]`** : `Matrix2x2::zero` est conservé car le
+    BLA non conforme l'utilise encore. Suppression limitée aux quatre symboles
+    sans lecteur : alias déprécié `find_period`, helper `complex_to_xy`, ancien
+    `detect_cycle` et `ComplexExp::mul_signed`.
+  - **Audit bytecode `[2026-08-24]`** : les annotations `dead_code` de `NegX`,
+    `Rot`, `opcode_tag`, `formula_last_degree`, `Formula::hybrid`, du wrapper
+    pixel unifié et de ses canaux étaient obsolètes ; leurs consommateurs ont
+    été vérifiés et les annotations retirées. Seuls le champ dupliqué
+    `GmpInterpState::prec` et son getter sans lecteur ont été supprimés.
+    Audit complémentaire : suppression des vrais morts `Mat2::ZERO` et
+    `Mat2Exp::zero`; les compteurs du pixel-loop exp et sa variante à options
+    restent actifs et perdent seulement leurs annotations obsolètes.
+  - **Fin d'audit annotations `[2026-08-24]`** : retrait des derniers faux
+    `allow(dead_code)` de la matrice non conforme, du résultat nucleus, du
+    diagnostic F3 pur et de l'API de compression Imagina exercée par les tests.
+    Aucun de ces contrats actifs n'est supprimé.
+  - **Sous-étape GMP `[2026-08-24]`** : les consommateurs appellent désormais
+    `bytecode::pixel_loop_gmp::iterate_pixel_gmp`, qui contient maintenant le
+    corps mathématique complet auparavant hébergé par `delta.rs`. `DeltaResult`
+    est extrait dans `perturbation::types` ; tous les consommateurs utilisent
+    désormais ce contrat partagé et la réexport legacy depuis `delta` est
+    supprimée. Les utilitaires de tolérance de glitch et de lissage vivent dans
+    `perturbation::pixel_math`, avec leurs propres tests et sans réexport
+    transitoire : `pixel_loop_gmp` ne dépend plus de `delta`.
+    Le test structurel de `DeltaResult` appartient également désormais à
+    `perturbation::types`, et non plus aux tests de `delta`.
+  - **Nettoyage GMP `[2026-08-24]`** : suppression du seuil mort
+    `PIXEL_SIZE_GMP_THRESHOLD` (l'ancien basculement à `1e-150` n'avait plus
+    aucun lecteur) et du fixture `delta::tests::test_params` inutilisé.
+  - **Nettoyage densité f64 `[2026-08-24]`** : suppression des trois renderers
+    non-cancellables sans appel (`render_buddhabrot`, `render_nebulabrot`,
+    `render_antibuddhabrot`). Les variantes f64/MPC cancellables du dispatcher
+    restent la source unique et la navigabilité des types demeure verrouillée.
+    Même traitement pour le doublon `render_lyapunov` ; `LyapunovPreset` reste
+    réexporté et les variantes Lyapunov f64/MPC cancellables restent actives.
+    Les diagnostics `iterate_point*` renvoient maintenant vers le dispatcher
+    cancellable réellement disponible, au lieu de nommer les API supprimées.
+  - **Deep zoom spécial `[2026-08-24]`** : Buddhabrot, Nebulabrot,
+    Anti-Buddhabrot et Lyapunov basculent automatiquement sur MPC dès qu'un
+    pixel n'est plus résolvable en f64. Leurs renderers MPC lisent désormais
+    centre et spans HP directement ; les modes densité projettent aussi les
+    trajectoires en pixels avant toute conversion f64.
 - [ ] **Découper les gros fichiers** (< ~800 lignes chacun) :
   `gui/app.rs` (~2.9k) → menu Type / drag-drop / HQ render / raccourcis ;
   `perturbation/mod.rs` (~1.5k) → dispatch CPU/GMP ; `gpu/mod.rs` (~1.8k) →
   pipelines standard / perturbation / bytecode.
+  - **Sous-étape perturbation `[2026-08-24]`** : extraction du calcul des
+    coordonnées pixel GMP et du plan d'échantillonnage résolu dans
+    `perturbation/sampling.rs`. Les types `DcGmpContext` et
+    `ResolvedSamplingPlan` restent réexportés à l'identique ; suppression du
+    wrapper mort `compute_dc_gmp`. `perturbation/mod.rs` descend d'environ 170
+    lignes sans modifier le dispatch.
+  - **Sous-étape progression `[2026-08-24]`** : extraction de l'état partagé,
+    du reporter à réveil immédiat et du résumé `[FRACTALL]` dans
+    `perturbation/progress.rs`. Les appels internes conservent la même API et
+    la même cadence ; aucun chemin de rendu n'est déplacé.
+  - **Nettoyage dispatcher perturbation `[2026-08-24]`** : suppression du
+    wrapper non-cancellable mort `render_mandelbrot_perturbation`. Le point
+    d'entrée effectif reste `render_perturbation_cancellable_with_reuse`, sans
+    duplication d'un faux raccourci spécifique à Mandelbrot.
+  - **Sous-étape réutilisation `[2026-08-24]`** : extraction de la validation
+    des buffers progressifs dans `perturbation/reuse.rs`. Les gardes de ratio,
+    dimensions et canaux requis sont conservées et couvertes directement.
+  - **Sous-étape glitches `[2026-08-24]`** : déplacement de la passe de
+    voisinage `mark_neighbor_glitches` depuis le dispatcher vers `glitch.rs`.
+    Son réexport public préserve les consommateurs CPU et GPU.
+  - **Sous-étape précision `[2026-08-24]`** : création de
+    `perturbation/precision.rs` et déplacement de la politique de fallback GMP
+    complet. Le seuil `1e-300`, l'override et la priorité au bytecode restent
+    inchangés ; l'API publique est réexportée. `effective_pixel_size`, y compris
+    sa reconstruction depuis les spans HP et sa sentinelle anti-underflow, a
+    ensuite rejoint ce module afin que la décision soit autonome. Le calcul
+    partagé `log2_zoom` (HP prioritaire, fallback f64) y est également centralisé
+    pour Wisdom et le dimensionnement GMP. Enfin, les deux formules de précision
+    (référence F3 et conservative), leurs marges et la borne technique `u32`
+    sont déplacées avec `compute_perturbation_precision_bits`. La conversion des
+    spans HP vers le tier double-double (`effective_spans_dd`) rejoint aussi ce
+    module sans perdre les bits bas extraits via GMP. `effective_spans_fexp` y
+    est également déplacé avec sa décomposition GMP par blocs pour les exposants
+    hors plage f64.
+  - **Sous-étape compression `[2026-08-24]`** : déplacement de la politique de
+    libération des tableaux d'orbite pleine vers `perturbation/compress.rs`.
+    Le gate `FRACTALL_COMPRESS_REF`, le comportement avec un `Arc` partagé et
+    l'invalidation des caches strippés restent inchangés.
 - [ ] **GPU : K natif dans `perturbation.wgsl` + shaders f32 dédiés** (basse
   prio) — aujourd'hui fallback CPU quand une transform est active (garde-fou
   contre la sortie non-tournée silencieuse) ; l'appliquer nativement évite le
@@ -1638,6 +1734,23 @@ le câblage params/render, + la BLA par phase + le nucleus phase-aware + l'UI.
 
 **Chantiers d'architecture (chasse aux bugs 2026-08-23, ~25 bugs corrigés en
 v0.8.2 — chaque chantier ferme LA CLASSE dont plusieurs bugs sont issus)** :
+
+### Suite prioritaire — consolidation architecturale
+
+1. [ ] Introduire un véritable `ViewHp` comme source unique de vérité.
+2. [ ] Introduire `RenderRequest`, puis consolider `RenderPlan` comme contrat
+   unique de planification du rendu.
+3. [ ] Unifier les contrats des pixel loops sans nécessairement fusionner leurs
+   implémentations optimisées.
+4. [ ] Séparer complètement la GUI en contrôleur, état de navigation, état de
+   rendu et panneaux.
+5. [ ] Réduire les champs historiques de `FractalParams` en sous-structures
+   cohérentes.
+6. [ ] Ajouter des tests end-to-end de navigation profonde, notamment pour
+   Buddhabrot, Nebulabrot, Anti-Buddhabrot et Lyapunov, au-delà des tests
+   unitaires de coordonnées.
+7. [ ] Mesurer les performances par backend afin que chaque suppression de
+   chemin legacy soit fondée sur des données.
 
 - [ ] **Type `View` HP unique** (centre/span HP + dims + précision attachée),
   au lieu de 4 `String` + 4 `f64` + précisions dispersées (`HP_PRECISION`,
@@ -1667,17 +1780,36 @@ v0.8.2 — chaque chantier ferme LA CLASSE dont plusieurs bugs sont issus)** :
   fermée : 4 bugs « Smooth silencieux » (copie CLI, boucle AA, pipeline
   vidéo, auto-GPU). 399 unit + 24 goldens verts, e2e vérifié (Distance ≠
   Smooth ; OrbitTraps deep = erreur explicite exit 1).
-- [ ] **Compteur d'itération partagé des boucles pixel** : chaque boucle
-  (f64/exp/dd/GMP/multi-phase) réimplémente n (absolu) / m (réf) à la main —
-  `iterate_pixel_gmp` n'avait QUE m et bouclait à l'infini au rebase d'un
-  pixel intérieur (v0.8.2). Un état commun + `debug_assert!(n <= iter_max)` +
-  un test « pixel intérieur qui rebase termine » PAR boucle.
-- [ ] **`RenderPlan` wisdom complet** : la sélection (device/algo/tier) est
+- [x] **✅ Compteur d'itération partagé des boucles pixel `[2026-08-24]`** :
+  `PixelCounter` porte désormais `n` (absolu) / `m` (réf) dans les boucles
+  f64/exp/dd/GMP/multi-phase, avec rebase incapable de remettre `n` à zéro,
+  sauts BLA atomiques et assertions debug `m ≤ n ≤ iteration_max`. Le verrou
+  « pixel intérieur qui rebase à chaque pas termine » couvre le cas pathologique
+  qui faisait boucler `iterate_pixel_gmp` à l'infini (v0.8.2). Validation :
+  403 unit verts + corpus golden pixel-exact vert (4 groupes / 24 images).
+- [x] **✅ `RenderPlan` wisdom complet `[2026-08-24]`** : la sélection (device/algo/tier) est
   centralisée mais les à-côtés (K du nucleus, offset off-center, jitter AA,
   gates de capacités) étaient recalculés — ou oubliés — par chaque path
   (K perdue dans un clone local, offset absent du path GMP legacy, jitter
   absent des corrections GMP). Étendre `wisdom::plan()` pour porter TOUT ce
   que le path doit honorer, consommé au lieu de recalculé.
+  - **Jalon 1 `[2026-08-24]`** : `WisdomPlan` porte désormais un
+    `SamplingPlan` unique (K/rotation + jitter uniforme/par-pixel) et le contrat
+    de canaux requis. Le dispatcher CPU consomme le plan complet ; les mappings
+    FloatExp et GMP consomment le même plan d'échantillonnage. Reste à y intégrer
+    le contexte de référence choisi (offset off-center, connu seulement après le
+    lookup cache) et à faire consommer le plan par les dispatchers GUI/GPU. 404
+    unit + 24 goldens verts.
+  - **Jalon 2 `[2026-08-24]`** : `auto_plan()` rend la décision device + algo
+    atomique ; CLI et GUI consomment cet objet, le dispatcher GPU consomme
+    `plan_for(..., Gpu)`, et les labels/passes GUI ne recalculent plus leur
+    propre routage. Tous les binaires compilent. Reste le plan résolu après
+    lookup du cache (offset off-center).
+  - **Jalon 3 `[2026-08-24]`** : `ResolvedSamplingPlan` ajoute après lookup le
+    seul état dynamique, `centre_vue − centre_référence`, calculé une fois en HP
+    puis consommé par FloatExp et GMP. `gpu_compatible` centralise les gates de
+    formule/nucleus/tier/canaux du dispatcher GPU. Le verrou subset-reuse prouve
+    l'identité de l'offset entre plan résolu et contexte GMP. Chantier clos.
 - [x] **✅ Property tests XaoS `[2026-08-24]`** : verrou
   `random_navigation_sequences_keep_declared_error_true` (`xaos.rs`) —
   séquences ALÉATOIRES pan (entier/fractionnaire) / zoom-in ancré /
@@ -1689,11 +1821,31 @@ v0.8.2 — chaque chantier ferme LA CLASSE dont plusieurs bugs sont issus)** :
   1e-30 → 1e-74 avait caché le bug de précision fixe). Mutation-testé : la
   transformée regelée à 256 b fixes fait ÉCHOUER le test (bug 2026-08-23
   reproduit), la version dynamique passe.
-- [ ] **Extraire les machines d'état GUI en modules purs testables** (comme
+- [x] **✅ Extraire les machines d'état GUI en modules purs testables `[2026-08-24]`** (comme
   `video_gui/nav.rs`) : versioning render/recolor/AA, cycle de vie de la
   frame source XaoS, provisoires timeline — quasi tous les bugs GUI de la
   chasse étaient dans `gui/app.rs` / `video_gui/mod.rs`, qui n'ont aucun
   test. Recouvre le « Découper les gros fichiers » ci-dessus.
+  - **Jalon 1 `[2026-08-24]`** : `gui/async_version.rs` centralise la porte de
+    génération des workers asynchrones. Recolorisation et mini-Julia partagent
+    désormais `issue/accepts` ; zéro est réservé et le wrap `u64` est testé,
+    comme l'invalidation de toutes les réponses antérieures. Reste le cycle
+    render/AA et la frame source XaoS.
+  - **Jalon 2 `[2026-08-24]`** : `gui/render_state.rs` porte la progression des
+    passes et de l'AA. Les réponses de texture arrivées en retard ne peuvent
+    plus faire régresser la barre, les indices/sample sont bornés par le plan,
+    et un nouveau rendu réinitialise atomiquement passes + AA. Reste le cycle
+    de vie de la frame source XaoS.
+  - **Jalon 3 `[2026-08-24]`** : `gui/xaos_state.rs` encapsule source +
+    raffinement. Une passe grossière tardive ne remplace jamais une source plus
+    résolue, l'AA interdit la réutilisation, et commencer un rendu annule le
+    raffinement obsolète sans jeter la source. Reste l'état provisoire timeline
+    du studio vidéo avant de solder le chantier.
+  - **Jalon 4 `[2026-08-24]`** : `video_gui/timeline_state.rs` rend atomiques
+    position/activité/version du scrub ; fermer le scrub rejette les réponses
+    encore en vol. Preview studio et scrub utilisent tous deux `AsyncVersion`.
+    Les quatre classes visées (render/recolor/AA, XaoS, timeline) sont désormais
+    hors des structs eframe et couvertes par tests purs. Chantier soldé.
 
 ### G6 — Robustesse & infra qualité · `[P1]`
 

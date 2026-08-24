@@ -1,7 +1,7 @@
 use num_complex::Complex64;
 
-use crate::fractal::FractalParams;
 use crate::fractal::perturbation::types::ComplexExp;
+use crate::fractal::FractalParams;
 
 /// Maximum supported series order.
 pub const MAX_SERIES_ORDER: usize = 32;
@@ -228,7 +228,13 @@ impl TiledSeriesValidation {
     /// Get the interpolated valid iteration count for a pixel position.
     /// When using interpolated results (from rust-fractal-core's interpolate_probes()),
     /// each cell already contains the minimum of its 4 corners, so a simple lookup suffices.
-    pub fn valid_iteration_for_pixel(&self, px: usize, py: usize, width: usize, height: usize) -> usize {
+    pub fn valid_iteration_for_pixel(
+        &self,
+        px: usize,
+        py: usize,
+        width: usize,
+        height: usize,
+    ) -> usize {
         if self.probe_cols == 0 || self.probe_rows == 0 || width == 0 || height == 0 {
             return self.global_min;
         }
@@ -241,7 +247,10 @@ impl TiledSeriesValidation {
         let iy = (fy as usize).min(self.probe_rows - 1);
 
         let idx = iy * self.probe_cols + ix;
-        self.probe_valid_iterations.get(idx).copied().unwrap_or(self.global_min)
+        self.probe_valid_iterations
+            .get(idx)
+            .copied()
+            .unwrap_or(self.global_min)
     }
 }
 
@@ -312,8 +321,14 @@ pub fn validate_series_with_probes_tiled(
 
     // Phase 1: Validate corners
     validate_probe_set(
-        &probes, &corner_indices, table, z_ref, is_julia,
-        delta_pixel_sqr, check_interval, &mut probe_valid_iterations,
+        &probes,
+        &corner_indices,
+        table,
+        z_ref,
+        is_julia,
+        delta_pixel_sqr,
+        check_interval,
+        &mut probe_valid_iterations,
     );
 
     // Phase 2: Validate remaining probes
@@ -322,8 +337,14 @@ pub fn validate_series_with_probes_tiled(
             .filter(|i| !corner_indices.contains(i))
             .collect();
         validate_probe_set(
-            &probes, &remaining_indices, table, z_ref, is_julia,
-            delta_pixel_sqr, check_interval, &mut probe_valid_iterations,
+            &probes,
+            &remaining_indices,
+            table,
+            z_ref,
+            is_julia,
+            delta_pixel_sqr,
+            check_interval,
+            &mut probe_valid_iterations,
         );
     }
 
@@ -345,9 +366,21 @@ pub fn validate_series_with_probes_tiled(
     }
 
     TiledSeriesValidation {
-        probe_cols: if interpolated.is_empty() { probe_sampling } else { probe_sampling - 1 },
-        probe_rows: if interpolated.is_empty() { probe_sampling } else { probe_sampling - 1 },
-        probe_valid_iterations: if interpolated.is_empty() { probe_valid_iterations } else { interpolated },
+        probe_cols: if interpolated.is_empty() {
+            probe_sampling
+        } else {
+            probe_sampling - 1
+        },
+        probe_rows: if interpolated.is_empty() {
+            probe_sampling
+        } else {
+            probe_sampling - 1
+        },
+        probe_valid_iterations: if interpolated.is_empty() {
+            probe_valid_iterations
+        } else {
+            interpolated
+        },
         global_min: global_min.min(z_ref.len().saturating_sub(1)),
     }
 }
@@ -368,7 +401,11 @@ fn validate_probe_set(
 ) {
     for &probe_idx in indices {
         let probe_dc = probes[probe_idx];
-        let mut actual_delta = if is_julia { probe_dc } else { Complex64::new(0.0, 0.0) };
+        let mut actual_delta = if is_julia {
+            probe_dc
+        } else {
+            Complex64::new(0.0, 0.0)
+        };
 
         for n in 0..z_ref.len().saturating_sub(1) {
             // Only check series accuracy at check intervals (reduces overhead)
@@ -379,11 +416,16 @@ fn validate_probe_set(
                         evaluate_ho_series(ho, probe_dc)
                     } else {
                         let coeffs = &table.coeffs[n];
-                        probe_dc * (coeffs.a + probe_dc * (coeffs.b + probe_dc * (coeffs.c + probe_dc * coeffs.d)))
+                        probe_dc
+                            * (coeffs.a
+                                + probe_dc
+                                    * (coeffs.b + probe_dc * (coeffs.c + probe_dc * coeffs.d)))
                     }
                 } else {
                     let coeffs = &table.coeffs[n];
-                    probe_dc * (coeffs.a + probe_dc * (coeffs.b + probe_dc * (coeffs.c + probe_dc * coeffs.d)))
+                    probe_dc
+                        * (coeffs.a
+                            + probe_dc * (coeffs.b + probe_dc * (coeffs.c + probe_dc * coeffs.d)))
                 };
 
                 // Compare series vs actual
@@ -395,15 +437,22 @@ fn validate_probe_set(
                         evaluate_ho_derivative(ho, probe_dc).norm_sqr()
                     } else {
                         let coeffs = &table.coeffs[n];
-                        (coeffs.a + probe_dc * (coeffs.b * 2.0 + probe_dc * coeffs.c * 3.0)).norm_sqr()
+                        (coeffs.a + probe_dc * (coeffs.b * 2.0 + probe_dc * coeffs.c * 3.0))
+                            .norm_sqr()
                     }
                 } else {
                     let coeffs = &table.coeffs[n];
                     (coeffs.a + probe_dc * (coeffs.b * 2.0 + probe_dc * coeffs.c * 3.0)).norm_sqr()
                 };
-                let derivative_scale = if derivative_norm > 1.0 { derivative_norm } else { 1.0 };
+                let derivative_scale = if derivative_norm > 1.0 {
+                    derivative_norm
+                } else {
+                    1.0
+                };
 
-                if relative_error / derivative_scale > delta_pixel_sqr || !relative_error.is_finite() {
+                if relative_error / derivative_scale > delta_pixel_sqr
+                    || !relative_error.is_finite()
+                {
                     probe_valid_iterations[probe_idx] = n.saturating_sub(check_interval).max(1);
                     break;
                 }
@@ -441,10 +490,7 @@ fn validate_probe_set(
 ///
 /// Inspired by rust-fractal-core's evaluate() method.
 #[inline]
-pub fn evaluate_ho_series(
-    coefficients: &[Complex64],
-    point_delta: Complex64,
-) -> Complex64 {
+pub fn evaluate_ho_series(coefficients: &[Complex64], point_delta: Complex64) -> Complex64 {
     if coefficients.is_empty() {
         return Complex64::new(0.0, 0.0);
     }
@@ -464,10 +510,7 @@ pub fn evaluate_ho_series(
 ///
 /// Inspired by rust-fractal-core's evaluate_derivative() method.
 #[inline]
-pub fn evaluate_ho_derivative(
-    coefficients: &[Complex64],
-    point_delta: Complex64,
-) -> Complex64 {
+pub fn evaluate_ho_derivative(coefficients: &[Complex64], point_delta: Complex64) -> Complex64 {
     if coefficients.is_empty() {
         return Complex64::new(1.0, 0.0);
     }
@@ -560,7 +603,11 @@ pub fn compute_series_skip(
             last_term_norm
         };
 
-        if error < error_tolerance && term_ratio < 0.5 && approx.re.is_finite() && approx.im.is_finite() {
+        if error < error_tolerance
+            && term_ratio < 0.5
+            && approx.re.is_finite()
+            && approx.im.is_finite()
+        {
             best_skip = n;
             best_approx = approx;
             best_error = error;
@@ -790,7 +837,11 @@ mod tests {
         let result = compute_series_skip(&table, small_dc, 1e-9);
         assert!(result.is_some(), "Series skip should work for small dc");
         let skip = result.unwrap();
-        assert!(skip.skip_to >= 2, "Should skip at least 2 iterations, got {}", skip.skip_to);
+        assert!(
+            skip.skip_to >= 2,
+            "Should skip at least 2 iterations, got {}",
+            skip.skip_to
+        );
     }
 
     #[test]
@@ -831,8 +882,8 @@ mod tests {
     #[test]
     fn ho_evaluation_horner() {
         let coeffs = vec![
-            Complex64::new(1.0, 0.0),  // order 1
-            Complex64::new(0.5, 0.0),  // order 2
+            Complex64::new(1.0, 0.0), // order 1
+            Complex64::new(0.5, 0.0), // order 2
         ];
         let dc = Complex64::new(0.1, 0.0);
         let result = evaluate_ho_series(&coeffs, dc);
@@ -856,10 +907,7 @@ mod tests {
         let z_ref = vec![Complex64::new(0.0, 0.0); 50];
         let table = build_series_table(&z_ref, false);
 
-        let tiled = validate_series_with_probes_tiled(
-            &table, &z_ref, false,
-            0.01, 100, 100, 3,
-        );
+        let tiled = validate_series_with_probes_tiled(&table, &z_ref, false, 0.01, 100, 100, 3);
         // After interpolation: (probe_sampling-1) x (probe_sampling-1) = 2x2 cells
         assert_eq!(tiled.probe_cols, 2);
         assert_eq!(tiled.probe_rows, 2);
@@ -895,14 +943,22 @@ mod tests {
     fn adaptive_series_order_deep_zoom() {
         // Deep zoom (pixel_size = 1e-20, ~10^20 zoom): should use higher order
         let order = compute_adaptive_series_order(1e-20, 10000, 0);
-        assert!(order >= 8, "Expected order >= 8 for deep zoom, got {}", order);
+        assert!(
+            order >= 8,
+            "Expected order >= 8 for deep zoom, got {}",
+            order
+        );
     }
 
     #[test]
     fn adaptive_series_order_ultra_deep_zoom() {
         // Ultra-deep zoom (pixel_size = 1e-40, ~10^40 zoom): should use high order
         let order = compute_adaptive_series_order(1e-40, 100000, 0);
-        assert!(order >= 16, "Expected order >= 16 for ultra-deep zoom, got {}", order);
+        assert!(
+            order >= 16,
+            "Expected order >= 16 for ultra-deep zoom, got {}",
+            order
+        );
     }
 
     #[test]

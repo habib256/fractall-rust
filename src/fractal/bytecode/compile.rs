@@ -60,8 +60,7 @@ pub fn parse_opcodes_formula(text: &str) -> Option<Formula> {
     let mut phases: Vec<Phase> = Vec::new();
     let mut current: Vec<Op> = Vec::new();
     for word in text.split_whitespace() {
-        let op = if let Some(deg_str) =
-            word.strip_prefix("rot{").and_then(|w| w.strip_suffix('}'))
+        let op = if let Some(deg_str) = word.strip_prefix("rot{").and_then(|w| w.strip_suffix('}'))
         {
             let degrees: f32 = deg_str.parse().ok()?;
             let radians = degrees * std::f32::consts::PI / 180.0;
@@ -248,11 +247,9 @@ mod tests {
     #[test]
     fn parse_opcodes_hybrid_mbs_matches_compile() {
         let parsed = parse_opcodes_formula("sqr add absx absy sqr add").unwrap();
-        let compiled = compile_hybrid_formula(
-            &[FractalType::Mandelbrot, FractalType::BurningShip],
-            2.0,
-        )
-        .unwrap();
+        let compiled =
+            compile_hybrid_formula(&[FractalType::Mandelbrot, FractalType::BurningShip], 2.0)
+                .unwrap();
         assert_eq!(parsed.phases.len(), 2);
         assert_eq!(parsed.phases[0].ops, compiled.phases[0].ops);
         assert_eq!(parsed.phases[1].ops, compiled.phases[1].ops);
@@ -263,7 +260,7 @@ mod tests {
         // F3 need_store : `mul` avant tout `store` explicite → store préfixé.
         let parsed = parse_opcodes_formula("sqr mul add").unwrap();
         assert_eq!(parsed.phases[0].ops, compile_power(3)); // Store Sqr Mul Add
-        // Store explicite : pas de double préfixe.
+                                                            // Store explicite : pas de double préfixe.
         let explicit = parse_opcodes_formula("store sqr mul add").unwrap();
         assert_eq!(explicit.phases[0].ops, compile_power(3));
     }
@@ -272,7 +269,11 @@ mod tests {
     fn parse_opcodes_rot_f32_coefficients() {
         let f = parse_opcodes_formula("sqr rot{30} add").unwrap();
         assert_eq!(f.phases.len(), 1);
-        let Op::Rot { cos_theta, sin_theta } = f.phases[0].ops[1] else {
+        let Op::Rot {
+            cos_theta,
+            sin_theta,
+        } = f.phases[0].ops[1]
+        else {
             panic!("attendu Op::Rot, ops = {:?}", f.phases[0].ops);
         };
         // Parité F3 : cos/sin calculés en f32 (opcode.u.rot.{x,y} float).
@@ -281,7 +282,11 @@ mod tests {
         assert_eq!(sin_theta, rad.sin() as f64);
         // rot{0} = identité exacte.
         let f0 = parse_opcodes_formula("sqr rot{0} add").unwrap();
-        let Op::Rot { cos_theta: c0, sin_theta: s0 } = f0.phases[0].ops[1] else {
+        let Op::Rot {
+            cos_theta: c0,
+            sin_theta: s0,
+        } = f0.phases[0].ops[1]
+        else {
             panic!("attendu Op::Rot");
         };
         assert_eq!((c0, s0), (1.0, 0.0));
@@ -339,9 +344,8 @@ mod tests {
     #[test]
     fn hybrid_two_phases_mandel_ship() {
         // [Mandelbrot, BurningShip] = 2 phases, chacune le bytecode de son type.
-        let f =
-            compile_hybrid_formula(&[FractalType::Mandelbrot, FractalType::BurningShip], 2.0)
-                .unwrap();
+        let f = compile_hybrid_formula(&[FractalType::Mandelbrot, FractalType::BurningShip], 2.0)
+            .unwrap();
         assert_eq!(f.phases.len(), 2);
         assert_eq!(f.phases[0].ops, vec![Op::Sqr, Op::Add]);
         assert_eq!(f.phases[1].ops, vec![Op::AbsX, Op::AbsY, Op::Sqr, Op::Add]);
@@ -388,10 +392,15 @@ mod tests {
         use super::super::iterate_bytecode_f64;
         use num_complex::Complex64;
         let m = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
-        let mm =
-            compile_hybrid_formula(&[FractalType::Mandelbrot, FractalType::Mandelbrot], 2.0)
-                .unwrap();
-        for &(re, im) in &[(-0.5, 0.5), (0.3, 0.0), (-1.0, 0.1), (0.28, 0.53), (-0.75, 0.0)] {
+        let mm = compile_hybrid_formula(&[FractalType::Mandelbrot, FractalType::Mandelbrot], 2.0)
+            .unwrap();
+        for &(re, im) in &[
+            (-0.5, 0.5),
+            (0.3, 0.0),
+            (-1.0, 0.1),
+            (0.28, 0.53),
+            (-0.75, 0.0),
+        ] {
             let c = Complex64::new(re, im);
             let z0 = Complex64::new(0.0, 0.0);
             let rm = iterate_bytecode_f64(&m, z0, c, 500, 25.0);
@@ -405,24 +414,17 @@ mod tests {
     fn hybrid_empty_or_unrepresentable_is_none() {
         assert!(compile_hybrid_formula(&[], 2.0).is_none());
         // Newton n'est pas représentable en bytecode → toute la formule None.
-        assert!(compile_hybrid_formula(
-            &[FractalType::Mandelbrot, FractalType::Newton],
-            2.0
-        )
-        .is_none());
-        // Multibrot puissance non-entière dans une phase → None.
         assert!(
-            compile_hybrid_formula(&[FractalType::Multibrot], 2.5).is_none()
+            compile_hybrid_formula(&[FractalType::Mandelbrot, FractalType::Newton], 2.0).is_none()
         );
+        // Multibrot puissance non-entière dans une phase → None.
+        assert!(compile_hybrid_formula(&[FractalType::Multibrot], 2.5).is_none());
     }
 
     #[test]
     fn burning_ship_compiles() {
         let f = compile_formula(FractalType::BurningShip, 2.0).unwrap();
-        assert_eq!(
-            f.phases[0].ops,
-            vec![Op::AbsX, Op::AbsY, Op::Sqr, Op::Add]
-        );
+        assert_eq!(f.phases[0].ops, vec![Op::AbsX, Op::AbsY, Op::Sqr, Op::Add]);
     }
 
     #[test]

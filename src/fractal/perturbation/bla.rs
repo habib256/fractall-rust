@@ -1,14 +1,11 @@
 use num_complex::Complex64;
 use rayon::prelude::*;
 
-use crate::fractal::{FractalParams, FractalType};
 use crate::fractal::perturbation::nonconformal::{
-    self as nc,
-    compute_tricorn_bla_coefficients,
-    compute_nonconformal_validity_radius,
-    merge_nonconformal_bla,
-    Matrix2x2,
+    self as nc, compute_nonconformal_validity_radius, compute_tricorn_bla_coefficients,
+    merge_nonconformal_bla, Matrix2x2,
 };
+use crate::fractal::{FractalParams, FractalType};
 
 #[derive(Clone, Copy, Debug)]
 pub struct BlaNode {
@@ -113,31 +110,31 @@ impl BlaTable {
 
     #[inline]
     pub fn nc_level_len(&self, level: usize) -> usize {
-        self.nc_level_lengths.as_ref().map_or(0, |v| {
-            if level < v.len() { v[level] } else { 0 }
-        })
+        self.nc_level_lengths
+            .as_ref()
+            .map_or(0, |v| if level < v.len() { v[level] } else { 0 })
     }
 }
 
 /// Vérifie si le BLA est valide pour Burning Ship sur une plage d'itérations.
 /// Le BLA est valide si z_ref ne change pas de quadrant (signe de Re et Im) pendant les steps.
-/// 
+///
 /// # Arguments
 /// * `z_ref` - L'orbite de référence
 /// * `n` - L'indice de départ
 /// * `steps` - Le nombre d'itérations à vérifier
-/// 
+///
 /// # Returns
 /// `true` si z_ref reste dans le même quadrant pendant les steps
 fn burning_ship_bla_validity(z_ref: &[Complex64], n: usize, steps: usize) -> bool {
     if n >= z_ref.len() {
         return false;
     }
-    
+
     let z0 = z_ref[n];
     let sign_re = z0.re >= 0.0;
     let sign_im = z0.im >= 0.0;
-    
+
     // Vérifier que z_ref reste dans le même quadrant
     for i in 1..=steps.min(z_ref.len().saturating_sub(n).saturating_sub(1)) {
         let z = z_ref[n + i];
@@ -145,7 +142,7 @@ fn burning_ship_bla_validity(z_ref: &[Complex64], n: usize, steps: usize) -> boo
             return false;
         }
     }
-    
+
     true
 }
 
@@ -153,12 +150,9 @@ fn burning_ship_bla_validity(z_ref: &[Complex64], n: usize, steps: usize) -> boo
 /// Pour Burning Ship: z' = (|Re(z)|, |Im(z)|)² + c
 /// Si z reste dans le même quadrant, la dérivée est similaire à Mandelbrot
 /// avec un facteur de signe pour Re et Im.
-fn compute_burning_ship_bla_coefficients(
-    z: Complex64,
-    quadrant_stable: bool,
-) -> BlaCoefficients {
+fn compute_burning_ship_bla_coefficients(z: Complex64, quadrant_stable: bool) -> BlaCoefficients {
     let zero = Complex64::new(0.0, 0.0);
-    
+
     if !quadrant_stable {
         // Si le quadrant n'est pas stable, les coefficients ne sont pas utilisés
         return BlaCoefficients {
@@ -169,33 +163,39 @@ fn compute_burning_ship_bla_coefficients(
             e: zero,
         };
     }
-    
+
     // Pour Burning Ship avec quadrant stable:
     // z' = (|Re|, |Im|)² + c
     // En termes de perturbation, si z_ref + δ reste dans le même quadrant:
     // (|Re(z_ref + δ)|, |Im(z_ref + δ)|) ≈ (|Re(z_ref)| + sign(Re)*δ_re, |Im(z_ref)| + sign(Im)*δ_im)
     let re_abs = z.re.abs();
     let im_abs = z.im.abs();
-    
+
     // Pour z_abs² + c, le terme linéaire de la perturbation est:
     // 2·z_abs·δ_diffabs, où δ_diffabs = (sign_re·δ_re, sign_im·δ_im)
     // Puisque le BLA applique A à work_delta = (sign_re·δ_re, sign_im·δ_im),
     // le coefficient A doit être 2·z_abs = 2·(|Re|, |Im|) (pas 2·z).
     let a = Complex64::new(2.0 * re_abs, 2.0 * im_abs);
     let b = Complex64::new(1.0, 0.0);
-    let c = Complex64::new(1.0, 0.0);  // Terme quadratique
-    
+    let c = Complex64::new(1.0, 0.0); // Terme quadratique
+
     // Pour Burning Ship, les termes d'ordre supérieur sont nuls (comme Mandelbrot z²)
-    BlaCoefficients { a, b, c, d: zero, e: zero }
+    BlaCoefficients {
+        a,
+        b,
+        c,
+        d: zero,
+        e: zero,
+    }
 }
 
 /// Coefficients BLA pour une itération
 struct BlaCoefficients {
-    a: Complex64,  // Linéaire
-    b: Complex64,  // dc
-    c: Complex64,  // δ²
-    d: Complex64,  // δ³
-    e: Complex64,  // δ⁴
+    a: Complex64, // Linéaire
+    b: Complex64, // dc
+    c: Complex64, // δ²
+    d: Complex64, // δ³
+    e: Complex64, // δ⁴
 }
 
 /// Compute BLA coefficients (A_{n,1}, B_{n,1}, C, D, E) for a single iteration at z_ref.
@@ -217,11 +217,21 @@ fn compute_bla_coefficients(
     match fractal_type {
         FractalType::Mandelbrot | FractalType::Julia => {
             // Standard z² + c: A_{n,1} = 2·Z_n, C = 1, D = E = 0
-            let a = z * 2.0;  // A_{n,1} = 2·Z_n
-            let b = if is_julia { zero } else { Complex64::new(1.0, 0.0) };
+            let a = z * 2.0; // A_{n,1} = 2·Z_n
+            let b = if is_julia {
+                zero
+            } else {
+                Complex64::new(1.0, 0.0)
+            };
             let c = Complex64::new(1.0, 0.0);
             // Pour z², les termes d'ordre supérieur sont nuls
-            BlaCoefficients { a, b, c, d: zero, e: zero }
+            BlaCoefficients {
+                a,
+                b,
+                c,
+                d: zero,
+                e: zero,
+            }
         }
         FractalType::Multibrot => {
             // z^d + c: calcul des coefficients jusqu'à l'ordre 4
@@ -268,19 +278,47 @@ fn compute_bla_coefficients(
             };
 
             // Validate coefficients
-            let a = if a.re.is_finite() && a.im.is_finite() { a } else { z * 2.0 };
-            let c = if c.re.is_finite() && c.im.is_finite() { c } else { Complex64::new(1.0, 0.0) };
-            let d_term = if d_term.re.is_finite() && d_term.im.is_finite() { d_term } else { zero };
-            let e_term = if e_term.re.is_finite() && e_term.im.is_finite() { e_term } else { zero };
+            let a = if a.re.is_finite() && a.im.is_finite() {
+                a
+            } else {
+                z * 2.0
+            };
+            let c = if c.re.is_finite() && c.im.is_finite() {
+                c
+            } else {
+                Complex64::new(1.0, 0.0)
+            };
+            let d_term = if d_term.re.is_finite() && d_term.im.is_finite() {
+                d_term
+            } else {
+                zero
+            };
+            let e_term = if e_term.re.is_finite() && e_term.im.is_finite() {
+                e_term
+            } else {
+                zero
+            };
 
-            BlaCoefficients { a, b, c, d: d_term, e: e_term }
+            BlaCoefficients {
+                a,
+                b,
+                c,
+                d: d_term,
+                e: e_term,
+            }
         }
         _ => {
             // Fallback: use Mandelbrot coefficients
             let a = z * 2.0;
             let b = Complex64::new(1.0, 0.0);
             let c = Complex64::new(1.0, 0.0);
-            BlaCoefficients { a, b, c, d: zero, e: zero }
+            BlaCoefficients {
+                a,
+                b,
+                c,
+                d: zero,
+                e: zero,
+            }
         }
     }
 }
@@ -326,19 +364,26 @@ fn compute_bla_coefficients(
 /// The resulting table has `O(M)` elements.
 ///
 /// Note: Use z_ref_f64 from ReferenceOrbit, not z_ref (which is Vec<ComplexExp>).
-pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Complex64) -> BlaTable {
+pub fn build_bla_table(
+    ref_orbit: &[Complex64],
+    params: &FractalParams,
+    cref: Complex64,
+) -> BlaTable {
     // Note: Tricorn support in BLA would require non-conformal matrices (see nonconformal.rs)
     // For now, Tricorn uses perturbation without BLA acceleration
     let supports_bla = matches!(
         params.fractal_type,
-        FractalType::Mandelbrot | FractalType::Julia | FractalType::Multibrot | FractalType::BurningShip
+        FractalType::Mandelbrot
+            | FractalType::Julia
+            | FractalType::Multibrot
+            | FractalType::BurningShip
     );
     if !supports_bla {
         return BlaTable::empty();
     }
 
     // M = number of iterations in reference orbit (minus 1, as we don't need BLA for last iteration)
-    let base_len = ref_orbit.len().saturating_sub(1);  // M
+    let base_len = ref_orbit.len().saturating_sub(1); // M
     if base_len == 0 {
         return BlaTable::empty();
     }
@@ -389,7 +434,7 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
                 (coeffs, quadrant_stable)
             } else {
                 let coeffs = compute_bla_coefficients(z, fractal_type, power);
-                (coeffs, true)  // Toujours valide pour les autres types
+                (coeffs, true) // Toujours valide pour les autres types
             };
 
             let a_norm = coeffs.a.norm();
@@ -406,7 +451,7 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
             // Formula: R_{n,1} = ε·|A_{n,1}| where ε is the threshold (base_threshold * validity_scale)
             let epsilon = base_threshold * validity_scale;
             let validity = if a_norm > 1e-20 {
-                epsilon * a_norm  // R_{n,1} = ε·|A_{n,1}|
+                epsilon * a_norm // R_{n,1} = ε·|A_{n,1}|
             } else {
                 0.0
             };
@@ -435,11 +480,14 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
                 // ε·inf|A| - sup|B|·|c| / inf|A| ≈ ε·|A| - |c| / |A|
                 // For deep zooms where |c| << |A|, this simplifies to ε·|A|.
                 // We use ε·|A| as the non-linearity radius (valid in stable quadrant).
-                let nonlinearity_radius = validity;  // ε·|A| ≈ ε·inf|A| - sup|B|·|c| / inf|A| (for conformal case)
-                let folding_radius_re = z.re.abs() / 2.0;  // |X|/2 (fudge factor for paranoia)
-                let folding_radius_im = z.im.abs() / 2.0;  // |Y|/2 (fudge factor for paranoia)
-                // R = max{0, min{nonlinearity_radius, |X|/2, |Y|/2}}
-                validity = nonlinearity_radius.min(folding_radius_re).min(folding_radius_im).max(0.0);
+                let nonlinearity_radius = validity; // ε·|A| ≈ ε·inf|A| - sup|B|·|c| / inf|A| (for conformal case)
+                let folding_radius_re = z.re.abs() / 2.0; // |X|/2 (fudge factor for paranoia)
+                let folding_radius_im = z.im.abs() / 2.0; // |Y|/2 (fudge factor for paranoia)
+                                                          // R = max{0, min{nonlinearity_radius, |X|/2, |Y|/2}}
+                validity = nonlinearity_radius
+                    .min(folding_radius_re)
+                    .min(folding_radius_im)
+                    .max(0.0);
             }
 
             // Calculate quadrant signs for Burning Ship optimization
@@ -465,7 +513,11 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
     // Heuristique petites images: limiter la profondeur de merge pour réduire le coût fixe.
     // Utile surtout quand width*height est faible et que l'orbite de référence est longue.
     let pixel_count = (params.width as usize).saturating_mul(params.height as usize);
-    let max_level = if pixel_count <= 65_536 { 12usize } else { 16usize };
+    let max_level = if pixel_count <= 65_536 {
+        12usize
+    } else {
+        16usize
+    };
     for level in 1..=max_level {
         let step = 1usize << (level - 1);
         let prev = &levels[level - 1];
@@ -499,9 +551,9 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
             });
         }
         for i in start_idx..(prev.len() - step) {
-            let node1 = prev[i];      // T_x: skips l_x = step iterations from m_x = i
-            let node2 = prev[i + step];  // T_y: skips l_y = step iterations from m_x + l_x = i + step
-            
+            let node1 = prev[i]; // T_x: skips l_x = step iterations from m_x = i
+            let node2 = prev[i + step]; // T_y: skips l_y = step iterations from m_x + l_x = i + step
+
             // Merging BLA Steps:
             // If T_x skips l_x iterations from iteration m_x when |z| < R_x
             // and T_y skips l_y iterations from iteration m_x + l_x when |z| < R_y,
@@ -516,11 +568,11 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
             // Composition des coefficients (merge order: y∘x where y=node2, x=node1):
             // C++: merge(y, x, c) where A = y.A * x.A, B = y.A * x.B + y.B
             // Rust: node2 corresponds to y (later BLA), node1 corresponds to x (earlier BLA)
-            let a_new = node2.a * node1.a;  // A_z = A_y·A_x (composition: y∘x)
-            let b_new = node2.a * node1.b + node2.b;  // B_z = A_y·B_x + B_y
+            let a_new = node2.a * node1.a; // A_z = A_y·A_x (composition: y∘x)
+            let b_new = node2.a * node1.b + node2.b; // B_z = A_y·B_x + B_y
             let a1_sq = node1.a * node1.a;
             let c_new = node2.a * node1.c + node2.c * a1_sq;
-            
+
             // Coefficients d'ordre supérieur pour Multibrot
             // D_new ≈ A2·D1 + 2·C2·A1·C1 + D2·A1³
             let d_new = if params.fractal_type == FractalType::Multibrot {
@@ -528,18 +580,18 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
             } else {
                 zero
             };
-            
+
             // E_new ≈ A2·E1 + 2·C2·(A1·D1 + C1²) + 3·D2·A1²·C1 + E2·A1⁴
             let e_new = if params.fractal_type == FractalType::Multibrot {
                 let c1_sq = node1.c * node1.c;
-                node2.a * node1.e 
+                node2.a * node1.e
                     + node2.c * (node1.a * node1.d + c1_sq) * 2.0
                     + node2.d * a1_sq * node1.c * 3.0
                     + node2.e * a1_sq * a1_sq
             } else {
                 zero
             };
-            
+
             // Merging BLA validity formula (F3 `bla.h:37`) :
             // R_z = max{0, min{R_x, (R_y - |B_x|·c) / |A_x|}}
             //
@@ -551,10 +603,10 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
             // - `c` = c_image = rayon image en espace-c (max |δc|, F3
             //   `engine.cc:282`), PAS |cref|. Le /|A_x| porte sur tout le
             //   numérateur (R_y inclus), cf. F3.
-            let a1_norm = node1.a.norm();  // |A_x|
+            let a1_norm = node1.a.norm(); // |A_x|
             let is_julia = params.fractal_type == FractalType::Julia;
             let validity = if a1_norm > 1e-20 && !is_julia {
-                let b1_norm = node1.b.norm();  // |B_x|
+                let b1_norm = node1.b.norm(); // |B_x|
                 let inner = (node2.validity_radius - b1_norm * c_image).max(0.0) / a1_norm;
                 node1.validity_radius.min(inner).max(0.0)
             } else {
@@ -562,20 +614,28 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
                 // R_z = max{0, min{R_x, R_y}}
                 node1.validity_radius.min(node2.validity_radius)
             };
-            
-            // Pour les niveaux supérieurs de Burning Ship, le BLA est valide 
+
+            // Pour les niveaux supérieurs de Burning Ship, le BLA est valide
             // seulement si les deux nœuds sont valides.
             // The merged BLA step radius is unchanged (same formula as conformal case).
             let bs_valid = node1.burning_ship_valid && node2.burning_ship_valid;
             let validity = if is_burning_ship && !bs_valid {
                 0.0
             } else {
-                validity  // Merged BLA step radius unchanged for Burning Ship
+                validity // Merged BLA step radius unchanged for Burning Ship
             };
-            
+
             // Valider les coefficients d'ordre supérieur
-            let d_new = if d_new.re.is_finite() && d_new.im.is_finite() { d_new } else { zero };
-            let e_new = if e_new.re.is_finite() && e_new.im.is_finite() { e_new } else { zero };
+            let d_new = if d_new.re.is_finite() && d_new.im.is_finite() {
+                d_new
+            } else {
+                zero
+            };
+            let e_new = if e_new.re.is_finite() && e_new.im.is_finite() {
+                e_new
+            } else {
+                zero
+            };
 
             // Propagate signs from starting node (node1)
             // For multi-step BLA, the starting quadrant determines the sign
@@ -591,7 +651,7 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
                 sign_im: node1.sign_im,
             });
         }
-        levels.push(current);  // Level k: ⌈M/2^k⌉ BLAs each skipping 2^k iterations
+        levels.push(current); // Level k: ⌈M/2^k⌉ BLAs each skipping 2^k iterations
     }
     // The resulting table has O(M) elements: M + M/2 + M/4 + ... = 2M - 1 = O(M)
 
@@ -618,19 +678,20 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
     }
 
     // Flatten non-conformal levels similarly
-    let (nc_nodes, nc_level_offsets, nc_level_lengths) = if let Some(ref nc_levels) = nonconformal_levels {
-        let mut nc_flat = Vec::new();
-        let mut nc_offs = Vec::new();
-        let mut nc_lens = Vec::new();
-        for level in nc_levels {
-            nc_offs.push(nc_flat.len());
-            nc_lens.push(level.len());
-            nc_flat.extend_from_slice(level);
-        }
-        (Some(nc_flat), Some(nc_offs), Some(nc_lens))
-    } else {
-        (None, None, None)
-    };
+    let (nc_nodes, nc_level_offsets, nc_level_lengths) =
+        if let Some(ref nc_levels) = nonconformal_levels {
+            let mut nc_flat = Vec::new();
+            let mut nc_offs = Vec::new();
+            let mut nc_lens = Vec::new();
+            for level in nc_levels {
+                nc_offs.push(nc_flat.len());
+                nc_lens.push(level.len());
+                nc_flat.extend_from_slice(level);
+            }
+            (Some(nc_flat), Some(nc_offs), Some(nc_lens))
+        } else {
+            (None, None, None)
+        };
 
     BlaTable {
         nodes,
@@ -650,7 +711,11 @@ pub fn build_bla_table(ref_orbit: &[Complex64], params: &FractalParams, cref: Co
 /// coefficients leads to incorrect merging at higher levels when the reference orbit crosses
 /// quadrant boundaries. The 2×2 matrix approach correctly handles all quadrants via matrix
 /// multiplication.
-pub fn build_bla_table_nonconformal(ref_orbit: &[Complex64], params: &FractalParams, _cref: Complex64) -> Option<Vec<Vec<BlaNodeNonConformal>>> {
+pub fn build_bla_table_nonconformal(
+    ref_orbit: &[Complex64],
+    params: &FractalParams,
+    _cref: Complex64,
+) -> Option<Vec<Vec<BlaNodeNonConformal>>> {
     let is_tricorn = params.fractal_type == FractalType::Tricorn;
     let is_burning_ship = params.fractal_type == FractalType::BurningShip;
     if !is_tricorn && !is_burning_ship {
@@ -692,7 +757,9 @@ pub fn build_bla_table_nonconformal(ref_orbit: &[Complex64], params: &FractalPar
                 coeffs.b,
                 base_threshold * validity_scale,
                 cref_norm,
-            ).min(max_validity).max(0.0);
+            )
+            .min(max_validity)
+            .max(0.0);
 
             // For Burning Ship, constrain validity by distance to folding lines (|X|=0, |Y|=0).
             // The absolute value operation folds the plane at these lines, making the BLA
@@ -714,7 +781,11 @@ pub fn build_bla_table_nonconformal(ref_orbit: &[Complex64], params: &FractalPar
 
     // Merge levels: start from iteration 1 (iteration 0 is always non-linear)
     let pixel_count = (params.width as usize).saturating_mul(params.height as usize);
-    let max_level = if pixel_count <= 65_536 { 12usize } else { 16usize };
+    let max_level = if pixel_count <= 65_536 {
+        12usize
+    } else {
+        16usize
+    };
     for level in 1..=max_level {
         let step = 1usize << (level - 1);
         let prev = &levels[level - 1];
@@ -747,7 +818,7 @@ pub fn build_bla_table_nonconformal(ref_orbit: &[Complex64], params: &FractalPar
                 node2.validity_radius,
                 cref_norm,
             );
-            
+
             current.push(BlaNodeNonConformal {
                 a: az,
                 b: bz,

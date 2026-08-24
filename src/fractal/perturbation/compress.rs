@@ -22,7 +22,52 @@
 //! par défaut reste bit-identique). L'instrumentation phase 1
 //! (`FRACTALL_COMPRESS_REF_STATS=1`, log `[COMPRESS]`) reste disponible.
 
+use std::sync::Arc;
+
 use num_complex::Complex64;
+
+use crate::fractal::perturbation::delta;
+use crate::fractal::perturbation::orbit::ReferenceOrbitCache;
+use crate::fractal::perturbation::types::ComplexExp;
+use crate::fractal::FractalParams;
+
+/// Libère les tableaux pleins de l'orbite lorsque le routage compressé est
+/// actif. Si le cache est partagé, le chemin compressé reste actif et la
+/// libération attend le prochain rendu.
+pub(super) fn strip_orbit_arrays_for_compress(
+    cache: Arc<ReferenceOrbitCache>,
+    params: &FractalParams,
+) -> Arc<ReferenceOrbitCache> {
+    if !delta::compressed_ref_route_active(params, &cache.orbit) {
+        return cache;
+    }
+    let (wp_count, wp_bytes) = cache
+        .orbit
+        .compressed_f64
+        .as_ref()
+        .map(|c| (c.waypoints.len(), c.memory_bytes()))
+        .unwrap_or((0, 0));
+    let full_bytes = cache.orbit.z_ref_f64.len() * std::mem::size_of::<Complex64>()
+        + cache.orbit.z_ref.len() * std::mem::size_of::<ComplexExp>();
+    match Arc::try_unwrap(cache) {
+        Ok(mut owned) => {
+            owned.orbit.z_ref_f64 = Vec::new();
+            owned.orbit.z_ref = Vec::new();
+            eprintln!(
+                "[COMPRESS] actif : réf via {} waypoints ({:.3} Mo) ; libéré z_ref_f64+z_ref = {:.1} Mo",
+                wp_count, wp_bytes as f64 / 1e6, full_bytes as f64 / 1e6,
+            );
+            Arc::new(owned)
+        }
+        Err(shared) => {
+            eprintln!(
+                "[COMPRESS] actif : réf via {} waypoints ({:.3} Mo) ; libération sautée (Arc partagé) — {:.1} Mo évités au prochain rendu",
+                wp_count, wp_bytes as f64 / 1e6, full_bytes as f64 / 1e6,
+            );
+            shared
+        }
+    }
+}
 
 /// Tolérance de décrochage par défaut (Imagina : `0x1p-32`).
 pub const DEFAULT_TOLERANCE: f64 = 2.328_306_436_538_696e-10; // 2^-32
@@ -128,7 +173,6 @@ impl<'a> ReferenceCompressor<'a> {
     /// Usage « add pour tout SAUF la dernière valeur, puis finalize(last) »
     /// (cf. tests roundtrip). Le build d'orbite production, qui appelle `add`
     /// pour TOUTES les valeurs au fil de l'eau, doit clore par [`seal`].
-    #[allow(dead_code)] // API mirror Imagina, consommée par les tests roundtrip.
     pub fn finalize(&mut self, z_exact: Complex64) {
         self.iteration += 1;
         self.reference.waypoints.push(Waypoint {
@@ -163,7 +207,6 @@ impl<'a> ReferenceCompressor<'a> {
     }
 
     /// Nombre d'itérations compressées jusqu'ici.
-    #[allow(dead_code)] // API mirror Imagina (instrumentation).
     pub fn iterations(&self) -> u32 {
         self.iteration
     }
@@ -190,7 +233,6 @@ impl<'a> ReferenceDecompressor<'a> {
     }
 
     #[inline]
-    #[allow(dead_code)] // API mirror Imagina, consommée par les tests.
     pub fn get(&self) -> Complex64 {
         self.z
     }
@@ -211,7 +253,6 @@ impl<'a> ReferenceDecompressor<'a> {
 
     /// Vrai quand la réf compressée est épuisée (dernier waypoint consommé).
     #[inline]
-    #[allow(dead_code)] // API mirror Imagina, consommée par les tests.
     pub fn end(&self) -> bool {
         self.next_waypoint >= self.reference.waypoints.len()
     }
@@ -342,7 +383,10 @@ mod tests {
         // décrochages fréquents ; les waypoints doivent maintenir la
         // tolérance partout.
         let (wps, max_rel) = roundtrip(Complex64::new(-1.9997740601362, 0.0), 5_000);
-        assert!(wps > 10, "chaotique : compression étonnamment forte ({wps})");
+        assert!(
+            wps > 10,
+            "chaotique : compression étonnamment forte ({wps})"
+        );
         assert!(max_rel <= DEFAULT_TOLERANCE * 1.0001);
     }
 
@@ -352,7 +396,10 @@ mod tests {
         // s'effondre → tout écart force un waypoint, y compris underflow.
         let c = Complex64::new(-1.7548776662466927, 0.0); // ~racine réelle période 3
         let orb = orbit(c, 300);
-        let min_norm = orb.iter().map(|z| chebyshev_norm(*z)).fold(f64::MAX, f64::min);
+        let min_norm = orb
+            .iter()
+            .map(|z| chebyshev_norm(*z))
+            .fold(f64::MAX, f64::min);
         assert!(min_norm < 1e-3, "l'orbite doit frôler 0 (min={min_norm:e})");
         let mut cref = CompressedReference::default();
         {
@@ -429,7 +476,10 @@ mod tests {
                 assert_eq!(z, z_exact, "waypoint {k} non snappé après seek");
             }
         }
-        assert!(dec.end(), "waypoint terminal non consommé après seek+replay");
+        assert!(
+            dec.end(),
+            "waypoint terminal non consommé après seek+replay"
+        );
     }
 
     /// `seek(0, 0)` ≡ `reset()` : même état, même replay bit-identique.

@@ -837,7 +837,7 @@ fn main() {
     } else if cli.gpu {
         true
     } else {
-        fractal::wisdom::select_device(&params, true) == fractal::wisdom::Device::Gpu
+        fractal::wisdom::auto_plan(&params, true).device == fractal::wisdom::Device::Gpu
     };
 
     let aa_samples = cli.aa_samples.max(1);

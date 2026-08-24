@@ -488,30 +488,24 @@ impl GpuRenderer {
         orbit_cache: Option<&Arc<ReferenceOrbitCache>>,
     ) -> Option<GpuDispatchResult> {
         use crate::fractal::wisdom;
+        let render_plan = wisdom::plan_for(params, wisdom::Device::Gpu);
         // G4 jalon 2 : le GPU ne cycle pas les phases (shaders/kernel mono-
         // formule) → aucun path GPU pour un hybride. `None` → fallback CPU
         // (f64 standard, seul path multi-phase). Empêche `--gpu`/GUI de rendre
         // un hybride en base-type faux.
-        if params.is_hybrid_formula() {
-            return None;
-        }
         // Nucleus finder : la référence est déplacée par Newton et le kernel
         // calcule `center − cref` en f64 — au-delà de ~1e16 l'offset est sous
         // l'ulp (recentrage silencieux ≠ CPU, ou frame vide) ; de plus la
         // matrice K du nucleus (dans le cache) n'est appliquée qu'au mapping
         // CPU. → fallback CPU (bug 2026-08-23).
-        if params.find_nucleus {
-            return None;
-        }
         // Canaux distances/orbites ou tier dd demandés : le GPU ne les produit
         // pas → fallback CPU plutôt qu'une image plausible mais fausse.
-        if wisdom::gpu_lacks_features(params) {
+        if !render_plan.gpu_compatible {
             return None;
         }
         // Sélection wisdom (source unique, G9.1) — device Gpu : seuil
         // d'activation perturbation f32 (~1e5) au lieu du seuil CPU (~1e12).
-        let use_perturbation = wisdom::select_algorithm(params, wisdom::Device::Gpu)
-            == wisdom::Algorithm::Perturbation;
+        let use_perturbation = render_plan.algorithm == wisdom::Algorithm::Perturbation;
 
         let std_result = |r: Option<(Vec<u32>, Vec<Complex64>)>| {
             r.map(|(iterations, zs)| GpuDispatchResult {

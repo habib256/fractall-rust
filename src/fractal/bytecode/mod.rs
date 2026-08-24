@@ -12,17 +12,18 @@
 
 use crate::fractal::FractalType;
 
+pub mod bla_dd;
 pub mod bla_dual;
 pub mod bla_dual_exp;
 pub mod compile;
 pub mod delta_form;
+pub mod harmonic_mla;
 pub mod interp;
 pub mod interp_gmp;
-pub mod bla_dd;
-pub mod harmonic_mla;
 pub mod pixel_loop;
 pub mod pixel_loop_dd;
 pub mod pixel_loop_exp;
+pub mod pixel_loop_gmp;
 
 #[cfg(test)]
 mod tests;
@@ -53,7 +54,6 @@ pub enum Op {
     AbsY,
     /// Pas utilisé par les types actuels — réservé pour les hybrides
     /// (Mandelbar variants où on négocie la partie réelle).
-    #[allow(dead_code)]
     NegX,
     NegY,
     Add,
@@ -68,8 +68,10 @@ pub enum Op {
     /// Pas `Eq`/`Hash` à cause des f64 — on accepte cette restriction
     /// puisque les comparaisons d'opcodes restent structurelles via
     /// `PartialEq`.
-    #[allow(dead_code)]
-    Rot { cos_theta: f64, sin_theta: f64 },
+    Rot {
+        cos_theta: f64,
+        sin_theta: f64,
+    },
 }
 
 impl Op {
@@ -79,7 +81,6 @@ impl Op {
     /// `Op::Rot` ne peut pas être encodé dans le buffer u32 GPU actuel
     /// (payload (f64, f64)) — le caller GPU doit refuser ces formules
     /// avant l'upload. CPU et GMP gèrent `Rot` directement via le match.
-    #[allow(dead_code)]
     pub fn opcode_tag(self) -> u32 {
         match self {
             Op::Sqr => 0,
@@ -122,13 +123,8 @@ pub fn opcodes_degree(phase: &Phase) -> u32 {
 /// multi-phase, F3 utilise `last_degree` (la dernière phase appliquée avant
 /// l'évasion, cf. `hybrid.cc:334`). En supposant un évadé "régulier" qui
 /// quitte sur la dernière phase de la séquence, on prend `degrees[last]`.
-#[allow(dead_code)]
 pub fn formula_last_degree(formula: &Formula) -> u32 {
-    formula
-        .phases
-        .last()
-        .map(opcodes_degree)
-        .unwrap_or(2)
+    formula.phases.last().map(opcodes_degree).unwrap_or(2)
 }
 
 /// Une phase = séquence d'opcodes appliquée par itération.
@@ -163,7 +159,9 @@ pub struct Formula {
 
 impl Formula {
     pub fn single(phase: Phase) -> Self {
-        Self { phases: vec![phase] }
+        Self {
+            phases: vec![phase],
+        }
     }
 
     /// Construit une formule hybride à partir d'une liste de phases.
@@ -173,9 +171,11 @@ impl Formula {
     /// en passant `vec![mb_phase; 5].extend(vec![bs_phase; 3])`.
     ///
     /// Cf. `docs/fraktaler-3-analysis.md` §2 (chaînage de phases = hybrides).
-    #[allow(dead_code)]
     pub fn hybrid(phases: Vec<Phase>) -> Self {
-        assert!(!phases.is_empty(), "Formula::hybrid : phases ne peut pas être vide");
+        assert!(
+            !phases.is_empty(),
+            "Formula::hybrid : phases ne peut pas être vide"
+        );
         Self { phases }
     }
 

@@ -19,8 +19,6 @@ pub struct GmpInterpState {
     im_scratch: Float,
     /// Scratch complexe pour `Sqr` (z = z * z).
     cplx_scratch: Complex,
-    #[allow(dead_code)]
-    prec: u32,
 }
 
 impl GmpInterpState {
@@ -32,7 +30,6 @@ impl GmpInterpState {
             re_scratch: Float::with_val(prec, 0),
             im_scratch: Float::with_val(prec, 0),
             cplx_scratch: Complex::with_val(prec, (0, 0)),
-            prec,
         }
     }
 
@@ -81,7 +78,10 @@ impl GmpInterpState {
                 Op::Add => {
                     self.z += c;
                 }
-                Op::Rot { cos_theta, sin_theta } => {
+                Op::Rot {
+                    cos_theta,
+                    sin_theta,
+                } => {
                     // z := z * (cos + sin·i). On utilise les scratch flottants
                     // pour construire le multiplicateur à la précision du
                     // contexte sans allouer un Complex éphémère par étape.
@@ -99,11 +99,6 @@ impl GmpInterpState {
         if n_phases > 1 {
             self.phase = (self.phase + 1) % n_phases;
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn prec(&self) -> u32 {
-        self.prec
     }
 }
 

@@ -307,18 +307,12 @@ pub fn iterate_point_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
         FractalType::PerpendicularBurningShipJulia => perpendicular_burning_ship_julia_mpc(g, z_pixel),
         FractalType::AlphaMandelbrotJulia => alpha_mandelbrot_julia_mpc(g, z_pixel),
         FractalType::MandelbrotSin => mandelbrot_sin_mpc(g, z_pixel),
-        FractalType::Buddhabrot => {
-            panic!("Buddhabrot doit être rendu via render_buddhabrot(), pas iterate_point_mpc()")
-        }
-        FractalType::Lyapunov => {
-            panic!("Lyapunov doit être rendu via render_lyapunov(), pas iterate_point_mpc()")
-        }
-        FractalType::Nebulabrot => {
-            panic!("Nebulabrot doit être rendu via render_nebulabrot(), pas iterate_point_mpc()")
-        }
-        FractalType::AntiBuddhabrot => {
-            panic!("Anti-Buddhabrot doit être rendu via render_antibuddhabrot(), pas iterate_point_mpc()")
-        }
+        special @ (FractalType::Buddhabrot
+        | FractalType::Lyapunov
+        | FractalType::Nebulabrot
+        | FractalType::AntiBuddhabrot) => panic!(
+            "{special:?} doit être rendu via le dispatcher cancellable, pas iterate_point_mpc()"
+        ),
     }
 }
 
@@ -355,18 +349,12 @@ pub fn iterate_point_gmp(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
         FractalType::PerpendicularBurningShipJulia => perpendicular_burning_ship_julia(g, z_pixel),
         FractalType::AlphaMandelbrotJulia => alpha_mandelbrot_julia(g, z_pixel),
         FractalType::MandelbrotSin => mandelbrot_sin(g, z_pixel),
-        FractalType::Buddhabrot => {
-            panic!("Buddhabrot doit être rendu via render_buddhabrot(), pas iterate_point_gmp()")
-        }
-        FractalType::Lyapunov => {
-            panic!("Lyapunov doit être rendu via render_lyapunov(), pas iterate_point_gmp()")
-        }
-        FractalType::Nebulabrot => {
-            panic!("Nebulabrot doit être rendu via render_nebulabrot(), pas iterate_point_gmp()")
-        }
-        FractalType::AntiBuddhabrot => {
-            panic!("Anti-Buddhabrot doit être rendu via render_antibuddhabrot(), pas iterate_point_gmp()")
-        }
+        special @ (FractalType::Buddhabrot
+        | FractalType::Lyapunov
+        | FractalType::Nebulabrot
+        | FractalType::AntiBuddhabrot) => panic!(
+            "{special:?} doit être rendu via le dispatcher cancellable, pas iterate_point_gmp()"
+        ),
     }
 }
 

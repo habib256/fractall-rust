@@ -21,7 +21,7 @@
 //!   utilise floatexp pour la passe de détection ; à porter si la perf
 //!   devient bloquante (cf. e22522 prec ~80k bits).
 
-use rug::{Assign, Complex, Float};
+use rug::{Assign, Float};
 
 use crate::fractal::perturbation::types::FloatExp;
 
@@ -38,7 +38,6 @@ pub struct NucleusResult {
     /// `true` si Newton a convergé. Lu via debug log uniquement aujourd'hui ;
     /// gardé pour exposer la qualité de convergence au caller (GUI futur,
     /// QA harness).
-    #[allow(dead_code)]
     pub converged: bool,
 }
 
@@ -151,21 +150,6 @@ pub fn find_period_atom_domain(
     }
 
     None
-}
-
-/// Alias rétro-compatible : utilise une échelle `s = 1e-6` par défaut, qui
-/// approxime une "zone d'intérêt" sans dépendre du zoom courant. Préférer
-/// `find_period_atom_domain` avec un `s` explicite quand le zoom est connu.
-#[deprecated(note = "use find_period_atom_domain with an explicit view scale `s`")]
-#[allow(dead_code)]
-pub fn find_period(
-    cx: &Float,
-    cy: &Float,
-    max_iter: u32,
-    prec: u32,
-) -> Option<u32> {
-    let s = Float::with_val(prec, 1e-6);
-    find_period_atom_domain(cx, cy, max_iter, &s, prec)
 }
 
 /// Newton-raffine le centre vers le nucleus exact de période `period`.
@@ -424,12 +408,7 @@ impl HybridSize {
 /// **Coût** : O(period × prec²) en GMP. Pour un zoom 1e1000 avec
 /// period ~10⁵ et prec ~3300 bits, l'appel prend plusieurs secondes.
 /// Acceptable comme étape unique avant un rendu deep zoom.
-pub fn hybrid_size_mat2(
-    cx: &Float,
-    cy: &Float,
-    period: u32,
-    prec: u32,
-) -> Option<HybridSize> {
+pub fn hybrid_size_mat2(cx: &Float, cy: &Float, period: u32, prec: u32) -> Option<HybridSize> {
     if period == 0 {
         return None;
     }
@@ -751,7 +730,10 @@ impl GmpDualMat2 {
                         self.j[3] += 1u32;
                     }
                 }
-                Op::Rot { cos_theta, sin_theta } => {
+                Op::Rot {
+                    cos_theta,
+                    sin_theta,
+                } => {
                     let rx = Float::with_val(prec, *cos_theta);
                     let ry = Float::with_val(prec, *sin_theta);
                     self.j = Self::cmul_mat(prec, &rx, &ry, &self.j);
@@ -1037,7 +1019,8 @@ pub fn hybrid_size_mat2_formula(
     let beta = floatexp_sqrt(det_b_fexp);
     // llb = exp(log(λ)·d)·β ; size = 1/llb. log(λ) via mantisse+exposant.
     let log_lambda = lambda.mantissa.ln() + (lambda.exponent as f64) * std::f64::consts::LN_2;
-    let log_llb = log_lambda * d + beta.mantissa.ln() + (beta.exponent as f64) * std::f64::consts::LN_2;
+    let log_llb =
+        log_lambda * d + beta.mantissa.ln() + (beta.exponent as f64) * std::f64::consts::LN_2;
     // size = exp(−log_llb) → FloatExp via base 2.
     let log2_size = -log_llb / std::f64::consts::LN_2;
     let e = log2_size.floor();
@@ -1055,12 +1038,20 @@ pub fn hybrid_size_mat2_formula(
             let r = Float::with_val(prec, num / &db);
             let r_fexp = gmp_to_fexp(&r);
             // divisé ensuite par β : (r/β) en FloatExp → f64
-            let scaled = FloatExp::new(r_fexp.mantissa, r_fexp.exponent)
-                .div(beta_f);
+            let scaled = FloatExp::new(r_fexp.mantissa, r_fexp.exponent).div(beta_f);
             let v = scaled.to_f64();
-            if neg { -v } else { v }
+            if neg {
+                -v
+            } else {
+                v
+            }
         };
-        [el(&b[3], false), el(&b[2], true), el(&b[1], true), el(&b[0], false)]
+        [
+            el(&b[3], false),
+            el(&b[2], true),
+            el(&b[1], true),
+            el(&b[0], false),
+        ]
     };
 
     Some(HybridSize { size, k })
@@ -1081,15 +1072,6 @@ pub fn find_nucleus_formula(
     Some(result)
 }
 
-/// Helper : centre complexe → (Float, Float).
-#[allow(dead_code)]
-pub fn complex_to_xy(c: &Complex, prec: u32) -> (Float, Float) {
-    (
-        Float::with_val(prec, c.real()),
-        Float::with_val(prec, c.imag()),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1107,15 +1089,11 @@ mod tests {
         let cy = Float::with_val(prec, 0.0002);
         let s = Float::with_val(prec, 1e-3);
 
-        let p_z2c = find_period_atom_domain(&cx, &cy, 1000, &s, prec)
-            .expect("période z²+c");
-        let f = compile_hybrid_formula(
-            &[FractalType::Mandelbrot, FractalType::Mandelbrot],
-            2.0,
-        )
-        .expect("formule [M,M]");
-        let p_mm = find_period_atom_domain_formula(&f, &cx, &cy, 1000, &s, prec)
-            .expect("période [M,M]");
+        let p_z2c = find_period_atom_domain(&cx, &cy, 1000, &s, prec).expect("période z²+c");
+        let f = compile_hybrid_formula(&[FractalType::Mandelbrot, FractalType::Mandelbrot], 2.0)
+            .expect("formule [M,M]");
+        let p_mm =
+            find_period_atom_domain_formula(&f, &cx, &cy, 1000, &s, prec).expect("période [M,M]");
         assert_eq!(p_mm, p_z2c, "période mat2 ≠ z²+c");
 
         let r_z2c = newton_refine_center(&cx, &cy, p_z2c, prec, 64);
@@ -1126,11 +1104,14 @@ mod tests {
         let dy = Float::with_val(prec, &r_mm.center_y - &r_z2c.center_y)
             .abs()
             .to_f64();
-        assert!(dx < 1e-20 && dy < 1e-20, "centres divergent : dx={dx:e} dy={dy:e}");
+        assert!(
+            dx < 1e-20 && dy < 1e-20,
+            "centres divergent : dx={dx:e} dy={dy:e}"
+        );
 
         // Size/K : mêmes valeurs (J conforme ⇒ mat2 ≡ complexe).
-        let s_z2c = hybrid_size_mat2(&r_z2c.center_x, &r_z2c.center_y, p_z2c, prec)
-            .expect("size z²+c");
+        let s_z2c =
+            hybrid_size_mat2(&r_z2c.center_x, &r_z2c.center_y, p_z2c, prec).expect("size z²+c");
         let s_mm = hybrid_size_mat2_formula(&f, &r_mm.center_x, &r_mm.center_y, p_mm, prec)
             .expect("size [M,M]");
         let ratio = s_mm.size.div(s_z2c.size).to_f64();
@@ -1161,11 +1142,8 @@ mod tests {
         let cx = Float::with_val(prec, -0.474404979221344);
         let cy = Float::with_val(prec, -0.6327382500546773);
         let s = Float::with_val(prec, 2e-6);
-        let f = compile_hybrid_formula(
-            &[FractalType::Mandelbrot, FractalType::BurningShip],
-            2.0,
-        )
-        .expect("formule [M,BS]");
+        let f = compile_hybrid_formula(&[FractalType::Mandelbrot, FractalType::BurningShip], 2.0)
+            .expect("formule [M,BS]");
         let period = find_period_atom_domain_formula(&f, &cx, &cy, 20000, &s, prec)
             .expect("période blob [M,BS]");
         assert!(period > 0);
@@ -1206,7 +1184,11 @@ mod tests {
             sz.is_finite() && sz > 0.0 && sz < 1e-2,
             "size {sz:e} non plausible"
         );
-        assert!(hs.k.iter().all(|v| v.is_finite()), "K non finie : {:?}", hs.k);
+        assert!(
+            hs.k.iter().all(|v| v.is_finite()),
+            "K non finie : {:?}",
+            hs.k
+        );
         eprintln!(
             "[MBS-NUCLEUS] period={period} newton_steps={} converged={} size={sz:e} K={:?}",
             r.newton_steps, r.converged, hs.k
@@ -1237,7 +1219,11 @@ mod tests {
         let res = newton_refine_center(&cx, &cy, 2, prec, 64);
         assert!(res.converged);
         let actual = res.center_x.to_f64();
-        assert!((actual - (-1.0)).abs() < 1e-10, "Expected -1, got {}", actual);
+        assert!(
+            (actual - (-1.0)).abs() < 1e-10,
+            "Expected -1, got {}",
+            actual
+        );
     }
 
     #[test]
@@ -1330,7 +1316,11 @@ mod tests {
         );
         // size > 0 et fini.
         let s = hs.size.to_f64();
-        assert!(s.is_finite() && s > 0.0, "size should be positive finite, got {}", s);
+        assert!(
+            s.is_finite() && s > 0.0,
+            "size should be positive finite, got {}",
+            s
+        );
     }
 
     #[test]

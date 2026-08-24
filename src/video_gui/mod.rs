@@ -19,6 +19,7 @@
 pub mod job;
 pub mod nav;
 pub mod timeline;
+pub mod timeline_state;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -136,7 +137,7 @@ pub struct VideoStudioApp {
     preview_iters: u32,
 
     // --- Rendu preview asynchrone ---
-    preview_version: u64,
+    preview_version: crate::gui::async_version::AsyncVersion,
     preview_cancel: Arc<AtomicBool>,
     preview_rx: Option<mpsc::Receiver<PreviewPass>>,
     preview_rendering: bool,
@@ -199,11 +200,9 @@ pub struct VideoStudioApp {
     scrub_tx: Option<mpsc::Sender<ScrubRequest>>,
     scrub_rx: Option<mpsc::Receiver<ScrubReply>>,
     scrub_fingerprint: String,
-    scrub_version: u64,
     scrub_texture: Option<egui::TextureHandle>,
     scrub_label: String,
-    scrub_active: bool,
-    scrub_p: f64,
+    scrub: timeline_state::ScrubState,
     /// Positions p(frame) de l'assembleur, cachées par (n, fps, vitesse).
     scrub_positions: Option<(String, Vec<f64>)>,
     /// Compteur bumpé à chaque job terminé : invalide le cache du worker de
@@ -226,7 +225,7 @@ impl VideoStudioApp {
             seed: p.seed,
             multibrot_power: p.multibrot_power,
             preview_iters: 1000,
-            preview_version: 0,
+            preview_version: Default::default(),
             preview_cancel: Arc::new(AtomicBool::new(false)),
             preview_rx: None,
             preview_rendering: false,
@@ -265,11 +264,9 @@ impl VideoStudioApp {
             scrub_tx: None,
             scrub_rx: None,
             scrub_fingerprint: String::new(),
-            scrub_version: 0,
             scrub_texture: None,
             scrub_label: String::new(),
-            scrub_active: false,
-            scrub_p: 0.0,
+            scrub: Default::default(),
             scrub_positions: None,
             generation: 0,
             status: "Naviguez vers la cible (molette = zoom, glisser = déplacer) ou déposez un PNG fractall".into(),
@@ -334,8 +331,7 @@ impl VideoStudioApp {
         };
         self.preview_cancel.store(true, Ordering::Relaxed);
         self.preview_cancel = Arc::new(AtomicBool::new(false));
-        self.preview_version += 1;
-        let version = self.preview_version;
+        let version = self.preview_version.issue();
         let cancel = self.preview_cancel.clone();
         let (tx, rx) = mpsc::channel();
         self.preview_rx = Some(rx);
@@ -488,7 +484,7 @@ impl VideoStudioApp {
         self.job_total = None;
         self.tl_current = None;
         self.probed_dir = None;
-        self.scrub_active = false;
+        self.scrub.close();
     }
 
     fn drain_job_messages(&mut self) {
@@ -736,7 +732,7 @@ impl VideoStudioApp {
         let mut disconnected = false;
         loop {
             match rx.try_recv() {
-                Ok(pass) if pass.version == self.preview_version => latest = Some(pass),
+                Ok(pass) if self.preview_version.accepts(pass.version) => latest = Some(pass),
                 Ok(_) => {} // passe périmée (navigation depuis) : ignorée
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -1001,7 +997,7 @@ impl VideoStudioApp {
         self.preview_iters = iters;
         self.orbit_cache = None;
         self.preview_dirty = true;
-        self.scrub_active = false;
+        self.scrub.close();
         self.status = format!("Aperçu keyframe {k} — zoom e{:.1}", k as f64 * 2f64.log10());
     }
 
@@ -1079,8 +1075,7 @@ impl VideoStudioApp {
 
     /// Demande la frame de scrub à la position `p` (keyframe fractionnaire).
     fn start_scrub(&mut self, p: f64) {
-        self.scrub_active = true;
-        self.scrub_p = p;
+        let version = self.scrub.start(p);
         // Libellé temporel : frame la plus proche de p dans la timeline réelle.
         let fps = self.settings.fps.clamp(1, 120) as f64;
         let mut frame_idx = 0usize;
@@ -1098,7 +1093,6 @@ impl VideoStudioApp {
             self.scrub_label = format!("p = {p:.2}");
         }
         if self.ensure_scrub_worker() {
-            self.scrub_version += 1;
             let (w, h) = self.panel_size;
             if let Some(tx) = &self.scrub_tx {
                 let _ = tx.send(ScrubRequest {
@@ -1114,7 +1108,7 @@ impl VideoStudioApp {
                     },
                     out_w: w.max(64),
                     out_h: h.max(48),
-                    version: self.scrub_version,
+                    version,
                 });
             }
         } else {
@@ -1130,7 +1124,7 @@ impl VideoStudioApp {
         }
         match latest {
             Some(ScrubReply::Frame { rgb, w, h, version, missing_next }) => {
-                if version != self.scrub_version {
+                if !self.scrub.accepts(version) {
                     return; // réponse périmée (drag depuis)
                 }
                 let img = egui::ColorImage::from_rgb([w as usize, h as usize], &rgb);
@@ -1149,7 +1143,7 @@ impl VideoStudioApp {
                 }
             }
             Some(ScrubReply::Missing { k, version }) => {
-                if version == self.scrub_version {
+                if self.scrub.accepts(version) {
                     self.scrub_label = format!("Keyframe {k} pas encore rendue — Générer la produira");
                 }
             }
@@ -1470,8 +1464,8 @@ impl VideoStudioApp {
             self.draw_thumbs(ui, full_rect.min.x, thumbs_top, n, cell_w);
 
             // Curseur de scrub sur toute la hauteur.
-            if self.scrub_active {
-                let x = full_rect.min.x + ((self.scrub_p + 0.5) * cell_w as f64) as f32;
+            if self.scrub.active() {
+                let x = full_rect.min.x + ((self.scrub.position() + 0.5) * cell_w as f64) as f32;
                 ui.painter().vline(
                     x,
                     full_rect.y_range(),
@@ -1753,7 +1747,7 @@ impl VideoStudioApp {
         // Mode scrub (G13) : la zone centrale montre la FRAME VIDÉO interpolée
         // (même code que l'assembleur). Toute interaction de navigation
         // (clic, glisser, molette) rend la main à la preview live.
-        if self.scrub_active {
+        if self.scrub.active() {
             if let Some(tex) = &self.scrub_texture {
                 ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
                     ui.add(egui::Image::new(tex).fit_to_exact_size(rect.size()));
@@ -1777,7 +1771,7 @@ impl VideoStudioApp {
             );
             let wheel = ui.ctx().input(|i| i.smooth_scroll_delta.y) != 0.0;
             if response.clicked() || response.dragged() || (response.hovered() && wheel) {
-                self.scrub_active = false;
+                self.scrub.close();
             }
             return;
         }

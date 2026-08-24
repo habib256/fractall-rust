@@ -38,11 +38,40 @@ impl GlitchCluster {
     pub fn len(&self) -> usize {
         self.pixel_indices.len()
     }
+}
 
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.pixel_indices.is_empty()
+/// Marque les pixels dont le compte d'itérations s'écarte fortement d'un de
+/// leurs quatre voisins directs.
+pub fn mark_neighbor_glitches(
+    iterations: &[u32],
+    width: u32,
+    height: u32,
+    threshold: u32,
+) -> Vec<bool> {
+    let size = (width * height) as usize;
+    let mut mask = vec![false; size];
+    if width < 3 || height < 3 || iterations.len() != size {
+        return mask;
     }
+
+    for y in 1..(height - 1) {
+        for x in 1..(width - 1) {
+            let idx = (y * width + x) as usize;
+            let center = iterations[idx];
+            let left = iterations[(y * width + (x - 1)) as usize];
+            let right = iterations[(y * width + (x + 1)) as usize];
+            let up = iterations[((y - 1) * width + x) as usize];
+            let down = iterations[((y + 1) * width + x) as usize];
+            let mut max_diff = center.abs_diff(left);
+            max_diff = max_diff.max(center.abs_diff(right));
+            max_diff = max_diff.max(center.abs_diff(up));
+            max_diff = max_diff.max(center.abs_diff(down));
+            if max_diff > threshold {
+                mask[idx] = true;
+            }
+        }
+    }
+    mask
 }
 
 /// Détecte les clusters de glitchs par composantes connexes.
@@ -125,11 +154,15 @@ pub fn detect_glitch_clusters(
 
         // Calculer le centre du cluster
         if cluster.len() >= min_cluster_size {
-            let (sum_x, sum_y) = cluster.pixel_indices.iter().fold((0usize, 0usize), |(sx, sy), &idx| {
-                let x = idx % w;
-                let y = idx / w;
-                (sx + x, sy + y)
-            });
+            let (sum_x, sum_y) =
+                cluster
+                    .pixel_indices
+                    .iter()
+                    .fold((0usize, 0usize), |(sx, sy), &idx| {
+                        let x = idx % w;
+                        let y = idx / w;
+                        (sx + x, sy + y)
+                    });
 
             let avg_x = sum_x as f64 / cluster.len() as f64;
             let avg_y = sum_y as f64 / cluster.len() as f64;
@@ -163,26 +196,8 @@ pub fn select_secondary_reference_points(
     clusters.iter().take(max_refs).collect()
 }
 
-/// Segregate glitched pixels by their iteration depth.
-///
-/// Inspired by rust-fractal-core's glitch resolution which groups glitched
-/// pixels by their last valid iteration count, then creates dedicated
-/// reference orbits for each group. This is more effective than spatial
-/// clustering alone because pixels that glitch at the same iteration
-/// likely need the same reference correction.
-///
-/// # Arguments
-/// * `glitch_mask` - Boolean mask of glitched pixels
-/// * `iterations` - Iteration counts per pixel
-/// * `z_finals` - Final z values per pixel (for selecting reference center)
-/// * `width` - Image width
-/// * `height` - Image height
-/// * `params` - Fractal parameters
-/// * `min_group_size` - Minimum group size to warrant a dedicated reference
-///
-/// # Returns
-/// Groups sorted by size (largest first), each with the optimal reference center
-/// (the pixel with smallest |z| norm in the group).
+/// Regroupe les pixels glitchés par profondeur d'itération et choisit, pour
+/// chaque groupe, le pixel de plus petit |z| comme centre de référence.
 pub fn segregate_glitches_by_iteration(
     glitch_mask: &[bool],
     iterations: &[u32],
@@ -193,59 +208,47 @@ pub fn segregate_glitches_by_iteration(
     min_group_size: usize,
 ) -> Vec<GlitchCluster> {
     let w = width as usize;
-    let h = height as usize;
-    let total = w * h;
+    let total = w * height as usize;
     if glitch_mask.len() != total || iterations.len() != total || z_finals.len() != total {
         return Vec::new();
     }
-
-    // Find max iteration among glitched pixels to size the Vec
-    let max_iter = glitch_mask.iter().enumerate()
-        .filter(|(_, &g)| g)
+    let max_iter = glitch_mask
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| **g)
         .map(|(idx, _)| iterations[idx])
         .max()
         .unwrap_or(0) as usize;
-
-    // Group glitched pixels by iteration count using Vec instead of HashMap
-    let mut groups: Vec<Vec<usize>> = vec![Vec::new(); max_iter + 1];
+    let mut groups = vec![Vec::new(); max_iter + 1];
     for idx in 0..total {
         if glitch_mask[idx] {
             groups[iterations[idx] as usize].push(idx);
         }
     }
-
-    // Convert groups to GlitchClusters
-    let mut clusters: Vec<GlitchCluster> = groups
+    let mut clusters: Vec<_> = groups
         .into_iter()
         .filter(|pixels| pixels.len() >= min_group_size)
         .map(|pixels| {
-            // Find the pixel with smallest |z| norm as reference center.
-            // Inspired by rust-fractal-core which uses the pixel with smallest
-            // z_norm as the glitch-resolving reference center.
             let best_idx = pixels
                 .iter()
-                .min_by(|&&a, &&b| {
-                    let na = z_finals[a].norm_sqr();
-                    let nb = z_finals[b].norm_sqr();
-                    na.partial_cmp(&nb).unwrap_or(std::cmp::Ordering::Equal)
-                })
                 .copied()
+                .min_by(|&a, &b| {
+                    z_finals[a]
+                        .norm_sqr()
+                        .partial_cmp(&z_finals[b].norm_sqr())
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
                 .unwrap_or(pixels[0]);
-
             let bx = best_idx % w;
             let by = best_idx / w;
-            let center_x = params.center_x + ((bx as f64 + 0.5) / w as f64 - 0.5) * params.span_x;
-            let center_y = params.center_y + ((by as f64 + 0.5) / h as f64 - 0.5) * params.span_y;
-
             GlitchCluster {
-                center_x,
-                center_y,
+                center_x: params.center_x + ((bx as f64 + 0.5) / w as f64 - 0.5) * params.span_x,
+                center_y: params.center_y
+                    + ((by as f64 + 0.5) / height as f64 - 0.5) * params.span_y,
                 pixel_indices: pixels,
             }
         })
         .collect();
-
-    // Sort by size descending (largest groups first for best impact)
     clusters.sort_by(|a, b| b.len().cmp(&a.len()));
     clusters
 }
@@ -255,6 +258,8 @@ mod tests {
     use super::*;
     use crate::fractal::definitions::default_params_for_type;
     use crate::fractal::{AlgorithmMode, FractalType};
+    use num_complex::Complex64;
+
     fn test_params() -> FractalParams {
         let mut p = default_params_for_type(FractalType::Mandelbrot, 10, 10);
         p.span_x = 4.0;
@@ -340,5 +345,48 @@ mod tests {
         // Should be sorted by size descending
         assert!(selected[0].len() >= selected[1].len());
         assert!(selected[1].len() >= selected[2].len());
+    }
+
+    #[test]
+    fn segregates_by_iteration_and_chooses_smallest_norm_center() {
+        let mut params = default_params_for_type(FractalType::Mandelbrot, 4, 2);
+        params.center_x = 0.0;
+        params.center_y = 0.0;
+        params.span_x = 4.0;
+        params.span_y = 2.0;
+
+        let mut glitch_mask = vec![false; 8];
+        glitch_mask[0] = true;
+        glitch_mask[1] = true;
+        glitch_mask[6] = true;
+        let iterations = vec![7, 7, 0, 0, 0, 0, 9, 0];
+        let mut z_finals = vec![Complex64::new(10.0, 0.0); 8];
+        z_finals[0] = Complex64::new(3.0, 0.0);
+        z_finals[1] = Complex64::new(1.0, 0.0);
+        z_finals[6] = Complex64::new(0.5, 0.0);
+
+        let clusters =
+            segregate_glitches_by_iteration(&glitch_mask, &iterations, &z_finals, 4, 2, &params, 2);
+
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].pixel_indices, vec![0, 1]);
+        assert_eq!(clusters[0].center_x, -0.5);
+        assert_eq!(clusters[0].center_y, -0.5);
+    }
+
+    #[test]
+    fn segregate_by_iteration_rejects_misaligned_buffers() {
+        let params = default_params_for_type(FractalType::Mandelbrot, 2, 2);
+
+        assert!(segregate_glitches_by_iteration(
+            &[true, false],
+            &[1],
+            &[Complex64::new(0.0, 0.0); 2],
+            2,
+            1,
+            &params,
+            1,
+        )
+        .is_empty());
     }
 }

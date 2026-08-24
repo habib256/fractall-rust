@@ -84,7 +84,10 @@ impl DoubleDouble {
 
     #[inline(always)]
     pub fn neg(self) -> Self {
-        Self { hi: -self.hi, lo: -self.lo }
+        Self {
+            hi: -self.hi,
+            lo: -self.lo,
+        }
     }
 
     #[inline(always)]
@@ -310,7 +313,10 @@ impl DoubleDoubleExp {
     /// Multiplication : produit des mantisses dd, somme des exposants.
     #[inline(always)]
     pub fn mul(self, rhs: Self) -> Self {
-        Self::normalized(self.mantissa.mul(rhs.mantissa), self.exponent + rhs.exponent)
+        Self::normalized(
+            self.mantissa.mul(rhs.mantissa),
+            self.exponent + rhs.exponent,
+        )
     }
 
     #[inline(always)]
@@ -340,7 +346,10 @@ impl DoubleDoubleExp {
         if self.mantissa.hi == 0.0 {
             return Self::ZERO;
         }
-        Self::normalized(self.mantissa.div(rhs.mantissa), self.exponent - rhs.exponent)
+        Self::normalized(
+            self.mantissa.div(rhs.mantissa),
+            self.exponent - rhs.exponent,
+        )
     }
 
     /// Re-normalise (par sécurité après de longues séquences).
@@ -362,10 +371,18 @@ impl PartialOrd for DoubleDoubleExp {
             return Some(Equal);
         }
         if self.mantissa.hi == 0.0 {
-            return Some(if other.mantissa.hi > 0.0 { Less } else { Greater });
+            return Some(if other.mantissa.hi > 0.0 {
+                Less
+            } else {
+                Greater
+            });
         }
         if other.mantissa.hi == 0.0 {
-            return Some(if self.mantissa.hi > 0.0 { Greater } else { Less });
+            return Some(if self.mantissa.hi > 0.0 {
+                Greater
+            } else {
+                Less
+            });
         }
         if s != o {
             return self.mantissa.hi.partial_cmp(&other.mantissa.hi);
@@ -597,7 +614,11 @@ mod tests {
         }
         // Attendu : 1.0 + 1e6 * 1e-10 = 1.0001 exactement.
         let expected = 1.0 + 1e6 * 1e-10;
-        assert!((acc.to_f64() - expected).abs() < 1e-13, "got {}", acc.to_f64());
+        assert!(
+            (acc.to_f64() - expected).abs() < 1e-13,
+            "got {}",
+            acc.to_f64()
+        );
     }
 
     #[test]
@@ -617,7 +638,11 @@ mod tests {
     fn ddexp_roundtrip_in_range() {
         for &x in &[1.5, -3.25, 1e100, 1e-100, 42.0, -0.001] {
             let v = DoubleDoubleExp::from_f64(x);
-            assert!((v.to_f64() - x).abs() <= x.abs() * 1e-15 + 1e-300, "x={}", x);
+            assert!(
+                (v.to_f64() - x).abs() <= x.abs() * 1e-15 + 1e-300,
+                "x={}",
+                x
+            );
         }
     }
 
@@ -717,9 +742,15 @@ mod tests {
         let a = ComplexDDExp::from_complex64(Complex64::new(1.0, 2.0));
         let b = ComplexDDExp::from_complex64(Complex64::new(3.0, 4.0));
         let p = a.mul(b).to_complex64_approx();
-        assert!((p.re - (-5.0)).abs() < 1e-13 && (p.im - 10.0).abs() < 1e-13, "{:?}", p);
+        assert!(
+            (p.re - (-5.0)).abs() < 1e-13 && (p.im - 10.0).abs() < 1e-13,
+            "{:?}",
+            p
+        );
         // mul_complex64 doit donner le même résultat.
-        let p2 = a.mul_complex64(Complex64::new(3.0, 4.0)).to_complex64_approx();
+        let p2 = a
+            .mul_complex64(Complex64::new(3.0, 4.0))
+            .to_complex64_approx();
         assert!((p2.re - (-5.0)).abs() < 1e-13 && (p2.im - 10.0).abs() < 1e-13);
     }
 
@@ -730,7 +761,11 @@ mod tests {
         let m = z.mul(z).to_complex64_approx();
         assert!((s.re - m.re).abs() < 1e-14 && (s.im - m.im).abs() < 1e-14);
         // (0.6-0.4i)² = 0.36-0.16 + 2·0.6·(-0.4)i = 0.20 - 0.48i.
-        assert!((s.re - 0.20).abs() < 1e-13 && (s.im - (-0.48)).abs() < 1e-13, "{:?}", s);
+        assert!(
+            (s.re - 0.20).abs() < 1e-13 && (s.im - (-0.48)).abs() < 1e-13,
+            "{:?}",
+            s
+        );
     }
 
     #[test]

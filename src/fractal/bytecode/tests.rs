@@ -175,7 +175,11 @@ fn multibrot_integer_iso() {
                 }
             }
         }
-        assert_eq!(divergences, 0, "Multibrot power={}: {} divergences", power, divergences);
+        assert_eq!(
+            divergences, 0,
+            "Multibrot power={}: {} divergences",
+            power, divergences
+        );
     }
 }
 

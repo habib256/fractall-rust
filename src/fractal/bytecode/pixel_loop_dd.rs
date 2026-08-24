@@ -23,6 +23,7 @@ use num_complex::Complex64;
 
 use super::bla_dd::BlaTableDd;
 use super::pixel_loop_exp::UnifiedPixelResultExp;
+use crate::fractal::perturbation::counter::PixelCounter;
 use crate::fractal::perturbation::dd::{ComplexDDExp, DoubleDoubleExp};
 use crate::fractal::perturbation::orbit::ReferenceOrbit;
 use crate::fractal::perturbation::types::FloatExp;
@@ -71,14 +72,13 @@ pub fn iterate_pixel_unified_ddexp_mandelbrot(
     let bailout_sqr = DoubleDoubleExp::from_f64(bailout * bailout);
 
     let mut delta = delta_initial;
-    let mut n = 0u32;
-    let mut m = 0u32;
+    let mut c = PixelCounter::new();
     let mut rebase_count = 0u32;
     let mut bla_steps = 0u32;
     let mut iters_ptb = 0u32;
     const REDUCE_INTERVAL: u32 = 250;
 
-    while n < iteration_max
+    while c.keep_iterating(iteration_max)
         && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
         && (max_bla_steps == 0 || bla_steps < max_bla_steps)
     {
@@ -87,30 +87,30 @@ pub fn iterate_pixel_unified_ddexp_mandelbrot(
         // un pas BLA saute plusieurs itérations et pourrait passer par-dessus le
         // point de rebase. Périodique : `wrap_periodic`.
         {
-            let z_m0 = z_ref_dd[m as usize];
+            let z_m0 = z_ref_dd[c.m_usize()];
             let zz = z_m0.add(delta);
-            let end_of_ref = (m as usize) + 1 >= ref_len;
+            let end_of_ref = c.m_usize() + 1 >= ref_len;
             if end_of_ref {
-                if let Some(m_wrapped) = ref_orbit.wrap_periodic(m) {
-                    m = m_wrapped;
+                if let Some(m_wrapped) = ref_orbit.wrap_periodic(c.m()) {
+                    c.set_ref_index(m_wrapped);
                 } else {
                     delta = zz;
-                    m = 0;
+                    c.rebase();
                     rebase_count += 1;
                 }
             } else if zz.norm_sqr() < delta.norm_sqr() {
                 delta = zz;
-                m = 0;
+                c.rebase();
                 rebase_count += 1;
             }
         }
 
-        let z_m = z_ref_dd[m as usize];
+        let z_m = z_ref_dd[c.m_usize()];
         // Bailout : |Z[m] + δ|² ≥ bailout² (tout en dd, pas de saturation f64).
         let z_abs = z_m.add(delta);
         if !(z_abs.norm_sqr() < bailout_sqr) {
             return UnifiedPixelResultExp {
-                iteration: n,
+                iteration: c.n(),
                 z_final: z_abs.to_complex64_approx(),
                 rebase_count,
                 bla_steps,
@@ -120,10 +120,9 @@ pub fn iterate_pixel_unified_ddexp_mandelbrot(
 
         // Pas BLA dd si disponible et valide : δ := A·δ + B·dc, saute `l` iters.
         if let Some(table) = bla {
-            if let Some(node) = table.lookup_fexp(m as usize, delta_norm_sqr_fexp(delta)) {
-                let new_n = n.saturating_add(node.l);
-                let new_m = m.saturating_add(node.l);
-                if new_n <= iteration_max && (new_m as usize) < ref_len {
+            if let Some(node) = table.lookup_fexp(c.m_usize(), delta_norm_sqr_fexp(delta)) {
+                let cand_c = c.after_jump(node.l);
+                if cand_c.n() <= iteration_max && cand_c.m_usize() < ref_len {
                     let a = node.a;
                     let b = node.b;
                     // A·δ (Mat2Dd × vecteur dd) + B·dc.
@@ -139,11 +138,13 @@ pub fn iterate_pixel_unified_ddexp_mandelbrot(
                         .add(delta.im.mul_dd(a.m11))
                         .add(dc.re.mul_dd(b.m10))
                         .add(dc.im.mul_dd(b.m11));
-                    delta = ComplexDDExp { re: new_re, im: new_im };
-                    n = new_n;
-                    m = new_m;
+                    delta = ComplexDDExp {
+                        re: new_re,
+                        im: new_im,
+                    };
+                    c = cand_c;
                     bla_steps += 1;
-                    if n % REDUCE_INTERVAL == 0 {
+                    if c.n() % REDUCE_INTERVAL == 0 {
                         delta.reduce();
                     }
                     continue;
@@ -157,14 +158,13 @@ pub fn iterate_pixel_unified_ddexp_mandelbrot(
             im: z_m.im.mul_f64(2.0),
         };
         delta = delta.mul(two_z).add(delta.sqr()).add(dc);
-        n += 1;
-        m += 1;
+        c.step();
         iters_ptb += 1;
 
         if !delta.is_finite() {
-            let m_read = (m as usize).min(ref_len - 1);
+            let m_read = c.m_usize().min(ref_len - 1);
             return UnifiedPixelResultExp {
-                iteration: n,
+                iteration: c.n(),
                 z_final: z_ref_dd[m_read].add(delta).to_complex64_approx(),
                 rebase_count,
                 bla_steps,
@@ -172,14 +172,14 @@ pub fn iterate_pixel_unified_ddexp_mandelbrot(
             };
         }
 
-        if n % REDUCE_INTERVAL == 0 {
+        if c.n() % REDUCE_INTERVAL == 0 {
             delta.reduce();
         }
     }
 
-    let final_m = (m as usize).min(ref_len - 1);
+    let final_m = c.m_usize().min(ref_len - 1);
     UnifiedPixelResultExp {
-        iteration: n,
+        iteration: c.n(),
         z_final: z_ref_dd[final_m].add(delta).to_complex64_approx(),
         rebase_count,
         bla_steps,

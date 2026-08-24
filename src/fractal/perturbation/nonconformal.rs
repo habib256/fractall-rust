@@ -33,7 +33,6 @@ pub struct Matrix2x2 {
 }
 
 impl Matrix2x2 {
-    #[allow(dead_code)]
     pub fn zero() -> Self {
         Self {
             m00: 0.0,
@@ -54,10 +53,7 @@ impl Matrix2x2 {
 
     /// Multiplie la matrice par un vecteur 2D (re, im)
     pub fn mul_vector(self, re: f64, im: f64) -> (f64, f64) {
-        (
-            self.m00 * re + self.m01 * im,
-            self.m10 * re + self.m11 * im,
-        )
+        (self.m00 * re + self.m01 * im, self.m10 * re + self.m11 * im)
     }
 
     /// Multiplie deux matrices
@@ -80,17 +76,6 @@ impl Matrix2x2 {
         }
     }
 
-    /// Multiplie la matrice par un scalaire
-    #[allow(dead_code)]
-    pub fn scale(self, s: f64) -> Self {
-        Self {
-            m00: self.m00 * s,
-            m01: self.m01 * s,
-            m10: self.m10 * s,
-            m11: self.m11 * s,
-        }
-    }
-
     /// Calcule la plus grande valeur singulière (sup|M|).
     /// Define sup|M| as the largest singular value of M.
     pub fn sup_norm(self) -> f64 {
@@ -100,10 +85,10 @@ impl Matrix2x2 {
         let mtm_01 = self.m00 * self.m01 + self.m10 * self.m11;
         let mtm_10 = self.m01 * self.m00 + self.m11 * self.m10;
         let mtm_11 = self.m01 * self.m01 + self.m11 * self.m11;
-        
+
         let trace = mtm_00 + mtm_11;
         let det = mtm_00 * mtm_11 - mtm_01 * mtm_10;
-        
+
         let discriminant = trace * trace - 4.0 * det;
         if discriminant < 0.0 {
             // Fallback: use Frobenius norm = sqrt(trace(M^T * M))
@@ -122,10 +107,10 @@ impl Matrix2x2 {
         let mtm_01 = self.m00 * self.m01 + self.m10 * self.m11;
         let mtm_10 = self.m01 * self.m00 + self.m11 * self.m10;
         let mtm_11 = self.m01 * self.m01 + self.m11 * self.m11;
-        
+
         let trace = mtm_00 + mtm_11;
         let det = mtm_00 * mtm_11 - mtm_01 * mtm_10;
-        
+
         let discriminant = trace * trace - 4.0 * det;
         if discriminant < 0.0 {
             // Matrix is singular or near-singular
@@ -150,16 +135,6 @@ pub struct BlaCoefficientsNonConformal {
     pub b: Matrix2x2,
 }
 
-impl BlaCoefficientsNonConformal {
-    #[allow(dead_code)]
-    pub fn zero() -> Self {
-        Self {
-            a: Matrix2x2::zero(),
-            b: Matrix2x2::zero(),
-        }
-    }
-}
-
 /// Calcule les coefficients BLA non-conformes pour Tricorn (Mandelbar).
 ///
 /// Tricorn is defined by: X + iY → (X - iY)² + C
@@ -167,7 +142,7 @@ impl BlaCoefficientsNonConformal {
 /// For non-conformal formulas, replace complex numbers by 2×2 real matrices for A, B.
 ///
 /// Tricorn: z' = (X - iY)² + C = (X² - Y² - 2iXY) + C
-/// 
+///
 /// Pour z = X + iY, on a:
 /// z' = X' + iY' où:
 /// X' = X² - Y² + C_re
@@ -181,7 +156,7 @@ impl BlaCoefficientsNonConformal {
 pub fn compute_tricorn_bla_coefficients(z: Complex64) -> BlaCoefficientsNonConformal {
     let x = z.re;
     let y = z.im;
-    
+
     // A = [[2X, -2Y], [-2Y, -2X]]
     let a = Matrix2x2 {
         m00: 2.0 * x,
@@ -189,10 +164,10 @@ pub fn compute_tricorn_bla_coefficients(z: Complex64) -> BlaCoefficientsNonConfo
         m10: -2.0 * y,
         m11: -2.0 * x,
     };
-    
+
     // B = I (matrice identité) car dc contribue directement
     let b = Matrix2x2::identity();
-    
+
     BlaCoefficientsNonConformal { a, b }
 }
 
@@ -241,18 +216,18 @@ pub fn compute_nonconformal_validity_radius(
     epsilon: f64,
     c_norm: f64,
 ) -> f64 {
-    let inf_a = a.inf_norm();  // inf|A|
-    let sup_b = b.sup_norm();  // sup|B|
-    
+    let inf_a = a.inf_norm(); // inf|A|
+    let sup_b = b.sup_norm(); // sup|B|
+
     if inf_a < 1e-20 {
-        return 0.0;  // Avoid division by zero
+        return 0.0; // Avoid division by zero
     }
-    
+
     // R = ε·inf|A| - sup|B|·|c| / inf|A|
-    let term1 = epsilon * inf_a;  // ε·inf|A|
-    let term2 = sup_b * c_norm / inf_a;  // sup|B|·|c| / inf|A|
-    
-    (term1 - term2).max(0.0)  // max{0, ε·inf|A| - sup|B|·|c| / inf|A|}
+    let term1 = epsilon * inf_a; // ε·inf|A|
+    let term2 = sup_b * c_norm / inf_a; // sup|B|·|c| / inf|A|
+
+    (term1 - term2).max(0.0) // max{0, ε·inf|A| - sup|B|·|c| / inf|A|}
 }
 
 /// Fusionne deux BLAs non-conformes.
@@ -282,11 +257,11 @@ pub fn merge_nonconformal_bla(
     // Composition: A_z = A_y·A_x, B_z = A_y·B_x + B_y
     let az = ay.mul(ax);
     let bz = ay.mul(bx).add(by);
-    
+
     // Validity radius: R_z = max{0, min{R_x, R_y - sup|B_x|·|c| / sup|A_x|}}
-    let sup_ax = ax.sup_norm();  // sup|A_x|
-    let sup_bx = bx.sup_norm();  // sup|B_x|
-    
+    let sup_ax = ax.sup_norm(); // sup|A_x|
+    let sup_bx = bx.sup_norm(); // sup|B_x|
+
     let rz = if sup_ax < 1e-20 {
         // Avoid division by zero: use simpler formula
         rx.min(ry).max(0.0)
@@ -296,7 +271,7 @@ pub fn merge_nonconformal_bla(
         let inner = (ry - sup_bx * c_norm).max(0.0) / sup_ax;
         rx.min(inner).max(0.0)
     };
-    
+
     (az, bz, rz)
 }
 

@@ -163,7 +163,7 @@ pub fn sequence_from_str(s: &str) -> Vec<bool> {
 /// Séquence par défaut pour Zircon City: "BBBBBBAAAAAA"
 const ZIRCON_SEQUENCE: &[bool] = &[
     false, false, false, false, false, false, // 6 B's (use b)
-    true, true, true, true, true, true,       // 6 A's (use a)
+    true, true, true, true, true, true, // 6 A's (use a)
 ];
 
 /// Constantes pour l'algorithme
@@ -180,7 +180,11 @@ const MAX_X: f64 = 0.9999;
 /// 2. Phase de calcul: accumule log|dr/dx| par blocs pour éviter overflow/underflow
 /// 3. Normalise par le nombre d'itérations
 fn compute_lyapunov_exponent(a: f64, b: f64, iter_max: u32, sequence: &[bool]) -> f64 {
-    let seq = if sequence.is_empty() { ZIRCON_SEQUENCE } else { sequence };
+    let seq = if sequence.is_empty() {
+        ZIRCON_SEQUENCE
+    } else {
+        sequence
+    };
     let seq_len = seq.len();
 
     let mut x = 0.5;
@@ -270,7 +274,11 @@ fn compute_lyapunov_exponent_mpc(
     sequence: &[bool],
     prec: u32,
 ) -> Float {
-    let seq = if sequence.is_empty() { ZIRCON_SEQUENCE } else { sequence };
+    let seq = if sequence.is_empty() {
+        ZIRCON_SEQUENCE
+    } else {
+        sequence
+    };
     let seq_len = seq.len();
     let mut x = Float::with_val(prec, 0.5);
     let one = Float::with_val(prec, 1.0);
@@ -350,114 +358,6 @@ fn compute_lyapunov_exponent_mpc(
     lyap
 }
 
-/// Rendu de la fractale de Lyapunov.
-///
-/// Retourne (iterations, zs) où:
-/// - iterations[i] = valeur normalisée * iter_max (pour colorisation)
-/// - zs[i].re = valeur normalisée * 2.0 (comme en C)
-/// - zs[i].im = 0.0
-#[allow(dead_code)]
-pub fn render_lyapunov(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
-    let width = params.width as usize;
-    let height = params.height as usize;
-    let mut iterations = vec![0u32; width * height];
-    let mut zs = vec![Complex64::new(0.0, 0.0); width * height];
-
-    if width == 0 || height == 0 {
-        return (iterations, zs);
-    }
-
-    // Utiliser span directement au lieu de xmax-xmin pour éviter les problèmes de précision
-    let iter_max = params.iteration_max;
-
-    // Utiliser la séquence personnalisée ou la séquence par défaut Zircon City
-    let sequence: Vec<bool> = params.lyapunov_sequence.clone();
-
-    // Parallélisation par lignes
-    iterations
-        .par_chunks_mut(width)
-        .zip(zs.par_chunks_mut(width))
-        .enumerate()
-        .for_each(|(j, (iter_row, z_row))| {
-            // Utiliser center+span directement
-            let y_ratio = j as f64 / params.height as f64;
-            let b = params.center_y + (y_ratio - 0.5) * params.span_y;
-
-            for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
-                let x_ratio = i as f64 / params.width as f64;
-                let a = params.center_x + (x_ratio - 0.5) * params.span_x;
-
-                let lyap = compute_lyapunov_exponent(a, b, iter_max, &sequence);
-                let norm = normalize_lyapunov(lyap);
-
-                // Stockage compatible avec le système de colorisation
-                *iter = (norm * iter_max as f64) as u32;
-                *z = Complex64::new(norm * 2.0, 0.0);
-            }
-        });
-
-    (iterations, zs)
-}
-
-/// Rendu MPC de la fractale de Lyapunov.
-// Superseded par la variante `_cancellable` (le dispatcher unifié l'utilise).
-// Conservée pour usage direct éventuel ; candidate au retrait (TODO G5).
-#[allow(dead_code)]
-pub fn render_lyapunov_mpc(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
-    let width = params.width as usize;
-    let height = params.height as usize;
-    let mut iterations = vec![0u32; width * height];
-    let mut zs = vec![Complex64::new(0.0, 0.0); width * height];
-
-    if width == 0 || height == 0 {
-        return (iterations, zs);
-    }
-
-    let prec = params.precision_bits.max(64);
-    // Utiliser center+span directement pour éviter les problèmes de précision
-    let center_x = Float::with_val(prec, params.center_x);
-    let center_y = Float::with_val(prec, params.center_y);
-    let span_x = Float::with_val(prec, params.span_x);
-    let span_y = Float::with_val(prec, params.span_y);
-
-    let width_f = Float::with_val(prec, params.width);
-    let height_f = Float::with_val(prec, params.height);
-    let half = Float::with_val(prec, 0.5);
-    let iter_max = params.iteration_max;
-    let sequence: Vec<bool> = params.lyapunov_sequence.clone();
-
-    iterations
-        .par_chunks_mut(width)
-        .zip(zs.par_chunks_mut(width))
-        .enumerate()
-        .for_each(|(j, (iter_row, z_row))| {
-            let j_f = Float::with_val(prec, j as u32);
-            let mut y_ratio = j_f.clone();
-            y_ratio /= &height_f;
-            y_ratio -= &half;
-            let mut b = span_y.clone();
-            b *= &y_ratio;
-            b += &center_y;
-            for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
-                let i_f = Float::with_val(prec, i as u32);
-                let mut x_ratio = i_f;
-                x_ratio /= &width_f;
-                x_ratio -= &half;
-                let mut a = span_x.clone();
-                a *= &x_ratio;
-                a += &center_x;
-
-                let lyap = compute_lyapunov_exponent_mpc(&a, &b, iter_max, &sequence, prec);
-                let norm = normalize_lyapunov(lyap.to_f64());
-
-                *iter = (norm * iter_max as f64) as u32;
-                *z = Complex64::new(norm * 2.0, 0.0);
-            }
-        });
-
-    (iterations, zs)
-}
-
 /// Version annulable du rendu Lyapunov.
 pub fn render_lyapunov_cancellable(
     params: &FractalParams,
@@ -531,12 +431,20 @@ pub fn render_lyapunov_mpc_cancellable(
         return Some((iterations, zs));
     }
 
-    let prec = params.precision_bits.max(64);
-    // Utiliser center+span directement pour éviter les problèmes de précision
-    let center_x = Float::with_val(prec, params.center_x);
-    let center_y = Float::with_val(prec, params.center_y);
-    let span_x = Float::with_val(prec, params.span_x);
-    let span_y = Float::with_val(prec, params.span_y);
+    let prec = crate::fractal::perturbation::compute_perturbation_precision_bits(params)
+        .max(params.precision_bits)
+        .max(64);
+    let parse = |hp: Option<&String>, fallback: f64| {
+        hp.and_then(|value| Float::parse(value).ok())
+            .map(|value| Float::with_val(prec, value))
+            .unwrap_or_else(|| Float::with_val(prec, fallback))
+    };
+    // Le centre et les spans viennent directement de la vue HP : les miroirs
+    // f64 peuvent déjà être immobiles ou sous-fluer à ce niveau de zoom.
+    let center_x = parse(params.center_x_hp.as_ref(), params.center_x);
+    let center_y = parse(params.center_y_hp.as_ref(), params.center_y);
+    let span_x = parse(params.span_x_hp.as_ref(), params.span_x);
+    let span_y = parse(params.span_y_hp.as_ref(), params.span_y);
 
     let width_f = Float::with_val(prec, params.width);
     let height_f = Float::with_val(prec, params.height);

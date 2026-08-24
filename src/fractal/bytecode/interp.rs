@@ -73,7 +73,10 @@ pub fn iterate_bytecode_f64(
                     z += c;
                     iter += 1;
                 }
-                Op::Rot { cos_theta, sin_theta } => {
+                Op::Rot {
+                    cos_theta,
+                    sin_theta,
+                } => {
                     // z := z * (cos + sin·i)
                     let r = Complex64::new(*cos_theta, *sin_theta);
                     z = z * r;

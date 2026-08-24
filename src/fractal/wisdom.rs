@@ -48,6 +48,25 @@ use crate::fractal::perturbation::{
 use crate::fractal::perturbation::compress::compress_enabled;
 use crate::fractal::perturbation::delta::pixel_size_exp_threshold;
 use crate::render::escape_time::{should_use_gmp_reference, should_use_perturbation};
+use crate::render::output::{required_channels, ChannelRequirements};
+
+/// Entrées de mapping pixel → plan complexe communes à tous les backends.
+/// Les recopier depuis `FractalParams` dans chaque boucle a déjà fait perdre K
+/// et le jitter aux fallbacks GMP ; le plan devient leur source unique.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SamplingPlan {
+    pub transform: Option<(f64, f64, f64, f64)>,
+    pub aa_uniform: [f64; 2],
+    pub aa_jitter: Option<(u64, f64)>,
+}
+
+pub fn sampling_plan(params: &FractalParams) -> SamplingPlan {
+    SamplingPlan {
+        transform: params.transform_matrix(),
+        aa_uniform: params.aa_subpixel_offset,
+        aa_jitter: params.aa_jitter,
+    }
+}
 
 /// Algorithme de rendu escape-time sélectionné pour la frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +163,13 @@ pub struct WisdomPlan {
     pub required_precision: u32,
     /// Précision GMP de l'orbite référence (`compute_perturbation_precision_bits`).
     pub reference_precision_bits: u32,
+    /// Mapping pixel → c partagé par les chemins f64/exp/dd/GMP.
+    pub sampling: SamplingPlan,
+    /// Canaux que la colorisation demandera au backend choisi.
+    pub required_channels: ChannelRequirements,
+    /// Le dispatcher GPU sait produire la frame sans perdre de formule, de K
+    /// dynamique, de tier ou de canal annexe.
+    pub gpu_compatible: bool,
 }
 
 /// Le tier dd est-il **demandé** ? (`use_dd_tier` + Mandelbrot escape-time).
@@ -478,6 +504,13 @@ pub fn plan(params: &FractalParams) -> WisdomPlan {
     plan_for(params, Device::Cpu)
 }
 
+/// Plan auto complet, device compris. Les callers ne doivent pas sélectionner
+/// le device puis recalculer séparément l'algorithme avec un état susceptible
+/// d'avoir changé entre les deux décisions.
+pub fn auto_plan(params: &FractalParams, gpu_available: bool) -> WisdomPlan {
+    plan_for(params, select_device(params, gpu_available))
+}
+
 /// Calcule le [`WisdomPlan`] complet pour une frame sur un device donné —
 /// device, algorithme, tier, variantes et les grandeurs F3 (exposant/précision
 /// requis, précision GMP orbite). Descriptif : aucun effet de bord sur le rendu
@@ -503,6 +536,11 @@ pub fn plan_for(params: &FractalParams, device: Device) -> WisdomPlan {
         required_exponent: log2_zoom(params),
         required_precision: required_precision_bits(params),
         reference_precision_bits: compute_perturbation_precision_bits(params),
+        sampling: sampling_plan(params),
+        required_channels: required_channels(params),
+        gpu_compatible: !params.is_hybrid_formula()
+            && !params.find_nucleus
+            && !gpu_lacks_features(params),
     }
 }
 
@@ -629,6 +667,10 @@ mod tests {
         // GPU indisponible → toujours CPU, quel que soit le zoom.
         assert_eq!(select_device(&frame(1e8), false), Device::Cpu);
         assert_eq!(select_device(&frame(1e30), false), Device::Cpu);
+        let p = frame(1e30);
+        let render_plan = auto_plan(&p, false);
+        assert_eq!(render_plan.device, Device::Cpu);
+        assert_eq!(render_plan.algorithm, select_algorithm(&p, Device::Cpu));
     }
 
     #[test]
@@ -757,5 +799,24 @@ mod tests {
             "required_precision={} devrait être ~log2(diag) ≪ 53",
             plan.required_precision
         );
+    }
+
+    #[test]
+    fn plan_carries_sampling_and_channel_contract() {
+        use crate::fractal::OutColoringMode;
+
+        let mut p = frame(1e14);
+        p.transform_k = Some([1.5, 0.25, -0.5, 0.75]);
+        p.aa_subpixel_offset = [0.125, -0.25];
+        p.aa_jitter = Some((7, 0.8));
+        p.out_coloring_mode = OutColoringMode::Distance;
+
+        let render_plan = plan(&p);
+        assert_eq!(render_plan.sampling.transform, p.transform_matrix());
+        assert_eq!(render_plan.sampling.aa_uniform, [0.125, -0.25]);
+        assert_eq!(render_plan.sampling.aa_jitter, Some((7, 0.8)));
+        assert!(render_plan.required_channels.distances);
+        assert!(!render_plan.required_channels.orbits);
+        assert!(!render_plan.gpu_compatible, "GPU ne produit pas distances");
     }
 }

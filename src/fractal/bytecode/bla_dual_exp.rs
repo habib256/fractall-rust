@@ -34,16 +34,15 @@ pub struct Mat2Exp {
 }
 
 impl Mat2Exp {
-    #[allow(dead_code)]
-    pub fn zero() -> Self {
-        let z = FloatExp::zero();
-        Self { m00: z, m01: z, m10: z, m11: z }
-    }
-
     pub fn identity() -> Self {
         let one = FloatExp::from_f64(1.0);
         let z = FloatExp::zero();
-        Self { m00: one, m01: z, m10: z, m11: one }
+        Self {
+            m00: one,
+            m01: z,
+            m10: z,
+            m11: one,
+        }
     }
 
     /// Multiplication matricielle `self · rhs`.
@@ -90,7 +89,10 @@ pub struct DualComplex2Exp {
 impl DualComplex2Exp {
     /// Initialise comme `z = z0 + δ` (jac = I).
     pub fn from_value(z0: ComplexExp) -> Self {
-        Self { value: z0, jac: Mat2Exp::identity() }
+        Self {
+            value: z0,
+            jac: Mat2Exp::identity(),
+        }
     }
 
     /// `z := z²` (multiplication complexe). Chain rule identique à `DualComplex2`.
@@ -98,11 +100,20 @@ impl DualComplex2Exp {
         let x = self.value.re;
         let y = self.value.im;
         let two = FloatExp::from_f64(2.0);
-        let m = Mat2Exp { m00: x, m01: fneg(y), m10: y, m11: x }.scale(two);
+        let m = Mat2Exp {
+            m00: x,
+            m01: fneg(y),
+            m10: y,
+            m11: x,
+        }
+        .scale(two);
         self.jac = m.mul(self.jac);
         let new_x = x * x - y * y;
         let new_y = x * y * 2.0;
-        self.value = ComplexExp { re: new_x, im: new_y };
+        self.value = ComplexExp {
+            re: new_x,
+            im: new_y,
+        };
     }
 
     /// `z := z · stored` (multiplication complexe, règle de Leibniz).
@@ -111,8 +122,18 @@ impl DualComplex2Exp {
         let zy = self.value.im;
         let sx = stored.value.re;
         let sy = stored.value.im;
-        let ms = Mat2Exp { m00: sx, m01: fneg(sy), m10: sy, m11: sx };
-        let mz = Mat2Exp { m00: zx, m01: fneg(zy), m10: zy, m11: zx };
+        let ms = Mat2Exp {
+            m00: sx,
+            m01: fneg(sy),
+            m10: sy,
+            m11: sx,
+        };
+        let mz = Mat2Exp {
+            m00: zx,
+            m01: fneg(zy),
+            m10: zy,
+            m11: zx,
+        };
         let jac_a = ms.mul(self.jac);
         let jac_b = mz.mul(stored.jac);
         self.jac = Mat2Exp {
@@ -123,7 +144,10 @@ impl DualComplex2Exp {
         };
         let new_x = zx * sx - zy * sy;
         let new_y = zx * sy + zy * sx;
-        self.value = ComplexExp { re: new_x, im: new_y };
+        self.value = ComplexExp {
+            re: new_x,
+            im: new_y,
+        };
     }
 
     /// `z.re := |z.re|`. Si re < 0, flip la ligne 0 de la Jacobienne.
@@ -162,7 +186,10 @@ impl DualComplex2Exp {
         let s = sin_theta;
         let new_x = c * self.value.re - s * self.value.im;
         let new_y = s * self.value.re + c * self.value.im;
-        self.value = ComplexExp { re: new_x, im: new_y };
+        self.value = ComplexExp {
+            re: new_x,
+            im: new_y,
+        };
         let jac = self.jac;
         self.jac = Mat2Exp {
             m00: c * jac.m00 - s * jac.m10,
@@ -293,13 +320,19 @@ pub fn build_bla_single_step_exp(
                 };
                 return BlaSingleStepExp { a: w.jac, r2 };
             }
-            Op::Rot { cos_theta, sin_theta } => {
+            Op::Rot {
+                cos_theta,
+                sin_theta,
+            } => {
                 w.rot(*cos_theta, *sin_theta);
             }
         }
     }
 
-    BlaSingleStepExp { a: w.jac, r2: FloatExp::zero() }
+    BlaSingleStepExp {
+        a: w.jac,
+        r2: FloatExp::zero(),
+    }
 }
 
 /// BLA multi-step FloatExp (mirror de `BlaMultiStep`).
@@ -374,12 +407,7 @@ impl BlaTableUnifiedExp {
     /// Construit la table BLA FloatExp pour une phase à partir de l'orbite
     /// référence `ComplexExp`. Mirror serial de `BlaTableUnified::build`
     /// (même structure de niveaux, même free des bas niveaux `< BLA_SKIP_LEVELS`).
-    pub fn build(
-        z_ref: &[ComplexExp],
-        phase: &Phase,
-        c_norm: FloatExp,
-        epsilon: FloatExp,
-    ) -> Self {
+    pub fn build(z_ref: &[ComplexExp], phase: &Phase, c_norm: FloatExp, epsilon: FloatExp) -> Self {
         let m = z_ref.len().saturating_sub(1);
         if m == 0 {
             return Self { levels: Vec::new() };
@@ -387,7 +415,9 @@ impl BlaTableUnifiedExp {
 
         // Level 0 : un single-step par itération de référence.
         let level0: Vec<BlaMultiStepExp> = (0..m)
-            .map(|i| BlaMultiStepExp::from_single(build_bla_single_step_exp(z_ref[i], phase, epsilon)))
+            .map(|i| {
+                BlaMultiStepExp::from_single(build_bla_single_step_exp(z_ref[i], phase, epsilon))
+            })
             .collect();
         let mut levels = vec![level0];
 
@@ -415,11 +445,7 @@ impl BlaTableUnifiedExp {
     /// Cherche le BLA valide (le plus grand `l`) à partir de `m` quand
     /// `delta_norm_sqr < r2`. Mirror de `BlaTableUnified::lookup_fexp`, `r2` déjà
     /// en FloatExp.
-    pub fn lookup_fexp(
-        &self,
-        m: usize,
-        delta_norm_sqr_fexp: FloatExp,
-    ) -> Option<&BlaMultiStepExp> {
+    pub fn lookup_fexp(&self, m: usize, delta_norm_sqr_fexp: FloatExp) -> Option<&BlaMultiStepExp> {
         let nlevels = self.levels.len();
         if nlevels <= BLA_SKIP_LEVELS {
             return None;

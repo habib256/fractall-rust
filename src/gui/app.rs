@@ -98,7 +98,7 @@ fn colorize_buffer(
 fn effective_cpu_mode(params: &FractalParams) -> AlgorithmMode {
     use crate::fractal::wisdom;
     match params.algorithm_mode {
-        AlgorithmMode::Auto => match wisdom::select_algorithm(params, wisdom::Device::Cpu) {
+        AlgorithmMode::Auto => match wisdom::plan(params).algorithm {
             wisdom::Algorithm::Perturbation => AlgorithmMode::Perturbation,
             wisdom::Algorithm::ReferenceGmp => AlgorithmMode::ReferenceGmp,
             wisdom::Algorithm::StandardF64 => AlgorithmMode::StandardF64,
@@ -182,15 +182,13 @@ pub struct FractallApp {
     /// Canal pour recevoir les textures pré-colorisées (calcul hors thread principal).
     texture_ready_sender: Option<mpsc::Sender<TextureReadyMessage>>,
     texture_ready_receiver: Option<mpsc::Receiver<TextureReadyMessage>>,
-    current_pass: u8,
-    total_passes: u8,
+    render_progress: crate::gui::render_state::RenderProgress,
     is_preview: bool,
     /// Nombre d'échantillons anti-aliasing (per-frame jitter). 1 = désactivé.
     /// Après les passes progressives, N-1 samples plein cadre supplémentaires
     /// sont rendus avec offset sous-pixel et moyennés en RGB (CPU uniquement).
     aa_samples: u32,
     /// Progression AA courante affichée dans le panneau (sample, total).
-    aa_progress: Option<(u32, u32)>,
     /// Couleurs (palette, repeat, mode, espace) figées au lancement du rendu :
     /// les moyennes AA arrivent déjà colorisées avec elles — si l'utilisateur a
     /// recoloré entre-temps, on n'écrase pas sa recolorisation (bug 2026-08-23).
@@ -214,10 +212,9 @@ pub struct FractallApp {
     /// Frame source (buffers bruts Arc de la dernière passe CPU complétée +
     /// vue HP + positions vraies par axe). Mise à jour à chaque PassComplete
     /// CPU ; les passes GPU ne la remplacent pas (précision f32).
-    xaos_frame: Option<XaosSourceFrame>,
+    xaos: crate::gui::xaos_state::XaosLifecycle,
     /// La dernière passe finale a copié des pixels (approximés ≤ 0.5 px) →
     /// un rendu de raffinement exact est programmé à l'idle (~400 ms).
-    xaos_refine_pending: bool,
     /// Fin du dernier rendu (référence du délai idle de raffinement).
     last_render_finished: Option<Instant>,
     /// G10.5 : dernière position du curseur au-dessus de l'image, normalisée
@@ -237,7 +234,7 @@ pub struct FractallApp {
     recolor_sender: mpsc::Sender<RecolorReadyMessage>,
     recolor_receiver: mpsc::Receiver<RecolorReadyMessage>,
     /// Compteur de version pour ignorer les recolorisations obsolètes (si l'utilisateur change le slider rapidement)
-    recolor_version: u64,
+    recolor_version: crate::gui::async_version::AsyncVersion,
 
     // Zone de texte pour le nombre d'itérations
     iteration_input: String,
@@ -249,7 +246,7 @@ pub struct FractallApp {
     julia_preview_texture: Option<TextureHandle>,
     julia_preview_sender: mpsc::Sender<JuliaPreviewMessage>,
     julia_preview_receiver: mpsc::Receiver<JuliaPreviewMessage>,
-    julia_preview_version: u64,
+    julia_preview_version: crate::gui::async_version::AsyncVersion,
     julia_preview_last_seed: Option<Complex64>,
     julia_preview_last_request_time: Option<Instant>,
     julia_preview_cancel: Arc<AtomicBool>,
@@ -411,11 +408,9 @@ impl FractallApp {
             render_receiver: None,
             texture_ready_sender: None,
             texture_ready_receiver: None,
-            current_pass: 0,
-            total_passes: 0,
+            render_progress: Default::default(),
             is_preview: false,
             aa_samples: 1,
-            aa_progress: None,
             render_color_key: (6, 40, crate::fractal::OutColoringMode::Smooth, crate::fractal::ColorSpace::Rgb),
             last_render_time: None,
             render_start_time: None,
@@ -425,8 +420,7 @@ impl FractallApp {
             window_height: height,
             pending_resize: None,
             orbit_cache: None,
-            xaos_frame: None,
-            xaos_refine_pending: false,
+            xaos: Default::default(),
             hover_norm: None,
             last_render_finished: None,
             show_render_dialog: false,
@@ -437,7 +431,7 @@ impl FractallApp {
             hq_render_result: None,
             recolor_sender: recolor_tx,
             recolor_receiver: recolor_rx,
-            recolor_version: 0,
+            recolor_version: Default::default(),
 
             iteration_input: params.iteration_max.to_string(),
             iteration_input_has_focus: false,
@@ -447,7 +441,7 @@ impl FractallApp {
             julia_preview_texture: None,
             julia_preview_sender: julia_preview_tx,
             julia_preview_receiver: julia_preview_rx,
-            julia_preview_version: 0,
+            julia_preview_version: Default::default(),
             julia_preview_last_seed: None,
             julia_preview_last_request_time: None,
             julia_preview_cancel: Arc::new(AtomicBool::new(false)),
@@ -920,11 +914,9 @@ impl FractallApp {
             FractalType::VonKoch | FractalType::Dragon | FractalType::Buddhabrot
                 | FractalType::Nebulabrot | FractalType::AntiBuddhabrot | FractalType::Lyapunov
         );
+        let render_plan = crate::fractal::wisdom::plan(&render_params);
         let will_use_perturbation = allow_intermediate
-            && crate::fractal::wisdom::select_algorithm(
-                &render_params,
-                crate::fractal::wisdom::Device::Cpu,
-            ) == crate::fractal::wisdom::Algorithm::Perturbation;
+            && render_plan.algorithm == crate::fractal::wisdom::Algorithm::Perturbation;
         let config = ProgressiveConfig::for_params_with_intermediate(
             render_width,
             render_height,
@@ -1088,9 +1080,12 @@ type HqFinal = crate::render::RenderOutput;
         // arbitre CPU/GPU (benchmark machine + garde-fou correction — même
         // décision que le CLI). Une sélection EXPLICITE du menu CPU/GPU
         // (algorithm_mode ≠ Auto) est un override manuel via `self.use_gpu`.
+        let auto_plan = crate::fractal::wisdom::auto_plan(
+            &self.params,
+            self.gpu_renderer.is_some(),
+        );
         let device_want_gpu = if self.params.algorithm_mode == AlgorithmMode::Auto {
-            crate::fractal::wisdom::select_device(&self.params, self.gpu_renderer.is_some())
-                == crate::fractal::wisdom::Device::Gpu
+            auto_plan.device == crate::fractal::wisdom::Device::Gpu
         } else {
             self.use_gpu
         };
@@ -1100,15 +1095,20 @@ type HqFinal = crate::render::RenderOutput;
                 self.params.fractal_type,
                 FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
             );
+        let render_device = if use_gpu {
+            crate::fractal::wisdom::Device::Gpu
+        } else {
+            crate::fractal::wisdom::Device::Cpu
+        };
+        let render_plan = if self.params.algorithm_mode == AlgorithmMode::Auto
+            && render_device == auto_plan.device
+        {
+            auto_plan
+        } else {
+            crate::fractal::wisdom::plan_for(&self.params, render_device)
+        };
         let will_use_perturbation = allow_intermediate
-            && crate::fractal::wisdom::select_algorithm(
-                &self.params,
-                if use_gpu {
-                    crate::fractal::wisdom::Device::Gpu
-                } else {
-                    crate::fractal::wisdom::Device::Cpu
-                },
-            ) == crate::fractal::wisdom::Algorithm::Perturbation;
+            && render_plan.algorithm == crate::fractal::wisdom::Algorithm::Perturbation;
         // Navigation XaoS (bouton maintenu) : une passe UNIQUE pleine
         // résolution. Les passes basse résolution repeignent l'image flou→net
         // à chaque cycle de rendu — un pulsing perçu comme une saccade — et
@@ -1145,7 +1145,7 @@ type HqFinal = crate::render::RenderOutput;
 
         // G10.4 : un nouveau rendu remplace tout raffinement programmé (le
         // flag sera re-posé à la passe finale si elle copie des pixels).
-        self.xaos_refine_pending = false;
+        self.xaos.begin_render();
 
         if self.ui_trace {
             self.ui_frame_events.push(format!(
@@ -1156,8 +1156,6 @@ type HqFinal = crate::render::RenderOutput;
             ));
         }
 
-        self.total_passes = config.passes.len() as u8;
-        self.current_pass = 0;
         self.rendering = true;
         self.rendering_divisor = *config.passes.last().unwrap_or(&1);
         self.is_preview = true;
@@ -1201,7 +1199,7 @@ type HqFinal = crate::render::RenderOutput;
         // Anti-aliasing multi-sample (per-frame jitter), CPU uniquement.
         let aa_samples = if use_gpu { 1 } else { self.aa_samples.max(1) };
         let aa_jitter_scale = 1.0f64;
-        self.aa_progress = if aa_samples > 1 { Some((0, aa_samples)) } else { None };
+        self.render_progress.begin(config.passes.len(), aa_samples);
         self.render_color_key =
             (params.color_mode, params.color_repeat, params.out_coloring_mode, params.color_space);
 
@@ -1212,11 +1210,7 @@ type HqFinal = crate::render::RenderOutput;
         // il conserve les pixels dont la position est déjà vraie (calculés
         // frais ou copiés alignés) et ne recalcule que les approximations —
         // au lieu de refaire 100 % du travail de la passe finale.
-        let xaos_source = if aa_samples > 1 {
-            None
-        } else {
-            self.xaos_frame.clone()
-        };
+        let xaos_source = self.xaos.source_for_render(aa_samples);
 
         // G10.5 : point de priorité de la file de tuiles (dernier survol
         // curseur, sinon centre) — le zoom molette ancre le curseur, donc la
@@ -1669,7 +1663,7 @@ type HqFinal = crate::render::RenderOutput;
         // Traiter les recolorisations asynchrones (changement palette/color_repeat)
         // Ignorer les messages obsolètes (version != version actuelle)
         while let Ok(msg) = self.recolor_receiver.try_recv() {
-            if msg.version == self.recolor_version {
+            if self.recolor_version.accepts(msg.version) {
                 self.load_texture_from_buffer(ctx, &msg.display_buffer, msg.width, msg.height);
                 ctx.request_repaint();
                 break;
@@ -1680,7 +1674,7 @@ type HqFinal = crate::render::RenderOutput;
         // Traiter d'abord une texture prête (calcul faite hors thread principal)
         if let Some(ref rx) = self.texture_ready_receiver {
             if let Ok(tex) = rx.try_recv() {
-                self.current_pass = tex.pass_index + 1;
+                self.render_progress.pass_ready(tex.pass_index);
                 self.last_render_device_label = Some(tex.precision_label.clone());
                 self.last_render_method_label = Some(match tex.effective_mode {
                     AlgorithmMode::ReferenceGmp => String::new(),
@@ -1755,16 +1749,7 @@ type HqFinal = crate::render::RenderOutput;
                 // crans rapides → le rendu suivant partait d'une frame 1/16 →
                 // XaoS dégénéré en rendu complet, bug 2026-08-23). Une frame
                 // de résolution ≥ (passe finale, ou même dims) remplace.
-                if let Some(frame) = xaos_frame {
-                    let keep_existing = self.xaos_frame.as_ref().is_some_and(|old| {
-                        (old.width as u64 * old.height as u64)
-                            > (frame.width as u64 * frame.height as u64)
-                    });
-                    if !keep_existing {
-                        self.xaos_frame = Some(frame);
-                    }
-                }
-                self.xaos_refine_pending = xaos_approx;
+                self.xaos.accept_pass(xaos_frame, xaos_approx);
                 // Déléguer upscale + colorize à un thread pour ne pas bloquer l'UI (évite "ne répond pas")
                 let tx = match &self.texture_ready_sender {
                     Some(t) => t.clone(),
@@ -1905,7 +1890,7 @@ type HqFinal = crate::render::RenderOutput;
                 // re-colorisation depuis le brut, cf. doc du message). La passe
                 // courante est la dernière → image nette, plus en preview.
                 self.is_preview = false;
-                self.aa_progress = Some((sample, total));
+                self.render_progress.aa_ready(sample, total);
                 let current_key = (
                     self.params.color_mode,
                     self.params.color_repeat,
@@ -1938,7 +1923,7 @@ type HqFinal = crate::render::RenderOutput;
                         ctx.request_repaint();
                     }
                     if let Some(tex) = last_tex {
-                        self.current_pass = tex.pass_index + 1;
+                        self.render_progress.pass_ready(tex.pass_index);
                         self.last_render_device_label = Some(tex.precision_label.clone());
                         self.last_render_method_label = Some(match tex.effective_mode {
                             AlgorithmMode::ReferenceGmp => String::new(),
@@ -2118,8 +2103,7 @@ type HqFinal = crate::render::RenderOutput;
         let tx = self.recolor_sender.clone();
 
         // Incrémenter la version pour ignorer les résultats obsolètes
-        self.recolor_version = self.recolor_version.wrapping_add(1);
-        let version = self.recolor_version;
+        let version = self.recolor_version.issue();
 
         // Spawner un thread pour la colorisation (ne bloque pas l'UI)
         let repaint_ctx = ctx.clone();
@@ -2167,8 +2151,7 @@ type HqFinal = crate::render::RenderOutput;
         // Mettre à jour l'état
         self.julia_preview_last_seed = Some(seed);
         self.julia_preview_last_request_time = Some(Instant::now());
-        self.julia_preview_version = self.julia_preview_version.wrapping_add(1);
-        let version = self.julia_preview_version;
+        let version = self.julia_preview_version.issue();
 
         // Nouveau flag d'annulation
         self.julia_preview_cancel = Arc::new(AtomicBool::new(false));
@@ -2229,7 +2212,7 @@ type HqFinal = crate::render::RenderOutput;
     fn check_julia_preview_complete(&mut self, ctx: &Context) {
         while let Ok(msg) = self.julia_preview_receiver.try_recv() {
             // Ignorer les résultats obsolètes
-            if msg.version != self.julia_preview_version {
+            if !self.julia_preview_version.accepts(msg.version) {
                 continue;
             }
 
@@ -2542,15 +2525,16 @@ impl eframe::App for FractallApp {
         // copiés (approximés ≤ 0.5 px) ; après ~400 ms sans nouveau rendu,
         // relancer un rendu exact (passe unique, XaoS off) qui remplace
         // silencieusement l'image. Toute interaction (pan/zoom) le supplante.
-        if self.xaos_refine_pending && !self.rendering && !self.hq_rendering {
+        if self.xaos.refine_pending() && !self.rendering && !self.hq_rendering {
             const XAOS_REFINE_IDLE: Duration = Duration::from_millis(400);
             let idle_for = self
                 .last_render_finished
                 .map(|t| t.elapsed())
                 .unwrap_or(Duration::ZERO);
             if idle_for >= XAOS_REFINE_IDLE {
-                self.xaos_refine_pending = false;
-                self.start_render_refine();
+                if self.xaos.take_refine() {
+                    self.start_render_refine();
+                }
             } else {
                 // S'assurer qu'update() retourne après le délai même sans input.
                 ctx.request_repaint_after(XAOS_REFINE_IDLE - idle_for);
@@ -3937,13 +3921,13 @@ impl eframe::App for FractallApp {
                         ui.label("Navigation XaoS");
                     } else if self.rendering {
                         ui.separator();
-                        let total = self.total_passes.max(1) as f32;
-                        let progress = (self.current_pass as f32 / total).min(1.0);
+                        let progress = self.render_progress.fraction();
+                        let (current_pass, total_passes) = self.render_progress.passes();
                         let progress_bar = egui::ProgressBar::new(progress)
                             .show_percentage()
                             .animate(true);
                         ui.add(progress_bar);
-                        let aa_suffix = match self.aa_progress {
+                        let aa_suffix = match self.render_progress.aa() {
                             Some((s, t)) if t > 1 && s > 0 => format!(" - AA {s}/{t}"),
                             _ => String::new(),
                         };
@@ -3956,9 +3940,9 @@ impl eframe::App for FractallApp {
                                 let secs = elapsed % 60.0;
                                 format!("{}m {:.0}s", mins, secs)
                             };
-                            ui.label(format!("Calcul en cours... ({}) - Passe {}/{}{}", time_str, self.current_pass, self.total_passes, aa_suffix));
+                            ui.label(format!("Calcul en cours... ({}) - Passe {}/{}{}", time_str, current_pass, total_passes, aa_suffix));
                         } else {
-                            ui.label(format!("Calcul en cours... - Passe {}/{}{}", self.current_pass, self.total_passes, aa_suffix));
+                            ui.label(format!("Calcul en cours... - Passe {}/{}{}", current_pass, total_passes, aa_suffix));
                         }
                     } else if self.is_preview {
                         ui.separator();

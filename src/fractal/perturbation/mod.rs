@@ -82,21 +82,25 @@
 //! - **Détection de glitches**: Recalcule en GMP les pixels suspects
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Instant;
 
 use num_complex::Complex64;
 use rayon::prelude::*;
 
-use crate::fractal::{FractalParams, FractalType, OutColoringMode};
 use crate::fractal::bytecode::compile_formula;
+use crate::fractal::bytecode::pixel_loop_gmp::iterate_pixel_gmp;
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
+use crate::fractal::perturbation::compress::strip_orbit_arrays_for_compress;
 use crate::fractal::perturbation::delta::{
-    bytecode_path_label, iterate_pixel, iterate_pixel_gmp, iterate_pixel_with_dd,
+    bytecode_path_label, iterate_pixel, iterate_pixel_with_dd,
 };
-use crate::fractal::perturbation::orbit::{compute_reference_orbit_cached, compute_reference_orbit};
-use crate::fractal::perturbation::types::{ComplexExp, FloatExp};
-use rug::{Complex, Float};
+use crate::fractal::perturbation::orbit::{
+    compute_reference_orbit, compute_reference_orbit_cached,
+};
+use crate::fractal::perturbation::types::{ComplexExp, DeltaResult, FloatExp};
+use crate::fractal::{FractalParams, FractalType};
+use rug::Float;
 
 /// Le pixel passe par le path bytecode/F3 (BLA mat2 + rebasing F3 strict) ?
 /// Si oui, `iterate_pixel` retourne toujours `glitched: false` et le post-traitement
@@ -107,142 +111,39 @@ fn uses_bytecode_path(params: &FractalParams) -> bool {
         && compile_formula(params.fractal_type, params.multibrot_power).is_some()
 }
 
-pub mod types;
-pub mod compress;
-pub mod dd;
-pub mod orbit;
 pub mod bla;
+pub mod compress;
+pub mod counter;
+pub mod dd;
+#[cfg(test)]
+pub mod debug_pure_f3;
 pub mod delta;
-pub mod series;
 pub mod glitch;
 pub mod nonconformal;
 pub mod nucleus;
-#[cfg(test)]
-pub mod debug_pure_f3;
-pub use orbit::{ReferenceOrbitCache, HybridBlaReferences};
-pub use glitch::{detect_glitch_clusters, select_secondary_reference_points, segregate_glitches_by_iteration};
-
-fn env_flag_off(name: &str) -> bool {
-    match std::env::var(name) {
-        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"),
-        Err(_) => false,
-    }
-}
-
-/// Affiche le breakdown timing perturbation par défaut sur stderr.
-/// Opt-out : `FRACTALL_PERTURB_STATS=0`.
-pub(crate) fn perf_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| !env_flag_off("FRACTALL_PERTURB_STATS"))
-}
-
-/// Compteurs partagés pour le reporter live façon Fraktaler-3
-/// (`Frame[NN%] Ref[NN%] BLA[NN%] Tile[NN%]`). Stockés en pourcentages 0..100.
-#[derive(Default)]
-pub(crate) struct ProgressState {
-    pub r#ref: AtomicU32,
-    pub bla: AtomicU32,
-    pub tile: AtomicU32,
-    pub done: AtomicBool,
-    // Réveil immédiat du reporter à la fin du rendu : il attend sur la Condvar
-    // (timeout = intervalle de redraw) et `finish()` le notifie aussitôt → pas
-    // de latence de poll sur `join()` après un rendu rapide (cf. test5 : rendu
-    // 3 ms mais process 20 ms à cause du sleep). Guard bool sous Mutex = pattern
-    // condvar anti-lost-wakeup.
-    done_wake: Mutex<bool>,
-    done_cv: Condvar,
-}
-
-impl ProgressState {
-    /// Marque le rendu terminé et réveille le reporter immédiatement.
-    pub(crate) fn finish(&self) {
-        self.done.store(true, Ordering::Relaxed);
-        let mut g = self.done_wake.lock().unwrap();
-        *g = true;
-        self.done_cv.notify_all();
-    }
-
-    fn snapshot_line(&self) -> String {
-        format!(
-            "Frame[100%] Ref[{:>3}%] BLA[{:>3}%] Tile[{:>3}%]",
-            self.r#ref.load(Ordering::Relaxed).min(100),
-            self.bla.load(Ordering::Relaxed).min(100),
-            self.tile.load(Ordering::Relaxed).min(100),
-        )
-    }
-}
-
-/// Lance un thread qui affiche `Frame[NN%] Ref[NN%] BLA[NN%] Tile[NN%]\r` toutes
-/// les 500 ms tant que `state.done == false`. Mirror de F3 `batch.cc::batch()`.
-/// Retourne le handle à joindre une fois le rendu terminé (qui imprime la
-/// ligne finale avec retour à la ligne).
-pub(crate) fn spawn_progress_reporter(state: Arc<ProgressState>) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
-        // Premier tick immédiat pour montrer 0/0/0 au démarrage.
-        let mut last = String::new();
-        let mut last_draw = Instant::now();
-        loop {
-            let done = state.done.load(Ordering::Relaxed);
-            let line = state.snapshot_line();
-            // Redraw sur changement, throttlé à ~250ms pour un affichage calme
-            // (sauf le tout premier tick et le tick final `done`).
-            if line != last
-                && (done || last.is_empty() || last_draw.elapsed() >= Duration::from_millis(250))
-            {
-                eprint!("\r{} ", line);
-                let _ = std::io::Write::flush(&mut std::io::stderr());
-                last = line;
-                last_draw = Instant::now();
-            }
-            if done {
-                // Ligne finale avec retour à la ligne.
-                eprintln!("\r{} ", state.snapshot_line());
-                break;
-            }
-            // Attend le prochain redraw (250 ms) OU le réveil immédiat de
-            // `finish()`. Zéro latence sur `join()` après un rendu rapide (le
-            // sleep fixe faisait payer jusqu'à 20 ms à un rendu de 3 ms → test5
-            // à 20 ms au lieu de 3), sans busy-spin. Le guard `*g` sous le Mutex
-            // évite le lost-wakeup si `finish()` s'intercale avant l'attente.
-            let g = state.done_wake.lock().unwrap();
-            if !*g {
-                let _ = state.done_cv.wait_timeout(g, Duration::from_millis(250));
-            }
-        }
-    })
-}
-
-/// Imprime la ligne de résumé finale `[FRACTALL]` au format compact, alignée
-/// sur la sortie F3 pour faciliter les comparaisons côte-à-côte.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn print_fractall_summary(
-    path: &'static str,
-    fractal_type: FractalType,
-    prec_bits: u32,
-    iter_max: u32,
-    iterations: &[u32],
-    pixel_count: usize,
-    t_pixels: Duration,
-    t_total: Duration,
-) {
-    let total_iters: u64 = iterations.iter().map(|&n| n as u64).sum();
-    let max_iter = iterations.iter().copied().max().unwrap_or(0);
-    let avg_iter = if pixel_count > 0 {
-        total_iters as f64 / pixel_count as f64
-    } else {
-        0.0
-    };
-    let ns_per_iter = if total_iters > 0 {
-        t_pixels.as_secs_f64() * 1e9 / total_iters as f64
-    } else {
-        0.0
-    };
-    eprintln!(
-        "[FRACTALL] type={:?} path={} prec={}b iter_max={} avg_iter/px={:.0} max_iter/px={} ns/iter={:.1} pixels={:.3}s total={:.3}s",
-        fractal_type, path, prec_bits, iter_max, avg_iter, max_iter, ns_per_iter,
-        t_pixels.as_secs_f64(), t_total.as_secs_f64(),
-    );
-}
+pub mod orbit;
+pub mod pixel_math;
+mod precision;
+mod progress;
+mod reuse;
+pub mod sampling;
+pub mod series;
+pub mod types;
+pub use glitch::{
+    detect_glitch_clusters, mark_neighbor_glitches, segregate_glitches_by_iteration,
+    select_secondary_reference_points,
+};
+pub use orbit::{HybridBlaReferences, ReferenceOrbitCache};
+pub use precision::should_use_full_gmp_perturbation;
+pub(crate) use precision::{
+    compute_perturbation_precision_bits, effective_pixel_size, effective_spans_dd,
+    effective_spans_fexp, log2_zoom, MAX_PERTURB_PRECISION_BITS,
+};
+pub(crate) use progress::{
+    perf_enabled, print_fractall_summary, spawn_progress_reporter, ProgressState,
+};
+use reuse::build_reuse;
+pub use sampling::{DcGmpContext, ResolvedSamplingPlan};
 
 /// Iterate a pixel using Hybrid BLA with multiple references (one per phase).
 ///
@@ -258,9 +159,9 @@ fn iterate_pixel_hybrid_bla(
     series_table: Option<&crate::fractal::perturbation::series::SeriesTable>,
     delta0: crate::fractal::perturbation::types::ComplexExp,
     dc: crate::fractal::perturbation::types::ComplexExp,
-) -> crate::fractal::perturbation::delta::DeltaResult {
+) -> DeltaResult {
     use crate::fractal::perturbation::types::ComplexExp;
-    
+
     if hybrid_refs.cycle_period == 0 {
         // No cycle detected: use primary reference (single reference)
         return iterate_pixel(
@@ -274,14 +175,14 @@ fn iterate_pixel_hybrid_bla(
             None, // No hybrid refs for single reference
         );
     }
-    
+
     // Hybrid BLA: iterate through phases, switching references on rebasing
     // For Hybrid BLA: rebasing switches to the reference for the current phase
     // The current phase is determined by the total iteration count: phase = (iteration - cycle_start) % cycle_period
     let mut delta = delta0;
     let mut total_iterations = 0u32;
     let mut current_phase = hybrid_refs.get_current_phase(total_iterations);
-    
+
     // Iterate through phases until bailout or max iterations
     // Rebasing switches to the reference for the current phase (determined by iteration count)
     while total_iterations < params.iteration_max {
@@ -289,11 +190,11 @@ fn iterate_pixel_hybrid_bla(
         let ref_orbit = hybrid_refs.get_reference(current_phase);
         let bla_table = hybrid_refs.get_bla_table(current_phase);
         let effective_len = ref_orbit.effective_len() as u32;
-        
+
         // Create a modified params with reduced iteration_max for this phase
         let mut phase_params = params.clone();
         phase_params.iteration_max = (params.iteration_max - total_iterations).min(effective_len);
-        
+
         // Iterate with current phase reference
         // Pass current_phase and hybrid_refs to iterate_pixel() so it can update phase on rebasing
         let result = iterate_pixel(
@@ -306,14 +207,15 @@ fn iterate_pixel_hybrid_bla(
             Some(&mut current_phase),
             Some(hybrid_refs),
         );
-        
+
         total_iterations += result.iteration;
-        
+
         // Check if we escaped, glitched, or reached max iterations
-        if result.z_final.norm_sqr() > params.bailout * params.bailout 
-            || result.glitched 
-            || total_iterations >= params.iteration_max {
-            return crate::fractal::perturbation::delta::DeltaResult {
+        if result.z_final.norm_sqr() > params.bailout * params.bailout
+            || result.glitched
+            || total_iterations >= params.iteration_max
+        {
+            return DeltaResult {
                 iteration: total_iterations.min(params.iteration_max),
                 z_final: result.z_final,
                 glitched: result.glitched,
@@ -332,7 +234,7 @@ fn iterate_pixel_hybrid_bla(
             delta = ComplexExp::from_complex64(result.z_final);
             continue;
         }
-        
+
         // Check if rebasing occurred (completed effective orbit for this phase)
         // If result.iteration == effective_len, we reached the end and rebased
         // In Hybrid BLA, rebasing switches to the reference for the current phase
@@ -346,7 +248,7 @@ fn iterate_pixel_hybrid_bla(
             continue;
         } else {
             // Normal iteration: return result with accumulated iterations
-            return crate::fractal::perturbation::delta::DeltaResult {
+            return DeltaResult {
                 iteration: total_iterations,
                 z_final: result.z_final,
                 glitched: result.glitched,
@@ -358,7 +260,7 @@ fn iterate_pixel_hybrid_bla(
             };
         }
     }
-    
+
     // Fallback: use primary reference
     iterate_pixel(
         params,
@@ -372,616 +274,6 @@ fn iterate_pixel_hybrid_bla(
     )
 }
 
-pub fn mark_neighbor_glitches(
-    iterations: &[u32],
-    width: u32,
-    height: u32,
-    threshold: u32,
-) -> Vec<bool> {
-    let size = (width * height) as usize;
-    let mut mask = vec![false; size];
-    if width < 3 || height < 3 || iterations.len() != size {
-        return mask;
-    }
-    
-    for y in 1..(height - 1) {
-        for x in 1..(width - 1) {
-            let idx = (y * width + x) as usize;
-            let center = iterations[idx];
-            let left = iterations[(y * width + (x - 1)) as usize];
-            let right = iterations[(y * width + (x + 1)) as usize];
-            let up = iterations[((y - 1) * width + x) as usize];
-            let down = iterations[((y + 1) * width + x) as usize];
-            let mut max_diff = center.abs_diff(left);
-            max_diff = max_diff.max(center.abs_diff(right));
-            max_diff = max_diff.max(center.abs_diff(up));
-            max_diff = max_diff.max(center.abs_diff(down));
-            if max_diff > threshold {
-                mask[idx] = true;
-            }
-        }
-    }
-    mask
-}
-
-struct ReuseData<'a> {
-    iterations: &'a [u32],
-    zs: &'a [Complex64],
-    width: u32,
-    ratio: u32,
-}
-
-fn build_reuse<'a>(
-    params: &FractalParams,
-    reuse: Option<(&'a [u32], &'a [Complex64], u32, u32)>,
-) -> Option<ReuseData<'a>> {
-    // Disable pixel reuse for coloring modes that need per-pixel orbit/distance data,
-    // since reused pixels don't carry this data and would create checkerboard artifacts.
-    let needs_extra_data = matches!(
-        params.out_coloring_mode,
-        OutColoringMode::Distance | OutColoringMode::DistanceAO | OutColoringMode::Distance3D
-        | OutColoringMode::OrbitTraps | OutColoringMode::Wings
-    );
-    if needs_extra_data {
-        return None;
-    }
-    let (iterations, zs, width, height) = reuse?;
-    if width == 0 || height == 0 {
-        return None;
-    }
-    let expected_len = (width * height) as usize;
-    if iterations.len() != expected_len || zs.len() != expected_len {
-        return None;
-    }
-    if params.width % width != 0 || params.height % height != 0 {
-        return None;
-    }
-    let ratio_x = params.width / width;
-    let ratio_y = params.height / height;
-    if ratio_x < 2 || ratio_y < 2 || ratio_x != ratio_y {
-        return None;
-    }
-    Some(ReuseData {
-        iterations,
-        zs,
-        width,
-        ratio: ratio_x,
-    })
-}
-
-/// Spans (re, im) extraits depuis les coordonnées HP en FloatExp pour préserver
-/// les magnitudes < f64::MIN_POSITIVE.
-///
-/// À zoom > 1e308, `params.span_x / span_y` (f64) underflow à 0, ce qui force
-/// le dc per-pixel à zéro et produit une image uniforme. Ce helper construit
-/// FloatExp directement depuis les chaînes HP (parsing GMP → mantisse + exp
-/// arbitraire) puis convertit en FloatExp (mantisse f64 + exposant i64) qui
-/// est ensuite utilisable dans tous les arithmétiques par-pixel sans précision
-/// loss tant que les operations restent en FloatExp.
-pub(crate) fn effective_spans_fexp(params: &FractalParams) -> (crate::fractal::perturbation::types::FloatExp, crate::fractal::perturbation::types::FloatExp) {
-    use crate::fractal::perturbation::types::FloatExp;
-    let from_hp_or_f64 = |hp: Option<&str>, fallback: f64| -> FloatExp {
-        if fallback.is_finite() && fallback != 0.0 {
-            return FloatExp::from_f64(fallback);
-        }
-        let Some(hp_str) = hp else {
-            return FloatExp::from_f64(fallback);
-        };
-        let Ok(raw) = Float::parse(hp_str) else {
-            return FloatExp::from_f64(fallback);
-        };
-        // Précision suffisante pour capturer un exposant arbitraire.
-        let v = Float::with_val(1024, raw);
-        if v.is_zero() || !v.is_finite() {
-            return FloatExp::from_f64(fallback);
-        }
-        // Décomposer en (mantisse f64, exposant binaire). On utilise log2 ensuite
-        // pow2 pour reconstruire — ldexp ferait pareil mais sans risque d'overflow
-        // car FloatExp::new normalise.
-        let log2 = v.clone().abs().ln() / Float::with_val(1024, 2.0f64.ln());
-        let exp_int = log2.to_f64().floor();
-        // mantisse = v / 2^exp_int ∈ [1, 2)
-        let two_pow = Float::with_val(1024, 2.0f64.powf(exp_int.min(1023.0).max(-1023.0)));
-        // Si exp_int hors range f64 (très probable à zoom 1e1000), on construit
-        // 2^exp_int via une boucle. Pour simplicité ici on accepte un mantisse
-        // possiblement déformé et on laisse FloatExp::new() normaliser.
-        let mantissa_float = if exp_int.abs() < 1023.0 {
-            v.clone() / &two_pow
-        } else {
-            // Décomposition explicite : v * 2^(-exp_int) via successive halvings
-            // sur Float (1024 bits) — sûr pour any exp_int.
-            let mut m = v.clone();
-            let mut remaining = -exp_int;
-            // Apply by 1000-step chunks
-            while remaining.abs() >= 1000.0 {
-                let step = if remaining > 0.0 { 1000.0 } else { -1000.0 };
-                let chunk = Float::with_val(1024, 2.0f64.powf(step));
-                m *= &chunk;
-                remaining -= step;
-            }
-            if remaining != 0.0 {
-                let chunk = Float::with_val(1024, 2.0f64.powf(remaining));
-                m *= &chunk;
-            }
-            m
-        };
-        let mantissa = mantissa_float.to_f64();
-        if !mantissa.is_finite() || mantissa == 0.0 {
-            return FloatExp::from_f64(fallback);
-        }
-        // FloatExp exposant = i32 ; les span en zoom corpus restent dans
-        // ±(quelques milliers) — bien dans le range i32 (±2^31).
-        let exp_clamped = exp_int.clamp(i32::MIN as f64, i32::MAX as f64) as i32;
-        FloatExp::new(mantissa, exp_clamped)
-    };
-    let sx = from_hp_or_f64(params.span_x_hp.as_deref(), params.span_x);
-    let sy = from_hp_or_f64(params.span_y_hp.as_deref(), params.span_y);
-    (sx, sy)
-}
-
-/// Comme `effective_spans_fexp` mais en `DoubleDoubleExp` (~106 b). **Préfère la
-/// string HP** (`span_x_hp`) au f64 (`span_x`) pour capter les bits au-delà de
-/// 53 : c'est tout l'intérêt pour le tier dd — `effective_spans_fexp` renvoie le
-/// f64 dès qu'il est fini (53 b) donc capperait le `dc` dd. Extraction hi+lo
-/// depuis GMP 1024 b (comme `gmp_float_to_ddexp`). Fallback f64 si HP absent ou
-/// span hors range f64 (underflow deep zoom > 1e308 — hors scope dd Mandelbrot).
-pub(crate) fn effective_spans_dd(
-    params: &FractalParams,
-) -> (
-    crate::fractal::perturbation::dd::DoubleDoubleExp,
-    crate::fractal::perturbation::dd::DoubleDoubleExp,
-) {
-    use crate::fractal::perturbation::dd::{DoubleDouble, DoubleDoubleExp};
-    let from_hp_or_f64 = |hp: Option<&str>, fallback: f64| -> DoubleDoubleExp {
-        if let Some(hp_str) = hp {
-            if let Ok(raw) = Float::parse(hp_str) {
-                let v = Float::with_val(1024, raw);
-                if !v.is_zero() && v.is_finite() {
-                    let hi = v.to_f64();
-                    if hi != 0.0 && hi.is_finite() {
-                        let mut rem = v.clone();
-                        rem -= hi;
-                        let lo = rem.to_f64();
-                        return DoubleDoubleExp::normalized(DoubleDouble::new(hi, lo), 0);
-                    }
-                }
-            }
-        }
-        DoubleDoubleExp::from_f64(fallback)
-    };
-    let sx = from_hp_or_f64(params.span_x_hp.as_deref(), params.span_x);
-    let sy = from_hp_or_f64(params.span_y_hp.as_deref(), params.span_y);
-    (sx, sy)
-}
-
-/// Calcule un pixel_size effectif tenant compte des coordonnées HP quand le calcul
-/// f64 underflow.
-///
-/// À zoom > ~1e308, `span_x/width` calculé en f64 produit 0 (denormal underflow),
-/// ce qui fait croire au dispatcher (`should_use_full_gmp_perturbation`,
-/// `bytecode_path_label`, `try_bytecode_unified_path`) que pixel_size est nul
-/// → retombe sur le path legacy `iterate_pixel` qui cape la boucle à
-/// `effective_len-1` et produit une image uniforme sur orbite référence escapée.
-///
-/// Retourne `0.0` si pixel_size est vraiment 0 (width=0 ou tout span nul même
-/// en HP), sinon une valeur positive représentant le pixel_size effectif. La
-/// valeur peut être en dessous du normal range f64 (denormal), c'est OK pour
-/// les comparaisons `< seuil`.
-pub(crate) fn effective_pixel_size(params: &FractalParams) -> f64 {
-    if params.width == 0 || params.height == 0 {
-        return 0.0;
-    }
-    let pixel_size_f64 = (params.span_x.abs() / params.width as f64)
-        .max(params.span_y.abs() / params.height as f64);
-    if pixel_size_f64.is_finite() && pixel_size_f64 > 0.0 {
-        return pixel_size_f64;
-    }
-    // f64 underflow / non-finite : reconstruire via HP si dispo.
-    let parse = |s: &str| -> Option<Float> {
-        let raw = Float::parse(s).ok()?;
-        Some(Float::with_val(1024, raw))
-    };
-    let sx_str = params.span_x_hp.as_deref();
-    let sy_str = params.span_y_hp.as_deref().or(sx_str);
-    let sx = sx_str.and_then(parse);
-    let sy = sy_str.and_then(parse);
-    let (Some(sx), Some(sy)) = (sx, sy) else {
-        return 0.0;
-    };
-    let w = Float::with_val(1024, params.width as f64);
-    let h = Float::with_val(1024, params.height as f64);
-    let mut a = sx.abs();
-    a /= &w;
-    let mut b = sy.abs();
-    b /= &h;
-    let pixel = if a > b { a } else { b };
-    if pixel.is_zero() || !pixel.is_finite() {
-        return 0.0;
-    }
-    // log2 first then to_f64 — sinon to_f64 sature les très petits à 0.
-    let log2 = pixel.ln() / Float::with_val(1024, 2.0f64.ln());
-    let log2_f64 = log2.to_f64();
-    if !log2_f64.is_finite() {
-        return 0.0;
-    }
-    // Reconstruit pixel_size = 2^log2 ; pour log2 < f64::MIN_EXP (≈-1074), retourne
-    // f64::MIN_POSITIVE comme sentinelle « extrêmement petit mais > 0 ».
-    let result = 2.0_f64.powf(log2_f64);
-    if result > 0.0 && result.is_finite() {
-        result
-    } else {
-        f64::MIN_POSITIVE
-    }
-}
-
-/// Calcule la précision GMP en bits pour l'orbite de référence et le cache perturbation.
-///
-/// Deux politiques (référence C++ Fraktaler-3 vs conservative Rust):
-/// - **Formule référence C++** (`use_reference_precision_formula = true`):  
-///   `prec = max(24, 24 + exp(zoom * height))` (param.cc), équivalent bits  
-///   `bits = max(24, 24 + floor(log2(zoom * height)))`, puis clamp 128..8192.
-/// - **Politique conservative** (défaut): `bits = log2(zoom) + marge_par_palier`, 128..8192.  
-///   Choix délibéré plus conservateur pour éviter les glitches aux zooms extrêmes.
-/// PAS de plafond de précision par design — parité F3 (`param.cc:132` :
-/// aucun clamp haut). Historique : un plafond 65 536 b (crainte mémoire
-/// infondée — la précision ne vit que dans quelques temporaires GMP, l'orbite
-/// est stockée ComplexExp/f64) rendait e22522/e52465 en image UNIFORME fausse ;
-/// relevé à 262 144 puis SUPPRIMÉ le 2026-07-12 (décision utilisateur : « il
-/// ne devrait pas y avoir de limite de précision »). La seule borne restante
-/// est celle du type : `rug::Float::with_val` prend un `u32` (≈ 4.3 G bits ≈
-/// zoom 1e1.3e9) — borne technique, pas un choix. Le coût d'un zoom extrême
-/// est du TEMPS d'orbite (observable), pas un rendu faux silencieux ; les
-/// sweeps harness restent protégés par RLIMIT_AS + timeouts.
-pub(crate) const MAX_PERTURB_PRECISION_BITS: u32 = u32::MAX;
-
-/// `log2(zoom)` HP-aware, avec `zoom = 4 / pixel_size` et `pixel_size =
-/// max(|span_x|/width, |span_y|/height)`. Point d'entrée unique du calcul de
-/// profondeur : partagé par `compute_perturbation_precision_bits` (précision
-/// GMP de l'orbite) et le module `wisdom` (exposant requis du tier numérique).
-///
-/// Aux zooms extrêmes (> 1e308) le `pixel_size` f64 underflow à 0 ; on
-/// reconstruit alors `log2(zoom)` depuis les strings HP (`span_x_hp`) — 1024
-/// bits captent l'exposant jusqu'à ~10^10^4, au-delà de tout le corpus.
-/// Retourne `None` si les dimensions/spans sont dégénérés (zoom ≤ 1, non-fini).
-pub(crate) fn log2_zoom(params: &FractalParams) -> Option<f64> {
-    if params.width == 0 || params.height == 0 {
-        return None;
-    }
-    let log2_from_f64 = || -> Option<f64> {
-        let pixel_size = (params.span_x.abs() / params.width as f64)
-            .max(params.span_y.abs() / params.height as f64);
-        if !pixel_size.is_finite() || pixel_size <= 0.0 {
-            return None;
-        }
-        let zoom = 4.0 / pixel_size;
-        if !zoom.is_finite() || zoom <= 1.0 {
-            return None;
-        }
-        Some(zoom.log2())
-    };
-    let log2_from_hp = || -> Option<f64> {
-        // span_x_hp stores the span as a decimal string; parse with enough precision
-        // to capture the exponent regardless of magnitude (1024 bits = ~308 decimal digits,
-        // which is sufficient for zoom up to ~10^10^4 — anything deeper than the corpus).
-        let sx = params.span_x_hp.as_deref()?;
-        let sy = params.span_y_hp.as_deref().unwrap_or(sx);
-        let parse = |s: &str| -> Option<Float> {
-            let raw = Float::parse(s).ok()?;
-            Some(Float::with_val(1024, raw))
-        };
-        let px_x = parse(sx)?;
-        let px_y = parse(sy)?;
-        // pixel_size in HP = max(|sx|/w, |sy|/h) ; we want log2(4/pixel_size).
-        let w = Float::with_val(1024, params.width as f64);
-        let h = Float::with_val(1024, params.height as f64);
-        let mut a = px_x.clone().abs();
-        a /= &w;
-        let mut b = px_y.clone().abs();
-        b /= &h;
-        let pixel = if a > b { a } else { b };
-        if pixel.is_zero() || !pixel.is_finite() {
-            return None;
-        }
-        let mut zoom = Float::with_val(1024, 4.0);
-        zoom /= &pixel;
-        if zoom <= 1.0 {
-            return None;
-        }
-        // Float::to_f64 saturates to ±inf for values outside f64 range, so use log2
-        // first then convert — log2(1e8000) ≈ 26575 fits comfortably in f64.
-        let lz = zoom.ln() / Float::with_val(1024, 2.0f64.ln());
-        Some(lz.to_f64())
-    };
-    match log2_from_hp().or_else(log2_from_f64) {
-        Some(v) if v.is_finite() && v > 0.0 => Some(v),
-        _ => None,
-    }
-}
-
-pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32 {
-    if params.width == 0 || params.height == 0 {
-        return params.precision_bits.max(128);
-    }
-    // log2(zoom) where zoom = max(|span_x|/width, |span_y|/height) -> base_range/pixel_size.
-    //
-    // For super-deep zooms (zoom > 1e308) the f64 pixel_size underflows to 0, which
-    // previously made this function fall through to params.precision_bits (typically
-    // 256). At zoom 1e1000 that yields garbage reference orbits because the center
-    // is rounded to ~75 decimal digits when we actually need ~1000. `log2_zoom`
-    // computes it from the HP span strings when available to keep precision correct
-    // down to any depth the corpus throws at us (corpus has zoom 1e8000).
-    let log2_zoom = match log2_zoom(params) {
-        Some(v) => v,
-        None => return params.precision_bits.max(128),
-    };
-
-    let final_bits = if params.use_reference_precision_formula {
-        // Formule référence C++ Fraktaler-3: prec = max(24, 24 + (par.zoom * par.p.image.height).exp)
-        // .exp est l'exposant binaire du floatexp, donc équivalent à floor(log2(zoom * height))
-        let log2_height = (params.height as f64).max(1.0).log2();
-        let exp = (log2_zoom + log2_height).floor() as i64;
-        // 1 + exp matches max(24, 24 + exp) when exp grows; clamp negative to 0.
-        let bits = if exp >= 0 { (24 + exp) as i64 } else { 24 } as u64;
-        // Pas de plafond (parité F3) : la précision suit le zoom sans limite
-        // de design. Seule borne = le type (`rug` prec u32) ; si un zoom
-        // l'atteignait un jour (~1e1.3e9), on avertit — c'est la limite de la
-        // bibliothèque, pas un rendu faux silencieux choisi.
-        if bits > MAX_PERTURB_PRECISION_BITS as u64 {
-            eprintln!(
-                "[PRECISION] ⚠ zoom requiert ~{} bits > max u32 rug/MPFR : précision \
-                 saturée au maximum du type.",
-                bits
-            );
-        }
-        bits.clamp(128, MAX_PERTURB_PRECISION_BITS as u64) as u32
-    } else {
-        // Politique conservative Rust: log2(zoom) + marge par palier (choix délibéré)
-        let zoom_bits = log2_zoom.ceil() as i64;
-        let safety_margin: i64 = if log2_zoom > 100.0 {
-            200  // > 10^30
-        } else if log2_zoom > 66.0 {
-            160  // > 10^20
-        } else if log2_zoom > 50.0 {
-            128  // > 10^15
-        } else if log2_zoom > 33.0 {
-            96   // > 10^10
-        } else if log2_zoom > 20.0 {
-            80   // > 10^6
-        } else {
-            64
-        };
-        let needed_bits = (zoom_bits + safety_margin).max(128) as u64;
-        needed_bits.clamp(128, MAX_PERTURB_PRECISION_BITS as u64) as u32
-    };
-
-    // Respect params.precision_bits as a floor: if the user (or a preset) explicitly
-    // requests higher precision than the auto-formula, honor it. This keeps GMP pure
-    // and perturbation aligned under MpcParams::from_params and avoids precision-
-    // mismatch divergences at extreme zooms (seen at e50 with 170k+ iterations).
-    final_bits.max(params.precision_bits.clamp(128, MAX_PERTURB_PRECISION_BITS))
-}
-
-/// Détermine si le zoom est trop profond pour utiliser la perturbation standard (f64/ComplexExp).
-/// Pour les zooms très profonds (>10^15), il faut utiliser GMP complet pour tous les calculs.
-///
-/// # Arguments
-/// * `params` - Paramètres de la fractale
-///
-/// # Returns
-/// `true` si GMP complet doit être utilisé, `false` sinon
-pub fn should_use_full_gmp_perturbation(params: &FractalParams) -> bool {
-    if params.width == 0 || params.height == 0 {
-        return false;
-    }
-    // Override possible via FRACTALL_FORCE_GMP_PERTURB=1 si jamais un cas pathologique
-    // se présente.
-    if matches!(std::env::var("FRACTALL_FORCE_GMP_PERTURB").as_deref(), Ok("1" | "true")) {
-        return true;
-    }
-    // Si le path bytecode (f64 ou exp) peut s'en charger, il est strictement
-    // plus rapide que GMP-per-pixel et tout aussi précis (réf. orbite en GMP,
-    // delta en ComplexExp couvrant des magnitudes 2^±2^31). On laisse donc
-    // le pipeline routes via try_bytecode_unified_path → bytecode_exp pour
-    // les zooms > 1e100 sur Mandelbrot/Julia/BS/Tricorn/Multibrot. GMP-per-pixel
-    // ne reste utile que comme garde-fou si bytecode_path_label retourne None
-    // (multi-phase, type non-bytecode, ou pixel_size truly < bytecode_gmp_threshold).
-    if crate::fractal::perturbation::delta::bytecode_path_label(params).is_some() {
-        return false;
-    }
-    let pixel_size = effective_pixel_size(params);
-    if pixel_size <= 0.0 {
-        return false;
-    }
-
-    // FloatExp = (f64 mantissa, i32 exponent) → couvre des magnitudes jusqu'à
-    // ~2^(2^31). Le GMP-per-pixel n'est nécessaire que si la précision
-    // 53-bit du mantissa ne suffit plus à représenter un pixel — ce qui ne
-    // se produit qu'à des zooms extrêmes (>1e300) où l'erreur accumulée
-    // dans la boucle delta dépasse la taille d'un pixel. À zoom <1e15 le
-    // path bytecode/perturbation_fexp est ~10-50× plus rapide que GMP-per-pixel
-    // pour un résultat identique au pixel près (cf. comparaison avec Fraktaler-3
-    // dans `docs/`).
-    //
-    // Ancien seuil : 1e-15 — trop conservateur, déclenchait à zoom > 1e15
-    // alors que ComplexExp gère parfaitement ce régime.
-    pixel_size < 1e-300
-}
-
-/// Calcule l'offset dc (pixel offset from center) en GMP pour les zooms profonds.
-/// Cette fonction préserve la précision GMP en calculant directement l'offset
-/// sans utiliser params.center_x/center_y qui sont en f64.
-///
-/// # Arguments
-/// * `i` - Coordonnée X du pixel (0..width)
-/// * `j` - Coordonnée Y du pixel (0..height)
-/// * `params` - Paramètres de la fractale
-/// * `prec` - Précision GMP à utiliser
-///
-/// # Returns
-/// Le complexe dc représentant l'offset du pixel par rapport au centre, en GMP
-
-/// Pre-computed constants for GMP dc computation.
-/// Avoids re-allocating shared GMP values for every pixel.
-#[derive(Clone)]
-pub struct DcGmpContext {
-    pub inv_width: Float,
-    pub inv_height: Float,
-    pub half: Float,
-    pub x_range: Float,
-    pub y_range: Float,
-    pub prec: u32,
-    /// Matrice de rotation appliquée au delta (None si rotation == 0).
-    /// Cf. `FractalParams::rotation_matrix` et F3 hybrid.cc:265.
-    pub rot: Option<(f64, f64, f64, f64)>,
-    /// AA : offset sous-pixel uniforme legacy (`aa_subpixel_offset`, px).
-    pub aa_uniform: [f64; 2],
-    /// AA par pixel (Cranley-Patterson F3, `jitter::pixel_offset`), prioritaire.
-    pub aa_jitter: Option<(u64, f64)>,
-    pub width: usize,
-    /// `centre_vue − centre_référence` (GMP) pour les consommateurs RELATIFS
-    /// à la référence (`iterate_pixel_gmp`) — non nul seulement en
-    /// réutilisation subset off-center (G10.2). Cf. `compute_dc_ref`.
-    pub ref_offset: Option<(Float, Float)>,
-}
-
-impl DcGmpContext {
-    /// Contexte pour un consommateur relatif à la RÉFÉRENCE `cache` :
-    /// `compute_dc_ref` ajoute `centre_vue − cref`. Avant 2026-08-23 les
-    /// paths GMP legacy ignoraient cet offset (frame décalée du pan en
-    /// réutilisation off-center, `--no-bytecode` > 1e300).
-    pub fn with_reference(params: &FractalParams, prec: u32, cache: &ReferenceOrbitCache) -> Self {
-        let mut ctx = Self::new(params, prec);
-        let pf = |s: &str| Float::parse(s).ok().map(|p| Float::with_val(prec, p));
-        let cx = match &params.center_x_hp {
-            Some(s) => pf(s),
-            None => Some(Float::with_val(prec, params.center_x)),
-        };
-        let cy = match &params.center_y_hp {
-            Some(s) => pf(s),
-            None => Some(Float::with_val(prec, params.center_y)),
-        };
-        if let (Some(cx), Some(cy), Some(rx), Some(ry)) =
-            (cx, cy, pf(&cache.center_x_gmp), pf(&cache.center_y_gmp))
-        {
-            let ox = Float::with_val(prec, &cx - &rx);
-            let oy = Float::with_val(prec, &cy - &ry);
-            if !ox.is_zero() || !oy.is_zero() {
-                ctx.ref_offset = Some((ox, oy));
-            }
-        }
-        ctx
-    }
-
-    pub fn new(params: &FractalParams, prec: u32) -> Self {
-        let inv_width = Float::with_val(prec, 1.0) / Float::with_val(prec, params.width as f64);
-        let inv_height = Float::with_val(prec, 1.0) / Float::with_val(prec, params.height as f64);
-
-        let x_range = if let Some(ref sx_hp) = params.span_x_hp {
-            match Float::parse(sx_hp) {
-                Ok(parse_result) => Float::with_val(prec, parse_result),
-                Err(_) => Float::with_val(prec, params.span_x),
-            }
-        } else {
-            Float::with_val(prec, params.span_x)
-        };
-
-        let y_range = if let Some(ref sy_hp) = params.span_y_hp {
-            match Float::parse(sy_hp) {
-                Ok(parse_result) => Float::with_val(prec, parse_result),
-                Err(_) => Float::with_val(prec, params.span_y),
-            }
-        } else {
-            Float::with_val(prec, params.span_y)
-        };
-
-        let half = Float::with_val(prec, 0.5);
-
-        DcGmpContext {
-            inv_width,
-            inv_height,
-            half,
-            x_range,
-            y_range,
-            prec,
-            rot: params.transform_matrix(),
-            aa_uniform: params.aa_subpixel_offset,
-            aa_jitter: params.aa_jitter,
-            width: params.width as usize,
-            ref_offset: None,
-        }
-    }
-
-    /// `dc` relatif à la référence : `compute_dc` + (centre_vue − cref).
-    pub fn compute_dc_ref(&self, i: usize, j: usize) -> Complex {
-        let mut dc = self.compute_dc(i, j);
-        if let Some((ox, oy)) = &self.ref_offset {
-            let (mut re, mut im) = dc.into_real_imag();
-            re += ox;
-            im += oy;
-            dc = Complex::with_val(self.prec, (re, im));
-        }
-        dc
-    }
-
-    /// Compute dc for a pixel using pre-computed constants.
-    /// Only 2-3 GMP allocations per pixel instead of ~13.
-    ///
-    /// AA : même jitter que les paths f64/exp (`pixel_offset` par pixel,
-    /// sinon offset uniforme) — sans lui, les pixels corrigés en GMP étaient
-    /// ré-évalués au centre exact à chaque sample (non anti-aliasés).
-    /// Hors AA (`(0,0)` / `None`) : expression d'origine bit-identique.
-    pub fn compute_dc(&self, i: usize, j: usize) -> Complex {
-        let (jx, jy) = match self.aa_jitter {
-            Some((k, scale)) => crate::fractal::jitter::pixel_offset(self.width, i, j, k, scale),
-            None => (self.aa_uniform[0], self.aa_uniform[1]),
-        };
-        let mut i_float = Float::with_val(self.prec, i as f64);
-        i_float += &self.half;
-        if jx != 0.0 {
-            i_float += jx;
-        }
-        let mut j_float = Float::with_val(self.prec, j as f64);
-        j_float += &self.half;
-        if jy != 0.0 {
-            j_float += jy;
-        }
-        let mut x_ratio = Float::with_val(self.prec, &i_float * &self.inv_width);
-        let mut y_ratio = Float::with_val(self.prec, &j_float * &self.inv_height);
-        x_ratio -= &self.half;
-        y_ratio -= &self.half;
-        let dx = Float::with_val(self.prec, &x_ratio * &self.x_range);
-        let dy = Float::with_val(self.prec, &y_ratio * &self.y_range);
-        match self.rot {
-            Some((a, b, c, d)) => {
-                let dx_r = Float::with_val(self.prec, &dx * a) + Float::with_val(self.prec, &dy * b);
-                let dy_r = Float::with_val(self.prec, &dx * c) + Float::with_val(self.prec, &dy * d);
-                Complex::with_val(self.prec, (dx_r, dy_r))
-            }
-            None => Complex::with_val(self.prec, (dx, dy)),
-        }
-    }
-}
-
-#[allow(dead_code)]
-pub fn compute_dc_gmp(
-    i: usize,
-    j: usize,
-    params: &FractalParams,
-    _center_x_gmp: &Float,
-    _center_y_gmp: &Float,
-    prec: u32,
-) -> Complex {
-    let ctx = DcGmpContext::new(params, prec);
-    ctx.compute_dc(i, j)
-}
-
-#[allow(dead_code)]
-pub fn render_mandelbrot_perturbation(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>, Vec<f64>) {
-    let cancel = Arc::new(AtomicBool::new(false));
-    render_perturbation_cancellable_with_reuse(params, &cancel, None)
-        .unwrap_or_else(|| (Vec::new(), Vec::new(), Vec::new()))
-}
-
 pub fn render_perturbation_cancellable_with_reuse(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
@@ -989,60 +281,6 @@ pub fn render_perturbation_cancellable_with_reuse(
 ) -> Option<(Vec<u32>, Vec<Complex64>, Vec<f64>)> {
     let (result, _cache) = render_perturbation_with_cache(params, cancel, reuse, None, None, None)?;
     Some(result)
-}
-
-/// PTWithCompression phase 2 (`FRACTALL_COMPRESS_REF=1`) : libère les tableaux
-/// pleins `z_ref_f64` (16 o/iter) + `z_ref` ComplexExp (32 o/iter) de l'orbite
-/// quand le routage compressé est actif — mémoire orbite steady-state
-/// O(waypoints). Choix d'implémentation « simple et sûr » : la libération se
-/// fait sur NOTRE copie locale de l'Arc, via `Arc::try_unwrap` (rendu CLI/QA
-/// nominal : refcount 1 → libération effective). Si l'Arc est PARTAGÉ (cache
-/// GUI réutilisé entre passes), on ne libère pas : le path compressé tourne
-/// quand même (routage indépendant du strip), le gain mémoire est simplement
-/// différé — libérer in-place dans le cache partagé imposerait de reconstruire
-/// l'Arc chez tous les détenteurs. Un cache strippé n'est JAMAIS réutilisé
-/// (`ReferenceOrbitCache::is_valid_for` → false → recompute). No-op complet
-/// sans le gate env.
-fn strip_orbit_arrays_for_compress(
-    cache: Arc<ReferenceOrbitCache>,
-    params: &FractalParams,
-) -> Arc<ReferenceOrbitCache> {
-    if !delta::compressed_ref_route_active(params, &cache.orbit) {
-        return cache;
-    }
-    let (wp_count, wp_bytes) = cache
-        .orbit
-        .compressed_f64
-        .as_ref()
-        .map(|c| (c.waypoints.len(), c.memory_bytes()))
-        .unwrap_or((0, 0));
-    let full_bytes = cache.orbit.z_ref_f64.len() * std::mem::size_of::<Complex64>()
-        + cache.orbit.z_ref.len() * std::mem::size_of::<ComplexExp>();
-    match Arc::try_unwrap(cache) {
-        Ok(mut owned) => {
-            // Le buffer waypoints ne bouge pas (move de la struct, pas des
-            // heaps) → la clé du cache BLA (`delta::orbit_identity`) reste
-            // valide après le strip.
-            owned.orbit.z_ref_f64 = Vec::new();
-            owned.orbit.z_ref = Vec::new();
-            eprintln!(
-                "[COMPRESS] actif : réf via {} waypoints ({:.3} Mo) ; libéré z_ref_f64+z_ref = {:.1} Mo",
-                wp_count,
-                wp_bytes as f64 / 1e6,
-                full_bytes as f64 / 1e6,
-            );
-            Arc::new(owned)
-        }
-        Err(shared) => {
-            eprintln!(
-                "[COMPRESS] actif : réf via {} waypoints ({:.3} Mo) ; libération sautée (Arc partagé) — {:.1} Mo évités au prochain rendu",
-                wp_count,
-                wp_bytes as f64 / 1e6,
-                full_bytes as f64 / 1e6,
-            );
-            shared
-        }
-    }
 }
 
 /// Rend une fractale en utilisant la méthode de perturbation.
@@ -1081,7 +319,10 @@ pub fn render_perturbation_with_cache(
     orbit_cache: Option<&Arc<ReferenceOrbitCache>>,
     xaos: Option<&crate::fractal::xaos::XaosMap>,
     tiles: Option<&crate::render::tiles::TileOpts>,
-) -> Option<((Vec<u32>, Vec<Complex64>, Vec<f64>), Arc<ReferenceOrbitCache>)> {
+) -> Option<(
+    (Vec<u32>, Vec<Complex64>, Vec<f64>),
+    Arc<ReferenceOrbitCache>,
+)> {
     // Garde-fou (miroir du dispatcher, pour les appels directs) : mapping XaoS
     // ignoré si ses dimensions ne correspondent pas aux params (indexation
     // hors bornes sinon).
@@ -1119,7 +360,11 @@ pub fn render_perturbation_with_cache(
     }
     let supports = matches!(
         params.fractal_type,
-        FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip | FractalType::Tricorn | FractalType::Multibrot
+        FractalType::Mandelbrot
+            | FractalType::Julia
+            | FractalType::BurningShip
+            | FractalType::Tricorn
+            | FractalType::Multibrot
     );
     if !supports {
         progress.finish();
@@ -1161,7 +406,11 @@ pub fn render_perturbation_with_cache(
     // du minibrot (`out.transform = K`, `engine.cc:208`). K vit dans le cache
     // (calculée avec l'orbite) et s'applique ici au mapping pixel→c —
     // `transform_matrix()` (rot) ET `transform_sigma1()` (rayon BLA).
-    let nucleus_k = if params.find_nucleus { cache.nucleus_transform } else { None };
+    let nucleus_k = if params.find_nucleus {
+        cache.nucleus_transform
+    } else {
+        None
+    };
     let params = if cache.iteration_max > params.iteration_max || nucleus_k.is_some() {
         let mut adjusted = params.clone();
         adjusted.iteration_max = adjusted.iteration_max.max(cache.iteration_max);
@@ -1199,8 +448,17 @@ pub fn render_perturbation_with_cache(
         let prec_gmp = compute_perturbation_precision_bits(params);
         let t_gmp_pixels_start = Instant::now();
         let result = render_perturbation_gmp_path(
-            params, cancel, reuse_for_pixels, xaos, tiles, &cache, iterations, zs, distances,
-            Arc::clone(&progress), t_all_start,
+            params,
+            cancel,
+            reuse_for_pixels,
+            xaos,
+            tiles,
+            &cache,
+            iterations,
+            zs,
+            distances,
+            Arc::clone(&progress),
+            t_all_start,
         );
         let t_gmp_pixels = t_gmp_pixels_start.elapsed();
         progress.finish();
@@ -1249,13 +507,16 @@ pub fn render_perturbation_with_cache(
     // tout le frame : décale la grille pour le sample courant. Replié dans le
     // précalcul dc ci-dessous (la moyenne des frames colorés est faite par
     // l'appelant, CLI/GUI). Remplace l'ancien jitter per-pixel non-moyenné.
-    let [aa_dx, aa_dy] = params.aa_subpixel_offset;
+    let resolved_sampling =
+        ResolvedSamplingPlan::with_reference(params, cache.precision_bits.max(256), &cache);
+    let sampling = resolved_sampling.sampling;
+    let [aa_dx, aa_dy] = sampling.aa_uniform;
     // AA **par pixel** (Cranley-Patterson F3, `jitter::pixel_offset`) :
     // prioritaire sur l'offset uniforme. Quand actif, `aa_dx/aa_dy` valent 0
     // (le précalcul dc reste la base non-jitterée) et la boucle ajoute l'offset
     // décorrélé du pixel `jx·(span/width)`, `jy·(span/height)` en c-space avant
     // rotation. `None` hors AA → aucun surcoût (branche non prise).
-    let aa_jit = params.aa_jitter;
+    let aa_jit = sampling.aa_jitter;
     let img_w = params.width as usize;
     // Échelles pixel→c en FloatExp (survivent l'underflow deep zoom).
     let jit_re_fexp = x_range_fexp * inv_width;
@@ -1265,32 +526,18 @@ pub fn render_perturbation_with_cache(
     // Stocker directement en FloatExp pour éviter les conversions via Complex64.
     // dx/dy sont précalculés sans rotation ; K (rot) est appliqué par pixel dans
     // la boucle (mélange re/im) — cf. plus bas.
-    let rot = params.transform_matrix();
+    let rot = sampling.transform;
     // G10.2 : offset dc = centre_vue − centre_référence. La boucle calcule
     // `c = cref + dc` ; pour que `c` soit la coordonnée réelle du pixel il faut
     // `dc = grille + (centre_vue − cref)`. NUL quand la référence est centrée
     // (exact-reuse / rebuild, tous les chemins actuels) ; non-nul UNIQUEMENT en
     // réutilisation subset off-center (G10.2), qui est gated sans rotation → on
     // peut l'ajouter à la grille pré-rotation (séparable) sans risque.
-    let (off_re_fexp, off_im_fexp) = {
-        let prec = cache.precision_bits.max(256);
-        let pf = |s: &str| Float::parse(s).ok().map(|p| Float::with_val(prec, p));
-        let cx = match &params.center_x_hp {
-            Some(s) => pf(s),
-            None => Some(Float::with_val(prec, params.center_x)),
-        };
-        let cy = match &params.center_y_hp {
-            Some(s) => pf(s),
-            None => Some(Float::with_val(prec, params.center_y)),
-        };
-        match (cx, cy, pf(&cache.center_x_gmp), pf(&cache.center_y_gmp)) {
-            (Some(cx), Some(cy), Some(rx), Some(ry)) => (
-                FloatExp::from_gmp(&Float::with_val(prec, &cx - &rx)),
-                FloatExp::from_gmp(&Float::with_val(prec, &cy - &ry)),
-            ),
-            _ => (FloatExp::from_f64(0.0), FloatExp::from_f64(0.0)),
-        }
-    };
+    let (off_re_fexp, off_im_fexp) = resolved_sampling
+        .ref_offset
+        .as_ref()
+        .map(|(re, im)| (FloatExp::from_gmp(re), FloatExp::from_gmp(im)))
+        .unwrap_or((FloatExp::from_f64(0.0), FloatExp::from_f64(0.0)));
     let dc_re_fexp: Vec<FloatExp> = (0..width)
         .map(|i| x_range_fexp * ((i as f64 + 0.5 + aa_dx) * inv_width - 0.5) + off_re_fexp)
         .collect();
@@ -1320,13 +567,17 @@ pub fn render_perturbation_with_cache(
         let half = DdE::from_f64(0.5);
         let re = (0..width)
             .map(|i| {
-                let frac = DdE::from_f64(i as f64 + 0.5 + aa_dx).div(width_dd).sub(half);
+                let frac = DdE::from_f64(i as f64 + 0.5 + aa_dx)
+                    .div(width_dd)
+                    .sub(half);
                 x_range_dd.mul(frac)
             })
             .collect();
         let im = (0..height)
             .map(|j| {
-                let frac = DdE::from_f64(j as f64 + 0.5 + aa_dy).div(height_dd).sub(half);
+                let frac = DdE::from_f64(j as f64 + 0.5 + aa_dy)
+                    .div(height_dd)
+                    .sub(half);
                 y_range_dd.mul(frac)
             })
             .collect();
@@ -1334,7 +585,12 @@ pub fn render_perturbation_with_cache(
         (re, im, x_range_dd.div(width_dd), y_range_dd.div(height_dd))
     } else {
         use crate::fractal::perturbation::dd::DoubleDoubleExp as DdE;
-        (Vec::new(), Vec::new(), DdE::from_f64(0.0), DdE::from_f64(0.0))
+        (
+            Vec::new(),
+            Vec::new(),
+            DdE::from_f64(0.0),
+            DdE::from_f64(0.0),
+        )
     };
 
     // Pré-construit la table BLA partagée pendant que le pool rayon est libre :
@@ -1511,24 +767,27 @@ pub fn render_perturbation_with_cache(
                             None,
                         )
                     };
-                
+
                     // Use distance estimation and interior detection results
                     // Encode is_interior in z.im sign: negative = interior point
                     // Encode distance in z.re when available (for distance-based coloring)
                     let mut z_value = result.z_final;
-                
+
                     if result.is_interior {
                         // Interior point: encode flag in z.im sign (negative = interior)
                         // This allows color_for_pixel to detect and color interior points black
                         z_value = Complex64::new(z_value.re, -z_value.im.abs());
-                    } else if result.distance.is_finite() && result.distance != f64::INFINITY && result.distance > 0.0 {
+                    } else if result.distance.is_finite()
+                        && result.distance != f64::INFINITY
+                        && result.distance > 0.0
+                    {
                         // Distance estimation available: can be used for distance field coloring
                         // For now, we keep z as-is to preserve smooth_iteration calculation
                         // Distance can be accessed via result.distance if needed in the future
                         // Optionally encode distance in z.re for special distance-based coloring modes
                         // z_value = Complex64::new(result.distance, z_value.im);
                     }
-                
+
                     *iter = result.iteration;
                     *z = z_value;
                     *dist = result.distance;
@@ -1640,10 +899,8 @@ pub fn render_perturbation_with_cache(
                 params.min_glitch_cluster_size as usize,
             );
 
-            let secondary_refs = select_secondary_reference_points(
-                &clusters,
-                params.max_secondary_refs as usize,
-            );
+            let secondary_refs =
+                select_secondary_reference_points(&clusters, params.max_secondary_refs as usize);
 
             // Process each secondary reference
             // Each reference corresponds to a different phase/starting point in the hybrid loop.
@@ -1660,12 +917,17 @@ pub fn render_perturbation_with_cache(
                 sec_params.center_y = cluster.center_y;
 
                 // Compute secondary reference orbit (one reference per phase)
-                if let Some((sec_orbit, _, _)) = compute_reference_orbit(&sec_params, Some(cancel.as_ref()), true) {
+                if let Some((sec_orbit, _, _)) =
+                    compute_reference_orbit(&sec_params, Some(cancel.as_ref()), true)
+                {
                     // Build BLA table for this reference (one BLA table per reference)
-                    let sec_bla = bla::build_bla_table(&sec_orbit.z_ref_f64, &sec_params, sec_orbit.cref);
+                    let sec_bla =
+                        bla::build_bla_table(&sec_orbit.z_ref_f64, &sec_params, sec_orbit.cref);
                     let sec_series = if params.series_standalone
-                        && matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia)
-                    {
+                        && matches!(
+                            params.fractal_type,
+                            FractalType::Mandelbrot | FractalType::Julia
+                        ) {
                         let is_julia = params.fractal_type == FractalType::Julia;
                         let pixel_size = (params.span_x.abs() / params.width.max(1) as f64)
                             .max(params.span_y.abs() / params.height.max(1) as f64);
@@ -1673,9 +935,19 @@ pub fn render_perturbation_with_cache(
                             pixel_size,
                             params.iteration_max,
                             params.series_order,
-                        ).max(4);
-                        let interval = if sec_orbit.z_ref_f64.len() > 100_000 { 10 } else { 1 };
-                        Some(series::build_series_table_ho(&sec_orbit.z_ref_f64, is_julia, adaptive_order, interval))
+                        )
+                        .max(4);
+                        let interval = if sec_orbit.z_ref_f64.len() > 100_000 {
+                            10
+                        } else {
+                            1
+                        };
+                        Some(series::build_series_table_ho(
+                            &sec_orbit.z_ref_f64,
+                            is_julia,
+                            adaptive_order,
+                            interval,
+                        ))
                     } else {
                         None
                     };
@@ -1683,7 +955,8 @@ pub fn render_perturbation_with_cache(
                     // Re-render cluster pixels with secondary reference (parallelized).
                     // Inspired by rust-fractal-core: parallelize pixel iteration within each
                     // glitch cluster for significant speedup on large clusters.
-                    let results: Vec<(usize, delta::DeltaResult)> = cluster.pixel_indices
+                    let results: Vec<(usize, DeltaResult)> = cluster
+                        .pixel_indices
                         .par_iter()
                         .map(|&idx| {
                             let px = idx % width;
@@ -1786,7 +1059,9 @@ pub fn render_perturbation_with_cache(
                     // Try delta-based reference creation from existing orbit first
                     // (inspired by rust-fractal-core's get_glitch_resolving_reference).
                     // This is much faster than computing a full new orbit from scratch.
-                    let best_idx = cluster.pixel_indices.iter()
+                    let best_idx = cluster
+                        .pixel_indices
+                        .iter()
                         .min_by(|&&a, &&b| {
                             let na = zs[a].norm_sqr();
                             let nb = zs[b].norm_sqr();
@@ -1808,10 +1083,18 @@ pub fn render_perturbation_with_cache(
                         best_iter,
                         best_dc_re,
                         best_dc_im,
-                        best_z_final.re - cache_ref.orbit.z_ref_f64.get(best_iter as usize)
-                            .map_or(0.0, |z| z.re),
-                        best_z_final.im - cache_ref.orbit.z_ref_f64.get(best_iter as usize)
-                            .map_or(0.0, |z| z.im),
+                        best_z_final.re
+                            - cache_ref
+                                .orbit
+                                .z_ref_f64
+                                .get(best_iter as usize)
+                                .map_or(0.0, |z| z.re),
+                        best_z_final.im
+                            - cache_ref
+                                .orbit
+                                .z_ref_f64
+                                .get(best_iter as usize)
+                                .map_or(0.0, |z| z.im),
                         params,
                         Some(cancel.as_ref()),
                     );
@@ -1823,17 +1106,20 @@ pub fn render_perturbation_with_cache(
                             let mut sec_params = orbit_params.clone();
                             sec_params.center_x = cluster.center_x;
                             sec_params.center_y = cluster.center_y;
-                            match compute_reference_orbit(&sec_params, Some(cancel.as_ref()), true) {
+                            match compute_reference_orbit(&sec_params, Some(cancel.as_ref()), true)
+                            {
                                 Some((orbit, _, _)) => orbit,
                                 None => continue,
                             }
                         }
                     };
 
-                    let sec_bla = bla::build_bla_table(&sec_orbit.z_ref_f64, &orbit_params, sec_orbit.cref);
+                    let sec_bla =
+                        bla::build_bla_table(&sec_orbit.z_ref_f64, &orbit_params, sec_orbit.cref);
 
                     // Parallelize pixel iteration within each cluster (inspired by rust-fractal-core).
-                    let results: Vec<(usize, delta::DeltaResult)> = cluster.pixel_indices
+                    let results: Vec<(usize, DeltaResult)> = cluster
+                        .pixel_indices
                         .par_iter()
                         .map(|&idx| {
                             let px = idx % width;
@@ -1852,14 +1138,7 @@ pub fn render_perturbation_with_cache(
                             };
 
                             let result = iterate_pixel(
-                                params,
-                                &sec_orbit,
-                                &sec_bla,
-                                None,
-                                delta0,
-                                dc_term,
-                                None,
-                                None,
+                                params, &sec_orbit, &sec_bla, None, delta0, dc_term, None, None,
                             );
                             (idx, result)
                         })
@@ -1898,7 +1177,9 @@ pub fn render_perturbation_with_cache(
         // réf-intérieure ~36 % flaggés → < 0.30 après écho → escalade dd
         // sautée → chaque pixel frais passait en GMP par-pixel, ordres de
         // grandeur plus lent, bug 2026-08-23).
-        let computed_pixels = total_pixels.saturating_sub(xaos.map_or(0, |m| m.copied)).max(1);
+        let computed_pixels = total_pixels
+            .saturating_sub(xaos.map_or(0, |m| m.copied))
+            .max(1);
         let glitch_ratio = glitched_indices.len() as f64 / computed_pixels as f64;
         const GLITCH_FALLBACK_THRESHOLD: f64 = 0.30; // 30% (augmenté de 10%)
 
@@ -1976,14 +1257,14 @@ pub fn render_perturbation_with_cache(
 
                     // Calculer dc en GMP directement
                     let dc_gmp = dc_ctx.compute_dc(i, j);
-                    
+
                     // Calculer le point pixel = center + dc en GMP
                     let mut z_pixel_re = center_x_gmp.clone();
                     z_pixel_re += dc_gmp.real();
                     let mut z_pixel_im = center_y_gmp.clone();
                     z_pixel_im += dc_gmp.imag();
                     let z_pixel = complex_from_xy(prec, z_pixel_re, z_pixel_im);
-                    
+
                     let (iter_val, z_final) = iterate_point_mpc(&gmp_params, &z_pixel);
                     (idx, iter_val, complex_to_complex64(&z_final))
                 })
@@ -2026,7 +1307,6 @@ pub fn render_perturbation_with_cache(
             // (full GMP per-pixel, lent mais sans dépendance à l'orbite) pour
             // récupérer le vrai escape iter. Le seuil 30 % est aligné sur
             // GLITCH_FALLBACK_THRESHOLD plus haut.
-            use crate::fractal::perturbation::delta::iterate_pixel_gmp;
             let effective_len = gmp_orbit.effective_len() as u32;
             let cap_iter = params.iteration_max.min(effective_len.saturating_sub(1));
             let corrections: Vec<_> = glitched_indices
@@ -2035,12 +1315,7 @@ pub fn render_perturbation_with_cache(
                     let i = (idx as u32 % width_u32) as usize;
                     let j = (idx as u32 / width_u32) as usize;
                     let dc_gmp = dc_ctx.compute_dc_ref(i, j);
-                    let result = iterate_pixel_gmp(
-                        params,
-                        gmp_orbit,
-                        &dc_gmp,
-                        prec,
-                    );
+                    let result = iterate_pixel_gmp(params, gmp_orbit, &dc_gmp, prec);
                     (idx, result.iteration, result.z_final, result.glitched)
                 })
                 .collect();
@@ -2048,7 +1323,10 @@ pub fn render_perturbation_with_cache(
             // Détection de saturation : si la grande majorité des pixels glitchés
             // sont coincés à `cap_iter` (saturation à la fin de l'orbite référence),
             // l'orbite référence est inutilisable — on refait ces pixels en pure GMP.
-            let saturated_count = corrections.iter().filter(|&&(_, it, _, _)| it >= cap_iter).count();
+            let saturated_count = corrections
+                .iter()
+                .filter(|&&(_, it, _, _)| it >= cap_iter)
+                .count();
             let need_pure_gmp = bytecode_path
                 && cap_iter < params.iteration_max
                 && corrections.len() > 0
@@ -2074,8 +1352,7 @@ pub fn render_perturbation_with_cache(
                     .filter_map(|&(idx, _, _, g)| if g { Some(idx) } else { None })
                     .collect()
             };
-            let escalate_set: std::collections::HashSet<usize> =
-                escalate.iter().copied().collect();
+            let escalate_set: std::collections::HashSet<usize> = escalate.iter().copied().collect();
             // Applique les corrections GMP-delta rapides pour les pixels résolus.
             for (idx, iter_val, z_final, _) in &corrections {
                 if !escalate_set.contains(idx) {
@@ -2126,7 +1403,7 @@ pub fn render_perturbation_with_cache(
 
         if perf {
             let pixel_size = (params.span_x.abs() / params.width.max(1) as f64)
-            .max(params.span_y.abs() / params.height.max(1) as f64);
+                .max(params.span_y.abs() / params.height.max(1) as f64);
             let zoom = if pixel_size.is_finite() && pixel_size > 0.0 {
                 4.0 / pixel_size
             } else {
@@ -2222,14 +1499,17 @@ fn render_perturbation_gmp_path(
     distances: Vec<f64>,
     progress: Arc<ProgressState>,
     t_all_start: Instant,
-) -> Option<((Vec<u32>, Vec<Complex64>, Vec<f64>), Arc<ReferenceOrbitCache>)> {
+) -> Option<(
+    (Vec<u32>, Vec<Complex64>, Vec<f64>),
+    Arc<ReferenceOrbitCache>,
+)> {
     // Utiliser la précision calculée au lieu du preset
     let prec = compute_perturbation_precision_bits(params);
     let width = params.width as usize;
     let height = params.height as usize;
     let _pixel_count = width.saturating_mul(height);
     let t_pixels_start = Instant::now();
-    
+
     // IMPORTANT: Vérifier que la précision du cache correspond à la précision calculée
     // Si la précision du cache est inférieure, cela peut causer des erreurs de précision
     if cache.precision_bits < prec {
@@ -2243,26 +1523,32 @@ fn render_perturbation_gmp_path(
     let center_x_gmp = match Float::parse(&cache.center_x_gmp) {
         Ok(parse_result) => Float::with_val(prec, parse_result),
         Err(_) => {
-            eprintln!("[PRECISION ERROR] Failed to parse center_x_gmp: {}", cache.center_x_gmp);
+            eprintln!(
+                "[PRECISION ERROR] Failed to parse center_x_gmp: {}",
+                cache.center_x_gmp
+            );
             return None;
-        },
+        }
     };
     let center_y_gmp = match Float::parse(&cache.center_y_gmp) {
         Ok(parse_result) => Float::with_val(prec, parse_result),
         Err(_) => {
-            eprintln!("[PRECISION ERROR] Failed to parse center_y_gmp: {}", cache.center_y_gmp);
+            eprintln!(
+                "[PRECISION ERROR] Failed to parse center_y_gmp: {}",
+                cache.center_y_gmp
+            );
             return None;
-        },
+        }
     };
-    
+
     let cancelled = AtomicBool::new(false);
     // Réutiliser les pixels alignés de la passe précédente (même logique que le chemin f64).
     // build_reuse() valide l'alignement et désactive le reuse pour les modes distance/orbit.
     let reuse_data = build_reuse(params, reuse);
-    
+
     // Clone cache for use in parallel iteration
     let cache_ref = Arc::clone(cache);
-    
+
     // Collect glitched pixels for correction
     let glitch_mask: Vec<AtomicBool> = (0..width * params.height as usize)
         .map(|_| AtomicBool::new(false))
@@ -2332,18 +1618,17 @@ fn render_perturbation_gmp_path(
                     let dc_gmp = dc_ctx.compute_dc_ref(i, j);
 
                     // Iterate pixel with full GMP precision
-                    let result = iterate_pixel_gmp(
-                        params,
-                        &cache_ref.orbit,
-                        &dc_gmp,
-                        prec,
-                    );
+                    let result = iterate_pixel_gmp(params, &cache_ref.orbit, &dc_gmp, prec);
 
                     *iter = result.iteration;
                     *z = result.z_final;
 
                     // Mark glitched or suspect pixels for correction
-                    if result.glitched || result.suspect || !result.z_final.re.is_finite() || !result.z_final.im.is_finite() {
+                    if result.glitched
+                        || result.suspect
+                        || !result.z_final.re.is_finite()
+                        || !result.z_final.im.is_finite()
+                    {
                         let idx = j * width + i;
                         glitch_mask[idx].store(true, Ordering::Relaxed);
                     }
@@ -2361,7 +1646,9 @@ fn render_perturbation_gmp_path(
                 });
             }
             let done = tiles_done.fetch_add(1, Ordering::Relaxed) + 1;
-            progress.tile.store((done * 100 / total_tiles).min(100), Ordering::Relaxed);
+            progress
+                .tile
+                .store((done * 100 / total_tiles).min(100), Ordering::Relaxed);
         },
     );
     drop(slots);
@@ -2377,16 +1664,22 @@ fn render_perturbation_gmp_path(
         let glitched_indices: Vec<usize> = glitch_mask
             .iter()
             .enumerate()
-            .filter_map(|(idx, flag)| if flag.load(Ordering::Relaxed) { Some(idx) } else { None })
+            .filter_map(|(idx, flag)| {
+                if flag.load(Ordering::Relaxed) {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
             .collect();
-        
+
         if !glitched_indices.is_empty() {
             // Use direct GMP iteration as fallback for glitched pixels
             let mut orbit_params = params.clone();
             orbit_params.precision_bits = prec;
             let gmp_params = MpcParams::from_params(&orbit_params);
             let width_u32 = params.width;
-            
+
             // Pre-compute shared GMP constants for dc computation. La base
             // `center_*_gmp` est ici le centre de la RÉFÉRENCE (cache) →
             // dc relatif à la référence (offset off-center inclus).
@@ -2405,13 +1698,13 @@ fn render_perturbation_gmp_path(
                     let mut z_pixel_im = center_y_gmp.clone();
                     z_pixel_im += dc_gmp.imag();
                     let z_pixel = complex_from_xy(prec, z_pixel_re, z_pixel_im);
-                    
+
                     // Use direct GMP iteration (no perturbation)
                     let (iter_val, z_final) = iterate_point_mpc(&gmp_params, &z_pixel);
                     (idx, iter_val, complex_to_complex64(&z_final))
                 })
                 .collect();
-            
+
             for (idx, iter_val, z_final) in corrections {
                 iterations[idx] = iter_val;
                 zs[idx] = z_final;
@@ -2459,8 +1752,8 @@ mod tests {
         big.precision_bits = 256;
         big.iteration_max = 400;
         let cancel = Arc::new(AtomicBool::new(false));
-        let (_r, cache_big) =
-            render_perturbation_with_cache(&big, &cancel, None, None, None, None).expect("render big");
+        let (_r, cache_big) = render_perturbation_with_cache(&big, &cancel, None, None, None, None)
+            .expect("render big");
 
         // Vue CONTENUE : zoom-in ×2 (span 1.5) + pan (0.3, 0.1).
         // x: |0.3|+0.75=1.05 ≤ 1.5 ; y: |0.1|+0.75=0.85 ≤ 1.5 → sous-ensemble.
@@ -2490,7 +1783,8 @@ mod tests {
 
         // Rendu avec réutilisation off-center (offset dc = view.center - big.center).
         let (res_reuse, cache_after) =
-            render_perturbation_with_cache(&view, &cancel, None, Some(&cache_big), None, None).expect("reuse");
+            render_perturbation_with_cache(&view, &cancel, None, Some(&cache_big), None, None)
+                .expect("reuse");
         // Preuve de RÉUTILISATION : la référence est restée en A (-0.5), pas
         // recalculée au centre de la vue (-0.2).
         assert_eq!(
@@ -2507,7 +1801,11 @@ mod tests {
         let (it_reuse, _z1, _d1) = res_reuse;
         let (it_fresh, _z2, _d2) = res_fresh;
         assert_eq!(it_reuse.len(), it_fresh.len());
-        let ndiff = it_reuse.iter().zip(&it_fresh).filter(|(a, b)| a != b).count();
+        let ndiff = it_reuse
+            .iter()
+            .zip(&it_fresh)
+            .filter(|(a, b)| a != b)
+            .count();
         let total = it_reuse.len();
         assert!(
             ndiff * 100 <= total, // ≤ 1 % de pixels de bord tolérés
@@ -2516,7 +1814,7 @@ mod tests {
 
         use super::{
             compute_reference_orbit_cached, render_perturbation_gmp_path, DcGmpContext,
-            ProgressState, ReferenceOrbitCache,
+            ProgressState, ReferenceOrbitCache, ResolvedSamplingPlan,
         };
         use std::time::Instant;
         // Verrou #24 (2026-08-23) : le path GMP legacy (iterate_pixel_gmp)
@@ -2531,23 +1829,45 @@ mod tests {
         let cache_big_legacy =
             compute_reference_orbit_cached(&big_legacy, Some(&cancel), None, None, false)
                 .expect("réf legacy A");
-        assert!(!cache_big_legacy.orbit.z_ref_gmp.is_empty(), "GMP dense requis");
+        assert!(
+            !cache_big_legacy.orbit.z_ref_gmp.is_empty(),
+            "GMP dense requis"
+        );
         assert!(cache_big_legacy.can_subset_reuse(&view_legacy));
         let ctx = DcGmpContext::with_reference(&view_legacy, 256, &cache_big_legacy);
-        let (ox, oy) = ctx.ref_offset.clone().expect("offset non nul (pan 0.3, 0.1)");
+        let resolved = ResolvedSamplingPlan::with_reference(&view_legacy, 256, &cache_big_legacy);
+        let (ox, oy) = ctx
+            .ref_offset
+            .clone()
+            .expect("offset non nul (pan 0.3, 0.1)");
+        let (rx, ry) = resolved.ref_offset.expect("plan résolu off-center");
+        assert_eq!((ox.clone(), oy.clone()), (rx, ry));
         assert!((ox.to_f64() - 0.3).abs() < 1e-12 && (oy.to_f64() - 0.1).abs() < 1e-12);
         let n = (view.width * view.height) as usize;
         let gmp_render = |cache: &Arc<ReferenceOrbitCache>| {
             let progress = Arc::new(ProgressState::default());
             let (r, _) = render_perturbation_gmp_path(
-                &view_legacy, &cancel, None, None, None, cache,
-                vec![0u32; n], vec![Complex64::new(0.0, 0.0); n], vec![f64::INFINITY; n],
-                progress, Instant::now(),
-            ).expect("gmp path");
+                &view_legacy,
+                &cancel,
+                None,
+                None,
+                None,
+                cache,
+                vec![0u32; n],
+                vec![Complex64::new(0.0, 0.0); n],
+                vec![f64::INFINITY; n],
+                progress,
+                Instant::now(),
+            )
+            .expect("gmp path");
             r.0
         };
         let it_gmp_offcenter = gmp_render(&cache_big_legacy);
-        let nd = it_gmp_offcenter.iter().zip(&it_fresh).filter(|(a, b)| a != b).count();
+        let nd = it_gmp_offcenter
+            .iter()
+            .zip(&it_fresh)
+            .filter(|(a, b)| a != b)
+            .count();
         assert!(
             nd * 100 <= total,
             "path GMP off-center diverge du rendu frais : {nd}/{total} px (offset non propagé ?)"
@@ -2606,8 +1926,10 @@ mod tests {
     #[test]
     fn continuous_zoom_cache_reuse_matches_fresh() {
         use super::{render_perturbation_with_cache, ReferenceOrbitCache};
-        let cx = "-1.371894034497786177276218629447827355152810566065208011938331009089941256128969";
-        let cy = "-8.596946447921205325727880816022532777086452667518370092652771867971556457154214e-2";
+        let cx =
+            "-1.371894034497786177276218629447827355152810566065208011938331009089941256128969";
+        let cy =
+            "-8.596946447921205325727880816022532777086452667518370092652771867971556457154214e-2";
         let final_span = 9.462012871361855867690684674541606291146700322899874668115416663170852644098815e-26_f64;
         let (w, h) = (128u32, 96u32);
         let cancel = Arc::new(AtomicBool::new(false));
@@ -2634,8 +1956,9 @@ mod tests {
         let mut span = 1.0_f64;
         while span > final_span {
             let p = make(span);
-            let (_r, c) = render_perturbation_with_cache(&p, &cancel, None, cache.as_ref(), None, None)
-                .expect("zoom step");
+            let (_r, c) =
+                render_perturbation_with_cache(&p, &cancel, None, cache.as_ref(), None, None)
+                    .expect("zoom step");
             cache = Some(c);
             span /= 2.0;
         }
@@ -2644,13 +1967,19 @@ mod tests {
             render_perturbation_with_cache(&p_final, &cancel, None, cache.as_ref(), None, None)
                 .expect("final reuse");
         let (res_fresh, _c2) =
-            render_perturbation_with_cache(&p_final, &cancel, None, None, None, None).expect("final fresh");
+            render_perturbation_with_cache(&p_final, &cancel, None, None, None, None)
+                .expect("final fresh");
 
         let (it_reuse, _z1, _d1) = res_reuse;
         let (it_fresh, _z2, _d2) = res_fresh;
-        let ndiff = it_reuse.iter().zip(&it_fresh).filter(|(a, b)| a != b).count();
+        let ndiff = it_reuse
+            .iter()
+            .zip(&it_fresh)
+            .filter(|(a, b)| a != b)
+            .count();
         assert_eq!(
-            ndiff, 0,
+            ndiff,
+            0,
             "zoom continu (cache réutilisé) diverge du rendu frais : {ndiff}/{} px",
             it_reuse.len()
         );
@@ -2679,7 +2008,9 @@ mod tests {
             assert!(
                 (actual_log2 - expected_log2).abs() < 5.0,
                 "{} log2 mismatch: got {} expected {}",
-                label, actual_log2, expected_log2
+                label,
+                actual_log2,
+                expected_log2
             );
         }
     }
@@ -2832,19 +2163,28 @@ mod tests {
     #[test]
     fn perturbation_matches_f64_celtic() {
         assert_pert_dispatch_matches_f64(
-            &celtic_family_params(FractalType::Celtic), &[(0, 4), (2, 2), (4, 0)], 1);
+            &celtic_family_params(FractalType::Celtic),
+            &[(0, 4), (2, 2), (4, 0)],
+            1,
+        );
     }
 
     #[test]
     fn perturbation_matches_f64_buffalo() {
         assert_pert_dispatch_matches_f64(
-            &celtic_family_params(FractalType::Buffalo), &[(0, 4), (2, 2), (4, 0)], 1);
+            &celtic_family_params(FractalType::Buffalo),
+            &[(0, 4), (2, 2), (4, 0)],
+            1,
+        );
     }
 
     #[test]
     fn perturbation_matches_f64_perpendicular_burning_ship() {
         assert_pert_dispatch_matches_f64(
-            &celtic_family_params(FractalType::PerpendicularBurningShip), &[(0, 4), (2, 2), (4, 0)], 1);
+            &celtic_family_params(FractalType::PerpendicularBurningShip),
+            &[(0, 4), (2, 2), (4, 0)],
+            1,
+        );
     }
 
     #[test]

@@ -2,6 +2,25 @@ use num_complex::Complex64;
 use rug::{Complex, Float};
 use std::ops::{Add, Mul, Sub};
 
+/// Résultat commun d'une itération de perturbation par pixel.
+///
+/// Placé dans les types partagés afin que les pixel-loops bytecode ne
+/// dépendent pas du module d'implémentation historique `delta`.
+pub struct DeltaResult {
+    pub iteration: u32,
+    pub z_final: Complex64,
+    pub glitched: bool,
+    pub suspect: bool,
+    /// Distance estimation (if computed). f64::INFINITY if not computed or invalid.
+    pub distance: f64,
+    /// Whether the point is in the interior of the set.
+    pub is_interior: bool,
+    /// Whether the phase changed during hybrid rebasing.
+    pub phase_changed: bool,
+    /// Smooth (fractional) iteration count for continuous coloring.
+    pub smooth_iteration: f64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FloatExp {
     pub mantissa: f64,
@@ -62,7 +81,10 @@ impl FloatExp {
             mantissa_float >>= exp;
         }
         let mantissa = mantissa_float.to_f64();
-        Self { mantissa, exponent: exp }
+        Self {
+            mantissa,
+            exponent: exp,
+        }
     }
 
     #[inline(always)]
@@ -325,19 +347,6 @@ impl ComplexExp {
         Complex64::new(self.re.to_f64(), self.im.to_f64())
     }
 
-    /// Multiply with sign adjustment for Burning Ship perturbation.
-    /// Used when the quadrant is stable and we can apply signed perturbation.
-    /// result.re = sign_re * self.re
-    /// result.im = sign_im * self.im
-    #[inline(always)]
-    #[allow(dead_code)]
-    pub fn mul_signed(self, sign_re: f64, sign_im: f64) -> Self {
-        Self {
-            re: FloatExp::new(self.re.mantissa * sign_re, self.re.exponent),
-            im: FloatExp::new(self.im.mantissa * sign_im, self.im.exponent),
-        }
-    }
-
     /// Normalize both components. Inspired by rust-fractal-core's `reduce()` method
     /// which periodically re-normalizes mantissas to prevent gradual precision loss
     /// during long iteration sequences (called e.g. every 250 iterations).
@@ -346,7 +355,6 @@ impl ComplexExp {
         self.re.reduce();
         self.im.reduce();
     }
-
 }
 
 #[inline(always)]
@@ -392,8 +400,27 @@ pub fn pow2i(exp: i32) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ComplexExp, FloatExp};
+    use super::{ComplexExp, DeltaResult, FloatExp};
     use num_complex::Complex64;
+
+    #[test]
+    fn delta_result_carries_pixel_channels() {
+        let result = DeltaResult {
+            iteration: 10,
+            z_final: Complex64::new(1.0, 2.0),
+            glitched: false,
+            suspect: false,
+            distance: f64::INFINITY,
+            is_interior: false,
+            phase_changed: false,
+            smooth_iteration: 0.0,
+        };
+        assert_eq!(result.iteration, 10);
+        assert_eq!(result.z_final, Complex64::new(1.0, 2.0));
+        assert_eq!(result.distance, f64::INFINITY);
+        assert!(!result.is_interior);
+        assert!(!result.phase_changed);
+    }
 
     #[test]
     fn floatexp_roundtrip() {
@@ -424,14 +451,24 @@ mod tests {
 
     #[test]
     fn floatexp_reduce_normalizes() {
-        let mut fx = FloatExp { mantissa: 4.0, exponent: 5 };
+        let mut fx = FloatExp {
+            mantissa: 4.0,
+            exponent: 5,
+        };
         fx.reduce();
         // After reduce, mantissa should be in [0.5, 1.0)
-        assert!(fx.mantissa.abs() >= 0.5 && fx.mantissa.abs() < 1.0,
-            "mantissa should be normalized, got {}", fx.mantissa);
+        assert!(
+            fx.mantissa.abs() >= 0.5 && fx.mantissa.abs() < 1.0,
+            "mantissa should be normalized, got {}",
+            fx.mantissa
+        );
         // Value should be preserved
         let value = fx.to_f64();
-        assert!((value - 128.0).abs() < 1e-10, "value should be 4*2^5=128, got {}", value);
+        assert!(
+            (value - 128.0).abs() < 1e-10,
+            "value should be 4*2^5=128, got {}",
+            value
+        );
     }
 
     #[test]
@@ -467,8 +504,14 @@ mod tests {
         assert!((a.div(b).to_f64() - 3.5).abs() < 1e-12);
         // Division preserving exponents beyond f64 range. 2^2000 / 2^1000 = 2^1000
         // → normalized as 0.5·2^1001.
-        let big = FloatExp { mantissa: 0.5, exponent: 2001 }; // 2^2000
-        let small = FloatExp { mantissa: 0.5, exponent: 1001 }; // 2^1000
+        let big = FloatExp {
+            mantissa: 0.5,
+            exponent: 2001,
+        }; // 2^2000
+        let small = FloatExp {
+            mantissa: 0.5,
+            exponent: 1001,
+        }; // 2^1000
         let q = big.div(small);
         assert_eq!(q.exponent, 1001);
         assert!((q.mantissa - 0.5).abs() < 1e-12);
@@ -486,13 +529,19 @@ mod tests {
             );
         }
         // sqrt of a huge exp value: (0.5·2^2001) → sqrt = 0.7071·2^1000.
-        let huge = FloatExp { mantissa: 0.5, exponent: 2001 }; // = 2^2000
+        let huge = FloatExp {
+            mantissa: 0.5,
+            exponent: 2001,
+        }; // = 2^2000
         let sh = huge.sqrt();
         // 2^2000 → sqrt = 2^1000. Normalized: 0.5·2^1001.
         assert!((sh.mantissa - 0.5).abs() < 1e-12);
         assert_eq!(sh.exponent, 1001);
         // Odd stored exponent path: 0.5·2^2002 = 2^2001 → sqrt = 2^1000.5 = √2·2^1000.
-        let odd = FloatExp { mantissa: 0.5, exponent: 2002 };
+        let odd = FloatExp {
+            mantissa: 0.5,
+            exponent: 2002,
+        };
         let so = odd.sqrt();
         // Value should be √2 · 2^1000 → so.mantissa·2^so.exponent.
         // Check ratio so²/odd == 1 in exponent space: (so.exponent*2) == odd exponent region.
@@ -511,8 +560,14 @@ mod tests {
         assert!((a.min(b).to_f64() + 5.0).abs() < 1e-12);
         assert!((a.max(b).to_f64() - 3.0).abs() < 1e-12);
         // Beyond f64 range: 2^2000 vs 2^3000 (normalized 0.5·2^{2001,3001}).
-        let big = FloatExp { mantissa: 0.5, exponent: 2001 };
-        let bigger = FloatExp { mantissa: 0.5, exponent: 3001 };
+        let big = FloatExp {
+            mantissa: 0.5,
+            exponent: 2001,
+        };
+        let bigger = FloatExp {
+            mantissa: 0.5,
+            exponent: 3001,
+        };
         assert_eq!(big.max(bigger).exponent, 3001);
         assert_eq!(big.min(bigger).exponent, 2001);
     }

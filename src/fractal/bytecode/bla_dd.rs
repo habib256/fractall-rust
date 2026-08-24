@@ -252,7 +252,9 @@ mod tests {
         let sd1 = BlaStepDd::single_mandelbrot(cdd(z1.re, z1.im), 1e-6);
         let md = BlaStepDd::merge(sd0, sd1, 0.5);
         // f64
-        let phase = &compile_formula(FractalType::Mandelbrot, 2.0).unwrap().phases[0];
+        let phase = &compile_formula(FractalType::Mandelbrot, 2.0)
+            .unwrap()
+            .phases[0];
         let mf = BlaMultiStep::merge(
             // z_land arbitraire : non lu par ce test (compare A/B/r² seulement).
             BlaMultiStep::from_single(build_bla_single_step(z0.re, z0.im, phase, 1e-6), z1),
