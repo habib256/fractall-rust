@@ -87,26 +87,6 @@ pub fn sample_offset(k: u64) -> (f64, f64) {
     )
 }
 
-/// Décale le centre d'une vue pour un sample AA uniforme.
-///
-/// Ce contrat est destiné aux shaders GPU qui ne transportent pas encore le
-/// hash par pixel. La matrice K est appliquée avant le déplacement du centre,
-/// comme dans le mapping pixel→c des kernels.
-pub fn apply_uniform_sample_offset(
-    params: &mut crate::fractal::FractalParams,
-    k: u64,
-    scale: f64,
-) {
-    let (jx, jy) = sample_offset(k);
-    let dx = jx * scale * params.span_x / params.width.max(1) as f64;
-    let dy = jy * scale * params.span_y / params.height.max(1) as f64;
-    let (tx, ty) = params
-        .transform_matrix()
-        .map(|(a, b, c, d)| (a * dx + b * dy, c * dx + d * dy))
-        .unwrap_or((dx, dy));
-    params.center_x += tx;
-    params.center_y += ty;
-}
 
 /// Offset sous-pixel **par pixel** du sample `k`, en unités de pixel déjà
 /// multipliées par `scale`. Port fidèle de F3 `jitter` (`hybrid.h:62`, frame 0):
@@ -169,21 +149,6 @@ mod tests {
     }
 
 
-    #[test]
-    fn uniform_sample_offset_moves_view_in_pixel_units() {
-        let mut p = crate::fractal::default_params_for_type(
-            crate::fractal::FractalType::Mandelbrot,
-            100,
-            50,
-        );
-        p.span_x = 4.0;
-        p.span_y = 2.0;
-        let before = (p.center_x, p.center_y);
-        apply_uniform_sample_offset(&mut p, 1, 1.0);
-        let (jx, jy) = sample_offset(1);
-        assert!((p.center_x - before.0 - jx * 0.04).abs() < 1e-15);
-        assert!((p.center_y - before.1 - jy * 0.04).abs() < 1e-15);
-    }
 
     #[test]
     fn burtle_hash_matches_f3_reference() {

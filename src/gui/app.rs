@@ -978,8 +978,7 @@ impl FractallApp {
         let gpu_renderer = self.gpu_renderer.clone();
         let use_gpu = use_gpu;
         let orbit_cache = self.orbit_cache.clone();
-        // Anti-aliasing multi-sample : jitter F3 par pixel sur CPU, passes
-        // uniformément décalées sur GPU.
+        // Anti-aliasing multi-sample : jitter F3 par pixel sur CPU et GPU.
         let aa_samples = self.aa_samples.max(1);
         let aa_jitter_scale =
             crate::gui::render_state::normalized_jitter_scale(self.aa_jitter_scale);
@@ -1388,15 +1387,7 @@ impl FractallApp {
                     // Décorrélation Cranley-Patterson F3 par pixel (bas N sans
                     // aliasing corrélé). La boucle rend déjà tous les samples
                     // k=0..N (aucun réemploi de base à casser).
-                    if use_gpu {
-                        crate::fractal::jitter::apply_uniform_sample_offset(
-                            &mut p,
-                            k,
-                            aa_jitter_scale,
-                        );
-                    } else {
-                        p.aa_jitter = Some((k, aa_jitter_scale));
-                    }
+                    p.aa_jitter = Some((k, aa_jitter_scale));
 
                     // Même dispatcher unifié que le CLI (cache d'orbite réutilisé
                     // entre samples, même centre).

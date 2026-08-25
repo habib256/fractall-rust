@@ -70,6 +70,9 @@ struct Params {
     cycle_start: u32,
     cycle_period: u32,
     atom_truncated: u32,
+    aa_sample: u32,
+    aa_scale: f32,
+    _aa_pad: vec2<u32>,
 };
 
 struct PixelOut {
@@ -102,6 +105,30 @@ struct BlaMeta {
 @group(0) @binding(3) var<storage, read> bla_nodes: array<BlaNode>;
 @group(0) @binding(4) var<storage, read> z_ref: array<vec2<f64>>;
 @group(0) @binding(5) var<storage, read> reuse_mask: array<u32>;
+
+fn burtle_hash(value: u32) -> u32 {
+    var a = value;
+    a = a + 0x7ed55d16u + (a << 12u);
+    a = (a ^ 0xc761c23cu) ^ (a >> 19u);
+    a = a + 0x165667b1u + (a << 5u);
+    a = (a + 0xd3a2646cu) ^ (a << 9u);
+    a = a + 0xfd7046c5u + (a << 3u);
+    return (a ^ 0xb55a4f09u) ^ (a >> 16u);
+}
+fn radical_inverse(value: u32, base: u32) -> f32 {
+    var a = value; var reversed = 0u; var inv = 1.0; let bi = 1.0 / f32(base);
+    loop { if (a == 0u) { break; } let next = a / base; reversed = reversed * base + a - base * next; inv = inv * bi; a = next; }
+    return min(f32(reversed) * inv, 0.99999994);
+}
+fn tent(v: f32) -> f32 {
+    let orig = v * 2.0 - 1.0; if (orig == 0.0) { return 0.0; }
+    return max(orig / sqrt(abs(orig)), -1.0) - select(-1.0, 1.0, orig >= 0.0);
+}
+fn aa_offset(idx: u32) -> vec2<f32> {
+    if (params.aa_scale == 0.0) { return vec2<f32>(); }
+    let h = f32(burtle_hash(idx)) / 4294967296.0;
+    return vec2<f32>(tent(fract(radical_inverse(params.aa_sample, 2u) + h)), tent(fract(radical_inverse(params.aa_sample, 3u) + h))) * params.aa_scale;
+}
 
 fn cmul(a: vec2<f64>, b: vec2<f64>) -> vec2<f64> {
     return vec2<f64>(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
@@ -159,8 +186,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let span_y = f64(params.span_y_hi) + f64(params.span_y_lo);
     let offset_x = f64(params.offset_x_hi) + f64(params.offset_x_lo);
     let offset_y = f64(params.offset_y_hi) + f64(params.offset_y_lo);
-    let x_ratio = (f64(gid.x) + 0.5) / f64(params.width) - 0.5;
-    let y_ratio = (f64(gid.y) + 0.5) / f64(params.height) - 0.5;
+    let jitter = aa_offset(idx);
+    let x_ratio = (f64(gid.x) + 0.5 + f64(jitter.x)) / f64(params.width) - 0.5;
+    let y_ratio = (f64(gid.y) + 0.5 + f64(jitter.y)) / f64(params.height) - 0.5;
     let dc = vec2<f64>(x_ratio * span_x + offset_x, y_ratio * span_y + offset_y);
 
     let is_julia = params.fractal_kind == 1u;

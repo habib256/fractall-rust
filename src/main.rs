@@ -866,8 +866,8 @@ fn main() {
 
     // Anti-aliasing multi-sample (per-frame jitter). jitter_scale est
     // enregistré dans les métadonnées ; l'offset sous-pixel de chaque sample
-    // est appliqué dans la boucle d'accumulation plus bas. Le CPU utilise le
-    // jitter F3 par pixel ; le GPU décale uniformément chaque passe.
+    // est appliqué dans la boucle d'accumulation plus bas. CPU et GPU utilisent
+    // le jitter F3 par pixel.
     let aa_samples = cli.aa_samples.max(1);
     let aa_jitter_scale = cli.jitter_scale.unwrap_or(1.0);
     if aa_samples > 1 {
@@ -1070,11 +1070,7 @@ fn main() {
         // centre exact ; le rendu de base ci-dessus n'est réutilisé qu'à N=1).
         for k in 0..aa_samples as u64 {
             let mut p = params.clone();
-            if rendered_on_gpu {
-                fractal::jitter::apply_uniform_sample_offset(&mut p, k, aa_jitter_scale);
-            } else {
-                p.aa_jitter = Some((k, aa_jitter_scale));
-            }
+            p.aa_jitter = Some((k, aa_jitter_scale));
             // Dispatcher COMPLET : les canaux distances/orbites sont requis par
             // les modes Distance*/OrbitTraps/Wings (sinon retombée silencieuse
             // sur Smooth — classe « colorisation unique », cf. CLAUDE.md).

@@ -523,6 +523,17 @@ impl GpuRenderer {
         // d'activation perturbation f32 (~1e5) au lieu du seuil CPU (~1e12).
         let use_perturbation = render_plan.algorithm == wisdom::Algorithm::Perturbation;
 
+        // L'AA par pixel est câblé dans le kernel bytecode et le kernel de
+        // perturbation. Les anciens shaders dédiés ne transportent pas encore
+        // le sample : retomber sur le CPU plutôt que produire N passes égales.
+        if params.aa_jitter.is_some()
+            && !use_perturbation
+            && (!params.use_bytecode_engine
+                || !matches!(params.plane_transform, crate::fractal::PlaneTransform::Mu))
+        {
+            return None;
+        }
+
         let std_result = |r: Option<(Vec<u32>, Vec<Complex64>)>| {
             r.map(|(iterations, zs)| GpuDispatchResult {
                 iterations,
@@ -876,6 +887,9 @@ impl GpuRenderer {
                         cycle_start: ref_orbit.cycle_start,
                         cycle_period: ref_orbit.cycle_period,
                         atom_truncated: ref_orbit.atom_truncated as u32,
+                        aa_sample: params.aa_jitter.map_or(0, |(k, _)| k as u32),
+                        aa_scale: params.aa_jitter.map_or(0.0, |(_, scale)| scale as f32),
+                        _pad: [0; 2],
                     }
                 }),
                 usage: wgpu::BufferUsages::UNIFORM,
@@ -1780,7 +1794,9 @@ struct ParamsF32 {
     iter_max: u32,
     plane_transform: u32,
     bailout: f32,
-    _pad2: [f32; 3],
+    aa_sample: u32,
+    aa_scale: f32,
+    _pad2: f32,
     _pad3: [u32; 4],
 }
 
@@ -1826,6 +1842,9 @@ struct ParamsBytecode {
     k01: f32,
     k10: f32,
     k11: f32,
+    aa_sample: u32,
+    aa_scale: f32,
+    _pad: [u32; 2],
 }
 
 impl ParamsBytecode {
@@ -1851,6 +1870,9 @@ impl ParamsBytecode {
             k01,
             k10,
             k11,
+            aa_sample: params.aa_jitter.map_or(0, |(k, _)| k as u32),
+            aa_scale: params.aa_jitter.map_or(0.0, |(_, scale)| scale as f32),
+            _pad: [0; 2],
         }
     }
 }
@@ -1870,7 +1892,9 @@ impl ParamsF32 {
             iter_max: params.iteration_max,
             plane_transform: params.plane_transform.id() as u32,
             bailout: params.bailout as f32,
-            _pad2: [0.0; 3],
+            aa_sample: params.aa_jitter.map_or(0, |(k, _)| k as u32),
+            aa_scale: params.aa_jitter.map_or(0.0, |(_, scale)| scale as f32),
+            _pad2: 0.0,
             _pad3: [0; 4],
         }
     }
@@ -1971,6 +1995,9 @@ struct PerturbParams {
     cycle_start: u32,
     cycle_period: u32,
     atom_truncated: u32,
+    aa_sample: u32,
+    aa_scale: f32,
+    _pad: [u32; 2],
 }
 
 struct ReuseData<'a> {
