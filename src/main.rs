@@ -637,6 +637,10 @@ fn main() {
             std::process::exit(1);
         });
         view.write_to_params(&mut params);
+        // Le centre décimal fourni est plus exact que sa matérialisation MPFR
+        // finie. Le conserver textuellement pour la référence perturbée.
+        params.center_x_hp = Some(t.real.clone());
+        params.center_y_hp = Some(t.imag.clone());
 
         // Phases hybrides du TOML (G4 jalon 5e) — un --phases CLI explicite
         // reste prioritaire (déjà appliqué plus haut).
@@ -764,6 +768,10 @@ fn main() {
                     std::process::exit(1);
                 });
         view.write_to_params(&mut params);
+        // Ne pas remplacer une saisie décimale exacte par l'expansion de son
+        // approximation binaire MPFR : à deep zoom cela déplace la référence.
+        params.center_x_hp = Some(cx);
+        params.center_y_hp = Some(cy);
     }
 
     // Override des itérations si fourni.

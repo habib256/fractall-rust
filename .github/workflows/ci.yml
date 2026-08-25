@@ -8,10 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # `.cargo/config.toml` optimise les builds locaux pour le CPU hôte. Sur les
-  # runners GitHub, le job peut être compilé et exécuté sur des CPU virtuels
-  # exposant des jeux d'instructions différents, ce qui provoque un SIGILL.
-  RUSTFLAGS: -C target-cpu=x86-64
 
 jobs:
   test:
@@ -34,6 +30,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-ubuntu
+          # `.cargo/config.toml` utilise target-cpu=native : réutiliser target/
+          # depuis un runner au CPU différent peut provoquer SIGILL.
+          cache-targets: "false"
 
       # Les tests unitaires des modules appartiennent à la cible `lib` depuis
       # l'extraction de `src/lib.rs` : UNE exécution au lieu de la même suite
