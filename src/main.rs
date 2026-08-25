@@ -177,8 +177,8 @@ struct Cli {
     bytecode: bool,
 
     /// Désactive le moteur bytecode unifié et tombe sur le path legacy
-    /// (glitch detection Pauldelbrot + clustering + secondary refs).
-    /// À n'utiliser que pour debug ou comparaison.
+    /// (pas de rebasing F3 : les pixels jugés non fiables sont recalculés en
+    /// GMP un par un). À n'utiliser que pour debug ou comparaison.
     #[arg(long)]
     no_bytecode: bool,
 

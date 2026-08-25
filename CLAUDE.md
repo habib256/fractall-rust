@@ -26,7 +26,7 @@ Prérequis natifs : GMP / MPFR / MPC (pour `rug`).
   (`src/lib.rs`) : les binaires ne sont que des enveloppes, les tests des
   modules ne tournent plus en triple sous `--bin`.
   Couvre `perturbation/{bla,delta,series,nonconformal,distance,interior,
-  glitch,orbit,types,nucleus,mod}`, `jitter` (AA), `lyapunov`, `progressive`,
+  orbit,types,nucleus,mod}`, `jitter` (AA), `lyapunov`, `progressive`,
   `wisdom` (select_algorithm/device, plan), et tout le `bytecode/` (`compile`
   + `compile_hybrid_formula`, `interp{,_gmp}`, `bla_dual`, `delta_form`,
   `pixel_loop{,_exp}`).
@@ -138,7 +138,6 @@ src/
 │       ├── nonconformal.rs # BLA matriciel (path GMP)
 │       ├── delta.rs        # iterate_pixel{,_gmp}
 │       ├── series.rs       # Taylor series approximation
-│       └── glitch.rs       # Clustering Pauldelbrot (legacy)
 ├── render/
 │   ├── escape_time.rs    # dispatcher unique CLI↔GUI (sélection algo)
 │   └── tiles.rs          # G10.5 file de tuiles priorité-centre + sink streaming
@@ -444,10 +443,14 @@ Si `params.use_bytecode_engine` ET `compile_formula(type, power)` réussit :
   **Fallback correction** (Mandelbrot bytecode, `perturbation/mod.rs`) : quand
   `glitch_ratio > GLITCH_FALLBACK_THRESHOLD` (0.30), on **escalade au tier dd**
   (`[DD-ESCALATION]`, re-render pixel-exact GMP ~4-8× plus rapide) au lieu du
-  backstop full-GMP per-pixel. Les blocs de résolution glitch récursive
-  (neighbor-pass, secondary-refs, réf-intérieure `l.1623`) sont tous gatés
-  `!bytecode_path` : sans le gate, la 2e passe réf-intérieure supprimait le
-  fallback GMP à >512² → ~3.4 % de structure spurious.
+  backstop full-GMP per-pixel. ⚠️ **Plus AUCUNE résolution de glitch
+  Pauldelbrot** (2026-08-25) : passe voisinage, clustering spatial, références
+  secondaires et résolution récursive par itération sont SUPPRIMÉES — Fraktaler-3
+  n'en a aucune trace (`grep -ri glitch` sur ses sources : zéro occurrence), le
+  rebasing les rend structurellement inutiles, et elles coûtaient un tiers du
+  temps de rendu du chemin legacy pour une image identique au pixel près.
+  Restent : le critère par pixel `|δ|² > tol²·|Z|²` du chemin legacy (qui ne fait
+  que router vers GMP) et l'escalade dd.
 - **GPU** : `gpu/mod.rs::try_render_bytecode` → `bytecode_kernel.wgsl`.
 
 Fallback legacy si : type non compilable, `--no-bytecode`, ou GMP deep zoom
@@ -642,10 +645,8 @@ que la réutilisation GUI multi-frame ; les rendus single-shot (CLI/quality/harn
 |-------|-------------|--------|
 | `bla_threshold` | seuil delta BLA | 1/2²⁴ ≈ 5.96e-8 |
 | `bla_validity_scale` | multiplicateur rayon BLA | 1.0 |
-| `glitch_tolerance` | tolerance Pauldelbrot (legacy) | 1e-4 |
+| `glitch_tolerance` | seuil `\|δ\|²>tol²·\|Z\|²` → GMP (chemin legacy) | 1e-4 |
 | `series_order` | ordre série (0 = off) | 2 |
-| `max_secondary_refs` | refs secondaires (legacy) | 3 |
-| `min_glitch_cluster_size` | taille min cluster (legacy) | 100 |
 | `max_perturb_iterations` | cap pas DIRECTS par pixel (⚠️ voir note) | 1024 |
 | `max_bla_steps` | cap pas BLA par pixel | 1024 |
 | `use_reference_precision_formula` | formule C++ F3 | true |
@@ -1045,7 +1046,7 @@ défaut 256×256. La suite peut prendre plusieurs minutes au-delà de 1e15.
 1. Après toute modif `perturbation/` : `fractall-quality suite`.
 2. Lire `suite-summary.md`, identifier FAIL.
 3. Pour chaque FAIL, lire `report.md` + top 10 divergents.
-4. Localiser via coordonnées pixel ↔ modules `bla/delta/nonconformal/glitch/orbit`.
+4. Localiser via coordonnées pixel ↔ modules `bla/delta/nonconformal/orbit`.
 5. Patcher, relancer, vérifier l'amélioration.
 
 ## Référence Fraktaler-3.1

@@ -906,7 +906,9 @@ pub struct PerturbationParams {
     /// Multiplicateur du rayon de validité BLA (1.0 = conservateur, >1 = agressif).
     #[serde(default = "default_one_f64")]
     pub bla_validity_scale: f64,
-    /// Tolérance de glitch (Pauldelbrot).
+    /// Seuil de fiabilité `|δ|² > tol²·|Z|²` du chemin legacy : un pixel qui le
+    /// dépasse est recalculé en GMP. Le chemin par défaut (rebasing F3) ne
+    /// produit pas ce cas et ne lit donc pas ce réglage.
     #[serde(default = "default_glitch_tolerance")]
     pub glitch_tolerance: f64,
     /// Ordre de la série (0=off, 1=linéaire, 2=quadratique).
@@ -918,24 +920,10 @@ pub struct PerturbationParams {
     /// Tolérance d'erreur estimée pour la série.
     #[serde(default = "default_series_error_tolerance")]
     pub series_error_tolerance: f64,
-    /// Active la passe voisinage pour détecter les glitches.
-    #[serde(default = "default_true")]
-    pub glitch_neighbor_pass: bool,
-
     /// Active l'approximation par série standalone (sans BLA).
     /// Permet de sauter des itérations initiales en utilisant une série de Taylor.
     #[serde(default = "default_true")]
     pub series_standalone: bool,
-
-    /// Nombre maximum de références secondaires pour la correction de glitchs.
-    /// 0 = désactivé, 3 = valeur recommandée pour un bon compromis performance/qualité.
-    #[serde(default = "default_max_secondary_refs")]
-    pub max_secondary_refs: u8,
-
-    /// Taille minimale d'un cluster de glitchs pour justifier une référence secondaire.
-    /// Les petits clusters sont recalculés en GMP directement.
-    #[serde(default = "default_min_glitch_cluster_size")]
-    pub min_glitch_cluster_size: u32,
 
     /// Nombre maximum d'itérations de perturbation par pixel (aligné C++ Fraktaler-3: PerturbIterations).
     /// 0 = illimité (comportement historique). Défaut 1024.
@@ -960,10 +948,7 @@ impl Default for PerturbationParams {
             series_order: default_series_order(),
             series_threshold: default_series_threshold(),
             series_error_tolerance: default_series_error_tolerance(),
-            glitch_neighbor_pass: true,
             series_standalone: true,
-            max_secondary_refs: default_max_secondary_refs(),
-            min_glitch_cluster_size: default_min_glitch_cluster_size(),
             max_perturb_iterations: default_perturb_cap(),
             max_bla_steps: default_perturb_cap(),
             use_reference_precision_formula: true,
@@ -1178,8 +1163,6 @@ fn default_glitch_tolerance() -> f64 { 1e-4 }
 fn default_series_order() -> u8 { 2 }
 fn default_series_threshold() -> f64 { 1e-6 }
 fn default_series_error_tolerance() -> f64 { 1e-9 }
-fn default_max_secondary_refs() -> u8 { 3 }
-fn default_min_glitch_cluster_size() -> u32 { 100 }
 fn default_multibrot_power() -> f64 { 2.5 }
 fn default_perturb_cap() -> u32 { 1024 }
 fn default_interior_threshold() -> f64 { 0.001 }

@@ -116,7 +116,6 @@ pub mod dd;
 #[cfg(test)]
 pub mod debug_pure_f3;
 pub mod delta;
-pub mod glitch;
 pub mod nonconformal;
 pub mod nucleus;
 pub mod orbit;
@@ -127,10 +126,6 @@ mod reuse;
 pub mod sampling;
 pub mod series;
 pub mod types;
-pub use glitch::{
-    detect_glitch_clusters, mark_neighbor_glitches, segregate_glitches_by_iteration,
-    select_secondary_reference_points,
-};
 pub use orbit::{HybridBlaReferences, ReferenceOrbitCache};
 pub use precision::should_use_full_gmp_perturbation;
 pub(crate) use precision::{
@@ -483,9 +478,7 @@ pub fn render_perturbation_with_cache(
     // - dc_im = (j/height - 0.5) * span_y
     //
     // Le point complexe du pixel est alors: C + dc où C = (center_x, center_y)
-    let x_range = params.span_x;
-    let y_range = params.span_y;
-    // x_range/y_range HP-aware en FloatExp pour les zooms > 1e308 où le f64
+    // Spans HP-aware en FloatExp pour les zooms > 1e308 où le f64
     // span underflow à 0 (cf. e1000 zoom 1e1000 → dc = 0 partout → image
     // uniforme avant ce fix).
     let (x_range_fexp, y_range_fexp) = effective_spans_fexp(params);
@@ -829,16 +822,16 @@ pub fn render_perturbation_with_cache(
         None
     } else {
         let t_post_start = Instant::now();
-        let mut glitch_mask: Vec<bool> = glitch_mask
+        let glitch_mask: Vec<bool> = glitch_mask
             .iter()
             .map(|flag| flag.load(Ordering::Relaxed))
             .collect();
         let glitched_initial = glitch_mask.iter().filter(|v| **v).count();
 
-        // Ne pas marquer automatiquement les pixels avec itération <= 1 comme suspects.
-        // Ces pixels peuvent être corrects (divergence immédiate réelle).
-        // La détection de glitch basée sur la tolérance et le voisinage est suffisante.
-        // Marquer seulement si déjà détecté comme glitched/suspect par iterate_pixel.
+        // Les pixels signalés le sont par la boucle pixel elle-même (référence
+        // épuisée, ou critère de fiabilité du chemin legacy) : ils sont corrigés
+        // pixel par pixel en GMP plus bas. Il n'y a plus de passe d'inférence
+        // par voisinage ni de références secondaires — voir l'en-tête du module.
 
         // Neighbor pass (heuristique Pauldelbrot legacy) : flag les pixels dont
         // l'itération diffère fortement des voisins. Inutile + nuisible quand le
@@ -848,21 +841,6 @@ pub fn render_perturbation_with_cache(
         // (c) les pixels flaggés sont re-rendus via GMP (path secondary refs)
         // dont le résultat diverge légèrement du fexp → diff visuelle artificielle.
         let bytecode_path = uses_bytecode_path(params);
-        if !small_image && params.perturbation.glitch_neighbor_pass && !bytecode_path {
-            let neighbor_threshold = (params.iteration_max / 50).max(8);
-            let neighbor_mask = mark_neighbor_glitches(
-                &iterations,
-                params.width,
-                params.height,
-                neighbor_threshold,
-            );
-            for (idx, flagged) in neighbor_mask.into_iter().enumerate() {
-                if flagged {
-                    glitch_mask[idx] = true;
-                }
-            }
-        }
-
         // Hybrid BLA: Multi-reference glitch correction
         //
         // For a hybrid loop with multiple phases, you need multiple references, one starting at
@@ -883,113 +861,6 @@ pub fn render_perturbation_with_cache(
         // Les "vrais" glitches Pauldelbrot ne sont pas produits par le
         // bytecode (rebasing F3 strict les prévient structurellement), donc
         // les références secondaires (overhead lourd) restent inutiles ici.
-        if !small_image && params.perturbation.max_secondary_refs > 0 && !bytecode_path {
-            let clusters = detect_glitch_clusters(
-                &glitch_mask,
-                params.width,
-                params.height,
-                params,
-                params.perturbation.min_glitch_cluster_size as usize,
-            );
-
-            let secondary_refs =
-                select_secondary_reference_points(&clusters, params.perturbation.max_secondary_refs as usize);
-
-            // Process each secondary reference
-            // Each reference corresponds to a different phase/starting point in the hybrid loop.
-            // One BLA table per reference is computed.
-            //
-            // Improvement inspired by rust-fractal-core: parallelize pixel re-rendering
-            // within each cluster using rayon. The orbit computation is sequential (must be),
-            // but once the orbit + BLA table are ready, all pixels in the cluster can be
-            // re-rendered in parallel.
-            for cluster in secondary_refs {
-                // Create params with new center for secondary orbit (different phase)
-                let mut sec_params = orbit_params.clone();
-                sec_params.center_x = cluster.center_x;
-                sec_params.center_y = cluster.center_y;
-
-                // Compute secondary reference orbit (one reference per phase)
-                if let Some((sec_orbit, _, _)) =
-                    compute_reference_orbit(&sec_params, Some(cancel.as_ref()), true)
-                {
-                    // Build BLA table for this reference (one BLA table per reference)
-                    let sec_bla =
-                        bla::build_bla_table(&sec_orbit.z_ref_f64, &sec_params, sec_orbit.cref);
-                    let sec_series = if params.perturbation.series_standalone
-                        && matches!(
-                            params.fractal_type,
-                            FractalType::Mandelbrot | FractalType::Julia
-                        ) {
-                        let is_julia = params.fractal_type == FractalType::Julia;
-                        let pixel_size = (params.span_x.abs() / params.width.max(1) as f64)
-                            .max(params.span_y.abs() / params.height.max(1) as f64);
-                        let adaptive_order = series::compute_adaptive_series_order(
-                            pixel_size,
-                            params.iteration_max,
-                            params.perturbation.series_order,
-                        )
-                        .max(4);
-                        let interval = if sec_orbit.z_ref_f64.len() > 100_000 {
-                            10
-                        } else {
-                            1
-                        };
-                        Some(series::build_series_table_ho(
-                            &sec_orbit.z_ref_f64,
-                            is_julia,
-                            adaptive_order,
-                            interval,
-                        ))
-                    } else {
-                        None
-                    };
-
-                    // Re-render cluster pixels with secondary reference (parallelized).
-                    // Inspired by rust-fractal-core: parallelize pixel iteration within each
-                    // glitch cluster for significant speedup on large clusters.
-                    let results: Vec<(usize, DeltaResult)> = cluster
-                        .pixel_indices
-                        .par_iter()
-                        .map(|&idx| {
-                            let px = idx % width;
-                            let py = idx / width;
-
-                            // Compute dc relative to secondary center (pixel center = (px+0.5)/width)
-                            let dc_re = ((px as f64 + 0.5) * inv_width - 0.5) * x_range
-                                - (cluster.center_x - params.center_x);
-                            let dc_im = ((py as f64 + 0.5) * inv_height - 0.5) * y_range
-                                - (cluster.center_y - params.center_y);
-
-                            let dc = ComplexExp::from_complex64(Complex64::new(dc_re, dc_im));
-                            let (delta0, dc_term) = if params.fractal_type == FractalType::Julia {
-                                (dc, ComplexExp::zero())
-                            } else {
-                                (ComplexExp::zero(), dc)
-                            };
-
-                            let result = iterate_pixel_with_dd(
-                                delta::PerturbPixelRequest::new(
-                                    params, &sec_orbit, &sec_bla, delta0, dc_term,
-                                )
-                                .with_series(sec_series.as_ref()),
-                            );
-                            (idx, result)
-                        })
-                        .collect();
-
-                    // Apply results (sequential write to avoid race conditions)
-                    for (idx, result) in results {
-                        if !result.glitched && !result.suspect {
-                            iterations[idx] = result.iteration;
-                            zs[idx] = result.z_final;
-                            glitch_mask[idx] = false;
-                        }
-                    }
-                }
-            }
-        }
-
         // Second pass: recursive iteration-based glitch resolution (inspired by rust-fractal-core).
         //
         // rust-fractal-core's `resolve_glitches()` groups glitched pixels by iteration depth,
@@ -1013,143 +884,6 @@ pub fn render_perturbation_with_cache(
         // déclenche plus. C'était la cause du bug « réf intérieure » : PASS à
         // ≤512² (bloc sauté, small_image) mais 3.4 % de structure spurious à
         // 800×547 (bloc actif). Gate → le ratio reste haut → fallback GMP → correct.
-        if !small_image && params.perturbation.max_secondary_refs > 0 && !bytecode_path {
-            let max_resolution_rounds = 3; // Limit recursion depth to avoid infinite loops
-            for _round in 0..max_resolution_rounds {
-                let remaining_glitches: usize = glitch_mask.iter().filter(|v| **v).count();
-                let remaining_ratio = remaining_glitches as f64 / (width * height) as f64;
-                // Only apply if >0.5% pixels still glitched (lowered from 1% for more thorough resolution)
-                if remaining_ratio < 0.005 {
-                    break;
-                }
-
-                if cancel.load(Ordering::Relaxed) {
-                    break;
-                }
-
-                let iter_clusters = segregate_glitches_by_iteration(
-                    &glitch_mask,
-                    &iterations,
-                    &zs,
-                    params.width,
-                    params.height,
-                    params,
-                    params.perturbation.min_glitch_cluster_size as usize,
-                );
-
-                if iter_clusters.is_empty() {
-                    break;
-                }
-
-                let max_iter_refs = (params.perturbation.max_secondary_refs as usize).min(iter_clusters.len());
-                let mut resolved_any = false;
-
-                for cluster in iter_clusters.iter().take(max_iter_refs) {
-                    // Try delta-based reference creation from existing orbit first
-                    // (inspired by rust-fractal-core's get_glitch_resolving_reference).
-                    // This is much faster than computing a full new orbit from scratch.
-                    let best_idx = cluster
-                        .pixel_indices
-                        .iter()
-                        .min_by(|&&a, &&b| {
-                            let na = zs[a].norm_sqr();
-                            let nb = zs[b].norm_sqr();
-                            na.partial_cmp(&nb).unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                        .copied()
-                        .unwrap_or(cluster.pixel_indices[0]);
-                    let best_iter = iterations[best_idx];
-
-                    // Compute deltas for the best pixel (reference center for this group)
-                    let bpx = best_idx % width;
-                    let bpy = best_idx / width;
-                    let best_dc_re = ((bpx as f64 + 0.5) * inv_width - 0.5) * x_range;
-                    let best_dc_im = ((bpy as f64 + 0.5) * inv_height - 0.5) * y_range;
-                    let best_z_final = zs[best_idx];
-
-                    // Try delta-based reference from existing orbit (fast path)
-                    let sec_orbit_opt = cache_ref.orbit.create_glitch_reference(
-                        best_iter,
-                        best_dc_re,
-                        best_dc_im,
-                        best_z_final.re
-                            - cache_ref
-                                .orbit
-                                .z_ref_f64
-                                .get(best_iter as usize)
-                                .map_or(0.0, |z| z.re),
-                        best_z_final.im
-                            - cache_ref
-                                .orbit
-                                .z_ref_f64
-                                .get(best_iter as usize)
-                                .map_or(0.0, |z| z.im),
-                        params,
-                        Some(cancel.as_ref()),
-                    );
-
-                    // Fall back to full orbit computation if delta-based fails
-                    let sec_orbit = match sec_orbit_opt {
-                        Some(orbit) => orbit,
-                        None => {
-                            let mut sec_params = orbit_params.clone();
-                            sec_params.center_x = cluster.center_x;
-                            sec_params.center_y = cluster.center_y;
-                            match compute_reference_orbit(&sec_params, Some(cancel.as_ref()), true)
-                            {
-                                Some((orbit, _, _)) => orbit,
-                                None => continue,
-                            }
-                        }
-                    };
-
-                    let sec_bla =
-                        bla::build_bla_table(&sec_orbit.z_ref_f64, &orbit_params, sec_orbit.cref);
-
-                    // Parallelize pixel iteration within each cluster (inspired by rust-fractal-core).
-                    let results: Vec<(usize, DeltaResult)> = cluster
-                        .pixel_indices
-                        .par_iter()
-                        .map(|&idx| {
-                            let px = idx % width;
-                            let py = idx / width;
-
-                            let dc_re = ((px as f64 + 0.5) * inv_width - 0.5) * x_range
-                                - (cluster.center_x - params.center_x);
-                            let dc_im = ((py as f64 + 0.5) * inv_height - 0.5) * y_range
-                                - (cluster.center_y - params.center_y);
-
-                            let dc = ComplexExp::from_complex64(Complex64::new(dc_re, dc_im));
-                            let (delta0, dc_term) = if params.fractal_type == FractalType::Julia {
-                                (dc, ComplexExp::zero())
-                            } else {
-                                (ComplexExp::zero(), dc)
-                            };
-
-                            let result = iterate_pixel_with_dd(delta::PerturbPixelRequest::new(
-                                params, &sec_orbit, &sec_bla, delta0, dc_term,
-                            ));
-                            (idx, result)
-                        })
-                        .collect();
-
-                    for (idx, result) in results {
-                        if !result.glitched && !result.suspect {
-                            iterations[idx] = result.iteration;
-                            zs[idx] = result.z_final;
-                            glitch_mask[idx] = false;
-                            resolved_any = true;
-                        }
-                    }
-                }
-
-                // If no pixels were resolved in this round, stop recursing
-                if !resolved_any {
-                    break;
-                }
-            }
-        }
-
         let glitched_indices: Vec<usize> = glitch_mask
             .iter()
             .enumerate()
@@ -2055,7 +1789,6 @@ mod tests {
         p.precision_bits = 192;
         p.algorithm_mode = AlgorithmMode::Perturbation;
         p.perturbation.bla_threshold = 1e-6;
-        p.perturbation.glitch_neighbor_pass = false;
         p
     }
 
@@ -2188,16 +1921,6 @@ mod tests {
             &[(0, 4), (2, 2), (4, 0)],
             1,
         );
-    }
-
-    #[test]
-    fn neighbor_glitch_detection_marks_outliers() {
-        let width = 5;
-        let height = 5;
-        let mut iterations = vec![10u32; (width * height) as usize];
-        iterations[(2 * width + 2) as usize] = 200;
-        let mask = super::mark_neighbor_glitches(&iterations, width, height, 50);
-        assert!(mask[(2 * width + 2) as usize]);
     }
 
     #[test]

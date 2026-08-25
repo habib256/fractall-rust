@@ -16,7 +16,7 @@ use wgpu::util::DeviceExt;
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
 use crate::fractal::perturbation::orbit::{compute_reference_orbit_cached, ReferenceOrbitCache};
 use crate::fractal::perturbation::{
-    compute_perturbation_precision_bits, mark_neighbor_glitches, DcGmpContext,
+    compute_perturbation_precision_bits, DcGmpContext,
 };
 use crate::fractal::{FractalParams, FractalType};
 
@@ -1112,23 +1112,10 @@ impl GpuRenderer {
             );
         }
 
-        // Fast-path petites images: éviter le post-traitement voisinage (coût fixe non négligeable)
-        // Comme côté CPU, désactiver neighbor_pass pour petites images
-        let small_image = params.width.max(params.height) <= 512;
-        if !small_image && params.perturbation.glitch_neighbor_pass {
-            let neighbor_threshold = (params.iteration_max / 50).max(8);
-            let neighbor_mask = mark_neighbor_glitches(
-                &iterations,
-                params.width,
-                params.height,
-                neighbor_threshold,
-            );
-            for (idx, flagged) in neighbor_mask.into_iter().enumerate() {
-                if flagged {
-                    glitch_mask[idx] = true;
-                }
-            }
-        }
+        // Aucune inférence de glitch par voisinage : le kernel est un portage
+        // strict de la boucle pixel F3 (rebasing), il signale lui-même les seuls
+        // pixels à corriger. Comparer un pixel à ses voisins confond le détail
+        // fractal fin avec une erreur — même raisonnement que côté CPU.
 
         let glitched_indices: Vec<u32> = glitch_mask
             .iter()

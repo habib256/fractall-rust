@@ -147,6 +147,16 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
   bytecode), escalade au tier dd (~106 b) au lieu du full-GMP per-pixel — ~4-8×
   plus rapide, pixel-exact GMP (`GLITCH_FALLBACK_THRESHOLD`, `perturbation/mod.rs`).
 
+### Supprimé
+- **Résolution de glitch Pauldelbrot** : passe voisinage, clustering spatial,
+  références secondaires et résolution récursive par itération sont retirées du
+  CPU comme du GPU, avec le module `glitch.rs` et trois réglages
+  (`max_secondary_refs`, `min_glitch_cluster_size`, `glitch_neighbor_pass`).
+  Fraktaler-3 n'en a aucune trace : le rebasing rend la détection inutile. Ces
+  blocs étaient déjà inertes sur le chemin par défaut, et là où ils tournaient
+  encore ils coûtaient un tiers du temps de rendu pour une image identique au
+  pixel près. Rendus par défaut inchangés.
+
 ### Modifié
 - **`FractalParams` regroupé** : les réglages de perturbation, de couleur et
   d'échantillonnage sous-pixel vivent désormais dans trois sous-structures

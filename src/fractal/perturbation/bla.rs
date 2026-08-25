@@ -846,7 +846,6 @@ mod nonconformal_tests {
         p.precision_bits = 192;
         p.algorithm_mode = AlgorithmMode::Perturbation;
         p.perturbation.bla_threshold = 1e-6;
-        p.perturbation.glitch_neighbor_pass = false;
         p
     }
 

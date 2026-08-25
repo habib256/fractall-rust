@@ -1623,10 +1623,26 @@ le câblage params/render, + la BLA par phase + le nucleus phase-aware + l'UI.
   de la duplication (~60 lignes). Vérifié : GPU standard/perturbation/fallback
   Tricorn OK, 178 unit + golden verts.
 - [ ] **Retirer les modules perturbation legacy** : porter `iterate_pixel_gmp`
-  sur `pixel_loop`, puis supprimer `glitch.rs`, `nonconformal.rs` et les champs
-  perturbation legacy (`max_secondary_refs`, `min_glitch_cluster_size`,
-  `glitch_tolerance`, …). Un seul moteur. Retirer aussi les renderers densité
+  sur `pixel_loop`, puis supprimer `nonconformal.rs` et les derniers champs
+  perturbation legacy. Un seul moteur. Retirer aussi les renderers densité
   MPC non-cancellables marqués `#[allow(dead_code)]` (superseded).
+  - **✅ Résolution de glitch Pauldelbrot supprimée `[2026-08-25]`** :
+    `glitch.rs` (392 lignes) et ses trois consommateurs disparaissent — passe
+    voisinage, clustering spatial + références secondaires, et résolution
+    récursive par groupe d'itération. Justification : **Fraktaler-3 n'en a
+    aucune trace** (`grep -ril glitch` sur `fraktaler-3-3.1/src/` : zéro
+    fichier), le rebasing rendant la détection structurellement inutile ; nos
+    trois blocs étaient déjà gatés `!bytecode_path`, donc morts en production
+    (les quatre types de la famille perturbation compilent tous en bytecode) ;
+    et là où ils tournaient encore, ils coûtaient **un tiers du temps pour une
+    image identique au pixel près** (640², zoom 1e13, `--no-bytecode` :
+    4,79 s → 3,20 s, 0/409600 pixel de différence). Le chemin par défaut est
+    inchangé au pixel près. ⚠️ Le path **GPU** appliquait encore la passe
+    voisinage sans gate, alors que son kernel est un portage F3-strict sans
+    détection de glitch : elle y est également supprimée (non vérifiable sur
+    cette machine — Metal n'expose pas `SHADER_F64`). Restent le critère par
+    pixel `glitch_tolerance` du chemin legacy (simple routage vers GMP) et
+    l'escalade dd.
   - **Sous-étape `[2026-08-24]`** : les quatre entrées densité MPC
     non-cancellables mortes (`Buddhabrot`, `Nebulabrot`, `AntiBuddhabrot`,
     `Lyapunov`) sont supprimées ; le dispatcher n'expose plus que les variantes

@@ -439,7 +439,6 @@ mod tests {
         assert_eq!(params.perturbation.max_perturb_iterations, 1024);
         assert_eq!(params.perturbation.max_bla_steps, 1024);
         assert_eq!(params.interior_threshold, 0.001);
-        assert_eq!(params.perturbation.max_secondary_refs, 3);
     }
 
     /// Vérifie qu'un JSON avec quelques-uns des champs récents présents
