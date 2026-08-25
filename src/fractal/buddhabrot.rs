@@ -50,6 +50,7 @@ impl MpcView {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn sample(&self, rx: f64, ry: f64) -> Complex {
         let mut x = self.span_x.clone();
         x *= rx - 0.5;
@@ -94,6 +95,40 @@ impl Rng {
     fn next_f64(&mut self) -> f64 {
         (self.next() & 0x7FFFFFFF) as f64 / 2147483647.0
     }
+}
+
+/// Domaine d'échantillonnage des paramètres `c` des rendus de densité.
+///
+/// La densité Buddhabrot est définie sur le plan des `c` **entier** : la
+/// fenêtre affichée ne sert qu'à PROJETER les trajectoires. Échantillonner les
+/// `c` dans la vue (comportement historique) rendait toute navigation
+/// dégénérée — dès un zoom ×100, les orbites quittent la fenêtre et n'y
+/// reviennent jamais, donc l'image entière tombait à zéro.
+const SAMPLE_CENTER_X: f64 = -0.5;
+const SAMPLE_CENTER_Y: f64 = 0.0;
+const SAMPLE_SPAN_X: f64 = 4.0;
+const SAMPLE_SPAN_Y: f64 = 3.0;
+
+/// Tire un `c` dans le domaine canonique (path f64).
+#[inline]
+fn sample_c_f64(rng: &mut Rng) -> Complex64 {
+    let x = SAMPLE_CENTER_X + (rng.next_f64() - 0.5) * SAMPLE_SPAN_X;
+    let y = SAMPLE_CENTER_Y + (rng.next_f64() - 0.5) * SAMPLE_SPAN_Y;
+    Complex64::new(x, y)
+}
+
+/// Tire un `c` dans le domaine canonique (path MPC). L'ordre des opérations
+/// reproduit celui de [`MpcView::sample`] pour que la vue par défaut — dont le
+/// domaine EST la vue — reste bit-identique.
+#[inline]
+fn sample_c_mpc(rng: &mut Rng, prec: u32) -> Complex {
+    let mut x = Float::with_val(prec, SAMPLE_SPAN_X);
+    x *= rng.next_f64() - 0.5;
+    x += SAMPLE_CENTER_X;
+    let mut y = Float::with_val(prec, SAMPLE_SPAN_Y);
+    y *= rng.next_f64() - 0.5;
+    y += SAMPLE_CENTER_Y;
+    Complex::with_val(prec, (x, y))
 }
 
 fn complex_norm_sqr_mpc(value: &Complex, prec: u32) -> Float {
@@ -154,8 +189,8 @@ pub fn render_buddhabrot_mpc_cancellable(
         }
 
         let mut rng = Rng::new((sample_idx as u32).wrapping_mul(12345).wrapping_add(42));
-        // Point aléatoire : utiliser center+span directement
-        let c = view.sample(rng.next_f64(), rng.next_f64());
+        // Le `c` est tiré sur le domaine canonique, pas dans la vue.
+        let c = sample_c_mpc(&mut rng, prec);
 
         MPC_PIXEL_BUF.with(|buf| {
             let mut trajectory = buf.borrow_mut();
@@ -257,6 +292,58 @@ mod deep_zoom_tests {
         assert_eq!(view.pixel_index(&left), Some(40 * 100 + 25));
         assert_eq!(view.pixel_index(&right), Some(40 * 100 + 75));
     }
+
+    /// Les deux tireurs de `c` portent les mêmes constantes de domaine : ils
+    /// doivent produire le MÊME point pour une même graine, sinon les paths
+    /// f64 et MPC échantillonneraient des champs différents.
+    #[test]
+    fn f64_and_mpc_samplers_share_the_canonical_domain() {
+        for seed in [0u32, 1, 7, 4242] {
+            let mut rng_f64 = Rng::new(seed);
+            let mut rng_mpc = Rng::new(seed);
+            let sampled_f64 = sample_c_f64(&mut rng_f64);
+            let sampled_mpc = sample_c_mpc(&mut rng_mpc, 128);
+            assert_eq!(sampled_mpc.real().to_f64(), sampled_f64.re, "seed {seed}");
+            assert_eq!(sampled_mpc.imag().to_f64(), sampled_f64.im, "seed {seed}");
+            assert!(
+                (sampled_f64.re - SAMPLE_CENTER_X).abs() <= SAMPLE_SPAN_X / 2.0
+                    && (sampled_f64.im - SAMPLE_CENTER_Y).abs() <= SAMPLE_SPAN_Y / 2.0,
+                "seed {seed} : tirage hors du domaine canonique"
+            );
+        }
+    }
+
+    /// Le domaine d'échantillonnage ne doit dépendre d'AUCUN paramètre de vue :
+    /// c'est ce découplage qui rend la navigation possible.
+    #[test]
+    fn sampling_domain_ignores_the_rendered_view() {
+        assert_eq!(
+            (
+                SAMPLE_CENTER_X,
+                SAMPLE_CENTER_Y,
+                SAMPLE_SPAN_X,
+                SAMPLE_SPAN_Y
+            ),
+            (-0.5, 0.0, 4.0, 3.0),
+            "le domaine canonique doit rester la vue par défaut des types densité"
+        );
+        let defaults = default_params_for_type(FractalType::Buddhabrot, 64, 48);
+        assert_eq!(
+            (
+                defaults.center_x,
+                defaults.center_y,
+                defaults.span_x,
+                defaults.span_y
+            ),
+            (
+                SAMPLE_CENTER_X,
+                SAMPLE_CENTER_Y,
+                SAMPLE_SPAN_X,
+                SAMPLE_SPAN_Y
+            ),
+            "vue par défaut ≠ domaine : le rendu par défaut ne serait plus complet"
+        );
+    }
 }
 
 /// Version annulable du rendu Nebulabrot en MPC.
@@ -311,8 +398,8 @@ pub fn render_nebulabrot_mpc_cancellable(
         }
 
         let mut rng = Rng::new((sample_idx as u32).wrapping_mul(12345).wrapping_add(42));
-        // Point aléatoire : utiliser center+span directement
-        let c = view.sample(rng.next_f64(), rng.next_f64());
+        // Le `c` est tiré sur le domaine canonique, pas dans la vue.
+        let c = sample_c_mpc(&mut rng, prec);
 
         MPC_PIXEL_BUF.with(|buf| {
             let mut trajectory = buf.borrow_mut();
@@ -463,10 +550,8 @@ pub fn render_buddhabrot_cancellable(
         }
 
         let mut rng = Rng::new((sample_idx as u32).wrapping_mul(12345).wrapping_add(42));
-        // Point aléatoire : utiliser center+span directement
-        let xg = params.center_x + (rng.next_f64() - 0.5) * xrange;
-        let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
-        let c = Complex64::new(xg, yg);
+        // Le `c` est tiré sur le domaine canonique, pas dans la vue.
+        let c = sample_c_f64(&mut rng);
 
         TRAJ_BUF.with(|buf| {
             let mut trajectory = buf.borrow_mut();
@@ -600,10 +685,8 @@ pub fn render_nebulabrot_cancellable(
         }
 
         let mut rng = Rng::new((sample_idx as u32).wrapping_mul(12345).wrapping_add(42));
-        // Point aléatoire : utiliser center+span directement
-        let xg = params.center_x + (rng.next_f64() - 0.5) * xrange;
-        let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
-        let c = Complex64::new(xg, yg);
+        // Le `c` est tiré sur le domaine canonique, pas dans la vue.
+        let c = sample_c_f64(&mut rng);
 
         TRAJ_BUF.with(|buf| {
             let mut trajectory = buf.borrow_mut();
@@ -758,7 +841,7 @@ pub fn render_antibuddhabrot_mpc_cancellable(
         }
 
         let mut rng = Rng::new((sample_idx as u32).wrapping_mul(12345).wrapping_add(42));
-        let c = view.sample(rng.next_f64(), rng.next_f64());
+        let c = sample_c_mpc(&mut rng, prec);
 
         MPC_PIXEL_BUF.with(|buf| {
             let mut trajectory = buf.borrow_mut();
@@ -876,9 +959,7 @@ pub fn render_antibuddhabrot_cancellable(
         }
 
         let mut rng = Rng::new((sample_idx as u32).wrapping_mul(12345).wrapping_add(42));
-        let xg = params.center_x + (rng.next_f64() - 0.5) * xrange;
-        let yg = params.center_y + (rng.next_f64() - 0.5) * yrange;
-        let c = Complex64::new(xg, yg);
+        let c = sample_c_f64(&mut rng);
 
         TRAJ_BUF.with(|buf| {
             let mut trajectory = buf.borrow_mut();

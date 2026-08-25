@@ -41,6 +41,15 @@ Prérequis natifs : GMP / MPFR / MPC (pour `rug`).
   - Note : les goldens ER=25 (2026-05-20) ; `mandelbrot_e10/e15/e20` (G6,
     2026-07-12) comblent le trou 1e8→1e50 (revus visuellement, e10 PASS
     pixel-exact vs GMP, e15/e20 bruit de bord dispersé p99=0).
+- **Deep navigation tests** (`tests/deep_navigation.rs`) : e2e des types
+  SPÉCIAUX (Buddhabrot, Nebulabrot, Anti-Buddhabrot, Lyapunov) — navigation
+  réelle via `ViewHp` (molette ancrée / pan / sélection / resize) puis rendu par
+  `render_request`. Verrouille : canaux complets et finis à toute profondeur,
+  déterminisme, **consommation HP** (deux vues aux miroirs f64 identiques mais
+  aux chaînes HP différentes doivent rendre différemment — sonde en zone
+  Lyapunov CHAOTIQUE, les zones périodiques étant numériquement plates), pan de
+  k pixels exact sur le path MPC, et découplage domaine d'échantillonnage ↔ vue
+  pour la densité. `cargo test --release --test deep_navigation` (~9 s).
 - **QA perturbation vs GMP** (`fractall-quality`) : compare le chemin
   perturbation au rendu GMP pur pixel-par-pixel. Voir §Quality plus bas.
 
@@ -103,7 +112,8 @@ src/
 │   ├── xaos.rs          # G10.4 réutilisation pixels inter-frame (XaoS)
 │   ├── gmp.rs           # précision arbitraire (rug / mpc)
 │   ├── lyapunov.rs      # Lyapunov exponent
-│   ├── buddhabrot.rs    # Buddhabrot / Nebulabrot / Anti-Buddhabrot
+│   ├── buddhabrot.rs    # Buddhabrot / Nebulabrot / Anti-Buddhabrot (⚠️ les `c`
+│   │                    #   sont tirés sur le domaine CANONIQUE, jamais la vue)
 │   ├── vectorial.rs     # Von Koch, Dragon
 │   ├── orbit_traps.rs   # Point, Line, Cross, Circle
 │   ├── bytecode/        # Moteur unifié Fraktaler-3 (P3.1, défaut)

@@ -42,3 +42,8 @@ jobs:
 
       - name: Golden image tests
         run: cargo test --release --locked --test golden_images
+
+      # Navigation profonde des types spéciaux (densité + Lyapunov) : la chaîne
+      # complète ViewHp → dispatcher → canaux, y compris la bascule MPC.
+      - name: Deep navigation tests (types spéciaux)
+        run: cargo test --release --locked --test deep_navigation

@@ -36,7 +36,24 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
 
 ## [Non publié]
 
+### Corrigé
+- **Types de densité navigables** : Buddhabrot, Nebulabrot et Anti-Buddhabrot
+  tiraient leurs paramètres `c` DANS la fenêtre affichée. Zoomer donnait donc
+  une image **entièrement noire dès ×100** (les orbites quittent la fenêtre et
+  n'y reviennent pas), et n'importe quelle fenêtre éloignée se remplissait
+  d'une **nappe uniforme** (le premier itéré `z₁ = c` y retombait toujours).
+  Les `c` sont désormais tirés sur le domaine canonique du plan des paramètres
+  (centre `(-0.5, 0)`, span `4×3`), indépendamment de la vue : la fenêtre ne
+  sert plus qu'à projeter les trajectoires. Les rendus de la vue par défaut
+  restent bit-identiques.
+
 ### Ajouté
+- **Tests e2e de navigation profonde** (`tests/deep_navigation.rs`, cible CI) :
+  navigation réelle via `ViewHp` (molette ancrée, pan, sélection, resize) puis
+  rendu par le dispatcher, pour les quatre types spéciaux. Verrouille la
+  consommation effective des coordonnées HP au-delà du gel des miroirs `f64`,
+  l'exactitude au pixel du pan sur le path MPC, le déterminisme en zoom profond
+  et le découplage échantillonnage ↔ vue.
 - **G9.5 auto-device** : `wisdom::select_device(params, gpu_available) -> Device`
   (`src/fractal/wisdom.rs`) arbitre CPU/GPU par débit benché machine, sous
   garde-fou correction — GPU routé UNIQUEMENT dans la plage deep both-perturbation

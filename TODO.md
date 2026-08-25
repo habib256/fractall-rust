@@ -1793,9 +1793,35 @@ v0.8.2 — chaque chantier ferme LA CLASSE dont plusieurs bugs sont issus)** :
      canonique de la vue.
 5. [ ] Réduire les champs historiques de `FractalParams` en sous-structures
    cohérentes.
-6. [ ] Ajouter des tests end-to-end de navigation profonde, notamment pour
-   Buddhabrot, Nebulabrot, Anti-Buddhabrot et Lyapunov, au-delà des tests
-   unitaires de coordonnées.
+6. [x] **✅ Tests e2e de navigation profonde (types spéciaux) `[2026-08-25]`** :
+   `tests/deep_navigation.rs` (cible CI dédiée, ~9 s) part de `ViewHp`, applique
+   de VRAIES opérations de navigation (molette ancrée, pan, sélection
+   rectangulaire, resize) et rend par `render_request` — la chaîne complète, pas
+   des fonctions de coordonnées isolées. 8 verrous : canaux complets et finis à
+   chaque profondeur jusqu'au gel des miroirs f64, déterminisme en zoom profond,
+   **consommation HP prouvée** (deux vues aux miroirs f64 STRICTEMENT égaux mais
+   aux chaînes HP différentes doivent rendre différemment — sonde placée en zone
+   Lyapunov chaotique, seule sensible à 1e-40), **pan de k pixels exact au pixel
+   près sur le path MPC**, structure préservée en zoom densité, et découplage
+   domaine d'échantillonnage ↔ vue. Mutation-testé : couper l'escalade MPC fait
+   tomber les deux verrous HP, restaurer l'échantillonnage historique fait
+   tomber le verrou de découplage.
+   - **Bug fermé au passage** : les trois types de densité tiraient leurs `c`
+     DANS la fenêtre affichée. Conséquences mesurées — Buddhabrot/Nebulabrot
+     **entièrement noirs dès un zoom ×100** (les orbites quittent la fenêtre et
+     n'y reviennent jamais) et **nappe uniforme partout ailleurs** (à 10⁶ du
+     jeu, le premier itéré `z₁ = c` retombait forcément dans la fenêtre : 100 %
+     des pixels remplis). Les `c` sont désormais tirés sur le domaine canonique
+     `centre (-0.5, 0)`, `span 4×3`, indépendamment de la vue ; la vue par
+     défaut EST ce domaine, donc les rendus par défaut restent **bit-identiques**
+     (vérifié PNG à PNG sur les trois types).
+   - **Reste (documenté par le diagnostic `--ignored`
+     `density_sampling_starvation_diagnostic`)** : l'échantillonnage uniforme
+     affame la fenêtre au-delà de ~×100 (la densité visible décroît comme sa
+     surface), et la même famine masque la densité anti-Buddhabrot au coeur des
+     bulbes. Lever la limite demande un échantillonnage **par importance**
+     (Metropolis-Hastings, Boswell) — c'est la seule voie vers un Buddhabrot
+     réellement navigable en profondeur.
 7. [ ] Mesurer les performances par backend afin que chaque suppression de
    chemin legacy soit fondée sur des données.
 
