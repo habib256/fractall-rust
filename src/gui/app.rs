@@ -20,7 +20,7 @@ use crate::gui::hq_render_state::{HqRenderEvent, HqRenderResult, HqRenderState};
 use crate::gui::nav;
 use crate::gui::progressive::{upscale_nearest, ProgressiveConfig, RenderMessage};
 use crate::gui::texture::rgb_image_to_color_image;
-use crate::render::{render_request, RenderRequest};
+use crate::render::{render_planned, render_request, PlannedRenderRequest, RenderRequest};
 
 /// Précision par défaut pour les calculs de coordonnées haute précision (en bits).
 const HP_PRECISION: u32 = 256;
@@ -978,8 +978,9 @@ impl FractallApp {
         let gpu_renderer = self.gpu_renderer.clone();
         let use_gpu = use_gpu;
         let orbit_cache = self.orbit_cache.clone();
-        // Anti-aliasing multi-sample (per-frame jitter), CPU uniquement.
-        let aa_samples = if use_gpu { 1 } else { self.aa_samples.max(1) };
+        // Anti-aliasing multi-sample : jitter F3 par pixel sur CPU, passes
+        // uniformément décalées sur GPU.
+        let aa_samples = self.aa_samples.max(1);
         let aa_jitter_scale =
             crate::gui::render_state::normalized_jitter_scale(self.aa_jitter_scale);
         self.render_progress.begin(config.passes.len(), aa_samples);
@@ -1370,9 +1371,9 @@ impl FractallApp {
             // Après les passes progressives (la dernière passe pleine résolution
             // = sample 0, offset (0,0)), on rend N samples plein cadre avec un
             // offset sous-pixel low-discrepancy et on moyenne en espace RGB.
-            // CPU uniquement ; le cache d'orbite est réutilisé entre samples
+            // Le cache d'orbite est réutilisé entre samples CPU
             // (même centre) → coût perturbation amorti. Affichage incrémental.
-            if aa_samples > 1 && !use_gpu && !cancel.load(Ordering::Relaxed) {
+            if aa_samples > 1 && !cancel.load(Ordering::Relaxed) {
                 let w = full_width;
                 let h = full_height;
                 let mut accum = vec![0f64; (w as usize) * (h as usize) * 3];
@@ -1387,12 +1388,28 @@ impl FractallApp {
                     // Décorrélation Cranley-Patterson F3 par pixel (bas N sans
                     // aliasing corrélé). La boucle rend déjà tous les samples
                     // k=0..N (aucun réemploi de base à casser).
-                    p.aa_jitter = Some((k, aa_jitter_scale));
+                    if use_gpu {
+                        crate::fractal::jitter::apply_uniform_sample_offset(
+                            &mut p,
+                            k,
+                            aa_jitter_scale,
+                        );
+                    } else {
+                        p.aa_jitter = Some((k, aa_jitter_scale));
+                    }
 
                     // Même dispatcher unifié que le CLI (cache d'orbite réutilisé
                     // entre samples, même centre).
                     let mut cache = current_orbit_cache.take();
-                    let rendered = render_request(RenderRequest::new(&p, &cancel), &mut cache);
+                    let rendered = render_planned(
+                        PlannedRenderRequest::new(
+                            render_plan,
+                            RenderRequest::new(&p, &cancel),
+                        ),
+                        gpu_renderer.as_deref(),
+                        &mut cache,
+                    )
+                    .map(|result| result.output);
                     current_orbit_cache = cache;
                     let Some(sample) = rendered else { break };
                     let rgb = colorize_buffer(
@@ -3060,7 +3077,7 @@ impl eframe::App for FractallApp {
 
                     let prev_jitter_scale = self.aa_jitter_scale;
                     ui.add_enabled(
-                        self.aa_samples > 1 && !self.use_gpu,
+                        self.aa_samples > 1,
                         egui::Slider::new(&mut self.aa_jitter_scale, 0.0..=1.0)
                             .text("filtre")
                             .fixed_decimals(2),

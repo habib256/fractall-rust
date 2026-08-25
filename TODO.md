@@ -2075,7 +2075,12 @@ v0.8.2 — chaque chantier ferme LA CLASSE dont plusieurs bugs sont issus)** :
 - [x] **✅ Échelle du jitter AA dans la GUI `[2026-08-25]`** — contrôle 0..=1
   pixel, actif uniquement avec l'AA CPU, transmis au même contrat
   `aa_jitter` que le CLI et normalisé par une fonction pure testée.
-- [ ] **AA polish restant** : AA sur le path GPU.
+- [x] **✅ AA multi-passes GPU `[2026-08-25]`** — CLI et GUI accumulent les
+  samples via le dispatcher GPU standard/perturbation ; chaque passe reçoit un
+  décalage Halton uniforme transformé par K. Le CPU conserve la meilleure
+  décorrélation F3 par pixel.
+- [ ] **AA GPU polish restant** : porter le hash Cranley-Patterson par pixel
+  dans les shaders (le multi-pass actuel est uniforme par frame).
 
 ### G7 — I/O & interop · `[P2]`
 

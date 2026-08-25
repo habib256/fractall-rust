@@ -866,29 +866,12 @@ fn main() {
 
     // Anti-aliasing multi-sample (per-frame jitter). jitter_scale est
     // enregistré dans les métadonnées ; l'offset sous-pixel de chaque sample
-    // est appliqué dans la boucle d'accumulation plus bas. AA CPU uniquement.
-    // Device effectif (G9.5) : overrides `--gpu`/`--no-gpu`, sinon auto par le
-    // wisdom (benchmark machine + garde-fou correction : GPU seulement dans la
-    // plage perturbation f64, jamais sur les shaders std f32). `gpu_available`
-    // optimiste (true) — le bench arbitre sans créer le GPU ; si l'auto choisit
-    // GPU mais que `GpuRenderer::new()` échoue, fallback CPU en aval.
-    let use_gpu = if cli.no_gpu {
-        false
-    } else if cli.gpu {
-        true
-    } else {
-        render::RenderPlan::auto(&params, true).wisdom().device == fractal::wisdom::Device::Gpu
-    };
-
+    // est appliqué dans la boucle d'accumulation plus bas. Le CPU utilise le
+    // jitter F3 par pixel ; le GPU décale uniformément chaque passe.
     let aa_samples = cli.aa_samples.max(1);
     let aa_jitter_scale = cli.jitter_scale.unwrap_or(1.0);
     if aa_samples > 1 {
         params.jitter_scale = aa_jitter_scale;
-        if use_gpu {
-            eprintln!(
-                "[AA] --aa-samples {aa_samples} ignoré en mode --gpu (anti-aliasing CPU uniquement)"
-            );
-        }
     }
 
     match params.algorithm_mode {
@@ -1070,7 +1053,7 @@ fn main() {
         .span_y_hp
         .clone()
         .unwrap_or_else(|| params.span_y.to_string());
-    let png_result = if aa_samples > 1 && !rendered_on_gpu {
+    let png_result = if aa_samples > 1 {
         // Anti-aliasing multi-sample (per-frame jitter) : sample 0 = le rendu de
         // base déjà calculé (offset (0,0)), samples 1..N re-rendus avec un offset
         // sous-pixel low-discrepancy, puis moyenne en espace RGB.
@@ -1087,14 +1070,29 @@ fn main() {
         // centre exact ; le rendu de base ci-dessus n'est réutilisé qu'à N=1).
         for k in 0..aa_samples as u64 {
             let mut p = params.clone();
-            p.aa_jitter = Some((k, aa_jitter_scale));
+            if rendered_on_gpu {
+                fractal::jitter::apply_uniform_sample_offset(&mut p, k, aa_jitter_scale);
+            } else {
+                p.aa_jitter = Some((k, aa_jitter_scale));
+            }
             // Dispatcher COMPLET : les canaux distances/orbites sont requis par
             // les modes Distance*/OrbitTraps/Wings (sinon retombée silencieuse
             // sur Smooth — classe « colorisation unique », cf. CLAUDE.md).
             let mut aa_cache = None;
-            let Some(sample) =
+            let sample = if rendered_on_gpu {
+                render::render_planned(
+                    render::PlannedRenderRequest::new(
+                        final_plan,
+                        render::RenderRequest::new(&p, &cancel),
+                    ),
+                    gpu_renderer.as_ref(),
+                    &mut aa_cache,
+                )
+                .map(|r| r.output)
+            } else {
                 render::render_request(render::RenderRequest::new(&p, &cancel), &mut aa_cache)
-            else {
+            };
+            let Some(sample) = sample else {
                 eprintln!("Erreur : rendu AA interrompu (sample {})", k + 1);
                 std::process::exit(1);
             };
@@ -1150,7 +1148,7 @@ fn main() {
 
     // Map .fmap (G12 jalon 1) : buffers bruts recolorisables sans recalcul.
     if let Some(ref map_path) = cli.output_map {
-        if aa_samples > 1 && !rendered_on_gpu {
+        if aa_samples > 1 {
             eprintln!(
                 "[MAP] --output-map ignoré avec --aa-samples > 1 (sortie AA = moyenne RGB, pas des canaux itération)"
             );
