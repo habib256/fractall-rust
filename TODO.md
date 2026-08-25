@@ -2079,6 +2079,9 @@ v0.8.2 — chaque chantier ferme LA CLASSE dont plusieurs bugs sont issus)** :
   accumulent les samples via le dispatcher GPU ; les kernels bytecode et
   perturbation portent le même hash par pixel + Halton + filtre tente que le
   CPU. Les anciens shaders dédiés retombent explicitement sur le CPU en AA.
+  Vérifié matériellement sur Apple M1/Metal (kernel bytecode) : deux rendus 4×
+  bit-identiques entre eux et différents du témoin 1×. Le kernel perturbation
+  f64 est validé par naga (Metal M1 n'expose pas `SHADER_F64`).
 
 ### G7 — I/O & interop · `[P2]`
 

@@ -209,7 +209,8 @@ struct Cli {
     /// (1 = désactivé, défaut). Chaque sample décale la grille d'un offset
     /// low-discrepancy (Halton, port F3 `radical_inverse` + tente `triangle`)
     /// puis les rendus colorés sont moyennés. Améliore les bords fins
-    /// (surtout modes Distance/DE). CPU uniquement (ignoré avec --gpu).
+    /// (surtout modes Distance/DE). CPU et GPU ; les kernels GPU bytecode et
+    /// perturbation appliquent la même décorrélation par pixel.
     #[arg(long, default_value_t = 1)]
     aa_samples: u32,
 
