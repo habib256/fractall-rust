@@ -843,8 +843,8 @@ mod nonconformal_tests {
         p.span_x = 4.0;
         p.span_y = 4.0;
         p.iteration_max = 100;
-        p.precision_bits = 192;
-        p.algorithm_mode = AlgorithmMode::Perturbation;
+        p.engine.precision_bits = 192;
+        p.engine.algorithm_mode = AlgorithmMode::Perturbation;
         p.perturbation.bla_threshold = 1e-6;
         p
     }

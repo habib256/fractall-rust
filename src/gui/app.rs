@@ -668,20 +668,13 @@ impl FractallApp {
             .render_resolution_preset
             .resolution(window_width, window_height);
 
-        // Créer les params pour le rendu haute résolution
-        let mut render_params = self.params.clone();
-        render_params.width = render_width;
-        render_params.height = render_height;
-
-        // Ajuster span pour conserver le ratio d'aspect
-        let current_aspect = self.params.span_x / self.params.span_y;
-        let target_aspect = render_width as f64 / render_height as f64;
-
-        if current_aspect > target_aspect {
-            render_params.span_y = render_params.span_x / target_aspect;
-        } else {
-            render_params.span_x = render_params.span_y * target_aspect;
-        }
+        // Params du rendu haute résolution : dimensions, aspect et invariant
+        // mode → canaux, dans une fonction PURE (donc verrouillée par tests).
+        let render_params = crate::gui::hq_render_state::hq_render_params(
+            &self.params,
+            render_width,
+            render_height,
+        );
 
         // Copier les coordonnées HP pour le thread
         let (center_x_hp, center_y_hp, span_x_hp, span_y_hp) = self.view.decimal_parts();
@@ -709,7 +702,7 @@ impl FractallApp {
         let config = ProgressiveConfig::for_params_with_intermediate(
             render_width,
             render_height,
-            render_params.use_gmp,
+            render_params.engine.use_gmp,
             allow_intermediate,
             will_use_perturbation,
         );
@@ -865,7 +858,7 @@ impl FractallApp {
         // décision que le CLI). Une sélection EXPLICITE du menu CPU/GPU
         // (algorithm_mode ≠ Auto) est un override manuel via `self.use_gpu`.
         let auto_plan = crate::render::RenderPlan::auto(&self.params, self.gpu_renderer.is_some());
-        let device_want_gpu = if self.params.algorithm_mode == AlgorithmMode::Auto {
+        let device_want_gpu = if self.params.engine.algorithm_mode == AlgorithmMode::Auto {
             auto_plan.wisdom().device == crate::fractal::wisdom::Device::Gpu
         } else {
             self.use_gpu
@@ -881,7 +874,7 @@ impl FractallApp {
         } else {
             crate::fractal::wisdom::Device::Cpu
         };
-        let render_plan = if self.params.algorithm_mode == AlgorithmMode::Auto
+        let render_plan = if self.params.engine.algorithm_mode == AlgorithmMode::Auto
             && render_device == auto_plan.wisdom().device
         {
             auto_plan
@@ -918,7 +911,7 @@ impl FractallApp {
             ProgressiveConfig::for_params_with_intermediate(
                 self.params.width,
                 self.params.height,
-                self.params.use_gmp,
+                self.params.engine.use_gmp,
                 allow_intermediate,
                 will_use_perturbation,
             )
@@ -955,23 +948,10 @@ impl FractallApp {
         self.texture_ready_sender = Some(tex_tx);
         self.texture_ready_receiver = Some(tex_rx);
 
-        // Paramètres pour le thread (activer orbit traps / distance selon outcoloring)
+        // Paramètres pour le thread : règle UNIQUE mode → canaux, partagée
+        // avec le CLI et l'export HQ (`render::ensure_required_channels`).
         let mut params = self.params.clone();
-        match params.color.out_coloring_mode {
-            crate::fractal::OutColoringMode::OrbitTraps
-            | crate::fractal::OutColoringMode::Wings => {
-                params.channels.enable_orbit_traps = true;
-            }
-            _ => {}
-        }
-        if matches!(
-            params.color.out_coloring_mode,
-            crate::fractal::OutColoringMode::Distance
-                | crate::fractal::OutColoringMode::DistanceAO
-                | crate::fractal::OutColoringMode::Distance3D
-        ) {
-            params.channels.enable_distance_estimation = true;
-        }
+        crate::render::ensure_required_channels(&mut params);
         let cancel = Arc::clone(&self.render_cancel);
         let full_width = self.params.width;
         let full_height = self.params.height;
@@ -1944,10 +1924,11 @@ impl FractallApp {
         let mut params = default_params_for_type(julia_type, preview_width, preview_height);
         params.seed = seed;
         params.iteration_max = 256;
-        params.algorithm_mode = AlgorithmMode::StandardF64;
+        params.engine.algorithm_mode = AlgorithmMode::StandardF64;
         params.color.color_mode = self.palette_index;
         params.color.color_repeat = self.color_repeat;
         params.color.out_coloring_mode = self.out_coloring_mode;
+        crate::render::ensure_required_channels(&mut params);
 
         let tx = self.julia_preview_sender.clone();
         self.julia_preview_rendering = true;
@@ -2187,14 +2168,12 @@ impl FractallApp {
         self.selected_type = FractalType::Mandelbrot;
         let width = self.params.width;
         let height = self.params.height;
-        let mut new_params = default_params_for_type(FractalType::Mandelbrot, width, height);
-        new_params.use_gmp = self.params.use_gmp;
-        new_params.precision_bits = self.params.precision_bits;
-        new_params.color.color_mode = self.params.color.color_mode;
-        new_params.color.color_repeat = self.params.color.color_repeat;
-        new_params.algorithm_mode = AlgorithmMode::Auto;
-        new_params.perturbation.bla_threshold = self.params.perturbation.bla_threshold;
-        new_params.perturbation.glitch_tolerance = self.params.perturbation.glitch_tolerance;
+        let mut new_params = crate::fractal::params_for_type_keeping_preferences(
+            &self.params,
+            FractalType::Mandelbrot,
+            width,
+            height,
+        );
         new_params.formula.hybrid_phases = Some(self.hybrid_seq.clone());
         self.params = new_params;
         self.color_repeat = self.params.color.color_repeat;
@@ -2213,28 +2192,13 @@ impl FractallApp {
         let width = self.params.width;
         let height = self.params.height;
 
-        // Obtenir les paramètres par défaut pour le nouveau type
-        let mut new_params = default_params_for_type(new_type, width, height);
-
-        // Conserver les paramètres de rendu (GMP, palette, etc.)
-        let is_density_type = matches!(
-            new_type,
-            FractalType::Buddhabrot | FractalType::Nebulabrot | FractalType::AntiBuddhabrot
-        );
-        new_params.use_gmp = self.params.use_gmp;
-        new_params.precision_bits = self.params.precision_bits;
-        new_params.color.color_mode = self.params.color.color_mode;
-        // Fractales densité : toujours 1 par défaut à la sélection (ne pas conserver l’ancienne valeur)
-        new_params.color.color_repeat = if is_density_type {
-            1
-        } else {
-            self.params.color.color_repeat
-        };
-        new_params.algorithm_mode = AlgorithmMode::Auto;
-        new_params.perturbation.bla_threshold = self.params.perturbation.bla_threshold;
-        new_params.perturbation.glitch_tolerance = self.params.perturbation.glitch_tolerance;
-
-        // Toujours utiliser le domaine par défaut pour bien centrer la fractale
+        // Défauts du nouveau type + préférences de l'utilisateur (couleur,
+        // échantillonnage, moteur, perturbation, canaux) : la frontière est
+        // écrite groupe par groupe dans `params_for_type_keeping_preferences`,
+        // plus par une liste blanche de champs qui perdait le reste.
+        // Géométrie : toujours le domaine par défaut, pour bien centrer.
+        let new_params =
+            crate::fractal::params_for_type_keeping_preferences(&self.params, new_type, width, height);
         self.params = new_params;
         self.color_repeat = self.params.color.color_repeat;
         self.iteration_input = self.params.iteration_max.to_string();
@@ -2253,7 +2217,7 @@ impl FractallApp {
     }
 
     fn effective_algorithm_mode(&self) -> AlgorithmMode {
-        match self.params.algorithm_mode {
+        match self.params.engine.algorithm_mode {
             AlgorithmMode::Auto => {
                 if !matches!(
                     self.selected_type,
@@ -2439,11 +2403,11 @@ impl eframe::App for FractallApp {
                     let height = self.params.height;
                     let mut new_params = default_params_for_type(julia_type, width, height);
                     new_params.seed = seed;
-                    new_params.use_gmp = self.params.use_gmp;
-                    new_params.precision_bits = self.params.precision_bits;
+                    new_params.engine.use_gmp = self.params.engine.use_gmp;
+                    new_params.engine.precision_bits = self.params.engine.precision_bits;
                     new_params.color.color_mode = self.params.color.color_mode;
                     new_params.color.color_repeat = self.params.color.color_repeat;
-                    new_params.algorithm_mode = AlgorithmMode::Auto;
+                    new_params.engine.algorithm_mode = AlgorithmMode::Auto;
                     self.params = new_params;
                     self.selected_type = julia_type;
                     self.iteration_input = self.params.iteration_max.to_string();
@@ -2517,8 +2481,8 @@ impl eframe::App for FractallApp {
                 let height = self.params.height;
                 let mut new_params = default_params_for_type(self.selected_type, width, height);
                 // Conserver certains paramètres
-                new_params.use_gmp = self.params.use_gmp;
-                new_params.precision_bits = self.params.precision_bits;
+                new_params.engine.use_gmp = self.params.engine.use_gmp;
+                new_params.engine.precision_bits = self.params.engine.precision_bits;
                 new_params.color.color_mode = self.params.color.color_mode;
                 new_params.color.color_repeat = self.params.color.color_repeat;
                 self.params = new_params;
@@ -2737,9 +2701,9 @@ impl eframe::App for FractallApp {
                         if old_plane != self.params.plane_transform {
                             self.orbit_cache = None;
                             if self.params.plane_transform != PlaneTransform::Mu
-                                && self.params.algorithm_mode == AlgorithmMode::Perturbation
+                                && self.params.engine.algorithm_mode == AlgorithmMode::Perturbation
                             {
-                                self.params.algorithm_mode = AlgorithmMode::Auto;
+                                self.params.engine.algorithm_mode = AlgorithmMode::Auto;
                             }
                             self.start_render();
                         }
@@ -2812,16 +2776,16 @@ impl eframe::App for FractallApp {
                         ui.label("Tech:");
                         let gpu_available = self.gpu_renderer.is_some();
                         let old_use_gpu = self.use_gpu;
-                        let old_mode = self.params.algorithm_mode;
+                        let old_mode = self.params.engine.algorithm_mode;
 
                         let render_text = if is_lyapunov {
-                            match self.params.algorithm_mode {
+                            match self.params.engine.algorithm_mode {
                                 AlgorithmMode::Auto => "🔄 Auto".to_string(),
                                 AlgorithmMode::StandardF64 => "💻 CPU Standard f64".to_string(),
                                 _ => "🔄 Auto".to_string(),
                             }
                         } else {
-                            match (self.use_gpu && gpu_available, self.params.algorithm_mode) {
+                            match (self.use_gpu && gpu_available, self.params.engine.algorithm_mode) {
                                 (_, AlgorithmMode::Auto) => "🔄 Auto".to_string(),
                                 (false, AlgorithmMode::StandardF64) => "💻 CPU Standard f64".to_string(),
                                 (false, AlgorithmMode::Perturbation) => "💻 CPU Perturbation f64".to_string(),
@@ -2834,10 +2798,10 @@ impl eframe::App for FractallApp {
 
                         ui.menu_button(&render_text, |ui| {
                             if ui.selectable_label(
-                                self.params.algorithm_mode == AlgorithmMode::Auto,
+                                self.params.engine.algorithm_mode == AlgorithmMode::Auto,
                                 "🔄 Auto"
                             ).clicked() {
-                                self.params.algorithm_mode = AlgorithmMode::Auto;
+                                self.params.engine.algorithm_mode = AlgorithmMode::Auto;
                                 if is_lyapunov {
                                     self.use_gpu = false;
                                 }
@@ -2846,11 +2810,11 @@ impl eframe::App for FractallApp {
 
                             if is_lyapunov {
                                 if ui.selectable_label(
-                                    !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::StandardF64,
+                                    !self.use_gpu && self.params.engine.algorithm_mode == AlgorithmMode::StandardF64,
                                     "💻 CPU Standard f64"
                                 ).clicked() {
                                     self.use_gpu = false;
-                                    self.params.algorithm_mode = AlgorithmMode::StandardF64;
+                                    self.params.engine.algorithm_mode = AlgorithmMode::StandardF64;
                                     ui.close_menu();
                                 }
                             } else {
@@ -2858,20 +2822,20 @@ impl eframe::App for FractallApp {
 
                                 ui.menu_button("💻 CPU", |ui| {
                                     if ui.selectable_label(
-                                        !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::StandardF64,
+                                        !self.use_gpu && self.params.engine.algorithm_mode == AlgorithmMode::StandardF64,
                                         "📊 Standard f64"
                                     ).clicked() {
                                         self.use_gpu = false;
-                                        self.params.algorithm_mode = AlgorithmMode::StandardF64;
+                                        self.params.engine.algorithm_mode = AlgorithmMode::StandardF64;
                                         ui.close_menu();
                                     }
 
                                     if ui.selectable_label(
-                                        !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::ReferenceGmp,
+                                        !self.use_gpu && self.params.engine.algorithm_mode == AlgorithmMode::ReferenceGmp,
                                         "🔢 GMP Reference"
                                     ).clicked() {
                                         self.use_gpu = false;
-                                        self.params.algorithm_mode = AlgorithmMode::ReferenceGmp;
+                                        self.params.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
                                         ui.close_menu();
                                     }
 
@@ -2880,14 +2844,14 @@ impl eframe::App for FractallApp {
                                         .add_enabled(
                                             plane_ok,
                                             egui::SelectableLabel::new(
-                                                !self.use_gpu && self.params.algorithm_mode == AlgorithmMode::Perturbation,
+                                                !self.use_gpu && self.params.engine.algorithm_mode == AlgorithmMode::Perturbation,
                                                 "🔬 Perturbation f64",
                                             ),
                                         )
                                         .clicked()
                                     {
                                         self.use_gpu = false;
-                                        self.params.algorithm_mode = AlgorithmMode::Perturbation;
+                                        self.params.engine.algorithm_mode = AlgorithmMode::Perturbation;
                                         ui.close_menu();
                                     }
                                 });
@@ -2895,11 +2859,11 @@ impl eframe::App for FractallApp {
                                 if gpu_available {
                                     ui.menu_button("🎮 GPU", |ui| {
                                         if ui.selectable_label(
-                                            self.use_gpu && self.params.algorithm_mode == AlgorithmMode::StandardF64,
+                                            self.use_gpu && self.params.engine.algorithm_mode == AlgorithmMode::StandardF64,
                                             "⚡ Standard f32"
                                         ).clicked() {
                                             self.use_gpu = true;
-                                            self.params.algorithm_mode = AlgorithmMode::StandardF64;
+                                            self.params.engine.algorithm_mode = AlgorithmMode::StandardF64;
                                             ui.close_menu();
                                         }
 
@@ -2908,14 +2872,14 @@ impl eframe::App for FractallApp {
                                             .add_enabled(
                                                 plane_ok,
                                                 egui::SelectableLabel::new(
-                                                    self.use_gpu && self.params.algorithm_mode == AlgorithmMode::Perturbation,
+                                                    self.use_gpu && self.params.engine.algorithm_mode == AlgorithmMode::Perturbation,
                                                     "🚀 Perturbation f32",
                                                 ),
                                             )
                                             .clicked()
                                         {
                                             self.use_gpu = true;
-                                            self.params.algorithm_mode = AlgorithmMode::Perturbation;
+                                            self.params.engine.algorithm_mode = AlgorithmMode::Perturbation;
                                             ui.close_menu();
                                         }
                                     });
@@ -2927,24 +2891,24 @@ impl eframe::App for FractallApp {
 
                         if supports_advanced_modes {
                             if old_use_gpu != self.use_gpu {
-                                if self.use_gpu && self.params.algorithm_mode == AlgorithmMode::ReferenceGmp {
-                                    self.params.algorithm_mode = AlgorithmMode::Auto;
+                                if self.use_gpu && self.params.engine.algorithm_mode == AlgorithmMode::ReferenceGmp {
+                                    self.params.engine.algorithm_mode = AlgorithmMode::Auto;
                                 }
                                 self.orbit_cache = None;
                                 self.start_render();
                             }
 
                             if self.params.plane_transform != PlaneTransform::Mu
-                                && self.params.algorithm_mode == AlgorithmMode::Perturbation
+                                && self.params.engine.algorithm_mode == AlgorithmMode::Perturbation
                             {
-                                self.params.algorithm_mode = AlgorithmMode::Auto;
+                                self.params.engine.algorithm_mode = AlgorithmMode::Auto;
                             }
 
-                            if old_mode != self.params.algorithm_mode {
+                            if old_mode != self.params.engine.algorithm_mode {
                                 self.orbit_cache = None;
                                 self.start_render();
                             }
-                        } else if is_lyapunov && old_mode != self.params.algorithm_mode {
+                        } else if is_lyapunov && old_mode != self.params.engine.algorithm_mode {
                             self.start_render();
                         }
                     }

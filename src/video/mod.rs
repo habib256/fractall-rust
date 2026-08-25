@@ -30,7 +30,7 @@ use rug::Float;
 use serde::{Deserialize, Serialize};
 
 use crate::fractal::{
-    default_params_for_type, ColorSpace, FractalParams, FractalType, OutColoringMode,
+    default_params_for_type, ColorParams, ColorSpace, FractalParams, FractalType, OutColoringMode,
 };
 use crate::io::fmap::{load_fmap, save_fmap, FractalMap};
 use crate::render::{render_request, RenderRequest};
@@ -370,11 +370,11 @@ pub fn keyframe_path(project: &Path, k: u32) -> PathBuf {
 /// des heures de calcul (c'est tout l'intérêt du format map).
 pub fn map_fingerprint(params: &FractalParams) -> String {
     let mut p = params.clone();
-    p.color.color_mode = 0;
-    p.color.color_repeat = 1;
-    p.color.color_space = ColorSpace::Rgb;
-    p.color.color_offset = 0.0;
-    p.color.out_coloring_mode = OutColoringMode::Smooth;
+    // Le GROUPE couleur entier est neutralisé, pas une liste de champs : tout
+    // réglage de colorisation ajouté plus tard reste automatiquement hors
+    // empreinte. Une liste blanche oubliée coûterait le recalcul de toutes les
+    // keyframes d'un projet — des heures — pour un changement de palette.
+    p.color = ColorParams::default();
     serde_json::to_string(&p).unwrap_or_default()
 }
 
@@ -816,6 +816,43 @@ mod tests {
         assert_eq!(r4, 4, "iterations ≠ ⇒ re-rendu");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Verrou STRUCTUREL de l'empreinte de reprise : le GROUPE couleur entier
+    /// est hors empreinte (comparaison par groupe — un réglage de colorisation
+    /// ajouté plus tard y reste automatiquement), alors que tout réglage de
+    /// CALCUL y entre. Une liste blanche oubliée invaliderait toutes les
+    /// keyframes d'un projet — des heures — pour un changement de palette.
+    #[test]
+    fn map_fingerprint_ignores_the_whole_color_group() {
+        let base = default_params_for_type(FractalType::Mandelbrot, 64, 48);
+
+        let mut recolored = base.clone();
+        recolored.color = ColorParams {
+            color_mode: 17,
+            color_repeat: 111,
+            color_space: ColorSpace::Lch,
+            color_offset: 0.625,
+            out_coloring_mode: OutColoringMode::Biomorphs,
+        };
+        assert_eq!(
+            map_fingerprint(&base),
+            map_fingerprint(&recolored),
+            "changer la couleur ne doit PAS invalider une map"
+        );
+
+        // Témoins de calcul : chacun doit invalider.
+        let mut iters = base.clone();
+        iters.iteration_max += 1;
+        assert_ne!(map_fingerprint(&base), map_fingerprint(&iters), "itérations");
+
+        let mut chan = base.clone();
+        chan.channels.enable_distance_estimation = true;
+        assert_ne!(map_fingerprint(&base), map_fingerprint(&chan), "canaux");
+
+        let mut eng = base.clone();
+        eng.engine.precision_bits += 1;
+        assert_ne!(map_fingerprint(&base), map_fingerprint(&eng), "moteur");
     }
 
     /// `plan_project` : écrit un manifest complet (keyframes remplies) dans un

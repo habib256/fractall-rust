@@ -978,7 +978,7 @@ mod tests {
         params.span_x = span_x;
         params.span_y = span_x * 100.0 / 160.0;
         params.iteration_max = iter_max;
-        params.algorithm_mode = AlgorithmMode::Perturbation;
+        params.engine.algorithm_mode = AlgorithmMode::Perturbation;
         let (orbit, _, _) = compute_reference_orbit(&params, None, true).expect("ref orbit");
         orbit
     }
@@ -1130,7 +1130,7 @@ mod tests {
         params.span_y = span_y;
         params.iteration_max = iter_max;
         params.bailout = bailout;
-        params.algorithm_mode = AlgorithmMode::Perturbation;
+        params.engine.algorithm_mode = AlgorithmMode::Perturbation;
 
         let (orbit, _, _) =
             compute_reference_orbit(&params, None, true).expect("ref orbit (Julia)");

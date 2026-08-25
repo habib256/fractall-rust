@@ -116,6 +116,35 @@ pub fn required_channels(params: &FractalParams) -> ChannelRequirements {
     }
 }
 
+/// Rétablit l'invariant INTER-GROUPES `channels ⊇ required_channels(params)` :
+/// un mode de coloriage qui CONSOMME un canal doit le faire PRODUIRE.
+///
+/// Règle UNIQUE, à appliquer à chaque frontière d'entrée d'un rendu (CLI, GUI
+/// fenêtre / HQ / preview). Elle était réimplémentée à trois endroits avec
+/// trois tables différentes ; la GUI ne la posait que sur le clone du rendu
+/// fenêtre, si bien qu'un export haute résolution en mode Distance partait
+/// sans le canal et **échouait** à la colorisation vérifiée.
+///
+/// Monotone : n'active jamais que ce que le mode exige, ne désactive rien
+/// (l'utilisateur peut demander un canal sans mode correspondant). Les types
+/// à colorisation dédiée (densité, vectoriels) n'exigent aucun canal —
+/// `required_channels` le sait déjà, ils ne sont donc pas touchés.
+///
+/// Retourne `true` si un canal a dû être activé.
+pub fn ensure_required_channels(params: &mut FractalParams) -> bool {
+    let req = required_channels(params);
+    let mut changed = false;
+    if req.distances && !params.channels.enable_distance_estimation {
+        params.channels.enable_distance_estimation = true;
+        changed = true;
+    }
+    if req.orbits && !params.channels.enable_orbit_traps {
+        params.channels.enable_orbit_traps = true;
+        changed = true;
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,5 +212,51 @@ mod tests {
         let mut out = out_bare.clone();
         out.orbits = vec![None; n];
         assert!(out.validate_channels(&p).is_ok());
+    }
+
+    /// L'invariant tient pour TOUS les modes, sur un type piloté par le mode.
+    #[test]
+    fn ensure_required_channels_satisfies_every_mode() {
+        for mode in OutColoringMode::all() {
+            let mut p = params(FractalType::Mandelbrot, *mode);
+            p.channels.enable_distance_estimation = false;
+            p.channels.enable_orbit_traps = false;
+
+            let changed = ensure_required_channels(&mut p);
+            let req = required_channels(&p);
+            assert_eq!(
+                changed,
+                !req.none(),
+                "{mode:?} : `changed` doit refléter l'activation effective"
+            );
+            assert!(!req.distances || p.channels.enable_distance_estimation);
+            assert!(!req.orbits || p.channels.enable_orbit_traps);
+            // Idempotent : une seconde passe ne change plus rien.
+            assert!(!ensure_required_channels(&mut p), "{mode:?} : non idempotent");
+        }
+    }
+
+    /// Monotone : un canal demandé explicitement survit à la normalisation,
+    /// même si le mode ne le consomme pas (l'utilisateur peut vouloir la
+    /// donnée sans la coloriser).
+    #[test]
+    fn ensure_required_channels_never_disables_a_requested_channel() {
+        let mut p = params(FractalType::Mandelbrot, OutColoringMode::Smooth);
+        p.channels.enable_distance_estimation = true;
+        p.channels.enable_orbit_traps = true;
+        assert!(!ensure_required_channels(&mut p));
+        assert!(p.channels.enable_distance_estimation);
+        assert!(p.channels.enable_orbit_traps);
+    }
+
+    /// Types à colorisation dédiée : `out_coloring_mode` est ignoré, donc
+    /// aucun canal n'est requis — et surtout aucun canal coûteux activé.
+    #[test]
+    fn ensure_required_channels_leaves_dedicated_coloring_types_alone() {
+        for t in [FractalType::Buddhabrot, FractalType::VonKoch] {
+            let mut p = params(t, OutColoringMode::Distance);
+            assert!(!ensure_required_channels(&mut p), "{t:?}");
+            assert!(!p.channels.enable_distance_estimation, "{t:?}");
+        }
     }
 }

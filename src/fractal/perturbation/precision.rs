@@ -189,11 +189,11 @@ pub(crate) const MAX_PERTURB_PRECISION_BITS: u32 = u32::MAX;
 
 pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32 {
     if params.width == 0 || params.height == 0 {
-        return params.precision_bits.max(128);
+        return params.engine.precision_bits.max(128);
     }
     let log2_zoom = match log2_zoom(params) {
         Some(value) => value,
-        None => return params.precision_bits.max(128),
+        None => return params.engine.precision_bits.max(128),
     };
 
     let final_bits = if params.perturbation.use_reference_precision_formula {
@@ -227,7 +227,7 @@ pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32
         needed_bits.clamp(128, MAX_PERTURB_PRECISION_BITS as u64) as u32
     };
 
-    final_bits.max(params.precision_bits.clamp(128, MAX_PERTURB_PRECISION_BITS))
+    final_bits.max(params.engine.precision_bits.clamp(128, MAX_PERTURB_PRECISION_BITS))
 }
 
 /// Détermine si le zoom impose le fallback GMP complet par pixel.

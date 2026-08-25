@@ -5,7 +5,7 @@ pub mod request;
 pub mod tiles;
 
 #[allow(unused_imports)]
-pub use output::{required_channels, ChannelRequirements, RenderOutput};
+pub use output::{ensure_required_channels, required_channels, ChannelRequirements, RenderOutput};
 pub use planned::{render_planned, PlannedRenderOutput, PlannedRenderRequest};
 pub use request::{CpuRenderPlan, GpuRenderPlan, ProgressiveReuse, RenderPlan, RenderRequest};
 

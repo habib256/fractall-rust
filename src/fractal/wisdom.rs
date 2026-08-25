@@ -180,7 +180,7 @@ pub struct WisdomPlan {
 /// retombe sur le split exp/f64 par `pixel_size`.
 #[inline]
 pub fn dd_requested(params: &FractalParams) -> bool {
-    params.use_dd_tier && matches!(params.fractal_type, FractalType::Mandelbrot)
+    params.engine.use_dd_tier && matches!(params.fractal_type, FractalType::Mandelbrot)
 }
 
 /// Faut-il le tier ComplexExp plutôt que f64 pour ce `pixel_size` ?
@@ -203,7 +203,7 @@ pub fn wants_exp(pixel_size: f64) -> bool {
 /// **Source unique** de la sélection de tier. Ordre (identique à F3
 /// double→floatexp→float128, hoisté sur dd) : dd demandé > exp (deep) > f64.
 pub fn number_tier(params: &FractalParams) -> Option<NumberTier> {
-    if !params.use_bytecode_engine {
+    if !params.engine.use_bytecode_engine {
         return None;
     }
     let formula =
@@ -271,7 +271,7 @@ pub fn select_algorithm(params: &FractalParams, device: Device) -> Algorithm {
     // StandardF64 (`iterate_bytecode_f64` cycle aussi les phases). Le GMP
     // par-pixel (`iterate_point_mpc`) ne cycle pas → jamais routé pour un hybride.
     if params.is_hybrid_formula() {
-        if params.algorithm_mode != crate::fractal::types::AlgorithmMode::StandardF64
+        if params.engine.algorithm_mode != crate::fractal::types::AlgorithmMode::StandardF64
             && should_use_perturbation(params, false)
         {
             return Algorithm::Perturbation;
@@ -283,13 +283,13 @@ pub fn select_algorithm(params: &FractalParams, device: Device) -> Algorithm {
     // inline du dispatcher CPU.
     let perturbation_viable =
         perturbation_family(params.fractal_type) && params.plane_transform == PlaneTransform::Mu;
-    match params.algorithm_mode {
+    match params.engine.algorithm_mode {
         AlgorithmMode::ReferenceGmp => Algorithm::ReferenceGmp,
         AlgorithmMode::StandardF64 => Algorithm::StandardF64,
         AlgorithmMode::Perturbation => {
             if perturbation_viable {
                 Algorithm::Perturbation
-            } else if params.use_gmp {
+            } else if params.engine.use_gmp {
                 Algorithm::ReferenceGmp
             } else {
                 Algorithm::StandardF64
@@ -376,7 +376,7 @@ pub fn select_device(params: &FractalParams, gpu_available: bool) -> Device {
 /// demandé serait ignoré). Consommé par `select_device` ET `render_dispatch`.
 pub fn gpu_lacks_features(params: &FractalParams) -> bool {
     use crate::fractal::OutColoringMode as M;
-    params.use_dd_tier
+    params.engine.use_dd_tier
         || params.channels.enable_distance_estimation
         || params.channels.enable_orbit_traps
         || matches!(
@@ -539,7 +539,7 @@ pub fn plan_for(params: &FractalParams, device: Device) -> WisdomPlan {
         sampling: sampling_plan(params),
         required_channels: required_channels(params),
         gpu_compatible: !params.is_hybrid_formula()
-            && !params.find_nucleus
+            && !params.engine.find_nucleus
             && !gpu_lacks_features(params),
     }
 }
@@ -593,7 +593,7 @@ mod tests {
         p.center_y = 0.0;
         p.span_x = 4.0 / zoom;
         p.span_y = 4.0 / zoom;
-        p.algorithm_mode = AlgorithmMode::Auto;
+        p.engine.algorithm_mode = AlgorithmMode::Auto;
         p
     }
 
@@ -623,13 +623,13 @@ mod tests {
         // `use_dd_tier` sur Mandelbrot force le tier dd à tout zoom (hoisté).
         for exp in [8, 12, 50] {
             let mut p = frame(10f64.powi(exp));
-            p.use_dd_tier = true;
+            p.engine.use_dd_tier = true;
             assert_eq!(number_tier(&p), Some(NumberTier::Dd), "zoom 1e{exp}");
         }
         // dd non réclamé pour un type non-Mandelbrot même si use_dd_tier.
         let mut p = frame(1e8);
         p.fractal_type = FractalType::BurningShip;
-        p.use_dd_tier = true;
+        p.engine.use_dd_tier = true;
         assert!(!dd_requested(&p));
         assert_eq!(number_tier(&p), Some(NumberTier::F64));
     }
@@ -637,7 +637,7 @@ mod tests {
     #[test]
     fn no_bytecode_engine_yields_no_tier() {
         let mut p = frame(1e20);
-        p.use_bytecode_engine = false;
+        p.engine.use_bytecode_engine = false;
         assert_eq!(number_tier(&p), None);
     }
 
@@ -648,7 +648,7 @@ mod tests {
         assert_eq!(plan(&frame(1e14)).algorithm, Algorithm::Perturbation);
         // Forcé.
         let mut p = frame(1e3);
-        p.algorithm_mode = AlgorithmMode::ReferenceGmp;
+        p.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
         assert_eq!(plan(&p).algorithm, Algorithm::ReferenceGmp);
     }
 
@@ -694,7 +694,7 @@ mod tests {
         let base = frame(1e30);
         assert!(!gpu_lacks_features(&base));
         let mut dd = base.clone();
-        dd.use_dd_tier = true;
+        dd.engine.use_dd_tier = true;
         assert!(gpu_lacks_features(&dd));
         assert_eq!(select_device(&dd, true), Device::Cpu);
         for mode in [
@@ -756,9 +756,9 @@ mod tests {
         // perturbation → fallback f64/GMP (miroir du dispatcher historique).
         let mut p = frame(1e14);
         p.fractal_type = FractalType::Newton;
-        p.algorithm_mode = AlgorithmMode::Perturbation;
+        p.engine.algorithm_mode = AlgorithmMode::Perturbation;
         assert_eq!(select_algorithm(&p, Device::Cpu), Algorithm::StandardF64);
-        p.use_gmp = true;
+        p.engine.use_gmp = true;
         assert_eq!(select_algorithm(&p, Device::Cpu), Algorithm::ReferenceGmp);
     }
 

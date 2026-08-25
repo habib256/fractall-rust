@@ -105,7 +105,7 @@ use rug::Float;
 /// (neighbor pass Pauldelbrot + secondary references) n'est qu'overhead + source
 /// de pixels divergents (corrigés via GMP avec résultat ≠ fexp).
 fn uses_bytecode_path(params: &FractalParams) -> bool {
-    params.use_bytecode_engine
+    params.engine.use_bytecode_engine
         && compile_formula(params.fractal_type, params.formula.multibrot_power).is_some()
 }
 
@@ -369,7 +369,7 @@ pub fn render_perturbation_with_cache(
     let reuse_for_pixels = reuse;
 
     let mut orbit_params = params.clone();
-    orbit_params.precision_bits = compute_perturbation_precision_bits(params);
+    orbit_params.engine.precision_bits = compute_perturbation_precision_bits(params);
 
     // Check if we need full GMP perturbation (very deep zooms >10^15)
     let use_full_gmp = should_use_full_gmp_perturbation(params);
@@ -394,7 +394,7 @@ pub fn render_perturbation_with_cache(
     // du minibrot (`out.transform = K`, `engine.cc:208`). K vit dans le cache
     // (calculée avec l'orbite) et s'applique ici au mapping pixel→c —
     // `transform_matrix()` (rot) ET `transform_sigma1()` (rayon BLA).
-    let nucleus_k = if params.find_nucleus {
+    let nucleus_k = if params.engine.find_nucleus {
         cache.nucleus_transform
     } else {
         None
@@ -536,7 +536,7 @@ pub fn render_perturbation_with_cache(
     // ci-dessus est 53 b (span f64 × fraction f64) → plancher résiduel sur les
     // pixels de bord (grand |dc|). En dd : span depuis la string HP (106 b) et
     // fraction pixel via division dd. Vide sinon (path ComplexExp inchangé).
-    let build_dc_dd = params.use_dd_tier
+    let build_dc_dd = params.engine.use_dd_tier
         && matches!(params.fractal_type, FractalType::Mandelbrot)
         && rot.is_none();
     #[allow(clippy::type_complexity)]
@@ -931,11 +931,11 @@ pub fn render_perturbation_with_cache(
             // le full-GMP ci-dessous = backstop). `tiles=None` : la frame dd est
             // blittée en entier par l'appelant (pas de double-stream du sink).
             if bytecode_path
-                && !params.use_dd_tier
+                && !params.engine.use_dd_tier
                 && matches!(params.fractal_type, FractalType::Mandelbrot)
             {
                 let mut dd_params = params.clone();
-                dd_params.use_dd_tier = true;
+                dd_params.engine.use_dd_tier = true;
                 if let Some(dd_result) =
                     render_perturbation_with_cache(&dd_params, cancel, None, None, None, None)
                 {
@@ -1204,7 +1204,7 @@ pub fn render_perturbation_with_cache(
         print_fractall_summary(
             path_label,
             params.fractal_type,
-            orbit_params.precision_bits,
+            orbit_params.engine.precision_bits,
             params.iteration_max,
             &iterations,
             pixel_count,
@@ -1413,7 +1413,7 @@ fn render_perturbation_gmp_path(
         if !glitched_indices.is_empty() {
             // Use direct GMP iteration as fallback for glitched pixels
             let mut orbit_params = params.clone();
-            orbit_params.precision_bits = prec;
+            orbit_params.engine.precision_bits = prec;
             let gmp_params = MpcParams::from_params(&orbit_params);
             let width_u32 = params.width;
 
@@ -1477,7 +1477,7 @@ mod tests {
         // Vue « large » : référence centrée en A=(-0.5, 0), empreinte 3×3.
         // -0.5 est dans la cardioïde → orbite bornée (référence pleine longueur).
         let mut big = default_params_for_type(FractalType::Mandelbrot, 64, 64);
-        big.algorithm_mode = AlgorithmMode::Perturbation; // force le path même en shallow
+        big.engine.algorithm_mode = AlgorithmMode::Perturbation; // force le path même en shallow
         big.center_x = -0.5;
         big.center_y = 0.0;
         big.center_x_hp = None;
@@ -1486,7 +1486,7 @@ mod tests {
         big.span_y = 3.0;
         big.span_x_hp = None;
         big.span_y_hp = None;
-        big.precision_bits = 256;
+        big.engine.precision_bits = 256;
         big.iteration_max = 400;
         let cancel = Arc::new(AtomicBool::new(false));
         let (_r, cache_big) = render_perturbation_with_cache(&big, &cancel, None, None, None, None)
@@ -1560,9 +1560,9 @@ mod tests {
         // `view`, vs référence fraîche au centre de la vue — même image
         // (avant : frame décalée du pan). Juge : le rendu f64 frais.
         let mut big_legacy = big.clone();
-        big_legacy.use_bytecode_engine = false;
+        big_legacy.engine.use_bytecode_engine = false;
         let mut view_legacy = view.clone();
-        view_legacy.use_bytecode_engine = false;
+        view_legacy.engine.use_bytecode_engine = false;
         let cache_big_legacy =
             compute_reference_orbit_cached(&big_legacy, Some(&cancel), None, None, false)
                 .expect("réf legacy A");
@@ -1673,7 +1673,7 @@ mod tests {
 
         let make = |span_x: f64| -> FractalParams {
             let mut p = default_params_for_type(FractalType::Mandelbrot, w, h);
-            p.algorithm_mode = AlgorithmMode::Perturbation;
+            p.engine.algorithm_mode = AlgorithmMode::Perturbation;
             p.iteration_max = 2500;
             p.center_x = -1.3718940344977861;
             p.center_y = -0.08596946447921205;
@@ -1786,8 +1786,8 @@ mod tests {
         p.span_x = 4.0;
         p.span_y = 3.0;
         p.iteration_max = 64;
-        p.precision_bits = 192;
-        p.algorithm_mode = AlgorithmMode::Perturbation;
+        p.engine.precision_bits = 192;
+        p.engine.algorithm_mode = AlgorithmMode::Perturbation;
         p.perturbation.bla_threshold = 1e-6;
         p
     }
@@ -1867,7 +1867,7 @@ mod tests {
     fn assert_pert_dispatch_matches_f64(base: &FractalParams, indices: &[(u32, u32)], tol: i32) {
         use crate::render::escape_time::render_escape_time;
         let mut params = base.clone();
-        params.algorithm_mode = AlgorithmMode::Perturbation;
+        params.engine.algorithm_mode = AlgorithmMode::Perturbation;
         let iters = render_escape_time(&params).iterations;
         for &(x, y) in indices {
             let idx = (y * params.width + x) as usize;

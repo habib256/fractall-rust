@@ -141,7 +141,7 @@ impl ViewHp {
     }
 
     pub fn from_params(params: &FractalParams) -> Self {
-        let precision = params.precision_bits.max(MIN_VIEW_PRECISION).max(
+        let precision = params.engine.precision_bits.max(MIN_VIEW_PRECISION).max(
             required_precision(params.span_x_hp.as_deref(), params.span_x).max(required_precision(
                 params.span_y_hp.as_deref(),
                 params.span_y,

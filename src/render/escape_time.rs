@@ -23,7 +23,7 @@ use crate::render::request::RenderRequest;
 use crate::render::tiles::{self, TileGrid, TileOpts, TileUpdate};
 
 fn special_view_needs_mpc(params: &FractalParams) -> bool {
-    if params.use_gmp {
+    if params.engine.use_gmp {
         return true;
     }
     let pixel_x = params.span_x / params.width.max(1) as f64;
@@ -262,7 +262,7 @@ pub fn render_request(
     }
 
     let reuse = build_reuse(params, reuse);
-    if params.use_gmp {
+    if params.engine.use_gmp {
         return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse, xaos, tiles);
     }
     render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse, xaos, tiles)
@@ -792,7 +792,7 @@ mod tests {
         ] {
             let mut p = default_params_for_type(fractal_type, 4, 3);
             p.iteration_max = 8;
-            p.use_gmp = false;
+            p.engine.use_gmp = false;
             let out = render_with_tiles(&p, None);
             assert_eq!(out.iterations.len(), 12, "{fractal_type:?}");
             assert_eq!(out.zs.len(), 12, "{fractal_type:?}");

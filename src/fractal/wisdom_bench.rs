@@ -199,7 +199,7 @@ fn deep_frame(re: &str, im: &str, span_hp: &str, iterations: u32, size: u32) -> 
     p.span_x_hp = Some(span_hp.to_string());
     p.span_y_hp = Some(span_hp.to_string());
     p.iteration_max = iterations;
-    p.algorithm_mode = AlgorithmMode::Auto;
+    p.engine.algorithm_mode = AlgorithmMode::Auto;
     p
 }
 
@@ -210,7 +210,7 @@ fn bench_frame(key: BenchKey, size: u32) -> FractalParams {
         BenchKey::CpuStdF64 | BenchKey::GpuStdF32 => {
             let mut p = default_params_for_type(FractalType::Mandelbrot, size, size);
             p.iteration_max = 2000;
-            p.algorithm_mode = AlgorithmMode::Auto;
+            p.engine.algorithm_mode = AlgorithmMode::Auto;
             p
         }
         BenchKey::CpuPerturbF64 => deep_frame(E50_RE, E50_IM, "4e-50", 263_010, size),
@@ -222,7 +222,7 @@ fn bench_frame(key: BenchKey, size: u32) -> FractalParams {
         BenchKey::CpuPerturbExp => deep_frame(E318_RE, E318_IM, "1e-318", 212_138, size),
         BenchKey::CpuPerturbDd => {
             let mut p = deep_frame(E50_RE, E50_IM, "4e-50", 263_010, size);
-            p.use_dd_tier = true;
+            p.engine.use_dd_tier = true;
             p
         }
     }

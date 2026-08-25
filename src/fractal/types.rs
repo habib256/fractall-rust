@@ -812,7 +812,8 @@ impl PlaneTransform {
 use crate::fractal::lyapunov::LyapunovPreset;
 
 /// Ce qui définit la formule itérée, au-delà de [`FractalType`] : puissance du
-/// Multibrot, séquence de phases hybrides, opcodes Fraktaler-3.
+/// Multibrot, séquence de phases hybrides, opcodes Fraktaler-3, séquence
+/// Lyapunov.
 ///
 /// Sérialisation à plat comme les autres groupes (cf. [`ColorParams`]).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -845,6 +846,16 @@ pub struct FormulaParams {
     /// mono-phase : la formule n'est pas z²+c-garantie.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hybrid_opcodes: Option<String>,
+
+    /// Preset Lyapunov sélectionné (`FractalType::Lyapunov` uniquement) : il
+    /// nomme la séquence dans les menus, `apply_lyapunov_preset` écrivant les
+    /// deux champs ensemble.
+    #[serde(default)]
+    pub lyapunov_preset: LyapunovPreset,
+    /// Séquence Lyapunov (true=A, false=B) — la formule itérée elle-même pour
+    /// ce type. Si vide, la séquence par défaut du preset est utilisée.
+    #[serde(default)]
+    pub lyapunov_sequence: Vec<bool>,
 }
 
 impl Default for FormulaParams {
@@ -853,6 +864,8 @@ impl Default for FormulaParams {
             multibrot_power: default_multibrot_power(),
             hybrid_phases: None,
             hybrid_opcodes: None,
+            lyapunov_preset: LyapunovPreset::default(),
+            lyapunov_sequence: Vec::new(),
         }
     }
 }
@@ -1039,90 +1052,26 @@ impl Default for PerturbationParams {
     }
 }
 
-/// Paramètres d'une fractale pour le rendu escape-time.
+/// Ce qui pilote la SÉLECTION du chemin d'exécution : mode d'algorithme,
+/// moteur d'itération, tier numérique et précision de la référence.
 ///
-/// Cette structure est une version simplifiée de `struct fractal` en C,
-/// adaptée au mode non interactif/CLI.
-///
-/// Les coordonnées du plan complexe sont représentées par centre + étendue
-/// (center_x/center_y + span_x/span_y) plutôt que par bornes (xmin/xmax/ymin/ymax).
-/// Cela permet des zooms profonds (> 1e15) sans perte de précision f64.
+/// C'est le jeu de réglages que `wisdom::plan` consulte pour résoudre device +
+/// algorithme + tier : les autres groupes décrivent QUOI calculer, celui-ci
+/// COMMENT. Sérialisation à plat comme les autres groupes (cf.
+/// [`ColorParams`]).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct FractalParams {
-    pub width: u32,
-    pub height: u32,
-
-    /// Centre X du plan complexe.
-    pub center_x: f64,
-    /// Centre Y du plan complexe.
-    pub center_y: f64,
-    /// Étendue (largeur) du plan complexe.
-    pub span_x: f64,
-    /// Étendue (hauteur) du plan complexe.
-    pub span_y: f64,
-    
-    /// Coordonnées haute précision (String) pour préserver la précision arbitraire.
-    /// Utilisées pour les calculs GMP aux zooms profonds (>10^15).
-    /// Si None, les valeurs f64 sont utilisées (compatibilité GPU/CPU standard).
-    pub center_x_hp: Option<String>,
-    pub center_y_hp: Option<String>,
-    pub span_x_hp: Option<String>,
-    pub span_y_hp: Option<String>,
-
-    pub seed: Complex64,
-    pub iteration_max: u32,
-    pub bailout: f64,
-
-    pub fractal_type: FractalType,
-
-    /// Palette, espace colorimétrique et mode de colorisation.
-    #[serde(flatten)]
-    pub color: ColorParams,
-
-    /// Échantillonnage sous-pixel (anti-aliasing).
-    #[serde(flatten)]
-    pub sampling: SamplingParams,
+pub struct EngineParams {
+    /// Mode d'algorithme (auto/f64/perturbation/GMP).
+    #[serde(default)]
+    pub algorithm_mode: AlgorithmMode,
 
     /// Active le chemin GMP pour la haute précision.
     #[serde(default)]
     pub use_gmp: bool,
-    /// Précision GMP en bits (ex. 128, 256, 512).
+    /// Précision GMP en bits (ex. 128, 256, 512). Sert aussi de PLANCHER à la
+    /// formule de précision de la référence perturbation.
     #[serde(default = "default_precision_bits")]
     pub precision_bits: u32,
-
-    /// Mode d'algorithme pour Mandelbrot (auto/f64/perturbation/GMP).
-    #[serde(default)]
-    pub algorithm_mode: AlgorithmMode,
-
-    /// Réglages du chemin perturbation (BLA, série, glitch, bornes).
-    #[serde(flatten)]
-    pub perturbation: PerturbationParams,
-
-    /// Ce qui définit la formule itérée au-delà du type.
-    #[serde(flatten)]
-    pub formula: FormulaParams,
-
-    /// Canaux annexes produits en plus de l'itération.
-    #[serde(flatten)]
-    pub channels: ChannelParams,
-    /// Preset Lyapunov sélectionné.
-    #[serde(default)]
-    pub lyapunov_preset: LyapunovPreset,
-    /// Séquence Lyapunov (true=A, false=B). Si vide, utilise la séquence par défaut.
-    #[serde(default)]
-    pub lyapunov_sequence: Vec<bool>,
-
-    /// Complex plane transformation (XaoS-style).
-    #[serde(default)]
-    pub plane_transform: PlaneTransform,
-
-    /// Rotation appliquée au mapping pixel→c, en degrés (CCW).
-    /// 0.0 = pas de rotation. Équivalent à `transform.rotate` de Fraktaler-3
-    /// (cf. F3 hybrid.cc:234 `K = mat2(cos, -sin, sin, cos)` puis
-    /// `c = K * c + offset`). Plusieurs TOML du corpus l'utilisent
-    /// (olbaid*, opus*, x.toml).
-    #[serde(default)]
-    pub rotation: f64,
 
     /// Active le moteur d'itération bytecode hybride (Fraktaler-3 style).
     /// Activé par défaut depuis P3.1 Session E. Path unifié BLA mat2 +
@@ -1169,6 +1118,92 @@ pub struct FractalParams {
     /// peut être lent à très deep zoom. Activé via `--find-nucleus` CLI.
     #[serde(default)]
     pub find_nucleus: bool,
+}
+
+impl Default for EngineParams {
+    fn default() -> Self {
+        Self {
+            algorithm_mode: AlgorithmMode::default(),
+            use_gmp: false,
+            precision_bits: default_precision_bits(),
+            use_bytecode_engine: true,
+            use_dd_tier: false,
+            find_nucleus: false,
+        }
+    }
+}
+
+/// Paramètres d'une fractale pour le rendu escape-time.
+///
+/// Cette structure est une version simplifiée de `struct fractal` en C,
+/// adaptée au mode non interactif/CLI.
+///
+/// Les coordonnées du plan complexe sont représentées par centre + étendue
+/// (center_x/center_y + span_x/span_y) plutôt que par bornes (xmin/xmax/ymin/ymax).
+/// Cela permet des zooms profonds (> 1e15) sans perte de précision f64.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FractalParams {
+    pub width: u32,
+    pub height: u32,
+
+    /// Centre X du plan complexe.
+    pub center_x: f64,
+    /// Centre Y du plan complexe.
+    pub center_y: f64,
+    /// Étendue (largeur) du plan complexe.
+    pub span_x: f64,
+    /// Étendue (hauteur) du plan complexe.
+    pub span_y: f64,
+    
+    /// Coordonnées haute précision (String) pour préserver la précision arbitraire.
+    /// Utilisées pour les calculs GMP aux zooms profonds (>10^15).
+    /// Si None, les valeurs f64 sont utilisées (compatibilité GPU/CPU standard).
+    pub center_x_hp: Option<String>,
+    pub center_y_hp: Option<String>,
+    pub span_x_hp: Option<String>,
+    pub span_y_hp: Option<String>,
+
+    pub seed: Complex64,
+    pub iteration_max: u32,
+    pub bailout: f64,
+
+    pub fractal_type: FractalType,
+
+    /// Palette, espace colorimétrique et mode de colorisation.
+    #[serde(flatten)]
+    pub color: ColorParams,
+
+    /// Échantillonnage sous-pixel (anti-aliasing).
+    #[serde(flatten)]
+    pub sampling: SamplingParams,
+
+    /// Sélection du chemin d'exécution : algorithme, moteur, tier, précision.
+    #[serde(flatten)]
+    pub engine: EngineParams,
+
+    /// Réglages du chemin perturbation (BLA, série, glitch, bornes).
+    #[serde(flatten)]
+    pub perturbation: PerturbationParams,
+
+    /// Ce qui définit la formule itérée au-delà du type.
+    #[serde(flatten)]
+    pub formula: FormulaParams,
+
+    /// Canaux annexes produits en plus de l'itération.
+    #[serde(flatten)]
+    pub channels: ChannelParams,
+
+    /// Complex plane transformation (XaoS-style).
+    #[serde(default)]
+    pub plane_transform: PlaneTransform,
+
+    /// Rotation appliquée au mapping pixel→c, en degrés (CCW).
+    /// 0.0 = pas de rotation. Équivalent à `transform.rotate` de Fraktaler-3
+    /// (cf. F3 hybrid.cc:234 `K = mat2(cos, -sin, sin, cos)` puis
+    /// `c = K * c + offset`). Plusieurs TOML du corpus l'utilisent
+    /// (olbaid*, opus*, x.toml).
+    #[serde(default)]
+    pub rotation: f64,
 
     /// Matrice K 2×2 (row-major `[k00, k01, k10, k11]`) appliquée au mapping
     /// pixel→c. Aligné Fraktaler-3 `param.transform` (`engine.cc:235`).
@@ -1472,6 +1507,174 @@ mod transform_tests {
 mod serde_tests {
     use super::*;
 
+    /// Params dont **CHAQUE** champ porte une valeur distinctive non-défaut
+    /// (y compris les `Option` : `Some`, sinon `skip_serializing_if` les
+    /// masque). Base des deux verrous de surface ci-dessous — un champ ajouté
+    /// sans être posé ici fait tomber `params_serialization_surface_is_exhaustive`.
+    fn fully_populated_params() -> FractalParams {
+        use crate::fractal::lyapunov::LyapunovPreset;
+        use crate::fractal::orbit_traps::OrbitTrapType;
+        use crate::fractal::{default_params_for_type, FractalType};
+
+        let mut p = default_params_for_type(FractalType::Mandelbrot, 137, 79);
+        p.center_x = -0.743_643_887_037_151;
+        p.center_y = 0.131_825_904_205_330;
+        p.span_x = 1.5e-9;
+        p.span_y = 1.1e-9;
+        p.center_x_hp = Some("-0.7436438870371510".into());
+        p.center_y_hp = Some("0.1318259042053300".into());
+        p.span_x_hp = Some("1.5e-9".into());
+        p.span_y_hp = Some("1.1e-9".into());
+        p.seed = Complex64::new(-0.8, 0.156);
+        p.iteration_max = 4321;
+        p.bailout = 17.5;
+        p.fractal_type = FractalType::BurningShip;
+        p.plane_transform = PlaneTransform::InversionLambda;
+        p.rotation = 37.5;
+        p.transform_k = Some([1.5, -0.25, 0.125, 0.75]);
+
+        p.color = ColorParams {
+            color_mode: 11,
+            color_repeat: 73,
+            color_space: ColorSpace::Lch,
+            color_offset: 0.375,
+            out_coloring_mode: OutColoringMode::Biomorphs,
+        };
+        p.sampling = SamplingParams {
+            jitter_scale: 0.625,
+            // Transitoires : posés non-défaut EXPRÈS, ils ne doivent pas
+            // survivre (cf. `transient_sampling_state_is_never_serialized`).
+            aa_subpixel_offset: [0.25, -0.125],
+            aa_jitter: Some((7, 0.5)),
+        };
+        p.engine = EngineParams {
+            algorithm_mode: AlgorithmMode::ReferenceGmp,
+            use_gmp: true,
+            precision_bits: 1024,
+            use_bytecode_engine: false,
+            use_dd_tier: true,
+            find_nucleus: true,
+        };
+        p.perturbation = PerturbationParams {
+            bla_threshold: 1.25e-7,
+            bla_validity_scale: 2.5,
+            glitch_tolerance: 3.5e-4,
+            series_order: 1,
+            series_threshold: 4.5e-6,
+            series_error_tolerance: 5.5e-9,
+            series_standalone: false,
+            max_perturb_iterations: 2048,
+            max_bla_steps: 4096,
+            use_reference_precision_formula: false,
+        };
+        p.formula = FormulaParams {
+            multibrot_power: 3.5,
+            hybrid_phases: Some(vec![FractalType::Mandelbrot, FractalType::BurningShip]),
+            hybrid_opcodes: Some("sqr rot{30} add".into()),
+            lyapunov_preset: LyapunovPreset::Jellyfish,
+            lyapunov_sequence: vec![true, false, true],
+        };
+        p.channels = ChannelParams {
+            enable_distance_estimation: true,
+            enable_interior_detection: true,
+            interior_threshold: 0.007,
+            enable_orbit_traps: true,
+            orbit_trap_type: OrbitTrapType::Circle {
+                center: Complex64::new(0.25, -0.5),
+                radius: 1.75,
+            },
+        };
+        p
+    }
+
+    /// SURFACE de sérialisation verrouillée : la liste EXACTE des clés à plat.
+    ///
+    /// Ce contrat porte les métadonnées PNG, les `.fmap`, les TOML **et** les
+    /// empreintes de cache (`video::map_fingerprint`, `xaos::params_fingerprint`,
+    /// qui comparent des chaînes JSON). Une clé ajoutée, renommée ou déplacée
+    /// doit donc être une décision explicite — pas un effet de bord.
+    #[test]
+    fn params_serialization_surface_is_exhaustive() {
+        const KEYS: &[&str] = &[
+            // FractalParams, champs propres
+            "bailout", "center_x", "center_x_hp", "center_y", "center_y_hp",
+            "fractal_type", "height", "iteration_max", "plane_transform",
+            "rotation", "seed", "span_x", "span_x_hp", "span_y", "span_y_hp",
+            "transform_k", "width",
+            // ColorParams
+            "color_mode", "color_offset", "color_repeat", "color_space",
+            "out_coloring_mode",
+            // SamplingParams (les deux champs transitoires sont `serde(skip)`)
+            "jitter_scale",
+            // EngineParams
+            "algorithm_mode", "find_nucleus", "precision_bits",
+            "use_bytecode_engine", "use_dd_tier", "use_gmp",
+            // PerturbationParams
+            "bla_threshold", "bla_validity_scale", "glitch_tolerance",
+            "max_bla_steps", "max_perturb_iterations", "series_error_tolerance",
+            "series_order", "series_standalone", "series_threshold",
+            "use_reference_precision_formula",
+            // FormulaParams
+            "hybrid_opcodes", "hybrid_phases", "lyapunov_preset",
+            "lyapunov_sequence", "multibrot_power",
+            // ChannelParams
+            "enable_distance_estimation", "enable_interior_detection",
+            "enable_orbit_traps", "interior_threshold", "orbit_trap_type",
+        ];
+
+        let json = serde_json::to_value(fully_populated_params()).expect("sérialisation");
+        let obj = json.as_object().expect("objet JSON");
+        let mut got: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+        got.sort_unstable();
+        let mut want: Vec<&str> = KEYS.to_vec();
+        want.sort_unstable();
+        assert_eq!(
+            got, want,
+            "surface de sérialisation modifiée : mettre à jour KEYS **en connaissance \
+             de cause** (PNG/.fmap/TOML existants + empreintes de cache)"
+        );
+    }
+
+    /// Round-trip à valeurs TOUTES non-défaut. Détecte ce que le verrou à plat
+    /// échantillonné ne voit pas : un champ perdu (il revient au défaut), un
+    /// `#[serde(default)]` manquant, et surtout une **collision de nom entre
+    /// deux groupes `flatten`** — serde_json ne garderait qu'une valeur et
+    /// l'autre groupe repartirait silencieusement au défaut.
+    #[test]
+    fn params_round_trip_preserves_every_field() {
+        let params = fully_populated_params();
+        let once = serde_json::to_string(&params).expect("sérialisation");
+        let reread: FractalParams = serde_json::from_str(&once).expect("relecture");
+        let twice = serde_json::to_string(&reread).expect("re-sérialisation");
+        assert_eq!(once, twice, "un champ n'a pas survécu au round-trip");
+
+        // Témoins par groupe : le round-trip ne doit pas être vacuant (des
+        // valeurs par défaut partout passeraient trivialement).
+        assert_eq!(reread.color.color_space, ColorSpace::Lch);
+        assert_eq!(reread.engine.precision_bits, 1024);
+        assert!(!reread.engine.use_bytecode_engine);
+        assert_eq!(reread.perturbation.max_bla_steps, 4096);
+        assert_eq!(reread.formula.lyapunov_sequence, vec![true, false, true]);
+        assert!(reread.channels.enable_interior_detection);
+        assert_eq!(reread.sampling.jitter_scale, 0.625);
+    }
+
+    /// L'état de rendu TRANSITOIRE (offset AA uniforme, sample AA par pixel)
+    /// vit dans `SamplingParams` mais n'est PAS de la configuration : il ne
+    /// doit jamais atteindre un PNG ni une empreinte de cache, et repart à
+    /// zéro à la relecture.
+    #[test]
+    fn transient_sampling_state_is_never_serialized() {
+        let params = fully_populated_params();
+        let json = serde_json::to_value(&params).expect("sérialisation");
+        assert!(json.get("aa_subpixel_offset").is_none());
+        assert!(json.get("aa_jitter").is_none());
+
+        let reread: FractalParams = serde_json::from_value(json).expect("relecture");
+        assert_eq!(reread.sampling.aa_subpixel_offset, [0.0, 0.0]);
+        assert!(reread.sampling.aa_jitter.is_none());
+    }
+
     /// Les réglages regroupés restent SÉRIALISÉS À PLAT : les métadonnées PNG,
     /// les `.fmap` et les TOML écrits avant le regroupement doivent se relire à
     /// l'identique.
@@ -1484,7 +1687,14 @@ mod serde_tests {
 
         let params = default_params_for_type(FractalType::Mandelbrot, 64, 48);
         let mut json = serde_json::to_value(&params).expect("sérialisation");
-        for group in ["perturbation", "color", "sampling", "formula", "channels"] {
+        for group in [
+            "perturbation",
+            "color",
+            "sampling",
+            "formula",
+            "channels",
+            "engine",
+        ] {
             assert!(
                 json.get(group).is_none(),
                 "les réglages `{group}` ne doivent PAS être imbriqués : {json}"
@@ -1496,7 +1706,10 @@ mod serde_tests {
             "color_repeat",
             "out_coloring_mode",
             "multibrot_power",
+            "lyapunov_sequence",
             "enable_distance_estimation",
+            "algorithm_mode",
+            "precision_bits",
         ] {
             assert!(json.get(key).is_some(), "clé `{key}` absente : {json}");
         }
@@ -1507,18 +1720,27 @@ mod serde_tests {
         json["color_repeat"] = serde_json::json!(7);
         json["multibrot_power"] = serde_json::json!(3.5);
         json["enable_orbit_traps"] = serde_json::json!(true);
+        json["precision_bits"] = serde_json::json!(512);
+        json["algorithm_mode"] = serde_json::json!("ReferenceGmp");
         // ... et une clé absente retombe sur le défaut du champ.
         json.as_object_mut().unwrap().remove("bla_threshold");
+        json.as_object_mut().unwrap().remove("use_bytecode_engine");
 
         let reread: FractalParams = serde_json::from_value(json).expect("relecture");
         assert_eq!(reread.perturbation.max_bla_steps, 4242);
         assert_eq!(reread.color.color_repeat, 7);
         assert_eq!(reread.formula.multibrot_power, 3.5);
         assert!(reread.channels.enable_orbit_traps);
+        assert_eq!(reread.engine.precision_bits, 512);
+        assert_eq!(reread.engine.algorithm_mode, AlgorithmMode::ReferenceGmp);
         assert_eq!(
             reread.perturbation.bla_threshold,
             default_bla_threshold(),
             "clé absente ⇒ défaut du champ"
+        );
+        assert!(
+            reread.engine.use_bytecode_engine,
+            "clé absente ⇒ défaut du champ, y compris un défaut non-Rust (`true`)"
         );
     }
 }

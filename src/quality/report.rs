@@ -102,7 +102,7 @@ fn write_markdown(path: &Path, input: &ReportInputs) -> Result<(), Box<dyn std::
     writeln!(f, "| span_x_hp | `{}` |", p.span_x_hp.clone().unwrap_or_else(|| p.span_x.to_string()))?;
     writeln!(f, "| span_y_hp | `{}` |", p.span_y_hp.clone().unwrap_or_else(|| p.span_y.to_string()))?;
     writeln!(f, "| iteration_max | {} |", p.iteration_max)?;
-    writeln!(f, "| precision_bits | {} |", p.precision_bits)?;
+    writeln!(f, "| precision_bits | {} |", p.engine.precision_bits)?;
     writeln!(f, "| seed | {} + {}i |", p.seed.re, p.seed.im)?;
     writeln!(f)?;
 

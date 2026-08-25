@@ -1008,7 +1008,7 @@ mod tests {
         params.span_x = span_x;
         params.span_y = span_y;
         params.iteration_max = iter_max;
-        params.algorithm_mode = AlgorithmMode::Perturbation;
+        params.engine.algorithm_mode = AlgorithmMode::Perturbation;
         let (orbit, _, _) =
             compute_reference_orbit(&params, None, true).expect("compute_reference_orbit");
         assert_eq!(orbit.cycle_period, 0, "test suppose cycle_period == 0");
@@ -1133,7 +1133,7 @@ mod tests {
         params.span_x = span_x;
         params.span_y = span_y;
         params.iteration_max = iter_max;
-        params.algorithm_mode = AlgorithmMode::Perturbation;
+        params.engine.algorithm_mode = AlgorithmMode::Perturbation;
         let (orbit, _, _) =
             compute_reference_orbit(&params, None, true).expect("compute_reference_orbit");
         assert_eq!(orbit.cycle_period, 0, "test suppose cycle_period == 0");

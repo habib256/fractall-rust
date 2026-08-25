@@ -64,7 +64,7 @@ fn sized_params(
 ) -> FractalParams {
     let mut params = default_params_for_type(fractal_type, width, height);
     params.iteration_max = iteration_max;
-    params.use_gmp = false;
+    params.engine.use_gmp = false;
     params
 }
 

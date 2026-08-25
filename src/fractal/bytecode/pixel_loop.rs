@@ -1196,7 +1196,7 @@ mod tests {
         params.span_x = span_x;
         params.span_y = span_x * 100.0 / 160.0;
         params.iteration_max = iter_max;
-        params.algorithm_mode = AlgorithmMode::Perturbation;
+        params.engine.algorithm_mode = AlgorithmMode::Perturbation;
         let (orbit, _, _) =
             compute_reference_orbit(&params, None, true).expect("compute_reference_orbit failed");
         orbit
@@ -1241,7 +1241,7 @@ mod tests {
         params.span_x = span_x;
         params.span_y = span_y;
         params.iteration_max = iter_max;
-        params.algorithm_mode = AlgorithmMode::Perturbation;
+        params.engine.algorithm_mode = AlgorithmMode::Perturbation;
         params.formula.hybrid_phases = phases;
         params.formula.hybrid_opcodes = opcodes.map(str::to_string);
 
@@ -1569,7 +1569,7 @@ mod tests {
             params.span_x = span_x;
             params.span_y = span_y;
             params.iteration_max = iter_max;
-            params.algorithm_mode = AlgorithmMode::Perturbation;
+            params.engine.algorithm_mode = AlgorithmMode::Perturbation;
             params.formula.hybrid_phases = Some(vec![FractalType::Mandelbrot, FractalType::BurningShip]);
             let (orbit, _, _) = compute_reference_orbit(&params, None, false).expect("orbit");
             (params, orbit)
@@ -1881,7 +1881,7 @@ mod tests {
         params.span_x = span_x;
         params.span_y = span_y;
         params.iteration_max = iter_max;
-        params.algorithm_mode = AlgorithmMode::Perturbation;
+        params.engine.algorithm_mode = AlgorithmMode::Perturbation;
         let (orbit, _, _) = compute_reference_orbit(&params, None, true).expect("ref orbit");
 
         let formula = compile_formula(FractalType::BurningShip, 2.0).unwrap();
@@ -1963,7 +1963,7 @@ mod tests {
         params.span_x = span_x;
         params.span_y = span_y;
         params.iteration_max = iter_max;
-        params.algorithm_mode = AlgorithmMode::Perturbation;
+        params.engine.algorithm_mode = AlgorithmMode::Perturbation;
         let (orbit, _, _) = compute_reference_orbit(&params, None, true).expect("ref orbit");
 
         let formula = compile_formula(FractalType::Tricorn, 2.0).unwrap();
@@ -2043,7 +2043,7 @@ mod tests {
             params.span_x = span_x;
             params.span_y = span_y;
             params.iteration_max = iter_max;
-            params.algorithm_mode = AlgorithmMode::Perturbation;
+            params.engine.algorithm_mode = AlgorithmMode::Perturbation;
             params.formula.hybrid_phases = Some(vec![FractalType::Mandelbrot, FractalType::Mandelbrot]);
             let (orbit, _, _) = compute_reference_orbit(&params, None, true)
                 .expect("compute_reference_orbit failed");
@@ -2199,7 +2199,7 @@ mod tests {
         params.span_y = span_y;
         params.iteration_max = iter_max;
         params.bailout = bailout;
-        params.algorithm_mode = AlgorithmMode::Perturbation;
+        params.engine.algorithm_mode = AlgorithmMode::Perturbation;
 
         let (orbit, _, _) =
             compute_reference_orbit(&params, None, true).expect("compute_reference_orbit (Julia)");

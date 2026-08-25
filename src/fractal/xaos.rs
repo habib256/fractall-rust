@@ -330,7 +330,7 @@ pub fn params_allow_pixel_reuse(params: &FractalParams) -> bool {
     );
     params.rotation == 0.0
         && params.transform_k.is_none()
-        && !params.find_nucleus
+        && !params.engine.find_nucleus
         && !needs_extra_data
         && params.sampling.aa_subpixel_offset == [0.0, 0.0]
         && params.sampling.aa_jitter.is_none()
@@ -1287,7 +1287,7 @@ mod tests {
         aa.sampling.aa_subpixel_offset = [0.25, 0.0];
         assert!(build_map(&src, &aa).is_none());
         let mut nuc = p.clone();
-        nuc.find_nucleus = true;
+        nuc.engine.find_nucleus = true;
         assert!(build_map(&src, &nuc).is_none());
     }
 
@@ -1295,7 +1295,7 @@ mod tests {
     /// mapping XaoS → identique pixel à pixel au rendu frais de la nouvelle
     /// vue (pan entier ⇒ les pixels copiés portent exactement le même `c`).
     fn assert_integer_pan_roundtrip(mut params: FractalParams) {
-        params.use_bytecode_engine = true;
+        params.engine.use_bytecode_engine = true;
         let cancel = Arc::new(AtomicBool::new(false));
         let __out = render(&params, &cancel, None, &mut None, None, None).expect("A");
         let (it_a, zs_a) = (__out.iterations, __out.zs);
@@ -1371,7 +1371,7 @@ mod tests {
         p.span_x = 1e-10;
         p.span_y = 7.5e-11;
         p.iteration_max = 2000;
-        p.algorithm_mode = crate::fractal::AlgorithmMode::Perturbation;
+        p.engine.algorithm_mode = crate::fractal::AlgorithmMode::Perturbation;
         assert_integer_pan_roundtrip(p);
     }
 
@@ -1387,7 +1387,7 @@ mod tests {
         p.span_x = 0.5;
         p.span_y = 0.375;
         p.iteration_max = 300;
-        p.use_bytecode_engine = true;
+        p.engine.use_bytecode_engine = true;
         let cancel = Arc::new(AtomicBool::new(false));
         let __out = render(&p, &cancel, None, &mut None, None, None).expect("A");
         let (it_a, zs_a) = (__out.iterations, __out.zs);
@@ -1460,7 +1460,7 @@ mod tests {
         p.span_x = 0.5;
         p.span_y = 0.375;
         p.iteration_max = 300;
-        p.use_bytecode_engine = true;
+        p.engine.use_bytecode_engine = true;
         let cancel = Arc::new(AtomicBool::new(false));
         let __out = render(&p, &cancel, None, &mut None, None, None).expect("A");
         let (it_a, zs_a) = (__out.iterations, __out.zs);

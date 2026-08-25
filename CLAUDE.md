@@ -317,11 +317,25 @@ boucles pixel ; si un jour dz est exporté, brancher ici).
 ⚠️ Les réglages de `FractalParams` sont regroupés en sous-structures
 (`params.perturbation.*` BLA/série/bornes, `params.color.*` palette et mode
 extérieur, `params.sampling.*` jitter et état AA transitoire, `params.formula.*`
-Multibrot/hybrides/opcodes, `params.channels.*` distance/intérieur/orbit traps). Elles sont
+Multibrot/hybrides/opcodes/Lyapunov, `params.channels.*`
+distance/intérieur/orbit traps, `params.engine.*` mode d'algorithme, bytecode,
+tier dd, nucleus, GMP + précision — ce que lit `wisdom::plan`). Elles sont
 **sérialisées à plat** (`#[serde(flatten)]`, noms de champs conservés) : les
 PNG, `.fmap` et TOML antérieurs se relisent à l'identique — ne jamais renommer
 un champ ni retirer le `flatten` sans casser cette compatibilité (verrous
-`grouped_params_serialize_flat`, `legacy_png_populates_grouped_params`).
+`grouped_params_serialize_flat`, `legacy_png_populates_grouped_params`,
+`params_serialization_surface_is_exhaustive` = liste EXACTE des 49 clés,
+`params_round_trip_preserves_every_field` = toutes valeurs non-défaut, détecte
+une collision de clés entre deux groupes `flatten`).
+
+⚠️ **Raisonner par GROUPE, jamais par liste de champs** : tout site qui
+énumère à la main les champs d'un groupe finit par en oublier un.
+`params_for_type_keeping_preferences` (changement de type GUI : le type définit
+formule/géométrie, l'utilisateur garde couleur/échantillonnage/moteur/
+perturbation/canaux) et `video::map_fingerprint` (neutralise `params.color`
+ENTIER, sinon un futur réglage de couleur invaliderait des heures de
+keyframes) sont écrits ainsi et verrouillés par comparaison sérialisée du
+groupe.
 
 ```rust
 pub struct FractalParams {
@@ -740,6 +754,14 @@ HQ GUI, `colorize_keyframe` vidéo (+ refus au PLAN d'un manifest
 mode→flags (`--outcoloring distance` ⇒ `enable_distance_estimation`, parité
 GUI). Les paths d'affichage GUI (tuiles, recolor, previews) restent sur
 `colorize_buffers` non-vérifié (tolérance interactive).
+
+**Invariant mode → canaux UNIQUE** : `render::ensure_required_channels(
+&mut params)` (`render/output.rs`) pose `channels ⊇ required_channels(params)`
+— à appeler à CHAQUE frontière de rendu (CLI, GUI fenêtre, export HQ via la
+fonction pure `gui::hq_render_state::hq_render_params`, preview Julia). Ne pas
+le refaire à la main : la règle a existé en trois copies, et l'export HQ ne
+l'appliquait pas (4K en mode Distance → colorisation vérifiée en erreur). Le
+plan vidéo garde son REFUS explicite (canal `orbits` non persisté).
 
 **Ne JAMAIS** réécrire une boucle de colorisation ailleurs ni appeler
 `color_for_pixel_with_lut` directement depuis un path de sortie : une

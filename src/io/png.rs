@@ -427,7 +427,7 @@ mod tests {
         assert_eq!(params.bailout, 4.0);
         // Champs récents : defaults canoniques.
         assert!(
-            params.use_bytecode_engine,
+            params.engine.use_bytecode_engine,
             "use_bytecode_engine doit défauter à true sur PNG legacy"
         );
         assert_eq!(params.sampling.jitter_scale, 0.0);
@@ -460,7 +460,7 @@ mod tests {
             "multibrot_power": 3.5
         }"#;
         let params: FractalParams = serde_json::from_str(json).expect("deserialize");
-        assert!(!params.use_bytecode_engine);
+        assert!(!params.engine.use_bytecode_engine);
         assert_eq!(params.formula.multibrot_power, 3.5);
         assert_eq!(params.bailout, 8.0);
     }
@@ -586,6 +586,14 @@ mod tests {
         assert_eq!(params.color.color_mode, 0);
         assert_eq!(params.perturbation.max_bla_steps, 1024);
         assert!(params.perturbation.bla_threshold > 0.0);
+        assert_eq!(
+            params.engine.algorithm_mode,
+            crate::fractal::AlgorithmMode::Perturbation
+        );
+        assert_eq!(params.engine.precision_bits, 256);
+        // Écrit avant l'existence du champ : le défaut `true` du groupe doit
+        // s'appliquer (et non le `false` de `Default` de Rust).
+        assert!(params.engine.use_bytecode_engine);
     }
 
     /// Test exhaustif sur les PNG du dossier `png/` du repo : tous doivent

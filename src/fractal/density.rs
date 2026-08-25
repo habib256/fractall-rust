@@ -358,7 +358,7 @@ struct MpcSampler {
 impl MpcSampler {
     fn new(params: &FractalParams, spec: &OrbitSpec) -> Self {
         let prec = crate::fractal::perturbation::compute_perturbation_precision_bits(params)
-            .max(params.precision_bits)
+            .max(params.engine.precision_bits)
             .max(64);
         let parse = |hp: Option<&String>, fallback: f64| {
             hp.and_then(|value| Float::parse(value).ok())

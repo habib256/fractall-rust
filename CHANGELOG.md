@@ -93,6 +93,19 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
   nucleus phase-aware + éditeur GUI.
 
 ### Corrigé
+- **Export haute résolution en mode Distance / OrbitTraps** : le rendu 4K/8K
+  partait sans le canal que le mode consomme et **échouait** à la colorisation
+  vérifiée (« Erreur de colorisation »). La règle « ce mode exige ce canal »
+  n'était posée que sur le clone du rendu fenêtre ; elle est désormais unique
+  (`render::ensure_required_channels`) et appliquée à chaque frontière de
+  rendu — CLI, fenêtre, export HQ, preview Julia.
+- **Changement de type de fractale** : tout réglage absent d'une liste blanche
+  de six champs était silencieusement réinitialisé — espace colorimétrique,
+  décalage de palette, jitter d'anti-aliasing, tier dd, moteur bytecode, et
+  huit des dix réglages de perturbation. Le transfert se fait maintenant
+  **groupe par groupe** (`params_for_type_keeping_preferences`) : le type
+  définit la formule et la géométrie, l'utilisateur garde couleur,
+  échantillonnage, moteur, perturbation et canaux.
 - **Densité : bord gauche et bord haut** — le path f64 tronquait les
   coordonnées au lieu de les arrondir vers le bas, repliant sur la première
   colonne et la première ligne des points situés JUSTE en dehors de la fenêtre.
@@ -158,14 +171,27 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
   pixel près. Rendus par défaut inchangés.
 
 ### Modifié
+- **Empreinte de reprise vidéo aveugle au GROUPE couleur** : `map_fingerprint`
+  neutralise `params.color` en entier au lieu d'énumérer cinq champs. Un
+  réglage de colorisation ajouté plus tard reste automatiquement hors
+  empreinte — l'oublier aurait invalidé toutes les keyframes d'un projet
+  (des heures de calcul) pour un changement de palette.
+- **Surface de sérialisation verrouillée** : la liste EXACTE des 49 clés à
+  plat, un round-trip à valeurs **toutes** non-défaut (détecte un champ perdu
+  et une collision de nom entre deux groupes `flatten`) et l'absence des deux
+  champs d'état AA transitoire. Ce contrat porte les PNG, les `.fmap`, les
+  TOML *et* les empreintes de cache : il ne doit plus bouger par effet de
+  bord. Les trois verrous sont mutation-testés.
 - **`FractalParams` regroupé** : les réglages de perturbation, de couleur,
-  d'échantillonnage sous-pixel, de formule (Multibrot, hybrides, opcodes) et de
-  canaux annexes (distance, intérieur, orbit traps) vivent désormais dans cinq
-  sous-structures (`params.perturbation.*`, `params.color.*`,
-  `params.sampling.*`, `params.formula.*`, `params.channels.*`) au lieu de
-  flotter dans une struct plate d'une cinquantaine de champs. La
-  **sérialisation ne change pas** : les clés restent à plat, donc les PNG,
-  `.fmap` et TOML déjà écrits se relisent à l'identique.
+  d'échantillonnage sous-pixel, de formule (Multibrot, hybrides, opcodes,
+  séquence Lyapunov), de canaux annexes (distance, intérieur, orbit traps) et
+  de moteur (mode d'algorithme, bytecode, tier dd, nucleus, précision GMP)
+  vivent désormais dans six sous-structures (`params.perturbation.*`,
+  `params.color.*`, `params.sampling.*`, `params.formula.*`,
+  `params.channels.*`, `params.engine.*`) au lieu de flotter dans une struct
+  plate d'une cinquantaine de champs. La **sérialisation ne change pas** : les
+  clés restent à plat, donc les PNG, `.fmap` et TOML déjà écrits se relisent à
+  l'identique.
 - **Affichage des densités invariant d'échelle** : la compression
   logarithmique se rapporte désormais à un quantile haut de la densité, et non
   à sa valeur brute. Le contraste ne dépend plus du budget d'échantillons —

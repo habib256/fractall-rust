@@ -103,7 +103,7 @@ impl BlaUnifiedCacheEntry {
             && self.fractal_type == params.fractal_type
             && (self.multibrot_power - params.formula.multibrot_power).abs() <= 1e-12
             && (self.bla_threshold - params.perturbation.bla_threshold).abs() <= 1e-20
-            && self.use_dd_tier == params.use_dd_tier
+            && self.use_dd_tier == params.engine.use_dd_tier
     }
 }
 
@@ -200,7 +200,7 @@ fn build_bla_entry(
     // falaise observée. Gains : e100 744→500 ms, e30 4.8→4.1 s ; presets
     // peu profonds (seahorse/misiurewicz/minibrot) inchangés (leurs δ
     // relatifs restent au-dessus des rayons, avant comme après).
-    let dd_table = if params.use_dd_tier
+    let dd_table = if params.engine.use_dd_tier
         && matches!(params.fractal_type, FractalType::Mandelbrot)
         && ref_orbit.has_dd()
     {
@@ -322,7 +322,7 @@ fn build_bla_entry(
         bla_threshold: params.perturbation.bla_threshold,
         formula: formula.clone(),
         tables,
-        use_dd_tier: params.use_dd_tier,
+        use_dd_tier: params.engine.use_dd_tier,
         dd_table,
         bla_exp,
         harmonic,
@@ -399,7 +399,7 @@ fn get_or_build_bla_entry(
 /// tôt. `ref_orbit` DOIT être l'orbite que la boucle pixel utilisera (même ptr
 /// `z_ref_f64` → hit cache), sinon simple rebuild sans régression.
 pub fn prewarm_bla_entry(params: &FractalParams, ref_orbit: &ReferenceOrbit) {
-    if !params.use_bytecode_engine {
+    if !params.engine.use_bytecode_engine {
         return;
     }
     // G4 jalon 5b : la formule EFFECTIVE (hybride incluse) — le prewarm doit
@@ -1854,7 +1854,7 @@ pub fn iterate_pixel_with_dd(request: PerturbPixelRequest<'_>) -> DeltaResult {
     // P3.1 : path bytecode unifié (BLA mat2 + delta-form + rebasing F3).
     // Supporte désormais distance/interior/orbit_traps via ddelta tracking.
     // Si activé et type supporté, dispatch vers le pixel loop unifié.
-    if params.use_bytecode_engine {
+    if params.engine.use_bytecode_engine {
         if let Some(result) =
             try_bytecode_unified_path(params, ref_orbit, &delta0, &dc, dc_dd.as_ref())
         {
@@ -1866,7 +1866,7 @@ pub fn iterate_pixel_with_dd(request: PerturbPixelRequest<'_>) -> DeltaResult {
     // path bytecode (cf. dispatch ci-dessus). Si bytecode désactivé,
     // ces features ne sont plus disponibles en perturbation.
     if (params.channels.enable_distance_estimation || params.channels.enable_interior_detection)
-        && !params.use_bytecode_engine
+        && !params.engine.use_bytecode_engine
     {
         eprintln!(
             "[WARN] distance_estimation/interior_detection nécessite use_bytecode_engine \

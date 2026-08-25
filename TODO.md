@@ -1829,11 +1829,53 @@ v0.8.2 — chaque chantier ferme LA CLASSE dont plusieurs bugs sont issus)** :
      intérieur + son seuil, orbit traps et leur type : les canaux annexes que
      `required_channels` confronte au mode de coloriage). 124 accès migrés,
      même contrat de sérialisation à plat, verrou étendu aux cinq groupes.
-     Reste la **géométrie** : la grouper telle quelle figerait sa duplication
-     avec `ViewHp`, qui possède déjà la navigation. La bonne cible est un champ
-     de vue unique dont `ViewHp` serait la représentation canonique, écrit
-     atomiquement — pas un `params.geometry.width` qui alourdirait 1 100 sites
-     sans rien fermer.
+   - **Jalon 3 `[2026-08-25]`** : `EngineParams` — le jeu de réglages qui
+     décide COMMENT calculer (mode d'algorithme, moteur bytecode, tier dd,
+     nucleus, chemin GMP et sa précision), soit exactement ce que
+     `wisdom::plan` consulte pour résoudre device + algorithme + tier. Les deux
+     champs Lyapunov rejoignent `FormulaParams`, dont la séquence A/B EST la
+     formule itérée du type. 164 accès migrés. Le verrou de sérialisation
+     couvre désormais un défaut **non-Rust** (`use_bytecode_engine = true`) lu
+     à travers un `flatten` : un PNG antérieur au champ doit repartir sur le
+     path bytecode, pas sur `false`. Restent hors groupes les champs de
+     **géométrie** (+ `seed`/`iteration_max`/`bailout`, lus partout) : les
+     grouper tels quels figerait leur duplication avec `ViewHp`, qui possède
+     déjà la navigation. La bonne cible est un champ de vue unique dont
+     `ViewHp` serait la représentation canonique, écrit atomiquement — pas un
+     `params.geometry.width` qui alourdirait 1 100 sites sans rien fermer.
+   - **Jalon 4 `[2026-08-26]`** : encaisser le regroupement là où il paie, et
+     verrouiller le contrat. Trois sites énuméraient à la main les champs d'un
+     groupe désormais existant :
+     - `change_fractal_type` / `apply_hybrid_sequence` (GUI) reportaient SIX
+       champs — donc perdaient `color_space`, `color_offset`, `jitter_scale`,
+       `use_dd_tier`, `use_bytecode_engine` et huit des dix réglages de
+       perturbation à chaque changement de type.
+       `params_for_type_keeping_preferences` (definitions.rs) écrit la
+       frontière groupe par groupe : le TYPE définit formule + géométrie +
+       bailout + itérations, l'UTILISATEUR garde couleur, échantillonnage,
+       moteur, perturbation et canaux. Deux exceptions explicites (arbitrage
+       d'algorithme refait, gradient densité à 1) et l'état AA transitoire
+       jamais transporté.
+     - `video::map_fingerprint` neutralise `params.color` ENTIER (plus une
+       liste blanche) : un réglage de colorisation ajouté plus tard ne peut
+       plus invalider des heures de keyframes.
+     - la règle inter-groupes `channels ⊇ required_channels(color)` était
+       réimplémentée à trois endroits avec trois tables ; elle devient
+       `render::ensure_required_channels`, posée à chaque frontière de rendu.
+       **Bug fermé** : l'export HQ ne l'appliquait pas (elle ne vivait que sur
+       le clone du rendu fenêtre) → un 4K en mode Distance/OrbitTraps partait
+       sans son canal et mourait sur la colorisation vérifiée. Le builder de
+       params HQ est extrait en fonction PURE (`gui/hq_render_state.rs`), donc
+       testable : canaux requis satisfaits pour les 15 modes, aspect atteint
+       sans recadrage.
+     Verrous de sérialisation exhaustifs : surface EXACTE des 49 clés à plat,
+     round-trip à valeurs toutes non-défaut (détecte un champ perdu ET une
+     collision de nom entre deux groupes `flatten` — serde_json n'en garderait
+     qu'une), et absence des deux champs d'état AA transitoire. 452 unit.
+     Mutation-testé : champ rendu `skip`, collision de clés via `rename`,
+     empreinte redevenue sensible à la couleur, liste blanche restaurée au
+     changement de type, règle des canaux retirée de l'export HQ — cinq
+     mutations, cinq verrous rouges.
 6. [x] **✅ Tests e2e de navigation profonde (types spéciaux) `[2026-08-25]`** :
    `tests/deep_navigation.rs` (cible CI dédiée, ~9 s) part de `ViewHp`, applique
    de VRAIES opérations de navigation (molette ancrée, pan, sélection

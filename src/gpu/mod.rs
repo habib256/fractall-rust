@@ -528,7 +528,7 @@ impl GpuRenderer {
         // le sample : retomber sur le CPU plutôt que produire N passes égales.
         if params.sampling.aa_jitter.is_some()
             && !use_perturbation
-            && (!params.use_bytecode_engine
+            && (!params.engine.use_bytecode_engine
                 || !matches!(params.plane_transform, crate::fractal::PlaneTransform::Mu))
         {
             return None;
@@ -612,7 +612,7 @@ impl GpuRenderer {
         }
 
         let mut orbit_params = params.clone();
-        orbit_params.precision_bits = compute_perturbation_precision_bits(params);
+        orbit_params.engine.precision_bits = compute_perturbation_precision_bits(params);
 
         // Use cached orbit/BLA or compute fresh
         let t_ref = Instant::now();
@@ -1280,7 +1280,7 @@ impl GpuRenderer {
     ) -> Option<(Vec<u32>, Vec<Complex64>)> {
         use crate::fractal::bytecode::compile_formula;
         use crate::fractal::PlaneTransform;
-        if !params.use_bytecode_engine {
+        if !params.engine.use_bytecode_engine {
             return None;
         }
         // Plane transform non triviale n'est pas (encore) gérée par le shader

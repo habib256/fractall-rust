@@ -729,12 +729,12 @@ impl ReferenceOrbitCache {
     /// ⚠️ Exclut le tier dd (`use_dd_tier`) : l'offset dc ne serait pas propagé à
     /// la grille dd (hors périmètre) → rebuild exact pour dd.
     pub fn can_subset_reuse(&self, params: &FractalParams) -> bool {
-        if params.use_dd_tier {
+        if params.engine.use_dd_tier {
             return false;
         }
         // Nucleus déplace le centre de la référence (orbit_params ≠ params) : hors
         // périmètre de l'offset simple → rebuild exact.
-        if params.find_nucleus {
+        if params.engine.find_nucleus {
             return false;
         }
         // Rotation/transform : l'offset dc est ajouté à la grille PRÉ-rotation
@@ -989,7 +989,7 @@ pub fn compute_reference_orbit_cached(
     // via le critère atom-domain F3 (`|z|² < s²·|dz|²`) puis raffine le centre
     // via Newton vers le centre exact du minibrot. Inspiré de `hybrid_period`
     // + `hybrid_center` de Fraktaler-3.1.
-    if params.find_nucleus && matches!(params.fractal_type, FractalType::Mandelbrot) {
+    if params.engine.find_nucleus && matches!(params.fractal_type, FractalType::Mandelbrot) {
         // Précision dérivée de la formule perturbation (auto si span HP fournie).
         // À zoom 1e227, params.precision_bits=256 ne suffit pas pour itérer le
         // candidat près du minibrot exact ; il faut ~780 bits.
@@ -1436,7 +1436,7 @@ pub fn compute_reference_orbit_cached(
             pixel_count,
             small_image,
             params.fractal_type,
-            adjusted_params.precision_bits,
+            adjusted_params.engine.precision_bits,
             adjusted_params.iteration_max,
             adjusted,
             dt_orbit.as_secs_f64(),
@@ -1649,7 +1649,7 @@ fn compute_reference_orbit_phase(
             (seed_dd, cref_dd) // Mandelbrot : z0 = seed (=0), constante = cref
         };
         let (z_ref, z_ref_f64, z_ref_dd) =
-            dd_reference_orbit(z0, c, params.iteration_max, cancel, params.use_dd_tier)?;
+            dd_reference_orbit(z0, c, params.iteration_max, cancel, params.engine.use_dd_tier)?;
         let extended_iterations: Vec<u32> = z_ref_f64
             .iter()
             .enumerate()
@@ -1700,7 +1700,7 @@ fn compute_reference_orbit_phase(
     // `cref` sinon (cf. F3 `hybrid_reference`).
     // G4 : orbite référence itérée avec la formule EFFECTIVE (hybride si
     // `hybrid_phases` → GmpInterpState cycle les phases, cf. l.1856).
-    let bytecode_formula: Option<Formula> = if params.use_bytecode_engine {
+    let bytecode_formula: Option<Formula> = if params.engine.use_bytecode_engine {
         crate::fractal::bytecode::formula_for_params(params)
     } else {
         None
@@ -1728,7 +1728,7 @@ fn compute_reference_orbit_phase(
     let mut z_ref_f64 = Vec::with_capacity(orbit_reserve(params.iteration_max as usize + 1));
     // Tier dd (opt-in) : stocke la référence en double-double (~106 b) depuis
     // l'orbite GMP courante — Z à 106 b pour le pas `2·Z·δ` du pixel_loop_dd.
-    let build_dd = params.use_dd_tier;
+    let build_dd = params.engine.use_dd_tier;
     let mut z_ref_dd = Vec::with_capacity(if build_dd {
         orbit_reserve(params.iteration_max as usize + 1)
     } else {

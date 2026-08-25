@@ -16,7 +16,7 @@ use crate::fractal::orbit_traps::OrbitData;
 /// path legacy (cf. delta.rs::try_bytecode_unified_path).
 #[inline]
 fn can_use_bytecode(params: &FractalParams) -> bool {
-    params.use_bytecode_engine && formula_for_params(params).is_some()
+    params.engine.use_bytecode_engine && formula_for_params(params).is_some()
 }
 
 /// Dispatch interpréteur : (z₀, c) selon convention Mandelbrot/Julia.

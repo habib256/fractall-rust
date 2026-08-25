@@ -819,14 +819,14 @@ fn main() {
     }
 
     // GMP haute précision.
-    params.use_gmp = cli.gmp;
-    params.precision_bits = cli.precision_bits.max(64);
+    params.engine.use_gmp = cli.gmp;
+    params.engine.precision_bits = cli.precision_bits.max(64);
 
     // Mode d'algorithme.
     if let Some(mode) = &cli.algorithm {
         match AlgorithmMode::from_cli_name(mode) {
             Some(parsed) => {
-                params.algorithm_mode = parsed;
+                params.engine.algorithm_mode = parsed;
             }
             None => {
                 eprintln!(
@@ -868,18 +868,18 @@ fn main() {
 
     // Tier double-double (~106 b) opt-in pour les spirales deep-zoom sensibles.
     if cli.dd_tier {
-        params.use_dd_tier = true;
+        params.engine.use_dd_tier = true;
     }
 
     // Moteur d'itération bytecode (Fraktaler-3 style)
     // Activé par défaut depuis Session E. --no-bytecode pour désactiver.
     if cli.no_bytecode {
-        params.use_bytecode_engine = false;
+        params.engine.use_bytecode_engine = false;
     }
     let _ = cli.bytecode; // legacy flag, no-op (default already true)
 
     if cli.find_nucleus {
-        params.find_nucleus = true;
+        params.engine.find_nucleus = true;
     }
 
     // Rotation CLI : prioritaire sur la valeur TOML (cf. doc --rotation).
@@ -902,9 +902,9 @@ fn main() {
         params.sampling.jitter_scale = aa_jitter_scale;
     }
 
-    match params.algorithm_mode {
-        AlgorithmMode::ReferenceGmp => params.use_gmp = true,
-        AlgorithmMode::StandardF64 => params.use_gmp = false,
+    match params.engine.algorithm_mode {
+        AlgorithmMode::ReferenceGmp => params.engine.use_gmp = true,
+        AlgorithmMode::StandardF64 => params.engine.use_gmp = false,
         _ => {}
     }
 
@@ -941,11 +941,11 @@ fn main() {
         }
     }
 
-    // Couplage mode → canaux (parité GUI) : les modes Distance*/OrbitTraps/
-    // Wings requièrent leur canal — la colorisation vérifiée (G5
-    // `RenderOutput`) refuse un canal absent au lieu de retomber sur Smooth.
-    params.channels.enable_distance_estimation |= params.color.out_coloring_mode.requires_distance_channel();
-    params.channels.enable_orbit_traps |= params.color.out_coloring_mode.requires_orbit_channel();
+    // Invariant inter-groupes `channels ⊇ required_channels` : règle UNIQUE
+    // partagée avec la GUI (`render::ensure_required_channels`) — la
+    // colorisation vérifiée (G5 `RenderOutput`) refuse un canal absent au lieu
+    // de retomber silencieusement sur Smooth.
+    render::ensure_required_channels(&mut params);
 
     // Transformation du plan (XaoS-style).
     match PlaneTransform::from_cli_name(&cli.plane) {

@@ -25,7 +25,7 @@ fn main() {
     for (w, h) in [(1280u32, 720u32), (2560, 1440)] {
         let mut p = default_params_for_type(FractalType::Mandelbrot, w, h);
         p.iteration_max = 1000;
-        p.out_coloring_mode = OutColoringMode::Smooth;
+        p.color.out_coloring_mode = OutColoringMode::Smooth;
         let t0 = Instant::now();
         let out = render_escape_time(&p);
         let (it, zs) = (out.iterations, out.zs);
@@ -35,7 +35,7 @@ fn main() {
         const N: usize = 20;
         let t1 = Instant::now();
         for k in 0..N {
-            p.color_offset = k as f64 * 0.01; // offset variable = cas défilement
+            p.color.color_offset = k as f64 * 0.01; // offset variable = cas défilement
             std::hint::black_box(colorize_to_rgb_with_extras(&p, &it, &zs, &[], &[]));
         }
         let colorize_s = t1.elapsed().as_secs_f64() / N as f64;
@@ -43,7 +43,7 @@ fn main() {
         // Coût seul de la construction du LUT (fixe par appel).
         let t2 = Instant::now();
         for _ in 0..N {
-            std::hint::black_box(fractall_cli::color::PaletteLut::new(p.color_mode, p.color_space));
+            std::hint::black_box(fractall_cli::color::PaletteLut::new(p.color.color_mode, p.color.color_space));
         }
         let lut_s = t2.elapsed().as_secs_f64() / N as f64;
 

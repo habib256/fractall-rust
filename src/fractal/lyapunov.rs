@@ -374,7 +374,7 @@ pub fn render_lyapunov_cancellable(
 
     // Utiliser span directement au lieu de xmax-xmin pour éviter les problèmes de précision
     let iter_max = params.iteration_max;
-    let sequence: Vec<bool> = params.lyapunov_sequence.clone();
+    let sequence: Vec<bool> = params.formula.lyapunov_sequence.clone();
 
     let cancelled = AtomicBool::new(false);
 
@@ -432,7 +432,7 @@ pub fn render_lyapunov_mpc_cancellable(
     }
 
     let prec = crate::fractal::perturbation::compute_perturbation_precision_bits(params)
-        .max(params.precision_bits)
+        .max(params.engine.precision_bits)
         .max(64);
     let parse = |hp: Option<&String>, fallback: f64| {
         hp.and_then(|value| Float::parse(value).ok())
@@ -451,7 +451,7 @@ pub fn render_lyapunov_mpc_cancellable(
     let half = Float::with_val(prec, 0.5);
 
     let iter_max = params.iteration_max;
-    let sequence: Vec<bool> = params.lyapunov_sequence.clone();
+    let sequence: Vec<bool> = params.formula.lyapunov_sequence.clone();
     let cancelled = AtomicBool::new(false);
 
     iterations

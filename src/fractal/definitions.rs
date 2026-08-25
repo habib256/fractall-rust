@@ -1,8 +1,9 @@
 use num_complex::Complex64;
 
 use crate::fractal::{
-    AlgorithmMode, ChannelParams, ColorParams, ColorSpace, FormulaParams, FractalParams,
-    FractalType, OutColoringMode, PerturbationParams, PlaneTransform, SamplingParams,
+    AlgorithmMode, ChannelParams, ColorParams, ColorSpace, EngineParams, FormulaParams,
+    FractalParams, FractalType, OutColoringMode, PerturbationParams, PlaneTransform,
+    SamplingParams,
 };
 use crate::fractal::lyapunov::{LyapunovConfig, LyapunovPreset};
 use crate::fractal::orbit_traps::OrbitTrapType;
@@ -48,9 +49,25 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             aa_subpixel_offset: [0.0, 0.0],
             aa_jitter: None,
         },
-        use_gmp: false,
-        precision_bits: 256,
-        algorithm_mode: AlgorithmMode::Auto,
+        engine: EngineParams {
+            algorithm_mode: AlgorithmMode::Auto,
+            use_gmp: false,
+            precision_bits: 256,
+            // Activé par défaut depuis P3.1 Session E : path bytecode unifié
+            // (BLA mat2 + delta-form + rebasing F3) remplace le path legacy
+            // quand applicable.
+            // Le path legacy reste actif comme fallback :
+            //   - types non supportés par compile_formula (Newton, Phoenix,
+            //     Magnet, Barnsley, Lyapunov, Mandelbulb, etc.)
+            //   - pixel_size < 1e-13 (deep zoom GMP)
+            //   - features avancées (distance estimation, interior detection,
+            //     orbit traps)
+            // Tu peux désactiver explicitement via --no-bytecode ou en passant
+            // use_bytecode_engine = false depuis un loader TOML.
+            use_bytecode_engine: true,
+            use_dd_tier: false,
+            find_nucleus: false,
+        },
         perturbation: PerturbationParams {
             // Aligné Fraktaler-3 (`engine.cc:283`) : 1.0 / (1 << 24) ≈ 5.96e-8.
             bla_threshold: 1.0 / (1u64 << 24) as f64,
@@ -68,6 +85,8 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             multibrot_power: 2.5,
             hybrid_phases: None,
             hybrid_opcodes: None,
+            lyapunov_preset: LyapunovPreset::default(),
+            lyapunov_sequence: Vec::new(),
         },
         // Les canaux annexes coûtent des dual-numbers ou l'orbite complète :
         // ils restent éteints tant qu'un mode de coloriage ne les réclame pas.
@@ -78,23 +97,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             enable_orbit_traps: false,
             orbit_trap_type: OrbitTrapType::Point,
         },
-        lyapunov_preset: LyapunovPreset::default(),
-        lyapunov_sequence: Vec::new(),
         plane_transform: PlaneTransform::Mu,
-        // Activé par défaut depuis P3.1 Session E : path bytecode unifié
-        // (BLA mat2 + delta-form + rebasing F3) remplace le path legacy
-        // quand applicable.
-        // Le path legacy reste actif comme fallback :
-        //   - types non supportés par compile_formula (Newton, Phoenix,
-        //     Magnet, Barnsley, Lyapunov, Mandelbulb, etc.)
-        //   - pixel_size < 1e-13 (deep zoom GMP)
-        //   - features avancées (distance estimation, interior detection,
-        //     orbit traps)
-        // Tu peux désactiver explicitement via --no-bytecode (à venir) ou
-        // en passant use_bytecode_engine = false depuis un loader TOML.
-        use_bytecode_engine: true,
-        use_dd_tier: false,
-        find_nucleus: false,
         rotation: 0.0,
         transform_k: None,
     };
@@ -428,13 +431,168 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
 
 /// Applique un preset Lyapunov aux paramètres.
 /// Met à jour les bornes du domaine et la séquence.
+/// Paramètres par défaut de `new_type`, en CONSERVANT les préférences de
+/// l'utilisateur. Frontière EXPLICITE, écrite groupe par groupe :
+///
+/// - le **type** définit la formule, la géométrie, le bailout et les
+///   itérations — c'est tout l'intérêt de repartir de ses défauts ;
+/// - l'**utilisateur** possède la couleur, l'échantillonnage, le moteur, les
+///   réglages de perturbation et les canaux qu'il a demandés.
+///
+/// Un champ ajouté à un groupe suit donc automatiquement le bon côté de la
+/// frontière. La liste blanche de six champs qu'elle remplace perdait
+/// silencieusement `color_space`, `color_offset`, `jitter_scale`,
+/// `use_dd_tier` et huit des dix réglages de perturbation à CHAQUE changement
+/// de type.
+pub fn params_for_type_keeping_preferences(
+    previous: &FractalParams,
+    new_type: FractalType,
+    width: u32,
+    height: u32,
+) -> FractalParams {
+    let mut params = default_params_for_type(new_type, width, height);
+
+    // Préférences transportées, groupe entier.
+    params.color = previous.color.clone();
+    params.sampling = previous.sampling.clone();
+    params.engine = previous.engine.clone();
+    params.perturbation = previous.perturbation.clone();
+    params.channels = previous.channels.clone();
+
+    // `formula` n'est PAS transportée : c'est le type qui la définit (une
+    // séquence hybride ou des opcodes hérités décriraient une autre fractale
+    // que celle demandée).
+
+    // État de rendu transitoire : il n'appartient pas à la configuration et ne
+    // traverse jamais un changement de type (sa vraie place est le
+    // `RenderRequest`, cf. TODO).
+    params.sampling.aa_subpixel_offset = [0.0, 0.0];
+    params.sampling.aa_jitter = None;
+
+    // Le type change ⇒ l'arbitrage algorithme est refait : une perturbation
+    // forcée sur un type qui ne la supporte pas, ou un GMP hérité d'un zoom
+    // profond, n'a aucun sens sur la vue par défaut du nouveau type.
+    params.engine.algorithm_mode = AlgorithmMode::Auto;
+
+    // Densité : le gradient repart à 1 (une répétition héritée d'un
+    // escape-time rend l'accumulation illisible).
+    if matches!(
+        new_type,
+        FractalType::Buddhabrot | FractalType::Nebulabrot | FractalType::AntiBuddhabrot
+    ) {
+        params.color.color_repeat = 1;
+    }
+
+    params
+}
+
+
 pub fn apply_lyapunov_preset(params: &mut FractalParams, preset: LyapunovPreset) {
     let config = LyapunovConfig::from_preset(preset);
-    params.lyapunov_preset = preset;
-    params.lyapunov_sequence = config.sequence;
+    params.formula.lyapunov_preset = preset;
+    params.formula.lyapunov_sequence = config.sequence;
     params.center_x = (config.xmin + config.xmax) * 0.5;
     params.center_y = (config.ymin + config.ymax) * 0.5;
     params.span_x = config.xmax - config.xmin;
     params.span_y = config.ymax - config.ymin;
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fractal::{ColorSpace, OutColoringMode};
+
+    /// Params avec des préférences utilisateur non triviales dans CHAQUE
+    /// groupe transporté.
+    fn opinionated() -> FractalParams {
+        let mut p = default_params_for_type(FractalType::Mandelbrot, 320, 240);
+        p.color.color_mode = 11;
+        p.color.color_repeat = 73;
+        p.color.color_space = ColorSpace::Lch;
+        p.color.color_offset = 0.375;
+        p.color.out_coloring_mode = OutColoringMode::Biomorphs;
+        p.sampling.jitter_scale = 0.625;
+        p.engine.precision_bits = 1024;
+        p.engine.use_dd_tier = true;
+        p.engine.use_bytecode_engine = false;
+        p.engine.find_nucleus = true;
+        p.perturbation.bla_threshold = 1.25e-7;
+        p.perturbation.series_order = 1;
+        p.perturbation.max_bla_steps = 4096;
+        p.channels.enable_interior_detection = true;
+        p.channels.interior_threshold = 0.007;
+        p
+    }
+
+    fn dump<T: serde::Serialize>(v: &T) -> String {
+        serde_json::to_string(v).expect("groupe sérialisable")
+    }
+
+    /// Verrou STRUCTUREL du changement de type : les groupes de préférences
+    /// sont transportés ENTIÈREMENT (comparaison sérialisée — un champ ajouté
+    /// au groupe entre dans le verrou sans qu'on y touche). La liste blanche
+    /// de six champs qu'il remplace remettait silencieusement à zéro
+    /// `color_space`, `color_offset`, `jitter_scale`, `use_dd_tier` et huit
+    /// des dix réglages de perturbation à CHAQUE changement de type.
+    #[test]
+    fn changing_type_carries_whole_preference_groups() {
+        let before = opinionated();
+        let after =
+            params_for_type_keeping_preferences(&before, FractalType::BurningShip, 320, 240);
+
+        assert_eq!(dump(&after.color), dump(&before.color), "couleur");
+        assert_eq!(dump(&after.sampling), dump(&before.sampling), "échantillonnage");
+        assert_eq!(
+            dump(&after.perturbation),
+            dump(&before.perturbation),
+            "perturbation"
+        );
+        assert_eq!(dump(&after.channels), dump(&before.channels), "canaux");
+        // Moteur : tout sauf l'arbitrage d'algorithme, refait au changement.
+        let mut engine_ref = before.engine.clone();
+        engine_ref.algorithm_mode = after.engine.algorithm_mode;
+        assert_eq!(dump(&after.engine), dump(&engine_ref), "moteur");
+        assert_eq!(after.engine.algorithm_mode, AlgorithmMode::Auto);
+    }
+
+    /// L'autre moitié de la frontière : ce que le TYPE définit repart de ses
+    /// défauts — formule, géométrie, bailout, itérations.
+    #[test]
+    fn changing_type_resets_what_the_type_defines() {
+        let mut before = opinionated();
+        before.formula.hybrid_phases =
+            Some(vec![FractalType::Mandelbrot, FractalType::BurningShip]);
+        before.formula.hybrid_opcodes = Some("sqr rot{30} add".into());
+        before.center_x = -0.743_643_887;
+        before.span_x = 1e-9;
+        before.span_y = 1e-9;
+
+        let after = params_for_type_keeping_preferences(&before, FractalType::Tricorn, 320, 240);
+        let fresh = default_params_for_type(FractalType::Tricorn, 320, 240);
+
+        assert_eq!(dump(&after.formula), dump(&fresh.formula), "formule");
+        assert_eq!(after.center_x, fresh.center_x);
+        assert_eq!(after.span_x, fresh.span_x);
+        assert_eq!(after.bailout, fresh.bailout);
+        assert_eq!(after.iteration_max, fresh.iteration_max);
+        assert_eq!(after.fractal_type, FractalType::Tricorn);
+    }
+
+    /// Deux exceptions explicites : l'état AA transitoire ne traverse pas un
+    /// changement de type, et les types de densité repartent à un gradient de 1.
+    #[test]
+    fn changing_type_drops_transient_state_and_resets_density_repeat() {
+        let mut before = opinionated();
+        before.sampling.aa_subpixel_offset = [0.25, -0.125];
+        before.sampling.aa_jitter = Some((7, 0.5));
+
+        let after =
+            params_for_type_keeping_preferences(&before, FractalType::Buddhabrot, 320, 240);
+        assert_eq!(after.sampling.aa_subpixel_offset, [0.0, 0.0]);
+        assert!(after.sampling.aa_jitter.is_none());
+        assert_eq!(after.sampling.jitter_scale, before.sampling.jitter_scale);
+        assert_eq!(after.color.color_repeat, 1, "densité : gradient à 1");
+        assert_eq!(after.color.color_mode, before.color.color_mode, "palette gardée");
+    }
+}

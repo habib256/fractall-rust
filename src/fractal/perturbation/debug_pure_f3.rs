@@ -129,7 +129,7 @@ mod tests {
         params.span_x = span_x;
         params.span_y = span_x * 100.0 / 160.0;
         params.iteration_max = iter_max;
-        params.algorithm_mode = crate::fractal::AlgorithmMode::Perturbation;
+        params.engine.algorithm_mode = crate::fractal::AlgorithmMode::Perturbation;
         let (orbit, _, _) =
             compute_reference_orbit(&params, None, true).expect("compute_reference_orbit failed");
         orbit
@@ -214,7 +214,7 @@ mod tests {
         params.span_x = span_x;
         params.span_y = span_y;
         params.iteration_max = iter_max;
-        params.algorithm_mode = AlgorithmMode::Perturbation;
+        params.engine.algorithm_mode = AlgorithmMode::Perturbation;
         // Note historique : avant Session E, ce test forçait
         // use_legacy_glitch_detection=false pour exercer le path F3-pur de
         // production. Depuis Session E + cleanup, le path bytecode est par

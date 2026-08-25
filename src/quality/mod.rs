@@ -73,17 +73,17 @@ pub fn compare(params: &FractalParams, opt: &ComparisonOptions) -> Result<Compar
     let cancel = Arc::new(AtomicBool::new(false));
 
     let mut pert_params = params.clone();
-    pert_params.algorithm_mode = AlgorithmMode::Perturbation;
-    pert_params.use_gmp = false;
+    pert_params.engine.algorithm_mode = AlgorithmMode::Perturbation;
+    pert_params.engine.use_gmp = false;
 
     let mut gmp_params = params.clone();
-    gmp_params.algorithm_mode = AlgorithmMode::ReferenceGmp;
-    gmp_params.use_gmp = true;
+    gmp_params.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
+    gmp_params.engine.use_gmp = true;
 
     println!(
         "[quality] rendering perturbation: {}x{} type={:?} iter_max={} bits={}",
         pert_params.width, pert_params.height, pert_params.fractal_type,
-        pert_params.iteration_max, pert_params.precision_bits,
+        pert_params.iteration_max, pert_params.engine.precision_bits,
     );
     let t0 = Instant::now();
     let pert_out = render_request(RenderRequest::new(&pert_params, &cancel), &mut None)
@@ -166,8 +166,8 @@ pub fn compare_gpu(
     println!("[quality] GPU done in {:.0} ms", gpu_time_ms);
 
     let mut cpu_params = params.clone();
-    cpu_params.algorithm_mode = AlgorithmMode::ReferenceGmp;
-    cpu_params.use_gmp = true;
+    cpu_params.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
+    cpu_params.engine.use_gmp = true;
     println!(
         "[quality] rendering GMP judge (ground truth): {}x{}",
         cpu_params.width, cpu_params.height,
@@ -224,9 +224,9 @@ pub fn params_from_preset(preset: &Preset, opt: &ComparisonOptions) -> FractalPa
     params.iteration_max = opt.max_iterations.unwrap_or(preset.iterations);
     // Precedence: CLI --precision-bits > preset override > default (256 via default_params_for_type).
     if let Some(bits) = opt.precision_bits {
-        params.precision_bits = bits;
+        params.engine.precision_bits = bits;
     } else if let Some(bits) = preset.precision_bits {
-        params.precision_bits = bits;
+        params.engine.precision_bits = bits;
     }
 
     if let Some((sre, sim)) = preset.julia_seed {
@@ -253,7 +253,7 @@ pub fn params_from_preset(preset: &Preset, opt: &ComparisonOptions) -> FractalPa
     // mantisse. Les laisser en f64 fait que la QA vérifie le path que la
     // **production utilise réellement** (dd = opt-in) → verrou anti-régression
     // f64 sur ces scènes (complète les goldens e15/e20/e50).
-    params.use_dd_tier = matches!(
+    params.engine.use_dd_tier = matches!(
         preset.name,
         "mandelbrot-e30" | "mandelbrot-e50" | "mandelbrot-e100" | "seahorse-valley"
     );

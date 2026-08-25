@@ -270,7 +270,7 @@ fn main() {
                 params.iteration_max = iters;
             }
             if let Some(bits) = opt.precision_bits {
-                params.precision_bits = bits;
+                params.engine.precision_bits = bits;
             }
             if ft == FractalType::Julia {
                 let re = julia_re.unwrap_or_else(|| {

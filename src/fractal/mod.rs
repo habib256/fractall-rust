@@ -22,16 +22,18 @@ pub mod wisdom_bench;
 pub mod orbit_traps;
 
 pub use types::{
-    AlgorithmMode, ChannelParams, ColorParams, ColorSpace, FormulaParams, FractalParams,
-    FractalResult, FractalType, OutColoringMode, PerturbationParams, PlaneTransform,
-    SamplingParams,
+    AlgorithmMode, ChannelParams, ColorParams, ColorSpace, EngineParams, FormulaParams,
+    FractalParams, FractalResult, FractalType, OutColoringMode, PerturbationParams,
+    PlaneTransform, SamplingParams,
 };
 pub use view::{ViewHp, ViewTransform};
 // `apply_lyapunov_preset` et `LyapunovPreset` ne sont pas consommés par
 // `fractall-quality` (qui ne touche pas Lyapunov) ; les autres binaires les
 // utilisent. Silenciation locale du warning unused_imports pour ce binaire.
 #[allow(unused_imports)]
-pub use definitions::{default_params_for_type, apply_lyapunov_preset};
+pub use definitions::{
+    apply_lyapunov_preset, default_params_for_type, params_for_type_keeping_preferences,
+};
 #[allow(unused_imports)]
 pub use lyapunov::LyapunovPreset;
 pub use vectorial::{render_von_koch, render_dragon};
