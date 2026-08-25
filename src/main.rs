@@ -252,9 +252,9 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     wisdom_bench: bool,
 
-    /// Charge un fichier TOML de paramètres (format rust-fractal-core léger:
-    /// real/imag/zoom/iterations[/rotate]). Les overrides CLI restent prioritaires.
-    /// Utilisé pour le harness de parité Fraktaler-3 (corpus toml/).
+    /// Charge un fichier TOML léger (real/imag/zoom) ou Fraktaler-3 natif
+    /// (location.*, bailout.*, transform.*, [[formula]]). Les overrides CLI
+    /// restent prioritaires.
     #[arg(long, value_name = "FICHIER")]
     toml: Option<PathBuf>,
 
@@ -273,6 +273,7 @@ struct TomlParams {
     imag: String,
     zoom: String,
     iterations: Option<u32>,
+    escape_radius: Option<f64>,
     rotate: Option<f64>,
     /// G4 jalon 5e : séquence de phases hybride, format `--phases` CLI
     /// (`"mandelbrot,burning_ship"`). Consommé par le harness (cas de parité
@@ -296,8 +297,7 @@ fn load_toml_params(path: &std::path::Path) -> TomlParams {
         std::process::exit(1);
     });
 
-    let take_str = |key: &str| -> Option<String> {
-        let v = table.get(key)?;
+    let scalar_string = |v: &toml::Value| -> Option<String> {
         if let Some(s) = v.as_str() {
             Some(s.to_string())
         } else if let Some(f) = v.as_float() {
@@ -308,21 +308,30 @@ fn load_toml_params(path: &std::path::Path) -> TomlParams {
             None
         }
     };
+    let take_str = |key: &str| -> Option<String> { table.get(key).and_then(&scalar_string) };
+    let take_nested_str = |section: &str, key: &str| -> Option<String> {
+        table
+            .get(section)
+            .and_then(|v| v.as_table())
+            .and_then(|section| section.get(key))
+            .and_then(&scalar_string)
+    };
 
-    let real = take_str("real").unwrap_or_else(|| {
+    let real = take_str("real").or_else(|| take_nested_str("location", "real")).unwrap_or_else(|| {
         eprintln!("TOML {}: champ 'real' manquant", path.display());
         std::process::exit(1);
     });
-    let imag = take_str("imag").unwrap_or_else(|| {
+    let imag = take_str("imag").or_else(|| take_nested_str("location", "imag")).unwrap_or_else(|| {
         eprintln!("TOML {}: champ 'imag' manquant", path.display());
         std::process::exit(1);
     });
-    let zoom = take_str("zoom").unwrap_or_else(|| {
+    let zoom = take_str("zoom").or_else(|| take_nested_str("location", "zoom")).unwrap_or_else(|| {
         eprintln!("TOML {}: champ 'zoom' manquant", path.display());
         std::process::exit(1);
     });
-    let iterations = table
-        .get("iterations")
+    let iterations = table.get("iterations").or_else(|| {
+            table.get("bailout").and_then(|v| v.as_table()).and_then(|b| b.get("iterations"))
+        })
         .and_then(|v| v.as_integer())
         .map(|i| {
             if i > u32::MAX as i64 {
@@ -346,6 +355,12 @@ fn load_toml_params(path: &std::path::Path) -> TomlParams {
         });
     let rotate = table
         .get("rotate")
+        .or_else(|| table.get("transform").and_then(|v| v.as_table()).and_then(|t| t.get("rotate")))
+        .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
+    let escape_radius = table
+        .get("bailout")
+        .and_then(|v| v.as_table())
+        .and_then(|b| b.get("escape_radius"))
         .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
     let phases = take_str("phases");
 
@@ -412,6 +427,7 @@ fn load_toml_params(path: &std::path::Path) -> TomlParams {
         imag,
         zoom,
         iterations,
+        escape_radius,
         rotate,
         phases,
         formula_opcodes,
@@ -693,6 +709,12 @@ fn main() {
             // effective caps on both engines.
             params.max_perturb_iterations = iters;
             params.max_bla_steps = iters;
+        }
+
+        if cli.bailout.is_none() {
+            if let Some(radius) = t.escape_radius {
+                params.bailout = radius;
+            }
         }
 
         if let Some(rot) = t.rotate {

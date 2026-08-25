@@ -2093,6 +2093,10 @@ v0.8.2 — chaque chantier ferme LA CLASSE dont plusieurs bugs sont issus)** :
   sans re-rendre via `--export-iterations`.
 - [ ] **Interop TOML Fraktaler-3** bidirectionnelle (lire/écrire le format F3
   natif, pas seulement le format léger rust-fractal-core).
+  - [x] **Import natif `[2026-08-25]`** : `location.*`, `bailout.iterations`,
+    `bailout.escape_radius`, `transform.rotate` et `[[formula]]`, avec priorité
+    conservée aux overrides CLI.
+  - [ ] Export natif F3 depuis les paramètres résolus.
 
 ### G8 — Harness d'auto-amélioration · `[P0 · méta — égaler puis dépasser F3]`
 

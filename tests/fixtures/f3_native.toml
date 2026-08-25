@@ -1,0 +1,24 @@
+program = "fraktaler-3"
+version = "3.1"
+
+[location]
+real = "-0.743643887037158704752191506114774"
+imag = "0.131825904205311970493132056385139"
+zoom = "3e10"
+
+[bailout]
+iterations = 1200
+maximum_reference_iterations = 1200
+maximum_perturb_iterations = 1200
+maximum_bla_steps = 1200
+escape_radius = 25.0
+
+[image]
+width = 80
+height = 60
+
+[transform]
+rotate = 7.5
+
+[[formula]]
+opcodes = "sqr add"
