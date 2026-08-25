@@ -2096,7 +2096,9 @@ v0.8.2 — chaque chantier ferme LA CLASSE dont plusieurs bugs sont issus)** :
   - [x] **Import natif `[2026-08-25]`** : `location.*`, `bailout.iterations`,
     `bailout.escape_radius`, `transform.rotate` et `[[formula]]`, avec priorité
     conservée aux overrides CLI.
-  - [ ] Export natif F3 depuis les paramètres résolus.
+  - [x] **Export natif `[2026-08-25]`** : `--export-f3-toml` sérialise la vue HP,
+    les limites bailout, dimensions, rotation et phases `[[formula]]` depuis les
+    paramètres résolus.
 
 ### G8 — Harness d'auto-amélioration · `[P0 · méta — égaler puis dépasser F3]`
 

@@ -13,6 +13,7 @@ use fractal::{
 };
 use gpu::GpuRenderer;
 use io::exr::save_iterations_exr;
+use io::f3_toml::save_f3_toml;
 use io::png::save_png_rgb_with_metadata;
 
 /// Utilitaire CLI pour générer des fractales basées sur fractall.
@@ -264,6 +265,10 @@ struct Cli {
     /// reste produit en plus.
     #[arg(long, value_name = "FICHIER.exr")]
     export_iterations: Option<PathBuf>,
+
+    /// Exporte les paramètres résolus au format TOML natif Fraktaler-3 3.1.
+    #[arg(long, value_name = "FICHIER.toml")]
+    export_f3_toml: Option<PathBuf>,
 }
 
 /// Champs extraits d'un TOML de paramètres (format léger rust-fractal-core,
@@ -962,6 +967,14 @@ fn main() {
     if let Some(name) = non_finite_param(&params) {
         eprintln!("Erreur : paramètre '{name}' non fini (NaN/inf) — valeur refusée");
         std::process::exit(1);
+    }
+
+    if let Some(path) = cli.export_f3_toml.as_deref() {
+        if let Err(error) = save_f3_toml(path, &params) {
+            eprintln!("Erreur export TOML F3 {}: {error}", path.display());
+            std::process::exit(1);
+        }
+        println!("TOML F3 écrit: {}", path.display());
     }
 
     // Calcul escape-time (CPU ou GPU).
