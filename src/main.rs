@@ -494,14 +494,14 @@ fn run_from_map(cli: &Cli, map_path: &std::path::Path, output_path: &std::path::
     };
     let mut params = map.params.clone();
     if let Some(p) = cli.palette {
-        params.color_mode = p;
+        params.color.color_mode = p;
     }
     if let Some(cr) = cli.color_repeat {
-        params.color_repeat = cr.max(1);
+        params.color.color_repeat = cr.max(1);
     }
     if let Some(ref oc) = cli.outcoloring {
         match OutColoringMode::from_cli_name(oc) {
-            Some(mode) => params.out_coloring_mode = mode,
+            Some(mode) => params.color.out_coloring_mode = mode,
             None => {
                 eprintln!("Mode de colorisation invalide: '{oc}'");
                 std::process::exit(1);
@@ -712,8 +712,8 @@ fn main() {
             // onto a single iter count (e.g. e1000 stopped at 1028 while F3 reached
             // 16616+). Mirror F3's semantics here so a TOML in toml/ produces the same
             // effective caps on both engines.
-            params.max_perturb_iterations = iters;
-            params.max_bla_steps = iters;
+            params.perturbation.max_perturb_iterations = iters;
+            params.perturbation.max_bla_steps = iters;
         }
 
         if cli.bailout.is_none() {
@@ -810,12 +810,12 @@ fn main() {
     }
 
     // Palette et répétitions de couleurs (défauts historiques 6/40 si absents).
-    params.color_mode = cli.palette.unwrap_or(6);
+    params.color.color_mode = cli.palette.unwrap_or(6);
     // `color_repeat` : override explicite seulement — le défaut vient du type
     // (`default_params_for_type` : 1 pour les densités, 2 Lyapunov, 40 sinon),
     // comme dans la GUI. Forcer 40 rendait Buddhabrot/Nebulabrot en 40 cycles.
     if let Some(cr) = cli.color_repeat {
-        params.color_repeat = cr.max(1);
+        params.color.color_repeat = cr.max(1);
     }
 
     // GMP haute précision.
@@ -840,17 +840,17 @@ fn main() {
 
     if let Some(bla_threshold) = cli.bla_threshold {
         if bla_threshold > 0.0 {
-            params.bla_threshold = bla_threshold;
+            params.perturbation.bla_threshold = bla_threshold;
         }
     }
     if let Some(bla_validity_scale) = cli.bla_validity_scale {
         if bla_validity_scale > 0.0 {
-            params.bla_validity_scale = bla_validity_scale;
+            params.perturbation.bla_validity_scale = bla_validity_scale;
         }
     }
     if let Some(glitch_tolerance) = cli.glitch_tolerance {
         if glitch_tolerance > 0.0 {
-            params.glitch_tolerance = glitch_tolerance;
+            params.perturbation.glitch_tolerance = glitch_tolerance;
         }
     }
     if let Some(multibrot_power) = cli.multibrot_power {
@@ -899,7 +899,7 @@ fn main() {
     let aa_samples = cli.aa_samples.max(1);
     let aa_jitter_scale = cli.jitter_scale.unwrap_or(1.0);
     if aa_samples > 1 {
-        params.jitter_scale = aa_jitter_scale;
+        params.sampling.jitter_scale = aa_jitter_scale;
     }
 
     match params.algorithm_mode {
@@ -930,7 +930,7 @@ fn main() {
     let outcoloring = cli.outcoloring.as_deref().unwrap_or("smooth");
     match OutColoringMode::from_cli_name(outcoloring) {
         Some(mode) => {
-            params.out_coloring_mode = mode;
+            params.color.out_coloring_mode = mode;
         }
         None => {
             eprintln!(
@@ -944,8 +944,8 @@ fn main() {
     // Couplage mode → canaux (parité GUI) : les modes Distance*/OrbitTraps/
     // Wings requièrent leur canal — la colorisation vérifiée (G5
     // `RenderOutput`) refuse un canal absent au lieu de retomber sur Smooth.
-    params.enable_distance_estimation |= params.out_coloring_mode.requires_distance_channel();
-    params.enable_orbit_traps |= params.out_coloring_mode.requires_orbit_channel();
+    params.enable_distance_estimation |= params.color.out_coloring_mode.requires_distance_channel();
+    params.enable_orbit_traps |= params.color.out_coloring_mode.requires_orbit_channel();
 
     // Transformation du plan (XaoS-style).
     match PlaneTransform::from_cli_name(&cli.plane) {
@@ -1106,7 +1106,7 @@ fn main() {
         // centre exact ; le rendu de base ci-dessus n'est réutilisé qu'à N=1).
         for k in 0..aa_samples as u64 {
             let mut p = params.clone();
-            p.aa_jitter = Some((k, aa_jitter_scale));
+            p.sampling.aa_jitter = Some((k, aa_jitter_scale));
             // Dispatcher COMPLET : les canaux distances/orbites sont requis par
             // les modes Distance*/OrbitTraps/Wings (sinon retombée silencieuse
             // sur Smooth — classe « colorisation unique », cf. CLAUDE.md).
@@ -1226,9 +1226,9 @@ fn non_finite_param(p: &fractal::FractalParams) -> Option<&'static str> {
         ("span_y", p.span_y),
         ("rotation", p.rotation),
         ("bailout", p.bailout),
-        ("color_offset", p.color_offset),
+        ("color_offset", p.color.color_offset),
         ("multibrot_power", p.multibrot_power),
-        ("jitter_scale", p.jitter_scale),
+        ("jitter_scale", p.sampling.jitter_scale),
         ("seed.re", p.seed.re),
         ("seed.im", p.seed.im),
     ];

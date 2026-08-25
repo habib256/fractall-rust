@@ -21,7 +21,10 @@ pub mod xaos;
 pub mod wisdom_bench;
 pub mod orbit_traps;
 
-pub use types::{AlgorithmMode, FractalParams, FractalResult, FractalType, OutColoringMode, PlaneTransform, ColorSpace};
+pub use types::{
+    AlgorithmMode, ColorParams, ColorSpace, FractalParams, FractalResult, FractalType,
+    OutColoringMode, PerturbationParams, PlaneTransform, SamplingParams,
+};
 pub use view::{ViewHp, ViewTransform};
 // `apply_lyapunov_preset` et `LyapunovPreset` ne sont pas consommés par
 // `fractall-quality` (qui ne touche pas Lyapunov) ; les autres binaires les

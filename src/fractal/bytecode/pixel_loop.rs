@@ -57,8 +57,8 @@ impl From<&FractalParams> for PixelLoopLimits {
         Self {
             iteration_max: params.iteration_max,
             bailout: params.bailout,
-            max_perturb_iterations: params.max_perturb_iterations,
-            max_bla_steps: params.max_bla_steps,
+            max_perturb_iterations: params.perturbation.max_perturb_iterations,
+            max_bla_steps: params.perturbation.max_bla_steps,
         }
     }
 }
@@ -2207,7 +2207,7 @@ mod tests {
         let c_norm = effective_pixel_size(&params)
             * ((width as f64).powi(2) + (height as f64).powi(2)).sqrt();
         let tables =
-            build_bla_table_for_formula(&formula, &orbit.z_ref_f64, c_norm, params.bla_threshold)
+            build_bla_table_for_formula(&formula, &orbit.z_ref_f64, c_norm, params.perturbation.bla_threshold)
                 .expect("BLA table (Julia)");
         let bla = &tables[0];
 

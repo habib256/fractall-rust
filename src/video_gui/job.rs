@@ -189,7 +189,7 @@ pub fn first_thumb_params(
     }
     p.seed = seed;
     p.multibrot_power = multibrot_power;
-    p.color_space = color_space;
+    p.color.color_space = color_space;
     p.center_x = cx.to_f64();
     p.center_y = cy.to_f64();
     p.center_x_hp = Some(center_x_hp.to_string());
@@ -200,8 +200,8 @@ pub fn first_thumb_params(
     p.span_y_hp = Some(p.span_y.to_string());
     let iterations = iterations.clamp(50, 5000);
     p.iteration_max = iterations;
-    p.max_perturb_iterations = iterations;
-    p.max_bla_steps = iterations;
+    p.perturbation.max_perturb_iterations = iterations;
+    p.perturbation.max_bla_steps = iterations;
     Ok(p)
 }
 
@@ -462,7 +462,7 @@ pub fn spawn_first_thumb(params: FractalParams, cancel: Arc<AtomicBool>) -> mpsc
                 w: params.width,
                 h: params.height,
                 fractal_type: params.fractal_type,
-                color_space: params.color_space,
+                color_space: params.color.color_space,
                 iter_max: params.iteration_max,
                 iterations,
                 zs,
@@ -693,7 +693,7 @@ mod tests {
         assert_eq!(p.fractal_type, FractalType::Tricorn);
         assert_eq!(p.seed, seed);
         assert_eq!(p.multibrot_power, 3.25);
-        assert_eq!(p.color_space, ColorSpace::Lch);
+        assert_eq!(p.color.color_space, ColorSpace::Lch);
         assert_eq!(p.center_x_hp.as_deref(), Some(cx));
         assert_eq!(p.center_y_hp.as_deref(), Some(cy));
         assert_eq!((p.width, p.height), (72, 54));

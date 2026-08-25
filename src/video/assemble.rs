@@ -247,11 +247,11 @@ pub fn video_outcoloring(name: &str) -> Result<OutColoringMode, String> {
 /// + décalage de palette dynamique + éclairage optionnel (jalon 5).
 pub fn colorize_keyframe(map: &FractalMap, manifest: &Manifest, palette_offset: f64) -> Result<Vec<u8>, String> {
     let mut p = map.params.clone();
-    p.color_mode = manifest.color.palette;
-    p.color_repeat = manifest.color.color_repeat.max(1);
-    p.color_space = manifest.color.color_space;
-    p.out_coloring_mode = video_outcoloring(&manifest.color.outcoloring)?;
-    p.color_offset = palette_offset;
+    p.color.color_mode = manifest.color.palette;
+    p.color.color_repeat = manifest.color.color_repeat.max(1);
+    p.color.color_space = manifest.color.color_space;
+    p.color.out_coloring_mode = video_outcoloring(&manifest.color.outcoloring)?;
+    p.color.color_offset = palette_offset;
     // Le canal `distances` de la map (rendu avec `[fractal] distance_estimation`)
     // alimente les modes Distance*/DistanceAO/Distance3D. Vérification G5 :
     // un mode Distance sur des maps SANS canal (manifest sans
@@ -653,7 +653,7 @@ mod tests {
     fn colorize_keyframe_uses_manifest_color_space() {
         let mut params = default_params_for_type(FractalType::Mandelbrot, 3, 1);
         params.iteration_max = 100;
-        params.color_space = ColorSpace::Rgb;
+        params.color.color_space = ColorSpace::Rgb;
         let map = FractalMap {
             params: params.clone(),
             iterations: vec![1, 15, 80],
@@ -664,10 +664,10 @@ mod tests {
         manifest.color.color_space = ColorSpace::Lch;
 
         let actual = colorize_keyframe(&map, &manifest, 0.0).unwrap();
-        params.color_mode = manifest.color.palette;
-        params.color_repeat = manifest.color.color_repeat;
-        params.color_space = ColorSpace::Lch;
-        params.out_coloring_mode = OutColoringMode::Smooth;
+        params.color.color_mode = manifest.color.palette;
+        params.color.color_repeat = manifest.color.color_repeat;
+        params.color.color_space = ColorSpace::Lch;
+        params.color.out_coloring_mode = OutColoringMode::Smooth;
         let expected =
             colorize_to_rgb_with_extras(&params, &map.iterations, &map.zs, &[], &[]);
         assert_eq!(actual, expected);

@@ -811,42 +811,14 @@ impl PlaneTransform {
 
 use crate::fractal::lyapunov::LyapunovPreset;
 
-/// Paramètres d'une fractale pour le rendu escape-time.
+/// Réglages de colorisation : palette, espace colorimétrique et mode de
+/// coloriage extérieur.
 ///
-/// Cette structure est une version simplifiée de `struct fractal` en C,
-/// adaptée au mode non interactif/CLI.
-///
-/// Les coordonnées du plan complexe sont représentées par centre + étendue
-/// (center_x/center_y + span_x/span_y) plutôt que par bornes (xmin/xmax/ymin/ymax).
-/// Cela permet des zooms profonds (> 1e15) sans perte de précision f64.
+/// ⚠️ Les noms des champs sont conservés tels quels : ce sont aussi les CLÉS
+/// sérialisées (`#[serde(flatten)]` garde la représentation À PLAT), et les
+/// PNG, `.fmap` et TOML déjà écrits doivent se relire à l'identique.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct FractalParams {
-    pub width: u32,
-    pub height: u32,
-
-    /// Centre X du plan complexe.
-    pub center_x: f64,
-    /// Centre Y du plan complexe.
-    pub center_y: f64,
-    /// Étendue (largeur) du plan complexe.
-    pub span_x: f64,
-    /// Étendue (hauteur) du plan complexe.
-    pub span_y: f64,
-    
-    /// Coordonnées haute précision (String) pour préserver la précision arbitraire.
-    /// Utilisées pour les calculs GMP aux zooms profonds (>10^15).
-    /// Si None, les valeurs f64 sont utilisées (compatibilité GPU/CPU standard).
-    pub center_x_hp: Option<String>,
-    pub center_y_hp: Option<String>,
-    pub span_x_hp: Option<String>,
-    pub span_y_hp: Option<String>,
-
-    pub seed: Complex64,
-    pub iteration_max: u32,
-    pub bailout: f64,
-
-    pub fractal_type: FractalType,
-
+pub struct ColorParams {
     /// Palette (0-26).
     #[serde(default = "default_color_mode")]
     pub color_mode: u8,
@@ -863,16 +835,71 @@ pub struct FractalParams {
     #[serde(default, skip_serializing_if = "color_offset_is_zero")]
     pub color_offset: f64,
 
-    /// Active le chemin GMP pour la haute précision.
+    /// Mode de colorisation pour les pixels extérieurs (XaoS-style).
     #[serde(default)]
-    pub use_gmp: bool,
-    /// Précision GMP en bits (ex. 128, 256, 512).
-    #[serde(default = "default_precision_bits")]
-    pub precision_bits: u32,
+    pub out_coloring_mode: OutColoringMode,
+}
 
-    /// Mode d'algorithme pour Mandelbrot (auto/f64/perturbation/GMP).
+impl Default for ColorParams {
+    fn default() -> Self {
+        Self {
+            color_mode: default_color_mode(),
+            color_repeat: default_color_repeat(),
+            color_space: ColorSpace::default(),
+            color_offset: 0.0,
+            out_coloring_mode: OutColoringMode::default(),
+        }
+    }
+}
+
+/// Échantillonnage sous-pixel. `jitter_scale` est un réglage utilisateur ; les
+/// deux autres champs portent l'ÉTAT TRANSITOIRE d'une passe d'anti-aliasing
+/// multi-sample, jamais sérialisé (`#[serde(skip)]`), et `aa_jitter` prime sur
+/// `aa_subpixel_offset` quand il est présent.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SamplingParams {
+    /// Jitter scale for sub-pixel anti-aliasing in perturbation rendering.
+    /// Inspired by rust-fractal-core: adds a small random offset to each pixel's
+    /// position to reduce Moiré patterns and aliasing artifacts in deep zooms.
+    /// 0.0 = disabled (default), 1.0 = full pixel jitter, 0.5 = half pixel.
     #[serde(default)]
-    pub algorithm_mode: AlgorithmMode,
+    pub jitter_scale: f64,
+
+    /// Offset sous-pixel **transitoire** (en unités de pixel) ajouté au mapping
+    /// pixel→c par TOUS les paths de rendu (f64/GMP/perturbation). Sert à
+    /// l'anti-aliasing multi-sample « per-frame » : chaque sample décale la
+    /// grille entière d'un offset low-discrepancy (cf. `fractal::jitter`), puis
+    /// les rendus colorés sont moyennés. Ce n'est PAS un paramètre utilisateur
+    /// (état de rendu transitoire) → `#[serde(skip)]` : jamais sérialisé dans
+    /// les PNG, toujours `[0.0, 0.0]` au chargement.
+    #[serde(skip)]
+    pub aa_subpixel_offset: [f64; 2],
+
+    /// Sample AA **par pixel** (transitoire) : `Some((k, scale))` active la
+    /// décorrélation Cranley-Patterson F3 (`fractal::jitter::pixel_offset`) pour
+    /// le sample `k`, chaque pixel recevant sa propre rotation de la séquence de
+    /// Halton (échelle `scale` en pixels). Prioritaire sur `aa_subpixel_offset`
+    /// (offset uniforme legacy) : quand `Some`, les paths de rendu ajoutent
+    /// l'offset PAR PIXEL au mapping pixel→c. `None` hors AA (tous les rendus
+    /// single-shot : CLI, goldens, quality, harness) → chemin bit-identique.
+    /// `#[serde(skip)]` : état de rendu, jamais dans les PNG.
+    #[serde(skip)]
+    pub aa_jitter: Option<(u64, f64)>,
+}
+
+/// Réglages du chemin perturbation : approximation bilinéaire, série de
+/// Taylor, détection de glitch et bornes de boucle pixel.
+///
+/// Regroupés hors de [`FractalParams`] parce qu'ils forment un tout : ils ne
+/// sont lus que par `fractal::perturbation` et les boucles pixel, et n'ont
+/// aucun effet sur les autres chemins de rendu. Comme pour [`ColorParams`], la
+/// sérialisation reste à plat.
+///
+/// ⚠️ Plusieurs de ces réglages sont hérités de la résolution de glitch
+/// Pauldelbrot, remplacée par le rebasing F3 : ils ne pilotent plus que le
+/// chemin legacy, gaté `!bytecode_path`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PerturbationParams {
     /// Seuil delta pour activer BLA.
     #[serde(default = "default_bla_threshold")]
     pub bla_threshold: f64,
@@ -910,10 +937,6 @@ pub struct FractalParams {
     #[serde(default = "default_min_glitch_cluster_size")]
     pub min_glitch_cluster_size: u32,
 
-    /// Puissance pour Multibrot (z^d + c), défaut 2.5. Utilisé aussi pour le calcul BLA.
-    #[serde(default = "default_multibrot_power")]
-    pub multibrot_power: f64,
-
     /// Nombre maximum d'itérations de perturbation par pixel (aligné C++ Fraktaler-3: PerturbIterations).
     /// 0 = illimité (comportement historique). Défaut 1024.
     #[serde(default = "default_perturb_cap")]
@@ -926,6 +949,89 @@ pub struct FractalParams {
     /// Si true (défaut), utilise la formule C++ Fraktaler-3. Si false, utilise une politique plus conservative (log2(zoom) + marge par palier).
     #[serde(default = "default_true")]
     pub use_reference_precision_formula: bool,
+}
+
+impl Default for PerturbationParams {
+    fn default() -> Self {
+        Self {
+            bla_threshold: default_bla_threshold(),
+            bla_validity_scale: default_one_f64(),
+            glitch_tolerance: default_glitch_tolerance(),
+            series_order: default_series_order(),
+            series_threshold: default_series_threshold(),
+            series_error_tolerance: default_series_error_tolerance(),
+            glitch_neighbor_pass: true,
+            series_standalone: true,
+            max_secondary_refs: default_max_secondary_refs(),
+            min_glitch_cluster_size: default_min_glitch_cluster_size(),
+            max_perturb_iterations: default_perturb_cap(),
+            max_bla_steps: default_perturb_cap(),
+            use_reference_precision_formula: true,
+        }
+    }
+}
+
+/// Paramètres d'une fractale pour le rendu escape-time.
+///
+/// Cette structure est une version simplifiée de `struct fractal` en C,
+/// adaptée au mode non interactif/CLI.
+///
+/// Les coordonnées du plan complexe sont représentées par centre + étendue
+/// (center_x/center_y + span_x/span_y) plutôt que par bornes (xmin/xmax/ymin/ymax).
+/// Cela permet des zooms profonds (> 1e15) sans perte de précision f64.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FractalParams {
+    pub width: u32,
+    pub height: u32,
+
+    /// Centre X du plan complexe.
+    pub center_x: f64,
+    /// Centre Y du plan complexe.
+    pub center_y: f64,
+    /// Étendue (largeur) du plan complexe.
+    pub span_x: f64,
+    /// Étendue (hauteur) du plan complexe.
+    pub span_y: f64,
+    
+    /// Coordonnées haute précision (String) pour préserver la précision arbitraire.
+    /// Utilisées pour les calculs GMP aux zooms profonds (>10^15).
+    /// Si None, les valeurs f64 sont utilisées (compatibilité GPU/CPU standard).
+    pub center_x_hp: Option<String>,
+    pub center_y_hp: Option<String>,
+    pub span_x_hp: Option<String>,
+    pub span_y_hp: Option<String>,
+
+    pub seed: Complex64,
+    pub iteration_max: u32,
+    pub bailout: f64,
+
+    pub fractal_type: FractalType,
+
+    /// Palette, espace colorimétrique et mode de colorisation.
+    #[serde(flatten)]
+    pub color: ColorParams,
+
+    /// Échantillonnage sous-pixel (anti-aliasing).
+    #[serde(flatten)]
+    pub sampling: SamplingParams,
+
+    /// Active le chemin GMP pour la haute précision.
+    #[serde(default)]
+    pub use_gmp: bool,
+    /// Précision GMP en bits (ex. 128, 256, 512).
+    #[serde(default = "default_precision_bits")]
+    pub precision_bits: u32,
+
+    /// Mode d'algorithme pour Mandelbrot (auto/f64/perturbation/GMP).
+    #[serde(default)]
+    pub algorithm_mode: AlgorithmMode,
+
+    /// Réglages du chemin perturbation (BLA, série, glitch, bornes).
+    #[serde(flatten)]
+    pub perturbation: PerturbationParams,
+    /// Puissance pour Multibrot (z^d + c), défaut 2.5. Utilisé aussi pour le calcul BLA.
+    #[serde(default = "default_multibrot_power")]
+    pub multibrot_power: f64,
 
     /// Preset Lyapunov sélectionné.
     #[serde(default)]
@@ -943,10 +1049,6 @@ pub struct FractalParams {
     /// Seuil pour détection d'intérieur (défaut 0.001)
     #[serde(default = "default_interior_threshold")]
     pub interior_threshold: f64,
-
-    /// Mode de colorisation pour les pixels extérieurs (XaoS-style).
-    #[serde(default)]
-    pub out_coloring_mode: OutColoringMode,
 
     /// Complex plane transformation (XaoS-style).
     #[serde(default)]
@@ -966,34 +1068,6 @@ pub struct FractalParams {
     /// Type d'orbit trap à utiliser
     #[serde(default)]
     pub orbit_trap_type: OrbitTrapType,
-
-    /// Jitter scale for sub-pixel anti-aliasing in perturbation rendering.
-    /// Inspired by rust-fractal-core: adds a small random offset to each pixel's
-    /// position to reduce Moiré patterns and aliasing artifacts in deep zooms.
-    /// 0.0 = disabled (default), 1.0 = full pixel jitter, 0.5 = half pixel.
-    #[serde(default)]
-    pub jitter_scale: f64,
-
-    /// Offset sous-pixel **transitoire** (en unités de pixel) ajouté au mapping
-    /// pixel→c par TOUS les paths de rendu (f64/GMP/perturbation). Sert à
-    /// l'anti-aliasing multi-sample « per-frame » : chaque sample décale la
-    /// grille entière d'un offset low-discrepancy (cf. `fractal::jitter`), puis
-    /// les rendus colorés sont moyennés. Ce n'est PAS un paramètre utilisateur
-    /// (état de rendu transitoire) → `#[serde(skip)]` : jamais sérialisé dans
-    /// les PNG, toujours `[0.0, 0.0]` au chargement.
-    #[serde(skip)]
-    pub aa_subpixel_offset: [f64; 2],
-
-    /// Sample AA **par pixel** (transitoire) : `Some((k, scale))` active la
-    /// décorrélation Cranley-Patterson F3 (`fractal::jitter::pixel_offset`) pour
-    /// le sample `k`, chaque pixel recevant sa propre rotation de la séquence de
-    /// Halton (échelle `scale` en pixels). Prioritaire sur `aa_subpixel_offset`
-    /// (offset uniforme legacy) : quand `Some`, les paths de rendu ajoutent
-    /// l'offset PAR PIXEL au mapping pixel→c. `None` hors AA (tous les rendus
-    /// single-shot : CLI, goldens, quality, harness) → chemin bit-identique.
-    /// `#[serde(skip)]` : état de rendu, jamais dans les PNG.
-    #[serde(skip)]
-    pub aa_jitter: Option<(u64, f64)>,
 
     /// Active le moteur d'itération bytecode hybride (Fraktaler-3 style).
     /// Activé par défaut depuis P3.1 Session E. Path unifié BLA mat2 +
@@ -1362,5 +1436,49 @@ mod transform_tests {
         assert!(s1 > 1.3, "K skewé det=1 doit avoir σ₁ > 1, got {s1}");
         let col_y = 2f64.sqrt() * (0.680 / det);
         assert!((s1 - col_y).abs() < 1e-12, "σ₁={s1} vs ‖col_y‖={col_y}");
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    /// Les réglages regroupés restent SÉRIALISÉS À PLAT : les métadonnées PNG,
+    /// les `.fmap` et les TOML écrits avant le regroupement doivent se relire à
+    /// l'identique.
+    ///
+    /// Le verrou couvre les deux sens : aucune clé imbriquée à l'écriture, et
+    /// une clé à plat atterrit bien dans la sous-structure à la lecture.
+    #[test]
+    fn grouped_params_serialize_flat() {
+        use crate::fractal::{default_params_for_type, FractalType};
+
+        let params = default_params_for_type(FractalType::Mandelbrot, 64, 48);
+        let mut json = serde_json::to_value(&params).expect("sérialisation");
+        for group in ["perturbation", "color", "sampling"] {
+            assert!(
+                json.get(group).is_none(),
+                "les réglages `{group}` ne doivent PAS être imbriqués : {json}"
+            );
+        }
+        for key in ["bla_threshold", "max_bla_steps", "color_repeat", "out_coloring_mode"] {
+            assert!(json.get(key).is_some(), "clé `{key}` absente : {json}");
+        }
+
+        // Une valeur écrite à plat par une version antérieure est relue dans la
+        // sous-structure...
+        json["max_bla_steps"] = serde_json::json!(4242);
+        json["color_repeat"] = serde_json::json!(7);
+        // ... et une clé absente retombe sur le défaut du champ.
+        json.as_object_mut().unwrap().remove("bla_threshold");
+
+        let reread: FractalParams = serde_json::from_value(json).expect("relecture");
+        assert_eq!(reread.perturbation.max_bla_steps, 4242);
+        assert_eq!(reread.color.color_repeat, 7);
+        assert_eq!(
+            reread.perturbation.bla_threshold,
+            default_bla_threshold(),
+            "clé absente ⇒ défaut du champ"
+        );
     }
 }

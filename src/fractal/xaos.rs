@@ -321,7 +321,7 @@ pub fn params_fingerprint(params: &FractalParams) -> String {
 /// applicable à ce rendu (indépendamment de la frame source).
 pub fn params_allow_pixel_reuse(params: &FractalParams) -> bool {
     let needs_extra_data = matches!(
-        params.out_coloring_mode,
+        params.color.out_coloring_mode,
         OutColoringMode::Distance
             | OutColoringMode::DistanceAO
             | OutColoringMode::Distance3D
@@ -332,8 +332,8 @@ pub fn params_allow_pixel_reuse(params: &FractalParams) -> bool {
         && params.transform_k.is_none()
         && !params.find_nucleus
         && !needs_extra_data
-        && params.aa_subpixel_offset == [0.0, 0.0]
-        && params.aa_jitter.is_none()
+        && params.sampling.aa_subpixel_offset == [0.0, 0.0]
+        && params.sampling.aa_jitter.is_none()
 }
 
 /// Coordonnées de vue effectives (strings HP si présentes, sinon f64 formaté
@@ -1281,10 +1281,10 @@ mod tests {
         assert!(!params_allow_pixel_reuse(&rot));
         assert!(build_map(&src, &rot).is_none());
         let mut dist = p.clone();
-        dist.out_coloring_mode = OutColoringMode::Distance;
+        dist.color.out_coloring_mode = OutColoringMode::Distance;
         assert!(build_map(&src, &dist).is_none());
         let mut aa = p.clone();
-        aa.aa_subpixel_offset = [0.25, 0.0];
+        aa.sampling.aa_subpixel_offset = [0.25, 0.0];
         assert!(build_map(&src, &aa).is_none());
         let mut nuc = p.clone();
         nuc.find_nucleus = true;

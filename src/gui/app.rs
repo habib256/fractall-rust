@@ -537,9 +537,9 @@ impl FractallApp {
                 self.selected_type = params.fractal_type;
 
                 // Restaurer les paramètres de couleur
-                self.palette_index = params.color_mode;
-                self.color_repeat = params.color_repeat;
-                self.out_coloring_mode = params.out_coloring_mode;
+                self.palette_index = params.color.color_mode;
+                self.color_repeat = params.color.color_repeat;
+                self.out_coloring_mode = params.color.out_coloring_mode;
 
                 // Restaurer les params (mais garder les dimensions actuelles de la fenêtre)
                 let current_width = self.params.width;
@@ -553,8 +553,8 @@ impl FractallApp {
                     self.params.fractal_type,
                     FractalType::Buddhabrot | FractalType::Nebulabrot | FractalType::AntiBuddhabrot
                 );
-                if is_density && self.params.color_repeat > 8 {
-                    self.params.color_repeat = 8;
+                if is_density && self.params.color.color_repeat > 8 {
+                    self.params.color.color_repeat = 8;
                     self.color_repeat = 8;
                 }
 
@@ -957,7 +957,7 @@ impl FractallApp {
 
         // Paramètres pour le thread (activer orbit traps / distance selon outcoloring)
         let mut params = self.params.clone();
-        match params.out_coloring_mode {
+        match params.color.out_coloring_mode {
             crate::fractal::OutColoringMode::OrbitTraps
             | crate::fractal::OutColoringMode::Wings => {
                 params.enable_orbit_traps = true;
@@ -965,7 +965,7 @@ impl FractallApp {
             _ => {}
         }
         if matches!(
-            params.out_coloring_mode,
+            params.color.out_coloring_mode,
             crate::fractal::OutColoringMode::Distance
                 | crate::fractal::OutColoringMode::DistanceAO
                 | crate::fractal::OutColoringMode::Distance3D
@@ -984,10 +984,10 @@ impl FractallApp {
             crate::gui::render_state::normalized_jitter_scale(self.aa_jitter_scale);
         self.render_progress.begin(config.passes.len(), aa_samples);
         self.render_color_key = (
-            params.color_mode,
-            params.color_repeat,
-            params.out_coloring_mode,
-            params.color_space,
+            params.color.color_mode,
+            params.color.color_repeat,
+            params.color.out_coloring_mode,
+            params.color.color_space,
         );
 
         // G10.4 : frame source pour la réutilisation pixels inter-frame.
@@ -1077,7 +1077,7 @@ impl FractallApp {
                 // l'ancienne frame, mieux qu'un fond noir).
                 let sink_state = if refine
                     || matches!(
-                        params.out_coloring_mode,
+                        params.color.out_coloring_mode,
                         crate::fractal::OutColoringMode::OrbitTraps
                             | crate::fractal::OutColoringMode::Wings
                     ) {
@@ -1109,7 +1109,7 @@ impl FractallApp {
                     && sink_state.is_none()
                     && !refine
                     && !matches!(
-                        params.out_coloring_mode,
+                        params.color.out_coloring_mode,
                         crate::fractal::OutColoringMode::OrbitTraps
                             | crate::fractal::OutColoringMode::Wings
                     );
@@ -1387,7 +1387,7 @@ impl FractallApp {
                     // Décorrélation Cranley-Patterson F3 par pixel (bas N sans
                     // aliasing corrélé). La boucle rend déjà tous les samples
                     // k=0..N (aucun réemploi de base à casser).
-                    p.aa_jitter = Some((k, aa_jitter_scale));
+                    p.sampling.aa_jitter = Some((k, aa_jitter_scale));
 
                     // Même dispatcher unifié que le CLI (cache d'orbite réutilisé
                     // entre samples, même centre).
@@ -1672,10 +1672,10 @@ impl FractallApp {
                 self.is_preview = false;
                 self.render_progress.aa_ready(sample, total);
                 let current_key = (
-                    self.params.color_mode,
-                    self.params.color_repeat,
-                    self.params.out_coloring_mode,
-                    self.params.color_space,
+                    self.params.color.color_mode,
+                    self.params.color.color_repeat,
+                    self.params.color.out_coloring_mode,
+                    self.params.color.color_space,
                 );
                 if current_key == self.render_color_key {
                     self.load_texture_from_buffer(ctx, &display_buffer, width, height);
@@ -1873,9 +1873,9 @@ impl FractallApp {
         let orbits = Arc::clone(&self.orbits);
         let mut params = self.params.clone();
         // Mettre à jour les params avec les valeurs actuelles de l'UI
-        params.color_mode = self.palette_index;
-        params.color_repeat = self.color_repeat;
-        params.out_coloring_mode = self.out_coloring_mode;
+        params.color.color_mode = self.palette_index;
+        params.color.color_repeat = self.color_repeat;
+        params.color.out_coloring_mode = self.out_coloring_mode;
 
         let tx = self.recolor_sender.clone();
 
@@ -1945,9 +1945,9 @@ impl FractallApp {
         params.seed = seed;
         params.iteration_max = 256;
         params.algorithm_mode = AlgorithmMode::StandardF64;
-        params.color_mode = self.palette_index;
-        params.color_repeat = self.color_repeat;
-        params.out_coloring_mode = self.out_coloring_mode;
+        params.color.color_mode = self.palette_index;
+        params.color.color_repeat = self.color_repeat;
+        params.color.out_coloring_mode = self.out_coloring_mode;
 
         let tx = self.julia_preview_sender.clone();
         self.julia_preview_rendering = true;
@@ -2190,14 +2190,14 @@ impl FractallApp {
         let mut new_params = default_params_for_type(FractalType::Mandelbrot, width, height);
         new_params.use_gmp = self.params.use_gmp;
         new_params.precision_bits = self.params.precision_bits;
-        new_params.color_mode = self.params.color_mode;
-        new_params.color_repeat = self.params.color_repeat;
+        new_params.color.color_mode = self.params.color.color_mode;
+        new_params.color.color_repeat = self.params.color.color_repeat;
         new_params.algorithm_mode = AlgorithmMode::Auto;
-        new_params.bla_threshold = self.params.bla_threshold;
-        new_params.glitch_tolerance = self.params.glitch_tolerance;
+        new_params.perturbation.bla_threshold = self.params.perturbation.bla_threshold;
+        new_params.perturbation.glitch_tolerance = self.params.perturbation.glitch_tolerance;
         new_params.hybrid_phases = Some(self.hybrid_seq.clone());
         self.params = new_params;
-        self.color_repeat = self.params.color_repeat;
+        self.color_repeat = self.params.color.color_repeat;
         self.iteration_input = self.params.iteration_max.to_string();
         self.sync_params_to_hp();
         self.use_gpu = false; // GPU ne cycle pas les phases (render_dispatch → None)
@@ -2223,20 +2223,20 @@ impl FractallApp {
         );
         new_params.use_gmp = self.params.use_gmp;
         new_params.precision_bits = self.params.precision_bits;
-        new_params.color_mode = self.params.color_mode;
+        new_params.color.color_mode = self.params.color.color_mode;
         // Fractales densité : toujours 1 par défaut à la sélection (ne pas conserver l’ancienne valeur)
-        new_params.color_repeat = if is_density_type {
+        new_params.color.color_repeat = if is_density_type {
             1
         } else {
-            self.params.color_repeat
+            self.params.color.color_repeat
         };
         new_params.algorithm_mode = AlgorithmMode::Auto;
-        new_params.bla_threshold = self.params.bla_threshold;
-        new_params.glitch_tolerance = self.params.glitch_tolerance;
+        new_params.perturbation.bla_threshold = self.params.perturbation.bla_threshold;
+        new_params.perturbation.glitch_tolerance = self.params.perturbation.glitch_tolerance;
 
         // Toujours utiliser le domaine par défaut pour bien centrer la fractale
         self.params = new_params;
-        self.color_repeat = self.params.color_repeat;
+        self.color_repeat = self.params.color.color_repeat;
         self.iteration_input = self.params.iteration_max.to_string();
         // Synchroniser les coordonnées HP depuis les nouvelles params
         self.sync_params_to_hp();
@@ -2395,7 +2395,7 @@ impl eframe::App for FractallApp {
                 self.palette_index = (self.palette_index + 1) % 27;
                 // Synchroniser params (comme R et les boutons < / >) : sinon la
                 // passe suivante / un screenshot reviennent à l'ancienne palette.
-                self.params.color_mode = self.palette_index;
+                self.params.color.color_mode = self.palette_index;
                 if !self.iterations.is_empty() {
                     self.update_texture(ctx);
                 }
@@ -2416,7 +2416,7 @@ impl eframe::App for FractallApp {
                 } else {
                     self.color_repeat + 1
                 };
-                self.params.color_repeat = self.color_repeat;
+                self.params.color.color_repeat = self.color_repeat;
                 if !self.iterations.is_empty() {
                     self.update_texture(ctx);
                 }
@@ -2441,8 +2441,8 @@ impl eframe::App for FractallApp {
                     new_params.seed = seed;
                     new_params.use_gmp = self.params.use_gmp;
                     new_params.precision_bits = self.params.precision_bits;
-                    new_params.color_mode = self.params.color_mode;
-                    new_params.color_repeat = self.params.color_repeat;
+                    new_params.color.color_mode = self.params.color.color_mode;
+                    new_params.color.color_repeat = self.params.color.color_repeat;
                     new_params.algorithm_mode = AlgorithmMode::Auto;
                     self.params = new_params;
                     self.selected_type = julia_type;
@@ -2519,8 +2519,8 @@ impl eframe::App for FractallApp {
                 // Conserver certains paramètres
                 new_params.use_gmp = self.params.use_gmp;
                 new_params.precision_bits = self.params.precision_bits;
-                new_params.color_mode = self.params.color_mode;
-                new_params.color_repeat = self.params.color_repeat;
+                new_params.color.color_mode = self.params.color.color_mode;
+                new_params.color.color_repeat = self.params.color.color_repeat;
                 self.params = new_params;
                 self.iteration_input = self.params.iteration_max.to_string();
                 // Synchroniser les coordonnées HP
@@ -2961,7 +2961,7 @@ impl eframe::App for FractallApp {
                     ui.label("Palette:");
                     if ui.button("<").clicked() {
                         self.palette_index = if self.palette_index == 0 { 26 } else { self.palette_index - 1 };
-                        self.params.color_mode = self.palette_index;
+                        self.params.color.color_mode = self.palette_index;
                         if !self.iterations.is_empty() {
                             self.update_texture(ctx);
                         }
@@ -2970,7 +2970,7 @@ impl eframe::App for FractallApp {
                     // Afficher la prévisualisation de la palette
                     let palette_idx = self.palette_index as usize;
                     if self.palette_preview_textures[palette_idx].is_none() {
-                        let preview_image = generate_palette_preview(self.palette_index, 100, 12, self.params.color_space);
+                        let preview_image = generate_palette_preview(self.palette_index, 100, 12, self.params.color.color_space);
                         self.palette_preview_textures[palette_idx] = Some(ctx.load_texture(
                             format!("palette_preview_{}", self.palette_index),
                             preview_image,
@@ -2985,7 +2985,7 @@ impl eframe::App for FractallApp {
                     
                     if ui.button(">").clicked() {
                         self.palette_index = (self.palette_index + 1) % 27; // 13 palettes maintenant (0-12)
-                        self.params.color_mode = self.palette_index;
+                        self.params.color.color_mode = self.palette_index;
                         if !self.iterations.is_empty() {
                             self.update_texture(ctx);
                         }
@@ -3003,7 +3003,7 @@ impl eframe::App for FractallApp {
                             }
                         });
                     if old_out_mode != self.out_coloring_mode {
-                        self.params.out_coloring_mode = self.out_coloring_mode;
+                        self.params.color.out_coloring_mode = self.out_coloring_mode;
                         // Distance/OrbitTraps/Wings modes require data computed during render
                         let needs_rerender = matches!(self.out_coloring_mode,
                             OutColoringMode::Distance | OutColoringMode::DistanceAO | OutColoringMode::Distance3D
@@ -3028,12 +3028,12 @@ impl eframe::App for FractallApp {
                     let (min_repeat, max_repeat) = if is_density_type { (1, 8) } else { (1, 120) };
                     if is_density_type && self.color_repeat > max_repeat {
                         self.color_repeat = max_repeat;
-                        self.params.color_repeat = self.color_repeat;
+                        self.params.color.color_repeat = self.color_repeat;
                     }
                     let old_repeat = self.color_repeat;
                     ui.add(egui::Slider::new(&mut self.color_repeat, min_repeat..=max_repeat));
                     if old_repeat != self.color_repeat {
-                        self.params.color_repeat = self.color_repeat;
+                        self.params.color.color_repeat = self.color_repeat;
                         if !self.iterations.is_empty() {
                             self.update_texture(ctx);
                         }

@@ -63,8 +63,8 @@ pub struct SamplingPlan {
 pub fn sampling_plan(params: &FractalParams) -> SamplingPlan {
     SamplingPlan {
         transform: params.transform_matrix(),
-        aa_uniform: params.aa_subpixel_offset,
-        aa_jitter: params.aa_jitter,
+        aa_uniform: params.sampling.aa_subpixel_offset,
+        aa_jitter: params.sampling.aa_jitter,
     }
 }
 
@@ -380,7 +380,7 @@ pub fn gpu_lacks_features(params: &FractalParams) -> bool {
         || params.enable_distance_estimation
         || params.enable_orbit_traps
         || matches!(
-            params.out_coloring_mode,
+            params.color.out_coloring_mode,
             M::Distance | M::DistanceAO | M::Distance3D | M::OrbitTraps | M::Wings
         )
 }
@@ -705,7 +705,7 @@ mod tests {
             M::Wings,
         ] {
             let mut p = base.clone();
-            p.out_coloring_mode = mode;
+            p.color.out_coloring_mode = mode;
             assert!(gpu_lacks_features(&p), "{mode:?}");
             assert_eq!(select_device(&p, true), Device::Cpu);
         }
@@ -822,9 +822,9 @@ mod tests {
 
         let mut p = frame(1e14);
         p.transform_k = Some([1.5, 0.25, -0.5, 0.75]);
-        p.aa_subpixel_offset = [0.125, -0.25];
-        p.aa_jitter = Some((7, 0.8));
-        p.out_coloring_mode = OutColoringMode::Distance;
+        p.sampling.aa_subpixel_offset = [0.125, -0.25];
+        p.sampling.aa_jitter = Some((7, 0.8));
+        p.color.out_coloring_mode = OutColoringMode::Distance;
 
         let render_plan = plan(&p);
         assert_eq!(render_plan.sampling.transform, p.transform_matrix());

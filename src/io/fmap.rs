@@ -379,9 +379,9 @@ mod tests {
         // rester d'accord (même buffers → mêmes pixels), y compris après
         // override couleur comme le fait `--from-map`.
         let mut recolor_params = loaded.params.clone();
-        recolor_params.color_mode = (params.color_mode + 3) % 27;
+        recolor_params.color.color_mode = (params.color.color_mode + 3) % 27;
         let mut direct_params = params.clone();
-        direct_params.color_mode = recolor_params.color_mode;
+        direct_params.color.color_mode = recolor_params.color.color_mode;
 
         let from_map = colorize_to_rgb(&recolor_params, &loaded.iterations, &loaded.zs);
         let d2 = render_escape_time(&direct_params);

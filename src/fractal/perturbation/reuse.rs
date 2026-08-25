@@ -16,7 +16,7 @@ pub(super) fn build_reuse<'a>(
     reuse: Option<(&'a [u32], &'a [Complex64], u32, u32)>,
 ) -> Option<ReuseData<'a>> {
     let needs_extra_data = matches!(
-        params.out_coloring_mode,
+        params.color.out_coloring_mode,
         OutColoringMode::Distance
             | OutColoringMode::DistanceAO
             | OutColoringMode::Distance3D
@@ -73,7 +73,7 @@ mod tests {
     #[test]
     fn rejects_reuse_when_coloring_needs_missing_channels() {
         let mut params = default_params_for_type(FractalType::Mandelbrot, 8, 4);
-        params.out_coloring_mode = OutColoringMode::Distance;
+        params.color.out_coloring_mode = OutColoringMode::Distance;
         let iterations = vec![0; 8];
         let zs = vec![Complex64::new(0.0, 0.0); 8];
 

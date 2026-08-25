@@ -267,8 +267,8 @@ mod tests {
         p.iteration_max = 100;
         p.precision_bits = 192;
         p.algorithm_mode = AlgorithmMode::Perturbation;
-        p.bla_threshold = 1e-6;
-        p.glitch_neighbor_pass = false;
+        p.perturbation.bla_threshold = 1e-6;
+        p.perturbation.glitch_neighbor_pass = false;
         p
     }
 

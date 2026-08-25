@@ -73,7 +73,7 @@ fn build_reuse<'a>(
     // Disable pixel reuse for coloring modes that need per-pixel orbit/distance data,
     // since reused pixels don't carry this data and would create checkerboard artifacts.
     let needs_extra_data = matches!(
-        params.out_coloring_mode,
+        params.color.out_coloring_mode,
         OutColoringMode::Distance
             | OutColoringMode::DistanceAO
             | OutColoringMode::Distance3D
@@ -368,10 +368,10 @@ fn render_escape_time_f64_cancellable_with_reuse(
     // Pré-calcul de la matrice de rotation (None si rotation == 0 → no-op).
     let rot = params.transform_matrix();
     // Offset sous-pixel AA per-frame (unités de pixel, [0,0] hors AA).
-    let [aa_dx, aa_dy] = params.aa_subpixel_offset;
+    let [aa_dx, aa_dy] = params.sampling.aa_subpixel_offset;
     // AA par pixel (Cranley-Patterson F3) : prioritaire sur l'offset uniforme.
     // `None` hors AA → branche bit-identique. Largeur globale pour le hash pixel.
-    let aa_jit = params.aa_jitter;
+    let aa_jit = params.sampling.aa_jitter;
     let img_w = params.width as usize;
 
     // G10.5 : file de tuiles priorité-centre (curseur en GUI). Les buffers
@@ -586,9 +586,9 @@ fn render_escape_time_gmp_cancellable_with_reuse(
     // Rotation : appliquée au delta pixel→centre avant d'ajouter center_x/y.
     let rot = params.transform_matrix();
     // Offset sous-pixel AA per-frame (unités de pixel, [0,0] hors AA).
-    let [aa_dx, aa_dy] = params.aa_subpixel_offset;
+    let [aa_dx, aa_dy] = params.sampling.aa_subpixel_offset;
     // AA par pixel (Cranley-Patterson F3) : prioritaire sur l'offset uniforme.
-    let aa_jit = params.aa_jitter;
+    let aa_jit = params.sampling.aa_jitter;
     let img_w = params.width as usize;
 
     // G10.5 : file de tuiles priorité-centre. Les pixels GMP sont lourds
@@ -858,12 +858,12 @@ mod tests {
     #[test]
     fn aa_jitter_flows_through_and_is_deterministic() {
         let mut base_p = small_mandelbrot(80, 64);
-        base_p.aa_jitter = None;
+        base_p.sampling.aa_jitter = None;
         let base = render_with_tiles(&base_p, None);
 
         // Déterministe : même sample rendu deux fois → bit-identique.
         let mut p = base_p.clone();
-        p.aa_jitter = Some((1, 1.0));
+        p.sampling.aa_jitter = Some((1, 1.0));
         let a = render_with_tiles(&p, None);
         let a2 = render_with_tiles(&p, None);
         assert_eq!(
@@ -883,7 +883,7 @@ mod tests {
         // un motif différent d'un décalage uniforme équivalent.
         let mut u = base_p.clone();
         let (ux, uy) = crate::fractal::jitter::pixel_offset(80, 40, 32, 1, 1.0);
-        u.aa_subpixel_offset = [ux, uy];
+        u.sampling.aa_subpixel_offset = [ux, uy];
         let uniform = render_with_tiles(&u, None);
         assert_ne!(
             uniform.iterations, a.iterations,
@@ -892,7 +892,7 @@ mod tests {
 
         // Deux samples différents → motifs différents (k traverse Halton).
         let mut p2 = base_p.clone();
-        p2.aa_jitter = Some((2, 1.0));
+        p2.sampling.aa_jitter = Some((2, 1.0));
         let b = render_with_tiles(&p2, None);
         assert_ne!(
             a.iterations, b.iterations,

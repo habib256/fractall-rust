@@ -347,13 +347,13 @@ pub fn keyframe_params(m: &Manifest, k: u32) -> Result<FractalParams, String> {
     p.iteration_max = iters;
     // Mirror la sémantique F3/loader TOML (main.rs) : caps = iterations,
     // sinon les pas directs sont tronqués à 1024 en deep (anneaux parasites).
-    p.max_perturb_iterations = iters;
-    p.max_bla_steps = iters;
+    p.perturbation.max_perturb_iterations = iters;
+    p.perturbation.max_bla_steps = iters;
 
-    p.color_mode = m.color.palette;
-    p.color_repeat = m.color.color_repeat.max(1);
-    p.color_space = m.color.color_space;
-    p.out_coloring_mode = OutColoringMode::from_cli_name(&m.color.outcoloring)
+    p.color.color_mode = m.color.palette;
+    p.color.color_repeat = m.color.color_repeat.max(1);
+    p.color.color_space = m.color.color_space;
+    p.color.out_coloring_mode = OutColoringMode::from_cli_name(&m.color.outcoloring)
         .ok_or_else(|| format!("outcoloring invalide: '{}'", m.color.outcoloring))?;
     p.enable_distance_estimation = m.fractal.distance_estimation;
     Ok(p)
@@ -370,11 +370,11 @@ pub fn keyframe_path(project: &Path, k: u32) -> PathBuf {
 /// des heures de calcul (c'est tout l'intérêt du format map).
 pub fn map_fingerprint(params: &FractalParams) -> String {
     let mut p = params.clone();
-    p.color_mode = 0;
-    p.color_repeat = 1;
-    p.color_space = ColorSpace::Rgb;
-    p.color_offset = 0.0;
-    p.out_coloring_mode = OutColoringMode::Smooth;
+    p.color.color_mode = 0;
+    p.color.color_repeat = 1;
+    p.color.color_space = ColorSpace::Rgb;
+    p.color.color_offset = 0.0;
+    p.color.out_coloring_mode = OutColoringMode::Smooth;
     serde_json::to_string(&p).unwrap_or_default()
 }
 
@@ -727,7 +727,7 @@ mod tests {
             keyframe_params(&julia, 0).unwrap().seed,
             num_complex::Complex64::new(-0.745, 0.113)
         );
-        assert_eq!(keyframe_params(&julia, 0).unwrap().color_space, ColorSpace::Lch);
+        assert_eq!(keyframe_params(&julia, 0).unwrap().color.color_space, ColorSpace::Lch);
 
         let mut multi = Manifest::default();
         multi.fractal.r#type = 23;
@@ -773,8 +773,8 @@ mod tests {
         direct.span_x = 4.0 / 64.0;
         direct.span_y = direct.span_x * (36.0 / 48.0);
         direct.iteration_max = 300;
-        direct.max_perturb_iterations = 300;
-        direct.max_bla_steps = 300;
+        direct.perturbation.max_perturb_iterations = 300;
+        direct.perturbation.max_bla_steps = 300;
         let d = render_escape_time(&direct);
         let (it_direct, zs_direct) = (d.iterations, d.zs);
 

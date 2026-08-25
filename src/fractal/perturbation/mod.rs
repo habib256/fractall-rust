@@ -336,8 +336,8 @@ pub fn render_perturbation_with_cache(
     // faisait déjà ; ici on couvre GUI + CLI non-TOML (chemin commun).
     let params = &{
         let mut p = params.clone();
-        p.max_perturb_iterations = p.max_perturb_iterations.max(p.iteration_max);
-        p.max_bla_steps = p.max_bla_steps.max(p.iteration_max);
+        p.perturbation.max_perturb_iterations = p.perturbation.max_perturb_iterations.max(p.iteration_max);
+        p.perturbation.max_bla_steps = p.perturbation.max_bla_steps.max(p.iteration_max);
         p
     };
     let perf = perf_enabled();
@@ -848,7 +848,7 @@ pub fn render_perturbation_with_cache(
         // (c) les pixels flaggés sont re-rendus via GMP (path secondary refs)
         // dont le résultat diverge légèrement du fexp → diff visuelle artificielle.
         let bytecode_path = uses_bytecode_path(params);
-        if !small_image && params.glitch_neighbor_pass && !bytecode_path {
+        if !small_image && params.perturbation.glitch_neighbor_pass && !bytecode_path {
             let neighbor_threshold = (params.iteration_max / 50).max(8);
             let neighbor_mask = mark_neighbor_glitches(
                 &iterations,
@@ -883,17 +883,17 @@ pub fn render_perturbation_with_cache(
         // Les "vrais" glitches Pauldelbrot ne sont pas produits par le
         // bytecode (rebasing F3 strict les prévient structurellement), donc
         // les références secondaires (overhead lourd) restent inutiles ici.
-        if !small_image && params.max_secondary_refs > 0 && !bytecode_path {
+        if !small_image && params.perturbation.max_secondary_refs > 0 && !bytecode_path {
             let clusters = detect_glitch_clusters(
                 &glitch_mask,
                 params.width,
                 params.height,
                 params,
-                params.min_glitch_cluster_size as usize,
+                params.perturbation.min_glitch_cluster_size as usize,
             );
 
             let secondary_refs =
-                select_secondary_reference_points(&clusters, params.max_secondary_refs as usize);
+                select_secondary_reference_points(&clusters, params.perturbation.max_secondary_refs as usize);
 
             // Process each secondary reference
             // Each reference corresponds to a different phase/starting point in the hybrid loop.
@@ -916,7 +916,7 @@ pub fn render_perturbation_with_cache(
                     // Build BLA table for this reference (one BLA table per reference)
                     let sec_bla =
                         bla::build_bla_table(&sec_orbit.z_ref_f64, &sec_params, sec_orbit.cref);
-                    let sec_series = if params.series_standalone
+                    let sec_series = if params.perturbation.series_standalone
                         && matches!(
                             params.fractal_type,
                             FractalType::Mandelbrot | FractalType::Julia
@@ -927,7 +927,7 @@ pub fn render_perturbation_with_cache(
                         let adaptive_order = series::compute_adaptive_series_order(
                             pixel_size,
                             params.iteration_max,
-                            params.series_order,
+                            params.perturbation.series_order,
                         )
                         .max(4);
                         let interval = if sec_orbit.z_ref_f64.len() > 100_000 {
@@ -1013,7 +1013,7 @@ pub fn render_perturbation_with_cache(
         // déclenche plus. C'était la cause du bug « réf intérieure » : PASS à
         // ≤512² (bloc sauté, small_image) mais 3.4 % de structure spurious à
         // 800×547 (bloc actif). Gate → le ratio reste haut → fallback GMP → correct.
-        if !small_image && params.max_secondary_refs > 0 && !bytecode_path {
+        if !small_image && params.perturbation.max_secondary_refs > 0 && !bytecode_path {
             let max_resolution_rounds = 3; // Limit recursion depth to avoid infinite loops
             for _round in 0..max_resolution_rounds {
                 let remaining_glitches: usize = glitch_mask.iter().filter(|v| **v).count();
@@ -1034,14 +1034,14 @@ pub fn render_perturbation_with_cache(
                     params.width,
                     params.height,
                     params,
-                    params.min_glitch_cluster_size as usize,
+                    params.perturbation.min_glitch_cluster_size as usize,
                 );
 
                 if iter_clusters.is_empty() {
                     break;
                 }
 
-                let max_iter_refs = (params.max_secondary_refs as usize).min(iter_clusters.len());
+                let max_iter_refs = (params.perturbation.max_secondary_refs as usize).min(iter_clusters.len());
                 let mut resolved_any = false;
 
                 for cluster in iter_clusters.iter().take(max_iter_refs) {
@@ -1898,14 +1898,14 @@ mod tests {
         let d0 = base.compute_dc(4, 7);
         // Uniforme legacy : +0.25 px en x → +0.25·span/width.
         let mut pu = p.clone();
-        pu.aa_subpixel_offset = [0.25, 0.0];
+        pu.sampling.aa_subpixel_offset = [0.25, 0.0];
         let du = DcGmpContext::new(&pu, 128).compute_dc(4, 7);
         let expect = 0.25 * p.span_x / 16.0;
         assert!((du.real().to_f64() - d0.real().to_f64() - expect).abs() < 1e-15);
         assert_eq!(du.imag().to_f64(), d0.imag().to_f64());
         // Par pixel (prioritaire sur l'uniforme) : = pixel_offset en c-space.
         let mut pj = pu.clone();
-        pj.aa_jitter = Some((2, 1.0));
+        pj.sampling.aa_jitter = Some((2, 1.0));
         let dj = DcGmpContext::new(&pj, 128).compute_dc(4, 7);
         let (jx, jy) = crate::fractal::jitter::pixel_offset(16, 4, 7, 2, 1.0);
         assert!((dj.real().to_f64() - d0.real().to_f64() - jx * p.span_x / 16.0).abs() < 1e-15);
@@ -2054,8 +2054,8 @@ mod tests {
         p.iteration_max = 64;
         p.precision_bits = 192;
         p.algorithm_mode = AlgorithmMode::Perturbation;
-        p.bla_threshold = 1e-6;
-        p.glitch_neighbor_pass = false;
+        p.perturbation.bla_threshold = 1e-6;
+        p.perturbation.glitch_neighbor_pass = false;
         p
     }
 

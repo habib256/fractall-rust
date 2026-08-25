@@ -48,7 +48,7 @@ pub fn colorize_buffers(
         || params.fractal_type == FractalType::AntiBuddhabrot;
     let interior_flag_encoded = params.enable_interior_detection;
     let lut = if !is_nebulabrot && !is_buddhabrot {
-        Some(PaletteLut::cached(params.color_mode, params.color_space))
+        Some(PaletteLut::cached(params.color.color_mode, params.color.color_space))
     } else {
         None
     };
@@ -69,17 +69,17 @@ pub fn colorize_buffers(
             let (r, g, b) = if is_nebulabrot {
                 color_for_nebulabrot_pixel(iter, z)
             } else if is_buddhabrot {
-                color_for_buddhabrot_pixel(z, params.color_mode, params.color_repeat)
+                color_for_buddhabrot_pixel(z, params.color.color_mode, params.color.color_repeat)
             } else {
                 color_for_pixel_with_lut(
                     iter,
                     z,
                     params.iteration_max,
-                    params.color_mode,
-                    params.color_repeat,
-                    params.color_offset,
-                    params.out_coloring_mode,
-                    params.color_space,
+                    params.color.color_mode,
+                    params.color.color_repeat,
+                    params.color.color_offset,
+                    params.color.out_coloring_mode,
+                    params.color.color_space,
                     orbit,
                     distance,
                     interior_flag_encoded,
@@ -301,8 +301,8 @@ mod tests {
 
         let mut buddha = anti.clone();
         buddha.fractal_type = FractalType::Buddhabrot;
-        buddha.color_mode = anti.color_mode;
-        buddha.color_repeat = anti.color_repeat;
+        buddha.color.color_mode = anti.color.color_mode;
+        buddha.color.color_repeat = anti.color.color_repeat;
 
         let anti_rgb = colorize_to_rgb(&anti, &iterations, &zs);
         let buddha_rgb = colorize_to_rgb(&buddha, &iterations, &zs);
@@ -326,7 +326,7 @@ mod tests {
         let (w, h) = (8u32, 6u32);
         let n = (w * h) as usize;
         let mut params = default_params_for_type(FractalType::Mandelbrot, w, h);
-        params.out_coloring_mode = OutColoringMode::Distance;
+        params.color.out_coloring_mode = OutColoringMode::Distance;
 
         let bare = crate::render::RenderOutput::without_extras(
             vec![1; n],
@@ -347,11 +347,11 @@ mod tests {
         );
 
         // OrbitTraps : même contrat sur le canal orbits.
-        params.out_coloring_mode = OutColoringMode::Wings;
+        params.color.out_coloring_mode = OutColoringMode::Wings;
         assert!(colorize_output(&params, &bare).is_err());
 
         // Smooth : aucun canal requis → OK sans extras.
-        params.out_coloring_mode = OutColoringMode::Smooth;
+        params.color.out_coloring_mode = OutColoringMode::Smooth;
         assert!(colorize_output(&params, &bare).is_ok());
 
         // Buffers incomplets (iterations tronquées) refusés aussi.
@@ -370,7 +370,7 @@ mod tests {
         let mut params = default_params_for_type(FractalType::Mandelbrot, w, h);
         params.iteration_max = 100;
         params.enable_distance_estimation = true;
-        params.out_coloring_mode = OutColoringMode::Distance;
+        params.color.out_coloring_mode = OutColoringMode::Distance;
 
         // Pixels échappés (iter < iteration_max) sinon la couleur est noire
         // avant même de regarder le mode.
@@ -387,7 +387,7 @@ mod tests {
         // Les modes qui n'utilisent PAS les distances restent bit-identiques
         // (garantie de non-régression des goldens).
         let mut smooth = params.clone();
-        smooth.out_coloring_mode = OutColoringMode::Smooth;
+        smooth.color.out_coloring_mode = OutColoringMode::Smooth;
         assert_eq!(
             colorize_to_rgb_with_extras(&smooth, &iterations, &zs, &distances, &[]),
             colorize_to_rgb(&smooth, &iterations, &zs),
@@ -430,16 +430,16 @@ mod tests {
             params.use_bytecode_engine,
             "use_bytecode_engine doit défauter à true sur PNG legacy"
         );
-        assert_eq!(params.jitter_scale, 0.0);
+        assert_eq!(params.sampling.jitter_scale, 0.0);
         // Aligné F3 `engine.cc:283` : 1.0 / (1 << 24) ≈ 5.96e-8 (cf. P1.3
         // dans TODO.md). Anciennement 1e-8.
-        assert_eq!(params.bla_threshold, 1.0 / (1u64 << 24) as f64);
-        assert_eq!(params.glitch_tolerance, 1e-4);
+        assert_eq!(params.perturbation.bla_threshold, 1.0 / (1u64 << 24) as f64);
+        assert_eq!(params.perturbation.glitch_tolerance, 1e-4);
         assert_eq!(params.multibrot_power, 2.5);
-        assert_eq!(params.max_perturb_iterations, 1024);
-        assert_eq!(params.max_bla_steps, 1024);
+        assert_eq!(params.perturbation.max_perturb_iterations, 1024);
+        assert_eq!(params.perturbation.max_bla_steps, 1024);
         assert_eq!(params.interior_threshold, 0.001);
-        assert_eq!(params.max_secondary_refs, 3);
+        assert_eq!(params.perturbation.max_secondary_refs, 3);
     }
 
     /// Vérifie qu'un JSON avec quelques-uns des champs récents présents
@@ -565,6 +565,28 @@ mod tests {
         let params: FractalParams = serde_json::from_str(json)
             .expect("Removed champ doit être ignoré");
         assert_eq!(params.iteration_max, 500);
+    }
+
+    /// Les réglages regroupés en sous-structures restent lisibles depuis les
+    /// PNG écrits AVANT le regroupement : leurs clés sont toujours à plat dans
+    /// le JSON, et doivent atterrir dans la bonne sous-structure.
+    #[test]
+    fn legacy_png_populates_grouped_params() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("png")
+            .join("Deepfractal.png");
+        if !path.exists() {
+            eprintln!("{} absent, test ignoré", path.display());
+            return;
+        }
+        let params = load_png_metadata(&path).expect("PNG legacy lisible");
+        // Valeurs non triviales écrites par une version antérieure : si les
+        // clés à plat n'alimentaient plus les sous-structures, on lirait les
+        // défauts à la place.
+        assert_eq!(params.color.color_repeat, 120);
+        assert_eq!(params.color.color_mode, 0);
+        assert_eq!(params.perturbation.max_bla_steps, 1024);
+        assert!(params.perturbation.bla_threshold > 0.0);
     }
 
     /// Test exhaustif sur les PNG du dossier `png/` du repo : tous doivent

@@ -111,8 +111,8 @@ pub fn required_channels(params: &FractalParams) -> ChannelRequirements {
             | FractalType::Dragon
     );
     ChannelRequirements {
-        distances: mode_driven && params.out_coloring_mode.requires_distance_channel(),
-        orbits: mode_driven && params.out_coloring_mode.requires_orbit_channel(),
+        distances: mode_driven && params.color.out_coloring_mode.requires_distance_channel(),
+        orbits: mode_driven && params.color.out_coloring_mode.requires_orbit_channel(),
     }
 }
 
@@ -123,7 +123,7 @@ mod tests {
 
     fn params(t: FractalType, mode: OutColoringMode) -> FractalParams {
         let mut p = default_params_for_type(t, 8, 8);
-        p.out_coloring_mode = mode;
+        p.color.out_coloring_mode = mode;
         p
     }
 

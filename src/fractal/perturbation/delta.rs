@@ -102,7 +102,7 @@ impl BlaUnifiedCacheEntry {
             && self.orbit_len == orbit_len
             && self.fractal_type == params.fractal_type
             && (self.multibrot_power - params.multibrot_power).abs() <= 1e-12
-            && (self.bla_threshold - params.bla_threshold).abs() <= 1e-20
+            && (self.bla_threshold - params.perturbation.bla_threshold).abs() <= 1e-20
             && self.use_dd_tier == params.use_dd_tier
     }
 }
@@ -240,7 +240,7 @@ fn build_bla_entry(
         && matches!(params.fractal_type, FractalType::Mandelbrot)
         && ref_orbit.z_ref.len() >= 2
     {
-        let epsilon_fexp = FloatExp::from_f64(params.bla_threshold);
+        let epsilon_fexp = FloatExp::from_f64(params.perturbation.bla_threshold);
         let c_norm_fexp = {
             let (sx, sy) = crate::fractal::perturbation::effective_spans_fexp(params);
             let px = sx
@@ -319,7 +319,7 @@ fn build_bla_entry(
         orbit_len,
         fractal_type: params.fractal_type,
         multibrot_power: params.multibrot_power,
-        bla_threshold: params.bla_threshold,
+        bla_threshold: params.perturbation.bla_threshold,
         formula: formula.clone(),
         tables,
         use_dd_tier: params.use_dd_tier,
@@ -720,8 +720,8 @@ fn try_bytecode_unified_path(
                         *delta0,
                         params.iteration_max,
                         params.bailout,
-                        params.max_perturb_iterations,
-                        params.max_bla_steps,
+                        params.perturbation.max_perturb_iterations,
+                        params.perturbation.max_bla_steps,
                     );
                 return Some(crate::fractal::bytecode::pixel_loop::UnifiedPixelResult {
                     iteration: res_exp.iteration,
@@ -786,7 +786,7 @@ fn try_bytecode_unified_path(
                         dc_approx,
                         params.iteration_max,
                         params.bailout,
-                        params.max_perturb_iterations,
+                        params.perturbation.max_perturb_iterations,
                     ),
                 );
             }
@@ -1908,7 +1908,7 @@ pub fn iterate_pixel_with_dd(request: PerturbPixelRequest<'_>) -> DeltaResult {
     // let center_threshold = pixel_size_sqr * 0.01;
     // let delta_threshold = pixel_size_sqr * 1e-8;
     // let is_center_like = dc_norm_sqr < center_threshold && delta_norm_sqr_initial < delta_threshold;
-    let adaptive_tolerance = compute_adaptive_glitch_tolerance(pixel_size, params.glitch_tolerance);
+    let adaptive_tolerance = compute_adaptive_glitch_tolerance(pixel_size, params.perturbation.glitch_tolerance);
     let glitch_tolerance_sqr = adaptive_tolerance * adaptive_tolerance;
     let is_julia = params.fractal_type == FractalType::Julia;
     let is_burning_ship = params.fractal_type == FractalType::BurningShip;
@@ -1942,7 +1942,7 @@ pub fn iterate_pixel_with_dd(request: PerturbPixelRequest<'_>) -> DeltaResult {
     // of iterations based on its position in the image. Pixels near the center
     // can often skip more iterations than edge pixels.
     if let Some(table) = series_table {
-        if params.series_standalone && !is_burning_ship && !is_multibrot && !is_tricorn {
+        if params.perturbation.series_standalone && !is_burning_ship && !is_multibrot && !is_tricorn {
             // Compute per-pixel series skip using tiled validation if available
             let pixel_max_skip = if let Some(ref tiled) = table.tiled_validation {
                 // Estimate pixel position from dc (reuse pre-cached dc_f64)
@@ -2020,8 +2020,8 @@ pub fn iterate_pixel_with_dd(request: PerturbPixelRequest<'_>) -> DeltaResult {
     // 2. If no BLA was applied, do a perturbation iteration (fast f64 batch when possible)
     // 3. Check for rebasing opportunities after perturbation step
     // Limites séparées (C++: iters_ptb < PerturbIterations && steps_bla < BLASteps)
-    let limit_ptb = params.max_perturb_iterations;
-    let limit_bla = params.max_bla_steps;
+    let limit_ptb = params.perturbation.max_perturb_iterations;
+    let limit_bla = params.perturbation.max_bla_steps;
 
     // BLA level hint: track last successful level to avoid scanning from the top each time.
     // As delta grows, the valid BLA level tends to decrease monotonically, so starting

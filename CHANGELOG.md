@@ -148,6 +148,12 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
   plus rapide, pixel-exact GMP (`GLITCH_FALLBACK_THRESHOLD`, `perturbation/mod.rs`).
 
 ### Modifié
+- **`FractalParams` regroupé** : les réglages de perturbation, de couleur et
+  d'échantillonnage sous-pixel vivent désormais dans trois sous-structures
+  (`params.perturbation.*`, `params.color.*`, `params.sampling.*`) au lieu de
+  flotter dans une struct plate d'une cinquantaine de champs. La
+  **sérialisation ne change pas** : les clés restent à plat, donc les PNG,
+  `.fmap` et TOML déjà écrits se relisent à l'identique.
 - **Affichage des densités invariant d'échelle** : la compression
   logarithmique se rapporte désormais à un quantile haut de la densité, et non
   à sa valeur brute. Le contraste ne dépend plus du budget d'échantillons —

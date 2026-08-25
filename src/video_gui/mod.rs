@@ -219,9 +219,9 @@ impl VideoStudioApp {
             view: HpView::new(p.center_x, p.center_y, p.span_x),
             type_idx: 0,
             outcoloring_idx: 0,
-            palette: p.color_mode,
-            color_repeat: p.color_repeat,
-            color_space: p.color_space,
+            palette: p.color.color_mode,
+            color_repeat: p.color.color_repeat,
+            color_space: p.color.color_space,
             seed: p.seed,
             multibrot_power: p.multibrot_power,
             preview_iters: 1000,
@@ -289,7 +289,7 @@ impl VideoStudioApp {
         let mut p = default_params_for_type(ftype, w, h);
         p.seed = self.seed;
         p.multibrot_power = self.multibrot_power;
-        p.color_space = self.color_space;
+        p.color.color_space = self.color_space;
         let prec = nav::view_precision(&self.view.sx);
         let cx = Float::parse(&self.view.cx).ok().map(|v| Float::with_val(prec, v))?;
         let cy = Float::parse(&self.view.cy).ok().map(|v| Float::with_val(prec, v))?;
@@ -309,11 +309,11 @@ impl VideoStudioApp {
         p.span_y_hp = Some(sy.to_string_radix(10, None));
         let iters = self.preview_iters.max(50);
         p.iteration_max = iters;
-        p.max_perturb_iterations = iters;
-        p.max_bla_steps = iters;
-        p.color_mode = self.palette;
-        p.color_repeat = self.color_repeat.max(1);
-        p.out_coloring_mode =
+        p.perturbation.max_perturb_iterations = iters;
+        p.perturbation.max_bla_steps = iters;
+        p.color.color_mode = self.palette;
+        p.color.color_repeat = self.color_repeat.max(1);
+        p.color.out_coloring_mode =
             OutColoringMode::from_cli_name(self.current_outcoloring()).unwrap_or(OutColoringMode::Smooth);
         Some(p)
     }
@@ -406,10 +406,10 @@ impl VideoStudioApp {
             cy: params.center_y_hp.clone().unwrap_or_else(|| params.center_y.to_string()),
             sx: params.span_x_hp.clone().unwrap_or_else(|| params.span_x.to_string()),
         };
-        self.palette = params.color_mode;
-        self.color_repeat = params.color_repeat;
-        self.color_space = params.color_space;
-        self.outcoloring_idx = studio_outcoloring_index(params.out_coloring_mode).unwrap_or(0);
+        self.palette = params.color.color_mode;
+        self.color_repeat = params.color.color_repeat;
+        self.color_space = params.color.color_space;
+        self.outcoloring_idx = studio_outcoloring_index(params.color.out_coloring_mode).unwrap_or(0);
         self.seed = params.seed;
         self.multibrot_power = params.multibrot_power;
         self.preview_iters = params.iteration_max;
@@ -956,11 +956,11 @@ impl VideoStudioApp {
                 ..
             } => {
                 let mut p = default_params_for_type(*fractal_type, *w, *h);
-                p.color_space = self.color_space;
+                p.color.color_space = self.color_space;
                 p.iteration_max = *iter_max;
-                p.color_mode = self.palette;
-                p.color_repeat = self.color_repeat.max(1);
-                p.out_coloring_mode = OutColoringMode::from_cli_name(self.current_outcoloring())
+                p.color.color_mode = self.palette;
+                p.color.color_repeat = self.color_repeat.max(1);
+                p.color.out_coloring_mode = OutColoringMode::from_cli_name(self.current_outcoloring())
                     .unwrap_or(OutColoringMode::Smooth);
                 let mut rgb = colorize_buffers(&p, iterations, zs, &[], &[], *w, *h);
                 if self.settings.lighting {
@@ -1182,7 +1182,7 @@ impl VideoStudioApp {
                     if ui.selectable_value(&mut self.type_idx, i, *label).changed() {
                         let p = default_params_for_type(STUDIO_TYPES[i].1, 800, 600);
                         self.view = HpView::new(p.center_x, p.center_y, p.span_x);
-                        self.color_space = p.color_space;
+                        self.color_space = p.color.color_space;
                         self.seed = p.seed;
                         self.multibrot_power = p.multibrot_power;
                         self.orbit_cache = None;

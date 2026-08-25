@@ -668,8 +668,8 @@ impl ReferenceOrbitCache {
             && self.iteration_max >= params.iteration_max
             && (self.seed_re - params.seed.re).abs() < 1e-15
             && (self.seed_im - params.seed.im).abs() < 1e-15
-            && (self.bla_threshold - params.bla_threshold).abs() < 1e-20
-            && (self.bla_validity_scale - params.bla_validity_scale).abs() < 1e-10
+            && (self.bla_threshold - params.perturbation.bla_threshold).abs() < 1e-20
+            && (self.bla_validity_scale - params.perturbation.bla_validity_scale).abs() < 1e-10
     }
 
     /// Create a new cache from computed orbit and BLA table.
@@ -699,8 +699,8 @@ impl ReferenceOrbitCache {
             iteration_max: params.iteration_max,
             seed_re: params.seed.re,
             seed_im: params.seed.im,
-            bla_threshold: params.bla_threshold,
-            bla_validity_scale: params.bla_validity_scale,
+            bla_threshold: params.perturbation.bla_threshold,
+            bla_validity_scale: params.perturbation.bla_validity_scale,
             hybrid_refs,
             view_span_x: params
                 .span_x_hp
@@ -771,8 +771,8 @@ impl ReferenceOrbitCache {
             && self.iteration_max >= params.iteration_max
             && (self.seed_re - params.seed.re).abs() < 1e-15
             && (self.seed_im - params.seed.im).abs() < 1e-15
-            && (self.bla_threshold - params.bla_threshold).abs() < 1e-20
-            && (self.bla_validity_scale - params.bla_validity_scale).abs() < 1e-10)
+            && (self.bla_threshold - params.perturbation.bla_threshold).abs() < 1e-20
+            && (self.bla_validity_scale - params.perturbation.bla_validity_scale).abs() < 1e-10)
         {
             return false;
         }
@@ -1306,7 +1306,7 @@ pub fn compute_reference_orbit_cached(
             && (force_series
                 || (series_will_be_used
                     && !series_dead_for_atom
-                    && adjusted_params.series_standalone
+                    && adjusted_params.perturbation.series_standalone
                     && matches!(
                         adjusted_params.fractal_type,
                         FractalType::Mandelbrot | FractalType::Julia
@@ -1321,7 +1321,7 @@ pub fn compute_reference_orbit_cached(
             let adaptive_order = compute_adaptive_series_order(
                 pixel_size,
                 adjusted_params.iteration_max,
-                adjusted_params.series_order,
+                adjusted_params.perturbation.series_order,
             );
             let series_order = adaptive_order.max(4);
             let interval = if orbit.z_ref_f64.len() > 100_000 {

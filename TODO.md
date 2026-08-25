@@ -1793,6 +1793,23 @@ v0.8.2 — chaque chantier ferme LA CLASSE dont plusieurs bugs sont issus)** :
      canonique de la vue.
 5. [ ] Réduire les champs historiques de `FractalParams` en sous-structures
    cohérentes.
+   - **Jalon 1 `[2026-08-25]`** : trois groupes sortis de la struct plate —
+     `PerturbationParams` (13 réglages BLA/série/glitch/bornes, lus par le seul
+     `fractal::perturbation` et les boucles pixel), `ColorParams` (palette,
+     espace, offset, mode extérieur) et `SamplingParams` (jitter + les deux
+     champs transitoires d'AA, dont la règle de priorité est désormais portée
+     par le type). 177 accès migrés à la frontière, guidés par le compilateur.
+     ⚠️ **Sérialisation inchangée** : `#[serde(flatten)]` + noms de champs
+     conservés ⇒ les clés JSON restent À PLAT, donc les PNG, `.fmap` et TOML
+     déjà écrits se relisent à l'identique (verrous
+     `grouped_params_serialize_flat` — aucune clé imbriquée, clé à plat lue
+     dans la sous-structure, clé absente ⇒ défaut du champ — et
+     `legacy_png_populates_grouped_params` sur un PNG réel du dépôt, aux
+     valeurs non triviales). 446 unit + 24 goldens + 8 e2e verts, métadonnées
+     PNG comparées clé à clé à un golden antérieur. Restent à grouper la
+     géométrie (déjà possédée par `ViewHp` côté navigation), les canaux
+     annexes (distance/intérieur/orbit traps) et la formule (hybrides,
+     opcodes, multibrot).
 6. [x] **✅ Tests e2e de navigation profonde (types spéciaux) `[2026-08-25]`** :
    `tests/deep_navigation.rs` (cible CI dédiée, ~9 s) part de `ViewHp`, applique
    de VRAIES opérations de navigation (molette ancrée, pan, sélection

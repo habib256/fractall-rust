@@ -1,6 +1,9 @@
 use num_complex::Complex64;
 
-use crate::fractal::{AlgorithmMode, FractalParams, FractalType, OutColoringMode, PlaneTransform, ColorSpace};
+use crate::fractal::{
+    AlgorithmMode, ColorParams, ColorSpace, FractalParams, FractalType, OutColoringMode,
+    PerturbationParams, PlaneTransform, SamplingParams,
+};
 use crate::fractal::lyapunov::{LyapunovConfig, LyapunovPreset};
 use crate::fractal::orbit_traps::OrbitTrapType;
 
@@ -33,28 +36,38 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         iteration_max: 2500,
         bailout: 4.0,
         fractal_type,
-        color_mode: 6,   // SmoothPlasma (défaut dans le projet C)
-        color_repeat: 40,
-        color_offset: 0.0,
-        color_space: ColorSpace::Rgb,
+        color: ColorParams {
+            color_mode: 6, // SmoothPlasma (défaut dans le projet C)
+            color_repeat: 40,
+            color_offset: 0.0,
+            color_space: ColorSpace::Rgb,
+            out_coloring_mode: OutColoringMode::Smooth,
+        },
+        sampling: SamplingParams {
+            jitter_scale: 0.0,
+            aa_subpixel_offset: [0.0, 0.0],
+            aa_jitter: None,
+        },
         use_gmp: false,
         precision_bits: 256,
         algorithm_mode: AlgorithmMode::Auto,
-        // Aligné Fraktaler-3 (`engine.cc:283`) : 1.0 / (1 << 24) ≈ 5.96e-8.
-        bla_threshold: 1.0 / (1u64 << 24) as f64,
-        bla_validity_scale: 1.0,
-        glitch_tolerance: 1e-4,
-        series_order: 2,
-        series_threshold: 1e-6,
-        series_error_tolerance: 1e-9,
-        glitch_neighbor_pass: true,
-        series_standalone: true,
-        max_secondary_refs: 3,
-        min_glitch_cluster_size: 100,
+        perturbation: PerturbationParams {
+            // Aligné Fraktaler-3 (`engine.cc:283`) : 1.0 / (1 << 24) ≈ 5.96e-8.
+            bla_threshold: 1.0 / (1u64 << 24) as f64,
+            bla_validity_scale: 1.0,
+            glitch_tolerance: 1e-4,
+            series_order: 2,
+            series_threshold: 1e-6,
+            series_error_tolerance: 1e-9,
+            glitch_neighbor_pass: true,
+            series_standalone: true,
+            max_secondary_refs: 3,
+            min_glitch_cluster_size: 100,
+            max_perturb_iterations: 1024,
+            max_bla_steps: 1024,
+            use_reference_precision_formula: true,
+        },
         multibrot_power: 2.5,
-        max_perturb_iterations: 1024,
-        max_bla_steps: 1024,
-        use_reference_precision_formula: true,
         lyapunov_preset: LyapunovPreset::default(),
         lyapunov_sequence: Vec::new(),
         // Enable distance estimation and interior detection by default for better rendering
@@ -62,13 +75,9 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         enable_distance_estimation: false, // Can be enabled for distance field coloring
         enable_interior_detection: false,   // Disabled for now
         interior_threshold: 0.001,
-        out_coloring_mode: OutColoringMode::Smooth,
         plane_transform: PlaneTransform::Mu,
         enable_orbit_traps: false,
         orbit_trap_type: OrbitTrapType::Point,
-        jitter_scale: 0.0,
-        aa_subpixel_offset: [0.0, 0.0],
-        aa_jitter: None,
         // Activé par défaut depuis P3.1 Session E : path bytecode unifié
         // (BLA mat2 + delta-form + rebasing F3) remplace le path legacy
         // (glitch detection Pauldelbrot + secondary refs) quand applicable.
@@ -256,7 +265,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
             params.iteration_max = 220;
-            params.color_repeat = 1; // densité: 1 par défaut, max 8
+            params.color.color_repeat = 1; // densité: 1 par défaut, max 8
         }
         FractalType::Lyapunov => {
             // Lyapunov_def - Zircon City par défaut
@@ -304,7 +313,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 100.0;
             params.iteration_max = 1000;
-            params.color_repeat = 2;
+            params.color.color_repeat = 2;
         }
         FractalType::Nova => {
             // Nova_def: xmin=-3.0, xmax=3.0, ymin=-2.0, ymax=2.0
@@ -398,7 +407,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
             params.iteration_max = 2500;
-            params.color_repeat = 1; // densité: 1 par défaut, max 8
+            params.color.color_repeat = 1; // densité: 1 par défaut, max 8
         }
         FractalType::AntiBuddhabrot => {
             // Anti-Buddhabrot: mêmes bornes que Buddhabrot, iterations plus élevées
@@ -409,7 +418,7 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             params.seed = Complex64::new(0.0, 0.0);
             params.bailout = 4.0;
             params.iteration_max = 500;
-            params.color_repeat = 1; // densité: 1 par défaut, max 8
+            params.color.color_repeat = 1; // densité: 1 par défaut, max 8
         }
     }
 

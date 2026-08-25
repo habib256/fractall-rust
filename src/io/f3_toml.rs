@@ -30,8 +30,8 @@ pub fn to_f3_toml(params: &FractalParams) -> String {
         "program = \"fraktaler-3\"\nversion = \"3.1\"\n\n[location]\nreal = {}\nimag = {}\nzoom = {}\n\n[bailout]\niterations = {}\nmaximum_reference_iterations = {}\nmaximum_perturb_iterations = {}\nmaximum_bla_steps = {}\nescape_radius = {}\n\n[image]\nwidth = {}\nheight = {}\nsubframes = 1\n\n[transform]\nrotate = {}\n",
         quoted(real), quoted(imag), quoted(&view.zoom_string()),
         params.iteration_max, params.iteration_max,
-        params.max_perturb_iterations.max(params.iteration_max),
-        params.max_bla_steps.max(params.iteration_max), params.bailout,
+        params.perturbation.max_perturb_iterations.max(params.iteration_max),
+        params.perturbation.max_bla_steps.max(params.iteration_max), params.bailout,
         params.width, params.height, params.rotation,
     );
 

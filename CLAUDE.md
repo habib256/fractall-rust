@@ -315,6 +315,14 @@ boucles pixel ; si un jour dz est exporté, brancher ici).
 
 `center + span` (pas `xmin/xmax/ymin/ymax`) :
 
+⚠️ Les réglages de `FractalParams` sont regroupés en sous-structures
+(`params.perturbation.*` BLA/série/glitch/bornes, `params.color.*` palette et
+mode extérieur, `params.sampling.*` jitter et état AA transitoire). Elles sont
+**sérialisées à plat** (`#[serde(flatten)]`, noms de champs conservés) : les
+PNG, `.fmap` et TOML antérieurs se relisent à l'identique — ne jamais renommer
+un champ ni retirer le `flatten` sans casser cette compatibilité (verrous
+`grouped_params_serialize_flat`, `legacy_png_populates_grouped_params`).
+
 ```rust
 pub struct FractalParams {
     pub center_x: f64,           // f64 GPU/CPU standard

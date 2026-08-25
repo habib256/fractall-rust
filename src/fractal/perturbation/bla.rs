@@ -404,8 +404,8 @@ pub fn build_bla_table(
     let is_burning_ship = params.fractal_type == FractalType::BurningShip;
     let mut levels: Vec<Vec<BlaNode>> = Vec::new();
     // Step 1: Create M BLAs each skipping 1 iteration (this can be done in parallel)
-    let base_threshold = params.bla_threshold.max(1e-16);
-    let validity_scale = params.bla_validity_scale.clamp(0.1, 100.0);
+    let base_threshold = params.perturbation.bla_threshold.max(1e-16);
+    let validity_scale = params.perturbation.bla_validity_scale.clamp(0.1, 100.0);
     let power = params.multibrot_power;
     let fractal_type = params.fractal_type;
 
@@ -727,8 +727,8 @@ pub fn build_bla_table_nonconformal(
         return None;
     }
 
-    let base_threshold = params.bla_threshold.max(1e-16);
-    let validity_scale = params.bla_validity_scale.clamp(0.1, 100.0);
+    let base_threshold = params.perturbation.bla_threshold.max(1e-16);
+    let validity_scale = params.perturbation.bla_validity_scale.clamp(0.1, 100.0);
     let max_validity = base_threshold * validity_scale * 10.0;
     // `c` du merge BLA = rayon image en espace-c (max |δc|, F3 `engine.cc:282`),
     // et NON |cref|. (F3 ignore même c au single-step, `hybrid.h:144` `(void)c`.)
@@ -845,8 +845,8 @@ mod nonconformal_tests {
         p.iteration_max = 100;
         p.precision_bits = 192;
         p.algorithm_mode = AlgorithmMode::Perturbation;
-        p.bla_threshold = 1e-6;
-        p.glitch_neighbor_pass = false;
+        p.perturbation.bla_threshold = 1e-6;
+        p.perturbation.glitch_neighbor_pass = false;
         p
     }
 

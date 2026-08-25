@@ -196,7 +196,7 @@ pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32
         None => return params.precision_bits.max(128),
     };
 
-    let final_bits = if params.use_reference_precision_formula {
+    let final_bits = if params.perturbation.use_reference_precision_formula {
         let log2_height = (params.height as f64).max(1.0).log2();
         let exp = (log2_zoom + log2_height).floor() as i64;
         let bits = if exp >= 0 { (24 + exp) as i64 } else { 24 } as u64;

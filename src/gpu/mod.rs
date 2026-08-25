@@ -526,7 +526,7 @@ impl GpuRenderer {
         // L'AA par pixel est câblé dans le kernel bytecode et le kernel de
         // perturbation. Les anciens shaders dédiés ne transportent pas encore
         // le sample : retomber sur le CPU plutôt que produire N passes égales.
-        if params.aa_jitter.is_some()
+        if params.sampling.aa_jitter.is_some()
             && !use_perturbation
             && (!params.use_bytecode_engine
                 || !matches!(params.plane_transform, crate::fractal::PlaneTransform::Mu))
@@ -882,13 +882,13 @@ impl GpuRenderer {
                             _ => 0,
                         },
                         ref_len,
-                        series_order: params.series_order as u32,
-                        series_threshold: params.series_threshold as f32,
+                        series_order: params.perturbation.series_order as u32,
+                        series_threshold: params.perturbation.series_threshold as f32,
                         cycle_start: ref_orbit.cycle_start,
                         cycle_period: ref_orbit.cycle_period,
                         atom_truncated: ref_orbit.atom_truncated as u32,
-                        aa_sample: params.aa_jitter.map_or(0, |(k, _)| k as u32),
-                        aa_scale: params.aa_jitter.map_or(0.0, |(_, scale)| scale as f32),
+                        aa_sample: params.sampling.aa_jitter.map_or(0, |(k, _)| k as u32),
+                        aa_scale: params.sampling.aa_jitter.map_or(0.0, |(_, scale)| scale as f32),
                         _pad: [0; 2],
                     }
                 }),
@@ -1115,7 +1115,7 @@ impl GpuRenderer {
         // Fast-path petites images: éviter le post-traitement voisinage (coût fixe non négligeable)
         // Comme côté CPU, désactiver neighbor_pass pour petites images
         let small_image = params.width.max(params.height) <= 512;
-        if !small_image && params.glitch_neighbor_pass {
+        if !small_image && params.perturbation.glitch_neighbor_pass {
             let neighbor_threshold = (params.iteration_max / 50).max(8);
             let neighbor_mask = mark_neighbor_glitches(
                 &iterations,
@@ -1870,8 +1870,8 @@ impl ParamsBytecode {
             k01,
             k10,
             k11,
-            aa_sample: params.aa_jitter.map_or(0, |(k, _)| k as u32),
-            aa_scale: params.aa_jitter.map_or(0.0, |(_, scale)| scale as f32),
+            aa_sample: params.sampling.aa_jitter.map_or(0, |(k, _)| k as u32),
+            aa_scale: params.sampling.aa_jitter.map_or(0.0, |(_, scale)| scale as f32),
             _pad: [0; 2],
         }
     }
@@ -1892,8 +1892,8 @@ impl ParamsF32 {
             iter_max: params.iteration_max,
             plane_transform: params.plane_transform.id() as u32,
             bailout: params.bailout as f32,
-            aa_sample: params.aa_jitter.map_or(0, |(k, _)| k as u32),
-            aa_scale: params.aa_jitter.map_or(0.0, |(_, scale)| scale as f32),
+            aa_sample: params.sampling.aa_jitter.map_or(0, |(k, _)| k as u32),
+            aa_scale: params.sampling.aa_jitter.map_or(0.0, |(_, scale)| scale as f32),
             _pad2: 0.0,
             _pad3: [0; 4],
         }

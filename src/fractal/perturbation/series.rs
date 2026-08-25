@@ -696,9 +696,9 @@ pub struct SeriesConfig {
 impl SeriesConfig {
     pub fn from_params(params: &FractalParams) -> Self {
         Self {
-            order: params.series_order,
-            threshold: params.series_threshold.max(0.0),
-            error_tolerance: params.series_error_tolerance.max(0.0),
+            order: params.perturbation.series_order,
+            threshold: params.perturbation.series_threshold.max(0.0),
+            error_tolerance: params.perturbation.series_error_tolerance.max(0.0),
         }
     }
 }

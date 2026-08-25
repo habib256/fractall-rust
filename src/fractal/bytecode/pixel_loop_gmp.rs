@@ -80,7 +80,7 @@ pub fn iterate_pixel_gmp(request: GmpPixelRequest<'_>) -> DeltaResult {
     // Precompute glitch tolerance outside the loop to avoid repeated GMP allocations
     let pixel_size_gmp = params.span_x / params.width as f64;
     let adaptive_tolerance_gmp =
-        compute_adaptive_glitch_tolerance(pixel_size_gmp, params.glitch_tolerance);
+        compute_adaptive_glitch_tolerance(pixel_size_gmp, params.perturbation.glitch_tolerance);
     let glitch_tolerance_sqr_gmp =
         Float::with_val(prec, adaptive_tolerance_gmp * adaptive_tolerance_gmp);
     let min_scale_gmp = Float::with_val(prec, 1e-6);
