@@ -1,5 +1,18 @@
 //! Machine d'état pure de progression rendu progressif + anti-aliasing.
 
+/// Normalise l'amplitude du filtre AA exprimée en pixels.
+///
+/// La borne correspond au contrat CLI : zéro désactive le déplacement et un
+/// filtre tente complet vaut `1.0`. Garder cette règle hors d'egui permet de
+/// tester le paramètre réellement transmis au moteur.
+pub fn normalized_jitter_scale(scale: f64) -> f64 {
+    if scale.is_finite() {
+        scale.clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RenderProgress {
     completed_passes: u8,
@@ -42,6 +55,15 @@ impl RenderProgress {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jitter_scale_is_finite_and_bounded() {
+        assert_eq!(normalized_jitter_scale(-0.5), 0.0);
+        assert_eq!(normalized_jitter_scale(0.35), 0.35);
+        assert_eq!(normalized_jitter_scale(2.0), 1.0);
+        assert_eq!(normalized_jitter_scale(f64::NAN), 1.0);
+        assert_eq!(normalized_jitter_scale(f64::INFINITY), 1.0);
+    }
 
     #[test]
     fn progress_is_monotone_and_bounded_by_plan() {

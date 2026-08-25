@@ -2072,8 +2072,10 @@ v0.8.2 — chaque chantier ferme LA CLASSE dont plusieurs bugs sont issus)** :
   `aa_jitter_flows_through_and_is_deterministic` (déterminisme + ≠ non-jitteré +
   ≠ offset uniforme + k traverse Halton). Vérifié e2e : f64 (zoom 200,
   584→5694 couleurs), perturbation e13 (578→5752), dd e13 (sans crash).
-- [ ] **AA polish restant** : exposer `--jitter-scale` dans la GUI ; AA sur le
-  path GPU.
+- [x] **✅ Échelle du jitter AA dans la GUI `[2026-08-25]`** — contrôle 0..=1
+  pixel, actif uniquement avec l'AA CPU, transmis au même contrat
+  `aa_jitter` que le CLI et normalisé par une fonction pure testée.
+- [ ] **AA polish restant** : AA sur le path GPU.
 
 ### G7 — I/O & interop · `[P2]`
 

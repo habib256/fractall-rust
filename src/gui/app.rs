@@ -179,6 +179,8 @@ pub struct FractallApp {
     /// Après les passes progressives, N-1 samples plein cadre supplémentaires
     /// sont rendus avec offset sous-pixel et moyennés en RGB (CPU uniquement).
     aa_samples: u32,
+    /// Amplitude du filtre tente sous-pixel, dans l'intervalle 0..=1 pixel.
+    aa_jitter_scale: f64,
     /// Progression AA courante affichée dans le panneau (sample, total).
     /// Couleurs (palette, repeat, mode, espace) figées au lancement du rendu :
     /// les moyennes AA arrivent déjà colorisées avec elles — si l'utilisateur a
@@ -386,6 +388,7 @@ impl FractallApp {
             render_progress: Default::default(),
             is_preview: false,
             aa_samples: 1,
+            aa_jitter_scale: 1.0,
             render_color_key: (
                 6,
                 40,
@@ -977,7 +980,8 @@ impl FractallApp {
         let orbit_cache = self.orbit_cache.clone();
         // Anti-aliasing multi-sample (per-frame jitter), CPU uniquement.
         let aa_samples = if use_gpu { 1 } else { self.aa_samples.max(1) };
-        let aa_jitter_scale = 1.0f64;
+        let aa_jitter_scale =
+            crate::gui::render_state::normalized_jitter_scale(self.aa_jitter_scale);
         self.render_progress.begin(config.passes.len(), aa_samples);
         self.render_color_key = (
             params.color_mode,
@@ -3051,6 +3055,20 @@ impl eframe::App for FractallApp {
                             "Anti-aliasing : échantillons sous-pixel jitterés moyennés (CPU). Off = désactivé.",
                         );
                     if self.aa_samples != prev_aa {
+                        self.start_render();
+                    }
+
+                    let prev_jitter_scale = self.aa_jitter_scale;
+                    ui.add_enabled(
+                        self.aa_samples > 1 && !self.use_gpu,
+                        egui::Slider::new(&mut self.aa_jitter_scale, 0.0..=1.0)
+                            .text("filtre")
+                            .fixed_decimals(2),
+                    )
+                    .on_hover_text(
+                        "Amplitude du jitter AA en pixels : 0 = centre du pixel, 1 = filtre tente complet.",
+                    );
+                    if self.aa_jitter_scale != prev_jitter_scale {
                         self.start_render();
                     }
 
