@@ -31,11 +31,11 @@ fn z0_and_c(ft: FractalType, params: &FractalParams, pixel: Complex64) -> (Compl
 fn iso_test(ft: FractalType, grid_extent: f64, grid_n: usize) {
     let mut params = default_params_for_type(ft, 100, 100);
     // Désactive features qui divergent du coeur escape-time.
-    params.enable_orbit_traps = true; // désactive le path périodicité Mandelbrot
-    params.enable_distance_estimation = false;
+    params.channels.enable_orbit_traps = true; // désactive le path périodicité Mandelbrot
+    params.channels.enable_distance_estimation = false;
     params.iteration_max = 256;
 
-    let formula = compile_formula(ft, params.multibrot_power)
+    let formula = compile_formula(ft, params.formula.multibrot_power)
         .unwrap_or_else(|| panic!("compile_formula({:?}) returned None", ft));
 
     let mut divergences = 0usize;
@@ -143,8 +143,8 @@ fn multibrot_integer_iso() {
     // multibrot_power par défaut = 2.5 (non entier) → on doit le forcer entier.
     for power in [2.0_f64, 3.0, 4.0, 5.0, 7.0] {
         let mut params = default_params_for_type(FractalType::Multibrot, 100, 100);
-        params.multibrot_power = power;
-        params.enable_orbit_traps = true;
+        params.formula.multibrot_power = power;
+        params.channels.enable_orbit_traps = true;
         params.iteration_max = 256;
 
         let formula =

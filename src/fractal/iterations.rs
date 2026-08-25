@@ -31,9 +31,9 @@ fn iterate_via_bytecode(params: &FractalParams, z_pixel: Complex64) -> FractalRe
         (params.seed, z_pixel)
     };
 
-    let needs_orbit = params.enable_orbit_traps;
-    let needs_distance = params.enable_distance_estimation;
-    let needs_interior = params.enable_interior_detection;
+    let needs_orbit = params.channels.enable_orbit_traps;
+    let needs_distance = params.channels.enable_distance_estimation;
+    let needs_interior = params.channels.enable_interior_detection;
 
     if needs_orbit || needs_distance || needs_interior {
         // Path avec tracking : itère manuellement pour hooker orbit_data,
@@ -63,7 +63,7 @@ fn iterate_via_bytecode(params: &FractalParams, z_pixel: Complex64) -> FractalRe
         // à l'ancien comportement mono-phase, goldens inchangés).
         let n_phases = formula.phases.len();
         let mut orbit_data = if needs_orbit {
-            let mut od = OrbitData::new(params.orbit_trap_type);
+            let mut od = OrbitData::new(params.channels.orbit_trap_type);
             od.add_point(z, 0);
             Some(od)
         } else {
@@ -156,7 +156,7 @@ fn iterate_via_bytecode(params: &FractalParams, z_pixel: Complex64) -> FractalRe
         let mut z_out = z;
         if needs_interior && iter >= params.iteration_max {
             let dz_norm = dz.norm();
-            if dz_norm.is_finite() && dz_norm > 0.0 && dz_norm < params.interior_threshold {
+            if dz_norm.is_finite() && dz_norm > 0.0 && dz_norm < params.channels.interior_threshold {
                 z_out = Complex64::new(z.re, -z.im.abs());
             }
         }
@@ -233,11 +233,11 @@ fn mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let mut z_old = z;
     let mut period = 0u32;
     let mut check_period = 1u32;
-    let use_periodicity = !p.enable_orbit_traps && !p.enable_distance_estimation;
+    let use_periodicity = !p.channels.enable_orbit_traps && !p.channels.enable_distance_estimation;
     let bailout_sqr = p.bailout * p.bailout;
 
     // Cardioid and period-2 bulb detection (skip if orbit traps or distance estimation needed)
-    if !p.enable_orbit_traps && !p.enable_distance_estimation {
+    if !p.channels.enable_orbit_traps && !p.channels.enable_distance_estimation {
         let re = z_pixel.re;
         let im_sq = z_pixel.im * z_pixel.im;
         // Cardioid: q*(q + re - 0.25) <= 0.25*im^2
@@ -252,8 +252,8 @@ fn mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     }
 
     // Initialiser orbit data si orbit traps activés
-    let mut orbit_data = if p.enable_orbit_traps {
-        Some(OrbitData::new(p.orbit_trap_type))
+    let mut orbit_data = if p.channels.enable_orbit_traps {
+        Some(OrbitData::new(p.channels.orbit_trap_type))
     } else {
         None
     };
@@ -301,7 +301,7 @@ fn mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         z = Complex64::new(z_pixel.re * 10.0, z_pixel.im * 10.0);
     }
     // Estimation de distance Mandelbrot: d = 2 * |z| * ln(|z|) / |dz/dc|
-    let distance = if p.enable_distance_estimation && i < p.iteration_max && i > 0 {
+    let distance = if p.channels.enable_distance_estimation && i < p.iteration_max && i > 0 {
         let z_norm = z.norm().max(2.0);
         let dz_norm = dz.norm();
         if dz_norm > 1e-300 && z_norm > 1.0 {
@@ -324,11 +324,11 @@ fn julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let mut z_old = z;
     let mut period = 0u32;
     let mut check_period = 1u32;
-    let use_periodicity = !p.enable_orbit_traps && !p.enable_distance_estimation;
+    let use_periodicity = !p.channels.enable_orbit_traps && !p.channels.enable_distance_estimation;
     let bailout_sqr = p.bailout * p.bailout;
 
-    let mut orbit_data = if p.enable_orbit_traps {
-        Some(OrbitData::new(p.orbit_trap_type))
+    let mut orbit_data = if p.channels.enable_orbit_traps {
+        Some(OrbitData::new(p.channels.orbit_trap_type))
     } else {
         None
     };
@@ -367,7 +367,7 @@ fn julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         z = Complex64::new(p.seed.re * 10.0, p.seed.im * 10.0);
     }
     // Estimation de distance: d = |z| * ln(|z|) / |dz/dz_0|
-    let distance = if p.enable_distance_estimation && i < p.iteration_max && i > 0 {
+    let distance = if p.channels.enable_distance_estimation && i < p.iteration_max && i > 0 {
         let z_norm = z.norm().max(2.0);
         let dz_norm = dz.norm();
         if dz_norm > 1e-300 && z_norm > 1.0 {
@@ -576,8 +576,8 @@ fn burning_ship(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let mut i = 0u32;
     let bailout_sqr = p.bailout * p.bailout;
 
-    let mut orbit_data = if p.enable_orbit_traps {
-        Some(OrbitData::new(p.orbit_trap_type))
+    let mut orbit_data = if p.channels.enable_orbit_traps {
+        Some(OrbitData::new(p.channels.orbit_trap_type))
     } else {
         None
     };
@@ -822,7 +822,7 @@ fn multibrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     // Multibrot_Iteration (puissance configurable, défaut 2.5)
     let mut z = p.seed;
     let mut i = 0u32;
-    let d = p.multibrot_power;
+    let d = p.formula.multibrot_power;
     let bailout_sqr = p.bailout * p.bailout;
 
     // Check once if power is integer for fast-path
@@ -936,7 +936,7 @@ fn buffalo_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
 fn multibrot_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let mut z = z_pixel;
     let mut i = 0u32;
-    let d = p.multibrot_power;
+    let d = p.formula.multibrot_power;
     let bailout_sqr = p.bailout * p.bailout;
 
     // Check once if power is integer for fast-path

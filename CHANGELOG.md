@@ -158,9 +158,11 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
   pixel près. Rendus par défaut inchangés.
 
 ### Modifié
-- **`FractalParams` regroupé** : les réglages de perturbation, de couleur et
-  d'échantillonnage sous-pixel vivent désormais dans trois sous-structures
-  (`params.perturbation.*`, `params.color.*`, `params.sampling.*`) au lieu de
+- **`FractalParams` regroupé** : les réglages de perturbation, de couleur,
+  d'échantillonnage sous-pixel, de formule (Multibrot, hybrides, opcodes) et de
+  canaux annexes (distance, intérieur, orbit traps) vivent désormais dans cinq
+  sous-structures (`params.perturbation.*`, `params.color.*`,
+  `params.sampling.*`, `params.formula.*`, `params.channels.*`) au lieu de
   flotter dans une struct plate d'une cinquantaine de champs. La
   **sérialisation ne change pas** : les clés restent à plat, donc les PNG,
   `.fmap` et TOML déjà écrits se relisent à l'identique.

@@ -176,7 +176,7 @@ impl GmpParams {
             bailout_sqr,
             seed: ComplexF::with_val(prec, params.seed.re, params.seed.im),
             fractal_type: params.fractal_type,
-            multibrot_power: params.multibrot_power,
+            multibrot_power: params.formula.multibrot_power,
         }
     }
 }
@@ -211,7 +211,7 @@ impl MpcParams {
             bailout_sqr,
             seed: Complex::with_val(prec, (params.seed.re, params.seed.im)),
             fractal_type: params.fractal_type,
-            multibrot_power: params.multibrot_power,
+            multibrot_power: params.formula.multibrot_power,
         }
     }
 }

@@ -223,7 +223,7 @@ impl VideoStudioApp {
             color_repeat: p.color.color_repeat,
             color_space: p.color.color_space,
             seed: p.seed,
-            multibrot_power: p.multibrot_power,
+            multibrot_power: p.formula.multibrot_power,
             preview_iters: 1000,
             preview_version: Default::default(),
             preview_cancel: Arc::new(AtomicBool::new(false)),
@@ -288,7 +288,7 @@ impl VideoStudioApp {
         let (_, ftype) = self.current_type();
         let mut p = default_params_for_type(ftype, w, h);
         p.seed = self.seed;
-        p.multibrot_power = self.multibrot_power;
+        p.formula.multibrot_power = self.multibrot_power;
         p.color.color_space = self.color_space;
         let prec = nav::view_precision(&self.view.sx);
         let cx = Float::parse(&self.view.cx).ok().map(|v| Float::with_val(prec, v))?;
@@ -411,7 +411,7 @@ impl VideoStudioApp {
         self.color_space = params.color.color_space;
         self.outcoloring_idx = studio_outcoloring_index(params.color.out_coloring_mode).unwrap_or(0);
         self.seed = params.seed;
-        self.multibrot_power = params.multibrot_power;
+        self.multibrot_power = params.formula.multibrot_power;
         self.preview_iters = params.iteration_max;
         self.settings.iterations = params.iteration_max;
         self.orbit_cache = None;
@@ -852,7 +852,7 @@ impl VideoStudioApp {
                         ftype,
                         m.fractal.r#type,
                         seed,
-                        m.fractal.multibrot_power.unwrap_or(defaults.multibrot_power),
+                        m.fractal.multibrot_power.unwrap_or(defaults.formula.multibrot_power),
                         m.color.color_space,
                         m.location.real.as_str(),
                         m.location.imag.as_str(),
@@ -1184,7 +1184,7 @@ impl VideoStudioApp {
                         self.view = HpView::new(p.center_x, p.center_y, p.span_x);
                         self.color_space = p.color.color_space;
                         self.seed = p.seed;
-                        self.multibrot_power = p.multibrot_power;
+                        self.multibrot_power = p.formula.multibrot_power;
                         self.orbit_cache = None;
                         self.preview_dirty = true;
                     }

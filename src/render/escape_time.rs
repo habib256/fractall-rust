@@ -363,8 +363,8 @@ fn render_escape_time_f64_cancellable_with_reuse(
         return Some(RenderOutput::without_extras(iterations, zs));
     }
 
-    let need_orbits = params.enable_orbit_traps;
-    let need_distances = params.enable_distance_estimation;
+    let need_orbits = params.channels.enable_orbit_traps;
+    let need_distances = params.channels.enable_distance_estimation;
     // Pré-calcul de la matrice de rotation (None si rotation == 0 → no-op).
     let rot = params.transform_matrix();
     // Offset sous-pixel AA per-frame (unités de pixel, [0,0] hors AA).
@@ -817,8 +817,8 @@ mod tests {
             "distances non demandées ⇒ canal absent"
         );
 
-        p.enable_orbit_traps = true;
-        p.enable_distance_estimation = true;
+        p.channels.enable_orbit_traps = true;
+        p.channels.enable_distance_estimation = true;
         let out = render_with_tiles(&p, None);
         assert_eq!(out.orbits.len(), n, "orbits demandées ⇒ canal complet");
         assert_eq!(

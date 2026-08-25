@@ -628,7 +628,7 @@ fn main() {
             }
         }
         if !phases.is_empty() {
-            params.hybrid_phases = Some(phases);
+            params.formula.hybrid_phases = Some(phases);
         }
     }
 
@@ -639,7 +639,7 @@ fn main() {
             eprintln!("--opcodes : formule invalide '{ops}' (mots: add sqr mul store absx absy negx negy rot{{DEG}} ; chaque phase finit par add)");
             std::process::exit(2);
         }
-        params.hybrid_opcodes = Some(ops.clone());
+        params.formula.hybrid_opcodes = Some(ops.clone());
     }
 
     // Applique d'abord les paramètres TOML (les overrides CLI explicites
@@ -682,7 +682,7 @@ fn main() {
                     }
                 }
                 if !phases.is_empty() {
-                    params.hybrid_phases = Some(phases);
+                    params.formula.hybrid_phases = Some(phases);
                 }
             }
         }
@@ -699,7 +699,7 @@ fn main() {
                     );
                     std::process::exit(2);
                 }
-                params.hybrid_opcodes = Some(ops.clone());
+                params.formula.hybrid_opcodes = Some(ops.clone());
             }
         }
 
@@ -855,15 +855,15 @@ fn main() {
     }
     if let Some(multibrot_power) = cli.multibrot_power {
         if multibrot_power > 0.0 {
-            params.multibrot_power = multibrot_power;
+            params.formula.multibrot_power = multibrot_power;
         }
     }
 
     // Distance estimation et interior detection
-    params.enable_distance_estimation = cli.enable_distance_estimation;
-    params.enable_interior_detection = cli.enable_interior_detection;
+    params.channels.enable_distance_estimation = cli.enable_distance_estimation;
+    params.channels.enable_interior_detection = cli.enable_interior_detection;
     if cli.interior_threshold > 0.0 {
-        params.interior_threshold = cli.interior_threshold;
+        params.channels.interior_threshold = cli.interior_threshold;
     }
 
     // Tier double-double (~106 b) opt-in pour les spirales deep-zoom sensibles.
@@ -944,8 +944,8 @@ fn main() {
     // Couplage mode → canaux (parité GUI) : les modes Distance*/OrbitTraps/
     // Wings requièrent leur canal — la colorisation vérifiée (G5
     // `RenderOutput`) refuse un canal absent au lieu de retomber sur Smooth.
-    params.enable_distance_estimation |= params.color.out_coloring_mode.requires_distance_channel();
-    params.enable_orbit_traps |= params.color.out_coloring_mode.requires_orbit_channel();
+    params.channels.enable_distance_estimation |= params.color.out_coloring_mode.requires_distance_channel();
+    params.channels.enable_orbit_traps |= params.color.out_coloring_mode.requires_orbit_channel();
 
     // Transformation du plan (XaoS-style).
     match PlaneTransform::from_cli_name(&cli.plane) {
@@ -1047,10 +1047,10 @@ fn main() {
         // pixels juste échappés.
         let degree = match fractall_cli::fractal::bytecode::compile_formula(
             params.fractal_type,
-            params.multibrot_power,
+            params.formula.multibrot_power,
         ) {
             Some(formula) => fractall_cli::fractal::bytecode::formula_last_degree(&formula) as f64,
-            None => params.multibrot_power.max(2.0),
+            None => params.formula.multibrot_power.max(2.0),
         };
         match save_iterations_exr(
             exr_path,
@@ -1227,7 +1227,7 @@ fn non_finite_param(p: &fractal::FractalParams) -> Option<&'static str> {
         ("rotation", p.rotation),
         ("bailout", p.bailout),
         ("color_offset", p.color.color_offset),
-        ("multibrot_power", p.multibrot_power),
+        ("multibrot_power", p.formula.multibrot_power),
         ("jitter_scale", p.sampling.jitter_scale),
         ("seed.re", p.seed.re),
         ("seed.im", p.seed.im),

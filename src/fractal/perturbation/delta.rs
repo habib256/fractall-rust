@@ -101,7 +101,7 @@ impl BlaUnifiedCacheEntry {
         self.orbit_ptr == orbit_ptr
             && self.orbit_len == orbit_len
             && self.fractal_type == params.fractal_type
-            && (self.multibrot_power - params.multibrot_power).abs() <= 1e-12
+            && (self.multibrot_power - params.formula.multibrot_power).abs() <= 1e-12
             && (self.bla_threshold - params.perturbation.bla_threshold).abs() <= 1e-20
             && self.use_dd_tier == params.use_dd_tier
     }
@@ -318,7 +318,7 @@ fn build_bla_entry(
         orbit_ptr,
         orbit_len,
         fractal_type: params.fractal_type,
-        multibrot_power: params.multibrot_power,
+        multibrot_power: params.formula.multibrot_power,
         bla_threshold: params.perturbation.bla_threshold,
         formula: formula.clone(),
         tables,
@@ -542,9 +542,9 @@ fn harmonic_route_active(params: &FractalParams, orbit: &ReferenceOrbit) -> bool
 /// décision RÉELLE prise au build (candidat + probe Auto), contrairement à
 /// `harmonic_route_active` qui n'est que le candidat.
 pub(crate) fn harmonic_entry_active(params: &FractalParams, orbit: &ReferenceOrbit) -> bool {
-    if params.enable_orbit_traps
-        || params.enable_distance_estimation
-        || params.enable_interior_detection
+    if params.channels.enable_orbit_traps
+        || params.channels.enable_distance_estimation
+        || params.channels.enable_interior_detection
     {
         return false;
     }
@@ -774,9 +774,9 @@ fn try_bytecode_unified_path(
         // — type/seed/tier/compress/conditions orbite — est soit dans la clé
         // du cache, soit constant process, soit encodé par ce code path f64).
         if let Some(harmonic) = entry.harmonic.as_ref() {
-            if !params.enable_orbit_traps
-                && !params.enable_distance_estimation
-                && !params.enable_interior_detection
+            if !params.channels.enable_orbit_traps
+                && !params.channels.enable_distance_estimation
+                && !params.channels.enable_interior_detection
             {
                 debug_assert!(delta_init.norm_sqr() == 0.0, "Mandelbrot ⇒ delta0 = 0");
                 return Some(
@@ -802,14 +802,14 @@ fn try_bytecode_unified_path(
         };
 
         let options = crate::fractal::bytecode::pixel_loop::UnifiedOptions {
-            orbit_trap: if params.enable_orbit_traps {
-                Some(params.orbit_trap_type)
+            orbit_trap: if params.channels.enable_orbit_traps {
+                Some(params.channels.orbit_trap_type)
             } else {
                 None
             },
-            enable_distance: params.enable_distance_estimation,
-            enable_interior: params.enable_interior_detection,
-            interior_threshold: params.interior_threshold,
+            enable_distance: params.channels.enable_distance_estimation,
+            enable_interior: params.channels.enable_interior_detection,
+            interior_threshold: params.channels.interior_threshold,
             is_julia,
         };
         let pixel_result = crate::fractal::bytecode::pixel_loop::iterate_pixel_unified_full(
@@ -1865,7 +1865,7 @@ pub fn iterate_pixel_with_dd(request: PerturbPixelRequest<'_>) -> DeltaResult {
     // Distance estimation et interior detection sont supportés par le
     // path bytecode (cf. dispatch ci-dessus). Si bytecode désactivé,
     // ces features ne sont plus disponibles en perturbation.
-    if (params.enable_distance_estimation || params.enable_interior_detection)
+    if (params.channels.enable_distance_estimation || params.channels.enable_interior_detection)
         && !params.use_bytecode_engine
     {
         eprintln!(
@@ -1914,9 +1914,9 @@ pub fn iterate_pixel_with_dd(request: PerturbPixelRequest<'_>) -> DeltaResult {
     let is_burning_ship = params.fractal_type == FractalType::BurningShip;
     let is_multibrot = params.fractal_type == FractalType::Multibrot;
     let is_tricorn = params.fractal_type == FractalType::Tricorn;
-    let multibrot_power = params.multibrot_power;
+    let multibrot_power = params.formula.multibrot_power;
     let smooth_power = if is_multibrot {
-        params.multibrot_power
+        params.formula.multibrot_power
     } else {
         2.0
     };
@@ -2844,7 +2844,7 @@ mod tests {
         )
         .expect("orbite référence");
         let formula =
-            crate::fractal::bytecode::compile_formula(params.fractal_type, params.multibrot_power)
+            crate::fractal::bytecode::compile_formula(params.fractal_type, params.formula.multibrot_power)
                 .expect("formule compilable");
         let pixel_size = crate::fractal::perturbation::effective_pixel_size(params);
         let diag_px = ((params.width as f64).powi(2) + (params.height as f64).powi(2)).sqrt();

@@ -72,7 +72,7 @@ pub fn iterate_pixel_gmp(request: GmpPixelRequest<'_>) -> DeltaResult {
     let is_burning_ship = params.fractal_type == FractalType::BurningShip;
     let is_tricorn = params.fractal_type == FractalType::Tricorn;
     let smooth_power = if params.fractal_type == FractalType::Multibrot {
-        params.multibrot_power
+        params.formula.multibrot_power
     } else {
         2.0
     };
@@ -317,7 +317,7 @@ pub fn iterate_pixel_gmp(request: GmpPixelRequest<'_>) -> DeltaResult {
             c
         };
         let seed_complex = Complex::with_val(prec, (params.seed.re, params.seed.im));
-        let multibrot_power = params.multibrot_power;
+        let multibrot_power = params.formula.multibrot_power;
         while c.keep_iterating(params.iteration_max) {
             let z_new = if is_burning_ship {
                 let re_abs = z_curr.real().clone().abs();

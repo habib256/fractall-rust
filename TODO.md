@@ -1822,10 +1822,18 @@ v0.8.2 — chaque chantier ferme LA CLASSE dont plusieurs bugs sont issus)** :
      dans la sous-structure, clé absente ⇒ défaut du champ — et
      `legacy_png_populates_grouped_params` sur un PNG réel du dépôt, aux
      valeurs non triviales). 446 unit + 24 goldens + 8 e2e verts, métadonnées
-     PNG comparées clé à clé à un golden antérieur. Restent à grouper la
-     géométrie (déjà possédée par `ViewHp` côté navigation), les canaux
-     annexes (distance/intérieur/orbit traps) et la formule (hybrides,
-     opcodes, multibrot).
+     PNG comparées clé à clé à un golden antérieur.
+   - **Jalon 2 `[2026-08-25]`** : deux groupes de plus — `FormulaParams`
+     (puissance Multibrot, phases hybrides, opcodes F3 : tout ce qui définit la
+     formule itérée au-delà de `FractalType`) et `ChannelParams` (distance,
+     intérieur + son seuil, orbit traps et leur type : les canaux annexes que
+     `required_channels` confronte au mode de coloriage). 124 accès migrés,
+     même contrat de sérialisation à plat, verrou étendu aux cinq groupes.
+     Reste la **géométrie** : la grouper telle quelle figerait sa duplication
+     avec `ViewHp`, qui possède déjà la navigation. La bonne cible est un champ
+     de vue unique dont `ViewHp` serait la représentation canonique, écrit
+     atomiquement — pas un `params.geometry.width` qui alourdirait 1 100 sites
+     sans rien fermer.
 6. [x] **✅ Tests e2e de navigation profonde (types spéciaux) `[2026-08-25]`** :
    `tests/deep_navigation.rs` (cible CI dédiée, ~9 s) part de `ViewHp`, applique
    de VRAIES opérations de navigation (molette ancrée, pan, sélection

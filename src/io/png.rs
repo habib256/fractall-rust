@@ -46,7 +46,7 @@ pub fn colorize_buffers(
     let is_nebulabrot = params.fractal_type == FractalType::Nebulabrot;
     let is_buddhabrot = params.fractal_type == FractalType::Buddhabrot
         || params.fractal_type == FractalType::AntiBuddhabrot;
-    let interior_flag_encoded = params.enable_interior_detection;
+    let interior_flag_encoded = params.channels.enable_interior_detection;
     let lut = if !is_nebulabrot && !is_buddhabrot {
         Some(PaletteLut::cached(params.color.color_mode, params.color.color_space))
     } else {
@@ -369,7 +369,7 @@ mod tests {
         let n = (w * h) as usize;
         let mut params = default_params_for_type(FractalType::Mandelbrot, w, h);
         params.iteration_max = 100;
-        params.enable_distance_estimation = true;
+        params.channels.enable_distance_estimation = true;
         params.color.out_coloring_mode = OutColoringMode::Distance;
 
         // Pixels échappés (iter < iteration_max) sinon la couleur est noire
@@ -435,10 +435,10 @@ mod tests {
         // dans TODO.md). Anciennement 1e-8.
         assert_eq!(params.perturbation.bla_threshold, 1.0 / (1u64 << 24) as f64);
         assert_eq!(params.perturbation.glitch_tolerance, 1e-4);
-        assert_eq!(params.multibrot_power, 2.5);
+        assert_eq!(params.formula.multibrot_power, 2.5);
         assert_eq!(params.perturbation.max_perturb_iterations, 1024);
         assert_eq!(params.perturbation.max_bla_steps, 1024);
-        assert_eq!(params.interior_threshold, 0.001);
+        assert_eq!(params.channels.interior_threshold, 0.001);
     }
 
     /// Vérifie qu'un JSON avec quelques-uns des champs récents présents
@@ -461,7 +461,7 @@ mod tests {
         }"#;
         let params: FractalParams = serde_json::from_str(json).expect("deserialize");
         assert!(!params.use_bytecode_engine);
-        assert_eq!(params.multibrot_power, 3.5);
+        assert_eq!(params.formula.multibrot_power, 3.5);
         assert_eq!(params.bailout, 8.0);
     }
 

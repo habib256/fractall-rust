@@ -1,8 +1,8 @@
 use num_complex::Complex64;
 
 use crate::fractal::{
-    AlgorithmMode, ColorParams, ColorSpace, FractalParams, FractalType, OutColoringMode,
-    PerturbationParams, PlaneTransform, SamplingParams,
+    AlgorithmMode, ChannelParams, ColorParams, ColorSpace, FormulaParams, FractalParams,
+    FractalType, OutColoringMode, PerturbationParams, PlaneTransform, SamplingParams,
 };
 use crate::fractal::lyapunov::{LyapunovConfig, LyapunovPreset};
 use crate::fractal::orbit_traps::OrbitTrapType;
@@ -64,20 +64,26 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
             max_bla_steps: 1024,
             use_reference_precision_formula: true,
         },
-        multibrot_power: 2.5,
+        formula: FormulaParams {
+            multibrot_power: 2.5,
+            hybrid_phases: None,
+            hybrid_opcodes: None,
+        },
+        // Les canaux annexes coûtent des dual-numbers ou l'orbite complète :
+        // ils restent éteints tant qu'un mode de coloriage ne les réclame pas.
+        channels: ChannelParams {
+            enable_distance_estimation: false,
+            enable_interior_detection: false,
+            interior_threshold: 0.001,
+            enable_orbit_traps: false,
+            orbit_trap_type: OrbitTrapType::Point,
+        },
         lyapunov_preset: LyapunovPreset::default(),
         lyapunov_sequence: Vec::new(),
-        // Enable distance estimation and interior detection by default for better rendering
-        // These features use dual numbers (Section 5 and 6 of deep zoom theory)
-        enable_distance_estimation: false, // Can be enabled for distance field coloring
-        enable_interior_detection: false,   // Disabled for now
-        interior_threshold: 0.001,
         plane_transform: PlaneTransform::Mu,
-        enable_orbit_traps: false,
-        orbit_trap_type: OrbitTrapType::Point,
         // Activé par défaut depuis P3.1 Session E : path bytecode unifié
         // (BLA mat2 + delta-form + rebasing F3) remplace le path legacy
-        // (glitch detection Pauldelbrot + secondary refs) quand applicable.
+        // quand applicable.
         // Le path legacy reste actif comme fallback :
         //   - types non supportés par compile_formula (Newton, Phoenix,
         //     Magnet, Barnsley, Lyapunov, Mandelbulb, etc.)
@@ -91,8 +97,6 @@ pub fn default_params_for_type(fractal_type: FractalType, width: u32, height: u3
         find_nucleus: false,
         rotation: 0.0,
         transform_k: None,
-        hybrid_phases: None,
-        hybrid_opcodes: None,
     };
 
     match fractal_type {

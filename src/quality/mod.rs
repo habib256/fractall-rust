@@ -233,7 +233,7 @@ pub fn params_from_preset(preset: &Preset, opt: &ComparisonOptions) -> FractalPa
         params.seed = Complex64::new(sre, sim);
     }
     if let Some(power) = preset.multibrot_power {
-        params.multibrot_power = power;
+        params.formula.multibrot_power = power;
     }
 
     // Tier double-double (~106 b) pour les points **ultra-sensibles** où la

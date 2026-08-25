@@ -207,7 +207,7 @@ pub fn number_tier(params: &FractalParams) -> Option<NumberTier> {
         return None;
     }
     let formula =
-        crate::fractal::bytecode::compile_formula(params.fractal_type, params.multibrot_power)?;
+        crate::fractal::bytecode::compile_formula(params.fractal_type, params.formula.multibrot_power)?;
     if formula.phases.len() != 1 {
         // Multi-phase pas encore porté sur le pixel_loop unifié.
         return None;
@@ -377,8 +377,8 @@ pub fn select_device(params: &FractalParams, gpu_available: bool) -> Device {
 pub fn gpu_lacks_features(params: &FractalParams) -> bool {
     use crate::fractal::OutColoringMode as M;
     params.use_dd_tier
-        || params.enable_distance_estimation
-        || params.enable_orbit_traps
+        || params.channels.enable_distance_estimation
+        || params.channels.enable_orbit_traps
         || matches!(
             params.color.out_coloring_mode,
             M::Distance | M::DistanceAO | M::Distance3D | M::OrbitTraps | M::Wings
@@ -409,9 +409,9 @@ fn arbitrate_device(gpu_iters_per_sec: Option<f64>, cpu_iters_per_sec: Option<f6
 /// G9.1 : geomean quick 0.223→0.269 sans short-circuit).
 fn variant_eligible(params: &FractalParams) -> bool {
     matches!(params.fractal_type, FractalType::Mandelbrot)
-        && !params.enable_orbit_traps
-        && !params.enable_distance_estimation
-        && !params.enable_interior_detection
+        && !params.channels.enable_orbit_traps
+        && !params.channels.enable_distance_estimation
+        && !params.channels.enable_interior_detection
         && number_tier(params) == Some(NumberTier::F64)
 }
 
@@ -710,7 +710,7 @@ mod tests {
             assert_eq!(select_device(&p, true), Device::Cpu);
         }
         let mut de = base.clone();
-        de.enable_distance_estimation = true;
+        de.channels.enable_distance_estimation = true;
         assert_eq!(select_device(&de, true), Device::Cpu);
     }
 
@@ -781,7 +781,7 @@ mod tests {
         assert_eq!(variants(&julia).harmonic, None);
         // Flags de coloring impurs : pas de variante.
         let mut traps = frame(1e14);
-        traps.enable_distance_estimation = true;
+        traps.channels.enable_distance_estimation = true;
         assert_eq!(variants(&traps), Variants::default());
     }
 

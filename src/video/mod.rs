@@ -307,7 +307,7 @@ pub fn keyframe_params(m: &Manifest, k: u32) -> Result<FractalParams, String> {
         if !power.is_finite() || power <= 0.0 {
             return Err(format!("fractal.multibrot_power invalide: {power}"));
         }
-        p.multibrot_power = power;
+        p.formula.multibrot_power = power;
     }
 
     let prec = span_precision(k);
@@ -355,7 +355,7 @@ pub fn keyframe_params(m: &Manifest, k: u32) -> Result<FractalParams, String> {
     p.color.color_space = m.color.color_space;
     p.color.out_coloring_mode = OutColoringMode::from_cli_name(&m.color.outcoloring)
         .ok_or_else(|| format!("outcoloring invalide: '{}'", m.color.outcoloring))?;
-    p.enable_distance_estimation = m.fractal.distance_estimation;
+    p.channels.enable_distance_estimation = m.fractal.distance_estimation;
     Ok(p)
 }
 
@@ -732,7 +732,7 @@ mod tests {
         let mut multi = Manifest::default();
         multi.fractal.r#type = 23;
         multi.fractal.multibrot_power = Some(3.75);
-        assert_eq!(keyframe_params(&multi, 0).unwrap().multibrot_power, 3.75);
+        assert_eq!(keyframe_params(&multi, 0).unwrap().formula.multibrot_power, 3.75);
         multi.fractal.multibrot_power = Some(0.0);
         assert!(keyframe_params(&multi, 0).is_err());
         julia.fractal.julia_im = None;

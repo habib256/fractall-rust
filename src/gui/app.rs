@@ -960,7 +960,7 @@ impl FractallApp {
         match params.color.out_coloring_mode {
             crate::fractal::OutColoringMode::OrbitTraps
             | crate::fractal::OutColoringMode::Wings => {
-                params.enable_orbit_traps = true;
+                params.channels.enable_orbit_traps = true;
             }
             _ => {}
         }
@@ -970,7 +970,7 @@ impl FractallApp {
                 | crate::fractal::OutColoringMode::DistanceAO
                 | crate::fractal::OutColoringMode::Distance3D
         ) {
-            params.enable_distance_estimation = true;
+            params.channels.enable_distance_estimation = true;
         }
         let cancel = Arc::clone(&self.render_cancel);
         let full_width = self.params.width;
@@ -2195,7 +2195,7 @@ impl FractallApp {
         new_params.algorithm_mode = AlgorithmMode::Auto;
         new_params.perturbation.bla_threshold = self.params.perturbation.bla_threshold;
         new_params.perturbation.glitch_tolerance = self.params.perturbation.glitch_tolerance;
-        new_params.hybrid_phases = Some(self.hybrid_seq.clone());
+        new_params.formula.hybrid_phases = Some(self.hybrid_seq.clone());
         self.params = new_params;
         self.color_repeat = self.params.color.color_repeat;
         self.iteration_input = self.params.iteration_max.to_string();
@@ -2546,7 +2546,7 @@ impl eframe::App for FractallApp {
                     };
 
                     let type_menu_label = if let Some(seq) =
-                        self.params.hybrid_phases.as_ref().filter(|s| !s.is_empty())
+                        self.params.formula.hybrid_phases.as_ref().filter(|s| !s.is_empty())
                     {
                         format!("▼ Hybride: {}", Self::hybrid_seq_label(seq))
                     } else if current_category == current_label {
@@ -2656,7 +2656,7 @@ impl eframe::App for FractallApp {
                             if !can_apply {
                                 ui.small("≥ 2 phases requises");
                             }
-                            if self.params.hybrid_phases.is_some()
+                            if self.params.formula.hybrid_phases.is_some()
                                 && ui.button("✖ Désactiver (Mandelbrot)").clicked()
                             {
                                 self.hybrid_seq.clear();

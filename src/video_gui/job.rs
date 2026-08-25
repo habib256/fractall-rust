@@ -188,7 +188,7 @@ pub fn first_thumb_params(
         return Err(format!("exposant Multibrot invalide: {multibrot_power}"));
     }
     p.seed = seed;
-    p.multibrot_power = multibrot_power;
+    p.formula.multibrot_power = multibrot_power;
     p.color.color_space = color_space;
     p.center_x = cx.to_f64();
     p.center_y = cy.to_f64();
@@ -692,7 +692,7 @@ mod tests {
         .unwrap();
         assert_eq!(p.fractal_type, FractalType::Tricorn);
         assert_eq!(p.seed, seed);
-        assert_eq!(p.multibrot_power, 3.25);
+        assert_eq!(p.formula.multibrot_power, 3.25);
         assert_eq!(p.color.color_space, ColorSpace::Lch);
         assert_eq!(p.center_x_hp.as_deref(), Some(cx));
         assert_eq!(p.center_y_hp.as_deref(), Some(cy));

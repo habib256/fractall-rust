@@ -1288,7 +1288,7 @@ impl GpuRenderer {
         if !matches!(params.plane_transform, PlaneTransform::Mu) {
             return None;
         }
-        let formula = compile_formula(params.fractal_type, params.multibrot_power)?;
+        let formula = compile_formula(params.fractal_type, params.formula.multibrot_power)?;
         // Multi-phase pas (encore) supporté dans le shader bytecode.
         if formula.phases.len() != 1 {
             return None;

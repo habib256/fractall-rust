@@ -35,7 +35,7 @@ pub fn to_f3_toml(params: &FractalParams) -> String {
         params.width, params.height, params.rotation,
     );
 
-    if let Some(opcodes) = params.hybrid_opcodes.as_deref() {
+    if let Some(opcodes) = params.formula.hybrid_opcodes.as_deref() {
         let mut phase = Vec::new();
         for word in opcodes.split_whitespace() {
             phase.push(word);
@@ -44,7 +44,7 @@ pub fn to_f3_toml(params: &FractalParams) -> String {
                 phase.clear();
             }
         }
-    } else if let Some(phases) = params.hybrid_phases.as_deref() {
+    } else if let Some(phases) = params.formula.hybrid_phases.as_deref() {
         for &kind in phases {
             text.push_str(&format!("\n[[formula]]\nopcodes = {}\n", quoted(phase_opcodes(kind))));
         }
@@ -70,7 +70,7 @@ mod tests {
         p.center_y_hp = Some("0.131825904205311970493132056385139".into());
         p.iteration_max = 1200;
         p.rotation = 7.5;
-        p.hybrid_opcodes = Some("sqr add absx absy sqr add".into());
+        p.formula.hybrid_opcodes = Some("sqr add absx absy sqr add".into());
         let text = to_f3_toml(&p);
         let table: toml::Table = text.parse().unwrap();
         assert_eq!(table["location"]["real"].as_str(), p.center_x_hp.as_deref());

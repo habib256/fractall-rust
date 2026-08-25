@@ -27,17 +27,17 @@ pub fn formula_for_params(params: &crate::fractal::FractalParams) -> Option<Form
     // Formule opcodes F3 (G4 Op::Rot) : PRIORITAIRE — seule voie qui émet
     // Op::Rot. `hybrid_opcodes` vide/blanc = absent (mirror is_hybrid_formula).
     if let Some(text) = params
-        .hybrid_opcodes
+        .formula.hybrid_opcodes
         .as_ref()
         .filter(|s| !s.trim().is_empty())
     {
         return parse_opcodes_formula(text);
     }
-    match &params.hybrid_phases {
+    match &params.formula.hybrid_phases {
         Some(phases) if !phases.is_empty() => {
-            compile_hybrid_formula(phases, params.multibrot_power)
+            compile_hybrid_formula(phases, params.formula.multibrot_power)
         }
-        _ => compile_formula(params.fractal_type, params.multibrot_power),
+        _ => compile_formula(params.fractal_type, params.formula.multibrot_power),
     }
 }
 

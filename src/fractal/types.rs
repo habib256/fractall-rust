@@ -811,6 +811,89 @@ impl PlaneTransform {
 
 use crate::fractal::lyapunov::LyapunovPreset;
 
+/// Ce qui définit la formule itérée, au-delà de [`FractalType`] : puissance du
+/// Multibrot, séquence de phases hybrides, opcodes Fraktaler-3.
+///
+/// Sérialisation à plat comme les autres groupes (cf. [`ColorParams`]).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FormulaParams {
+    /// Puissance pour Multibrot (z^d + c), défaut 2.5. Utilisé aussi pour le calcul BLA.
+    #[serde(default = "default_multibrot_power")]
+    pub multibrot_power: f64,
+
+    /// **Hybride multi-phase (G4)** : liste de types escape-time itérés
+    /// CYCLIQUEMENT (`phases[n % len]`), ex. `[Mandelbrot, BurningShip]` =
+    /// Mandel-Ship alternant. Quand `Some` (non vide), la formule bytecode est
+    /// `compile_hybrid_formula(phases, multibrot_power)` au lieu de
+    /// `compile_formula(fractal_type)` — `fractal_type` sert alors seulement la
+    /// convention d'appel (Mandelbrot-like : δ₀=0, dc=pixel). Chaque type doit
+    /// être représentable en bytecode (sinon fallback au path dédié). CPU
+    /// uniquement (le GPU multi-phase n'est pas implémenté → force CPU).
+    /// `None` = mono-formule classique.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hybrid_phases: Option<Vec<FractalType>>,
+
+    /// **Formule opcodes F3 (G4 `Op::Rot` per-phase)** : chaîne d'opcodes au
+    /// format Fraktaler-3 (`[[formula]] opcodes = "…"`), phases séparées par
+    /// `add`, ex. `"sqr rot{15} add absx absy sqr add"`. Mots reconnus :
+    /// `add sqr mul store absx absy negx negy rot{DEG}` (cf. F3
+    /// `param.cc::parse_opcodess`). Quand `Some` (non vide), PRIORITAIRE sur
+    /// `hybrid_phases` : la formule bytecode est
+    /// `parse_opcodes_formula(opcodes)` — seule voie qui ÉMET `Op::Rot`.
+    /// `fractal_type` sert la convention d'appel (Mandelbrot-like). Routage =
+    /// identique aux hybrides (cf. [`FractalParams::is_hybrid_formula`]) même
+    /// mono-phase : la formule n'est pas z²+c-garantie.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hybrid_opcodes: Option<String>,
+}
+
+impl Default for FormulaParams {
+    fn default() -> Self {
+        Self {
+            multibrot_power: default_multibrot_power(),
+            hybrid_phases: None,
+            hybrid_opcodes: None,
+        }
+    }
+}
+
+/// Canaux annexes produits par la boucle pixel en plus du compte d'itérations.
+///
+/// Ils coûtent cher (dual-numbers, orbite complète) et conditionnent la
+/// colorisation : `render::output::required_channels` en dérive ce que le mode
+/// de coloriage exige, et la colorisation vérifiée REFUSE un canal manquant.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChannelParams {
+    /// Active le calcul de distance estimation (nécessite DualComplex, ajoute overhead)
+    #[serde(default)]
+    pub enable_distance_estimation: bool,
+    /// Active la détection d'intérieur (nécessite ExtendedDualComplex, ajoute overhead)
+    #[serde(default)]
+    pub enable_interior_detection: bool,
+    /// Seuil pour détection d'intérieur (défaut 0.001)
+    #[serde(default = "default_interior_threshold")]
+    pub interior_threshold: f64,
+
+    /// Active le calcul d'orbit traps (nécessite stockage de l'orbite complète)
+    #[serde(default)]
+    pub enable_orbit_traps: bool,
+    /// Type d'orbit trap à utiliser
+    #[serde(default)]
+    pub orbit_trap_type: OrbitTrapType,
+}
+
+impl Default for ChannelParams {
+    fn default() -> Self {
+        Self {
+            enable_distance_estimation: false,
+            enable_interior_detection: false,
+            interior_threshold: default_interior_threshold(),
+            enable_orbit_traps: false,
+            orbit_trap_type: OrbitTrapType::default(),
+        }
+    }
+}
+
 /// Réglages de colorisation : palette, espace colorimétrique et mode de
 /// coloriage extérieur.
 ///
@@ -1014,26 +1097,20 @@ pub struct FractalParams {
     /// Réglages du chemin perturbation (BLA, série, glitch, bornes).
     #[serde(flatten)]
     pub perturbation: PerturbationParams,
-    /// Puissance pour Multibrot (z^d + c), défaut 2.5. Utilisé aussi pour le calcul BLA.
-    #[serde(default = "default_multibrot_power")]
-    pub multibrot_power: f64,
 
+    /// Ce qui définit la formule itérée au-delà du type.
+    #[serde(flatten)]
+    pub formula: FormulaParams,
+
+    /// Canaux annexes produits en plus de l'itération.
+    #[serde(flatten)]
+    pub channels: ChannelParams,
     /// Preset Lyapunov sélectionné.
     #[serde(default)]
     pub lyapunov_preset: LyapunovPreset,
     /// Séquence Lyapunov (true=A, false=B). Si vide, utilise la séquence par défaut.
     #[serde(default)]
     pub lyapunov_sequence: Vec<bool>,
-
-    /// Active le calcul de distance estimation (nécessite DualComplex, ajoute overhead)
-    #[serde(default)]
-    pub enable_distance_estimation: bool,
-    /// Active la détection d'intérieur (nécessite ExtendedDualComplex, ajoute overhead)
-    #[serde(default)]
-    pub enable_interior_detection: bool,
-    /// Seuil pour détection d'intérieur (défaut 0.001)
-    #[serde(default = "default_interior_threshold")]
-    pub interior_threshold: f64,
 
     /// Complex plane transformation (XaoS-style).
     #[serde(default)]
@@ -1046,13 +1123,6 @@ pub struct FractalParams {
     /// (olbaid*, opus*, x.toml).
     #[serde(default)]
     pub rotation: f64,
-
-    /// Active le calcul d'orbit traps (nécessite stockage de l'orbite complète)
-    #[serde(default)]
-    pub enable_orbit_traps: bool,
-    /// Type d'orbit trap à utiliser
-    #[serde(default)]
-    pub orbit_trap_type: OrbitTrapType,
 
     /// Active le moteur d'itération bytecode hybride (Fraktaler-3 style).
     /// Activé par défaut depuis P3.1 Session E. Path unifié BLA mat2 +
@@ -1116,30 +1186,6 @@ pub struct FractalParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transform_k: Option<[f64; 4]>,
 
-    /// **Hybride multi-phase (G4)** : liste de types escape-time itérés
-    /// CYCLIQUEMENT (`phases[n % len]`), ex. `[Mandelbrot, BurningShip]` =
-    /// Mandel-Ship alternant. Quand `Some` (non vide), la formule bytecode est
-    /// `compile_hybrid_formula(phases, multibrot_power)` au lieu de
-    /// `compile_formula(fractal_type)` — `fractal_type` sert alors seulement la
-    /// convention d'appel (Mandelbrot-like : δ₀=0, dc=pixel). Chaque type doit
-    /// être représentable en bytecode (sinon fallback au path dédié). CPU
-    /// uniquement (le GPU multi-phase n'est pas implémenté → force CPU).
-    /// `None` = mono-formule classique.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hybrid_phases: Option<Vec<FractalType>>,
-
-    /// **Formule opcodes F3 (G4 `Op::Rot` per-phase)** : chaîne d'opcodes au
-    /// format Fraktaler-3 (`[[formula]] opcodes = "…"`), phases séparées par
-    /// `add`, ex. `"sqr rot{15} add absx absy sqr add"`. Mots reconnus :
-    /// `add sqr mul store absx absy negx negy rot{DEG}` (cf. F3
-    /// `param.cc::parse_opcodess`). Quand `Some` (non vide), PRIORITAIRE sur
-    /// `hybrid_phases` : la formule bytecode est
-    /// `parse_opcodes_formula(opcodes)` — seule voie qui ÉMET `Op::Rot`.
-    /// `fractal_type` sert la convention d'appel (Mandelbrot-like). Routage =
-    /// identique aux hybrides (cf. [`FractalParams::is_hybrid_formula`]) même
-    /// mono-phase : la formule n'est pas z²+c-garantie.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hybrid_opcodes: Option<String>,
 }
 
 // Helpers pour `#[serde(default = "...")]`. Permettent de charger des PNG
@@ -1176,9 +1222,9 @@ impl FractalParams {
     /// chemin spécialisé Mandelbrot ne doit s'y appliquer.
     #[inline]
     pub fn is_hybrid_formula(&self) -> bool {
-        self.hybrid_phases.as_ref().is_some_and(|p| !p.is_empty())
+        self.formula.hybrid_phases.as_ref().is_some_and(|p| !p.is_empty())
             || self
-                .hybrid_opcodes
+                .formula.hybrid_opcodes
                 .as_ref()
                 .is_some_and(|s| !s.trim().is_empty())
     }
@@ -1438,13 +1484,20 @@ mod serde_tests {
 
         let params = default_params_for_type(FractalType::Mandelbrot, 64, 48);
         let mut json = serde_json::to_value(&params).expect("sérialisation");
-        for group in ["perturbation", "color", "sampling"] {
+        for group in ["perturbation", "color", "sampling", "formula", "channels"] {
             assert!(
                 json.get(group).is_none(),
                 "les réglages `{group}` ne doivent PAS être imbriqués : {json}"
             );
         }
-        for key in ["bla_threshold", "max_bla_steps", "color_repeat", "out_coloring_mode"] {
+        for key in [
+            "bla_threshold",
+            "max_bla_steps",
+            "color_repeat",
+            "out_coloring_mode",
+            "multibrot_power",
+            "enable_distance_estimation",
+        ] {
             assert!(json.get(key).is_some(), "clé `{key}` absente : {json}");
         }
 
@@ -1452,12 +1505,16 @@ mod serde_tests {
         // sous-structure...
         json["max_bla_steps"] = serde_json::json!(4242);
         json["color_repeat"] = serde_json::json!(7);
+        json["multibrot_power"] = serde_json::json!(3.5);
+        json["enable_orbit_traps"] = serde_json::json!(true);
         // ... et une clé absente retombe sur le défaut du champ.
         json.as_object_mut().unwrap().remove("bla_threshold");
 
         let reread: FractalParams = serde_json::from_value(json).expect("relecture");
         assert_eq!(reread.perturbation.max_bla_steps, 4242);
         assert_eq!(reread.color.color_repeat, 7);
+        assert_eq!(reread.formula.multibrot_power, 3.5);
+        assert!(reread.channels.enable_orbit_traps);
         assert_eq!(
             reread.perturbation.bla_threshold,
             default_bla_threshold(),

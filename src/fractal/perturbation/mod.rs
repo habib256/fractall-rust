@@ -106,7 +106,7 @@ use rug::Float;
 /// de pixels divergents (corrigés via GMP avec résultat ≠ fexp).
 fn uses_bytecode_path(params: &FractalParams) -> bool {
     params.use_bytecode_engine
-        && compile_formula(params.fractal_type, params.multibrot_power).is_some()
+        && compile_formula(params.fractal_type, params.formula.multibrot_power).is_some()
 }
 
 pub mod bla;
@@ -1507,14 +1507,14 @@ mod tests {
         // Verrou 2026-08-23 : un changement de FORMULE au même centre
         // invalide la réutilisation subset (comme is_valid_for).
         let mut hybrid = view.clone();
-        hybrid.hybrid_phases = Some(vec![FractalType::Mandelbrot, FractalType::BurningShip]);
+        hybrid.formula.hybrid_phases = Some(vec![FractalType::Mandelbrot, FractalType::BurningShip]);
         assert!(!cache_big.can_subset_reuse(&hybrid), "hybride ≠ z²+c");
         assert!(!cache_big.is_valid_for(&hybrid));
         let mut opcodes = view.clone();
-        opcodes.hybrid_opcodes = Some("sqr rot{30} add".into());
+        opcodes.formula.hybrid_opcodes = Some("sqr rot{30} add".into());
         assert!(!cache_big.can_subset_reuse(&opcodes), "opcodes ≠ z²+c");
         let mut power = view.clone();
-        power.multibrot_power = 3.0;
+        power.formula.multibrot_power = 3.0;
         assert!(!cache_big.can_subset_reuse(&power), "puissance ≠");
         assert!(!cache_big.is_valid_for(&power));
 

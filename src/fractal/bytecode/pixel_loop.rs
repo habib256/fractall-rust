@@ -1242,8 +1242,8 @@ mod tests {
         params.span_y = span_y;
         params.iteration_max = iter_max;
         params.algorithm_mode = AlgorithmMode::Perturbation;
-        params.hybrid_phases = phases;
-        params.hybrid_opcodes = opcodes.map(str::to_string);
+        params.formula.hybrid_phases = phases;
+        params.formula.hybrid_opcodes = opcodes.map(str::to_string);
 
         let (orbit, _, _) =
             compute_reference_orbit(&params, None, false).expect("compute_reference_orbit failed");
@@ -1493,7 +1493,7 @@ mod tests {
         params.span_x = span_x;
         params.span_y = span_y;
         params.iteration_max = iter_max;
-        params.hybrid_phases = Some(vec![FractalType::Mandelbrot, FractalType::BurningShip]);
+        params.formula.hybrid_phases = Some(vec![FractalType::Mandelbrot, FractalType::BurningShip]);
         let formula = formula_for_params(&params).expect("formula");
         let bailout_sqr = params.bailout * params.bailout;
 
@@ -1570,7 +1570,7 @@ mod tests {
             params.span_y = span_y;
             params.iteration_max = iter_max;
             params.algorithm_mode = AlgorithmMode::Perturbation;
-            params.hybrid_phases = Some(vec![FractalType::Mandelbrot, FractalType::BurningShip]);
+            params.formula.hybrid_phases = Some(vec![FractalType::Mandelbrot, FractalType::BurningShip]);
             let (orbit, _, _) = compute_reference_orbit(&params, None, false).expect("orbit");
             (params, orbit)
         };
@@ -2044,7 +2044,7 @@ mod tests {
             params.span_y = span_y;
             params.iteration_max = iter_max;
             params.algorithm_mode = AlgorithmMode::Perturbation;
-            params.hybrid_phases = Some(vec![FractalType::Mandelbrot, FractalType::Mandelbrot]);
+            params.formula.hybrid_phases = Some(vec![FractalType::Mandelbrot, FractalType::Mandelbrot]);
             let (orbit, _, _) = compute_reference_orbit(&params, None, true)
                 .expect("compute_reference_orbit failed");
             orbit

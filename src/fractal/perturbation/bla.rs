@@ -406,7 +406,7 @@ pub fn build_bla_table(
     // Step 1: Create M BLAs each skipping 1 iteration (this can be done in parallel)
     let base_threshold = params.perturbation.bla_threshold.max(1e-16);
     let validity_scale = params.perturbation.bla_validity_scale.clamp(0.1, 100.0);
-    let power = params.multibrot_power;
+    let power = params.formula.multibrot_power;
     let fractal_type = params.fractal_type;
 
     // Cap maximum validity at a reasonable multiple of base_threshold

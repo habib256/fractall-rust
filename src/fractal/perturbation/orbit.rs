@@ -658,9 +658,9 @@ impl ReferenceOrbitCache {
                 && !super::should_use_full_gmp_perturbation(params));
 
         self.fractal_type == params.fractal_type
-            && self.hybrid_phases == params.hybrid_phases
-            && self.hybrid_opcodes == params.hybrid_opcodes
-            && self.multibrot_power.to_bits() == params.multibrot_power.to_bits()
+            && self.hybrid_phases == params.formula.hybrid_phases
+            && self.hybrid_opcodes == params.formula.hybrid_opcodes
+            && self.multibrot_power.to_bits() == params.formula.multibrot_power.to_bits()
             && gmp_ok
             && self.center_x_gmp == cx_str
             && self.center_y_gmp == cy_str
@@ -710,10 +710,10 @@ impl ReferenceOrbitCache {
                 .span_y_hp
                 .clone()
                 .unwrap_or_else(|| params.span_y.to_string()),
-            hybrid_phases: params.hybrid_phases.clone(),
-            hybrid_opcodes: params.hybrid_opcodes.clone(),
+            hybrid_phases: params.formula.hybrid_phases.clone(),
+            hybrid_opcodes: params.formula.hybrid_opcodes.clone(),
             nucleus_transform: None,
-            multibrot_power: params.multibrot_power,
+            multibrot_power: params.formula.multibrot_power,
         }
     }
 
@@ -759,9 +759,9 @@ impl ReferenceOrbitCache {
         // Discriminants de FORMULE (mêmes que is_valid_for) : sans eux une
         // orbite z²+c serait réutilisée pour un [M,BS] / opcodes au même
         // centre (bug latent 2026-08-23).
-        if self.hybrid_phases != params.hybrid_phases
-            || self.hybrid_opcodes != params.hybrid_opcodes
-            || self.multibrot_power.to_bits() != params.multibrot_power.to_bits()
+        if self.hybrid_phases != params.formula.hybrid_phases
+            || self.hybrid_opcodes != params.formula.hybrid_opcodes
+            || self.multibrot_power.to_bits() != params.formula.multibrot_power.to_bits()
         {
             return false;
         }
@@ -1841,7 +1841,7 @@ fn compute_reference_orbit_phase(
     let mut norm_im = Float::with_val(prec, 0);
     let mut norm_sqr = Float::with_val(prec, 0);
     let ftype = params.fractal_type;
-    let multibrot_power = params.multibrot_power;
+    let multibrot_power = params.formula.multibrot_power;
 
     // Atom-domain period detection PORT EXACT F3 (`hybrid.cc:92`
     // `abs(inverse(radius·dZdC)·Zp[i]) < 1`, conforme Mandelbrot =
