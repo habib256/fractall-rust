@@ -112,8 +112,10 @@ src/
 │   ├── xaos.rs          # G10.4 réutilisation pixels inter-frame (XaoS)
 │   ├── gmp.rs           # précision arbitraire (rug / mpc)
 │   ├── lyapunov.rs      # Lyapunov exponent
-│   ├── buddhabrot.rs    # Buddhabrot / Nebulabrot / Anti-Buddhabrot (⚠️ les `c`
-│   │                    #   sont tirés sur le domaine CANONIQUE, jamais la vue)
+│   ├── buddhabrot.rs    # Buddhabrot / Nebulabrot / Anti-Buddhabrot (specs
+│   │                    #   d'orbite + colorisation ; échantillonnage → density.rs)
+│   ├── density.rs       # Échantillonneur densité : uniforme + Metropolis-Hastings
+│   │                    #   (⚠️ `c` tirés sur le domaine CANONIQUE, jamais la vue)
 │   ├── vectorial.rs     # Von Koch, Dragon
 │   ├── orbit_traps.rs   # Point, Line, Cross, Circle
 │   ├── bytecode/        # Moteur unifié Fraktaler-3 (P3.1, défaut)
@@ -151,6 +153,52 @@ src/
 ├── io/fmap.rs            # format map .fmap (G12) : canaux bruts compressés zlib
 └── quality/              # fractall-quality QA suite
 ```
+
+## Densité : Buddhabrot / Nebulabrot / Anti-Buddhabrot (`fractal/density.rs`)
+
+Ces trois types n'évaluent pas un pixel : ils tirent des paramètres `c` sur le
+**domaine canonique** du plan des paramètres (centre `(-0.5, 0)`, span `4×3` —
+la vue par défaut), itèrent l'orbite, et projettent les points visités dans la
+fenêtre. ⚠️ **La fenêtre ne définit JAMAIS où l'on échantillonne** : tirer les
+`c` dans la vue (bug fermé le 2026-08-25) rendait tout zoom noir et remplissait
+n'importe quelle fenêtre lointaine d'une nappe uniforme.
+
+Deux régimes, choisis par `density::uses_metropolis` (seuil : vue < ¼ du
+domaine) :
+
+- **uniforme** — historique, non biaisé, trivialement parallèle. La fraction des
+  orbites qui atteignent la fenêtre décroît comme sa SURFACE : vide dès ~×1000.
+- **Metropolis-Hastings** (Boswell) — chaînes de Markov ciblant la
+  CONTRIBUTION à la fenêtre. Nourrit la fenêtre à toute profondeur (vérifié
+  jusqu'à ×1e8 et sur le path MPC au-delà de 1e16).
+
+Invariants du régime MH, tous payés par un bug mesuré :
+- **poids `1/f`** à la projection (`f` = points de l'orbite dans la fenêtre) :
+  la chaîne échantillonne `∝ f`, sans ce poids l'image vaudrait `f·D` ;
+- **noyau de mutation figé pendant la mesure** : une adaptation au taux
+  d'acceptation égalise le pas DANS la fenêtre, donc annule le jacobien
+  `dz/dc` — c'est-à-dire la densité elle-même (corrélation tombée à 0,06) ;
+- **fenêtres d'amorçage concentriques** sur la vue et emboîtées : une
+  interpolation qui déplace aussi le centre translate la fenêtre de dizaines de
+  largeurs à la fin, la population s'éteint ;
+- **ré-échantillonnage** des chaînes mortes à chaque barrière d'étape (~25 %
+  d'attrition par octave, sinon zéro survivant en dix étapes) ;
+- **cible = nombre de touches** + terme de proximité minuscule (un noyau de
+  proximité de plein poids attire les orbites qui FRÔLENT la fenêtre) ;
+- accumulation en **virgule fixe** (`AtomicU64`) : déterminisme indépendant des
+  threads.
+
+Verrous : `metropolis_estimates_the_same_field_as_uniform_sampling`
+(corrélation > 0,85 contre un tirage uniforme à gros budget),
+`metropolis_feeds_a_window_that_starves_uniform_sampling`, et
+`zooming_density_types_keeps_structure` (e2e, ×10 → ×1e8).
+Diagnostics : `FRACTALL_MH_DEBUG=1` (survie des chaînes par étape),
+`FRACTALL_DENSITY_SAMPLING=uniform|metropolis` (forçage du régime),
+`regimes_diagnostic` et `density_fill_by_zoom_diagnostic` (tests `--ignored`).
+
+⚠️ La compression logarithmique d'affichage est **invariante d'échelle**
+(rapport à un quantile haut, pas à la valeur brute) : sans quoi le contraste
+dépendrait du budget d'échantillons — donc de la résolution — et du régime.
 
 ## Vidéo & maps (G12, 2026-08-11)
 

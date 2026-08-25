@@ -18,9 +18,8 @@
 //!   distinguent deux vues, ce qui donne une sonde directe « la HP est-elle
 //!   réellement consommée ? » (test [`lyapunov_deep_navigation_consumes_the_high_precision_center`]) ;
 //! - la projection pixel du path MPC est exacte à la translation entière ;
-//! - les types de densité gardent de la structure en zoom modéré, mais leur
-//!   échantillonnage uniforme finit par les affamer (diagnostic ignoré en fin
-//!   de fichier).
+//! - les types de densité gardent une fenêtre nourrie à toute profondeur, ce
+//!   que leur échantillonnage par importance rend seul possible.
 
 use std::collections::BTreeSet;
 use std::sync::atomic::AtomicBool;
@@ -281,26 +280,35 @@ fn lyapunov_deep_pan_by_whole_pixels_is_pixel_exact() {
 /// Les types de densité échantillonnent les `c` sur le domaine canonique du
 /// plan des paramètres, PAS sur la fenêtre affichée : zoomer doit donc montrer
 /// la densité de plus près, pas une image vide.
+///
+/// Le zoom est poussé bien au-delà de ce qu'un tirage uniforme peut nourrir
+/// (sa fenêtre est vide dès ~×1000, la densité visible décroissant comme sa
+/// surface) : c'est l'échantillonnage par importance qui doit prendre le
+/// relais et garder l'image vivante à toute profondeur.
 #[test]
 fn zooming_density_types_keeps_structure() {
+    let pixels = (W * H) as usize;
     for fractal_type in DENSITY_TYPES {
         let params = base_params(fractal_type);
         let mut view = ViewHp::from_params(&params);
-        view.zoom_at(0.4, 0.55, 10.0);
-        let zoomed = apply(&view, &params);
-        let out = render(&zoomed);
 
-        let nonzero = out.iterations.iter().filter(|v| **v != 0).count();
-        let distinct: BTreeSet<u32> = out.iterations.iter().copied().collect();
-        assert!(
-            nonzero >= (W * H) as usize / 8,
-            "{fractal_type:?} : ×10 ne garde que {nonzero} pixels non nuls"
-        );
-        assert!(
-            distinct.len() >= 3,
-            "{fractal_type:?} : ×10 ne garde que {} valeurs distinctes",
-            distinct.len()
-        );
+        for decade in 1..=8 {
+            view.zoom_at(0.4, 0.55, 10.0);
+            let zoomed = apply(&view, &params);
+            let out = render(&zoomed);
+
+            let fed = out.iterations.iter().filter(|v| **v != 0).count();
+            let distinct: BTreeSet<u32> = out.iterations.iter().copied().collect();
+            assert!(
+                fed * 4 >= pixels,
+                "{fractal_type:?} : à ×1e{decade}, seuls {fed}/{pixels} pixels sont nourris"
+            );
+            assert!(
+                distinct.len() >= 8,
+                "{fractal_type:?} : à ×1e{decade}, seulement {} valeurs distinctes",
+                distinct.len()
+            );
+        }
     }
 }
 
@@ -386,27 +394,23 @@ fn default_density_view_samples_the_whole_canonical_domain() {
     }
 }
 
-/// Diagnostic (non bloquant) : jusqu'où l'échantillonnage UNIFORME des `c`
-/// nourrit-il encore la fenêtre ? La densité visible décroît comme la surface
-/// de la vue ; au-delà de ~×100 la fenêtre est affamée et l'image redevient
-/// vide, quel que soit le domaine d'échantillonnage. Lever cette limite demande
-/// un échantillonnage par importance (Metropolis-Hastings), cf. TODO G5.
+/// Diagnostic : taux de remplissage de la fenêtre en fonction du zoom.
 ///
 /// `cargo test --release --test deep_navigation -- --ignored --nocapture`
 #[test]
-#[ignore = "diagnostic : caractérise la famine d'échantillonnage, ne verrouille rien"]
-fn density_sampling_starvation_diagnostic() {
+#[ignore = "diagnostic : caractérise le remplissage, ne verrouille rien"]
+fn density_fill_by_zoom_diagnostic() {
     for fractal_type in DENSITY_TYPES {
         let params = base_params(fractal_type);
         let mut view = ViewHp::from_params(&params);
-        for decade in 0..5 {
+        for decade in 0..9 {
             let stepped = apply(&view, &params);
             let out = render(&stepped);
-            let nonzero = out.iterations.iter().filter(|v| **v != 0).count();
+            let fed = out.iterations.iter().filter(|v| **v != 0).count();
             let distinct: BTreeSet<u32> = out.iterations.iter().copied().collect();
             println!(
-                "{fractal_type:?} ×{:<7} span={:.2e} non_nuls={nonzero}/{} distinctes={}",
-                10u32.pow(decade),
+                "{fractal_type:?} ×{:<10} span={:.2e} nourris={fed}/{} distinctes={}",
+                10u64.pow(decade),
                 stepped.span_x,
                 out.iterations.len(),
                 distinct.len()

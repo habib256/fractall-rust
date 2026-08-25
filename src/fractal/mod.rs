@@ -7,6 +7,7 @@ pub mod gmp;
 pub mod lyapunov;
 pub mod vectorial;
 pub mod buddhabrot;
+pub(crate) mod density;
 pub mod perturbation;
 pub mod wisdom;
 pub mod view;

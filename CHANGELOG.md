@@ -36,18 +36,18 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
 
 ## [Non publié]
 
-### Corrigé
-- **Types de densité navigables** : Buddhabrot, Nebulabrot et Anti-Buddhabrot
-  tiraient leurs paramètres `c` DANS la fenêtre affichée. Zoomer donnait donc
-  une image **entièrement noire dès ×100** (les orbites quittent la fenêtre et
-  n'y reviennent pas), et n'importe quelle fenêtre éloignée se remplissait
-  d'une **nappe uniforme** (le premier itéré `z₁ = c` y retombait toujours).
-  Les `c` sont désormais tirés sur le domaine canonique du plan des paramètres
-  (centre `(-0.5, 0)`, span `4×3`), indépendamment de la vue : la fenêtre ne
-  sert plus qu'à projeter les trajectoires. Les rendus de la vue par défaut
-  restent bit-identiques.
-
 ### Ajouté
+- **Buddhabrot navigable en profondeur** : nouvel échantillonnage par
+  importance (**Metropolis-Hastings**, `fractal/density.rs`) pour Buddhabrot,
+  Nebulabrot et Anti-Buddhabrot. Des chaînes de Markov ciblent la contribution
+  à la fenêtre affichée au lieu de tirer les `c` au hasard sur tout le plan, ce
+  qui garde l'image vivante à n'importe quel zoom — le tirage uniforme, lui,
+  laissait la fenêtre vide dès ~×1000. Amorçage recuit (la fenêtre part du
+  domaine entier et se resserre par octaves), projection pondérée pour rester
+  non biaisée, accumulation déterministe. La vue par défaut, où le tirage
+  uniforme ne souffre d'aucune famine, continue de l'utiliser.
+- `FRACTALL_DENSITY_SAMPLING=uniform|metropolis` force le régime,
+  `FRACTALL_MH_DEBUG=1` trace la survie des chaînes.
 - **Tests e2e de navigation profonde** (`tests/deep_navigation.rs`, cible CI) :
   navigation réelle via `ViewHp` (molette ancrée, pan, sélection, resize) puis
   rendu par le dispatcher, pour les quatre types spéciaux. Verrouille la
@@ -93,6 +93,19 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
   nucleus phase-aware + éditeur GUI.
 
 ### Corrigé
+- **Densité : bord gauche et bord haut** — le path f64 tronquait les
+  coordonnées au lieu de les arrondir vers le bas, repliant sur la première
+  colonne et la première ligne des points situés JUSTE en dehors de la fenêtre.
+  Le path MPC arrondissait déjà correctement.
+- **Types de densité navigables** : Buddhabrot, Nebulabrot et Anti-Buddhabrot
+  tiraient leurs paramètres `c` DANS la fenêtre affichée. Zoomer donnait donc
+  une image **entièrement noire dès ×100** (les orbites quittent la fenêtre et
+  n'y reviennent pas), et n'importe quelle fenêtre éloignée se remplissait
+  d'une **nappe uniforme** (le premier itéré `z₁ = c` y retombait toujours).
+  Les `c` sont désormais tirés sur le domaine canonique du plan des paramètres
+  (centre `(-0.5, 0)`, span `4×3`), indépendamment de la vue : la fenêtre ne
+  sert plus qu'à projeter les trajectoires. Les rendus de la vue par défaut
+  restent bit-identiques.
 - **G4 jalon 5a — hybrides GENUINE deep : références par phase** (port F3
   `hybrid_references`). Trois bugs latents corrigés, invisibles au verrou
   `[M,M]` (phases identiques ⇒ désync sans effet) : (1) **désync
@@ -135,6 +148,11 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
   plus rapide, pixel-exact GMP (`GLITCH_FALLBACK_THRESHOLD`, `perturbation/mod.rs`).
 
 ### Modifié
+- **Affichage des densités invariant d'échelle** : la compression
+  logarithmique se rapporte désormais à un quantile haut de la densité, et non
+  à sa valeur brute. Le contraste ne dépend plus du budget d'échantillons —
+  donc de la résolution demandée — ni du régime d'échantillonnage, et quelques
+  pixels chauds n'écrasent plus l'image.
 - **Couverture >512² durcie** : nouveau golden `mandelbrot_interior_ref_640`
   (seul cas >512², exerce l'escalade dd) ; audit des gates `small_image` (tous
   sains).

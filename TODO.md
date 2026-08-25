@@ -1815,13 +1815,25 @@ v0.8.2 — chaque chantier ferme LA CLASSE dont plusieurs bugs sont issus)** :
      `centre (-0.5, 0)`, `span 4×3`, indépendamment de la vue ; la vue par
      défaut EST ce domaine, donc les rendus par défaut restent **bit-identiques**
      (vérifié PNG à PNG sur les trois types).
-   - **Reste (documenté par le diagnostic `--ignored`
-     `density_sampling_starvation_diagnostic`)** : l'échantillonnage uniforme
-     affame la fenêtre au-delà de ~×100 (la densité visible décroît comme sa
-     surface), et la même famine masque la densité anti-Buddhabrot au coeur des
-     bulbes. Lever la limite demande un échantillonnage **par importance**
-     (Metropolis-Hastings, Boswell) — c'est la seule voie vers un Buddhabrot
-     réellement navigable en profondeur.
+   - **✅ Échantillonnage par importance `[2026-08-25]`** : le tirage uniforme
+     affamait la fenêtre au-delà de ~×100 (la densité visible décroît comme sa
+     surface). `fractal/density.rs` ajoute le régime **Metropolis-Hastings**
+     (Boswell) : chaînes de Markov ciblant la contribution à la fenêtre,
+     projection pondérée `1/f` (sans quoi l'image vaudrait `f·D`), amorçage
+     recuit par fenêtres CONCENTRIQUES emboîtées avec ré-échantillonnage des
+     chaînes mortes à chaque barrière, accumulation en virgule fixe pour rester
+     déterministe. Engagé dès que la vue fait moins du quart du domaine ; en
+     deçà le tirage uniforme est conservé (vue par défaut inchangée).
+     Mesuré à budget égal, fenêtre nourrie (pixels non vides sur 3072) :
+     uniforme 2981 / 20 / 0 à ×100 / ×1000 / ×1e4 ; Metropolis 2981 / 2992 /
+     3023, et encore 2986 à **×1e8** — MPC compris au-delà de 1e16. Verrous :
+     corrélation > 0,85 avec un tirage uniforme à très gros budget (le témoin
+     qui a fait tomber deux erreurs de conception : noyau adapté pendant la
+     mesure, cible de proximité de plein poids) et structure préservée de ×10 à
+     ×1e8 dans `tests/deep_navigation.rs`. Les six renderers de densité sont
+     désormais des enveloppes autour d'un moteur unique (specs d'orbite +
+     colorisation), et l'affichage logarithmique est devenu invariant d'échelle
+     — il dépendait du budget d'échantillons, donc de la résolution demandée.
 7. [ ] Mesurer les performances par backend afin que chaque suppression de
    chemin legacy soit fondée sur des données.
 
