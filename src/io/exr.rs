@@ -9,16 +9,11 @@
 //! - **Attribut `IterationsBias`** (Int) : `Nbias = 1024`.
 //! - **Attribut `Iterations`** (Int) : `iter_max`.
 //!
-//! Suppose `iter_max + Nbias < u32::MAX` (vrai pour tout notre corpus actuel).
-//! Si on dépasse, on tronquera silencieusement à `u32::MAX` (TODO: support N0+N1).
+//! Quand `iter_max + Nbias >= u32::MAX`, les canaux `N0` + `N1` remplacent `N`
+//! conformément à Kalles Fraktaler 2, sans saturation silencieuse.
 //!
 //! Référence F3 : `hybrid.cc:350` pour NF, `image_raw.cc:166` pour le layout EXR.
 //!
-//! Stub P3.3 : ce module n'est pas encore branché sur le pipeline rendu. On
-//! garde l'API pour que `scripts/compare_f3.py` ait son point d'ancrage,
-//! mais les warnings dead_code sont silenced jusqu'à intégration CLI.
-#![allow(dead_code)]
-
 use std::path::Path;
 
 use exr::prelude::{
@@ -28,6 +23,15 @@ use exr::prelude::{
 use num_complex::Complex64;
 
 pub const NBIAS: u32 = 1024;
+
+fn encoded_count(iter: u32, iter_max: u32) -> (u32, u32) {
+    if iter >= iter_max {
+        (u32::MAX, u32::MAX)
+    } else {
+        let biased = iter as u64 + NBIAS as u64;
+        (biased as u32, (biased >> 32) as u32)
+    }
+}
 
 /// Calcule la valeur NF (smooth fraction) façon F3 hybrid.cc:350.
 ///
@@ -79,7 +83,9 @@ pub fn save_iterations_exr(
     // both invalidates pixel-by-pixel parity tests and surfaces visually as
     // "same image, Y-flipped" when viewed alongside F3's output. Mirror the
     // rows here so the on-disk layout matches F3's INCREASING_Y convention.
-    let mut n_buf: Vec<u32> = Vec::with_capacity(width * height);
+    let wide_counts = iter_max as u64 + NBIAS as u64 >= u32::MAX as u64;
+    let mut n0_buf: Vec<u32> = Vec::with_capacity(width * height);
+    let mut n1_buf: Vec<u32> = Vec::with_capacity(width * height);
     let mut nf_buf: Vec<f32> = Vec::with_capacity(width * height);
     for j in 0..height {
         let src_row = height - 1 - j;
@@ -87,37 +93,29 @@ pub fn save_iterations_exr(
         for i in 0..width {
             let idx = row_start + i;
             let iter = iterations[idx];
-            let n_val: u32 = if iter >= iter_max {
-                u32::MAX
-            } else {
-                let biased = iter as u64 + NBIAS as u64;
-                if biased >= u32::MAX as u64 {
-                    u32::MAX - 1
-                } else {
-                    biased as u32
-                }
-            };
-            n_buf.push(n_val);
+            let (n0, n1) = encoded_count(iter, iter_max);
+            n0_buf.push(n0);
+            if wide_counts {
+                n1_buf.push(n1);
+            }
             nf_buf.push(nf_f3(zs[idx], iter, iter_max, bailout_sq, degree));
         }
     }
 
     let size = Vec2(width, height);
 
-    let n_channel = AnyChannel::new(
-        "N",
-        FlatSamples::U32(n_buf),
-    );
     let nf_channel = AnyChannel::new(
         "NF",
         FlatSamples::F32(nf_buf),
     );
 
     let mut attrs = LayerAttributes::default();
-    attrs.other.insert(
-        Text::from("Iterations"),
-        AttributeValue::I32(iter_max as i32),
-    );
+    let iter_max_text = iter_max.to_string();
+    attrs.other.insert(Text::from("Iterations"), if iter_max <= i32::MAX as u32 {
+        AttributeValue::I32(iter_max as i32)
+    } else {
+        AttributeValue::Text(Text::from(iter_max_text.as_str()))
+    });
     attrs.other.insert(
         Text::from("IterationsBias"),
         AttributeValue::I32(NBIAS as i32),
@@ -126,6 +124,10 @@ pub fn save_iterations_exr(
         Text::from("fraktall_source"),
         AttributeValue::Text(Text::from("fractall-rust --export-iterations")),
     );
+    attrs.other.insert(
+        Text::from("KallesFraktaler2+"),
+        AttributeValue::Text(Text::from("fractall-rust compatible raw map")),
+    );
 
     let layer = Layer::new(
         size,
@@ -133,7 +135,12 @@ pub fn save_iterations_exr(
         Encoding::default(),
         AnyChannels::sort({
             let mut v: SmallVec<[AnyChannel<FlatSamples>; 4]> = SmallVec::new();
-            v.push(n_channel);
+            if wide_counts {
+                v.push(AnyChannel::new("N0", FlatSamples::U32(n0_buf)));
+                v.push(AnyChannel::new("N1", FlatSamples::U32(n1_buf)));
+            } else {
+                v.push(AnyChannel::new("N", FlatSamples::U32(n0_buf)));
+            }
             v.push(nf_channel);
             v
         }),
@@ -142,4 +149,67 @@ pub fn save_iterations_exr(
     let image = Image::from_layer(layer);
     image.write().to_file(path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn count_encoding_matches_kf2_bias_and_inside_marker() {
+        assert_eq!(encoded_count(42, 100), (42 + NBIAS, 0));
+        assert_eq!(encoded_count(100, 100), (u32::MAX, u32::MAX));
+    }
+
+    #[test]
+    fn count_encoding_preserves_high_word() {
+        let iter = u32::MAX - 100;
+        let biased = iter as u64 + NBIAS as u64;
+        assert_eq!(encoded_count(iter, u32::MAX), (biased as u32, 1));
+    }
+
+    #[test]
+    fn written_wide_map_exposes_kf2_channels_and_metadata() {
+        let path = std::env::temp_dir().join(format!(
+            "fractall-kf2-roundtrip-{}-{}.exr",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let iterations = [u32::MAX - 100, u32::MAX];
+        let zs = [Complex64::new(100.0, 0.0); 2];
+        save_iterations_exr(
+            &path,
+            2,
+            1,
+            &iterations,
+            &zs,
+            u32::MAX,
+            625.0,
+            2.0,
+        )
+        .unwrap();
+
+        let meta = exr::prelude::MetaData::read_from_file(&path, true).unwrap();
+        let header = &meta.headers[0];
+        let names: Vec<String> = header
+            .channels
+            .list
+            .iter()
+            .map(|channel| channel.name.to_string())
+            .collect();
+        assert_eq!(names, ["N0", "N1", "NF"]);
+        assert!(header
+            .own_attributes
+            .other
+            .contains_key(&Text::from("KallesFraktaler2+")));
+        assert!(matches!(
+            header
+                .own_attributes
+                .other
+                .get(&Text::from("Iterations")),
+            Some(AttributeValue::Text(value)) if value.to_string() == u32::MAX.to_string()
+        ));
+
+        std::fs::remove_file(path).unwrap();
+    }
 }

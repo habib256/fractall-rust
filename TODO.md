@@ -2086,9 +2086,11 @@ v0.8.2 — chaque chantier ferme LA CLASSE dont plusieurs bugs sont issus)** :
 ### G7 — I/O & interop · `[P2]`
 
 **Done when** :
-- [ ] **EXR raw export** compatible KFR / zoomasm (assemblage zoom-vidéo) →
-  recolorisation/animation sans re-rendre. (Base EXR N0/NF déjà présente via
-  `--export-iterations`.)
+- [x] **✅ EXR raw export compatible KF2 / zoomasm `[2026-08-25]`** — `N` +
+  `NF` + biais 1024 pour les comptes usuels ; bascule sans perte vers `N0` +
+  `N1` au-delà de 32 bits, attribut `Iterations` texte si nécessaire et marqueur
+  `KallesFraktaler2+`. Importable comme raw map pour recolorisation/assemblage
+  sans re-rendre via `--export-iterations`.
 - [ ] **Interop TOML Fraktaler-3** bidirectionnelle (lire/écrire le format F3
   natif, pas seulement le format léger rust-fractal-core).
 
