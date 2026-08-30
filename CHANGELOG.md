@@ -8,35 +8,24 @@ regroupement par type (Ajouté / Corrigé / Performance / Modifié), et sections
 jalon (`Gx`) pour l'historique. Ce fichier est un résumé actionnable — le détail
 technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
 
-## [0.8.2] — 2026-08-23 — chasse aux bugs
-
-### Corrigé
-- **Zoom XaoS** : erreur de position par pixel (le modèle par axe dérivait en
-  molette continue, 0,5 → 1,5 px), transformée HP à précision dynamique
-  (faux au-delà de ~1e74), fin de la réutilisation grossière inter-passes
-  (treillis 1/16 de pixels à 1,5 px, progressif et HQ), frame source non
-  dégradée en zoom-out, `glitch_ratio` sur pixels calculés.
-- **Perturbation** : K du nucleus finder enfin appliquée au pixel→c (golden
-  `hybrid_mbs_nucleus_5e28` régénéré) ; `iterate_pixel_gmp` bouclait à
-  l'infini sur un pixel intérieur qui rebase ; offset off-center et jitter
-  AA propagés aux paths GMP legacy ; discriminants de formule du cache subset.
-- **Couleur** : `--enable-interior-detection` noircissait ~50 % de
-  l'extérieur ; couture sur `color_offset` négatif.
-- **GUI** : resize en HP (centre préservé en deep zoom), clic-zoom par ratio
-  pixel (zoomait au centre > 1e15), touche `C`, AA vs recolorisation,
-  `TileProgress` upscalé, raccourcis inhibés en saisie.
-- **Studio vidéo** : « Ré-assembler » re-planifiait sur le zoom de la vue
-  (vidéo tronquée, manifest écrasé) ; miniatures provisoires périmées ;
-  mini-rendus non annulables ; drag des points de vitesse.
-- **CLI/vidéo/GPU** : AA multi-sample et vidéo perdaient distances/orbites
-  (Smooth silencieux — vidéo : refus explicite), `color_repeat` forcé à 40,
-  HP périmées après `--toml`, NaN dans les métadonnées PNG, dimensions 0 ;
-  jamais de GPU quand distances/orbites/dd sont demandés ni avec
-  `--find-nucleus`.
-
-## [Non publié]
+## [0.8.3] — 2026-08-30 — densité navigable, hybrides deep, distribution portable
 
 ### Ajouté
+- **AppImage Linux x86_64** (`packaging/linux/`) : un fichier unique qui embarque
+  les trois binaires de la distribution. `AppRun` choisit lequel lancer selon le
+  nom d'invocation (`ln -s fractall-*.AppImage fractall-cli`) puis selon le
+  premier argument, avec la GUI par défaut pour que le double-clic ouvre
+  l'explorateur. Bâtie dans le MÊME conteneur bionic que le `tar.gz` — la glibc
+  de la machine de build est le plancher de compatibilité — et son icône est un
+  rendu frais du `fractall-cli` qu'elle emballe.
+- **Format TOML natif Fraktaler-3** : import (`--toml` accepte les fichiers F3
+  complets, blocs `[[formula]]` inclus) et export (`src/io/f3_toml.rs`), en plus
+  du format léger déjà supporté.
+- **Maps EXR lisibles par Kalles Fraktaler 2** (`src/io/exr.rs`) : les canaux
+  bruts exportés suivent désormais la convention de nommage KF2.
+- **Anti-aliasing sur GPU** : l'AA multi-passes n'est plus réservé au CPU
+  (`src/gpu/`), avec la décorrélation Cranley-Patterson du jitter PAR PIXEL
+  portée dans les kernels, et l'échelle du jitter exposée dans la GUI.
 - **Buddhabrot navigable en profondeur** : nouvel échantillonnage par
   importance (**Metropolis-Hastings**, `fractal/density.rs`) pour Buddhabrot,
   Nebulabrot et Anti-Buddhabrot. Des chaînes de Markov ciblent la contribution
@@ -93,6 +82,15 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
   nucleus phase-aware + éditeur GUI.
 
 ### Corrigé
+- **Binaires de release inexécutables** (SIGILL au démarrage) : `.cargo/config.toml`
+  est versionné avec `target-cpu=native` pour le confort du dev local, et aucun
+  job de release ne le surchargeait sauf celui du Pi 400. Les artefacts étaient
+  donc compilés pour le CPU du *runner* GitHub : la v0.8.2 linux-x86_64
+  embarquait de l'AVX-512 (`vptestmb`) et mourait instantanément sur tout CPU
+  qui n'en a pas — vérifié sur Core i7-8700, `fractall-gui` comme
+  `fractall-cli`. Chaque job pose maintenant `RUSTFLAGS` explicitement
+  (`x86-64` sur Linux/Windows x86_64 — la même baseline que `ci.yml`, qui
+  posait déjà ce garde-fou pour les tests —, `apple-m1` sur macOS).
 - **Export haute résolution en mode Distance / OrbitTraps** : le rendu 4K/8K
   partait sans le canal que le mode consomme et **échouait** à la colorisation
   vérifiée (« Erreur de colorisation »). La règle « ce mode exige ce canal »
@@ -204,6 +202,32 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
 **État moteur** : 0 gap mesuré (harness quick + standard-speed + wisdom-optimality),
 bat F3 partout (geomean ~0.18, 25/25 wins speed). 271 tests unit CLI + 24 golden
 pixel-exact + quality 15/15 PASS.
+
+## [0.8.2] — 2026-08-23 — chasse aux bugs
+
+### Corrigé
+- **Zoom XaoS** : erreur de position par pixel (le modèle par axe dérivait en
+  molette continue, 0,5 → 1,5 px), transformée HP à précision dynamique
+  (faux au-delà de ~1e74), fin de la réutilisation grossière inter-passes
+  (treillis 1/16 de pixels à 1,5 px, progressif et HQ), frame source non
+  dégradée en zoom-out, `glitch_ratio` sur pixels calculés.
+- **Perturbation** : K du nucleus finder enfin appliquée au pixel→c (golden
+  `hybrid_mbs_nucleus_5e28` régénéré) ; `iterate_pixel_gmp` bouclait à
+  l'infini sur un pixel intérieur qui rebase ; offset off-center et jitter
+  AA propagés aux paths GMP legacy ; discriminants de formule du cache subset.
+- **Couleur** : `--enable-interior-detection` noircissait ~50 % de
+  l'extérieur ; couture sur `color_offset` négatif.
+- **GUI** : resize en HP (centre préservé en deep zoom), clic-zoom par ratio
+  pixel (zoomait au centre > 1e15), touche `C`, AA vs recolorisation,
+  `TileProgress` upscalé, raccourcis inhibés en saisie.
+- **Studio vidéo** : « Ré-assembler » re-planifiait sur le zoom de la vue
+  (vidéo tronquée, manifest écrasé) ; miniatures provisoires périmées ;
+  mini-rendus non annulables ; drag des points de vitesse.
+- **CLI/vidéo/GPU** : AA multi-sample et vidéo perdaient distances/orbites
+  (Smooth silencieux — vidéo : refus explicite), `color_repeat` forcé à 40,
+  HP périmées après `--toml`, NaN dans les métadonnées PNG, dimensions 0 ;
+  jamais de GPU quand distances/orbites/dd sont demandés ni avec
+  `--find-nucleus`.
 
 ## [G10] — Plan XaoS : réutilisation inter-frame & tuiles
 
