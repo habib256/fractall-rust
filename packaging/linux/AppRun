@@ -1,0 +1,39 @@
+#!/bin/bash
+# AppRun fractall — l'AppImage embarque les TROIS binaires de la distribution
+# (fractall-gui, fractall-cli, fractall-quality) ; ce lanceur choisit lequel
+# exécuter, dans cet ordre de priorité :
+#
+#   1. le nom d'invocation : `ln -s fractall-x86_64.AppImage fractall-cli`
+#      puis `./fractall-cli …` lance la CLI (ARGV0 est posé par le runtime) ;
+#   2. le premier argument s'il nomme un binaire embarqué :
+#      `./fractall-x86_64.AppImage fractall-cli --type 3 --output out.png` ;
+#   3. par défaut, la GUI — le double-clic depuis un gestionnaire de fichiers
+#      ou le menu .desktop doit ouvrir l'explorateur, pas une aide CLI.
+#
+# Contrairement à POM1, aucun amorçage de répertoire de données : fractall ne
+# lit aucune ressource au runtime (pas de ROM, pas de fonte) et écrit
+# uniquement là où l'utilisateur demande (PNG, .fmap, projets vidéo) plus
+# ~/.config/fractall/wisdom.toml, déjà géré par le binaire.
+
+set -e
+
+HERE="$(dirname "$(readlink -f "${0}")")"
+
+# Libs déployées par linuxdeploy (rpath = $ORIGIN/../lib ; la variable couvre
+# aussi les dlopen — wgpu charge libvulkan/libEGL à chaud).
+export LD_LIBRARY_PATH="${HERE}/usr/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+BIN="fractall-gui"
+
+case "$(basename "${ARGV0:-$0}")" in
+    fractall-cli|fractall-quality|fractall-gui) BIN="$(basename "${ARGV0:-$0}")" ;;
+esac
+
+case "${1:-}" in
+    fractall-cli|fractall-quality|fractall-gui) BIN="$1"; shift ;;
+    cli)     BIN="fractall-cli";     shift ;;
+    quality) BIN="fractall-quality"; shift ;;
+    gui)     BIN="fractall-gui";     shift ;;
+esac
+
+exec "${HERE}/usr/bin/${BIN}" "$@"

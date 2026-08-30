@@ -57,3 +57,6 @@ Thumbs.db
 
 ## Artefacts de release (CI)
 /dist/
+
+## Staging AppImage (AppDir + linuxdeploy/appimagetool téléchargés)
+/build-appimage/

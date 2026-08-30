@@ -14,22 +14,10 @@ set -euo pipefail
 LABEL="${1:?usage: package.sh <label-cible>}"
 BINS=(fractall-cli fractall-gui fractall-quality)
 
-# Version : le tag fait foi lors d'une release ; sinon version du Cargo.toml
-# suffixée du sha court, pour que deux builds manuels ne se confondent pas.
-if [[ "${GITHUB_REF_TYPE:-}" == "tag" && -n "${GITHUB_REF_NAME:-}" ]]; then
-  VERSION="${GITHUB_REF_NAME#v}"
-else
-  CARGO_VERSION="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)"
-  # `GITHUB_SHA` d'abord : dans un conteneur tournant en root, `git rev-parse`
-  # échoue sur « dubious ownership » du checkout (artefacts versionnés
-  # `gunknown`). Repli sur git en local, hors CI.
-  if [[ -n "${GITHUB_SHA:-}" ]]; then
-    SHA="${GITHUB_SHA:0:7}"
-  else
-    SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-  fi
-  VERSION="${CARGO_VERSION}-g${SHA}"
-fi
+# Version : logique partagée avec appimage.sh (tag > Cargo.toml + sha).
+# shellcheck source=.github/scripts/version.sh
+source "$(dirname "${BASH_SOURCE[0]}")/version.sh"
+VERSION="$(fractall_version)"
 
 NAME="fractall-${VERSION}-${LABEL}"
 OUT="dist/${NAME}"

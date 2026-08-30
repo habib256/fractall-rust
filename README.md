@@ -60,6 +60,24 @@ Fractall is a high-performance fractal explorer written in Rust, featuring GPU r
 
 ## Quick Start
 
+### Download a release (no toolchain needed)
+
+Prebuilt packages are attached to every [release](https://github.com/habib256/fractall-rust/releases):
+a **Linux x86_64 AppImage** (single file, GUI + CLI + quality tools), plain
+`tar.gz` bundles for Linux x86_64 / ARM64 (Raspberry Pi 400) / macOS arm64, and
+a Windows `zip`.
+
+```bash
+chmod +x fractall-*-x86_64.AppImage
+./fractall-*-x86_64.AppImage                                   # GUI
+./fractall-*-x86_64.AppImage fractall-cli --type 3 --output out.png   # CLI
+```
+
+Built under Ubuntu 18.04 (glibc 2.27), so it runs on any distribution released
+since 2018. The graphics stack (libGL / Vulkan / X11 / Wayland) is loaded from
+the host system, as it must be — GPU rendering is optional, the whole engine
+runs on CPU otherwise.
+
 ### Prerequisites
 
 ```bash

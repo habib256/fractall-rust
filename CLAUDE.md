@@ -66,6 +66,24 @@ windows-x86_64 (toolchain **GNU + MSYS2** — `gmp-mpfr-sys` compile GMP depuis
 les sources et **ne supporte pas MSVC** ; les DLL MinGW sont copiées à côté
 des .exe), macos-arm64.
 
+**⚠️ RUSTFLAGS obligatoire par job** : `.cargo/config.toml` est versionné avec
+`target-cpu=native` (confort local). Sans surcharge, un job de release compile
+pour le CPU du RUNNER — la release v0.8.2 linux-x86_64 embarquait de l'AVX-512
+(`vptestmb`) et mourait en **SIGILL** au démarrage sur tout CPU sans AVX-512.
+Chaque job pose donc `RUSTFLAGS` (`x86-64-v2` sur x86_64, `apple-m1` sur macOS,
+`cortex-a72` sur Pi 400) — la variable d'env écrase `build.rustflags`.
+
+**AppImage x86_64** (`packaging/linux/`, calqué sur POM1) : produite par le
+MÊME job bionic que le tar.gz (`build_appimage.sh`, appelé avec
+`FRACTALL_APPIMAGE_SKIP_BUILD=1`), car la glibc de la machine de build est le
+plancher de compatibilité et linuxdeploy doit résoudre contre le rootfs 18.04.
+`AppRun` dispatche GUI/CLI/quality (nom d'invocation `ARGV0`, puis 1er
+argument, défaut GUI) ; l'icône est un **rendu frais de `fractall-cli`** (pas
+d'asset versionné ; override `FRACTALL_APPIMAGE_ICON` quand l'hôte ne peut pas
+exécuter le binaire produit). `usr/lib` reste VIDE et c'est normal : les
+binaires ne listent que la glibc en `NEEDED`, winit/wgpu chargent
+X11/xkbcommon/Wayland/GL par `dlopen` depuis le système.
+
 ## Harness d'auto-amélioration (HARNESS.md)
 
 Trois axes mesurés contre Fraktaler-3 : **vitesse** (wall-clock head-to-head,

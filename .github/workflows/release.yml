@@ -1,7 +1,8 @@
 name: Release artifacts
 
 # Fabrique les binaires de distribution dans `dist/` pour 4 cibles :
-#   - linux-x86_64-glibc2.27  (Ubuntu 18.04 → tourne sur toute glibc ≥ 2.27)
+#   - linux-x86_64-glibc2.27  (Ubuntu 18.04 → tourne sur toute glibc ≥ 2.27),
+#                             qui produit AUSSI l'AppImage x86_64
 #   - linux-arm64-pi400       (Cortex-A72 tuné, Debian bullseye → glibc ≥ 2.31)
 #   - windows-x86_64          (toolchain GNU + MSYS2, cf. note gmp-mpfr-sys)
 #   - macos-arm64             (Apple Silicon)
@@ -15,6 +16,19 @@ name: Release artifacts
 #   - Aucun chemin de build ne doit contenir d'espace (limite du build system).
 #   - Pas de `libgmp-dev` système à installer : tout est bâti depuis les sources
 #     (d'où des builds longs, ~10-20 min avec LTO fat + codegen-units=1).
+#
+# ⚠️ CONTRAINTE STRUCTURANTE #2 — `.cargo/config.toml` est VERSIONNÉ et pose
+# `rustflags = ["-C", "target-cpu=native"]` (confort du dev local). Sans
+# surcharge, un job de release compile donc pour le CPU du RUNNER : la release
+# v0.8.2 linux-x86_64 contenait de l'AVX-512 (`vptestmb`) et mourait en SIGILL
+# au démarrage sur tout CPU sans AVX-512 (ex. Core i7-8700). CHAQUE job DOIT
+# donc poser `RUSTFLAGS` explicitement — la variable d'environnement écrase
+# `build.rustflags` du fichier de config. Les baselines choisies :
+#   - x86_64 (Linux/Windows) : `x86-64-v2` (SSE4.2/POPCNT, ≥ Nehalem 2009).
+#     Passer à `x86-64-v3` (AVX2/FMA) exclurait tout CPU antérieur à 2013.
+#   - macOS  : `apple-m1`, plancher de toute la gamme Apple Silicon (le runner
+#     `macos-latest` peut être une puce plus récente que la cible).
+#   - Pi 400 : `cortex-a72` (déjà explicite, cf. job dédié).
 
 on:
   push:
@@ -43,29 +57,33 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Build dans un conteneur Ubuntu 18.04
+      # Build ET AppImage dans le MÊME conteneur bionic : la glibc de la machine
+      # de build est le plancher de compatibilité des deux artefacts, et
+      # linuxdeploy doit résoudre les dépendances contre le rootfs 18.04 —
+      # bundler les libs de l'hôte ubuntu-latest (glibc 2.39) annulerait
+      # justement la promesse « glibc ≥ 2.27 ».
+      - name: Build + AppImage dans un conteneur Ubuntu 18.04
         run: |
           docker run --rm \
             -v "$PWD":/w -w /w \
+            -e RUSTFLAGS="-C target-cpu=x86-64-v2" \
             -e CARGO_HOME=/w/.cargo-home \
             -e RUSTUP_HOME=/w/.rustup-home \
             -e CARGO_TERM_COLOR=always \
+            -e GITHUB_REF_TYPE="${GITHUB_REF_TYPE:-}" \
+            -e GITHUB_REF_NAME="${GITHUB_REF_NAME:-}" \
+            -e GITHUB_SHA="${GITHUB_SHA:-}" \
             ubuntu:18.04 bash -eux -c '
-              export DEBIAN_FRONTEND=noninteractive
-              apt-get update
-              # build-essential/m4/make/diffutils : exigés par le build source de
-              # GMP/MPFR/MPC. Les libs X11/Wayland/GL servent au binaire GUI
-              # (eframe features x11 + wayland).
-              apt-get install -y --no-install-recommends \
-                build-essential m4 make diffutils pkg-config \
-                curl ca-certificates \
-                libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
-                libxkbcommon-dev libwayland-dev libgl1-mesa-dev
-              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs \
-                | sh -s -- -y --profile minimal --default-toolchain stable
+              .github/scripts/bionic-deps.sh
               . "$CARGO_HOME/env"
               cargo build --release --locked --bins
+              # Le build vient de tourner : on emballe tel quel.
+              FRACTALL_APPIMAGE_SKIP_BUILD=1 packaging/linux/build_appimage.sh
             '
+          # Le conteneur tourne en root : les artefacts lui appartiennent et
+          # les étapes suivantes (host, uid 1001) ne pourraient plus écrire
+          # dans dist/.
+          sudo chown -R "$(id -u):$(id -g)" "$PWD"
 
       - name: Assembler dist/
         run: .github/scripts/package.sh linux-x86_64-glibc2.27
@@ -130,6 +148,9 @@ jobs:
     name: Windows x86_64 (GNU)
     runs-on: windows-latest
     timeout-minutes: 120
+    env:
+      # Écrase `target-cpu=native` de .cargo/config.toml (cf. contrainte #2).
+      RUSTFLAGS: -C target-cpu=x86-64-v2
     defaults:
       run:
         shell: msys2 {0}
@@ -177,6 +198,9 @@ jobs:
     name: macOS arm64
     runs-on: macos-latest
     timeout-minutes: 90
+    env:
+      # Écrase `target-cpu=native` de .cargo/config.toml (cf. contrainte #2).
+      RUSTFLAGS: -C target-cpu=apple-m1
     steps:
       - uses: actions/checkout@v7
 
@@ -214,7 +238,7 @@ jobs:
           # N'attacher QUE les archives : `dist/*` contiendrait aussi les
           # répertoires déployés, que `gh release` refuse.
           shopt -s nullglob
-          files=(dist/*.tar.gz dist/*.zip)
+          files=(dist/*.tar.gz dist/*.zip dist/*.AppImage)
           if [[ ${#files[@]} -eq 0 ]]; then
             echo "Aucune archive trouvée dans dist/" >&2
             exit 1

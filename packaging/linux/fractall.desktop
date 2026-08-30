@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=fractall
+GenericName=Fractal Explorer
+Comment=Explorateur de fractales temps réel : perturbation + BLA, deep zoom GMP, 33 types, 27 palettes.
+Comment[fr]=Explorateur de fractales temps réel : perturbation + BLA, deep zoom GMP, 33 types, 27 palettes.
+Exec=fractall-gui
+Icon=fractall
+Terminal=false
+# Une SEULE catégorie principale : Graphics + Science ferait apparaître
+# l'entrée deux fois dans les menus (hint de desktop-file-validate).
+Categories=Graphics;2DGraphics;RasterGraphics;
+Keywords=fractal;mandelbrot;julia;burningship;buddhabrot;lyapunov;deepzoom;
+StartupNotify=true
+StartupWMClass=fractall-gui
