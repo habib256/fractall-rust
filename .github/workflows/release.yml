@@ -24,8 +24,10 @@ name: Release artifacts
 # au démarrage sur tout CPU sans AVX-512 (ex. Core i7-8700). CHAQUE job DOIT
 # donc poser `RUSTFLAGS` explicitement — la variable d'environnement écrase
 # `build.rustflags` du fichier de config. Les baselines choisies :
-#   - x86_64 (Linux/Windows) : `x86-64-v2` (SSE4.2/POPCNT, ≥ Nehalem 2009).
-#     Passer à `x86-64-v3` (AVX2/FMA) exclurait tout CPU antérieur à 2013.
+#   - x86_64 (Linux/Windows) : `x86-64`, la baseline — même valeur que `ci.yml`.
+#     Monter d'un cran (SSE4.2/POPCNT) exclurait les Core 2, deux crans
+#     (AVX2/FMA) tout CPU d'avant 2013 ; le moteur est surtout scalaire
+#     f64 + GMP, le gain ne vaut pas les machines perdues.
 #   - macOS  : `apple-m1`, plancher de toute la gamme Apple Silicon (le runner
 #     `macos-latest` peut être une puce plus récente que la cible).
 #   - Pi 400 : `cortex-a72` (déjà explicite, cf. job dédié).
@@ -66,7 +68,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$PWD":/w -w /w \
-            -e RUSTFLAGS="-C target-cpu=x86-64-v2" \
+            -e RUSTFLAGS="-C target-cpu=x86-64" \
             -e CARGO_HOME=/w/.cargo-home \
             -e RUSTUP_HOME=/w/.rustup-home \
             -e CARGO_TERM_COLOR=always \
@@ -150,7 +152,7 @@ jobs:
     timeout-minutes: 120
     env:
       # Écrase `target-cpu=native` de .cargo/config.toml (cf. contrainte #2).
-      RUSTFLAGS: -C target-cpu=x86-64-v2
+      RUSTFLAGS: -C target-cpu=x86-64
     defaults:
       run:
         shell: msys2 {0}

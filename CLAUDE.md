@@ -70,7 +70,8 @@ des .exe), macos-arm64.
 `target-cpu=native` (confort local). Sans surcharge, un job de release compile
 pour le CPU du RUNNER — la release v0.8.2 linux-x86_64 embarquait de l'AVX-512
 (`vptestmb`) et mourait en **SIGILL** au démarrage sur tout CPU sans AVX-512.
-Chaque job pose donc `RUSTFLAGS` (`x86-64-v2` sur x86_64, `apple-m1` sur macOS,
+Chaque job pose donc `RUSTFLAGS` (`x86-64` sur x86_64 — la baseline, comme
+`ci.yml` —, `apple-m1` sur macOS,
 `cortex-a72` sur Pi 400) — la variable d'env écrase `build.rustflags`.
 
 **AppImage x86_64** (`packaging/linux/`, calqué sur POM1) : produite par le

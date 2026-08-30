@@ -5,7 +5,7 @@
 #
 #   docker run --rm -v "$PWD":/w -w /w \
 #       -e CARGO_HOME=/w/.cargo-home -e RUSTUP_HOME=/w/.rustup-home \
-#       -e RUSTFLAGS="-C target-cpu=x86-64-v2" \
+#       -e RUSTFLAGS="-C target-cpu=x86-64" \
 #       ubuntu:18.04 bash -eux -c \
 #       '.github/scripts/bionic-deps.sh && . "$CARGO_HOME/env" \
 #        && packaging/linux/build_appimage.sh'
