@@ -51,4 +51,23 @@ mod tests {
             result.err()
         );
     }
+
+    /// Kernel f32 + détecteur de fiabilité (G9.6) : doit valider SANS la
+    /// capability FLOAT64 — c'est tout son intérêt (Metal, GPU sans f64).
+    #[test]
+    fn perturbation_f32_wgsl_validates_without_float64() {
+        let source = include_str!("perturbation_f32.wgsl");
+        let module =
+            naga::front::wgsl::parse_str(source).expect("perturbation_f32.wgsl ne parse pas");
+        let mut validator = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::default(),
+        );
+        let result = validator.validate(&module);
+        assert!(
+            result.is_ok(),
+            "perturbation_f32.wgsl ne valide pas : {:?}",
+            result.err()
+        );
+    }
 }

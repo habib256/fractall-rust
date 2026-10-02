@@ -24,6 +24,7 @@ pub mod pixel_loop;
 pub mod pixel_loop_dd;
 pub mod pixel_loop_exp;
 pub mod pixel_loop_gmp;
+pub mod reliability;
 
 #[cfg(test)]
 mod tests;
