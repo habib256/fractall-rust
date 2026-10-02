@@ -113,6 +113,222 @@ pub mod bla;
 pub mod compress;
 pub mod counter;
 pub mod dd;
+
+/// Rapport du détecteur de fiabilité (G9.6) : ligne `[RELIABILITY]` (quand
+/// le suivi est actif et que les stats perturbation — `FRACTALL_PERTURB_STATS`,
+/// actives par défaut — ou `FRACTALL_RELIABILITY_LOG` le demandent) et dump
+/// des bornes d'erreur (`FRACTALL_RELIABILITY_DUMP=path`, f32
+/// little-endian par pixel, ligne par ligne) pour la calibration hors-ligne.
+fn report_reliability(
+    params: &FractalParams,
+    ratios: &[f32],
+    unreliable: &[usize],
+    width: usize,
+    height: usize,
+) {
+    let mode = crate::fractal::bytecode::reliability::reliability_mode();
+    if !mode.tracks() {
+        return;
+    }
+    if perf_enabled() || std::env::var_os("FRACTALL_RELIABILITY_LOG").is_some() {
+        eprintln!(
+            "[RELIABILITY] mode={:?} runaway={:e} flagged={}/{} ({:.4}%) type={:?}",
+            mode,
+            crate::fractal::bytecode::reliability::reliability_runaway(),
+            unreliable.len(),
+            width * height,
+            100.0 * unreliable.len() as f64 / (width * height).max(1) as f64,
+            params.fractal_type,
+        );
+    }
+    if let Some(path) = std::env::var_os("FRACTALL_RELIABILITY_DUMP") {
+        let bytes: Vec<u8> = ratios.iter().flat_map(|r| r.to_le_bytes()).collect();
+        if let Err(e) = std::fs::write(&path, &bytes) {
+            eprintln!("[RELIABILITY] dump {:?} impossible : {e}", path);
+        }
+    }
+}
+
+/// Fix G3 (anneaux concentriques) : `max_perturb_iterations` / `max_bla_steps`
+/// ne doivent JAMAIS plafonner sous `iteration_max`. Comme `iters_ptb ≤ n <
+/// iteration_max`, un cap < iteration_max tronque les pixels qui ont besoin de
+/// beaucoup de pas directs → ils sortent tôt avec un compte d'itération
+/// ~radial → anneaux (cf. cusp -0.75, défaut 1024 < iter requis ~1700). F3 met
+/// `maximum_perturb_iterations = iterations` ; on s'aligne. Le loader TOML le
+/// faisait déjà ; ceci couvre GUI + CLI non-TOML ET tout appel pixel isolé
+/// (`recompute_pixels_cpu` : oublié, il rendait 1024 sur l'hôte GPU f32).
+fn with_uncapped_perturb_limits(params: &FractalParams) -> FractalParams {
+    let mut p = params.clone();
+    p.perturbation.max_perturb_iterations = p.perturbation.max_perturb_iterations.max(p.iteration_max);
+    p.perturbation.max_bla_steps = p.perturbation.max_bla_steps.max(p.iteration_max);
+    p
+}
+
+/// Correction **dd** des pixels non fiables (G9.6) : orbite référence dd
+/// (~106 b, centrée sur la vue) + boucle pixel dd avec dc dd, sur les SEULS
+/// pixels désignés — la même arithmétique que l'escalade frame entière
+/// (`use_dd_tier`), sans payer les pixels fiables. ~25× moins cher qu'une
+/// correction GMP par pixel sur les orbites longues. Hypothèses (gardées par
+/// l'appelant) : Mandelbrot bytecode, sans transformation K ni nucleus.
+///
+/// Renvoie `(index, iterations, z_final, encore_glitché)`, ou `None` si
+/// l'orbite dd n'a pu être construite (annulation).
+fn correct_pixels_dd(
+    params: &FractalParams,
+    cancel: &AtomicBool,
+    indices: &[usize],
+    aa_uniform: [f64; 2],
+    aa_jitter: Option<(u64, f64)>,
+) -> Option<Vec<(usize, u32, Complex64, bool)>> {
+    use crate::fractal::perturbation::dd::{ComplexDDExp, DoubleDoubleExp as DdE};
+    let mut dd_params = params.clone();
+    dd_params.engine.use_dd_tier = true;
+    dd_params.engine.precision_bits = compute_perturbation_precision_bits(params);
+    let cache = compute_reference_orbit_cached(&dd_params, Some(cancel), None, None, false)?;
+    if !cache.orbit.has_dd() {
+        return None;
+    }
+    let width = params.width.max(1) as usize;
+    let (x_range, y_range) = effective_spans_dd(params);
+    let width_dd = DdE::from_f64(params.width.max(1) as f64);
+    let height_dd = DdE::from_f64(params.height.max(1) as f64);
+    let half = DdE::from_f64(0.5);
+    let (jit_re, jit_im) = (x_range.div(width_dd), y_range.div(height_dd));
+    Some(
+        indices
+            .par_iter()
+            .map(|&idx| {
+                let (i, j) = (idx % width, idx / width);
+                let mut re = x_range.mul(
+                    DdE::from_f64(i as f64 + 0.5 + aa_uniform[0])
+                        .div(width_dd)
+                        .sub(half),
+                );
+                let mut im = y_range.mul(
+                    DdE::from_f64(j as f64 + 0.5 + aa_uniform[1])
+                        .div(height_dd)
+                        .sub(half),
+                );
+                if let Some((k, scale)) = aa_jitter {
+                    let (jx, jy) = crate::fractal::jitter::pixel_offset(width, i, j, k, scale);
+                    re = re.add(jit_re.mul(DdE::from_f64(jx)));
+                    im = im.add(jit_im.mul(DdE::from_f64(jy)));
+                }
+                let dc_dd = ComplexDDExp { re, im };
+                // dc 53 b (repli si le dispatch ne prend pas la branche dd).
+                let dc = ComplexExp {
+                    re: FloatExp::new(dc_dd.re.mantissa.hi, dc_dd.re.exponent),
+                    im: FloatExp::new(dc_dd.im.mantissa.hi, dc_dd.im.exponent),
+                };
+                let r = iterate_pixel_with_dd(delta::PerturbPixelRequest {
+                    params: &dd_params,
+                    ref_orbit: &cache.orbit,
+                    bla_table: &cache.bla_table,
+                    series_table: None,
+                    delta0: ComplexExp::zero(),
+                    dc,
+                    dc_dd: Some(dc_dd),
+                    current_phase: None,
+                    hybrid_refs: None,
+                });
+                (idx, r.iteration, r.z_final, r.glitched)
+            })
+            .collect(),
+    )
+}
+
+/// Recalcule des pixels isolés sur le CPU (perturbation f64, même boucle que
+/// le rendu plein cadre), pour l'hôte GPU : les pixels que le kernel f32
+/// (G9.6) déclare non fiables. Un pixel que le CPU f64 juge LUI AUSSI non
+/// fiable (borne emballée) est escaladé au GMP pur par point. Hypothèses
+/// de l'appelant (vérifiées par l'hôte GPU) : pas de transformation K, pas
+/// d'hybride, référence `cache` construite pour `params`.
+///
+/// Renvoie `(index, iterations, z_final)` par pixel demandé.
+pub fn recompute_pixels_cpu(
+    params: &FractalParams,
+    cache: &ReferenceOrbitCache,
+    indices: &[usize],
+) -> Vec<(usize, u32, Complex64)> {
+    // Mêmes plafonds que le rendu plein cadre (sinon les pixels corrigés
+    // sortent à `max_perturb_iterations` = 1024, cf. `with_uncapped_perturb_limits`).
+    let params = &with_uncapped_perturb_limits(params);
+    let width = params.width.max(1) as usize;
+    let (w, h) = (params.width.max(1) as f64, params.height.max(1) as f64);
+    let offset = Complex64::new(
+        params.center_x - cache.orbit.cref.re,
+        params.center_y - cache.orbit.cref.im,
+    );
+    let aa_jit = params.sampling.aa_jitter;
+    let runaway = crate::fractal::bytecode::reliability::reliability_runaway() as f32;
+    let is_julia = params.fractal_type == FractalType::Julia;
+    let results: Vec<(usize, u32, Complex64, bool)> = indices
+        .par_iter()
+        .map(|&idx| {
+            let (i, j) = (idx % width, idx / width);
+            let (jx, jy) = match aa_jit {
+                Some((k, scale)) => crate::fractal::jitter::pixel_offset(width, i, j, k, scale),
+                None => (0.0, 0.0),
+            };
+            let dc = Complex64::new(
+                ((i as f64 + 0.5 + jx) / w - 0.5) * params.span_x + offset.re,
+                ((j as f64 + 0.5 + jy) / h - 0.5) * params.span_y + offset.im,
+            );
+            let dc = ComplexExp::from_complex64(dc);
+            let (delta0, dc_term) = if is_julia {
+                (dc, ComplexExp::zero())
+            } else {
+                (ComplexExp::zero(), dc)
+            };
+            let r = iterate_pixel_with_dd(
+                delta::PerturbPixelRequest::new(
+                    params,
+                    &cache.orbit,
+                    &cache.bla_table,
+                    delta0,
+                    dc_term,
+                )
+                .with_series(cache.series_table.as_ref()),
+            );
+            let escalate = r.glitched || !(r.error_bound < runaway);
+            (idx, r.iteration, r.z_final, escalate)
+        })
+        .collect();
+
+    let escalate: Vec<usize> = results
+        .iter()
+        .filter_map(|&(idx, _, _, e)| e.then_some(idx))
+        .collect();
+    let mut out: Vec<(usize, u32, Complex64)> = results
+        .iter()
+        .filter(|r| !r.3)
+        .map(|&(idx, it, z, _)| (idx, it, z))
+        .collect();
+    if !escalate.is_empty() {
+        let prec = compute_perturbation_precision_bits(params);
+        let mut orbit_params = params.clone();
+        orbit_params.engine.precision_bits = prec;
+        let gmp_params = MpcParams::from_params(&orbit_params);
+        let parse = |hp: &Option<String>, f: f64| match hp.as_deref().map(Float::parse) {
+            Some(Ok(v)) => Float::with_val(prec, v),
+            _ => Float::with_val(prec, f),
+        };
+        let cx = parse(&params.center_x_hp, params.center_x);
+        let cy = parse(&params.center_y_hp, params.center_y);
+        let dc_ctx = DcGmpContext::new(params, prec);
+        out.par_extend(escalate.par_iter().map(|&idx| {
+            let dc_gmp = dc_ctx.compute_dc(idx % width, idx / width);
+            let mut re = cx.clone();
+            re += dc_gmp.real();
+            let mut im = cy.clone();
+            im += dc_gmp.imag();
+            let (it, z) = iterate_point_mpc(&gmp_params, &complex_from_xy(prec, re, im));
+            (idx, it, complex_to_complex64(&z))
+        }));
+    }
+    out
+}
+
 #[cfg(test)]
 pub mod debug_pure_f3;
 pub mod delta;
@@ -208,6 +424,7 @@ fn iterate_pixel_hybrid_bla(
                 z_final: result.z_final,
                 glitched: result.glitched,
                 suspect: result.suspect,
+                error_bound: result.error_bound,
                 distance: result.distance,
                 is_interior: result.is_interior,
                 phase_changed: result.phase_changed,
@@ -241,6 +458,7 @@ fn iterate_pixel_hybrid_bla(
                 z_final: result.z_final,
                 glitched: result.glitched,
                 suspect: result.suspect,
+                error_bound: result.error_bound,
                 distance: result.distance,
                 is_interior: result.is_interior,
                 phase_changed: result.phase_changed,
@@ -322,19 +540,8 @@ pub fn render_perturbation_with_cache(
     // calculés (le reuse copie des centres décalés de (ratio−1)/2 px, ce qui
     // contaminerait les axes déclarés exacts, consommés par le refine union).
     let reuse = if xaos.is_some() { None } else { reuse };
-    // Fix G3 (anneaux concentriques) : `max_perturb_iterations` / `max_bla_steps`
-    // ne doivent JAMAIS plafonner sous `iteration_max`. Comme `iters_ptb ≤ n <
-    // iteration_max`, un cap < iteration_max tronque les pixels qui ont besoin de
-    // beaucoup de pas directs → ils sortent tôt avec un compte d'itération
-    // ~radial → anneaux (cf. cusp -0.75, défaut 1024 < iter requis ~1700). F3 met
-    // `maximum_perturb_iterations = iterations` ; on s'aligne. Le loader TOML le
-    // faisait déjà ; ici on couvre GUI + CLI non-TOML (chemin commun).
-    let params = &{
-        let mut p = params.clone();
-        p.perturbation.max_perturb_iterations = p.perturbation.max_perturb_iterations.max(p.iteration_max);
-        p.perturbation.max_bla_steps = p.perturbation.max_bla_steps.max(p.iteration_max);
-        p
-    };
+    // Fix G3 (anneaux concentriques), cf. `with_uncapped_perturb_limits`.
+    let params = &with_uncapped_perturb_limits(params);
     let perf = perf_enabled();
     let t_all_start = Instant::now();
     let t_orbit_start = Instant::now();
@@ -423,6 +630,18 @@ pub fn render_perturbation_with_cache(
     let glitch_mask: Vec<AtomicBool> = (0..width * height)
         .map(|_| AtomicBool::new(false))
         .collect();
+    // Détecteur de fiabilité (G9.6) : borne d'erreur finale par pixel
+    // (bits f32 ; cf. `bytecode::reliability`). Distinct du
+    // glitch_mask : autre cause (plancher de précision, pas référence
+    // épuisée), autre remède. Vide quand le suivi est coupé.
+    let track_reliability = crate::fractal::bytecode::reliability::reliability_mode().tracks();
+    let error_bounds: Vec<std::sync::atomic::AtomicU32> = if track_reliability {
+        (0..width * height)
+            .map(|_| std::sync::atomic::AtomicU32::new(0))
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     if width == 0 || height == 0 {
         progress.tile.store(100, Ordering::Relaxed);
@@ -786,6 +1005,10 @@ pub fn render_perturbation_with_cache(
                     } else if result.glitched || result.suspect {
                         glitch_mask[j * width + i].store(true, Ordering::Relaxed);
                     }
+                    if track_reliability {
+                        error_bounds[j * width + i]
+                            .store(result.error_bound.to_bits(), Ordering::Relaxed);
+                    }
                 }
             }
             // G10.5 : streaming intra-passe — tuile terminée livrée au sink
@@ -891,6 +1114,20 @@ pub fn render_perturbation_with_cache(
             .collect();
         let corrections_requested = glitched_indices.len();
 
+        // Détecteur de fiabilité (G9.6) : pixels non fiables NON déjà flaggés
+        // glitch (ceux-là suivent leur propre correction).
+        let error_bounds: Vec<f32> = error_bounds
+            .iter()
+            .map(|r| f32::from_bits(r.load(Ordering::Relaxed)))
+            .collect();
+        let runaway = crate::fractal::bytecode::reliability::reliability_runaway() as f32;
+        let unreliable_indices: Vec<usize> = error_bounds
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, &r)| (!(r < runaway) && !glitch_mask[idx]).then_some(idx))
+            .collect();
+        report_reliability(params, &error_bounds, &unreliable_indices, width, height);
+
         // Fallback complet vers GMP si trop de glitches (>30% des pixels)
         // Augmenté de 10% à 30% pour éviter de recalculer toute l'image trop souvent.
         // La correction individuelle avec perturbation GMP est maintenant plus efficace.
@@ -916,6 +1153,37 @@ pub fn render_perturbation_with_cache(
         // glitches Pauldelbrot ne sont jamais flaggés par le bytecode (rebasing
         // F3 strict les prévient), donc tout pixel glitched ici est ref_exhausted.
         let allow_full_gmp_fallback = true;
+
+        // Détecteur de fiabilité (G9.6) — escalade FRAME : au-delà d'une
+        // fraction de pixels non fiables, la correction pixel par pixel (GMP
+        // perturbation, ~25× le coût dd par itération) coûte plus que de
+        // re-rendre toute la frame au tier dd (~4-8× le f64). Même mécanisme
+        // et mêmes gardes que l'escalade glitch ci-dessous (Mandelbrot
+        // bytecode, pas de récursion).
+        let escalate_unreliable = crate::fractal::bytecode::reliability::reliability_mode()
+            == crate::fractal::bytecode::reliability::ReliabilityMode::Escalate;
+        let unreliable_ratio = unreliable_indices.len() as f64 / computed_pixels as f64;
+        if escalate_unreliable
+            && unreliable_ratio > crate::fractal::bytecode::reliability::UNRELIABLE_FRAME_THRESHOLD
+            && bytecode_path
+            && !params.engine.use_dd_tier
+            && matches!(params.fractal_type, FractalType::Mandelbrot)
+        {
+            let mut dd_params = params.clone();
+            dd_params.engine.use_dd_tier = true;
+            if let Some(dd_result) =
+                render_perturbation_with_cache(&dd_params, cancel, None, None, None, None)
+            {
+                if perf {
+                    eprintln!(
+                        "[DD-ESCALATION] unreliable_ratio={:.4} > {:.2} → re-render tier dd",
+                        unreliable_ratio,
+                        crate::fractal::bytecode::reliability::UNRELIABLE_FRAME_THRESHOLD
+                    );
+                }
+                return Some(dd_result);
+            }
+        }
 
         if allow_full_gmp_fallback && glitch_ratio > GLITCH_FALLBACK_THRESHOLD {
             // Escalade tier **dd** (perf) AVANT le fallback full-GMP. Le régime
@@ -1001,7 +1269,51 @@ pub fn render_perturbation_with_cache(
             return Some(((iterations, zs, distances), cache));
         }
 
-        if !glitched_indices.is_empty() {
+        // Pixels à corriger en GMP perturbation : glitchés (référence
+        // épuisée) + non fiables (G9.6, en mode escalade). Les seconds ne
+        // participent PAS à la statistique de saturation plus bas, qui
+        // diagnostique une référence trop courte à partir des seuls glitchés.
+        let mut to_correct = glitched_indices.clone();
+        if escalate_unreliable && !unreliable_indices.is_empty() {
+            // Correction préférée : tier dd sur les seuls pixels non fiables
+            // (même arithmétique que l'escalade frame, ~25× moins chère que
+            // le GMP par pixel sur les orbites longues). Ce qui reste glitché
+            // en dd — ou si le dd n'est pas applicable — passe au GMP.
+            let dd_ok = bytecode_path
+                && !params.engine.use_dd_tier
+                && !params.engine.find_nucleus
+                && matches!(params.fractal_type, FractalType::Mandelbrot)
+                && rot.is_none()
+                && cache.hybrid_refs.is_none();
+            let fixed = if dd_ok {
+                correct_pixels_dd(
+                    params,
+                    cancel.as_ref(),
+                    &unreliable_indices,
+                    [aa_dx, aa_dy],
+                    aa_jit,
+                )
+            } else {
+                None
+            };
+            match fixed {
+                Some(fixed) => {
+                    for (idx, it, z, still_glitched) in fixed {
+                        if still_glitched {
+                            to_correct.push(idx);
+                        } else {
+                            iterations[idx] = it;
+                            zs[idx] = z;
+                        }
+                    }
+                }
+                None => to_correct.extend_from_slice(&unreliable_indices),
+            }
+        }
+        let glitched_set: std::collections::HashSet<usize> =
+            glitched_indices.iter().copied().collect();
+
+        if !to_correct.is_empty() {
             let prec = compute_perturbation_precision_bits(params);
             let width_u32 = params.width;
             // Relatif à la référence pour `iterate_pixel_gmp` (compute_dc_ref) ;
@@ -1032,7 +1344,7 @@ pub fn render_perturbation_with_cache(
             // GLITCH_FALLBACK_THRESHOLD plus haut.
             let effective_len = gmp_orbit.effective_len() as u32;
             let cap_iter = params.iteration_max.min(effective_len.saturating_sub(1));
-            let corrections: Vec<_> = glitched_indices
+            let corrections: Vec<_> = to_correct
                 .par_iter()
                 .map(|&idx| {
                     let i = (idx as u32 % width_u32) as usize;
@@ -1053,14 +1365,17 @@ pub fn render_perturbation_with_cache(
             // Détection de saturation : si la grande majorité des pixels glitchés
             // sont coincés à `cap_iter` (saturation à la fin de l'orbite référence),
             // l'orbite référence est inutilisable — on refait ces pixels en pure GMP.
-            let saturated_count = corrections
+            let glitched_corrections = corrections
                 .iter()
-                .filter(|&&(_, it, _, _)| it >= cap_iter)
-                .count();
+                .filter(|&&(idx, _, _, _)| glitched_set.contains(&idx));
+            let (saturated_count, glitched_count) =
+                glitched_corrections.fold((0usize, 0usize), |(sat, tot), &(_, it, _, _)| {
+                    (sat + usize::from(it >= cap_iter), tot + 1)
+                });
             let need_pure_gmp = bytecode_path
                 && cap_iter < params.iteration_max
-                && corrections.len() > 0
-                && saturated_count as f64 / corrections.len() as f64 > 0.30;
+                && glitched_count > 0
+                && saturated_count as f64 / glitched_count as f64 > 0.30;
 
             // Pixels à escalader vers le full GMP par-pixel (`iterate_point_mpc`,
             // sans dépendance à l'orbite référence) :
@@ -1074,14 +1389,12 @@ pub fn render_perturbation_with_cache(
             //    référence résout ces pixels (cf. fuzz mandelbrot -0.615+0.401i
             //    zoom 6e7 : blob intérieur au z_pert bit-identique, faussement
             //    évadé à iter 304 vs 2048 réel).
-            let escalate: Vec<usize> = if need_pure_gmp {
-                glitched_indices.clone()
-            } else {
-                corrections
-                    .iter()
-                    .filter_map(|&(idx, _, _, g)| if g { Some(idx) } else { None })
-                    .collect()
-            };
+            let escalate: Vec<usize> = corrections
+                .iter()
+                .filter_map(|&(idx, _, _, g)| {
+                    (g || (need_pure_gmp && glitched_set.contains(&idx))).then_some(idx)
+                })
+                .collect();
             let escalate_set: std::collections::HashSet<usize> = escalate.iter().copied().collect();
             // Applique les corrections GMP-delta rapides pour les pixels résolus.
             for (idx, iter_val, z_final, _) in &corrections {

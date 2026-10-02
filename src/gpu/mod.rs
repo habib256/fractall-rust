@@ -73,6 +73,8 @@ struct PerturbationBufferCache {
     meta_buffer: wgpu::Buffer,
     /// Identifiant unique de l'orbite (center_x_gmp + center_y_gmp + iteration_max)
     orbit_id: String,
+    /// Buffers au layout f32 (kernel `perturbation_f32.wgsl`) plutôt que f64.
+    f32_layout: bool,
 }
 
 impl PerturbationBufferCache {
@@ -94,6 +96,10 @@ pub struct GpuRenderer {
     pipeline_julia_f32: wgpu::ComputePipeline,
     pipeline_burning_ship_f32: wgpu::ComputePipeline,
     pipeline_perturbation: Option<wgpu::ComputePipeline>,
+    /// Kernel perturbation à mantisse f32 + détecteur de fiabilité (G9.6,
+    /// `perturbation_f32.wgsl`) : créé quand `SHADER_F64` manque (Metal), ou
+    /// forcé par `FRACTALL_GPU_PERTURB_F32=1` (tests/QA sur GPU f64).
+    pipeline_perturbation_f32: Option<wgpu::ComputePipeline>,
     /// Pipeline bytecode unifié (P3.1 #7). Remplace les 3 shaders dupliqués
     /// mandelbrot_f32/julia_f32/burning_ship_f32 pour les types supportés
     /// par `bytecode::compile_formula`. Activé via `use_bytecode_engine`.
@@ -359,6 +365,28 @@ impl GpuRenderer {
                 } else {
                     None
                 };
+                let pipeline_perturbation_f32 = if !supports_f64
+                    || env_flag("FRACTALL_GPU_PERTURB_F32")
+                {
+                    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                        label: Some("perturbation-f32-shader"),
+                        source: wgpu::ShaderSource::Wgsl(
+                            include_str!("perturbation_f32.wgsl").into(),
+                        ),
+                    });
+                    Some(
+                        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                            label: Some("perturbation-f32-pipeline"),
+                            layout: Some(&pipeline_layout_perturb),
+                            module: &shader,
+                            entry_point: Some("main"),
+                            compilation_options: wgpu::PipelineCompilationOptions::default(),
+                            cache: None,
+                        }),
+                    )
+                } else {
+                    None
+                };
 
                 // Pipeline bytecode unifié (P3.1 #7).
                 // Layout : 3 bindings — uniform Params, storage out_pixels,
@@ -431,6 +459,7 @@ impl GpuRenderer {
                     pipeline_julia_f32,
                     pipeline_burning_ship_f32,
                     pipeline_perturbation,
+                    pipeline_perturbation_f32,
                     pipeline_bytecode,
                     bind_group_layout,
                     bind_group_layout_f64,
@@ -577,16 +606,44 @@ impl GpuRenderer {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return None;
         }
-        // Kernel f64 natif : sans SHADER_F64 (ex. Metal) la pipeline n'existe
-        // pas → fallback CPU via le dispatcher unique.
-        let Some(pipeline_perturbation) = self.pipeline_perturbation.as_ref() else {
-            return None;
+        // Choix du kernel : f64 natif si disponible ; sinon (Metal, pas de
+        // SHADER_F64) — ou forcé par `FRACTALL_GPU_PERTURB_F32` — le kernel
+        // à mantisse f32 + détecteur de fiabilité (G9.6), dont les pixels
+        // non fiables sont recalculés sur le CPU plus bas. Aucun des deux →
+        // fallback CPU via le dispatcher unique.
+        let force_f32 = env_flag("FRACTALL_GPU_PERTURB_F32");
+        let (pipeline_perturbation, use_f32) = match (
+            self.pipeline_perturbation.as_ref(),
+            self.pipeline_perturbation_f32.as_ref(),
+        ) {
+            (Some(p64), _) if !force_f32 => (p64, false),
+            (_, Some(p32)) => (p32, true),
+            (Some(p64), None) => (p64, false),
+            (None, None) => return None,
         };
-        let supports = matches!(
-            params.fractal_type,
-            FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
-        );
+        let supports = if use_f32 {
+            // Le traqueur f32 est écrit pour z²+c (Mandelbrot/Julia).
+            matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia)
+        } else {
+            matches!(
+                params.fractal_type,
+                FractalType::Mandelbrot | FractalType::Julia | FractalType::BurningShip
+            )
+        };
         if !supports {
+            return None;
+        }
+        // Kernel f32 : δ ~ pixel doit rester un f32 NORMAL et |dz/dc| sous
+        // f32::MAX — au-delà, fallback CPU.
+        const GPU_F32_SPAN_MIN: f64 = 1e-28;
+        if use_f32 && !(params.span_x.abs().min(params.span_y.abs()) >= GPU_F32_SPAN_MIN) {
+            if stats {
+                eprintln!(
+                    "[GPU PERTURB] fallback CPU: kernel f32, span {:.3e} < {:.0e}",
+                    params.span_x.abs().min(params.span_y.abs()),
+                    GPU_F32_SPAN_MIN,
+                );
+            }
             return None;
         }
         // Le shader perturbation GPU n'applique pas la transformation K (rotation
@@ -676,6 +733,30 @@ impl GpuRenderer {
             .iter()
             .map(|z| ZRef { re: z.re, im: z.im })
             .collect();
+        // Layout f32 (kernel `perturbation_f32.wgsl`) : mêmes données arrondies.
+        let (flattened_f32, z_ref_f32): (Vec<BlaNodeF32>, Vec<ZRefF32>) = if use_f32 {
+            (
+                flattened
+                    .iter()
+                    .map(|n| BlaNodeF32 {
+                        a: [n.a[0] as f32, n.a[1] as f32],
+                        b: [n.b[0] as f32, n.b[1] as f32],
+                        c: [n.c[0] as f32, n.c[1] as f32],
+                        validity: n.validity as f32,
+                        _pad: 0.0,
+                    })
+                    .collect(),
+                z_ref_data
+                    .iter()
+                    .map(|z| ZRefF32 {
+                        re: z.re as f32,
+                        im: z.im as f32,
+                    })
+                    .collect(),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
 
         // Access the cache with interior mutability via Mutex.
         // Recover from poison if another thread panicked (e.g. device lost) to avoid double panic.
@@ -687,7 +768,7 @@ impl GpuRenderer {
         // Check if we can reuse existing buffers
         let can_reuse = cache_guard
             .as_ref()
-            .map(|c| c.orbit_id == current_orbit_id)
+            .map(|c| c.orbit_id == current_orbit_id && c.f32_layout == use_f32)
             .unwrap_or(false);
 
         if !can_reuse {
@@ -696,7 +777,11 @@ impl GpuRenderer {
                 .device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("perturb-zref-cached"),
-                    contents: bytemuck::cast_slice(&z_ref_data),
+                    contents: if use_f32 {
+                        bytemuck::cast_slice(&z_ref_f32)
+                    } else {
+                        bytemuck::cast_slice(&z_ref_data)
+                    },
                     usage: wgpu::BufferUsages::STORAGE,
                 });
 
@@ -706,11 +791,20 @@ impl GpuRenderer {
             } else {
                 flattened
             };
+            let bla_contents_f32: Vec<BlaNodeF32> = if flattened_f32.is_empty() {
+                vec![BlaNodeF32::zeroed()]
+            } else {
+                flattened_f32
+            };
             let bla_buffer = self
                 .device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("perturb-bla-nodes-cached"),
-                    contents: bytemuck::cast_slice(&bla_contents),
+                    contents: if use_f32 {
+                        bytemuck::cast_slice(&bla_contents_f32)
+                    } else {
+                        bytemuck::cast_slice(&bla_contents)
+                    },
                     usage: wgpu::BufferUsages::STORAGE,
                 });
 
@@ -732,6 +826,7 @@ impl GpuRenderer {
                 bla_buffer,
                 meta_buffer,
                 orbit_id: current_orbit_id,
+                f32_layout: use_f32,
             });
         }
 
@@ -889,7 +984,8 @@ impl GpuRenderer {
                         atom_truncated: ref_orbit.atom_truncated as u32,
                         aa_sample: params.sampling.aa_jitter.map_or(0, |(k, _)| k as u32),
                         aa_scale: params.sampling.aa_jitter.map_or(0.0, |(_, scale)| scale as f32),
-                        _pad: [0; 2],
+                        runaway: crate::fractal::bytecode::reliability::reliability_runaway() as f32,
+                        bla_epsilon: params.perturbation.bla_threshold as f32,
                     }
                 }),
                 usage: wgpu::BufferUsages::UNIFORM,
@@ -991,6 +1087,9 @@ impl GpuRenderer {
         let mut iterations = Vec::with_capacity(output_count);
         let mut zs = Vec::with_capacity(output_count);
         let mut glitch_mask = vec![false; output_count];
+        // Kernel f32 (G9.6) : `flags == 2` = test de shadowing échoué → pixel
+        // recalculé sur le CPU (distinct des glitchs `flags == 1`, réf épuisée).
+        let mut unreliable_gpu: Vec<usize> = Vec::new();
 
         // Stats de diagnostic: détecter les zones non calculées (iter=0, flags=0, z=0)
         let mut count_iter0 = 0usize;
@@ -1016,7 +1115,9 @@ impl GpuRenderer {
         };
 
         for (idx, p) in pixels.iter().enumerate() {
-            if p.flags != 0 {
+            if p.flags == 2 {
+                unreliable_gpu.push(idx);
+            } else if p.flags != 0 {
                 glitch_mask[idx] = true;
             }
             iterations.push(p.iter);
@@ -1241,6 +1342,37 @@ impl GpuRenderer {
 
             // Apply corrections
             for (idx, iter_val, z_final) in corrections {
+                iterations[idx] = iter_val;
+                zs[idx] = z_final;
+            }
+        }
+
+        // Kernel f32 (G9.6) : pixels non fiables recalculés sur le CPU
+        // (perturbation f64, escalade GMP si le f64 doute aussi). Au-delà
+        // d'une fraction élevée, le GPU n'a rien économisé : la frame entière
+        // repart au CPU (`None` → dispatcher unique), plus simple et pas plus
+        // lent qu'un recalcul pixel par pixel.
+        if !unreliable_gpu.is_empty() {
+            let ratio = unreliable_gpu.len() as f64 / total_pixels;
+            if stats {
+                eprintln!(
+                    "[GPU PERTURB] f32: {} px non fiables ({:.3}%) → CPU",
+                    unreliable_gpu.len(),
+                    100.0 * ratio
+                );
+            }
+            if ratio > GPU_F32_CPU_FALLBACK_RATIO {
+                return None;
+            }
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                return None;
+            }
+            let fixed = crate::fractal::perturbation::recompute_pixels_cpu(
+                &orbit_params,
+                &cache,
+                &unreliable_gpu,
+            );
+            for (idx, iter_val, z_final) in fixed {
                 iterations[idx] = iter_val;
                 zs[idx] = z_final;
             }
@@ -1917,6 +2049,29 @@ struct PixelOut {
     flags: u32,
 }
 
+/// Kernel f32 (G9.6) : fraction de pixels non fiables au-delà de laquelle la
+/// frame est rendue entièrement sur le CPU plutôt que corrigée pixel à pixel.
+const GPU_F32_CPU_FALLBACK_RATIO: f64 = 0.25;
+
+/// Z de référence arrondi f32 (kernel `perturbation_f32.wgsl`, vec2<f32>).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ZRefF32 {
+    re: f32,
+    im: f32,
+}
+
+/// Nœud BLA conforme arrondi f32 (kernel `perturbation_f32.wgsl`).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct BlaNodeF32 {
+    a: [f32; 2],
+    b: [f32; 2],
+    c: [f32; 2],
+    validity: f32,
+    _pad: f32,
+}
+
 /// Z de référence f64 natif (kernel SHADER_F64, layout vec2<f64>).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -1984,7 +2139,10 @@ struct PerturbParams {
     atom_truncated: u32,
     aa_sample: u32,
     aa_scale: f32,
-    _pad: [u32; 2],
+    /// Kernel f32 (G9.6) : seuil d'emballement de la borne d'erreur et
+    /// epsilon de validité BLA. Ignorés (padding) par le kernel f64.
+    runaway: f32,
+    bla_epsilon: f32,
 }
 
 struct ReuseData<'a> {

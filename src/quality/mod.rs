@@ -323,3 +323,102 @@ mod view_tests {
         assert_eq!(params.span_y, 3.0);
     }
 }
+
+/// **Étude de calibration du détecteur de fiabilité (G9.6)** — diagnostic,
+/// `--ignored`. Pour chaque preset Mandelbrot, rend la perturbation en f64
+/// FORCÉ (tier dd coupé : on mesure le détecteur, pas la correction), dumpe
+/// les bornes d'erreur par pixel, les confronte au juge GMP pur et
+/// imprime la matrice de confusion pour une échelle de seuils d'emballement τ.
+///
+/// `FRACTALL_STUDY_SIZE` (défaut 128), `FRACTALL_STUDY_PRESETS` (liste
+/// séparée par des virgules ; défaut : presets Mandelbrot peu profonds).
+///
+/// ```text
+/// FRACTALL_RELIABILITY=observe cargo test --release --lib \
+///     reliability_detector_calibration -- --ignored --nocapture
+/// ```
+#[cfg(test)]
+mod reliability_study {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn reliability_detector_calibration() {
+        let size: u32 = std::env::var("FRACTALL_STUDY_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(128);
+        let list = std::env::var("FRACTALL_STUDY_PRESETS").unwrap_or_else(|_| {
+            "seahorse-valley,mandelbrot-e13,misiurewicz-m32,mandelbrot-e18-minibrot,\
+             single-ref-glitch-interior,mandelbrot-interior-ref"
+                .into()
+        });
+        let dump = std::env::temp_dir().join(format!("fractall-shadow-{}.f32", std::process::id()));
+        std::env::set_var("FRACTALL_RELIABILITY_DUMP", &dump);
+        // Seuils d'emballement candidats (borne d'erreur absolue en espace-z).
+        let kappas = [1e-3f32, 1e-1, 1e1, 1e3, 1e10, 1e20, 1e30, f32::MAX];
+        for name in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let preset = presets::find(name).unwrap_or_else(|| panic!("preset {name}"));
+            let opt = ComparisonOptions {
+                width: size,
+                height: size,
+                ..Default::default()
+            };
+            let mut params = params_from_preset(preset, &opt);
+            params.engine.use_dd_tier = false;
+            let _ = std::fs::remove_file(&dump);
+            let out = compare(&params, &opt).expect("compare");
+            let bytes = std::fs::read(&dump).expect("dump absent (FRACTALL_RELIABILITY=observe ?)");
+            let ratios: Vec<f32> = bytes
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect();
+            assert_eq!(ratios.len(), out.pert_iters.len());
+            let wrong: Vec<bool> = out
+                .pert_iters
+                .iter()
+                .zip(&out.gmp_iters)
+                .map(|(p, g)| p != g)
+                .collect();
+            let big: Vec<bool> = out
+                .pert_iters
+                .iter()
+                .zip(&out.gmp_iters)
+                .map(|(p, g)| (*p as i64 - *g as i64).abs() > 1)
+                .collect();
+            let n_wrong = wrong.iter().filter(|w| **w).count();
+            let n_big = big.iter().filter(|w| **w).count();
+            let mut sorted: Vec<f32> = ratios.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let q = |p: f64| sorted[((sorted.len() - 1) as f64 * p) as usize];
+            eprintln!(
+                "[STUDY {name}] {size}² wrong={n_wrong} big(>1)={n_big} bound p50={:.2e} p99={:.2e} p999={:.2e} max={:.2e}",
+                q(0.5),
+                q(0.99),
+                q(0.999),
+                q(1.0)
+            );
+            let mut wrong_ratios: Vec<(f32, i64)> = ratios
+                .iter()
+                .zip(out.pert_iters.iter().zip(&out.gmp_iters))
+                .filter(|(_, (p, g))| p != g)
+                .map(|(r, (p, g))| (*r, *p as i64 - *g as i64))
+                .collect();
+            wrong_ratios.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            eprintln!(
+                "    wrong px (bound, iter_diff), top 12 : {:?}",
+                &wrong_ratios[..wrong_ratios.len().min(12)]
+            );
+            for &k in &kappas {
+                let flagged = ratios.iter().filter(|r| !(**r < k)).count();
+                let tp = ratios.iter().zip(&wrong).filter(|(r, w)| !(**r < k) && **w).count();
+                let tp_big = ratios.iter().zip(&big).filter(|(r, w)| !(**r < k) && **w).count();
+                eprintln!(
+                    "    τ={k:<9.0e} flagged={flagged:>6} ({:.3}%)  caught wrong {tp}/{n_wrong}  caught big {tp_big}/{n_big}",
+                    100.0 * flagged as f64 / ratios.len() as f64
+                );
+            }
+        }
+        let _ = std::fs::remove_file(&dump);
+    }
+}

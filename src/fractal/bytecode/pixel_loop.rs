@@ -24,6 +24,7 @@
 use num_complex::Complex64;
 
 use super::bla_dual::BlaTableUnified;
+use super::reliability::{NoObserve, ShadowTracker, StepObserver};
 use super::delta_form::DeltaState;
 use super::{Formula, Phase};
 use crate::fractal::orbit_traps::{OrbitData, OrbitTrapType};
@@ -909,7 +910,61 @@ pub fn iterate_pixel_unified_mandelbrot(
         bailout,
         max_perturb_iterations,
         max_bla_steps,
+        &mut NoObserve,
     )
+}
+
+/// Copie locale d'un observateur, réécrite dans `out` au drop (couvre les
+/// nombreux `return` de la boucle).
+struct ObsGuard<'a, O: StepObserver> {
+    local: O,
+    out: &'a mut O,
+}
+
+impl<O: StepObserver> Drop for ObsGuard<'_, O> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        *self.out = self.local;
+    }
+}
+
+/// Variante du fast-path Mandelbrot f64 avec **détecteur de fiabilité**
+/// (G9.6, cf. [`super::reliability`]) : MÊME boucle (monomorphisée avec un
+/// [`ShadowTracker`] au lieu de `NoObserve`, donc mêmes décisions et même
+/// résultat bit-à-bit), plus le traqueur final — borne d'erreur et dérivée —
+/// pour le test de shadowing par l'appelant.
+pub fn iterate_pixel_unified_mandelbrot_tracked(
+    ref_orbit: &ReferenceOrbit,
+    bla: &BlaTableUnified,
+    dc: Complex64,
+    limits: PixelLoopLimits,
+    bla_epsilon: f64,
+) -> (UnifiedPixelResult, ShadowTracker) {
+    let PixelLoopLimits {
+        iteration_max,
+        bailout,
+        max_perturb_iterations,
+        max_bla_steps,
+    } = limits;
+    let ref_len = ref_orbit.z_ref_f64.len();
+    let mut src = SliceSource {
+        z: &ref_orbit.z_ref_f64,
+        cursor: 0,
+    };
+    let mut tracker = ShadowTracker::new(dc, bla_epsilon);
+    let result = iterate_pixel_unified_mandelbrot_impl(
+        ref_orbit,
+        &mut src,
+        ref_len,
+        bla,
+        dc,
+        iteration_max,
+        bailout,
+        max_perturb_iterations,
+        max_bla_steps,
+        &mut tracker,
+    );
+    (result, tracker)
 }
 
 /// Variante COMPRESSÉE (`FRACTALL_COMPRESS_REF=1`, G8.2 phase 2) : lit la
@@ -948,6 +1003,7 @@ pub fn iterate_pixel_unified_mandelbrot_compressed(
         bailout,
         max_perturb_iterations,
         max_bla_steps,
+        &mut NoObserve,
     )
 }
 
@@ -957,7 +1013,7 @@ pub fn iterate_pixel_unified_mandelbrot_compressed(
 /// verrouillé par les goldens). `ref_len` est passé explicitement (longueur
 /// logique pour la source compressée ; `z_ref_f64` peut être vide).
 #[allow(clippy::too_many_arguments)]
-fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source>(
+fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source, O: StepObserver>(
     ref_orbit: &ReferenceOrbit,
     src: &mut S,
     ref_len: usize,
@@ -967,7 +1023,16 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source>(
     bailout: f64,
     max_perturb_iterations: u32,
     max_bla_steps: u32,
+    obs_out: &mut O,
 ) -> UnifiedPixelResult {
+    // Observateur en LOCAL (copie, réécrite par le garde de sortie) : derrière
+    // `&mut`, LLVM le laisse en mémoire et ses chaînes de dépendance (borne,
+    // dérivée) paient un aller-retour store→load par itération.
+    let mut obs = ObsGuard {
+        local: *obs_out,
+        out: obs_out,
+    };
+    let obs = &mut obs.local;
     let bailout_sqr = bailout * bailout;
     if ref_len < 2 {
         return UnifiedPixelResult {
@@ -1055,6 +1120,12 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source>(
                 let z_end_norm_sqr = z_end.norm_sqr();
                 let overshoots_escape = node.l >= 2 && z_end_norm_sqr >= bailout_sqr;
                 if !overshoots_escape {
+                    obs.bla(
+                        &a,
+                        &b,
+                        Complex64::new(a_re, a_im),
+                        Complex64::new(b_re, b_im),
+                    );
                     delta = cand;
                     c = jumped;
                     bla_steps += 1;
@@ -1087,7 +1158,9 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source>(
         // Étape 2 : pas perturbation Mandelbrot
         // δ_{n+1} = 2·Z[m]·δ + δ² + dc
         let two_zm = z_m * 2.0;
-        delta = two_zm * delta + delta * delta + dc;
+        let two_zm_delta = two_zm * delta;
+        obs.direct(z_abs, two_zm_delta, delta);
+        delta = two_zm_delta + delta * delta + dc;
         c.step();
         iters_ptb += 1;
 
@@ -1125,6 +1198,7 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source>(
             } else if ref_orbit.atom_truncated {
                 // `z_after` == Z[min(m, ref_len-1)] == Z[end] ici (m ≥ ref_len-1).
                 delta = z_after + delta;
+                obs.rebase(z_after, delta);
                 c.rebase();
                 rebase_count += 1;
                 z_m = src.reset();
@@ -1145,6 +1219,7 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source>(
             delta_norm_sqr = delta.norm_sqr();
             if z_curr_norm_sqr < delta_norm_sqr {
                 delta = z_curr;
+                obs.rebase(z_after, z_curr);
                 c.rebase();
                 rebase_count += 1;
                 z_m = src.reset();
@@ -1200,6 +1275,68 @@ mod tests {
         let (orbit, _, _) =
             compute_reference_orbit(&params, None, true).expect("compute_reference_orbit failed");
         orbit
+    }
+
+    /// **G9.6 — le détecteur de fiabilité n'altère pas la boucle.** La variante
+    /// trackée monomorphise la MÊME boucle avec un `ShadowTracker` au lieu de
+    /// `NoObserve` : itérations, z final, rebases et sauts BLA doivent être
+    /// bit-identiques sur toute une grille (bord chaotique). Deux tables :
+    /// ε = 6e-8 (rayons larges → sauts BLA exercés) et ε = 2⁻⁵³ (production).
+    /// Avec la table de production, le détecteur doit rester sobre : l'étude
+    /// vs GMP (`quality::reliability_study`) mesure ~0,4 % de pixels flaggés
+    /// sur seahorse, dont la moitié réellement faux — on borne à 2 %. (Avec
+    /// ε = 6e-8 il flagge ~8 % : la troncature BLA y est réellement ~2⁻²⁴.)
+    #[test]
+    fn tracked_mandelbrot_loop_is_bit_identical_and_quiet() {
+        // Seahorse 1e10 : orbite longue + bord chaotique (rebases).
+        let (width, height, iter_max) = (64u32, 40u32, 4000u32);
+        let (cx, cy, zoom) = (-0.743643887037158, 0.131825904205312, 1e10);
+        let span_x = 4.0 / zoom;
+        let span_y = span_x * height as f64 / width as f64;
+        let orbit = make_ref_orbit(cx, cy, zoom, iter_max);
+        let formula = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
+        // Rayon BLA de production : max |dc| sur l'image (cf. `delta::bla_c_norm`).
+        let c_norm = 0.5 * span_x.hypot(span_y);
+        let run = |eps: f64| -> (u32, u32, u32) {
+            let tables = build_bla_table_for_formula(&formula, &orbit.z_ref_f64, c_norm, eps)
+                .expect("BLA table build");
+            let bla = &tables[0];
+            let (mut rebases, mut jumps, mut flagged) = (0u32, 0u32, 0u32);
+            for j in 0..height {
+                for i in 0..width {
+                    let dc = Complex64::new(
+                        ((i as f64 + 0.5) / width as f64 - 0.5) * span_x,
+                        ((j as f64 + 0.5) / height as f64 - 0.5) * span_y,
+                    );
+                    let limits = PixelLoopLimits::uncapped(iter_max, 25.0);
+                    let plain = iterate_pixel_unified_mandelbrot(&orbit, bla, dc, limits);
+                    let (tracked, tracker) =
+                        iterate_pixel_unified_mandelbrot_tracked(&orbit, bla, dc, limits, eps);
+                    assert_eq!(plain.iteration, tracked.iteration, "px ({i},{j})");
+                    assert_eq!(plain.z_final.re.to_bits(), tracked.z_final.re.to_bits());
+                    assert_eq!(plain.z_final.im.to_bits(), tracked.z_final.im.to_bits());
+                    assert_eq!(plain.rebase_count, tracked.rebase_count);
+                    assert_eq!(plain.bla_steps, tracked.bla_steps);
+                    rebases += plain.rebase_count;
+                    jumps += plain.bla_steps;
+                    if !(tracker.error_bound()
+                        < super::super::reliability::DEFAULT_RUNAWAY as f32)
+                    {
+                        flagged += 1;
+                    }
+                }
+            }
+            (rebases, jumps, flagged)
+        };
+        let (rebases, jumps, _) = run(6e-8);
+        // Garde anti-vacuité : la grille exerce rebases ET sauts BLA.
+        assert!(rebases > 0 && jumps > 0, "rebases={rebases} jumps={jumps}");
+        let (_, _, flagged) = run(1.0 / (1u64 << 53) as f64);
+        assert!(
+            flagged * 50 <= width * height,
+            "détecteur trop bavard : {flagged}/{} flaggés",
+            width * height
+        );
     }
 
     /// **G4 jalon 5 — verrou GMP des hybrides genuine en perturbation.**
