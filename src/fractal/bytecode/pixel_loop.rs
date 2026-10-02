@@ -1297,7 +1297,6 @@ mod tests {
         let formula = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
         // Rayon BLA de production : max |dc| sur l'image (cf. `delta::bla_c_norm`).
         let c_norm = 0.5 * span_x.hypot(span_y);
-        let pixel_size = span_x / width as f64;
         let run = |eps: f64| -> (u32, u32, u32) {
             let tables = build_bla_table_for_formula(&formula, &orbit.z_ref_f64, c_norm, eps)
                 .expect("BLA table build");
@@ -1320,8 +1319,8 @@ mod tests {
                     assert_eq!(plain.bla_steps, tracked.bla_steps);
                     rebases += plain.rebase_count;
                     jumps += plain.bla_steps;
-                    if tracker.shadow_ratio(pixel_size)
-                        > super::super::reliability::DEFAULT_KAPPA as f32
+                    if !(tracker.error_bound()
+                        < super::super::reliability::DEFAULT_RUNAWAY as f32)
                     {
                         flagged += 1;
                     }

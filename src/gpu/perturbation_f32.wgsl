@@ -10,18 +10,17 @@
 // (cancellation au rebase, amplification de Lyapunov) qui exige davantage.
 // Fraktaler-3 tourne en float 24 b par défaut à zoom modéré et le paie en
 // pixels faux sans le savoir (mesuré 3-voies vs GMP, cf. TODO G3). Ici chaque
-// pixel porte le traqueur de shadowing de `bytecode/reliability.rs` (même
-// récurrence, `u = 2⁻²⁴`) : un pixel dont l'erreur, ramenée en espace-c,
-// dépasse `kappa` pixel est marqué `flags = 2` et RE-CALCULÉ sur le CPU par
-// l'hôte. Le GPU fait le gros du travail, le CPU garantit la justesse.
+// pixel porte le traqueur de `bytecode/reliability.rs` (même récurrence,
+// `u = 2⁻²⁴`) : un pixel dont la borne d'erreur s'EMBALLE (≥ `runaway`, ou
+// non finie) est marqué `flags = 2` et RE-CALCULÉ sur le CPU par l'hôte. Le GPU fait le gros du travail, le CPU garantit la justesse.
 //
 // Sémantique de boucle identique au kernel f64 (n/m séparés, rebasing F3
 // strict, garde anti-over-skip BLA, références tronquées périodiques /
 // atom-domain). Mandelbrot et Julia seulement (le traqueur est écrit pour
 // z²+c ; Burning Ship reste sur CPU/f64).
 //
-// Plage : δ ~ pixel doit rester normal en f32 (≥ 1.2e-38) et |dz/dc| sous
-// 3.4e38 — l'hôte borne le span (`GPU_F32_SPAN_MIN`).
+// Plage : δ ~ pixel doit rester normal en f32 (≥ 1.2e-38) — l'hôte borne le
+// span (`GPU_F32_SPAN_MIN`).
 
 struct Params {
     offset_x_hi: f32,
@@ -46,8 +45,8 @@ struct Params {
     atom_truncated: u32,
     aa_sample: u32,
     aa_scale: f32,
-    // Seuil de shadowing (fraction de pixel) et epsilon de validité BLA.
-    kappa: f32,
+    // Seuil d'emballement de la borne et epsilon de validité BLA.
+    runaway: f32,
     bla_epsilon: f32,
 };
 
@@ -84,7 +83,7 @@ struct BlaMeta {
 // u = 2⁻²⁴ (epsilon f32) ; constante d'arrondi local d'un pas complexe.
 const U: f32 = 5.9604645e-8;
 const GAMMA: f32 = 2.3841858e-7;
-const F32_BIG: f32 = 1.0e37;
+const F32_BIG: f32 = 1.0e37;  // garde de débordement de δ
 
 fn burtle_hash(value: u32) -> u32 {
     var a = value;
@@ -123,24 +122,9 @@ fn zref_at(m: u32) -> vec2<f32> {
     return z_ref[min(m, params.ref_len - 1u)];
 }
 
-// Verdict de shadowing (mirror `ShadowTracker::shadow_ratio`) : erreur
-// ramenée en espace-c, en pixels, comparée à κ. Borne débordée ou NaN →
-// non fiable ; dérivée débordée avec erreur finie → expansion énorme, fiable.
-fn unreliable(err: f32, deriv: vec2<f32>, pixel_size: f32) -> bool {
-    if (err != err || err > F32_BIG) {
-        return true;
-    }
-    if (err == 0.0) {
-        return false;
-    }
-    let d = length(deriv);
-    if (d != d || d > F32_BIG) {
-        return false;
-    }
-    if (d == 0.0) {
-        return true;
-    }
-    return err / d > params.kappa * pixel_size;
+// Verdict (mirror `reliability.rs`) : borne emballée ou NaN → non fiable.
+fn unreliable(err: f32) -> bool {
+    return !(err < params.runaway);
 }
 
 fn write_pixel(idx: u32, iter: u32, z: vec2<f32>, flags: u32) {
@@ -172,17 +156,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         x_ratio * params.span_x_hi + (x_ratio * params.span_x_lo + params.offset_x_hi + params.offset_x_lo),
         y_ratio * params.span_y_hi + (y_ratio * params.span_y_lo + params.offset_y_hi + params.offset_y_lo),
     );
-    let pixel_size = max(span_x / f32(params.width), span_y / f32(params.height));
 
     let is_julia = params.fractal_kind == 1u;
     var delta = vec2<f32>();
-    // Traqueur : borne d'erreur absolue `err` sur z, dérivée `deriv` = dz/dc
-    // (Mandelbrot, D₀ = 0) ou dz/dz₀ (Julia, D₀ = 1).
+    // Traqueur : borne d'erreur absolue `err` sur z.
     var err: f32 = 0.0;
-    var deriv = vec2<f32>();
     if (is_julia) {
         delta = dc;
-        deriv = vec2<f32>(1.0, 0.0);
     }
     let dc_abs = length(dc);
     var n: u32 = 0u;
@@ -196,7 +176,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let z_m = zref_at(m);
         let z_abs = z_m + delta;
         if (norm_sqr(z_abs) >= bailout_sqr) {
-            write_pixel(idx, n, z_abs, select(0u, 2u, unreliable(err, deriv, pixel_size)));
+            write_pixel(idx, n, z_abs, select(0u, 2u, unreliable(err)));
             return;
         }
 
@@ -241,15 +221,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 if (skip >= 2u && norm_sqr(z_end) >= bailout_sqr) {
                     break;
                 }
-                // Traqueur, saut BLA : D' = (A + 2Cδ)·D (+ B), A conforme →
-                // σ₁(A) = |A| ; troncature ε par saut + arrondi local.
+                // Traqueur, saut BLA : jacobien A + 2Cδ conforme → σ₁ = |·| ;
+                // troncature ε par saut + arrondi local.
                 var jac = node.a;
                 if (use_series && delta_norm_sqr < series_threshold_sqr) {
                     jac = jac + 2.0 * cmul(node.c, delta);
-                }
-                deriv = cmul(jac, deriv);
-                if (!is_julia) {
-                    deriv = deriv + node.b;
                 }
                 err = length(jac) * err
                     + (params.bla_epsilon + GAMMA) * (length(a_delta) + length(b_dc) + length(c_term));
@@ -265,14 +241,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             continue;
         }
 
-        // Pas direct δ' = (2Z + δ)·δ (+ dc). Traqueur : D' = 2zD (+ 1),
+        // Pas direct δ' = (2Z + δ)·δ (+ dc). Traqueur :
         // E' = E·(2|z| + E) + γ·(|2Z + δ|·|δ| + |dc|).
         let two_z_delta = 2.0 * z_m + delta;
         let z_norm = length(z_abs);
-        deriv = 2.0 * cmul(z_abs, deriv);
-        if (!is_julia) {
-            deriv = deriv + vec2<f32>(1.0, 0.0);
-        }
         err = err * (2.0 * z_norm + err) + GAMMA * (length(two_z_delta) * length(delta) + dc_abs);
         var next = cmul(two_z_delta, delta);
         if (!is_julia) {
@@ -316,6 +288,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         idx,
         params.iter_max,
         zref_at(m) + delta,
-        select(0u, 2u, unreliable(err, deriv, pixel_size)),
+        select(0u, 2u, unreliable(err)),
     );
 }

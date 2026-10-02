@@ -11,11 +11,11 @@ pub struct DeltaResult {
     pub z_final: Complex64,
     pub glitched: bool,
     pub suspect: bool,
-    /// Détecteur de fiabilité (G9.6) : erreur de l'orbite ramenée en
-    /// espace-c, en PIXELS (`E / |dz/dc| / pixel_size`, cf.
-    /// `bytecode::reliability`). Le pixel est non fiable au-delà de κ.
-    /// `0.0` hors du fast-path tracké (aucune information = réputé fiable).
-    pub shadow_ratio: f32,
+    /// Détecteur de fiabilité (G9.6) : borne d'erreur absolue finale sur z
+    /// (cf. `bytecode::reliability`) ; le pixel est non fiable quand elle
+    /// s'est EMBALLÉE (≥ `reliability_runaway()`, 1e30). `0.0` hors du
+    /// fast-path tracké (aucune information = réputé fiable).
+    pub error_bound: f32,
     /// Distance estimation (if computed). f64::INFINITY if not computed or invalid.
     pub distance: f64,
     /// Whether the point is in the interior of the set.
@@ -415,7 +415,7 @@ mod tests {
             z_final: Complex64::new(1.0, 2.0),
             glitched: false,
             suspect: false,
-            shadow_ratio: 0.0,
+            error_bound: 0.0,
             distance: f64::INFINITY,
             is_interior: false,
             phase_changed: false,

@@ -619,7 +619,7 @@ fn try_bytecode_unified_path(
     // sémantique `return Some(...)` par branche ; `?` propage None (fallback).
     // Détecteur de fiabilité (G9.6) : renseigné par le fast-path f64
     // Mandelbrot tracké ci-dessous ; `0` (réputé fiable) sur les autres paths.
-    let mut shadow_ratio = 0.0f32;
+    let mut error_bound = 0.0f32; // borne finale, 0 = non suivi
     let result = (|| -> Option<crate::fractal::bytecode::pixel_loop::UnifiedPixelResult> {
         // ── Tier double-double (~106 b, opt-in `use_dd_tier`) ───────────────
         // Mandelbrot escape-time, orbite dd disponible. Route vers `pixel_loop_dd`
@@ -813,8 +813,7 @@ fn try_bytecode_unified_path(
         // `iterate_pixel_unified_single_phase` vers le fast-path Mandelbrot
         // (phase [Sqr, Add], sans features dual-numbers, Mandelbrot-like) :
         // la variante trackée monomorphise la MÊME boucle (résultat
-        // bit-identique) et renvoie la borne d'erreur pour le test de
-        // shadowing. Hors de ces conditions, aucun suivi (`unreliable=false`).
+        // bit-identique) et renvoie la borne d'erreur (test d'emballement). Hors de ces conditions, aucun suivi (`unreliable=false`).
         let reliability = crate::fractal::bytecode::reliability::reliability_mode();
         if reliability.tracks()
             && !is_julia
@@ -835,7 +834,7 @@ fn try_bytecode_unified_path(
                     crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
                     F64_BLA_EPSILON_PIXEL,
                 );
-            shadow_ratio = tracker.shadow_ratio(pixel_size);
+            error_bound = tracker.error_bound();
             return Some(res);
         }
 
@@ -890,7 +889,7 @@ fn try_bytecode_unified_path(
         z_final: result.z_final,
         glitched: result.ref_exhausted,
         suspect: false,
-        shadow_ratio,
+        error_bound,
         distance: result.distance.unwrap_or(f64::INFINITY),
         is_interior: result.is_interior,
         phase_changed: false,
@@ -2470,7 +2469,7 @@ pub fn iterate_pixel_with_dd(request: PerturbPixelRequest<'_>) -> DeltaResult {
                             z_final,
                             glitched: false,
                             suspect,
-                            shadow_ratio: 0.0,
+                            error_bound: 0.0,
                             distance: f64::INFINITY,
                             is_interior: false,
                             phase_changed,
@@ -2488,7 +2487,7 @@ pub fn iterate_pixel_with_dd(request: PerturbPixelRequest<'_>) -> DeltaResult {
                             z_final,
                             glitched: true,
                             suspect,
-                            shadow_ratio: 0.0,
+                            error_bound: 0.0,
                             distance: f64::INFINITY,
                             is_interior: false,
                             phase_changed,
@@ -2731,7 +2730,7 @@ pub fn iterate_pixel_with_dd(request: PerturbPixelRequest<'_>) -> DeltaResult {
                 z_final: z_curr,
                 glitched: true,
                 suspect,
-                shadow_ratio: 0.0,
+                error_bound: 0.0,
                 distance: f64::INFINITY,
                 is_interior: false,
                 phase_changed,
@@ -2744,7 +2743,7 @@ pub fn iterate_pixel_with_dd(request: PerturbPixelRequest<'_>) -> DeltaResult {
                 z_final: z_curr,
                 glitched: false,
                 suspect,
-                shadow_ratio: 0.0,
+                error_bound: 0.0,
                 distance: f64::INFINITY, // Distance estimation not computed for escaped points
                 is_interior: false,
                 phase_changed,
@@ -2764,7 +2763,7 @@ pub fn iterate_pixel_with_dd(request: PerturbPixelRequest<'_>) -> DeltaResult {
                 z_final: z_curr,
                 glitched: true,
                 suspect,
-                shadow_ratio: 0.0,
+                error_bound: 0.0,
                 distance: f64::INFINITY,
                 is_interior: false,
                 phase_changed,
@@ -2800,7 +2799,7 @@ pub fn iterate_pixel_with_dd(request: PerturbPixelRequest<'_>) -> DeltaResult {
         z_final: z_curr,
         glitched: ref_exhausted,
         suspect,
-        shadow_ratio: 0.0,
+        error_bound: 0.0,
         distance: f64::INFINITY, // Distance estimation not computed by default
         is_interior: false,      // Interior detection not computed by default
         phase_changed,

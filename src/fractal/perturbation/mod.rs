@@ -117,8 +117,8 @@ pub mod dd;
 /// Rapport du détecteur de fiabilité (G9.6) : ligne `[RELIABILITY]` (quand
 /// le suivi est actif et que les stats perturbation — `FRACTALL_PERTURB_STATS`,
 /// actives par défaut — ou `FRACTALL_RELIABILITY_LOG` le demandent) et dump
-/// des ratios de shadowing (`FRACTALL_RELIABILITY_DUMP=path`, f32
-/// little-endian par pixel, ligne par ligne) pour calibrer κ hors-ligne.
+/// des bornes d'erreur (`FRACTALL_RELIABILITY_DUMP=path`, f32
+/// little-endian par pixel, ligne par ligne) pour la calibration hors-ligne.
 fn report_reliability(
     params: &FractalParams,
     ratios: &[f32],
@@ -132,9 +132,9 @@ fn report_reliability(
     }
     if perf_enabled() || std::env::var_os("FRACTALL_RELIABILITY_LOG").is_some() {
         eprintln!(
-            "[RELIABILITY] mode={:?} kappa={} flagged={}/{} ({:.4}%) type={:?}",
+            "[RELIABILITY] mode={:?} runaway={:e} flagged={}/{} ({:.4}%) type={:?}",
             mode,
-            crate::fractal::bytecode::reliability::reliability_kappa(),
+            crate::fractal::bytecode::reliability::reliability_runaway(),
             unreliable.len(),
             width * height,
             100.0 * unreliable.len() as f64 / (width * height).max(1) as f64,
@@ -240,7 +240,7 @@ fn correct_pixels_dd(
 /// Recalcule des pixels isolés sur le CPU (perturbation f64, même boucle que
 /// le rendu plein cadre), pour l'hôte GPU : les pixels que le kernel f32
 /// (G9.6) déclare non fiables. Un pixel que le CPU f64 juge LUI AUSSI non
-/// fiable (`shadow_ratio > κ`) est escaladé au GMP pur par point. Hypothèses
+/// fiable (borne emballée) est escaladé au GMP pur par point. Hypothèses
 /// de l'appelant (vérifiées par l'hôte GPU) : pas de transformation K, pas
 /// d'hybride, référence `cache` construite pour `params`.
 ///
@@ -260,7 +260,7 @@ pub fn recompute_pixels_cpu(
         params.center_y - cache.orbit.cref.im,
     );
     let aa_jit = params.sampling.aa_jitter;
-    let kappa = crate::fractal::bytecode::reliability::reliability_kappa() as f32;
+    let runaway = crate::fractal::bytecode::reliability::reliability_runaway() as f32;
     let is_julia = params.fractal_type == FractalType::Julia;
     let results: Vec<(usize, u32, Complex64, bool)> = indices
         .par_iter()
@@ -290,7 +290,7 @@ pub fn recompute_pixels_cpu(
                 )
                 .with_series(cache.series_table.as_ref()),
             );
-            let escalate = r.glitched || r.shadow_ratio > kappa;
+            let escalate = r.glitched || !(r.error_bound < runaway);
             (idx, r.iteration, r.z_final, escalate)
         })
         .collect();
@@ -424,7 +424,7 @@ fn iterate_pixel_hybrid_bla(
                 z_final: result.z_final,
                 glitched: result.glitched,
                 suspect: result.suspect,
-                shadow_ratio: result.shadow_ratio,
+                error_bound: result.error_bound,
                 distance: result.distance,
                 is_interior: result.is_interior,
                 phase_changed: result.phase_changed,
@@ -458,7 +458,7 @@ fn iterate_pixel_hybrid_bla(
                 z_final: result.z_final,
                 glitched: result.glitched,
                 suspect: result.suspect,
-                shadow_ratio: result.shadow_ratio,
+                error_bound: result.error_bound,
                 distance: result.distance,
                 is_interior: result.is_interior,
                 phase_changed: result.phase_changed,
@@ -630,12 +630,12 @@ pub fn render_perturbation_with_cache(
     let glitch_mask: Vec<AtomicBool> = (0..width * height)
         .map(|_| AtomicBool::new(false))
         .collect();
-    // Détecteur de fiabilité (G9.6) : erreur de shadowing par pixel, en
-    // pixels (bits f32 ; cf. `bytecode::reliability`). Distinct du
+    // Détecteur de fiabilité (G9.6) : borne d'erreur finale par pixel
+    // (bits f32 ; cf. `bytecode::reliability`). Distinct du
     // glitch_mask : autre cause (plancher de précision, pas référence
     // épuisée), autre remède. Vide quand le suivi est coupé.
     let track_reliability = crate::fractal::bytecode::reliability::reliability_mode().tracks();
-    let shadow_ratios: Vec<std::sync::atomic::AtomicU32> = if track_reliability {
+    let error_bounds: Vec<std::sync::atomic::AtomicU32> = if track_reliability {
         (0..width * height)
             .map(|_| std::sync::atomic::AtomicU32::new(0))
             .collect()
@@ -1006,8 +1006,8 @@ pub fn render_perturbation_with_cache(
                         glitch_mask[j * width + i].store(true, Ordering::Relaxed);
                     }
                     if track_reliability {
-                        shadow_ratios[j * width + i]
-                            .store(result.shadow_ratio.to_bits(), Ordering::Relaxed);
+                        error_bounds[j * width + i]
+                            .store(result.error_bound.to_bits(), Ordering::Relaxed);
                     }
                 }
             }
@@ -1116,17 +1116,17 @@ pub fn render_perturbation_with_cache(
 
         // Détecteur de fiabilité (G9.6) : pixels non fiables NON déjà flaggés
         // glitch (ceux-là suivent leur propre correction).
-        let shadow_ratios: Vec<f32> = shadow_ratios
+        let error_bounds: Vec<f32> = error_bounds
             .iter()
             .map(|r| f32::from_bits(r.load(Ordering::Relaxed)))
             .collect();
-        let kappa = crate::fractal::bytecode::reliability::reliability_kappa() as f32;
-        let unreliable_indices: Vec<usize> = shadow_ratios
+        let runaway = crate::fractal::bytecode::reliability::reliability_runaway() as f32;
+        let unreliable_indices: Vec<usize> = error_bounds
             .iter()
             .enumerate()
-            .filter_map(|(idx, &r)| (r > kappa && !glitch_mask[idx]).then_some(idx))
+            .filter_map(|(idx, &r)| (!(r < runaway) && !glitch_mask[idx]).then_some(idx))
             .collect();
-        report_reliability(params, &shadow_ratios, &unreliable_indices, width, height);
+        report_reliability(params, &error_bounds, &unreliable_indices, width, height);
 
         // Fallback complet vers GMP si trop de glitches (>30% des pixels)
         // Augmenté de 10% à 30% pour éviter de recalculer toute l'image trop souvent.

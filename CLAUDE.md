@@ -659,25 +659,25 @@ Seuils calibrés **préservés** (271 unit + 24 golden pixel-exact + sweep-lock)
 
 Le fast-path f64 Mandelbrot rendait des comptes FAUX sans rien signaler
 (plancher de précision du δ : seahorse 1e8 max_diff 437, e50 23 px).
-**Traqueur de shadowing** (Heiland-Allen « Reliable Mandelbrot ») injecté par
-monomorphisation (`StepObserver` ; production = `NoObserve` ZST, verrou
-bit-identique `tracked_mandelbrot_loop_is_bit_identical_and_quiet`) : borne
-d'erreur `E` propagée (pas direct `E·(2|z|+E)+γ·local`, saut BLA
-`σ₁(A)·E+(ε+γ)·…`, rebase `+u·(|Z|+|z|)`) + dérivée `dz/dc` ; pixel non fiable
-si `E/|D| > κ·pixel` (`shadow_ratio` dans `DeltaResult`).
-⚠️ **Ne PAS linéariser** la propagation : c'est le terme `E²` qui détecte
-(les pixels faux ont une erreur de 1er ordre ~1e-11 px — z y varie si vite
-dans le pixel que le compte au centre exact n'est plus déterminé ; la borne
-dépasse |z| et part à ∞). Distribution bimodale ⇒ κ (0.5) insensible.
+**Traqueur de borne d'erreur** injecté par monomorphisation (`StepObserver` ;
+production = `NoObserve` ZST, verrou bit-identique
+`tracked_mandelbrot_loop_is_bit_identical_and_quiet`) : borne absolue `E` sur
+z propagée (pas direct `E·(2|z|+E)+γ·local`, saut BLA `σ₁(A)·E+(ε+γ)·…`,
+rebase `+u·(|Z|+|z|)`) ; pixel non fiable si la borne **s'EMBALLE**
+(`error_bound ≥ 1e30` ou NaN, `DeltaResult::error_bound`).
+⚠️ Calibration (étude vs GMP, `quality::reliability_study`) : TOUS les pixels
+faux ont une borne emballée ; un seuil z-space MODÉRÉ flagge 1-8 % (rejeté) ;
+la normalisation par dz/dc (shadowing d'origine) ne départageait aucun pixel
+faux → supprimée (gain de vitesse) ; **ne PAS linéariser** la propagation
+(0/33 détecté : c'est le terme E² qui révèle la perte de détermination).
 **Escalade par défaut** (`FRACTALL_RELIABILITY=escalate|observe|off`) :
 pixels flaggés recalculés au **tier dd** sur ces seuls pixels
-(`correct_pixels_dd`, repli GMP), frame entière dd au-delà de 5 %. Coût :
-+35 % sur la boucle f64 (traqueur gardé en LOCAL — derrière `&mut` il coûtait
-×3) + correction (~0.3 s seahorse 512²). Mesuré vs GMP : seahorse 1e8
-WARN→PASS max_diff 0 ; e30 5/5, e50 17/18 pixels faux détectés, 0 faux
-positif sur e13/e17/e18/e100. Étude : `quality::reliability_study`
-(`--ignored`, dump `FRACTALL_RELIABILITY_DUMP`). Hors fast-path (exp, hybrides,
-harmonic, Julia, DE) : pas de suivi.
+(`correct_pixels_dd`, repli GMP), frame entière dd au-delà de 5 %. Coût
+(seahorse 1e8 512²) : boucle 2,0 → 2,5 ns/iter (traqueur gardé en LOCAL —
+derrière `&mut` il coûtait ×3), total 0,72 → 1,10 s. Mesuré vs GMP :
+seahorse WARN max_diff 437 → PASS ; e30 5/5, e50 17/18 pixels faux
+détectés, 0 faux positif sur e13/e17/e18/e100. Hors fast-path (exp,
+hybrides, harmonic, Julia, DE) : pas de suivi.
 
 ### Précision GMP perturbation
 
@@ -916,9 +916,10 @@ fractall-cli --type N --output FILE [OPTIONS]
   Pixels `flags=2` (non fiables) recalculés sur le CPU
   (`perturbation::recompute_pixels_cpu`, mêmes plafonds que le plein cadre —
   sans `with_uncapped_perturb_limits` ils sortaient à 1024) ; frame entière
-  CPU au-delà de 25 %. lavapipe, seahorse 1e6 192² vs GMP : **PASS**
-  max_diff 1 (kernel f64 : WARN max_diff 442), mais ~19 % de pixels renvoyés
-  au CPU sur ce bord chaotique. Perf réelle sur Metal NON mesurée.
+  CPU au-delà de 25 %. lavapipe vs GMP : **PASS** max_diff 1 à 1e4/3e5/1e6/
+  e13 (kernel f64 : WARN max_diff 442 à 1e6), mais 11-16 % de pixels
+  renvoyés au CPU sur le bord chaotique seahorse (0,2 % à e13 ; 1e8 → CPU
+  entier). Perf réelle sur Metal NON mesurée.
 
 **Rotation/transform** : seul le path bytecode applique K sur GPU. Les autres
 paths GPU (perturbation, shaders f32 dédiés) retombent sur le CPU quand

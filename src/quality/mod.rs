@@ -327,8 +327,8 @@ mod view_tests {
 /// **Étude de calibration du détecteur de fiabilité (G9.6)** — diagnostic,
 /// `--ignored`. Pour chaque preset Mandelbrot, rend la perturbation en f64
 /// FORCÉ (tier dd coupé : on mesure le détecteur, pas la correction), dumpe
-/// les ratios de shadowing par pixel, les confronte au juge GMP pur et
-/// imprime la matrice de confusion pour une échelle de κ.
+/// les bornes d'erreur par pixel, les confronte au juge GMP pur et
+/// imprime la matrice de confusion pour une échelle de seuils d'emballement τ.
 ///
 /// `FRACTALL_STUDY_SIZE` (défaut 128), `FRACTALL_STUDY_PRESETS` (liste
 /// séparée par des virgules ; défaut : presets Mandelbrot peu profonds).
@@ -355,7 +355,8 @@ mod reliability_study {
         });
         let dump = std::env::temp_dir().join(format!("fractall-shadow-{}.f32", std::process::id()));
         std::env::set_var("FRACTALL_RELIABILITY_DUMP", &dump);
-        let kappas = [1e-3f32, 1e-2, 3e-2, 0.1, 0.3, 1.0, 3.0, 10.0, 100.0];
+        // Seuils d'emballement candidats (borne d'erreur absolue en espace-z).
+        let kappas = [1e-3f32, 1e-1, 1e1, 1e3, 1e10, 1e20, 1e30, f32::MAX];
         for name in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
             let preset = presets::find(name).unwrap_or_else(|| panic!("preset {name}"));
             let opt = ComparisonOptions {
@@ -391,7 +392,7 @@ mod reliability_study {
             sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let q = |p: f64| sorted[((sorted.len() - 1) as f64 * p) as usize];
             eprintln!(
-                "[STUDY {name}] {size}² wrong={n_wrong} big(>1)={n_big} ratio p50={:.2e} p99={:.2e} p999={:.2e} max={:.2e}",
+                "[STUDY {name}] {size}² wrong={n_wrong} big(>1)={n_big} bound p50={:.2e} p99={:.2e} p999={:.2e} max={:.2e}",
                 q(0.5),
                 q(0.99),
                 q(0.999),
@@ -405,28 +406,15 @@ mod reliability_study {
                 .collect();
             wrong_ratios.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
             eprintln!(
-                "    wrong px (ratio, iter_diff), top 12 : {:?}",
+                "    wrong px (bound, iter_diff), top 12 : {:?}",
                 &wrong_ratios[..wrong_ratios.len().min(12)]
             );
-            // Projection f32 (direction GPU) : la borne est ~linéaire en u ;
-            // un kernel à mantisse 24 b aurait un ratio ≈ ratio_f64 · 2²⁹.
-            // Fraction de pixels qu'un tel kernel devrait renvoyer au CPU.
-            for &k in &[0.05f32, 0.5] {
-                let f32_flag = ratios
-                    .iter()
-                    .filter(|r| **r as f64 * (1u64 << 29) as f64 > k as f64)
-                    .count();
-                eprintln!(
-                    "    projection f32 κ={k}: {:.3}% de pixels non fiables",
-                    100.0 * f32_flag as f64 / ratios.len() as f64
-                );
-            }
             for &k in &kappas {
-                let flagged = ratios.iter().filter(|r| **r > k).count();
-                let tp = ratios.iter().zip(&wrong).filter(|(r, w)| **r > k && **w).count();
-                let tp_big = ratios.iter().zip(&big).filter(|(r, w)| **r > k && **w).count();
+                let flagged = ratios.iter().filter(|r| !(**r < k)).count();
+                let tp = ratios.iter().zip(&wrong).filter(|(r, w)| !(**r < k) && **w).count();
+                let tp_big = ratios.iter().zip(&big).filter(|(r, w)| !(**r < k) && **w).count();
                 eprintln!(
-                    "    κ={k:<7} flagged={flagged:>6} ({:.3}%)  caught wrong {tp}/{n_wrong}  caught big {tp_big}/{n_big}",
+                    "    τ={k:<9.0e} flagged={flagged:>6} ({:.3}%)  caught wrong {tp}/{n_wrong}  caught big {tp_big}/{n_big}",
                     100.0 * flagged as f64 / ratios.len() as f64
                 );
             }

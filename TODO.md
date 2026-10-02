@@ -2721,14 +2721,16 @@ Jalons (chacun ≈ 1-2 itérations /improve, ordre suggéré) :
   33/33 px faux détectés (0,4 % flaggés), e30 5/5, e50 17/18 (12/12 écarts
   > 1), 0 faux positif e13/e17/e18/e100/misiurewicz/interior-ref. seahorse
   192² : WARN max_diff 437 → PASS max_diff 0. Goldens e50/e113/glitch_test_2
-  régénérés (pixels modifiés == tier dd, 0 écart dd restant). Coût +35 %
-  boucle f64. **Découverte** : c'est le terme non linéaire E² qui détecte
-  (erreur 1er ordre des pixels faux ≈ 1e-11 px) — cf. doc du module.
+  régénérés (pixels modifiés == tier dd, 0 écart dd restant). **Découverte** :
+  c'est le terme non linéaire E² qui détecte (erreur 1er ordre des pixels
+  faux ≈ 1e-11 px) ; critère final = EMBALLEMENT de la borne, sans dérivée
+  (la normalisation dz/dc ne départageait aucun pixel faux). Coût : boucle
+  2,0 → 2,5 ns/iter, seahorse 512² total 0,72 → 1,10 s (correction dd).
   ⚠️ NB : `mandelbrot-e13` ne reproduit plus ses 2 px faux à 256² (0 faux) —
   le cas moteur historique a été résorbé entre-temps (fix epsilon BLA ?).
   - [ ] **Reste** : étendre le suivi aux paths exp (> 1e280), hybrides,
     Julia, DE/intérieur, harmonic LA (non suivis aujourd'hui) ; réduire les
-    +35 % (gating wisdom par zone de sensibilité ?).
+    ~+25 % du suivi (reste : une racine carrée par itération pour |z|).
   - [~] **GPU f32 + détecteur (`perturbation_f32.wgsl`)** : pour Metal (pas
     de SHADER_F64 → toute la perturbation était CPU). PASS vs GMP sur
     lavapipe seahorse 1e6 (f64 natif : WARN 442), MAIS ~19 % de pixels

@@ -10,41 +10,32 @@
 //! opt-in : aucun proxy par frame ne sépare les pixels faux des justes (proxy
 //! `cbits` réfuté, cf. TODO G3).
 //!
-//! **Idée.** Une orbite bruitée est correcte au sens pixel tant qu'elle
-//! « ombre » une vraie orbite d'un `c` voisin : son erreur, ramenée en espace-c
-//! par la dérivée, doit rester sous une fraction du pixel :
-//!
-//! ```text
-//! fiable ⟺ E_n < κ · pixel_size · |dz_n/dc|
-//! ```
-//!
-//! `E` = borne d'erreur absolue sur `z = Z + δ`, propagée par récurrence
+//! **Idée.** Propager une borne d'erreur absolue `E` sur `z = Z + δ`
 //! (`u = 2⁻⁵³`) sur les trois événements de la boucle :
 //! - pas direct `δ' = 2Zδ + δ² + dc` : `E ← E·(2|z| + E) + γ·(|2Zδ| + |δ|² + |dc|)` ;
 //! - saut BLA `δ' = Aδ + B·dc` : `E ← σ₁(A)·E + (ε_bla + γ)·(|Aδ| + |B·dc|)` ;
 //! - rebase `δ ← Z + δ` : `E ← E + u·(|Z| + |z|)` — l'arrondi f64 de la
 //!   référence, inoffensif tant que δ est relatif à Z, devient une erreur
-//!   ABSOLUE de l'état (c'est exactement le mécanisme d'e13).
+//!   ABSOLUE de l'état.
 //!
-//! La dérivée suit `D' = 2zD + 1` (pas direct), `D' = A·D + B` (BLA), et est
-//! invariante au rebase (`d(Z+δ)/dc = dδ/dc`).
-//!
-//! **Ce qui sépare réellement (mesuré 2026-10-02)** : le terme NON LINÉAIRE
-//! `E²` de la propagation. Les pixels faux vs GMP ont une erreur de premier
-//! ordre minuscule en espace-c (~5e-11 pixel — en propagation linéarisée
-//! `E' = 2|z|·E + local`, AUCUN n'est détecté) ; ils sont faux parce que z
-//! varie si vite à l'intérieur du pixel (`pixel·|dz/dc| ≫ |z|`) qu'un
-//! décalage de 1e-11 pixel change déjà le compte d'itération. La borne y
-//! dépasse |z|, le terme E² l'emballe jusqu'à ∞ : le résultat au centre
-//! exact n'est plus DÉTERMINÉ par l'arithmétique. D'où la distribution
-//! bimodale (≈1e-11 pixel ou ∞) et un κ insensible sur 5 ordres de grandeur.
-//! Ne pas « simplifier » la propagation en linéaire.
-//!
-//! **Pourquoi ça sépare là où cbits échouait** : la borne est propagée
-//! multiplicativement ET normalisée par la dérivée. Une cancellation au début
-//! d'une orbite très expansive (deep zoom, |D| énorme) ne pèse rien en
-//! espace-c ; la même cancellation sur une orbite faiblement expansive pèse un
-//! pixel entier.
+//! **Critère : l'EMBALLEMENT de la borne** (`E ≥ 1e30` ou non finie). Tant
+//! que `E ≪ |z|`, la borne croît comme l'orbite elle-même ; dès qu'elle
+//! dépasse |z|, le terme `E²` la fait doubler d'exposant à chaque pas : le
+//! compte d'itération au centre exact n'est plus déterminé par
+//! l'arithmétique f64. Historique de calibration (2026-10-02, étude vs GMP
+//! pur `quality::reliability_study`) :
+//! - critère de shadowing d'origine `E/|dz/dc| > κ·pixel` : distribution
+//!   bimodale (≈1e-11 pixel ou ∞), et TOUS les pixels faux à ∞ (seahorse
+//!   33/33, e30 5/5, e50 17/18) — la dérivée ne départageait qu'une poignée
+//!   de pixels à ratio fini, aucun faux ;
+//! - critère z-space à seuil MODÉRÉ (`E ≥ τ`, τ ∈ [1e-3, 1e2]) : PAS bimodal,
+//!   0,8-8 % de flags sur seahorse → rejeté ;
+//! - propagation LINÉARISÉE (`E' = 2|z|·E + local`) : 0/33 détecté → les
+//!   pixels faux ont une erreur de premier ordre ~1e-11 pixel ; c'est le
+//!   terme E² qui révèle la perte de détermination. Ne pas linéariser.
+//! D'où le critère retenu : emballement seul, SANS dérivée (une
+//! multiplication complexe et une chaîne de dépendance de moins par
+//! itération).
 //!
 //! Le traqueur s'injecte par monomorphisation ([`StepObserver`]) : la boucle de
 //! production instancie [`NoObserve`] (ZST, hooks vides) → code identique à
@@ -83,13 +74,11 @@ pub trait StepObserver: Copy {
 pub struct NoObserve;
 impl StepObserver for NoObserve {}
 
-/// Traqueur de shadowing : borne d'erreur `E` + dérivée `D = dz/dc`.
+/// Traqueur de fiabilité : borne d'erreur absolue `E` sur `z`.
 #[derive(Clone, Copy, Debug)]
 pub struct ShadowTracker {
     /// Borne d'erreur absolue sur `z`.
     pub err: f64,
-    /// Dérivée `dz/dc` (Mandelbrot-like : `D₀ = 0`).
-    pub deriv: Complex64,
     /// `|dc|` du pixel (terme d'arrondi constant du pas direct).
     dc_abs: f64,
     /// Epsilon de validité BLA de la table (erreur de troncature par saut).
@@ -100,51 +89,18 @@ impl ShadowTracker {
     pub fn new(dc: Complex64, bla_epsilon: f64) -> Self {
         Self {
             err: 0.0,
-            deriv: Complex64::new(0.0, 0.0),
             dc_abs: dc.norm(),
             bla_epsilon,
         }
     }
 
-    /// Erreur ramenée en espace-c : `E / |dz/dc|`. `+∞` si la borne a
-    /// débordé ou si la dérivée est nulle avec une erreur non nulle.
-    pub fn c_space_error(&self) -> f64 {
-        if !self.err.is_finite() {
-            return f64::INFINITY;
-        }
-        if self.err == 0.0 {
-            return 0.0;
-        }
-        let d = self.deriv.norm();
-        if d.is_finite() {
-            if d > 0.0 {
-                self.err / d
-            } else {
-                f64::INFINITY
-            }
-        } else {
-            // Dérivée débordée mais erreur finie : expansion énorme, l'erreur
-            // est négligeable en espace-c.
-            0.0
-        }
-    }
-
-    /// Erreur en espace-c exprimée en pixels (`E / |D| / pixel_size`),
-    /// saturée en `f32` (`+∞` si non bornée). Le pixel est fiable ssi
-    /// `ratio ≤ κ`.
-    pub fn shadow_ratio(&self, pixel_size: f64) -> f32 {
-        // Diagnostic de calibration (`STUDY_ZSPACE=1`, lu par l'étude
-        // `quality::reliability_study`) : renvoie la borne BRUTE en espace-z,
-        // pour tester un critère sans dérivée (`E ≥ τ`).
-        let r = if study_zspace() {
-            self.err
-        } else {
-            self.c_space_error() / pixel_size
-        };
-        if r.is_nan() {
+    /// Borne finale saturée en `f32` (`+∞` si emballée au-delà de f32 ou
+    /// NaN). Le pixel est non fiable ssi `bound ≥ seuil d'emballement`.
+    pub fn error_bound(&self) -> f32 {
+        if self.err.is_nan() {
             f32::INFINITY
         } else {
-            r as f32
+            self.err as f32
         }
     }
 }
@@ -153,12 +109,6 @@ impl ShadowTracker {
 #[inline(always)]
 fn l1(z: Complex64) -> f64 {
     z.re.abs() + z.im.abs()
-}
-
-fn study_zspace() -> bool {
-    use std::sync::OnceLock;
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("STUDY_ZSPACE").is_some())
 }
 
 /// Norme spectrale (plus grande valeur singulière) d'une mat2. Fermée : pour
@@ -176,9 +126,6 @@ fn spectral_norm(m: &Mat2) -> f64 {
 impl StepObserver for ShadowTracker {
     #[inline(always)]
     fn direct(&mut self, z: Complex64, two_zm_delta: Complex64, delta_old: Complex64) {
-        // Dérivée : D' = 2·z·D + 1.
-        let two_z = z * 2.0;
-        self.deriv = two_z * self.deriv + Complex64::new(1.0, 0.0);
         // Propagation : |(z+e)² − z²| ≤ |e|·(2|z| + |e|).
         // Seul le facteur de PROPAGATION exige le module exact (une
         // surestimation s'y composerait d'itération en itération) ; les termes
@@ -192,12 +139,7 @@ impl StepObserver for ShadowTracker {
 
     #[inline(always)]
     fn bla(&mut self, a: &Mat2, b: &Mat2, a_delta: Complex64, b_dc: Complex64) {
-        // Dérivée : D' = A·D + B·1 (colonne 0 de B = image de dc = 1).
-        let d = self.deriv;
-        self.deriv = Complex64::new(
-            a.m00 * d.re + a.m01 * d.im + b.m00,
-            a.m10 * d.re + a.m11 * d.im + b.m10,
-        );
+        let _ = b;
         let local = (self.bla_epsilon + GAMMA) * (l1(a_delta) + l1(b_dc));
         self.err = spectral_norm(a) * self.err + local;
     }
@@ -215,9 +157,8 @@ impl StepObserver for ShadowTracker {
 ///   non fiables recalculés au tier dd, frame entière en dd au-delà de
 ///   [`UNRELIABLE_FRAME_THRESHOLD`].
 ///
-/// Coût mesuré (seahorse 1e8, 512²) : suivi +35 % sur la boucle f64
-/// (2,2 → 2,9 ns/iter), correction dd des 0,45 % de pixels flaggés ≈ +0,3 s.
-/// En échange : WARN (max_diff 437) → PASS pixel-exact vs GMP.
+/// En échange du coût du suivi et de la correction dd : seahorse 1e8 192²
+/// WARN (max_diff 437) → PASS pixel-exact vs GMP.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReliabilityMode {
     Off,
@@ -245,22 +186,25 @@ fn parse_mode(raw: Option<&str>) -> ReliabilityMode {
     }
 }
 
-/// κ du test de shadowing (fraction de pixel tolérée en espace-c). Override
-/// `FRACTALL_RELIABILITY_KAPPA` (calibration).
-pub fn reliability_kappa() -> f64 {
+/// Seuil d'emballement de la borne (espace-z). Override
+/// `FRACTALL_RELIABILITY_RUNAWAY` (calibration). Le régime emballé double
+/// l'exposant de `E` à chaque pas : entre 1e30 et le débordement f64 il n'y a
+/// que ~3 itérations, le seuil exact est sans effet mesurable — 1e30 tient
+/// dans un f32 (canal `error_bound`, kernel GPU f32).
+pub fn reliability_runaway() -> f64 {
     use std::sync::OnceLock;
-    static KAPPA: OnceLock<f64> = OnceLock::new();
-    *KAPPA.get_or_init(|| {
-        std::env::var("FRACTALL_RELIABILITY_KAPPA")
+    static RUNAWAY: OnceLock<f64> = OnceLock::new();
+    *RUNAWAY.get_or_init(|| {
+        std::env::var("FRACTALL_RELIABILITY_RUNAWAY")
             .ok()
             .and_then(|v| v.trim().parse::<f64>().ok())
             .filter(|k| k.is_finite() && *k > 0.0)
-            .unwrap_or(DEFAULT_KAPPA)
+            .unwrap_or(DEFAULT_RUNAWAY)
     })
 }
 
-/// Valeur par défaut de κ (calibrée sur les presets QA, cf. tests).
-pub const DEFAULT_KAPPA: f64 = 0.5;
+/// Seuil d'emballement par défaut.
+pub const DEFAULT_RUNAWAY: f64 = 1e30;
 
 /// Fraction de pixels non fiables au-delà de laquelle la frame entière est
 /// re-rendue au tier dd plutôt que corrigée pixel par pixel en GMP.
@@ -303,28 +247,32 @@ mod tests {
         assert_eq!(parse_mode(Some("observe")), ReliabilityMode::Observe);
     }
 
-    /// Le traqueur reproduit la dérivée exacte d'une orbite Mandelbrot sans
-    /// rebase : D_n = dz_n/dc (différences finies sur c).
+    /// Orbite intérieure attractive (c = -0.1+0.1i, cycle stable) : la
+    /// borne reste bornée et minuscule — pas d'emballement sur 10⁴ pas.
     #[test]
-    fn derivative_matches_finite_difference() {
-        let c = Complex64::new(-0.1, 0.65);
-        let h = 1e-7;
-        let orbit = |c: Complex64, n: usize| {
-            let mut z = Complex64::new(0.0, 0.0);
-            for _ in 0..n {
-                z = z * z + c;
-            }
-            z
-        };
+    fn bound_stays_small_on_attracting_orbit() {
+        let c = Complex64::new(-0.1, 0.1);
         let mut t = ShadowTracker::new(c, 0.0);
         let mut z = Complex64::new(0.0, 0.0);
-        for _ in 0..20 {
+        for _ in 0..10_000 {
             // Référence nulle : δ = z, Z = 0 → 2Zδ = 0.
             t.direct(z, Complex64::new(0.0, 0.0), z);
             z = z * z + c;
         }
-        let fd = (orbit(c + h, 20) - orbit(c - h, 20)) / (2.0 * h);
-        let rel = (t.deriv - fd).norm() / fd.norm();
-        assert!(rel < 1e-5, "D={:?} fd={:?}", t.deriv, fd);
+        assert!(t.err < 1e-12, "E = {}", t.err);
+    }
+
+    /// Une erreur initiale comparable à |z| s'emballe au-delà du seuil.
+    #[test]
+    fn bound_runs_away_once_comparable_to_z() {
+        let c = Complex64::new(-0.1, 0.1);
+        let mut t = ShadowTracker::new(c, 0.0);
+        t.err = 1.0;
+        let mut z = Complex64::new(0.0, 0.0);
+        for _ in 0..20 {
+            t.direct(z, Complex64::new(0.0, 0.0), z);
+            z = z * z + c;
+        }
+        assert!(t.error_bound() as f64 >= DEFAULT_RUNAWAY);
     }
 }

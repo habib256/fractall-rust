@@ -984,7 +984,7 @@ impl GpuRenderer {
                         atom_truncated: ref_orbit.atom_truncated as u32,
                         aa_sample: params.sampling.aa_jitter.map_or(0, |(k, _)| k as u32),
                         aa_scale: params.sampling.aa_jitter.map_or(0.0, |(_, scale)| scale as f32),
-                        kappa: crate::fractal::bytecode::reliability::reliability_kappa() as f32,
+                        runaway: crate::fractal::bytecode::reliability::reliability_runaway() as f32,
                         bla_epsilon: params.perturbation.bla_threshold as f32,
                     }
                 }),
@@ -2139,9 +2139,9 @@ struct PerturbParams {
     atom_truncated: u32,
     aa_sample: u32,
     aa_scale: f32,
-    /// Kernel f32 (G9.6) : seuil de shadowing κ (fraction de pixel) et
+    /// Kernel f32 (G9.6) : seuil d'emballement de la borne d'erreur et
     /// epsilon de validité BLA. Ignorés (padding) par le kernel f64.
-    kappa: f32,
+    runaway: f32,
     bla_epsilon: f32,
 }
 
