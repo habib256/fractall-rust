@@ -149,6 +149,21 @@ fn report_reliability(
     }
 }
 
+/// Fix G3 (anneaux concentriques) : `max_perturb_iterations` / `max_bla_steps`
+/// ne doivent JAMAIS plafonner sous `iteration_max`. Comme `iters_ptb ≤ n <
+/// iteration_max`, un cap < iteration_max tronque les pixels qui ont besoin de
+/// beaucoup de pas directs → ils sortent tôt avec un compte d'itération
+/// ~radial → anneaux (cf. cusp -0.75, défaut 1024 < iter requis ~1700). F3 met
+/// `maximum_perturb_iterations = iterations` ; on s'aligne. Le loader TOML le
+/// faisait déjà ; ceci couvre GUI + CLI non-TOML ET tout appel pixel isolé
+/// (`recompute_pixels_cpu` : oublié, il rendait 1024 sur l'hôte GPU f32).
+fn with_uncapped_perturb_limits(params: &FractalParams) -> FractalParams {
+    let mut p = params.clone();
+    p.perturbation.max_perturb_iterations = p.perturbation.max_perturb_iterations.max(p.iteration_max);
+    p.perturbation.max_bla_steps = p.perturbation.max_bla_steps.max(p.iteration_max);
+    p
+}
+
 /// Correction **dd** des pixels non fiables (G9.6) : orbite référence dd
 /// (~106 b, centrée sur la vue) + boucle pixel dd avec dc dd, sur les SEULS
 /// pixels désignés — la même arithmétique que l'escalade frame entière
@@ -235,6 +250,9 @@ pub fn recompute_pixels_cpu(
     cache: &ReferenceOrbitCache,
     indices: &[usize],
 ) -> Vec<(usize, u32, Complex64)> {
+    // Mêmes plafonds que le rendu plein cadre (sinon les pixels corrigés
+    // sortent à `max_perturb_iterations` = 1024, cf. `with_uncapped_perturb_limits`).
+    let params = &with_uncapped_perturb_limits(params);
     let width = params.width.max(1) as usize;
     let (w, h) = (params.width.max(1) as f64, params.height.max(1) as f64);
     let offset = Complex64::new(
@@ -522,19 +540,8 @@ pub fn render_perturbation_with_cache(
     // calculés (le reuse copie des centres décalés de (ratio−1)/2 px, ce qui
     // contaminerait les axes déclarés exacts, consommés par le refine union).
     let reuse = if xaos.is_some() { None } else { reuse };
-    // Fix G3 (anneaux concentriques) : `max_perturb_iterations` / `max_bla_steps`
-    // ne doivent JAMAIS plafonner sous `iteration_max`. Comme `iters_ptb ≤ n <
-    // iteration_max`, un cap < iteration_max tronque les pixels qui ont besoin de
-    // beaucoup de pas directs → ils sortent tôt avec un compte d'itération
-    // ~radial → anneaux (cf. cusp -0.75, défaut 1024 < iter requis ~1700). F3 met
-    // `maximum_perturb_iterations = iterations` ; on s'aligne. Le loader TOML le
-    // faisait déjà ; ici on couvre GUI + CLI non-TOML (chemin commun).
-    let params = &{
-        let mut p = params.clone();
-        p.perturbation.max_perturb_iterations = p.perturbation.max_perturb_iterations.max(p.iteration_max);
-        p.perturbation.max_bla_steps = p.perturbation.max_bla_steps.max(p.iteration_max);
-        p
-    };
+    // Fix G3 (anneaux concentriques), cf. `with_uncapped_perturb_limits`.
+    let params = &with_uncapped_perturb_limits(params);
     let perf = perf_enabled();
     let t_all_start = Instant::now();
     let t_orbit_start = Instant::now();

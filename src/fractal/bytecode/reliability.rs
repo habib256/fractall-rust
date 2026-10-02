@@ -29,6 +29,17 @@
 //! La dérivée suit `D' = 2zD + 1` (pas direct), `D' = A·D + B` (BLA), et est
 //! invariante au rebase (`d(Z+δ)/dc = dδ/dc`).
 //!
+//! **Ce qui sépare réellement (mesuré 2026-10-02)** : le terme NON LINÉAIRE
+//! `E²` de la propagation. Les pixels faux vs GMP ont une erreur de premier
+//! ordre minuscule en espace-c (~5e-11 pixel — en propagation linéarisée
+//! `E' = 2|z|·E + local`, AUCUN n'est détecté) ; ils sont faux parce que z
+//! varie si vite à l'intérieur du pixel (`pixel·|dz/dc| ≫ |z|`) qu'un
+//! décalage de 1e-11 pixel change déjà le compte d'itération. La borne y
+//! dépasse |z|, le terme E² l'emballe jusqu'à ∞ : le résultat au centre
+//! exact n'est plus DÉTERMINÉ par l'arithmétique. D'où la distribution
+//! bimodale (≈1e-11 pixel ou ∞) et un κ insensible sur 5 ordres de grandeur.
+//! Ne pas « simplifier » la propagation en linéaire.
+//!
 //! **Pourquoi ça sépare là où cbits échouait** : la borne est propagée
 //! multiplicativement ET normalisée par la dérivée. Une cancellation au début
 //! d'une orbite très expansive (deep zoom, |D| énorme) ne pèse rien en

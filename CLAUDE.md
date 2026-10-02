@@ -655,6 +655,30 @@ la mantisse (vérifié : à 1e300, `req_exp=1003` mais `req_prec=8`). Le tier **
 non captée par un détecteur cheap fiable (proxy `cbits` réfuté, cf. TODO G3).
 Seuils calibrés **préservés** (271 unit + 24 golden pixel-exact + sweep-lock).
 
+### Détecteur de fiabilité par pixel (G9.6, `bytecode/reliability.rs`)
+
+Le fast-path f64 Mandelbrot rendait des comptes FAUX sans rien signaler
+(plancher de précision du δ : seahorse 1e8 max_diff 437, e50 23 px).
+**Traqueur de shadowing** (Heiland-Allen « Reliable Mandelbrot ») injecté par
+monomorphisation (`StepObserver` ; production = `NoObserve` ZST, verrou
+bit-identique `tracked_mandelbrot_loop_is_bit_identical_and_quiet`) : borne
+d'erreur `E` propagée (pas direct `E·(2|z|+E)+γ·local`, saut BLA
+`σ₁(A)·E+(ε+γ)·…`, rebase `+u·(|Z|+|z|)`) + dérivée `dz/dc` ; pixel non fiable
+si `E/|D| > κ·pixel` (`shadow_ratio` dans `DeltaResult`).
+⚠️ **Ne PAS linéariser** la propagation : c'est le terme `E²` qui détecte
+(les pixels faux ont une erreur de 1er ordre ~1e-11 px — z y varie si vite
+dans le pixel que le compte au centre exact n'est plus déterminé ; la borne
+dépasse |z| et part à ∞). Distribution bimodale ⇒ κ (0.5) insensible.
+**Escalade par défaut** (`FRACTALL_RELIABILITY=escalate|observe|off`) :
+pixels flaggés recalculés au **tier dd** sur ces seuls pixels
+(`correct_pixels_dd`, repli GMP), frame entière dd au-delà de 5 %. Coût :
++35 % sur la boucle f64 (traqueur gardé en LOCAL — derrière `&mut` il coûtait
+×3) + correction (~0.3 s seahorse 512²). Mesuré vs GMP : seahorse 1e8
+WARN→PASS max_diff 0 ; e30 5/5, e50 17/18 pixels faux détectés, 0 faux
+positif sur e13/e17/e18/e100. Étude : `quality::reliability_study`
+(`--ignored`, dump `FRACTALL_RELIABILITY_DUMP`). Hors fast-path (exp, hybrides,
+harmonic, Julia, DE) : pas de suivi.
+
 ### Précision GMP perturbation
 
 Formule C++ Fraktaler-3 : `bits = max(24, 24 + floor(log2(zoom * height)))`,
@@ -885,6 +909,16 @@ fractall-cli --type N --output FILE [OPTIONS]
   Gate host : `ref_len-1 ≥ iter_max` sinon fallback CPU (réfs tronquées).
 - `bytecode_kernel.wgsl` — runtime bytecode unifié (P3.1 Task 7). Applique la
   matrice K (rotation/transform) au mapping pixel→c, parité CPU/F3.
+
+- `perturbation_f32.wgsl` — **kernel perturbation à mantisse f32 + traqueur
+  de fiabilité** (G9.6) pour les GPU SANS `SHADER_F64` (Metal/Apple Silicon)
+  — forçable `FRACTALL_GPU_PERTURB_F32=1`. Mandelbrot/Julia, span ≥ 1e-28.
+  Pixels `flags=2` (non fiables) recalculés sur le CPU
+  (`perturbation::recompute_pixels_cpu`, mêmes plafonds que le plein cadre —
+  sans `with_uncapped_perturb_limits` ils sortaient à 1024) ; frame entière
+  CPU au-delà de 25 %. lavapipe, seahorse 1e6 192² vs GMP : **PASS**
+  max_diff 1 (kernel f64 : WARN max_diff 442), mais ~19 % de pixels renvoyés
+  au CPU sur ce bord chaotique. Perf réelle sur Metal NON mesurée.
 
 **Rotation/transform** : seul le path bytecode applique K sur GPU. Les autres
 paths GPU (perturbation, shaders f32 dédiés) retombent sur le CPU quand

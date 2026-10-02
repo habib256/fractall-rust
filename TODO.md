@@ -2714,10 +2714,28 @@ Jalons (chacun ≈ 1-2 itérations /improve, ordre suggéré) :
     272 gui + 263 cli + 21 golden verts. **G9.5 FONCTIONNELLEMENT COMPLET** :
     le device est auto-arbitré (CLI + GUI) par benchmark machine + garde-fou
     correction, `--gpu`/`--no-gpu` (CLI) et le menu CPU/GPU (GUI) = overrides.
-- [ ] **9.6 — Fiabilité → escalade de tier** (= G-dd auto-dispatch, plan déjà
-  écrit) : détecteur shadowing en observation puis escalade px→dd /
-  frame→dd ; ferme la boucle « le wisdom ne sous-provisionne jamais »
-  (contrairement au wisdom F3, cf. diag 3-voies : F3 float 24 b = 9391 px faux).
+- [x] **✅ 9.6 — Fiabilité → escalade de tier `[2026-10-02]`** (fast-path f64
+  Mandelbrot). Détecteur shadowing (`bytecode/reliability.rs`) puis escalade
+  px→dd (`correct_pixels_dd`) / frame→dd (> 5 %), ACTIF par défaut.
+  Étude vs GMP pur (f64 forcé, `quality::reliability_study`) : seahorse 1e8
+  33/33 px faux détectés (0,4 % flaggés), e30 5/5, e50 17/18 (12/12 écarts
+  > 1), 0 faux positif e13/e17/e18/e100/misiurewicz/interior-ref. seahorse
+  192² : WARN max_diff 437 → PASS max_diff 0. Goldens e50/e113/glitch_test_2
+  régénérés (pixels modifiés == tier dd, 0 écart dd restant). Coût +35 %
+  boucle f64. **Découverte** : c'est le terme non linéaire E² qui détecte
+  (erreur 1er ordre des pixels faux ≈ 1e-11 px) — cf. doc du module.
+  ⚠️ NB : `mandelbrot-e13` ne reproduit plus ses 2 px faux à 256² (0 faux) —
+  le cas moteur historique a été résorbé entre-temps (fix epsilon BLA ?).
+  - [ ] **Reste** : étendre le suivi aux paths exp (> 1e280), hybrides,
+    Julia, DE/intérieur, harmonic LA (non suivis aujourd'hui) ; réduire les
+    +35 % (gating wisdom par zone de sensibilité ?).
+  - [~] **GPU f32 + détecteur (`perturbation_f32.wgsl`)** : pour Metal (pas
+    de SHADER_F64 → toute la perturbation était CPU). PASS vs GMP sur
+    lavapipe seahorse 1e6 (f64 natif : WARN 442), MAIS ~19 % de pixels
+    renvoyés au CPU sur ce bord chaotique (pixels réellement indéterminés à
+    24 b). À faire : mesure perf sur Apple Silicon (impossible ici), wisdom
+    bench `gpu_perturb_f32` pour l'auto-device, exposant étendu (> 1e28),
+    Burning Ship.
 - [ ] **9.7 — Le wisdom choisit aussi le TYPE de l'ORBITE référence**
   `[⏸ faible ROI — documenté, pas prioritaire]` : aujourd'hui l'orbite est
   **toujours en GMP**, clampée à **≥128 b** (`compute_perturbation_precision_
