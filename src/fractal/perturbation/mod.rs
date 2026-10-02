@@ -149,6 +149,79 @@ fn report_reliability(
     }
 }
 
+/// Correction **dd** des pixels non fiables (G9.6) : orbite référence dd
+/// (~106 b, centrée sur la vue) + boucle pixel dd avec dc dd, sur les SEULS
+/// pixels désignés — la même arithmétique que l'escalade frame entière
+/// (`use_dd_tier`), sans payer les pixels fiables. ~25× moins cher qu'une
+/// correction GMP par pixel sur les orbites longues. Hypothèses (gardées par
+/// l'appelant) : Mandelbrot bytecode, sans transformation K ni nucleus.
+///
+/// Renvoie `(index, iterations, z_final, encore_glitché)`, ou `None` si
+/// l'orbite dd n'a pu être construite (annulation).
+fn correct_pixels_dd(
+    params: &FractalParams,
+    cancel: &AtomicBool,
+    indices: &[usize],
+    aa_uniform: [f64; 2],
+    aa_jitter: Option<(u64, f64)>,
+) -> Option<Vec<(usize, u32, Complex64, bool)>> {
+    use crate::fractal::perturbation::dd::{ComplexDDExp, DoubleDoubleExp as DdE};
+    let mut dd_params = params.clone();
+    dd_params.engine.use_dd_tier = true;
+    dd_params.engine.precision_bits = compute_perturbation_precision_bits(params);
+    let cache = compute_reference_orbit_cached(&dd_params, Some(cancel), None, None, false)?;
+    if !cache.orbit.has_dd() {
+        return None;
+    }
+    let width = params.width.max(1) as usize;
+    let (x_range, y_range) = effective_spans_dd(params);
+    let width_dd = DdE::from_f64(params.width.max(1) as f64);
+    let height_dd = DdE::from_f64(params.height.max(1) as f64);
+    let half = DdE::from_f64(0.5);
+    let (jit_re, jit_im) = (x_range.div(width_dd), y_range.div(height_dd));
+    Some(
+        indices
+            .par_iter()
+            .map(|&idx| {
+                let (i, j) = (idx % width, idx / width);
+                let mut re = x_range.mul(
+                    DdE::from_f64(i as f64 + 0.5 + aa_uniform[0])
+                        .div(width_dd)
+                        .sub(half),
+                );
+                let mut im = y_range.mul(
+                    DdE::from_f64(j as f64 + 0.5 + aa_uniform[1])
+                        .div(height_dd)
+                        .sub(half),
+                );
+                if let Some((k, scale)) = aa_jitter {
+                    let (jx, jy) = crate::fractal::jitter::pixel_offset(width, i, j, k, scale);
+                    re = re.add(jit_re.mul(DdE::from_f64(jx)));
+                    im = im.add(jit_im.mul(DdE::from_f64(jy)));
+                }
+                let dc_dd = ComplexDDExp { re, im };
+                // dc 53 b (repli si le dispatch ne prend pas la branche dd).
+                let dc = ComplexExp {
+                    re: FloatExp::new(dc_dd.re.mantissa.hi, dc_dd.re.exponent),
+                    im: FloatExp::new(dc_dd.im.mantissa.hi, dc_dd.im.exponent),
+                };
+                let r = iterate_pixel_with_dd(delta::PerturbPixelRequest {
+                    params: &dd_params,
+                    ref_orbit: &cache.orbit,
+                    bla_table: &cache.bla_table,
+                    series_table: None,
+                    delta0: ComplexExp::zero(),
+                    dc,
+                    dc_dd: Some(dc_dd),
+                    current_phase: None,
+                    hybrid_refs: None,
+                });
+                (idx, r.iteration, r.z_final, r.glitched)
+            })
+            .collect(),
+    )
+}
+
 /// Recalcule des pixels isolés sur le CPU (perturbation f64, même boucle que
 /// le rendu plein cadre), pour l'hôte GPU : les pixels que le kernel f32
 /// (G9.6) déclare non fiables. Un pixel que le CPU f64 juge LUI AUSSI non
@@ -1194,8 +1267,41 @@ pub fn render_perturbation_with_cache(
         // participent PAS à la statistique de saturation plus bas, qui
         // diagnostique une référence trop courte à partir des seuls glitchés.
         let mut to_correct = glitched_indices.clone();
-        if escalate_unreliable {
-            to_correct.extend_from_slice(&unreliable_indices);
+        if escalate_unreliable && !unreliable_indices.is_empty() {
+            // Correction préférée : tier dd sur les seuls pixels non fiables
+            // (même arithmétique que l'escalade frame, ~25× moins chère que
+            // le GMP par pixel sur les orbites longues). Ce qui reste glitché
+            // en dd — ou si le dd n'est pas applicable — passe au GMP.
+            let dd_ok = bytecode_path
+                && !params.engine.use_dd_tier
+                && !params.engine.find_nucleus
+                && matches!(params.fractal_type, FractalType::Mandelbrot)
+                && rot.is_none()
+                && cache.hybrid_refs.is_none();
+            let fixed = if dd_ok {
+                correct_pixels_dd(
+                    params,
+                    cancel.as_ref(),
+                    &unreliable_indices,
+                    [aa_dx, aa_dy],
+                    aa_jit,
+                )
+            } else {
+                None
+            };
+            match fixed {
+                Some(fixed) => {
+                    for (idx, it, z, still_glitched) in fixed {
+                        if still_glitched {
+                            to_correct.push(idx);
+                        } else {
+                            iterations[idx] = it;
+                            zs[idx] = z;
+                        }
+                    }
+                }
+                None => to_correct.extend_from_slice(&unreliable_indices),
+            }
         }
         let glitched_set: std::collections::HashSet<usize> =
             glitched_indices.iter().copied().collect();

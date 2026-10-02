@@ -481,6 +481,10 @@ fn hybrid_mm_equals_mandelbrot_deep_perturbation() {
     let render = |extra: &[&str]| -> (u32, u32, Vec<u8>) {
         let out = temp_output();
         let status = Command::new(cli_binary_path())
+            // Équivalence de MÉCANIQUE de boucle ([M,M] vs [M]) : le détecteur
+            // de fiabilité (G9.6) ne suit que le fast-path mono-phase et
+            // corrigerait [M] seul — il est hors sujet ici.
+            .env("FRACTALL_RELIABILITY", "off")
             .args(common)
             .args(extra)
             .arg("--output")
@@ -522,6 +526,10 @@ fn hybrid_mm_equals_mandelbrot_deep_exp_e1000() {
     let render = |extra: &[&str]| -> (u32, u32, Vec<u8>) {
         let out = temp_output();
         let status = Command::new(cli_binary_path())
+            // Équivalence de MÉCANIQUE de boucle ([M,M] vs [M]) : le détecteur
+            // de fiabilité (G9.6) ne suit que le fast-path mono-phase et
+            // corrigerait [M] seul — il est hors sujet ici.
+            .env("FRACTALL_RELIABILITY", "off")
             .args(common)
             .args(extra)
             .arg("--output")
@@ -566,6 +574,10 @@ fn hybrid_mm_equals_mandelbrot_deep_f64_e50() {
     let render = |extra: &[&str]| -> (u32, u32, Vec<u8>) {
         let out = temp_output();
         let status = Command::new(cli_binary_path())
+            // Équivalence de MÉCANIQUE de boucle ([M,M] vs [M]) : le détecteur
+            // de fiabilité (G9.6) ne suit que le fast-path mono-phase et
+            // corrigerait [M] seul — il est hors sujet ici.
+            .env("FRACTALL_RELIABILITY", "off")
             .args(common)
             .args(extra)
             .arg("--output")

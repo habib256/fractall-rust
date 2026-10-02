@@ -51,7 +51,7 @@ const GAMMA: f64 = 4.0 * U;
 /// Hooks appelés par la boucle pixel sur ses trois événements. Les
 /// implémentations par défaut sont vides : [`NoObserve`] monomorphise en la
 /// boucle d'origine.
-pub trait StepObserver {
+pub trait StepObserver: Copy {
     /// Pas direct : `z` = `Z[m] + δ_old` (état avant le pas), `two_zm_delta` =
     /// `2·Z[m]·δ_old` (terme dominant calculé par la boucle), `delta_old`.
     #[inline(always)]
@@ -68,6 +68,7 @@ pub trait StepObserver {
 }
 
 /// Observateur nul : la boucle de production.
+#[derive(Clone, Copy)]
 pub struct NoObserve;
 impl StepObserver for NoObserve {}
 
@@ -130,6 +131,12 @@ impl ShadowTracker {
     }
 }
 
+/// Borne L1 du module (`|re| + |im| ≥ |z|`), sans racine carrée.
+#[inline(always)]
+fn l1(z: Complex64) -> f64 {
+    z.re.abs() + z.im.abs()
+}
+
 /// Norme spectrale (plus grande valeur singulière) d'une mat2. Fermée : pour
 /// `M`, `σ₁² = (F² + √(F⁴ − 4·det²)) / 2` avec `F` la norme de Frobenius. La
 /// Frobenius surestimerait de √2 une matrice conforme — facteur qui se
@@ -149,8 +156,13 @@ impl StepObserver for ShadowTracker {
         let two_z = z * 2.0;
         self.deriv = two_z * self.deriv + Complex64::new(1.0, 0.0);
         // Propagation : |(z+e)² − z²| ≤ |e|·(2|z| + |e|).
-        let z_abs = z.norm();
-        let local = GAMMA * (two_zm_delta.norm() + delta_old.norm_sqr() + self.dc_abs);
+        // Seul le facteur de PROPAGATION exige le module exact (une
+        // surestimation s'y composerait d'itération en itération) ; les termes
+        // d'arrondi locaux, additifs, prennent la borne L1 (≤ √2·module) sans
+        // racine carrée.
+        let z_abs = z.norm_sqr().sqrt();
+        let local = GAMMA
+            * (l1(two_zm_delta) + delta_old.norm_sqr() + self.dc_abs);
         self.err = self.err * (2.0 * z_abs + self.err) + local;
     }
 
@@ -162,23 +174,26 @@ impl StepObserver for ShadowTracker {
             a.m00 * d.re + a.m01 * d.im + b.m00,
             a.m10 * d.re + a.m11 * d.im + b.m10,
         );
-        let local = (self.bla_epsilon + GAMMA) * (a_delta.norm() + b_dc.norm());
+        let local = (self.bla_epsilon + GAMMA) * (l1(a_delta) + l1(b_dc));
         self.err = spectral_norm(a) * self.err + local;
     }
 
     #[inline(always)]
     fn rebase(&mut self, z_ref: Complex64, z_new: Complex64) {
-        self.err += U * (z_ref.norm() + z_new.norm());
+        self.err += U * (l1(z_ref) + l1(z_new));
     }
 }
 
 /// Mode du détecteur, lu une fois depuis `FRACTALL_RELIABILITY` :
 /// - `off` / `0` : détecteur inactif (boucle de production intacte) ;
 /// - `observe` : détecte et rapporte (`[RELIABILITY]`), ne corrige rien ;
-/// - `escalate` / `1` / `auto` : détecte et CORRIGE (escalade).
+/// - défaut (`escalate`, `auto`, `1`, unset) : détecte et CORRIGE — pixels
+///   non fiables recalculés au tier dd, frame entière en dd au-delà de
+///   [`UNRELIABLE_FRAME_THRESHOLD`].
 ///
-/// Défaut provisoire : `off`, tant que le surcoût du suivi et l'effet sur les
-/// goldens ne sont pas mesurés (calibration en cours, cf. TODO G9.6).
+/// Coût mesuré (seahorse 1e8, 512²) : suivi +35 % sur la boucle f64
+/// (2,2 → 2,9 ns/iter), correction dd des 0,45 % de pixels flaggés ≈ +0,3 s.
+/// En échange : WARN (max_diff 437) → PASS pixel-exact vs GMP.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReliabilityMode {
     Off,
@@ -202,8 +217,7 @@ fn parse_mode(raw: Option<&str>) -> ReliabilityMode {
     match raw.map(|s| s.trim().to_ascii_lowercase()) {
         Some(s) if s == "0" || s == "off" => ReliabilityMode::Off,
         Some(s) if s == "observe" || s == "obs" => ReliabilityMode::Observe,
-        Some(s) if s == "1" || s == "auto" || s == "escalate" => ReliabilityMode::Escalate,
-        _ => ReliabilityMode::Off,
+        _ => ReliabilityMode::Escalate,
     }
 }
 
@@ -257,7 +271,7 @@ mod tests {
 
     #[test]
     fn mode_parsing() {
-        assert_eq!(parse_mode(None), ReliabilityMode::Off);
+        assert_eq!(parse_mode(None), ReliabilityMode::Escalate);
         assert_eq!(parse_mode(Some("auto")), ReliabilityMode::Escalate);
         assert_eq!(parse_mode(Some("escalate")), ReliabilityMode::Escalate);
         assert_eq!(parse_mode(Some("OFF")), ReliabilityMode::Off);

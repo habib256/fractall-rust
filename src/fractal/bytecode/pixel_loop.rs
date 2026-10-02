@@ -914,6 +914,20 @@ pub fn iterate_pixel_unified_mandelbrot(
     )
 }
 
+/// Copie locale d'un observateur, réécrite dans `out` au drop (couvre les
+/// nombreux `return` de la boucle).
+struct ObsGuard<'a, O: StepObserver> {
+    local: O,
+    out: &'a mut O,
+}
+
+impl<O: StepObserver> Drop for ObsGuard<'_, O> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        *self.out = self.local;
+    }
+}
+
 /// Variante du fast-path Mandelbrot f64 avec **détecteur de fiabilité**
 /// (G9.6, cf. [`super::reliability`]) : MÊME boucle (monomorphisée avec un
 /// [`ShadowTracker`] au lieu de `NoObserve`, donc mêmes décisions et même
@@ -1009,8 +1023,16 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source, O: StepObserver>(
     bailout: f64,
     max_perturb_iterations: u32,
     max_bla_steps: u32,
-    obs: &mut O,
+    obs_out: &mut O,
 ) -> UnifiedPixelResult {
+    // Observateur en LOCAL (copie, réécrite par le garde de sortie) : derrière
+    // `&mut`, LLVM le laisse en mémoire et ses chaînes de dépendance (borne,
+    // dérivée) paient un aller-retour store→load par itération.
+    let mut obs = ObsGuard {
+        local: *obs_out,
+        out: obs_out,
+    };
+    let obs = &mut obs.local;
     let bailout_sqr = bailout * bailout;
     if ref_len < 2 {
         return UnifiedPixelResult {
