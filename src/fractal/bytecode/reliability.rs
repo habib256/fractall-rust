@@ -133,7 +133,14 @@ impl ShadowTracker {
     /// saturée en `f32` (`+∞` si non bornée). Le pixel est fiable ssi
     /// `ratio ≤ κ`.
     pub fn shadow_ratio(&self, pixel_size: f64) -> f32 {
-        let r = self.c_space_error() / pixel_size;
+        // Diagnostic de calibration (`STUDY_ZSPACE=1`, lu par l'étude
+        // `quality::reliability_study`) : renvoie la borne BRUTE en espace-z,
+        // pour tester un critère sans dérivée (`E ≥ τ`).
+        let r = if study_zspace() {
+            self.err
+        } else {
+            self.c_space_error() / pixel_size
+        };
         if r.is_nan() {
             f32::INFINITY
         } else {
@@ -146,6 +153,12 @@ impl ShadowTracker {
 #[inline(always)]
 fn l1(z: Complex64) -> f64 {
     z.re.abs() + z.im.abs()
+}
+
+fn study_zspace() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("STUDY_ZSPACE").is_some())
 }
 
 /// Norme spectrale (plus grande valeur singulière) d'une mat2. Fermée : pour
