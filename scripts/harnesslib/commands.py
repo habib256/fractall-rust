@@ -105,7 +105,8 @@ def cmd_score(args) -> None:
     if "parity" in axes:
         print("\n== PARITY ==")
         card["parity"] = axis_parity(cases, width, height, timeout, f3_bin,
-                                     mem_limit_mb=mem_limit_mb)
+                                     mem_limit_mb=mem_limit_mb,
+                                     iterations_cap=args.parity_iterations)
     if "quality" in axes:
         print("\n== QUALITY ==")
         card["quality"] = axis_quality(

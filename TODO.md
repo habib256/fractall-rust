@@ -2511,8 +2511,12 @@ Actions candidates pour la boucle (ordre suggéré) :
     lue (verrou résolution). F3 batch Linux + OpenEXR installés dans le
     conteneur de session (`build_f3_linux.sh` OK sous Debian avec `apt-get
     update` préalable) → score quick complet 7 axes ici.
-  - **Reste harness** : pic RSS par cas dans le profil (sans `/usr/bin/time` :
-    wrapper `resource.getrusage`) ; temps de build BLA séparé de `orbit`
+  - **`harness.py ab`** (A/B isolé env/flags : médiane + spread, phases,
+    path, identité PNG entre bras — étape 2 de la méthode G14) ; **pic RSS**
+    par cas dans le profil (wrapper `getrusage`, colonne `RSS (MB)`) ;
+    `score --parity-iterations N` ; ligne `[FRACTALL] path=std_f64|std_gmp`
+    émise par le dispatcher (spiral sortait `path=?`).
+  - **Reste harness** : temps de build BLA séparé de `orbit`
     (aujourd'hui `bla=0.000s` dans la ligne cache-miss, le prewarm est compté
     dans `pixels`) ; parité full avec cap d'itérations (leçon 2026-07-16b) ;
     **re-baseline standard sur l'i7** au schéma 2 (sinon pas de delta
@@ -3194,7 +3198,8 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   PTWithCompression). *Métriques* : profil `orbit %` sur e1000/e1121/e1200
   (tier standard), `trend --case e1000`. *Done* : orbite ≤ 10 % du wall
   jusqu'à 1e1200 et vidéo deep sans recalcul d'orbite par keyframe.
-- [ ] **G14.4 — Instrumentation manquante (harness)**. (a) **temps de build
+- [~] **G14.4 — Instrumentation manquante (harness)** — (b) pic RSS et (d)
+  ligne `[FRACTALL]` std LIVRÉS 2026-11-03 ; restent (a) et (c). (a) **temps de build
   BLA** séparé : la ligne cache-miss affiche `bla=0.000s` car le prewarm
   tourne sous le lock au premier pixel → compté dans `pixels` ; exposer
   `bla=` réel dans `[PERTURB PERF]` final ; (b) **pic RSS** par cas dans le

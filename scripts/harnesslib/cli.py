@@ -8,6 +8,7 @@ from .commands import (
     cmd_render,
     cmd_adjudicate, cmd_baseline, cmd_gaps, cmd_journal, cmd_score,
 )
+from .ab import cmd_ab
 from .commands_insight import cmd_doctor, cmd_trend
 from .commands_guard import cmd_preflight, cmd_quarantine, cmd_slow_safe
 from .config import FUZZ_SEED_DEFAULT
@@ -45,6 +46,9 @@ def main() -> None:
     sc.add_argument("--fuzz-seed", type=int, default=FUZZ_SEED_DEFAULT,
                     help="seed des sondes fuzz (défaut committé ; le faire "
                          "tourner au rebaseline)")
+    sc.add_argument("--parity-iterations", type=int, default=0,
+                    help="plafond d'itérations COMMUN fractall/F3 pour l'axe "
+                         "parity (0 = natif ; utile en tier full)")
     sc.add_argument("--no-rebuild", action="store_true")
     sc.add_argument("--cases", default=None,
                     help="liste CSV de stems (override du tier)")
@@ -138,6 +142,21 @@ def main() -> None:
 
     gp = sub.add_parser("gaps", help="Ré-affiche les gaps du dernier history.")
     gp.set_defaults(func=cmd_gaps)
+
+    ab = sub.add_parser("ab",
+                        help="A/B isolé : variantes d'env (--env K=a,b) ou de "
+                             "flags CLI (--flags '--x|'), médiane + bruit + "
+                             "phases + identité de sortie (méthode G14).")
+    ab.add_argument("--cases", required=True, help="CSV de stems toml/")
+    ab.add_argument("--env", action="append", default=[],
+                    help="K=v1,v2,… (répétable ; vide = variable posée vide)")
+    ab.add_argument("--flags", action="append", default=[],
+                    help="alternatives séparées par | (ex. '--dd-tier|')")
+    ab.add_argument("--size", type=int, default=None)
+    ab.add_argument("--runs", type=int, default=None)
+    ab.add_argument("--timeout", type=float, default=None)
+    ab.add_argument("--no-rebuild", action="store_true")
+    ab.set_defaults(func=cmd_ab)
 
     dr = sub.add_parser("doctor",
                         help="Prérequis machine, axes mesurables ici, état de "

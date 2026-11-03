@@ -189,7 +189,12 @@ def _fnum(row: dict, key: str):
         return None
 
 def axis_parity(cases: list[str], width: int, height: int, timeout: float,
-                f3_bin: Path | None, mem_limit_mb: int = 0) -> dict:
+                f3_bin: Path | None, mem_limit_mb: int = 0,
+                iterations_cap: int = 0) -> dict:
+    """`iterations_cap` > 0 = plafond d'itérations COMMUN aux deux moteurs
+    (`compare_f3 --iterations`) : rend la parité `full` praticable en une passe
+    (leçon 2026-07-16b : à itérations natives, e52465/super_dense/seahorse
+    coûtent 600 s chacun). Le cap est noté dans la carte (`iterations_cap`)."""
     empty = {"cases": {}, "n_ok": 0, "n_pixel_equiv": 0, "n_fail": 0,
              "n_timeout": 0, "n_f3_degenerate": 0}
     if f3_bin is None:
@@ -202,7 +207,10 @@ def axis_parity(cases: list[str], width: int, height: int, timeout: float,
            "--only", ",".join(cases), "--width", str(width),
            "--height", str(height), "--timeout", str(timeout),
            "--out", str(outdir)]
-    print(f"  $ compare_f3.py --only {len(cases)} cas", flush=True)
+    if iterations_cap and iterations_cap > 0:
+        cmd += ["--iterations", str(iterations_cap)]
+    print(f"  $ compare_f3.py --only {len(cases)} cas"
+          + (f" --iterations {iterations_cap}" if iterations_cap else ""), flush=True)
     jrec = journal_begin("parity", "<compare_f3-suite>",
                          {"size": f"{width}x{height}", "n_cases": len(cases)})
     proc = subprocess.run(cmd, cwd=REPO, preexec_fn=_rlimit_preexec(mem_limit_mb))
@@ -254,6 +262,7 @@ def axis_parity(cases: list[str], width: int, height: int, timeout: float,
         update_f3_degenerate(cases_out)
     return {
         "status": axis_status,
+        "iterations_cap": iterations_cap or None,
         "cases": cases_out,
         "n_ok": n_ok,
         "n_pixel_equiv": n_pixel_equiv,

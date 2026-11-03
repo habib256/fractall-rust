@@ -101,6 +101,7 @@ python3 scripts/harness.py doctor                # prérequis + axes mesurables 
 python3 scripts/harness.py score --tier quick    # cycle interne (~10 cas, 256²)
 python3 scripts/harness.py score --tier standard # 3 runs médiane, avant commit perf
 python3 scripts/harness.py trend --case e50      # évolution d'un cas (temps, ns/iter, path)
+python3 scripts/harness.py ab --cases e50 --env FRACTALL_RELIABILITY=off,escalate  # A/B isolé (G14)
 python3 scripts/harness.py baseline              # fige la référence de CETTE machine (harness/baselines/)
 python3 scripts/test_harness_guard.py            # verrous du harness (CI)
 ```

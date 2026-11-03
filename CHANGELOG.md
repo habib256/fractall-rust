@@ -29,6 +29,13 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
   dans l'historique, `--case`, `--bench`), **`render`** (re-génère le
   SCORECARD depuis un history sans re-mesurer) ; section « Tendance » dans le
   SCORECARD.
+- **Harness : `ab`** — A/B isolé par variable d'environnement ou flag CLI
+  (médiane + bruit sur N runs, ventilation par phase, path routé, identité
+  des octets PNG entre bras) : l'outil de la méthode G14. Profil : **pic RSS**
+  par cas (wrapper `getrusage`, sans `/usr/bin/time`) ; `score
+  --parity-iterations N` plafonne les itérations des deux moteurs (parité
+  `full` praticable). Le moteur émet la ligne `[FRACTALL] path=std_f64|std_gmp`
+  sur les paths standard (un cas shallow sortait `path=?` dans le profil).
 - **Harness : baselines par machine** (`harness/baselines/<cpu-threads>.json`,
   repli `baseline.json`) — une machine secondaire fige sa référence sans
   écraser celle de la machine de dev.

@@ -20,6 +20,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 
 from .config import BENCH, CLI, TOML_DIR, machine_info
@@ -137,6 +138,35 @@ def phase_breakdown(prof: dict, wall_s: float | None) -> dict:
             "share_pct": share, "dominant": dominant}
 
 
+# Wrapper Python : lance la commande puis imprime le pic RSS (ko) de SON enfant
+# sur la dernière ligne de stderr — `ru_maxrss` de RUSAGE_CHILDREN est le max
+# sur les enfants TERMINÉS du process appelant ; dans un wrapper frais il n'y
+# en a qu'un → mesure exacte par cas, sans dépendre de `/usr/bin/time`.
+RSS_WRAPPER = (
+    "import resource,subprocess,sys;"
+    "rc=subprocess.run(sys.argv[1:]).returncode;"
+    "print('[HARNESS-RSS-KB]', resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss,"
+    " file=sys.stderr);"
+    "sys.exit(rc if rc >= 0 else 128 - rc)"
+)
+_RE_RSS = re.compile(r"\[HARNESS-RSS-KB\] (\d+)")
+
+
+def wrap_rss(cmd: list[str]) -> list[str]:
+    return [sys.executable, "-I", "-c", RSS_WRAPPER, *cmd]
+
+
+def parse_rss_kb(text: str) -> int | None:
+    m = None
+    for m in _RE_RSS.finditer(text):
+        pass
+    if m is None:
+        return None
+    kb = int(m.group(1))
+    # macOS rapporte ru_maxrss en OCTETS, Linux en ko.
+    return kb // 1024 if sys.platform == "darwin" else kb
+
+
 def axis_profile(cases: list[str], width: int, height: int, timeout: float,
                  mem_limit_mb: int = 0, quarantined: set | None = None,
                  slow_safe: set | None = None) -> dict:
@@ -166,7 +196,7 @@ def axis_profile(cases: list[str], width: int, height: int, timeout: float,
         jrec = journal_begin("profile", name, {"size": f"{width}x{height}"})
         t0 = time.monotonic()
         try:
-            proc = subprocess.run(cmd, stdout=subprocess.PIPE,
+            proc = subprocess.run(wrap_rss(cmd), stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, env=env,
                                   timeout=timeout, text=True,
                                   errors="replace",
@@ -187,12 +217,15 @@ def axis_profile(cases: list[str], width: int, height: int, timeout: float,
         prof = parse_profile_output(proc.stdout or "")
         prof["status"] = "ok"
         prof["wall_s"] = round(wall, 4)
+        rss_kb = parse_rss_kb(proc.stdout or "")
+        prof["peak_rss_mb"] = round(rss_kb / 1024, 1) if rss_kb else None
         prof.update(phase_breakdown(prof, wall))
         results[name] = prof
         sh = prof["share_pct"]
         print(f"{prof['path'] or '?':28s} wall={wall:.3f}s "
               f"orb={sh['orbit']}% px={sh['pixels']}% post={sh['post']}% "
-              f"save={sh['save']}% ns/it={prof['ns_per_iter']}"
+              f"save={sh['save']}% ns/it={prof['ns_per_iter']} "
+              f"rss={prof['peak_rss_mb']}MB"
               f"{' DD-ESC' if prof['dd_escalation'] else ''}")
     ok = [r for r in results.values() if r.get("status") == "ok"]
     cum = {k: round(sum(r["secs"][k] for r in ok), 4) for k in PHASES}
@@ -204,7 +237,9 @@ def axis_profile(cases: list[str], width: int, height: int, timeout: float,
         d = r.get("dominant")
         if d:
             dominant_counts[d] = dominant_counts.get(d, 0) + 1
+    rss = [r["peak_rss_mb"] for r in ok if r.get("peak_rss_mb")]
     return {"status": "ok", "cases": results, "n_ok": len(ok),
+            "peak_rss_mb_max": max(rss) if rss else None,
             "cumulative_secs": cum, "cumulative_share_pct": cum_share,
             "dominant_counts": dominant_counts,
             "dd_escalations": sorted(n for n, r in results.items()

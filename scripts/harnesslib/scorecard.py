@@ -210,15 +210,17 @@ def build_scorecard_md(card: dict, base: dict | None) -> str:
             if pr.get("dd_escalations"):
                 L.append(f"- **escalade dd** (frame re-rendue au tier dd) : "
                          f"{', '.join(pr['dd_escalations'])}")
-            L.append(f"- paths : {', '.join(pr.get('paths') or []) or '—'}")
+            L.append(f"- paths : {', '.join(pr.get('paths') or []) or '—'}"
+                     + (f" · pic RSS max {pr['peak_rss_mb_max']:.0f} MB"
+                        if pr.get("peak_rss_mb_max") else ""))
             L.append("")
             L.append("| Cas | path | variantes | wall (s) | orbite % | pixels % | "
                      "post % | save % | autre % | ns/iter | iter/px | esc.dd | "
-                     "fiab. % |")
-            L.append("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|")
+                     "fiab. % | RSS (MB) |")
+            L.append("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|")
             for name, c in pr.get("cases", {}).items():
                 if c.get("status") != "ok":
-                    L.append(f"| `{name}` | — ({c.get('status')}) | | | | | | | | | | | |")
+                    L.append(f"| `{name}` | — ({c.get('status')}) | | | | | | | | | | | | |")
                     continue
                 sh = c.get("share_pct") or {}
                 rel = c.get("reliability_flagged_pct")
@@ -228,7 +230,8 @@ def build_scorecard_md(card: dict, base: dict | None) -> str:
                          f"{_fmt(c.get('ns_per_iter'))} | "
                          f"{_fmt0(c.get('avg_iter_px'))} | "
                          f"{'oui' if c.get('dd_escalation') else ''} | "
-                         f"{(f'{rel:.2f}' if rel is not None else '—')} |")
+                         f"{(f'{rel:.2f}' if rel is not None else '—')} | "
+                         f"{_fmt0(c.get('peak_rss_mb'))} |")
             L.append("")
 
     # Bench : débits par technique

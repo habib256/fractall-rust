@@ -109,6 +109,11 @@ répartition cumulée + comptage des phases dominantes.
   identique** (même machine) = sév. 3. L'escalade dd est affichée, pas
   gappée (elle peut être légitime) — mais c'est un candidat perf (voir
   TODO G14 : sur e50 le post-traitement fiabilité = +63 % de wall).
+- **Pic RSS** par cas (colonne `RSS (MB)`, wrapper `getrusage` — sans
+  dépendre de `/usr/bin/time`) : la mémoire est une métrique suivie
+  (prérequis de la décision « compression de réf par défaut », G14.6).
+- Les paths f64 standard et GMP par-pixel émettent aussi la ligne
+  `[FRACTALL] path=std_f64|std_gmp` : tout cas du corpus a un path nommé.
 - Logs bruts : `bench/harness/profile/<cas>.log`.
 
 ### 6. Bench — débits par technique (`bench`, 2026-11)
@@ -120,6 +125,17 @@ ns/iter par technique : `cpu_std_f64`, `cpu_perturb_f64`, `cpu_perturb_exp`,
 l'autre **sur la même machine** : débit < 85 % de la baseline = gap sév. 3.
 C'est le micro-benchmark du moteur, sans le bruit du démarrage process ni de
 l'orbite. (~30 s ; `--axes` sans `bench` pour l'omettre.)
+
+### A/B isolé (`ab`, 2026-11) — l'outil de la méthode G14
+`harness.py ab --cases e50,dragon --env FRACTALL_RELIABILITY=off,observe,escalate
+--runs 3` (ou `--flags '--dd-tier|'`) : pour chaque cas × variante, N runs
+(médiane + spread), profil par phase (orbite/pixels/post), path routé, et
+**identité de la sortie** (octets PNG — encodeur déterministe ⇒ mêmes octets ⇔
+mêmes pixels). `vs A` = ratio au premier bras. Une variante plus rapide à
+sortie **différente** n'est pas un gain : c'est un tradeoff correction à
+adjuger vs GMP (`fractall-quality compare`) avant toute décision. Rapport
+`bench/harness/ab/ab.md` + `ab.json`. C'est l'étape 2 de la méthode G14 (TODO),
+avant la confirmation `score --tier standard --cases …`.
 
 ### Axe wisdom-optimality (`wisdom-optimality`, G9)
 Commande séparée (pas dans `score`) : pour un échantillon 2-régimes, le plan
@@ -148,6 +164,8 @@ sur les cas profonds. Adjugés au 2026-07-14 : test5 (`both_match_gmp`), rug
 python3 scripts/harness.py doctor            # prérequis, axes mesurables ICI, baseline
 python3 scripts/harness.py score [--tier quick|standard|full] \
         [--axes speed,parity,quality,fuzz,goldens,profile,bench] [--cases a,b]
+python3 scripts/harness.py ab --cases e50 --env FRACTALL_RELIABILITY=off,escalate --runs 3
+                                             # A/B isolé (méthode G14) : médiane, bruit, phases, sortie ≡
 python3 scripts/harness.py render [history]  # re-génère SCORECARD.md sans re-mesurer
 python3 scripts/harness.py trend [--case e50] [--bench] [--all-machines]
 python3 scripts/harness.py baseline          # fige le dernier score comme référence
@@ -170,7 +188,9 @@ python3 scripts/test_harness_guard.py        # verrous du harness lui-même (CI)
   son absence éteint parity/adjudicate, pas le harness.
 - **Tiers** : `quick` ≈ 10 cas représentatifs à 256², 1 run (~5-10 min, l'outil
   du cycle interne) ; `standard` ≈ 25 cas, 3 runs (validation avant commit
-  perf) ; `full` = 84 cas (jalon, plusieurs heures — `preflight` d'abord).
+  perf) ; `full` = 84 cas (jalon, plusieurs heures — `preflight` d'abord, et
+  `--parity-iterations N` pour plafonner les itérations des deux moteurs sur
+  l'axe parité : à itérations natives trois cas coûtent 600 s chacun).
 - **Sorties** :
   - `harness/history/<UTC>-<sha>.json` — scorecard machine-readable complet
     (versionné : c'est la mémoire longue de la boucle ; schéma 2 depuis

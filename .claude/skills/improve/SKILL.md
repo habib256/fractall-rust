@@ -120,6 +120,11 @@ re-litiger un cas tranché.
 - Respecter les invariants CLAUDE.md : chemin de rendu unique CLI↔GUI,
   un seul dispatcher, fichiers < ~800 lignes.
 - Patch minimal et ciblé ; pas de refactor opportuniste dans le même commit.
+- Toute hypothèse perf se teste d'abord en A/B isolé, AVANT de toucher le
+  code quand une env/un flag le permet :
+  `python3 scripts/harness.py ab --cases <stem> --env K=a,b --runs 3`
+  (médiane, bruit, phases, sortie identique ou non). Une variante plus rapide
+  à sortie ≠ est un tradeoff correction → `fractall-quality compare` d'abord.
 
 ## Étape 5 — Vérifier (obligatoire, dans cet ordre)
 
