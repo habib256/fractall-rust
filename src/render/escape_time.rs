@@ -13,7 +13,9 @@ use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_m
 use crate::fractal::iterations::iterate_point;
 use crate::fractal::lyapunov::{render_lyapunov_cancellable, render_lyapunov_mpc_cancellable};
 use crate::fractal::orbit_traps::OrbitData;
-use crate::fractal::perturbation::{render_perturbation_with_cache, ReferenceOrbitCache};
+use crate::fractal::perturbation::{
+    perf_enabled, print_fractall_summary, render_perturbation_with_cache, ReferenceOrbitCache,
+};
 use crate::fractal::wisdom;
 use crate::fractal::xaos::XaosMap;
 use crate::fractal::{render_dragon, render_von_koch};
@@ -363,6 +365,10 @@ fn render_escape_time_f64_cancellable_with_reuse(
         return Some(RenderOutput::without_extras(iterations, zs));
     }
 
+    // Diagnostic `[FRACTALL] path=std_f64 …` (même format que la perturbation,
+    // consommé par l'axe profil du harness : sans lui un cas f64 standard
+    // sortait `path=?` — on ne peut pas optimiser un path qu'on ne nomme pas).
+    let t_render = std::time::Instant::now();
     let need_orbits = params.channels.enable_orbit_traps;
     let need_distances = params.channels.enable_distance_estimation;
     // Pré-calcul de la matrice de rotation (None si rotation == 0 → no-op).
@@ -493,6 +499,19 @@ fn render_escape_time_f64_cancellable_with_reuse(
         if !need_distances {
             distances = Vec::new();
         }
+        if perf_enabled() {
+            let dt = t_render.elapsed();
+            print_fractall_summary(
+                "std_f64",
+                params.fractal_type,
+                53,
+                params.iteration_max,
+                &iterations,
+                n,
+                dt,
+                dt,
+            );
+        }
         Some(RenderOutput {
             iterations,
             zs,
@@ -529,6 +548,7 @@ fn render_escape_time_gmp_cancellable_with_reuse(
 
     let gmp = MpcParams::from_params(params);
     let prec = gmp.prec;
+    let t_render = std::time::Instant::now();
 
     // IMPORTANT: Utiliser les String haute précision si disponibles pour préserver la précision GMP
     // aux zooms profonds (>e16). Sinon fallback sur f64 pour compatibilité.
@@ -727,6 +747,19 @@ fn render_escape_time_gmp_cancellable_with_reuse(
     if !completed || cancel.load(Ordering::Relaxed) {
         None
     } else {
+        if perf_enabled() {
+            let dt = t_render.elapsed();
+            print_fractall_summary(
+                "std_gmp",
+                params.fractal_type,
+                prec,
+                params.iteration_max,
+                &iterations,
+                n,
+                dt,
+                dt,
+            );
+        }
         // Le path GMP par-pixel ne produit ni orbites ni distances.
         Some(RenderOutput::without_extras(iterations, zs))
     }

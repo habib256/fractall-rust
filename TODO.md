@@ -10,9 +10,24 @@
 
 ---
 
-## 🧭 État actuel (2026-07-18) — lire ceci en premier
+## 🧭 État actuel (2026-11-03) — lire ceci en premier
 
-**Moteur : 0 gap mesuré.** harness quick + standard-speed + wisdom-optimality
+**2026-11-03 — harnais prêt pour la campagne d'optimisation (G14).** Le
+harness mesure désormais SANS F3 : vitesse intrinsèque par cas vs baseline
+même machine, **profil « où va le temps »** (path exécuté, orbite/pixels/post/
+sauvegarde, ns/iter, % fiabilité, escalade dd), **bench** iters/s par
+technique ; `doctor` / `trend` / `render` ; `scripts/harness.py` scindé en
+`harnesslib/` (< 800 l.), verrous Python en CI. Premier constat mesuré : sur
+**e50 256²** le détecteur de fiabilité + sa correction dd coûtent **+63 % de
+wall** (1.16 → 1.89 s, 4 threads) pour 0.38 % de pixels — gap #1 de G14. État
+moteur inchangé depuis 2026-07-18 (ci-dessous) hormis G9.6 livré (escalade
+fiabilité par défaut, kernel GPU f32, cf. CLAUDE.md). F3 batch Linux rebâti
+dans le conteneur (`build_f3_linux.sh`) : quick 7 axes **geomean 0.265, 9/10
+wins** (test5 1.10 = 37 ms vs 34 ms, démarrage process sur 4 cœurs, cf.
+G14.7), parité 10/10 ok ; baseline de cette machine figée
+(`harness/baselines/intel-r-xeon-r-processor-4t.json`).
+
+**Moteur : 0 gap mesuré (2026-07-18).** harness quick + standard-speed + wisdom-optimality
 verts, bat F3 partout (geomean speed ~0.19, 10/10 wins quick). 286 unit CLI + 24
 golden pixel-exact + quality 16/16 PASS. Re-confirmé à cf11b59 (le commit AA
 per-pixel decorr. ne touche aucun path non-AA).
@@ -64,7 +79,10 @@ per-pixel decorr. ne touche aucun path non-AA).
   per-phase câblé (parseur opcodes F3 `--opcodes`/`[[formula]]`, verrou GMP
   160/160 + juge F3 natif).
 - **G6** : durcir/étendre le corpus golden.
-- **G9.6** : fiabilité → escalade tier auto (px→dd/frame→dd) — marginal.
+- **G9.6 : LIVRÉ (2026-08/09)** — détecteur de fiabilité par pixel +
+  escalade dd par défaut ; reste son COÛT (G14.1).
+- **G14** : campagne d'optimisation outillée par le harness (profil + bench +
+  vitesse intrinsèque) — liste de travail quand le SCORECARD n'a plus de gap.
 
 ---
 
@@ -2447,6 +2465,62 @@ Actions candidates pour la boucle (ordre suggéré) :
     vérité ; le faire proprement = re-dériver tout le build mat2 en métrique
     chebyshev (normes d'opérateur incluses) — pas un micro-A/B, ROI attendu
     faible (pixel loop memory-bound, cf. G2).
+- [x] **✅ Harness 2026-11-03 — outillage de la campagne G14** (session
+  `ccr-2a6edb29`) :
+  - `scripts/harness.py` → package **`scripts/harnesslib/`** (config / guard /
+    axes_f3 / axes_truth / axes_perf / gaps / scorecard / commands* /
+    wisdom_opt / cli, chacun < 800 l. — le harness respectait pas le pilier 5
+    qu'il impose). Découpe mécanique par segments AST (code verbatim),
+    imports dérivés de pyflakes. `harness.py` = enveloppe.
+  - **Bug de démarrage** : `import compare_f3` en tête faisait `sys.exit` sans
+    numpy/OpenEXR → le harness ENTIER était inutilisable sur une machine sans
+    deps EXR (cas du conteneur de cette session). Import paresseux, statut
+    `f3_deps_missing` ; `find_f3` filtre par magic bytes (le `.macos` versionné
+    était « trouvé » sous Linux → 10 `fail` silencieux de l'axe vitesse).
+  - **`test_harness_guard.py` était ROUGE** depuis la règle « crash côté F3 ne
+    quarantaine pas » (fixture `speed_f3`) — personne ne le lançait : fixture
+    corrigée, règle verrouillée, **ajouté à la CI**. + verrous : parseur du
+    profil (formats réels progress.rs/mod.rs/wisdom.rs/main.rs), seuils de
+    vitesse intrinsèque (même machine / plancher 50 ms / bruit `spread`),
+    régressions ns/iter et bench, gap « sauvegarde > rendu ».
+  - **Axe `profile`** (`axes_perf.axis_profile`) : rendu unique par cas avec
+    `[FRACTALL]`/`[PERTURB PERF]`/`[WISDOM]`/`[DD-ESCALATION]`/`[RELIABILITY]`
+    + « Génération terminée » parsés → path, ventilation orbit/pixels/post/
+    save/other, ns/iter, iter/px, % fiabilité, escalade dd ; agrégats
+    (répartition cumulée, phases dominantes). Gaps : save > rendu (sév. 3) ;
+    ns/iter +15 % à path égal (sév. 3).
+  - **Axe `bench`** (`--wisdom-bench` isolé via `FRACTALL_WISDOM_FILE`) :
+    iters/s + ns/iter par technique, régression > 15 % = gap. Première mesure
+    (Xeon 4t) : std_f64 0.97 ns/iter · perturb_f64 0.17 · perturb_exp 0.07 ·
+    **perturb_dd 7.5 ns/iter** (45× f64 — c'est le prix de la correction dd).
+  - **Vitesse intrinsèque** (`speed_self`) : `timed_runs_detail` (médiane/min/
+    spread), auto-ratio geomean + pire cas vs baseline même machine/tier,
+    gaps par cas (`> max(1.15, 1+spread)` ET Δ > 50 ms), geomean > 1.10.
+  - Commandes **`doctor`** (prérequis, axes mesurables, baseline/machine,
+    inflight, registres), **`trend`** (`--case`, `--bench`, `--all-machines`,
+    tolère schéma 1), **`render`** (SCORECARD depuis un history). Section
+    « Tendance » (6 derniers scores même machine) dans le SCORECARD. Schéma
+    history **2**.
+  - Docs : HARNESS.md (axes intrinsèques vs F3, checklist machine neuve),
+    SKILL `/improve` (étape doctor, lecture du profil, `cargo test --lib` au
+    lieu du `--bin` périmé), harness/README (rôle de chaque registre),
+    CLAUDE.md, README, CHANGELOG.
+  - **Baselines PAR MACHINE** (`harness/baselines/<slug>.json`, repli
+    `baseline.json`, `baseline --legacy`) : une machine secondaire fige sa
+    référence sans écraser l'i7 ; `doctor`/scorecard nomment la baseline
+    lue (verrou résolution). F3 batch Linux + OpenEXR installés dans le
+    conteneur de session (`build_f3_linux.sh` OK sous Debian avec `apt-get
+    update` préalable) → score quick complet 7 axes ici.
+  - **`harness.py ab`** (A/B isolé env/flags : médiane + spread, phases,
+    path, identité PNG entre bras — étape 2 de la méthode G14) ; **pic RSS**
+    par cas dans le profil (wrapper `getrusage`, colonne `RSS (MB)`) ;
+    `score --parity-iterations N` ; ligne `[FRACTALL] path=std_f64|std_gmp`
+    émise par le dispatcher (spiral sortait `path=?`).
+  - **Reste harness** : temps de build BLA séparé de `orbit`
+    (aujourd'hui `bla=0.000s` dans la ligne cache-miss, le prewarm est compté
+    dans `pixels`) ; parité full avec cap d'itérations (leçon 2026-07-16b) ;
+    **re-baseline standard sur l'i7** au schéma 2 (sinon pas de delta
+    profil/bench là-bas).
 - [x] **✅ Cross-check ground truth indépendant (2026-07-14)** :
   `scripts/independent_probe.py` — mpmath pur-Python (zéro GMP/MPFR/rug),
   réplique exactement mapping pixel→c + boucle escape des 7 familles QA, lit
@@ -3038,6 +3112,131 @@ l'interpolation en espace itération, à ne tenter que sur preuve) ; ffmpeg =
 dépendance runtime externe (fallback PNG) ; keyframes e100+ dominent le
 temps (reprise par fichier). Non retenu : Makefile généré (rayon suffit),
 portage shaders GLSL (CPU v1), textures overlay.
+
+### G14 — Campagne d'optimisation outillée · `[P1 · vitesse — plan 2026-11-03]`
+
+> **Barre** : plus F3 (battu 80/80, geomean 0.19) mais **notre propre
+> baseline** — `speed_self` (temps par cas), `bench` (ns/iter par tier) et le
+> **profil** (où va le temps) du harness. **Méthode par item** : (1) le profil
+> désigne la phase dominante et le path réel ; (2) A/B isolé par variable
+> d'env ou flag ; (3) `score --tier standard --cases …` (3 runs, médiane, le
+> gain doit dépasser `spread`) + `trend --case` ; (4) 0 régression quality/
+> fuzz/goldens ; (5) verrou. Ordre = levier mesuré (part du wall × nb de cas),
+> pas intuition. Tableau de bord : `SCORECARD.md` §Profil + §Bench.
+
+**Où va le temps (quick, 256², Xeon 4 threads, 2026-11-03)** :
+_(history `20261103T045227Z-169a8de.json`, `harness.py score --tier quick`, Intel(R) Xeon(R) Processor · 4 threads, F3 batch Linux bâti sur place ; geomean ratio F3 0.2646, parité 10/10 ok)_
+
+| Cas | path | wall (s) | ratio F3 | orbite % | pixels % | post % | autre % | ns/iter | iter/px | fiab. % | dominante |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| `test5` | bytecode_f64 | 0.022 | 1.1012 | 4.6 | 64.8 | 0.0 | 30.6 | 34.6 | 6 | 0.00 | **pixels** |
+| `spiral` | None | 0.028 | 0.1005 | 0.0 | 70.7 | 0.0 | 29.3 | — | — | — | **pixels** |
+| `flake` | bytecode_f64_harmonic_lla | 0.028 | 0.0877 | 17.7 | 56.6 | 0.0 | 25.7 | 0.0 | 30921 | 0.00 | **pixels** |
+| `glitch_test_2` | bytecode_f64_harmonic_lla | 0.037 | 0.2456 | 2.7 | 78.9 | 0.0 | 18.4 | 0.1 | 7779 | 0.00 | **pixels** |
+| `e50` | bytecode_f64 | 1.919 | 0.7948 | 2.2 | 75.8 | 21.2 | 0.8 | 0.1 | 172455 | 0.38 | **pixels** |
+| `e113` | bytecode_f64 | 0.194 | 0.3843 | 3.1 | 92.6 | 0.0 | 4.3 | 0.1 | 22729 | 0.00 | **pixels** |
+| `e401` | bytecode_exp | 0.783 | 0.1253 | 4.9 | 92.9 | 0.0 | 2.3 | 0.4 | 27584 | 0.00 | **pixels** |
+| `e1000` | bytecode_exp | 0.774 | 0.2506 | 2.2 | 96.5 | 0.0 | 1.3 | 0.7 | 16634 | 0.00 | **pixels** |
+| `floral_fantasy` | bytecode_f64_harmonic_lla | 0.026 | 0.1071 | 3.8 | 68.3 | 0.0 | 27.9 | 0.1 | 2156 | 0.00 | **pixels** |
+| `dragon` | bytecode_f64 | 4.913 | 0.687 | 23.9 | 25.9 | 48.8 | 1.5 | 0.0 | 3921441 | 0.12 | **post** |
+
+Cumul : orbite 14.7 % · pixels 51.3 % · **post 32.1 %** · sauvegarde 0.0 % · autre 1.8 %. Dominantes : pixels ×9, post ×1.
+
+Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_perturb_f64` 0.165 · `cpu_perturb_exp` 0.069 · `cpu_perturb_dd` 7.467 · `gpu_std_f32` 3.249.
+
+**Items (ordre de levier mesuré)** :
+
+- [ ] **G14.1 — Coût de l'escalade de fiabilité (G9.6)**. *Mesuré* e50 256²
+  4t : `FRACTALL_RELIABILITY=off` 1.16 s → `escalate` (défaut) **1.89 s
+  (+63 %)** = traqueur dans la boucle pixel **+25 %** (1.14 → 1.44 s) +
+  **post 0.40 s** pour recalculer **249 px (0.38 %)** au tier dd. **Pire sur
+  dragon** (profil quick) : post **47 % du wall** (2.35 s / 4.96 s) pour
+  **0.12 %** de pixels flaggés — 3.9 M iter/px, le dd sans skip efficace y
+  est 45× le f64 ; c'est la phase dominante du cas le plus lent du tier,
+  et 32 % du wall CUMULÉ des 10 cas. Or le coût
+  marginal attendu est ~1.3 ms/px (172 k iter/px × 7.5 ns/iter dd, bench) et
+  la correction est parallèle (`correct_pixels_dd` → `par_iter`) : 249 px /
+  4 threads ≈ 0.1 s, pas 0.4. Le reste est un **coût FIXE** :
+  `correct_pixels_dd` appelle `compute_reference_orbit_cached(dd_params…)`
+  → re-build d'une orbite de référence dd (GMP 0.04 s + conversion dd) + table
+  BLA dd (`bla_dd.rs`, prewarm) à chaque frame qui a ≥ 1 pixel flaggé. Leviers,
+  par ordre : (a) **dériver l'orbite dd de l'orbite GMP déjà calculée** (même
+  centre, même précision — le cache l'a, `has_dd()` est juste faux) et ne
+  bâtir la table dd que si > N pixels ; (b) traqueur : réduire le travail par
+  pas (déjà local, sans dérivée) — comparer `observe` vs `escalate` vs `off`
+  sur 3 cas ; (c) seuil frame-entière `UNRELIABLE_FRAME_THRESHOLD` = 5 % en
+  FRACTION : à basse résolution la même scène flagge une fraction plus
+  grande (pixels plus gros) ⇒ frame entière dd 45× plus lente — tester un
+  seuil en nombre absolu de pixels OU en coût estimé (`n_flagged × iter/px ×
+  7.5 ns` vs `frame × iter/px × 0.17 ns`). NB : la suite quality rend e50 à
+  96² **entièrement en `bytecode_dd` (12 s)** — c'est voulu (`quality/mod.rs:
+  256` force `use_dd_tier` sur ce preset pour juger le tier dd), pas une
+  escalade ; ne pas confondre.
+  *Métriques* : profil `post %` + `fiab. %` (e50, e113, dragon, spiral),
+  `trend --case e50`, bench `cpu_perturb_dd`. *Done* : post < 10 % du wall
+  sur e50 sans perdre un pixel vs GMP (quality 16/16, e50 PASS).
+- [ ] **G14.2 — Boucle pixel f64 (76 % du wall e50, dominante sur 8/10
+  cas)**. `ns/iter` effectif 0.1-0.2 (skips BLA inclus) ; bench
+  `cpu_perturb_f64` 0.17 ns/iter à 4 threads = ~0.7 ns/iter/thread. Leviers :
+  **SIMD 4-wide f64** (AVX2/NEON) sur le fast-path Mandelbrot `δ' = 2Zδ + δ²
+  + dc` en traitant 4 pixels par lane (les pixels d'une tuile partagent la
+  réf ; divergence de contrôle gérée par masque, rebase par lane) — gros
+  chantier, à n'ouvrir qu'avec un prototype A/B sur `pixel_loop.rs` ;
+  granularité des pas BLA (lookup `trailing_zeros` déjà fait) ; layout
+  mémoire de la table BLA (memory-bound, cf. G2). *Métriques* : bench
+  `cpu_perturb_f64`, profil `pixels %`. *Done* : ns/iter −25 % bit-identique
+  (goldens verts sans regen).
+- [ ] **G14.3 — Orbite de référence GMP (single-thread)**. Part `orbit %`
+  faible sur le quick (≤ 2 % à e50, 1-5 % attendu e1000) mais **dominante en
+  ultra-deep** (e52465 : 660 s, slow-safe). F3 fait pareil (MPFR séquentiel) ;
+  FractalShark passe par le GPU (NTT). Leviers réalistes : précision
+  demandée vs requise (`ref_prec` du `[WISDOM]` : e50 = 256 b pour
+  req ≈ 196 b — le plancher `precision_bits` de la formule F3 ?), cache
+  d'orbite **inter-runs** côté CLI/vidéo (le pipeline vidéo recalcule une
+  orbite par keyframe au même centre : réutiliser l'orbite la plus profonde
+  tronquée atom-domain par échelle), compression de réf streaming (phase 3
+  PTWithCompression). *Métriques* : profil `orbit %` sur e1000/e1121/e1200
+  (tier standard), `trend --case e1000`. *Done* : orbite ≤ 10 % du wall
+  jusqu'à 1e1200 et vidéo deep sans recalcul d'orbite par keyframe.
+- [~] **G14.4 — Instrumentation manquante (harness)** — (b) pic RSS et (d)
+  ligne `[FRACTALL]` std LIVRÉS 2026-11-03 ; restent (a) et (c). (a) **temps de build
+  BLA** séparé : la ligne cache-miss affiche `bla=0.000s` car le prewarm
+  tourne sous le lock au premier pixel → compté dans `pixels` ; exposer
+  `bla=` réel dans `[PERTURB PERF]` final ; (b) **pic RSS** par cas dans le
+  profil (`resource.getrusage(RUSAGE_CHILDREN)` par sous-process, sans
+  dépendre de `/usr/bin/time`) → la mémoire devient une métrique suivie
+  (prérequis de la décision compression par défaut) ; (c) colonne
+  `threads` et `rayon` effectif (le ratio ns/iter/thread rend les machines
+  comparables) ; (d) **ligne `[FRACTALL]` aussi sur le path f64 standard** :
+  `spiral` (zoom shallow, hors perturbation) sort `path=?` dans le profil
+  faute de diagnostic — le dispatcher doit nommer son path dans tous les
+  cas. *Done* : quatre colonnes/lignes de plus dans §Profil, verrou parseur.
+- [ ] **G14.5 — GPU : mesurer avant de croire**. Le kernel perturbation f64
+  wgpu est ~2× plus lent que le CPU 16t sur GeForce (f64 1:64) ; le kernel
+  **f32 + fiabilité** (`perturbation_f32.wgsl`, Metal/Apple Silicon) n'a
+  **jamais été chronométré** sur Metal. L'axe `bench` capte `gpu_std_f32` /
+  `gpu_perturb_f64` dès qu'un GPU est présent → lancer `score` sur la machine
+  GPU (i7 + RTX 4060 Ti, et le Mac M-series) et lire §Bench. Barre externe :
+  FractalShark GPU 0.6 s vs fractall CPU 1.25 s (1e30, 1024², 131 k iters).
+  *Done* : décision chiffrée GPU deep (poursuivre / geler) dans ce TODO.
+- [ ] **G14.6 — Compression de référence par défaut** (PTWithCompression
+  phase 3) : mémoire (dragon 98 Mo → 46 Ko) et non vitesse ; bloqué par la
+  regen de 21 goldens + **décision utilisateur** (les rendus bougent de
+  quelques px, correction jamais pire vs GMP). À rouvrir quand G14.4(b)
+  mesure le pic RSS dans le profil.
+- [ ] **G14.7 — Démarrage / cas courts**. test5 : wall 18 ms dont pixels
+  11 ms, `other` 38 % (lancement process, compilation bytecode, PNG) — et
+  c'est le SEUL cas où F3 gagne sur 4 cœurs (ratio 1.10 : 37 ms vs 34 ms ;
+  0.27 sur l'i7 16t). Sans
+  objet pour l'excellence deep-zoom ; pertinent pour la vidéo (milliers de
+  frames courtes) → mesurer `other` cumulé sur un `render` vidéo avant de
+  toucher quoi que ce soit.
+- [ ] **G14.8 — Re-baseline standard au schéma 2** sur la machine de
+  développement (i7, F3 dispo) : `score --tier standard` (profil + bench
+  inclus) puis `baseline` — sans quoi `speed_self`, `ns/iter` et `bench` n'ont
+  pas de référence là où le travail se fait.
+
+---
 
 ## ✅ Shipped (condensé, le plus récent en haut)
 

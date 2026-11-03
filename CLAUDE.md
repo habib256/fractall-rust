@@ -87,22 +87,35 @@ X11/xkbcommon/Wayland/GL par `dlopen` depuis le système.
 
 ## Harness d'auto-amélioration (HARNESS.md)
 
-Trois axes mesurés contre Fraktaler-3 : **vitesse** (wall-clock head-to-head,
-geomean des ratios), **génération/parité** (`compare_f3.py`, EXR N0/NF),
-**qualité** (`fractall-quality` vs ground truth GMP + goldens).
+Axes **contre Fraktaler-3** (exigent F3 + numpy/OpenEXR) : **vitesse-ratio**
+(wall-clock head-to-head, geomean des ratios), **parité** (`compare_f3.py`,
+EXR N0/NF). Axes **intrinsèques** (tournent partout, dont CI/conteneur) :
+**vitesse auto-relative** (temps fractall par cas vs baseline même machine),
+**qualité** (`fractall-quality` vs ground truth GMP + goldens), **fuzz**
+(sondes pert-vs-GMP), **profil** (où va le temps : path exécuté + ventilation
+orbite/pixels/post/sauvegarde + ns/iter + % fiabilité), **bench** (iters/s par
+technique via `--wisdom-bench` isolé).
 
 ```bash
-python3 scripts/harness.py score --tier quick   # cycle interne (~10 cas, 256²)
+python3 scripts/harness.py doctor                # prérequis + axes mesurables ICI
+python3 scripts/harness.py score --tier quick    # cycle interne (~10 cas, 256²)
 python3 scripts/harness.py score --tier standard # 3 runs médiane, avant commit perf
-python3 scripts/harness.py baseline              # fige la référence (explicite)
+python3 scripts/harness.py trend --case e50      # évolution d'un cas (temps, ns/iter, path)
+python3 scripts/harness.py ab --cases e50 --env FRACTALL_RELIABILITY=off,escalate  # A/B isolé (G14)
+python3 scripts/harness.py baseline              # fige la référence de CETTE machine (harness/baselines/)
+python3 scripts/test_harness_guard.py            # verrous du harness (CI)
 ```
 
 Sorties : `harness/history/<date>-<sha>.json` (mémoire longue, versionnée),
-`SCORECARD.md` (dernier score + gaps triés), artefacts lourds dans `bench/`
-(gitignoré). Baseline **par machine**. Binaire F3 : auto-détection
-(`fraktaler-3-3.1/fraktaler-3` Linux, `.macos` sinon, override `F3_BIN`).
-Priorités de gap : correction > robustesse > vitesse > qualité. Détail et
-invariants : `HARNESS.md`.
+`SCORECARD.md` (dernier score + profil + gaps triés), artefacts lourds dans
+`bench/` (gitignoré). Baseline **par machine** (`harness/baselines/<slug>.json`,
+repli `baseline.json`). Binaire F3 : auto-détection
+(`fraktaler-3-3.1/fraktaler-3-3.1.linux` Linux, `.macos` sinon, filtrée par
+format ELF/Mach-O, override `F3_BIN`) — sans F3 le reste tourne. Code :
+`scripts/harnesslib/` (fichiers < 800 lignes ; `harness.py` = enveloppe).
+Priorités de gap : correction > robustesse > vitesse > qualité. Détail,
+invariants et checklist machine neuve : `HARNESS.md` ; plan des optimisations
+à venir : `TODO.md` G14.
 
 ## Architecture
 
@@ -709,7 +722,7 @@ que la réutilisation GUI multi-frame ; les rendus single-shot (CLI/quality/harn
 | `max_bla_steps` | cap pas BLA par pixel | 1024 |
 | `use_reference_precision_formula` | formule C++ F3 | true |
 | `use_bytecode_engine` | path unifié BLA mat2 + rebasing F3 | true |
-| `use_dd_tier` | tier double-double ~106b Mandelbrot deep (float128-like, sans BLA) | false |
+| `use_dd_tier` | tier double-double ~106b Mandelbrot deep (float128-like, table BLA dd `bla_dd.rs`) | false |
 | `find_nucleus` | nucleus Mandelbrot avant orbit | false |
 | `jitter_scale` | amplitude AA sous-pixel (px) | 0.0 |
 | `aa_subpixel_offset` | offset AA uniforme transitoire legacy (`#[serde(skip)]`) | `[0,0]` |
