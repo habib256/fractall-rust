@@ -47,3 +47,10 @@ jobs:
       # complète ViewHp → dispatcher → canaux, y compris la bascule MPC.
       - name: Deep navigation tests (types spéciaux)
         run: cargo test --release --locked --test deep_navigation
+
+      # Verrous du harness d'auto-amélioration (scripts/harnesslib) : pur
+      # Python, sans F3 ni OpenEXR — réconciliation journal↔quarantaine, gates
+      # de régression machine-sensibles, parseur du profil, seuils de vitesse
+      # intrinsèque. Un harness qui ment coûte des heures (leçon G2).
+      - name: Harness guard tests (python)
+        run: python3 scripts/test_harness_guard.py

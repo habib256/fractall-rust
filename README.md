@@ -115,11 +115,16 @@ cargo run --release --bin fractall-cli -- \
 ### Tests
 
 ```bash
-# Unit tests (perturbation modules, bytecode, etc.)
-cargo test --release --bin fractall-cli
+# Unit tests (perturbation modules, bytecode, quality, gui — `lib` target)
+cargo test --release --lib
 
 # Pixel-exact golden image tests (regression guard for the render pipeline)
 cargo test --release --test golden_images
+
+# Self-improvement harness: speed / parity vs Fraktaler-3, quality vs GMP,
+# fuzz, goldens, per-phase profile, per-technique throughput (see HARNESS.md)
+python3 scripts/harness.py doctor            # what can be measured on this machine
+python3 scripts/harness.py score --tier quick
 ```
 
 ## GUI Controls

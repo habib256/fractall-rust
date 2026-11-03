@@ -8,6 +8,49 @@ regroupement par type (Ajouté / Corrigé / Performance / Modifié), et sections
 jalon (`Gx`) pour l'historique. Ce fichier est un résumé actionnable — le détail
 technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
 
+## [Unreleased] — harnais d'optimisation
+
+### Ajouté
+- **Harness : axe `profile`** (où va le temps) — chaque cas du tier est rendu
+  une fois avec les diagnostics du moteur capturés : path exécuté, ventilation
+  du wall-clock orbite/pixels/post/sauvegarde/autre, ns/iter effectif, % de
+  pixels flaggés par le détecteur de fiabilité, escalade dd. Versionné dans
+  `harness/history`, affiché dans `SCORECARD.md`. Un gap est levé quand la
+  sauvegarde domine le rendu ou quand `ns/iter` régresse de 15 % à path égal.
+- **Harness : axe `bench`** — `fractall-cli --wisdom-bench` lancé isolé
+  (`FRACTALL_WISDOM_FILE` dans `bench/`) → iters/s et ns/iter par technique
+  (`cpu_std_f64`, `cpu_perturb_{f64,exp,dd}`, `gpu_*`), régression > 15 % =
+  gap.
+- **Harness : vitesse intrinsèque sans F3** — temps fractall par cas comparés
+  à la baseline de la même machine (`speed_self`, geomean + pire cas) ; gap
+  par cas au-delà de 15 % ET du bruit mesuré (`spread`, runs ≥ 2) ET de 50 ms.
+- **Harness : `doctor`** (prérequis, axes mesurables sur la machine, baseline
+  d'une autre machine, crash en suspens), **`trend`** (évolution des métriques
+  dans l'historique, `--case`, `--bench`), **`render`** (re-génère le
+  SCORECARD depuis un history sans re-mesurer) ; section « Tendance » dans le
+  SCORECARD.
+- `TODO.md` G14 : plan de campagne des optimisations, chaque item avec sa
+  métrique harness ; CI exécute `scripts/test_harness_guard.py`.
+
+### Corrigé
+- **Le harness démarrait seulement avec numpy + OpenEXR** (`import compare_f3`
+  en tête de fichier faisait `sys.exit`) : import paresseux, statut
+  `f3_deps_missing` distinct de `f3_unavailable` ; la détection de F3 filtre
+  par format binaire (le `.macos` versionné était « trouvé » sous Linux →
+  10 `fail` silencieux de l'axe vitesse).
+- `scripts/test_harness_guard.py` échouait depuis l'ajout de la règle « un
+  crash côté F3 ne quarantaine pas » (fixture sur la phase `speed_f3`) ;
+  fixture corrigée, règle verrouillée, parseur du profil et seuils de vitesse
+  intrinsèque couverts.
+
+### Modifié
+- `scripts/harness.py` scindé en package `scripts/harnesslib/` (10 modules
+  < 800 lignes, pilier 5) ; `harness.py` reste le point d'entrée. Schéma du
+  history 2 (sections `profile`, `bench`, `speed_self` ; `trend` lit les deux).
+- Docs : `HARNESS.md` (axes intrinsèques vs F3, checklist machine neuve),
+  skill `/improve` (étape doctor, lecture du profil, `cargo test --lib`),
+  `harness/README.md` (rôle de chaque registre), `CLAUDE.md`, README.
+
 ## [0.8.3] — 2026-08-30 — densité navigable, hybrides deep, distribution portable
 
 ### Ajouté

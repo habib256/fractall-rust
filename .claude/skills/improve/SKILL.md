@@ -9,7 +9,20 @@ Protocole complet : `HARNESS.md` (racine). Roadmap des gaps connus : `TODO.md`.
 Ne JAMAIS sauter l'étape 5 (vérification). Une itération = un commit (ou un
 revert propre + une note TODO si l'hypothèse échoue).
 
-## Étape 0 — Garde-fou crash (TOUJOURS, avant tout sweep)
+## Étape 0a — Doctor (début de session / machine neuve)
+
+```bash
+python3 scripts/harness.py doctor
+```
+
+Dit en 2 s ce qui est mesurable ICI : F3 présent (axes speed-ratio/parity),
+deps Python EXR, binaires bâtis, baseline de CETTE machine ou d'une autre
+(→ pas de delta vitesse tant qu'on n'a pas re-`baseline`), crash en suspens,
+quarantaine/slow-safe. Suivre ses « commandes recommandées ». **Sans F3, la
+boucle tourne quand même** : vitesse intrinsèque (temps fractall par cas vs
+baseline même machine), quality, fuzz, goldens, profil, bench.
+
+## Étape 0b — Garde-fou crash (TOUJOURS, avant tout sweep)
 
 Un cas gourmand du corpus peut allouer toute la RAM et **faire tomber l'OS**
 pendant un sweep étendu (`--tier standard`/`full` ou un `--cases` large). Au
@@ -56,15 +69,22 @@ automatiquement les gourmands (pic RSS ≥ seuil) et ceux qui plantent. Le tier
 python3 scripts/harness.py score --tier quick
 ```
 
-- Lire `SCORECARD.md` (généré) : agrégats par axe + **gaps triés**.
+- Lire `SCORECARD.md` (généré) : agrégats par axe, **temps fractall par
+  cas** (auto-ratio vs baseline), **Profil — où va le temps** (path exécuté,
+  orbite/pixels/post/save %, ns/iter, % fiabilité, escalade dd), bench par
+  technique, tendance, puis **gaps triés**.
 - Si `$ARGUMENTS` désigne un axe/cas, filtrer les gaps dessus ; sinon prendre
   le gap #1 (priorités : correction > robustesse > vitesse > qualité —
-  cf. HARNESS.md §Priorités).
-- Pas de baseline (`harness/baseline.json` absent) ? La créer d'abord :
-  `python3 scripts/harness.py baseline` puis committer.
-- Binaire F3 absent (axes marqués `f3_unavailable`) ? Le (re)builder d'abord
-  (voir `fraktaler-3-3.1/`, cible batch du Makefile) — sans F3, seuls les
-  axes quality/goldens sont mesurables.
+  cf. HARNESS.md §Priorités). **Aucun gap ?** La liste de travail est alors
+  `TODO.md` G14 (plan des optimisations) — choisir l'item dont le profil
+  montre le plus gros levier (phase dominante × nombre de cas).
+- Pas de baseline pour CETTE machine (`doctor` le dit) ? La créer d'abord :
+  `python3 scripts/harness.py baseline` puis committer — sinon aucune
+  régression intrinsèque n'est détectable.
+- Binaire F3 absent (axes `f3_unavailable`) ou deps EXR absentes
+  (`f3_deps_missing`) ? `bash scripts/build_f3_linux.sh` + `pip3 install
+  numpy OpenEXR Pillow` si la parité est le sujet ; sinon continuer, les
+  axes intrinsèques suffisent au cycle vitesse/correction.
 
 ## Étape 2 — Reproduire petit
 
@@ -76,12 +96,17 @@ re-litiger un cas tranché.
 
 ## Étape 3 — Diagnostiquer (avant TOUT patch)
 
-- **Confirmer QUEL path s'exécute** : `FRACTALL_PERTURB_STATS=1` + compteurs.
-  Leçon G2 : des heures d'optimisation perdues sur un path qui ne tournait
-  pas. Signature GMP par-pixel ≈ 1 µs/iter ; perturbation+BLA est 100-1000×
-  plus rapide.
-- Perf : isoler la phase (orbite référence / BLA build / pixels / post) via
-  les stats internes ; méfiance thermique sur les A/B back-to-back.
+- **Confirmer QUEL path s'exécute** : colonne `path` du §Profil du SCORECARD
+  (puis `FRACTALL_PERTURB_STATS=1` + compteurs pour le détail). Leçon G2 :
+  des heures d'optimisation perdues sur un path qui ne tournait pas.
+  Signature GMP par-pixel ≈ 1 µs/iter ; perturbation+BLA est 100-1000× plus
+  rapide.
+- Perf : la phase dominante est dans le profil (orbite référence / pixels /
+  post / sauvegarde / autre) ; `post` élevé + `fiab. %` > 0 = coût de
+  l'escalade de fiabilité (A/B : `FRACTALL_RELIABILITY=off`) ; `other` élevé
+  sur un cas court = démarrage/colorisation. Suivre un cas dans le temps :
+  `harness.py trend --case <stem>`. Méfiance thermique sur les A/B
+  back-to-back ; un delta < `spread` (colonne bruit) n'est pas un résultat.
 - Correction : comparer au ground truth GMP (`fractall-quality compare`),
   PAS seulement à F3 ; vérifier l'hypothèse F3-dégénéré (timing < 0.1 s +
   uniformité) avant d'accuser fractall.
@@ -98,9 +123,11 @@ re-litiger un cas tranché.
 ## Étape 5 — Vérifier (obligatoire, dans cet ordre)
 
 ```bash
-cargo test --release --bin fractall-cli
+cargo test --release --lib                        # ~460 unit (cible lib, PAS --bin)
 cargo test --release --test golden_images
+cargo test --release --test deep_navigation       # si types spéciaux / dispatcher touchés
 cargo run --release --bin fractall-quality -- suite
+python3 scripts/test_harness_guard.py             # si scripts/harnesslib a bougé
 python3 scripts/harness.py score --tier quick
 ```
 
@@ -112,7 +139,9 @@ python3 scripts/harness.py score --tier quick
   régression mémoire de ton patch : consulter `harness journal`, isoler,
   corriger avant de committer — ne pas laisser passer.
 - Affirmation de perf → re-mesurer en `--tier standard` (3 runs, médiane)
-  sur les cas touchés.
+  sur les cas touchés (`--cases a,b`), et vérifier que `ns/iter` (profil) et
+  le débit `bench` bougent dans le bon sens — un gain de wall-clock sans gain
+  de ns/iter est du bruit ou du démarrage.
 - Goldens modifiés légitimement → `FRACTALL_UPDATE_GOLDENS=1` + **revue
   visuelle** de chaque PNG + justification dans le commit.
 - Fix de correction → **poser un verrou** : nouveau golden
@@ -127,6 +156,7 @@ python3 scripts/harness.py score --tier quick
   révélé un nouveau gap, l'ajouter au bon goal.
 - Si l'amélioration établit un nouveau niveau de référence :
   `python3 scripts/harness.py baseline` et committer le nouveau
-  `harness/baseline.json` (jamais implicite).
+  `harness/baseline.json` (jamais implicite). Un changement du FORMAT du
+  scorecard se rejoue sans re-mesurer : `harness.py render`.
 - Hypothèse infirmée ? Revert complet + noter l'impasse dans TODO.md (les
   fausses pistes documentées valent de l'or, cf. G3).
