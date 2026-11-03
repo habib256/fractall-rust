@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from harnesslib import guard  # noqa: E402
 from harnesslib import gaps as gaps_mod  # noqa: E402
 from harnesslib import axes_perf  # noqa: E402
+from harnesslib import config  # noqa: E402
 
 
 def _use_tmp(tmp: Path):
@@ -102,6 +103,7 @@ def run():
     run_regression_gates()
     run_profile_parsing()
     run_self_speed_gates()
+    run_baseline_resolution()
 
     print("\nTOUS LES TESTS PASSENT ✅")
 
@@ -246,6 +248,32 @@ def run_self_speed_gates():
     gs = gaps_mod.compute_gaps(slow_save, None)
     _check(any(x["axis"] == "profile" and x["metric"] == "save_s" for x in gs),
            "profile : sauvegarde > rendu → gap vitesse")
+
+
+def run_baseline_resolution():
+    """Verrou baselines PAR MACHINE : la machine courante lit SA baseline si
+    elle existe, sinon le repli `baseline.json` ; le slug est stable et sûr
+    pour un nom de fichier."""
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        config.BASELINE = tmp / "baseline.json"
+        config.BASELINES_DIR = tmp / "baselines"
+        i7 = {"cpu": "Intel(R) Core(TM) i7-10700F CPU @ 2.90GHz", "nproc": 16}
+        xeon = {"cpu": "Intel(R) Xeon(R) Processor", "nproc": 4}
+        _check(config.machine_slug(i7) == "intel-r-core-tm-i7-10700f-cpu-2-90ghz-16t",
+               "slug machine normalisé")
+        _check(config.resolve_baseline(xeon) is None, "aucune baseline → None")
+        config.BASELINE.write_text(json.dumps({"meta": {"machine": i7, "git_sha": "legacy"}}))
+        _check(config.load_baseline(xeon)["meta"]["git_sha"] == "legacy",
+               "sans baseline propre → repli baseline.json")
+        config.BASELINES_DIR.mkdir()
+        config.baseline_path_for(xeon).write_text(
+            json.dumps({"meta": {"machine": xeon, "git_sha": "mine"}}))
+        _check(config.load_baseline(xeon)["meta"]["git_sha"] == "mine",
+               "baseline propre prioritaire sur le repli")
+        _check(config.load_baseline(i7)["meta"]["git_sha"] == "legacy",
+               "l'autre machine garde le repli")
+
 
 if __name__ == "__main__":
     try:

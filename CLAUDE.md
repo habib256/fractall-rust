@@ -101,13 +101,14 @@ python3 scripts/harness.py doctor                # prérequis + axes mesurables 
 python3 scripts/harness.py score --tier quick    # cycle interne (~10 cas, 256²)
 python3 scripts/harness.py score --tier standard # 3 runs médiane, avant commit perf
 python3 scripts/harness.py trend --case e50      # évolution d'un cas (temps, ns/iter, path)
-python3 scripts/harness.py baseline              # fige la référence (explicite)
+python3 scripts/harness.py baseline              # fige la référence de CETTE machine (harness/baselines/)
 python3 scripts/test_harness_guard.py            # verrous du harness (CI)
 ```
 
 Sorties : `harness/history/<date>-<sha>.json` (mémoire longue, versionnée),
 `SCORECARD.md` (dernier score + profil + gaps triés), artefacts lourds dans
-`bench/` (gitignoré). Baseline **par machine**. Binaire F3 : auto-détection
+`bench/` (gitignoré). Baseline **par machine** (`harness/baselines/<slug>.json`,
+repli `baseline.json`). Binaire F3 : auto-détection
 (`fraktaler-3-3.1/fraktaler-3-3.1.linux` Linux, `.macos` sinon, filtrée par
 format ELF/Mach-O, override `F3_BIN`) — sans F3 le reste tourne. Code :
 `scripts/harnesslib/` (fichiers < 800 lignes ; `harness.py` = enveloppe).

@@ -175,8 +175,11 @@ python3 scripts/test_harness_guard.py        # verrous du harness lui-même (CI)
   - `harness/history/<UTC>-<sha>.json` — scorecard machine-readable complet
     (versionné : c'est la mémoire longue de la boucle ; schéma 2 depuis
     2026-11 : sections `profile`, `bench`, `speed_self` ; `trend` lit les deux).
-  - `harness/baseline.json` — référence courante (mise à jour explicite via
-    `baseline`, jamais implicite).
+  - `harness/baselines/<machine>.json` — référence **par machine** (slug
+    cpu+threads), écrite par `baseline` depuis le dernier score de CETTE
+    machine ; `harness/baseline.json` reste le repli historique (machine de
+    dev, `baseline --legacy`). Le scorecard nomme la baseline utilisée. Jamais
+    mise à jour implicitement.
   - `SCORECARD.md` (racine) — dernier score lisible : tableaux par axe, delta
     vs baseline, temps fractall par cas, **profil** (où va le temps), bench,
     tendance (6 derniers scores même machine), **gaps triés** (la liste de
@@ -309,8 +312,9 @@ correction ⇒ ajouter un golden ou un preset quality qui fige le cas
    les « commandes recommandées » (build F3, deps EXR, baseline).
 3. `python3 scripts/harness.py score --tier quick` — sans F3, le scorecard
    contient déjà : temps par cas, profil, bench, quality, fuzz, goldens.
-4. `python3 scripts/harness.py baseline` → la baseline de CETTE machine
-   (les régressions intrinsèques se mesurent dès le score suivant).
+4. `python3 scripts/harness.py baseline` → `harness/baselines/<machine>.json`
+   (les régressions intrinsèques se mesurent dès le score suivant, sans
+   toucher la baseline de la machine de dev).
 5. Si F3 est voulu : `bash scripts/build_f3_linux.sh` puis
    `pip3 install numpy OpenEXR Pillow`, re-`doctor`.
 

@@ -12,7 +12,8 @@ from .axes_f3 import axis_parity, axis_speed
 from .axes_perf import axis_bench, axis_profile
 from .axes_truth import axis_fuzz, axis_goldens, axis_quality
 from .config import (
-    ADJUDICATIONS, BASELINE, BENCH, CRASH_JOURNAL, REPO, SCHEMA, SCORECARD,
+    ADJUDICATIONS, BASELINE, BASELINES_DIR, BENCH, CRASH_JOURNAL, HISTORY_DIR,
+    REPO, SCHEMA, SCORECARD, baseline_path_for, load_baseline, machine_slug,
     SEVERITY_LABEL, TOML_DIR, _now_iso, cargo_build, find_f3, git_dirty,
     git_sha, load_compare_f3, machine_info, tier_config,
 )
@@ -21,7 +22,7 @@ from .guard import (
     check_stale_inflight, default_mem_limit_mb, journal_begin, journal_end,
     load_quarantine, load_slow_safe, reconcile_quarantine_from_journal,
 )
-from .scorecard import build_scorecard_md, latest_history, write_history
+from .scorecard import load_history, build_scorecard_md, latest_history, write_history
 
 def cmd_score(args) -> None:
     cfg = tier_config(args.tier)
@@ -138,12 +139,8 @@ def cmd_score(args) -> None:
             if c.get("status") == "f3_degenerate"],
     }
 
-    base = None
-    if BASELINE.exists():
-        try:
-            base = json.loads(BASELINE.read_text())
-        except Exception:
-            base = None
+    base = load_baseline(card["meta"]["machine"])
+    card["meta"]["baseline_file"] = base.get("_file") if base else None
     card["speed_self"] = self_speed_ratio(card, base) if base else {}
     card["gaps"] = compute_gaps(card, base)
 
@@ -161,12 +158,8 @@ def cmd_render(args) -> None:
     if path is None or not path.exists():
         sys.exit("history introuvable — lance d'abord `harness.py score`.")
     card = json.loads(path.read_text())
-    base = None
-    if BASELINE.exists():
-        try:
-            base = json.loads(BASELINE.read_text())
-        except Exception:
-            base = None
+    base = load_baseline(card.get("meta", {}).get("machine"))
+    card["meta"]["baseline_file"] = base.get("_file") if base else None
     card["speed_self"] = self_speed_ratio(card, base) if base else {}
     card["gaps"] = compute_gaps(card, base)
     if args.update_history:
@@ -176,11 +169,35 @@ def cmd_render(args) -> None:
     _print_gaps(card["gaps"])
 
 
-def cmd_baseline(_args) -> None:
-    latest = latest_history()
-    if latest is None:
-        sys.exit("Aucun history — lance d'abord `harness.py score`.")
-    shutil.copyfile(latest, BASELINE)
+def cmd_baseline(args) -> None:
+    """Fige un history comme baseline de SA machine (`harness/baselines/
+    <slug>.json`) — par défaut le dernier history produit sur CETTE machine.
+    `--legacy` écrit le repli historique `baseline.json` (machine de dev)."""
+    me = machine_info()
+    if args.history:
+        latest = Path(args.history)
+    else:
+        mine = load_history(same_machine_as={"meta": {"machine": me}})
+        latest = (HISTORY_DIR / mine[-1]["_file"]) if mine else None
+        if latest is None:
+            sys.exit("Aucun history de CETTE machine — lance d'abord "
+                     "`harness.py score` (ou passe un fichier history).")
+    if not latest.exists():
+        sys.exit(f"history introuvable : {latest}")
+    card = json.loads(latest.read_text())
+    machine = card.get("meta", {}).get("machine") or me
+    if args.legacy:
+        target = BASELINE
+    else:
+        BASELINES_DIR.mkdir(parents=True, exist_ok=True)
+        target = baseline_path_for(machine)
+    shutil.copyfile(latest, target)
+    print(f"✓ baseline {target.relative_to(REPO)} ← {latest.name} "
+          f"(tier {card.get('meta', {}).get('tier')}, "
+          f"{machine.get('cpu')} · {machine.get('nproc')}t)")
+    if not args.legacy and machine_slug(machine) != machine_slug(me):
+        print("  ⚠️ ce history vient d'une AUTRE machine que celle-ci — la "
+              "baseline écrite est celle de SA machine.")
     print(f"✓ baseline ← {latest.relative_to(REPO)}")
 
 def cmd_gaps(_args) -> None:

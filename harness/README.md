@@ -6,7 +6,8 @@ Protocole : `../HARNESS.md`. Outil : `../scripts/harness.py` (package
 | Fichier | Versionné | Rôle | Écrit par |
 |---|---|---|---|
 | `history/<UTC>-<sha>.json` | oui | scorecard complet (mémoire longue ; schéma 1 = axes speed/parity/quality/fuzz/goldens, schéma 2 (2026-11) + `profile`, `bench`, `speed_self`) | `harness.py score` |
-| `baseline.json` | oui | référence courante, **par machine** (`meta.machine`) — jamais mise à jour implicitement | `harness.py baseline` |
+| `baselines/<machine>.json` | oui | référence **par machine** (slug cpu+threads) — lue en priorité par `score`/`render`/`doctor` | `harness.py baseline` |
+| `baseline.json` | oui | repli historique (machine de dev i7) quand la machine n'a pas sa baseline | `harness.py baseline --legacy` |
 | `adjudications.json` | oui | verdicts 3-voies fractall/F3/GMP par cas parité (`f3_wrong` déclasse le gap) | `harness.py adjudicate` |
 | `wisdom-adjudications.json` | oui | tradeoffs correction tranchés de l'axe wisdom-optimality (évite le re-litige tant que le régime est stable) | manuel, après vérification GMP |
 | `f3-degenerate.json` | oui | cas où F3 rend un fast-path uniforme FAUX → exclus du geomean vitesse | axe parité (auto-entretenu) |

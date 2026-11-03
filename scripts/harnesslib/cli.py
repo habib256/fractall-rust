@@ -118,7 +118,13 @@ def main() -> None:
                     help="réécrire aussi les gaps dans le history")
     rd.set_defaults(func=cmd_render)
 
-    bl = sub.add_parser("baseline", help="Fige le dernier history comme baseline.")
+    bl = sub.add_parser("baseline",
+                        help="Fige le dernier history de CETTE machine comme "
+                             "sa baseline (harness/baselines/<machine>.json).")
+    bl.add_argument("history", nargs="?", default=None,
+                    help="history à figer (défaut : dernier de cette machine)")
+    bl.add_argument("--legacy", action="store_true",
+                    help="écrire le repli historique harness/baseline.json")
     bl.set_defaults(func=cmd_baseline)
 
     aj = sub.add_parser("adjudicate",

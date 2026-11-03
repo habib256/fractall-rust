@@ -21,7 +21,11 @@ technique ; `doctor` / `trend` / `render` ; `scripts/harness.py` scindé en
 **e50 256²** le détecteur de fiabilité + sa correction dd coûtent **+63 % de
 wall** (1.16 → 1.89 s, 4 threads) pour 0.38 % de pixels — gap #1 de G14. État
 moteur inchangé depuis 2026-07-18 (ci-dessous) hormis G9.6 livré (escalade
-fiabilité par défaut, kernel GPU f32, cf. CLAUDE.md).
+fiabilité par défaut, kernel GPU f32, cf. CLAUDE.md). F3 batch Linux rebâti
+dans le conteneur (`build_f3_linux.sh`) : quick 7 axes **geomean 0.265, 9/10
+wins** (test5 1.10 = 37 ms vs 34 ms, démarrage process sur 4 cœurs, cf.
+G14.7), parité 10/10 ok ; baseline de cette machine figée
+(`harness/baselines/intel-r-xeon-r-processor-4t.json`).
 
 **Moteur : 0 gap mesuré (2026-07-18).** harness quick + standard-speed + wisdom-optimality
 verts, bat F3 partout (geomean speed ~0.19, 10/10 wins quick). 286 unit CLI + 24
@@ -2501,6 +2505,12 @@ Actions candidates pour la boucle (ordre suggéré) :
     SKILL `/improve` (étape doctor, lecture du profil, `cargo test --lib` au
     lieu du `--bin` périmé), harness/README (rôle de chaque registre),
     CLAUDE.md, README, CHANGELOG.
+  - **Baselines PAR MACHINE** (`harness/baselines/<slug>.json`, repli
+    `baseline.json`, `baseline --legacy`) : une machine secondaire fige sa
+    référence sans écraser l'i7 ; `doctor`/scorecard nomment la baseline
+    lue (verrou résolution). F3 batch Linux + OpenEXR installés dans le
+    conteneur de session (`build_f3_linux.sh` OK sous Debian avec `apt-get
+    update` préalable) → score quick complet 7 axes ici.
   - **Reste harness** : pic RSS par cas dans le profil (sans `/usr/bin/time` :
     wrapper `resource.getrusage`) ; temps de build BLA séparé de `orbit`
     (aujourd'hui `bla=0.000s` dans la ligne cache-miss, le prewarm est compté
@@ -3111,24 +3121,24 @@ portage shaders GLSL (CPU v1), textures overlay.
 > pas intuition. Tableau de bord : `SCORECARD.md` §Profil + §Bench.
 
 **Où va le temps (quick, 256², Xeon 4 threads, 2026-11-03)** :
-_(history `20261103T044142Z-922ddf0.json`, `harness.py score --tier quick`, Intel(R) Xeon(R) Processor · 4 threads ; F3 indisponible ici → ratios F3 absents, vitesse intrinsèque seule)_
+_(history `20261103T045227Z-169a8de.json`, `harness.py score --tier quick`, Intel(R) Xeon(R) Processor · 4 threads, F3 batch Linux bâti sur place ; geomean ratio F3 0.2646, parité 10/10 ok)_
 
-| Cas | path | wall (s) | orbite % | pixels % | post % | autre % | ns/iter | iter/px | fiab. % | dominante |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| `test5` | bytecode_f64 | 0.019 | 5.2 | 61.8 | 0.0 | 33.0 | 31.7 | 6 | 0.00 | **pixels** |
-| `spiral` | None | 0.025 | 0.0 | 78.7 | 0.0 | 21.3 | — | — | — | **pixels** |
-| `flake` | bytecode_f64_harmonic_lla | 0.028 | 18.1 | 57.9 | 0.0 | 23.9 | 0.0 | 30921 | 0.00 | **pixels** |
-| `glitch_test_2` | bytecode_f64_harmonic_lla | 0.035 | 2.9 | 80.7 | 0.0 | 16.4 | 0.1 | 7779 | 0.00 | **pixels** |
-| `e50` | bytecode_f64 | 1.945 | 2.0 | 74.0 | 23.3 | 0.7 | 0.1 | 172455 | 0.38 | **pixels** |
-| `e113` | bytecode_f64 | 0.188 | 3.2 | 92.9 | 0.0 | 3.9 | 0.1 | 22729 | 0.00 | **pixels** |
-| `e401` | bytecode_exp | 0.743 | 4.6 | 93.8 | 0.0 | 1.7 | 0.4 | 27584 | 0.00 | **pixels** |
-| `e1000` | bytecode_exp | 0.747 | 2.3 | 96.6 | 0.0 | 1.1 | 0.7 | 16634 | 0.00 | **pixels** |
-| `floral_fantasy` | bytecode_f64_harmonic_lla | 0.025 | 4.0 | 68.7 | 0.0 | 27.3 | 0.1 | 2156 | 0.00 | **pixels** |
-| `dragon` | bytecode_f64 | 4.963 | 25.3 | 25.9 | 47.3 | 1.5 | 0.0 | 3921441 | 0.12 | **post** |
+| Cas | path | wall (s) | ratio F3 | orbite % | pixels % | post % | autre % | ns/iter | iter/px | fiab. % | dominante |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| `test5` | bytecode_f64 | 0.022 | 1.1012 | 4.6 | 64.8 | 0.0 | 30.6 | 34.6 | 6 | 0.00 | **pixels** |
+| `spiral` | None | 0.028 | 0.1005 | 0.0 | 70.7 | 0.0 | 29.3 | — | — | — | **pixels** |
+| `flake` | bytecode_f64_harmonic_lla | 0.028 | 0.0877 | 17.7 | 56.6 | 0.0 | 25.7 | 0.0 | 30921 | 0.00 | **pixels** |
+| `glitch_test_2` | bytecode_f64_harmonic_lla | 0.037 | 0.2456 | 2.7 | 78.9 | 0.0 | 18.4 | 0.1 | 7779 | 0.00 | **pixels** |
+| `e50` | bytecode_f64 | 1.919 | 0.7948 | 2.2 | 75.8 | 21.2 | 0.8 | 0.1 | 172455 | 0.38 | **pixels** |
+| `e113` | bytecode_f64 | 0.194 | 0.3843 | 3.1 | 92.6 | 0.0 | 4.3 | 0.1 | 22729 | 0.00 | **pixels** |
+| `e401` | bytecode_exp | 0.783 | 0.1253 | 4.9 | 92.9 | 0.0 | 2.3 | 0.4 | 27584 | 0.00 | **pixels** |
+| `e1000` | bytecode_exp | 0.774 | 0.2506 | 2.2 | 96.5 | 0.0 | 1.3 | 0.7 | 16634 | 0.00 | **pixels** |
+| `floral_fantasy` | bytecode_f64_harmonic_lla | 0.026 | 0.1071 | 3.8 | 68.3 | 0.0 | 27.9 | 0.1 | 2156 | 0.00 | **pixels** |
+| `dragon` | bytecode_f64 | 4.913 | 0.687 | 23.9 | 25.9 | 48.8 | 1.5 | 0.0 | 3921441 | 0.12 | **post** |
 
-Cumul : orbite 15.6 % · pixels 50.6 % · **post 32.1 %** · sauvegarde 0.0 % · autre 1.7 %. Dominantes : pixels ×9, post ×1.
+Cumul : orbite 14.7 % · pixels 51.3 % · **post 32.1 %** · sauvegarde 0.0 % · autre 1.8 %. Dominantes : pixels ×9, post ×1.
 
-Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.931 · `cpu_perturb_f64` 0.173 · `cpu_perturb_exp` 0.07 · `cpu_perturb_dd` 7.626.
+Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_perturb_f64` 0.165 · `cpu_perturb_exp` 0.069 · `cpu_perturb_dd` 7.467 · `gpu_std_f32` 3.249.
 
 **Items (ordre de levier mesuré)** :
 
@@ -3210,7 +3220,9 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.931 · `cpu_
   quelques px, correction jamais pire vs GMP). À rouvrir quand G14.4(b)
   mesure le pic RSS dans le profil.
 - [ ] **G14.7 — Démarrage / cas courts**. test5 : wall 18 ms dont pixels
-  11 ms, `other` 38 % (lancement process, compilation bytecode, PNG). Sans
+  11 ms, `other` 38 % (lancement process, compilation bytecode, PNG) — et
+  c'est le SEUL cas où F3 gagne sur 4 cœurs (ratio 1.10 : 37 ms vs 34 ms ;
+  0.27 sur l'i7 16t). Sans
   objet pour l'excellence deep-zoom ; pertinent pour la vidéo (milliers de
   frames courtes) → mesurer `other` cumulé sur un `render` vidéo avant de
   toucher quoi que ce soit.

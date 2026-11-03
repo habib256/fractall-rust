@@ -5,15 +5,14 @@ harness/history). Aucune des deux ne rend quoi que ce soit."""
 from __future__ import annotations
 
 import importlib
-import json
 import os
 import shutil
 import sys
 from pathlib import Path
 
 from .config import (
-    BASELINE, CLI, CRASH_JOURNAL, HISTORY_DIR, INFLIGHT, QUALITY, REPO,
-    find_f3, git_dirty, git_sha, machine_info,
+    CLI, CRASH_JOURNAL, HISTORY_DIR, INFLIGHT, QUALITY, REPO,
+    baseline_path_for, find_f3, git_dirty, git_sha, load_baseline, machine_info,
 )
 from .gaps import _same_machine
 from .guard import default_mem_limit_mb, load_quarantine, load_slow_safe
@@ -91,21 +90,17 @@ def doctor_report() -> dict:
                    else f"absent ({wf}) — `fractall-cli --wisdom-bench` pour "
                         f"l'arbitrage device G9.5 (l'axe bench du harness est isolé)"))
     # baseline
-    base = None
-    if BASELINE.exists():
-        try:
-            base = json.loads(BASELINE.read_text())
-        except Exception:
-            base = None
+    base = load_baseline(mi)
     if base:
         bm = base["meta"]
         same = _same_machine({"meta": {"machine": mi}}, base)
         checks.append((OK if same else WARN, "baseline",
-                       f"{bm.get('git_sha')} · tier {bm.get('tier')} · "
-                       f"{bm.get('date_utc', '?')[:10]} · machine "
-                       f"{'IDENTIQUE' if same else 'DIFFÉRENTE (' + str(bm.get('machine', {}).get('cpu')) + ') → pas de delta vitesse ; `harness.py baseline` après un premier score ici'}"))
+                       f"{base.get('_file')} · {bm.get('git_sha')} · tier "
+                       f"{bm.get('tier')} · {bm.get('date_utc', '?')[:10]} · machine "
+                       f"{'IDENTIQUE' if same else 'DIFFÉRENTE (' + str(bm.get('machine', {}).get('cpu')) + ') → pas de delta vitesse ; `harness.py baseline` après un premier score ici écrira ' + str(baseline_path_for(mi).relative_to(REPO))}"))
     else:
-        checks.append((WARN, "baseline", "absente — `harness.py score` puis `harness.py baseline`"))
+        checks.append((WARN, "baseline", f"absente — `harness.py score` puis "
+                       f"`harness.py baseline` → {baseline_path_for(mi).relative_to(REPO)}"))
     n_hist = len(list(HISTORY_DIR.glob("*.json"))) if HISTORY_DIR.exists() else 0
     n_here = len(load_history(same_machine_as={"meta": {"machine": mi}}))
     checks.append((INFO, "history", f"{n_hist} scorecards ({n_here} sur cette machine)"))

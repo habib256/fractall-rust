@@ -79,8 +79,9 @@ python3 scripts/harness.py score --tier quick
   `TODO.md` G14 (plan des optimisations) — choisir l'item dont le profil
   montre le plus gros levier (phase dominante × nombre de cas).
 - Pas de baseline pour CETTE machine (`doctor` le dit) ? La créer d'abord :
-  `python3 scripts/harness.py baseline` puis committer — sinon aucune
-  régression intrinsèque n'est détectable.
+  `python3 scripts/harness.py baseline` (→ `harness/baselines/<machine>.json`,
+  la baseline de la machine de dev n'est pas touchée) puis committer — sinon
+  aucune régression intrinsèque n'est détectable.
 - Binaire F3 absent (axes `f3_unavailable`) ou deps EXR absentes
   (`f3_deps_missing`) ? `bash scripts/build_f3_linux.sh` + `pip3 install
   numpy OpenEXR Pillow` si la parité est le sujet ; sinon continuer, les

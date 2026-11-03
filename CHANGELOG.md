@@ -29,6 +29,9 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
   dans l'historique, `--case`, `--bench`), **`render`** (re-génère le
   SCORECARD depuis un history sans re-mesurer) ; section « Tendance » dans le
   SCORECARD.
+- **Harness : baselines par machine** (`harness/baselines/<cpu-threads>.json`,
+  repli `baseline.json`) — une machine secondaire fige sa référence sans
+  écraser celle de la machine de dev.
 - `TODO.md` G14 : plan de campagne des optimisations, chaque item avec sa
   métrique harness ; CI exécute `scripts/test_harness_guard.py`.
 

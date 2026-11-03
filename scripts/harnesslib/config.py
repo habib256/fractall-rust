@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import json
 import os
 import platform
+import re
 import subprocess
 import sys
 
@@ -22,6 +24,12 @@ HARNESS_DIR = REPO / "harness"
 HISTORY_DIR = HARNESS_DIR / "history"
 
 BASELINE = HARNESS_DIR / "baseline.json"
+# Baselines PAR MACHINE (2026-11) : `baselines/<slug-machine>.json`. La
+# baseline historique `baseline.json` reste le repli (machine de dev i7). Sans
+# ça, une machine secondaire (conteneur, CI, Mac) ne pouvait pas figer SA
+# référence sans écraser celle de la machine de dev — donc aucune régression
+# intrinsèque n'y était détectable. `machine_slug()` = cpu + nproc normalisés.
+BASELINES_DIR = HARNESS_DIR / "baselines"
 
 SCORECARD = REPO / "SCORECARD.md"
 
@@ -213,6 +221,47 @@ def machine_info() -> dict:
         pass
     return {"cpu": cpu, "nproc": os.cpu_count(),
             "os": f"{platform.system()} {platform.release()}"}
+
+def machine_slug(machine: dict | None = None) -> str:
+    """Identifiant de fichier stable d'une machine : cpu + nproc, minuscules,
+    [a-z0-9-] seulement (`intel-r-core-tm-i7-10700f-cpu-2-90ghz-16t`)."""
+    m = machine or machine_info()
+    raw = f"{m.get('cpu', 'cpu')}-{m.get('nproc', 0)}t".lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+    return slug or "unknown"
+
+
+def baseline_path_for(machine: dict | None = None) -> Path:
+    """Chemin de la baseline PROPRE à cette machine (existant ou à créer)."""
+    return BASELINES_DIR / f"{machine_slug(machine)}.json"
+
+
+def resolve_baseline(machine: dict | None = None) -> Path | None:
+    """Baseline à utiliser pour cette machine : la sienne si elle existe,
+    sinon le repli historique `baseline.json`, sinon None."""
+    own = baseline_path_for(machine)
+    if own.exists():
+        return own
+    if BASELINE.exists():
+        return BASELINE
+    return None
+
+
+def load_baseline(machine: dict | None = None) -> dict | None:
+    path = resolve_baseline(machine)
+    if path is None:
+        return None
+    try:
+        card = json.loads(path.read_text())
+    except Exception:
+        return None
+    if isinstance(card, dict):
+        try:
+            card["_file"] = str(path.relative_to(REPO))
+        except ValueError:  # baseline hors repo (tests, override)
+            card["_file"] = str(path)
+    return card if isinstance(card, dict) else None
+
 
 def cargo_build(bin_name: str | None = None) -> bool:
     cmd = ["cargo", "build", "--release"]

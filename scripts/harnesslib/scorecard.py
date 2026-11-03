@@ -35,6 +35,12 @@ def build_scorecard_md(card: dict, base: dict | None) -> str:
     L.append(f"- **Tier** : {m['tier']} · {m['width']}×{m['height']}{qual_note} · "
              f"runs={m['runs']} · axes={','.join(m['axes'])}")
     L.append(f"- **F3** : {m['f3_bin'] or '— (indisponible)'}")
+    if base:
+        bmeta = base.get("meta", {})
+        L.append(f"- **Baseline** : `{base.get('_file') or m.get('baseline_file') or 'harness/baseline.json'}` "
+                 f"({bmeta.get('git_sha')} · tier {bmeta.get('tier')} · "
+                 f"{bmeta.get('date_utc', '?')[:10]})"
+                 + ("" if _same_machine(card, base) else " · **autre machine**"))
     if base and not comparable:
         L.append(f"- _baseline présente mais tier différent "
                  f"({base.get('meta', {}).get('tier')}) — pas de delta._")
