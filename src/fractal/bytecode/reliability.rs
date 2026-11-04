@@ -214,8 +214,19 @@ pub fn reliability_runaway() -> f64 {
 pub const DEFAULT_RUNAWAY: f64 = 1e30;
 
 /// Fraction de pixels non fiables au-delà de laquelle la frame entière est
-/// re-rendue au tier dd plutôt que corrigée pixel par pixel en GMP.
-pub const UNRELIABLE_FRAME_THRESHOLD: f64 = 0.05;
+/// re-rendue au tier dd plutôt que corrigée pixel par pixel.
+///
+/// Depuis que la correction pixel par pixel est elle-même au tier dd
+/// (`correct_pixels_dd`, orbite dd reconstruite sans re-calcul), corriger une
+/// fraction f coûte ≈ f × (frame dd) + un surcoût fixe faible : le pixel par
+/// pixel est TOUJOURS moins cher, sauf f → 1. L'ancien seuil de 5 % (hérité
+/// de la correction GMP, ~25× le dd par itération) aurait déclenché une frame
+/// dd jusqu'à 45× plus lente que le f64. NB mesuré : aucun cas du corpus ne
+/// tombe entre 5 et 50 % (e50 : 0,46 % en 48×32, 0,28 % en 96×64, 0,38 % en
+/// 256² — la fraction ne croît pas à basse résolution sur cette scène) ; le
+/// changement est de principe. Le seuil ne reste qu'un filet : au-delà de la moitié de l'image, le
+/// décrochage est général et le tier dd couvre aussi les pixels non flaggés.
+pub const UNRELIABLE_FRAME_THRESHOLD: f64 = 0.5;
 
 #[cfg(test)]
 mod tests {
