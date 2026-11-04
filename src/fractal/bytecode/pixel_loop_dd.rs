@@ -213,6 +213,7 @@ mod tests {
             cref: Complex64::new(0.0, 0.0),
             z_ref: Vec::new(),
             z_ref_f64: vec![Complex64::new(0.0, 0.0); z_ref_dd.len()],
+            z_ref_lo: Vec::new(),
             z_ref_gmp: Vec::new(),
             cref_gmp: rug::Complex::with_val(53, (0, 0)),
             phase_offset: 0,

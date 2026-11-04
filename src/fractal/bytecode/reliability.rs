@@ -115,8 +115,15 @@ fn l1(z: Complex64) -> f64 {
 /// `M`, `σ₁² = (F² + √(F⁴ − 4·det²)) / 2` avec `F` la norme de Frobenius. La
 /// Frobenius surestimerait de √2 une matrice conforme — facteur qui se
 /// COMPOSE de saut en saut et ferait exploser la borne.
+///
+/// Cas CONFORME (Mandelbrot : `A` représente un complexe `a`, m00 = m11 et
+/// m01 = −m10) : `σ₁ = |a|`, une seule racine au lieu de deux — le hook BLA
+/// est sur le chemin chaud des scènes à longs sauts (e50).
 #[inline]
 fn spectral_norm(m: &Mat2) -> f64 {
+    if m.m00 == m.m11 && m.m01 == -m.m10 {
+        return (m.m00 * m.m00 + m.m10 * m.m10).sqrt();
+    }
     let f2 = m.m00 * m.m00 + m.m01 * m.m01 + m.m10 * m.m10 + m.m11 * m.m11;
     let det = m.m00 * m.m11 - m.m01 * m.m10;
     let disc = (f2 * f2 - 4.0 * det * det).max(0.0);
