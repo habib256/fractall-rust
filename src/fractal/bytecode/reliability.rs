@@ -54,10 +54,12 @@ const GAMMA: f64 = 4.0 * U;
 /// implémentations par défaut sont vides : [`NoObserve`] monomorphise en la
 /// boucle d'origine.
 pub trait StepObserver: Copy {
-    /// Pas direct : `z` = `Z[m] + δ_old` (état avant le pas), `two_zm_delta` =
-    /// `2·Z[m]·δ_old` (terme dominant calculé par la boucle), `delta_old`.
+    /// Pas direct : `z_norm_sqr` = `|Z[m] + δ_old|²` (état avant le pas),
+    /// `two_zm_delta` = `2·Z[m]·δ_old` (terme dominant calculé par la boucle),
+    /// `delta_norm_sqr` = `|δ_old|²`. Les deux normes sont celles que la
+    /// boucle garde déjà en cache de tête : le hook ne les recalcule pas.
     #[inline(always)]
-    fn direct(&mut self, _z: Complex64, _two_zm_delta: Complex64, _delta_old: Complex64) {}
+    fn direct(&mut self, _z_norm_sqr: f64, _two_zm_delta: Complex64, _delta_norm_sqr: f64) {}
 
     /// Saut BLA accepté : `delta_new = A·δ_old + B·dc`.
     #[inline(always)]
@@ -132,15 +134,14 @@ fn spectral_norm(m: &Mat2) -> f64 {
 
 impl StepObserver for ShadowTracker {
     #[inline(always)]
-    fn direct(&mut self, z: Complex64, two_zm_delta: Complex64, delta_old: Complex64) {
+    fn direct(&mut self, z_norm_sqr: f64, two_zm_delta: Complex64, delta_norm_sqr: f64) {
         // Propagation : |(z+e)² − z²| ≤ |e|·(2|z| + |e|).
         // Seul le facteur de PROPAGATION exige le module exact (une
         // surestimation s'y composerait d'itération en itération) ; les termes
         // d'arrondi locaux, additifs, prennent la borne L1 (≤ √2·module) sans
         // racine carrée.
-        let z_abs = z.norm_sqr().sqrt();
-        let local = GAMMA
-            * (l1(two_zm_delta) + delta_old.norm_sqr() + self.dc_abs);
+        let z_abs = z_norm_sqr.sqrt();
+        let local = GAMMA * (l1(two_zm_delta) + delta_norm_sqr + self.dc_abs);
         self.err = self.err * (2.0 * z_abs + self.err) + local;
     }
 
@@ -274,7 +275,7 @@ mod tests {
         let mut z = Complex64::new(0.0, 0.0);
         for _ in 0..10_000 {
             // Référence nulle : δ = z, Z = 0 → 2Zδ = 0.
-            t.direct(z, Complex64::new(0.0, 0.0), z);
+            t.direct(z.norm_sqr(), Complex64::new(0.0, 0.0), z.norm_sqr());
             z = z * z + c;
         }
         assert!(t.err < 1e-12, "E = {}", t.err);
@@ -288,7 +289,7 @@ mod tests {
         t.err = 1.0;
         let mut z = Complex64::new(0.0, 0.0);
         for _ in 0..20 {
-            t.direct(z, Complex64::new(0.0, 0.0), z);
+            t.direct(z.norm_sqr(), Complex64::new(0.0, 0.0), z.norm_sqr());
             z = z * z + c;
         }
         assert!(t.error_bound() as f64 >= DEFAULT_RUNAWAY);
