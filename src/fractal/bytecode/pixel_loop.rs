@@ -1159,7 +1159,7 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source, O: StepObserver>(
         // δ_{n+1} = 2·Z[m]·δ + δ² + dc
         let two_zm = z_m * 2.0;
         let two_zm_delta = two_zm * delta;
-        obs.direct(z_abs, two_zm_delta, delta);
+        obs.direct(z_abs_norm_sqr, two_zm_delta, delta_norm_sqr);
         delta = two_zm_delta + delta * delta + dc;
         c.step();
         iters_ptb += 1;

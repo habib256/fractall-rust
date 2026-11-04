@@ -56,6 +56,53 @@ fn gmp_float_to_ddexp(value: &Float) -> super::dd::DoubleDoubleExp {
     DoubleDoubleExp::normalized(DoubleDouble::new(hi, lo), 0)
 }
 
+/// Partie basse d'un Z GMP : `Z − hi` par composante, `hi` = l'arrondi f64
+/// déjà stocké dans `z_ref_f64` (cf. `ReferenceOrbit::z_ref_lo`). `scratch`
+/// est un Float de 64 bits réutilisé : MPFR arrondit `Z − hi` correctement
+/// DIRECTEMENT à cette précision — sans le clone pleine précision par
+/// itération qui coûtait +50 % sur l'orbite de dragon.
+fn gmp_low_part(z: &Complex, hi: Complex64, scratch: &mut Float) -> Complex64 {
+    use rug::Assign;
+    let mut lo = |v: &Float, h: f64| {
+        if h == 0.0 || !h.is_finite() {
+            return 0.0;
+        }
+        scratch.assign(v - h);
+        scratch.to_f64()
+    };
+    let re = lo(z.real(), hi.re);
+    let im = lo(z.imag(), hi.im);
+    Complex64::new(re, im)
+}
+
+/// Partie basse d'un Z double-double (fast-path dd) : `Z − hi` en f64.
+fn dd_low_part(z: super::dd::ComplexDDExp, hi: Complex64) -> Complex64 {
+    use super::dd::DoubleDoubleExp as DdE;
+    Complex64::new(
+        z.re.sub(DdE::from_f64(hi.re)).to_f64(),
+        z.im.sub(DdE::from_f64(hi.im)).to_f64(),
+    )
+}
+
+/// La référence doit-elle capturer sa partie basse (`z_ref_lo`) ? Oui quand
+/// l'escalade de fiabilité (G9.6) peut corriger des pixels au tier dd :
+/// mêmes conditions que `perturbation::correct_pixels_dd` (Mandelbrot
+/// bytecode mono-phase, tier dd non demandé, sans nucleus) et réf non
+/// compressée (la compression libère `z_ref_f64`, le `hi`).
+pub(crate) fn wants_dd_lo(params: &FractalParams) -> bool {
+    use crate::fractal::bytecode::reliability::{reliability_mode, ReliabilityMode};
+    reliability_mode() == ReliabilityMode::Escalate
+        && matches!(params.fractal_type, FractalType::Mandelbrot)
+        && params.engine.use_bytecode_engine
+        && !params.engine.use_dd_tier
+        && !params.engine.find_nucleus
+        && !params.is_hybrid_formula()
+        && !crate::fractal::wisdom::compression_active(params)
+        // Seul le tier f64 est suivi : au-delà (exp, > 1e280) aucun pixel
+        // n'est flaggé, la capture serait du temps perdu.
+        && !crate::fractal::wisdom::wants_exp(super::effective_pixel_size(params))
+}
+
 /// Orbite référence Mandelbrot itérée en **double-double** (~106 bits) au lieu de
 /// GMP — chemin rapide pour la tranche zoom où `precision ≤ ~100 bits`
 /// (~1e13–1e28). L'orbite est ITÉRÉE en dd (précision de la trajectoire) mais
@@ -75,10 +122,12 @@ fn dd_reference_orbit(
     iteration_max: u32,
     cancel: Option<&AtomicBool>,
     build_dd: bool,
+    build_lo: bool,
 ) -> Option<(
     Vec<ComplexExp>,
     Vec<Complex64>,
     Vec<super::dd::ComplexDDExp>,
+    Vec<Complex64>,
 )> {
     let mut z = z0;
     let mut z_ref = Vec::with_capacity(orbit_reserve(iteration_max as usize + 1));
@@ -90,11 +139,19 @@ fn dd_reference_orbit(
     } else {
         0
     });
+    let mut z_ref_lo = Vec::with_capacity(if build_lo {
+        orbit_reserve(iteration_max as usize + 1)
+    } else {
+        0
+    });
     let mut zf = z.to_complex64_approx();
     z_ref.push(ComplexExp::from_complex64(zf));
     z_ref_f64.push(zf);
     if build_dd {
         z_ref_dd.push(z);
+    }
+    if build_lo {
+        z_ref_lo.push(dd_low_part(z, zf));
     }
     for i in 0..iteration_max {
         if let Some(cancel) = cancel {
@@ -116,8 +173,11 @@ fn dd_reference_orbit(
         if build_dd {
             z_ref_dd.push(z);
         }
+        if build_lo {
+            z_ref_lo.push(dd_low_part(z, zf));
+        }
     }
-    Some((z_ref, z_ref_f64, z_ref_dd))
+    Some((z_ref, z_ref_f64, z_ref_dd, z_ref_lo))
 }
 
 /// Squared escape radius used while iterating the reference orbit.
@@ -264,6 +324,14 @@ pub struct ReferenceOrbit {
     /// arrondi f64 (2⁻⁵²·|Z|) capperait sinon la précision. Construite depuis
     /// l'orbite GMP (via `gmp_float_to_ddexp`) ou l'itération dd.
     pub z_ref_dd: Vec<super::dd::ComplexDDExp>,
+    /// Partie BASSE de la référence (`lo = Z_gmp − f64(Z)`, ~53 b de plus que
+    /// `z_ref_f64`), capturée pendant le calcul de l'orbite quand l'escalade
+    /// de fiabilité (G9.6) peut avoir à corriger des pixels au tier dd
+    /// (`wants_dd_lo`). `z_ref_f64[i] + z_ref_lo[i]` = Z en double-double :
+    /// la correction reconstruit l'orbite dd (`with_dd_from_lo`) au lieu de
+    /// RE-CALCULER l'orbite GMP (dragon : 2,5 s économisées pour 16 o/iter).
+    /// Vide sinon.
+    pub z_ref_lo: Vec<Complex64>,
     /// La référence a été TRONQUÉE par le critère atom-domain F3 (l'orbite est
     /// quasi-périodique à l'échelle de la vue, cf. `atom_period_enabled`).
     /// Le pixel loop doit alors cycler la réf par REBASE-AT-END F3
@@ -312,6 +380,36 @@ impl ReferenceOrbit {
     /// `true` si l'orbite double-double (tier dd) est disponible.
     pub fn has_dd(&self) -> bool {
         !self.z_ref_dd.is_empty()
+    }
+
+    /// Copie de l'orbite munie de sa référence double-double reconstruite
+    /// depuis `z_ref_f64 + z_ref_lo` (G9.6, cf. `z_ref_lo`). `None` si la
+    /// partie basse n'a pas été capturée. Valeurs identiques (au dernier ulp
+    /// dd près) à une orbite recalculée avec `use_dd_tier`.
+    pub fn with_dd_from_lo(&self) -> Option<ReferenceOrbit> {
+        use super::dd::{ComplexDDExp, DoubleDouble, DoubleDoubleExp};
+        if self.z_ref_lo.is_empty() || self.z_ref_lo.len() != self.z_ref_f64.len() {
+            return None;
+        }
+        let dd = |hi: f64, lo: f64| {
+            if hi == 0.0 || !hi.is_finite() {
+                DoubleDoubleExp::from_f64(hi)
+            } else {
+                DoubleDoubleExp::normalized(DoubleDouble::new(hi, lo), 0)
+            }
+        };
+        let mut orbit = self.clone();
+        orbit.z_ref_dd = self
+            .z_ref_f64
+            .iter()
+            .zip(&self.z_ref_lo)
+            .map(|(h, l)| ComplexDDExp {
+                re: dd(h.re, l.re),
+                im: dd(h.im, l.im),
+            })
+            .collect();
+        orbit.z_ref_lo = Vec::new();
+        Some(orbit)
     }
 
     /// Get the effective length of the reference orbit for this phase
@@ -481,6 +579,7 @@ impl ReferenceOrbit {
             // Références de résolution de glitch (path legacy) : tier dd non
             // concerné (le dd remplace la glitch-correction, pas l'inverse).
             z_ref_dd: Vec::new(),
+            z_ref_lo: Vec::new(),
             atom_truncated: false,
             compressed_f64: None,
             hybrid_phase_refs: Vec::new(),
@@ -896,6 +995,7 @@ fn build_hybrid_bla_references(
                 cycle_period: primary_orbit.cycle_period,
                 cycle_start: primary_orbit.cycle_start,
                 z_ref_dd: primary_orbit.z_ref_dd.clone(),
+                z_ref_lo: primary_orbit.z_ref_lo.clone(),
                 atom_truncated: primary_orbit.atom_truncated,
                 // Phases hybrides (cycle détecté) : hors périmètre du routage
                 // compressé (gaté `cycle_period == 0`) — pas de réf compressée.
@@ -1648,8 +1748,14 @@ fn compute_reference_orbit_phase(
         } else {
             (seed_dd, cref_dd) // Mandelbrot : z0 = seed (=0), constante = cref
         };
-        let (z_ref, z_ref_f64, z_ref_dd) =
-            dd_reference_orbit(z0, c, params.iteration_max, cancel, params.engine.use_dd_tier)?;
+        let (z_ref, z_ref_f64, z_ref_dd, z_ref_lo) = dd_reference_orbit(
+            z0,
+            c,
+            params.iteration_max,
+            cancel,
+            params.engine.use_dd_tier,
+            wants_dd_lo(params),
+        )?;
         let extended_iterations: Vec<u32> = z_ref_f64
             .iter()
             .enumerate()
@@ -1670,6 +1776,7 @@ fn compute_reference_orbit_phase(
                 cycle_period: 0,
                 cycle_start: 0,
                 z_ref_dd,
+                z_ref_lo,
                 atom_truncated: false,
                 // Fast-path dd (≤96 b) : le compresseur phase 2 ne tourne que
                 // sur la boucle GMP ci-dessous — pas de réf compressée ici
@@ -1729,6 +1836,15 @@ fn compute_reference_orbit_phase(
     // Tier dd (opt-in) : stocke la référence en double-double (~106 b) depuis
     // l'orbite GMP courante — Z à 106 b pour le pas `2·Z·δ` du pixel_loop_dd.
     let build_dd = params.engine.use_dd_tier;
+    // Partie basse (G9.6) : cf. `ReferenceOrbit::z_ref_lo`. Jamais en même
+    // temps que `build_dd` (qui stocke déjà la référence dd entière).
+    let build_lo = !build_dd && phase_start == 0 && wants_dd_lo(params);
+    let mut z_ref_lo: Vec<Complex64> = Vec::with_capacity(if build_lo {
+        orbit_reserve(params.iteration_max as usize + 1)
+    } else {
+        0
+    });
+    let mut lo_scratch = Float::new(64);
     let mut z_ref_dd = Vec::with_capacity(if build_dd {
         orbit_reserve(params.iteration_max as usize + 1)
     } else {
@@ -1766,6 +1882,9 @@ fn compute_reference_orbit_phase(
             re: gmp_float_to_ddexp(z.real()),
             im: gmp_float_to_ddexp(z.imag()),
         });
+    }
+    if build_lo {
+        z_ref_lo.push(gmp_low_part(&z, z_f64, &mut lo_scratch));
     }
     if store_dense_gmp {
         z_ref_gmp.push(z.clone());
@@ -2063,6 +2182,9 @@ fn compute_reference_orbit_phase(
                 im: gmp_float_to_ddexp(z.imag()),
             });
         }
+        if build_lo {
+            z_ref_lo.push(gmp_low_part(&z, z_f64, &mut lo_scratch));
+        }
         // GMP dense sauté hors correction glitch (cf. `store_dense_gmp`).
         if store_dense_gmp {
             z_ref_gmp.push(z.clone());
@@ -2240,6 +2362,7 @@ fn compute_reference_orbit_phase(
             cycle_period: detected_period,
             cycle_start: detected_cycle_start,
             z_ref_dd,
+            z_ref_lo,
             atom_truncated,
             compressed_f64,
             hybrid_phase_refs,
@@ -2461,6 +2584,53 @@ mod dd_orbit_tests {
         );
     }
 
+    /// **G9.6/G14.1 — l'orbite dd reconstruite depuis la partie basse est
+    /// BIT-IDENTIQUE à l'orbite dd recalculée.** La correction des pixels non
+    /// fiables (`correct_pixels_dd`) reconstruit `z_ref_dd` depuis
+    /// `z_ref_f64 + z_ref_lo` au lieu de relancer l'orbite GMP avec
+    /// `use_dd_tier` (dragon : 2,5 s). Deux régimes : boucle GMP (zoom 1e40,
+    /// > 96 b) et fast-path dd (zoom 1e14). Le détecteur doit être en mode
+    /// escalade (défaut) pour que la capture ait lieu.
+    #[test]
+    fn dd_orbit_from_low_parts_matches_recomputed_dd_orbit() {
+        use crate::fractal::bytecode::reliability::{reliability_mode, ReliabilityMode};
+        if reliability_mode() != ReliabilityMode::Escalate {
+            return; // capture désactivée par l'environnement du test
+        }
+        for (zoom, label) in [(1e40, "GMP"), (1e14, "fast-path dd")] {
+            let mut params = default_params_for_type(FractalType::Mandelbrot, 64, 64);
+            params.center_x = -0.743643887037158;
+            params.center_y = 0.131825904205330;
+            params.center_x_hp = Some("-0.74364388703715870475219150611477".into());
+            params.center_y_hp = Some("0.13182590420533000000000000000000".into());
+            params.span_x = 4.0 / zoom;
+            params.span_y = 4.0 / zoom;
+            params.span_x_hp = None;
+            params.span_y_hp = None;
+            params.iteration_max = 3000;
+            params.engine.precision_bits =
+                crate::fractal::perturbation::compute_perturbation_precision_bits(&params);
+
+            let (plain, _, _) = compute_reference_orbit(&params, None, false).expect("orbite");
+            assert_eq!(plain.z_ref_lo.len(), plain.z_ref_f64.len(), "{label}: capture");
+            let rebuilt = plain.with_dd_from_lo().expect("reconstruction");
+
+            let mut dd_params = params.clone();
+            dd_params.engine.use_dd_tier = true;
+            let (dd, _, _) = compute_reference_orbit(&dd_params, None, false).expect("orbite dd");
+            assert_eq!(rebuilt.z_ref_dd.len(), dd.z_ref_dd.len(), "{label}: longueur");
+            let mismatches = rebuilt
+                .z_ref_dd
+                .iter()
+                .zip(&dd.z_ref_dd)
+                .filter(|(a, b)| a.to_complex64_approx() != b.to_complex64_approx()
+                    || (a.re.sub(b.re).to_f64() != 0.0)
+                    || (a.im.sub(b.im).to_f64() != 0.0))
+                .count();
+            assert_eq!(mismatches, 0, "{label}: {mismatches} valeurs dd différentes");
+        }
+    }
+
     /// Verrou Phase 1a : l'orbite référence itérée en double-double (~106 b) doit
     /// matcher celle itérée en GMP (676 b) à la précision de stockage f64, sur un
     /// zoom moyen où dd est suffisant. Valide l'arithmétique dd avant le câblage.
@@ -2480,11 +2650,12 @@ mod dd_orbit_tests {
             re: gmp_float_to_ddexp(orbit_gmp.cref_gmp.real()),
             im: gmp_float_to_ddexp(orbit_gmp.cref_gmp.imag()),
         };
-        let (_, dd_f64, _) = dd_reference_orbit(
+        let (_, dd_f64, _, _) = dd_reference_orbit(
             ComplexDDExp::ZERO,
             cref_dd,
             params.iteration_max,
             None,
+            false,
             false,
         )
         .expect("orbite dd");
@@ -2513,7 +2684,8 @@ mod dd_orbit_tests {
             im: gmp_float_to_ddexp(orbit_gmp.cref_gmp.imag()),
         };
         let seed_dd = ComplexDDExp::from_complex64(params.seed);
-        let (_, dd_f64, _) = dd_reference_orbit(z0, seed_dd, params.iteration_max, None, false)
+        let (_, dd_f64, _, _) =
+            dd_reference_orbit(z0, seed_dd, params.iteration_max, None, false, false)
             .expect("orbite dd Julia");
 
         assert_orbit_close(&orbit_gmp.z_ref_f64, &dd_f64, 1e-9);

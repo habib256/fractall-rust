@@ -3172,6 +3172,27 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   96² **entièrement en `bytecode_dd` (12 s)** — c'est voulu (`quality/mod.rs:
   256` force `use_dd_tier` sur ce preset pour juger le tier dd), pas une
   escalade ; ne pas confondre.
+  - [x] **(a) LIVRÉ 2026-11-04** — l'orbite dd n'est plus RE-CALCULÉE :
+    la partie basse `lo = Z_gmp − f64(Z)` est capturée pendant l'orbite
+    primaire (`ReferenceOrbit::z_ref_lo`, 16 o/iter, tampon MPFR 64 b
+    réutilisé — un clone pleine précision par itération coûtait +50 %
+    d'orbite) quand l'escalade est active ET le tier f64 (`wants_dd_lo`) ;
+    `with_dd_from_lo` reconstruit `z_ref_dd` (verrou bit-identique
+    `dd_orbit_from_low_parts_matches_recomputed_dd_orbit`, régimes GMP et
+    fast-path dd). Mesuré 256² 4t : dragon orbite dd 2,49 → 0,13 s, total
+    7,15 → 5,97 s (off 3,56 s) ; e50 2,88 → 2,64 s (off 1,67 s). Images
+    identiques au pixel près à l'ancienne correction. Reste sur dragon :
+    capture lo +0,65 s, table BLA dd 0,52 s, pixels dd 0,46 s, traqueur
+    +0,6 s ; sur e50 : pixels dd 0,5 s (≈ 30-50 ns/iter effectif : la BLA
+    dd ε=2⁻⁸⁰ saute peu sur cette scène — même débit que la frame dd
+    entière de la QA, 12 s à 96²), traqueur +25 %. Hook BLA : σ₁ conforme
+    en une racine (gain dans le bruit) ; racine f32 essayée → plus lente.
+  - [x] **(c) LIVRÉ 2026-11-04** — seuil frame-entière dd 5 % → 50 % :
+    la correction pixel par pixel étant au tier dd, elle coûte ≈ f × frame
+    dd, donc toujours moins cher sauf f → 1. ⚠️ Hypothèse « la fraction
+    croît à basse résolution » NON vérifiée sur e50 (0,46 % à 48×32, 0,28 %
+    à 96×64) et aucun cas du corpus entre 5 et 50 % : changement de
+    principe, sans gain mesuré à ce jour.
   *Métriques* : profil `post %` + `fiab. %` (e50, e113, dragon, spiral),
   `trend --case e50`, bench `cpu_perturb_dd`. *Done* : post < 10 % du wall
   sur e50 sans perdre un pixel vs GMP (quality 16/16, e50 PASS).

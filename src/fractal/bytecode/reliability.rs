@@ -54,10 +54,12 @@ const GAMMA: f64 = 4.0 * U;
 /// implémentations par défaut sont vides : [`NoObserve`] monomorphise en la
 /// boucle d'origine.
 pub trait StepObserver: Copy {
-    /// Pas direct : `z` = `Z[m] + δ_old` (état avant le pas), `two_zm_delta` =
-    /// `2·Z[m]·δ_old` (terme dominant calculé par la boucle), `delta_old`.
+    /// Pas direct : `z_norm_sqr` = `|Z[m] + δ_old|²` (état avant le pas),
+    /// `two_zm_delta` = `2·Z[m]·δ_old` (terme dominant calculé par la boucle),
+    /// `delta_norm_sqr` = `|δ_old|²`. Les deux normes sont celles que la
+    /// boucle garde déjà en cache de tête : le hook ne les recalcule pas.
     #[inline(always)]
-    fn direct(&mut self, _z: Complex64, _two_zm_delta: Complex64, _delta_old: Complex64) {}
+    fn direct(&mut self, _z_norm_sqr: f64, _two_zm_delta: Complex64, _delta_norm_sqr: f64) {}
 
     /// Saut BLA accepté : `delta_new = A·δ_old + B·dc`.
     #[inline(always)]
@@ -115,8 +117,15 @@ fn l1(z: Complex64) -> f64 {
 /// `M`, `σ₁² = (F² + √(F⁴ − 4·det²)) / 2` avec `F` la norme de Frobenius. La
 /// Frobenius surestimerait de √2 une matrice conforme — facteur qui se
 /// COMPOSE de saut en saut et ferait exploser la borne.
+///
+/// Cas CONFORME (Mandelbrot : `A` représente un complexe `a`, m00 = m11 et
+/// m01 = −m10) : `σ₁ = |a|`, une seule racine au lieu de deux — le hook BLA
+/// est sur le chemin chaud des scènes à longs sauts (e50).
 #[inline]
 fn spectral_norm(m: &Mat2) -> f64 {
+    if m.m00 == m.m11 && m.m01 == -m.m10 {
+        return (m.m00 * m.m00 + m.m10 * m.m10).sqrt();
+    }
     let f2 = m.m00 * m.m00 + m.m01 * m.m01 + m.m10 * m.m10 + m.m11 * m.m11;
     let det = m.m00 * m.m11 - m.m01 * m.m10;
     let disc = (f2 * f2 - 4.0 * det * det).max(0.0);
@@ -125,15 +134,14 @@ fn spectral_norm(m: &Mat2) -> f64 {
 
 impl StepObserver for ShadowTracker {
     #[inline(always)]
-    fn direct(&mut self, z: Complex64, two_zm_delta: Complex64, delta_old: Complex64) {
+    fn direct(&mut self, z_norm_sqr: f64, two_zm_delta: Complex64, delta_norm_sqr: f64) {
         // Propagation : |(z+e)² − z²| ≤ |e|·(2|z| + |e|).
         // Seul le facteur de PROPAGATION exige le module exact (une
         // surestimation s'y composerait d'itération en itération) ; les termes
         // d'arrondi locaux, additifs, prennent la borne L1 (≤ √2·module) sans
         // racine carrée.
-        let z_abs = z.norm_sqr().sqrt();
-        let local = GAMMA
-            * (l1(two_zm_delta) + delta_old.norm_sqr() + self.dc_abs);
+        let z_abs = z_norm_sqr.sqrt();
+        let local = GAMMA * (l1(two_zm_delta) + delta_norm_sqr + self.dc_abs);
         self.err = self.err * (2.0 * z_abs + self.err) + local;
     }
 
@@ -207,8 +215,19 @@ pub fn reliability_runaway() -> f64 {
 pub const DEFAULT_RUNAWAY: f64 = 1e30;
 
 /// Fraction de pixels non fiables au-delà de laquelle la frame entière est
-/// re-rendue au tier dd plutôt que corrigée pixel par pixel en GMP.
-pub const UNRELIABLE_FRAME_THRESHOLD: f64 = 0.05;
+/// re-rendue au tier dd plutôt que corrigée pixel par pixel.
+///
+/// Depuis que la correction pixel par pixel est elle-même au tier dd
+/// (`correct_pixels_dd`, orbite dd reconstruite sans re-calcul), corriger une
+/// fraction f coûte ≈ f × (frame dd) + un surcoût fixe faible : le pixel par
+/// pixel est TOUJOURS moins cher, sauf f → 1. L'ancien seuil de 5 % (hérité
+/// de la correction GMP, ~25× le dd par itération) aurait déclenché une frame
+/// dd jusqu'à 45× plus lente que le f64. NB mesuré : aucun cas du corpus ne
+/// tombe entre 5 et 50 % (e50 : 0,46 % en 48×32, 0,28 % en 96×64, 0,38 % en
+/// 256² — la fraction ne croît pas à basse résolution sur cette scène) ; le
+/// changement est de principe. Le seuil ne reste qu'un filet : au-delà de la moitié de l'image, le
+/// décrochage est général et le tier dd couvre aussi les pixels non flaggés.
+pub const UNRELIABLE_FRAME_THRESHOLD: f64 = 0.5;
 
 #[cfg(test)]
 mod tests {
@@ -256,7 +275,7 @@ mod tests {
         let mut z = Complex64::new(0.0, 0.0);
         for _ in 0..10_000 {
             // Référence nulle : δ = z, Z = 0 → 2Zδ = 0.
-            t.direct(z, Complex64::new(0.0, 0.0), z);
+            t.direct(z.norm_sqr(), Complex64::new(0.0, 0.0), z.norm_sqr());
             z = z * z + c;
         }
         assert!(t.err < 1e-12, "E = {}", t.err);
@@ -270,7 +289,7 @@ mod tests {
         t.err = 1.0;
         let mut z = Complex64::new(0.0, 0.0);
         for _ in 0..20 {
-            t.direct(z, Complex64::new(0.0, 0.0), z);
+            t.direct(z.norm_sqr(), Complex64::new(0.0, 0.0), z.norm_sqr());
             z = z * z + c;
         }
         assert!(t.error_bound() as f64 >= DEFAULT_RUNAWAY);

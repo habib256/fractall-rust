@@ -175,6 +175,7 @@ fn with_uncapped_perturb_limits(params: &FractalParams) -> FractalParams {
 /// l'orbite dd n'a pu être construite (annulation).
 fn correct_pixels_dd(
     params: &FractalParams,
+    base: &ReferenceOrbitCache,
     cancel: &AtomicBool,
     indices: &[usize],
     aa_uniform: [f64; 2],
@@ -184,10 +185,28 @@ fn correct_pixels_dd(
     let mut dd_params = params.clone();
     dd_params.engine.use_dd_tier = true;
     dd_params.engine.precision_bits = compute_perturbation_precision_bits(params);
-    let cache = compute_reference_orbit_cached(&dd_params, Some(cancel), None, None, false)?;
-    if !cache.orbit.has_dd() {
+    let t0 = Instant::now();
+    // Orbite dd : reconstruite depuis la partie basse capturée avec
+    // l'orbite primaire (`z_ref_lo`, même centre, même précision) — sinon
+    // RE-CALCULÉE (dragon : 2,5 s). Le repli couvre les orbites sans
+    // capture (compression, cache GUI bâti avant l'activation).
+    let rebuilt;
+    let (orbit, legacy_bla) = match base.orbit.with_dd_from_lo() {
+        Some(o) => (o, &base.bla_table),
+        None => {
+            rebuilt =
+                compute_reference_orbit_cached(&dd_params, Some(cancel), None, None, false)?;
+            (rebuilt.orbit.clone(), &rebuilt.bla_table)
+        }
+    };
+    if !orbit.has_dd() {
         return None;
     }
+    let t_orbit = t0.elapsed();
+    let t1 = Instant::now();
+    delta::prewarm_bla_entry(&dd_params, &orbit);
+    let t_bla = t1.elapsed();
+    let t2 = Instant::now();
     let width = params.width.max(1) as usize;
     let (x_range, y_range) = effective_spans_dd(params);
     let width_dd = DdE::from_f64(params.width.max(1) as f64);
@@ -222,8 +241,8 @@ fn correct_pixels_dd(
                 };
                 let r = iterate_pixel_with_dd(delta::PerturbPixelRequest {
                     params: &dd_params,
-                    ref_orbit: &cache.orbit,
-                    bla_table: &cache.bla_table,
+                    ref_orbit: &orbit,
+                    bla_table: legacy_bla,
                     series_table: None,
                     delta0: ComplexExp::zero(),
                     dc,
@@ -233,8 +252,19 @@ fn correct_pixels_dd(
                 });
                 (idx, r.iteration, r.z_final, r.glitched)
             })
-            .collect(),
+            .collect::<Vec<_>>(),
     )
+    .inspect(|_| {
+        if perf_enabled() {
+            eprintln!(
+                "[RELIABILITY-DD] px={} orbit={:.3}s bla={:.3}s pixels={:.3}s",
+                indices.len(),
+                t_orbit.as_secs_f64(),
+                t_bla.as_secs_f64(),
+                t2.elapsed().as_secs_f64()
+            );
+        }
+    })
 }
 
 /// Recalcule des pixels isolés sur le CPU (perturbation f64, même boucle que
@@ -1288,6 +1318,7 @@ pub fn render_perturbation_with_cache(
             let fixed = if dd_ok {
                 correct_pixels_dd(
                     params,
+                    &cache,
                     cancel.as_ref(),
                     &unreliable_indices,
                     [aa_dx, aa_dy],

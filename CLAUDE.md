@@ -685,7 +685,10 @@ faux → supprimée (gain de vitesse) ; **ne PAS linéariser** la propagation
 (0/33 détecté : c'est le terme E² qui révèle la perte de détermination).
 **Escalade par défaut** (`FRACTALL_RELIABILITY=escalate|observe|off`) :
 pixels flaggés recalculés au **tier dd** sur ces seuls pixels
-(`correct_pixels_dd`, repli GMP), frame entière dd au-delà de 5 %. Coût
+(`correct_pixels_dd`, orbite dd reconstruite depuis la partie basse
+`z_ref_lo` capturée avec l'orbite primaire — jamais re-calculée ; repli
+GMP), frame entière dd au-delà de 50 % seulement (le pixel par pixel est
+toujours moins cher en dessous). Coût
 (seahorse 1e8 512²) : boucle 2,0 → 2,5 ns/iter (traqueur gardé en LOCAL —
 derrière `&mut` il coûtait ×3), total 0,72 → 1,10 s. Mesuré vs GMP :
 seahorse WARN max_diff 437 → PASS ; e30 5/5, e50 17/18 pixels faux
