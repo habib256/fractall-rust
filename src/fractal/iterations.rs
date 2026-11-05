@@ -14,17 +14,27 @@ use crate::fractal::orbit_traps::OrbitData;
 /// sont tous supportés par le bytecode f64 standard via tracking de dz dans
 /// iterate_via_bytecode. Pour la perturbation, ces features tombent sur le
 /// path legacy (cf. delta.rs::try_bytecode_unified_path).
+/// Formule bytecode du path f64 standard pour ces paramètres (`None` =
+/// fonctions dédiées par type). À compiler UNE fois par rendu puis passer à
+/// [`iterate_point_with_formula`] : `iterate_point` la recompilait deux fois
+/// par pixel (quatre allocations).
 #[inline]
-fn can_use_bytecode(params: &FractalParams) -> bool {
-    params.engine.use_bytecode_engine && formula_for_params(params).is_some()
+pub fn standard_formula(params: &FractalParams) -> Option<Formula> {
+    if params.engine.use_bytecode_engine {
+        formula_for_params(params)
+    } else {
+        None
+    }
 }
 
 /// Dispatch interpréteur : (z₀, c) selon convention Mandelbrot/Julia.
 /// Construit aussi un OrbitData si orbit_traps est demandé.
 #[inline]
-fn iterate_via_bytecode(params: &FractalParams, z_pixel: Complex64) -> FractalResult {
-    let formula = formula_for_params(params)
-        .expect("can_use_bytecode garantit que formula_for_params renvoie Some");
+fn iterate_via_bytecode(
+    params: &FractalParams,
+    formula: &Formula,
+    z_pixel: Complex64,
+) -> FractalResult {
     let (z0, c) = if Formula::is_julia_for(params.fractal_type) {
         (z_pixel, params.seed)
     } else {
@@ -169,7 +179,7 @@ fn iterate_via_bytecode(params: &FractalParams, z_pixel: Complex64) -> FractalRe
         };
     }
 
-    let r = iterate_bytecode_f64(&formula, z0, c, params.iteration_max, params.bailout);
+    let r = iterate_bytecode_f64(formula, z0, c, params.iteration_max, params.bailout);
     FractalResult {
         iteration: r.iteration,
         z: r.z,
@@ -181,8 +191,20 @@ fn iterate_via_bytecode(params: &FractalParams, z_pixel: Complex64) -> FractalRe
 /// Calcule l'itération pour un point donné, en suivant `FormulaSelector` côté C.
 #[inline]
 pub fn iterate_point(params: &FractalParams, z_pixel: Complex64) -> FractalResult {
-    if can_use_bytecode(params) {
-        return iterate_via_bytecode(params, z_pixel);
+    let formula = standard_formula(params);
+    iterate_point_with_formula(params, formula.as_ref(), z_pixel)
+}
+
+/// [`iterate_point`] avec la formule déjà compilée par l'appelant —
+/// `formula` DOIT valoir `standard_formula(params)`.
+#[inline]
+pub fn iterate_point_with_formula(
+    params: &FractalParams,
+    formula: Option<&Formula>,
+    z_pixel: Complex64,
+) -> FractalResult {
+    if let Some(formula) = formula {
+        return iterate_via_bytecode(params, formula, z_pixel);
     }
     match params.fractal_type {
         FractalType::VonKoch | FractalType::Dragon => {

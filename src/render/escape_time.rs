@@ -10,7 +10,7 @@ use crate::fractal::buddhabrot::{
     render_nebulabrot_cancellable, render_nebulabrot_mpc_cancellable,
 };
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
-use crate::fractal::iterations::iterate_point;
+use crate::fractal::iterations::{iterate_point_with_formula, standard_formula};
 use crate::fractal::lyapunov::{render_lyapunov_cancellable, render_lyapunov_mpc_cancellable};
 use crate::fractal::orbit_traps::OrbitData;
 use crate::fractal::perturbation::{
@@ -346,6 +346,27 @@ fn render_escape_time_f64_cancellable(
     render_escape_time_f64_cancellable_with_reuse(params, cancel, None, None, None)
 }
 
+/// Phase unique à itérer par lots sur le path f64 standard, ou `None` quand le
+/// chemin scalaire (`iterate_point`) doit rester : moteur bytecode coupé,
+/// formule non compilable ou multi-phase (hybride), ou canal annexe demandé
+/// (orbit traps / distance / intérieur — ils suivent `dz` point par point).
+/// `FRACTALL_STD_BATCH=0` force le scalaire (A/B).
+fn batch_phase_for(params: &FractalParams) -> Option<crate::fractal::bytecode::Phase> {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ENABLED.get_or_init(|| std::env::var("FRACTALL_STD_BATCH").as_deref() != Ok("0")) {
+        return None;
+    }
+    if !params.engine.use_bytecode_engine
+        || params.channels.enable_orbit_traps
+        || params.channels.enable_distance_estimation
+        || params.channels.enable_interior_detection
+    {
+        return None;
+    }
+    let mut formula = crate::fractal::bytecode::formula_for_params(params)?;
+    (formula.phases.len() == 1).then(|| formula.phases.remove(0))
+}
+
 fn render_escape_time_f64_cancellable_with_reuse(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
@@ -380,6 +401,18 @@ fn render_escape_time_f64_cancellable_with_reuse(
     let aa_jit = params.sampling.aa_jitter;
     let img_w = params.width as usize;
 
+    // Noyau par LOTS (voies entrelacées, bit-identique au scalaire — cf.
+    // `bytecode::interp_batch`) : la formule est compilée UNE fois ici, pas
+    // deux fois par pixel comme le faisait `iterate_point`, et les points à
+    // calculer d'une tuile sont itérés de front. Conditions : moteur bytecode,
+    // formule mono-phase, aucun canal annexe (orbit traps / distance /
+    // intérieur suivent dz point par point). Sinon : chemin scalaire inchangé.
+    let batch_phase = batch_phase_for(params);
+    // Chemin scalaire restant (hybrides, canaux annexes, types hors bytecode) :
+    // formule compilée une fois aussi.
+    let scalar_formula = standard_formula(params);
+    let is_julia = crate::fractal::bytecode::Formula::is_julia_for(params.fractal_type);
+
     // G10.5 : file de tuiles priorité-centre (curseur en GUI). Les buffers
     // sont découpés en segments disjoints par tuile ; l'ordre d'exécution ne
     // change pas les valeurs (pixels indépendants).
@@ -402,6 +435,13 @@ fn render_escape_time_f64_cancellable_with_reuse(
         tiles::run_prioritized(&grid.order, &slots, cancel.as_ref(), &|id, tile_bufs| {
             let (mut it_rows, mut z_rows, mut orb_rows, mut dist_rows) = tile_bufs;
             let (x0, y0, tw, th) = grid.rect(id);
+            // Points de la tuile à itérer par lot + leur case (ligne, colonne).
+            let mut batch_points: Vec<Complex64> = Vec::new();
+            let mut batch_cells: Vec<(u32, u32)> = Vec::new();
+            if batch_phase.is_some() {
+                batch_points.reserve(tw * th);
+                batch_cells.reserve(tw * th);
+            }
             for dj in 0..th {
                 let j = y0 + dj;
                 let y_ratio = (j as f64 + 0.5 + aa_dy) / params.height as f64;
@@ -454,12 +494,21 @@ fn render_escape_time_f64_cancellable_with_reuse(
                     };
                     let z_pixel = Complex64::new(params.center_x + dx_r, params.center_y + dy_r);
                     let z_pixel = params.plane_transform.transform(z_pixel);
+                    if batch_phase.is_some() {
+                        batch_points.push(z_pixel);
+                        batch_cells.push((dj as u32, di as u32));
+                        continue;
+                    }
                     let FractalResult {
                         iteration,
                         z: z_final,
                         orbit,
                         distance,
-                    } = iterate_point(params, z_pixel);
+                    } = iterate_point_with_formula(
+                        params,
+                        scalar_formula.as_ref(),
+                        z_pixel,
+                    );
                     *iter = iteration;
                     *z = z_final;
                     if need_orbits {
@@ -468,6 +517,24 @@ fn render_escape_time_f64_cancellable_with_reuse(
                     if need_distances {
                         dist_row[di] = distance.unwrap_or(f64::INFINITY);
                     }
+                }
+            }
+            if let Some(phase) = batch_phase.as_ref() {
+                let mut batch_iter = vec![0u32; batch_points.len()];
+                let mut batch_z = vec![Complex64::new(0.0, 0.0); batch_points.len()];
+                crate::fractal::bytecode::interp_batch::iterate_bytecode_f64_batch(
+                    phase,
+                    &batch_points,
+                    params.seed,
+                    is_julia,
+                    params.iteration_max,
+                    params.bailout,
+                    &mut batch_iter,
+                    &mut batch_z,
+                );
+                for (k, &(dj, di)) in batch_cells.iter().enumerate() {
+                    it_rows[dj as usize][di as usize] = batch_iter[k];
+                    z_rows[dj as usize][di as usize] = batch_z[k];
                 }
             }
             if let Some(sink) = sink {
