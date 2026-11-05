@@ -56,6 +56,19 @@ fn gmp_float_to_ddexp(value: &Float) -> super::dd::DoubleDoubleExp {
     DoubleDoubleExp::normalized(DoubleDouble::new(hi, lo), 0)
 }
 
+/// Fast-path d'itération GMP de l'orbite (2 mults au lieu de `mpc_sqr`).
+/// `FRACTALL_ORBIT_FAST_SQR=0` revient à `mpc_sqr` (A/B, diagnostic).
+fn fast_orbit_sqr_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        !matches!(
+            std::env::var("FRACTALL_ORBIT_FAST_SQR").ok().as_deref().map(str::trim),
+            Some("0") | Some("off")
+        )
+    })
+}
+
 /// Partie basse d'un Z GMP : `Z − hi` par composante, `hi` = l'arrondi f64
 /// déjà stocké dans `z_ref_f64` (cf. `ReferenceOrbit::z_ref_lo`). `scratch`
 /// est un Float de 64 bits réutilisé : MPFR arrondit `Z − hi` correctement
@@ -2051,6 +2064,19 @@ fn compute_reference_orbit_phase(
         None
     };
 
+    // Fast-path de l'itération GMP z²+c (G14.3) : `mpc_sqr` garantit l'arrondi
+    // correct de z² exact et coûte ~700 ns à 676 b ; l'identité
+    // `(re+im)(re−im) + i·2·re·im` en 2 multiplications MPFR (tampons
+    // réutilisés) coûte ~410 ns. Les deux sont des pseudo-orbites à la même
+    // précision : leur écart (~ulp × amplification de Lyapunov) est du même
+    // ordre que leur erreur commune vs l'orbite exacte, que la formule de
+    // précision F3 dimensionne déjà. Mandelbrot mono-phase seulement (les
+    // autres formules restent sur l'interpréteur / le `match`).
+    let mut fast_sqr_scratch: Option<(Float, Float)> = (matches!(ftype, FractalType::Mandelbrot)
+        && !is_hybrid
+        && fast_orbit_sqr_enabled())
+    .then(|| (Float::new(prec), Float::new(prec)));
+
     for i in 0..params.iteration_max {
         if let Some(cancel) = cancel {
             if i % 256 == 0 && cancel.load(Ordering::Relaxed) {
@@ -2119,7 +2145,19 @@ fn compute_reference_orbit_phase(
             }
         }
 
-        if let (Some(state), Some(formula), Some(c_phase)) = (
+        if let Some((t1, t2)) = fast_sqr_scratch.as_mut() {
+            // Fast-path z²+c Mandelbrot mono-phase (cf. `fast_sqr_scratch`) :
+            // re' = (re+im)(re−im) + cr ; im' = 2·re·im + ci — 2 mults MPFR.
+            use rug::Assign;
+            let (re, im) = z.as_mut_real_imag();
+            t1.assign(&*re + &*im);
+            t2.assign(&*re - &*im);
+            *im *= &*re;
+            *im <<= 1;
+            *im += cref.imag();
+            re.assign(&*t1 * &*t2);
+            *re += cref.real();
+        } else if let (Some(state), Some(formula), Some(c_phase)) = (
             bytecode_state.as_mut(),
             bytecode_formula.as_ref(),
             bytecode_c,

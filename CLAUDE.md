@@ -698,8 +698,21 @@ hybrides, harmonic, Julia, DE) : pas de suivi.
 ### Précision GMP perturbation
 
 Formule C++ Fraktaler-3 : `bits = max(24, 24 + floor(log2(zoom * height)))`,
-clamp `[128, 65536]`. Cf. `compute_perturbation_precision_bits()` ; le champ
-utilisateur `precision_bits` sert de plancher.
+**+ 64 bits de marge** (`ORBIT_PRECISION_MARGIN_BITS`, 2026-11-05) ; clamp
+`[128, …]`. Cf. `compute_perturbation_precision_bits()` ; le champ
+utilisateur `precision_bits` sert de plancher. ⚠️ La formule F3 NUE laisse
+2-4 % de pixels FAUX sur des scènes du corpus (golden_spider, e227,
+evolution_trees — mesuré contre une orbite à précision ×4, juge convergé
+×2 == ×4) ; +64 b les ramène à la vérité au pixel près.
+
+**Itération GMP de l'orbite** (`orbit.rs::fast_sqr_scratch`, Mandelbrot
+mono-phase) : `re' = (re+im)(re−im) + cr`, `im' = 2·re·im + ci` en 2
+multiplications MPFR à tampons réutilisés, au lieu de `mpc_sqr` (arrondi
+correct de z² exact, ~700 ns à 676 b contre ~410). Les deux sont des
+pseudo-orbites de même précision, aucune n'est « plus vraie » (écarts au juge
+×4 équivalents) ; 31/38 cas du corpus pixel-identiques, 25 goldens
+inchangés. Dragon : orbite −35 %, total −12 %. `FRACTALL_ORBIT_FAST_SQR=0`
+revient à `mpc_sqr` (A/B).
 
 **Cache** (`ReferenceOrbitCache`) : orbite + BLA réutilisées si même
 centre / type / précision. ⚠️ **Régime atom-domain** (`is_valid_for` +

@@ -3207,7 +3207,20 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   mémoire de la table BLA (memory-bound, cf. G2). *Métriques* : bench
   `cpu_perturb_f64`, profil `pixels %`. *Done* : ns/iter −25 % bit-identique
   (goldens verts sans regen).
-- [ ] **G14.3 — Orbite de référence GMP (single-thread)**. Part `orbit %`
+- [~] **G14.3 — Orbite de référence GMP (single-thread)** —
+  **LIVRÉ 2026-11-05 (itération + précision)** : (1) le plancher n'était
+  pas l'orbite mais `mpc_sqr` lui-même (~700 ns à 676 b, mesuré hors
+  moteur) ; itération en 2 mults MPFR (`fast_sqr_scratch`) → ~410 ns, orbite
+  dragon 2,27 → 1,73 s, total −12 % (harness ab 3 runs) ; (2) DÉCOUVERTE
+  véracité en arbitrant ce changement : la formule de précision F3 nue
+  laisse 2-4 % de pixels faux (golden_spider ~340, e227 ~228,
+  evolution_trees ~245 px à 96² vs juge ×4 convergé) quelle que soit
+  l'arithmétique ; +64 bits de marge (`ORBIT_PRECISION_MARGIN_BITS`) →
+  vérité au pixel près sur les 7 scènes divergentes. Goldens e113 (2 px),
+  glitch_test_2 atom/harmonic (1 px) régénérés : nouveaux == juge ×4,
+  anciens faux. Reste (texte d'origine ci-dessous) : cache inter-runs / vidéo,
+  compression streaming.
+- **G14.3 (texte d'origine)**. Part `orbit %`
   faible sur le quick (≤ 2 % à e50, 1-5 % attendu e1000) mais **dominante en
   ultra-deep** (e52465 : 660 s, slow-safe). F3 fait pareil (MPFR séquentiel) ;
   FractalShark passe par le GPU (NTT). Leviers réalistes : précision
