@@ -159,6 +159,20 @@ impl StepObserver for ShadowTracker {
     }
 }
 
+impl ShadowTracker {
+    /// Saut LA CONFORME de `l` pas (chemin Harmonic LA : `A` complexe) :
+    /// même modèle que le hook `bla` (troncature `l·ε`), mais `σ₁(A) = |A|`
+    /// est passé par l'appelant, calculé SANS carré (`hypot`). Les segments
+    /// harmonic sont longs : à zoom > 1e150 `|A|` dépasse 1e154 et
+    /// `spectral_norm` (m00² + m10²) déborde à +∞ — mesuré mitosis 1e270 :
+    /// 100 % des pixels flaggés (borne infinie) au lieu de 0.
+    #[inline(always)]
+    pub fn la_jump(&mut self, a_abs: f64, a_delta: Complex64, b_dc: Complex64, l: u32) {
+        let local = (self.bla_epsilon * l as f64 + GAMMA) * (l1(a_delta) + l1(b_dc));
+        self.err = a_abs * self.err + local;
+    }
+}
+
 // ─── Tier exp (> 1e280) ─────────────────────────────────────────────────────
 //
 // Même récurrence que [`ShadowTracker`], mais la borne est en `FloatExp` :

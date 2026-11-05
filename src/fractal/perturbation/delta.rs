@@ -962,6 +962,22 @@ fn try_bytecode_unified_path(
                 && !params.channels.enable_interior_detection
             {
                 debug_assert!(delta_init.norm_sqr() == 0.0, "Mandelbrot ⇒ delta0 = 0");
+                // Détecteur de fiabilité (G9.6) : même boucle monomorphisée
+                // avec traqueur ; un pixel à borne emballée rejoint
+                // l'escalade dd comme ceux du fast-path BLA.
+                if crate::fractal::bytecode::reliability::reliability_mode().tracks() {
+                    let (res, tracker) =
+                        crate::fractal::bytecode::harmonic_mla::iterate_pixel_harmonic_mla_tracked(
+                            ref_orbit,
+                            harmonic,
+                            dc_approx,
+                            params.iteration_max,
+                            params.bailout,
+                            params.perturbation.max_perturb_iterations,
+                        );
+                    error_bound = tracker.error_bound();
+                    return Some(res);
+                }
                 return Some(
                     crate::fractal::bytecode::harmonic_mla::iterate_pixel_harmonic_mla(
                         ref_orbit,
