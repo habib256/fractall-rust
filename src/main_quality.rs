@@ -515,6 +515,10 @@ fn run_gpu_bench(
             if let Some(n) = iters {
                 params.iteration_max = n;
             }
+            // Le tier dd des presets QA est opt-in en production (`--dd-tier`)
+            // et interdit le GPU (`gpu_lacks_features`) : le bench mesure ce
+            // que rend le CLI par défaut.
+            params.engine.use_dd_tier = false;
             let mut pert_params = params.clone();
             pert_params.engine.algorithm_mode = fractal::AlgorithmMode::Perturbation;
             let cancel = AtomicBool::new(false);
