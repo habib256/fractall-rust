@@ -690,7 +690,13 @@ pixels flaggés recalculés au **tier dd** sur ces seuls pixels
 (`correct_pixels_dd`, orbite dd reconstruite depuis la partie basse
 `z_ref_lo` capturée avec l'orbite primaire — jamais re-calculée ; repli
 GMP), frame entière dd au-delà de 50 % seulement (le pixel par pixel est
-toujours moins cher en dessous). Coût
+toujours moins cher en dessous). Tier **exp** : traqueur
+`ShadowTrackerExp` opt-in `FRACTALL_RELIABILITY_EXP=1` (+25-45 % pour 0-2 px ;
+les vraies erreurs exp étaient l'ε BLA 2⁻²⁴ → 2⁻⁵³ et le span f64
+**sous-normal** 1e308-1e324 — `effective_spans_fexp` exige `is_normal`).
+⚠️ `z_ref_lo` est à l'échelle de la MANTISSE de `z_ref` (ComplexExp), pas du
+f64 : |Z| ~ 1e-1200 près de la période atom-domain. Correction dd : K (rotation)
+appliquée au dc dd. Coût
 (seahorse 1e8 512²) : boucle 2,0 → 2,5 ns/iter (traqueur gardé en LOCAL —
 derrière `&mut` il coûtait ×3), total 0,72 → 1,10 s. Mesuré vs GMP :
 seahorse WARN max_diff 437 → PASS ; e30 5/5, e50 17/18 pixels faux

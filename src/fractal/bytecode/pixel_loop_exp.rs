@@ -17,6 +17,7 @@
 //! l'orbite référence f64 underflow aussi → fallback sur le path GMP legacy
 //! reste actif (gated par `pixel_size < 1e-150` dans le dispatcher).
 
+use super::reliability::{NoObserve, ShadowTrackerExp, StepObserverExp};
 use num_complex::Complex64;
 
 use super::bla_dual::BlaTableUnified;
@@ -440,6 +441,77 @@ fn iterate_pixel_unified_exp_mandelbrot_hp(
     max_perturb_iterations: u32,
     max_bla_steps: u32,
 ) -> UnifiedPixelResultExp {
+    iterate_pixel_unified_exp_mandelbrot_hp_impl(
+        ref_orbit,
+        bla_exp,
+        dc,
+        delta_initial,
+        iteration_max,
+        bailout,
+        max_perturb_iterations,
+        max_bla_steps,
+        &mut NoObserve,
+    )
+}
+
+/// Variante du path HP avec **détecteur de fiabilité** (G9.6, tier exp) :
+/// MÊME boucle monomorphisée avec un [`ShadowTrackerExp`] (résultat
+/// bit-identique), plus la borne d'erreur finale pour le test d'emballement.
+#[allow(clippy::too_many_arguments)]
+pub fn iterate_pixel_unified_exp_mandelbrot_hp_tracked(
+    ref_orbit: &ReferenceOrbit,
+    bla_exp: Option<&BlaTableUnifiedExp>,
+    dc: ComplexExp,
+    delta_initial: ComplexExp,
+    limits: crate::fractal::bytecode::pixel_loop::PixelLoopLimits,
+    bla_epsilon: f64,
+) -> (UnifiedPixelResultExp, ShadowTrackerExp) {
+    let mut tracker = ShadowTrackerExp::new(dc, bla_epsilon);
+    let res = iterate_pixel_unified_exp_mandelbrot_hp_impl(
+        ref_orbit,
+        bla_exp,
+        dc,
+        delta_initial,
+        limits.iteration_max,
+        limits.bailout,
+        limits.max_perturb_iterations,
+        limits.max_bla_steps,
+        &mut tracker,
+    );
+    (res, tracker)
+}
+
+/// Copie locale de l'observateur, réécrite au drop (cf. `pixel_loop.rs` :
+/// derrière `&mut`, LLVM le garderait en mémoire dans la chaîne chaude).
+struct ObsGuardExp<'a, O: StepObserverExp> {
+    local: O,
+    out: &'a mut O,
+}
+
+impl<O: StepObserverExp> Drop for ObsGuardExp<'_, O> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        *self.out = self.local;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn iterate_pixel_unified_exp_mandelbrot_hp_impl<O: StepObserverExp>(
+    ref_orbit: &ReferenceOrbit,
+    bla_exp: Option<&BlaTableUnifiedExp>,
+    dc: ComplexExp,
+    delta_initial: ComplexExp,
+    iteration_max: u32,
+    bailout: f64,
+    max_perturb_iterations: u32,
+    max_bla_steps: u32,
+    obs_out: &mut O,
+) -> UnifiedPixelResultExp {
+    let mut obs_guard = ObsGuardExp {
+        local: *obs_out,
+        out: obs_out,
+    };
+    let obs = &mut obs_guard.local;
     let bailout_sqr = bailout * bailout;
     let ref_len = ref_orbit.z_ref.len();
     // `z_ref` (ComplexExp) et `z_ref_f64` sont poussés ensemble → même longueur.
@@ -484,11 +556,13 @@ fn iterate_pixel_unified_exp_mandelbrot_hp(
             if let Some(m_wrapped) = ref_orbit.wrap_periodic(c.m()) {
                 c.set_ref_index(m_wrapped);
             } else {
+                obs.rebase(z_m0, z_curr);
                 delta = z_curr;
                 c.rebase();
                 rebase_count += 1;
             }
         } else if rebase_mid {
+            obs.rebase(z_m0, z_curr);
             delta = z_curr;
             c.rebase();
             rebase_count += 1;
@@ -536,6 +610,7 @@ fn iterate_pixel_unified_exp_mandelbrot_hp(
                             !(z_end.norm_sqr_fexp() < bailout_sqr_fexp)
                         };
                         if !overshoots_escape {
+                            obs.bla(&a, &b, delta, dc);
                             delta = cand;
                             c = cand_c;
                             bla_steps += 1;
@@ -556,6 +631,7 @@ fn iterate_pixel_unified_exp_mandelbrot_hp(
             im: z_m.im + z_m.im,
         };
         let two_z_delta = delta.mul(two_z);
+        obs.direct(z_abs, two_z_delta, delta);
         let delta_sq = delta.mul(delta);
         delta = two_z_delta.add(delta_sq).add(dc);
         c.step();

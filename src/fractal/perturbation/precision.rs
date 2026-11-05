@@ -13,7 +13,12 @@ pub(crate) fn effective_spans_fexp(
     use crate::fractal::perturbation::types::FloatExp;
 
     let from_hp_or_f64 = |hp: Option<&str>, fallback: f64| -> FloatExp {
-        if fallback.is_finite() && fallback != 0.0 {
+        // `is_normal`, PAS `!= 0.0` : au-delà de ~1e308 le span f64 est
+        // SOUS-NORMAL (1e321 → ~10 bits de mantisse, échelle fausse de ~0,2 %
+        // ⇒ pixels de bord décalés de ~0,1 px : 16/1024 px faux vs GMP sur
+        // liiiines, invisibles du traqueur de fiabilité — l'arithmétique est
+        // juste, c'est l'ENTRÉE qui ne l'est pas). Sous-normal → string HP.
+        if fallback.is_normal() {
             return FloatExp::from_f64(fallback);
         }
         let Some(hp_value) = hp else {
@@ -68,22 +73,17 @@ pub(crate) fn effective_spans_dd(
     crate::fractal::perturbation::dd::DoubleDoubleExp,
     crate::fractal::perturbation::dd::DoubleDoubleExp,
 ) {
-    use crate::fractal::perturbation::dd::{DoubleDouble, DoubleDoubleExp};
+    use crate::fractal::perturbation::dd::DoubleDoubleExp;
 
+    // Exposant étendu via `from_gmp` : au-delà de ~1e308 le span HP
+    // sous-dépassait `to_f64()` → repli `from_f64(span f64) = 0` → dc = 0
+    // pour tous les pixels (tier dd uniforme à e1000, bug 2026-11-05).
     let from_hp_or_f64 = |hp: Option<&str>, fallback: f64| -> DoubleDoubleExp {
         if let Some(hp_value) = hp {
             if let Ok(raw) = Float::parse(hp_value) {
                 let value = Float::with_val(1024, raw);
                 if !value.is_zero() && value.is_finite() {
-                    let hi = value.to_f64();
-                    if hi != 0.0 && hi.is_finite() {
-                        let mut remainder = value;
-                        remainder -= hi;
-                        return DoubleDoubleExp::normalized(
-                            DoubleDouble::new(hi, remainder.to_f64()),
-                            0,
-                        );
-                    }
+                    return DoubleDoubleExp::from_gmp(&value);
                 }
             }
         }
@@ -210,7 +210,8 @@ pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32
     let final_bits = if params.perturbation.use_reference_precision_formula {
         let log2_height = (params.height as f64).max(1.0).log2();
         let exp = (log2_zoom + log2_height).floor() as i64;
-        let bits = if exp >= 0 { (24 + exp) as i64 } else { 24 } as u64 + ORBIT_PRECISION_MARGIN_BITS;
+        let bits =
+            if exp >= 0 { (24 + exp) as i64 } else { 24 } as u64 + ORBIT_PRECISION_MARGIN_BITS;
         if bits > MAX_PERTURB_PRECISION_BITS as u64 {
             eprintln!(
                 "[PRECISION] ⚠ zoom requiert ~{} bits > max u32 rug/MPFR : précision \
@@ -238,7 +239,12 @@ pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32
         needed_bits.clamp(128, MAX_PERTURB_PRECISION_BITS as u64) as u32
     };
 
-    final_bits.max(params.engine.precision_bits.clamp(128, MAX_PERTURB_PRECISION_BITS))
+    final_bits.max(
+        params
+            .engine
+            .precision_bits
+            .clamp(128, MAX_PERTURB_PRECISION_BITS),
+    )
 }
 
 /// Détermine si le zoom impose le fallback GMP complet par pixel.

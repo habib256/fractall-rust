@@ -170,6 +170,21 @@ pub struct DoubleDoubleExp {
 }
 
 impl DoubleDoubleExp {
+    /// Conversion GMP → double-double à EXPOSANT ÉTENDU (2026-11-05). Point
+    /// d'entrée UNIQUE : deux copies passant par `to_f64()` (orbite dd et
+    /// spans dd) annulaient tout |x| < 1e-308 — au-delà de ~1e280 le tier dd
+    /// rendait une image noire (grazes de l'orbite à 0) ou uniforme (spans à
+    /// 0 ⇒ dc = 0 pour tous les pixels).
+    pub fn from_gmp(value: &rug::Float) -> Self {
+        if value.is_zero() || !value.is_finite() {
+            return Self::from_f64(value.to_f64());
+        }
+        let (hi, exp) = value.to_f64_exp();
+        let mut rem = value.clone();
+        rem >>= exp; // exact : |rem| ∈ [0.5, 1)
+        rem -= hi;
+        Self::normalized(DoubleDouble::new(hi, rem.to_f64()), exp)
+    }
     pub const ZERO: Self = Self {
         mantissa: DoubleDouble::ZERO,
         exponent: 0,

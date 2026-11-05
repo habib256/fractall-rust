@@ -3193,6 +3193,31 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
     croît à basse résolution » NON vérifiée sur e50 (0,46 % à 48×32, 0,28 %
     à 96×64) et aucun cas du corpus entre 5 et 50 % : changement de
     principe, sans gain mesuré à ce jour.
+  - [x] **(d) Tier exp (> 1e280), 2026-11-05** — trois défauts de véracité
+    trouvés en jugeant l'exp contre le dd (lui-même == GMP pur, vérifié
+    32² liiiines 0/1024, 48² e318) :
+    1. **ε BLA exp 2⁻²⁴ → 2⁻⁵³** (`EXP_BLA_EPSILON`) : 21/32 cas profonds
+       avaient des pixels faux (safari 80, e634 66, e890 57…) ; ≈ +5 %.
+    2. **Span f64 SOUS-NORMAL** (`effective_spans_fexp`) : entre 1e308 et
+       ~1e324 le span f64 est non nul mais à ~10 bits de mantisse → échelle
+       fausse de ~0,2 %, pixels de bord décalés de ~0,1 px. liiiines
+       138 → 0, e318 446 → 0 px faux (96²), coût nul. Même classe que le
+       span dd (`DoubleDoubleExp::from_gmp`, dc nul au-delà de 1e308).
+       Le traqueur ne POUVAIT pas le voir : l'arithmétique est juste,
+       c'est l'entrée qui est fausse.
+    3. **Partie basse relative au f64** : près de la période atom-domain
+       |Z| ~ 1e-1200 → `z_ref_f64 = 0` → `with_dd_from_lo` reconstruisait
+       Z = 0 exact → correction dd fausse sur ~tous les pixels (bulk test
+       olbaid3 1167/1170). `z_ref_lo` est désormais à l'échelle de la
+       mantisse de `z_ref` (verrou `low_part_survives_f64_underflow`).
+    + correction dd **avec rotation** (K appliquée au dc dd) : olbaid3
+    (rotate 20°) partait au GMP par pixel, 1,9 → 14 s pour 1 pixel ;
+    → 2,7 s, pixel identique au GMP.
+    **Traqueur exp** (`ShadowTrackerExp`, boucle HP monomorphisée) :
+    OPT-IN `FRACTALL_RELIABILITY_EXP=1` — +25-45 % de temps pixel pour
+    0-2 px détectés par cas. Résidus exp restants : 3-9 px à 96² (hard,
+    olbaid2, wfs_mb, safari, e1298) dont la borne ne s'emballe pas ;
+    axe precision 9/9 PASS (×4).
   *Métriques* : profil `post %` + `fiab. %` (e50, e113, dragon, spiral),
   `trend --case e50`, bench `cpu_perturb_dd`. *Done* : post < 10 % du wall
   sur e50 sans perdre un pixel vs GMP (quality 16/16, e50 PASS).
