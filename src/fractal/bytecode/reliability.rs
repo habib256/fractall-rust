@@ -61,9 +61,9 @@ pub trait StepObserver: Copy {
     #[inline(always)]
     fn direct(&mut self, _z_norm_sqr: f64, _two_zm_delta: Complex64, _delta_norm_sqr: f64) {}
 
-    /// Saut BLA accepté : `delta_new = A·δ_old + B·dc`.
+    /// Saut BLA accepté de `l` itérations : `delta_new = A·δ_old + B·dc`.
     #[inline(always)]
-    fn bla(&mut self, _a: &Mat2, _b: &Mat2, _a_delta: Complex64, _b_dc: Complex64) {}
+    fn bla(&mut self, _a: &Mat2, _b: &Mat2, _a_delta: Complex64, _b_dc: Complex64, _l: u32) {}
 
     /// Rebase `δ ← Z + δ` : `z_ref` = la valeur f64 de la référence absorbée,
     /// `z_new` = nouvel état (== nouveau δ).
@@ -146,9 +146,10 @@ impl StepObserver for ShadowTracker {
     }
 
     #[inline(always)]
-    fn bla(&mut self, a: &Mat2, b: &Mat2, a_delta: Complex64, b_dc: Complex64) {
+    fn bla(&mut self, a: &Mat2, b: &Mat2, a_delta: Complex64, b_dc: Complex64, l: u32) {
         let _ = b;
-        let local = (self.bla_epsilon + GAMMA) * (l1(a_delta) + l1(b_dc));
+        // Troncature cumulée des `l` pas fusionnés (≈ l·ε), cf. le traqueur exp.
+        let local = (self.bla_epsilon * l as f64 + GAMMA) * (l1(a_delta) + l1(b_dc));
         self.err = spectral_norm(a) * self.err + local;
     }
 
@@ -452,6 +453,28 @@ mod tests {
             z = z * z + c;
         }
         assert!(t.error_bound() as f64 >= DEFAULT_RUNAWAY);
+    }
+
+    /// Tier f64 : même règle l·ε que le tier exp. Sans elle, à 256² le
+    /// rendu de production avait des pixels faux NON flaggés vs GMP pur
+    /// (e227 384, golden_spider 169, rug 86, e50 10).
+    #[test]
+    fn f64_bla_truncation_scales_with_jump_length() {
+        let eps = U;
+        let id = Mat2 {
+            m00: 1.0,
+            m01: 0.0,
+            m10: 0.0,
+            m11: 1.0,
+        };
+        let one = Complex64::new(1.0, 0.0);
+        let zero = Complex64::new(0.0, 0.0);
+        let mut t = ShadowTracker::new(zero, eps);
+        t.bla(&id, &id, one, zero, 1024);
+        assert!(t.err >= 1024.0 * eps, "borne {:e} < l·ε", t.err);
+        let mut t1 = ShadowTracker::new(zero, eps);
+        t1.bla(&id, &id, one, zero, 1);
+        assert!(t1.err < 8.0 * eps);
     }
 
     /// Tier exp : un saut BLA de `l` itérations cumule la troncature de ses

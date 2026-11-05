@@ -1126,6 +1126,7 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source, O: StepObserver>(
                         &b,
                         Complex64::new(a_re, a_im),
                         Complex64::new(b_re, b_im),
+                        node.l,
                     );
                     delta = cand;
                     c = jumped;
