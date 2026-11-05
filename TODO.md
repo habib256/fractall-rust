@@ -3266,11 +3266,42 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
     un point de contrôle f64 (l'état f64 n'est jamais au niveau dd).
     Reste : le traqueur dans la boucle f64 (+25 %), et le tier dd plein
     cadre qui bâtit encore ses tables f64 inutiles.
-  - [ ] **(f) Le tier dd n'a pas de garde-fou** (trouvé 2026-11-06) :
-    seahorse 1e6 256², pixel (117,17) — GMP 1598 (convergé 256 = 768 b), dd
-    1838, f64 872. Un pixel dont la sensibilité dépasse 106 bits est
-    « corrigé » en dd et reste faux, sans signal. Chantier en cours :
-    traqueur de borne au niveau dd (u = 2⁻¹⁰⁴) + escalade GMP par pixel.
+  - [x] **(f) Garde-fou du tier dd — LIVRÉ 2026-11-06.** Trouvé : seahorse
+    1e6 256², pixel (117,17) — GMP 1598 (convergé 256 = 768 b), dd 1838, f64
+    872 : un pixel dont la sensibilité dépasse 106 bits était « corrigé » en
+    dd et restait faux, sans signal. `ShadowTrackerDd` (`reliability.rs`) :
+    même récurrence et même critère d'emballement que le f64, unité d'arrondi
+    2⁻¹⁰⁴, troncature BLA l·ε, borne collante ; hooks dans le chemin rapide
+    dd ET la boucle `DoubleDoubleExp`. Pixel dd non fiable → SECOND ESSAI
+    sans BLA (la borne n'y contient plus que l'arrondi dd : sans lui e50
+    envoyait 3 px et dragon 1 px au GMP pour rien — le pixel dragon seul
+    coûtait +4,3 s et +700 Mo) → GMP par pixel si la borne s'emballe encore.
+    Vaut pour la correction ET pour une frame dd (`--dd-tier`,
+    `[DD-ESCALATION]`). Vérifié sur l'assemblage : seahorse 1e6 256² == GMP
+    pur (0 pixel ≠), en défaut et en `--dd-tier`. Pixels envoyés au GMP à
+    256² : e50, dragon, e113, seahorse-valley 1e8, golden intérieur 640 = 0 ;
+    golden_spider 16 (1,0 s ; vrai positif vérifié à 64² : max_diff 1408 → 0).
+    Surcoût +2 à +7 % de wall (e50, dragon). `FRACTALL_RELIABILITY_DD=0`,
+    `FRACTALL_DD_RETRY_NOBLA=0`. Même garde-fou pour les pixels flaggés du
+    kernel GPU f32 (dd tracé d'abord, GMP ensuite) : correction CPU
+    gpu-seahorse-1e6 1024² 0,46 → 0,18 s, gpu-spiral-e20 3,6 → 2,7 s.
+  - [x] **(g) ε de la BLA dd 2⁻⁸⁰ → 2⁻¹⁰⁶, 2026-11-06.** 2⁻⁸⁰ supposait une
+    erreur par saut ~ε quelle que soit sa longueur ; elle vaut ≈ l·ε. En
+    escalade de production à 256² : golden_spider 24 px et e227 22 px
+    changent, la nouvelle valeur est juste 16/20 vs GMP, l'ancienne 0/20.
+    Coût +24 à +35 % sur les scènes qui escaladent (e50 0,67 → 0,85 s,
+    dragon 1,40 → 1,74 s). Verrou
+    `dd_bla_epsilon_is_double_double_unit_roundoff`.
+  - [ ] **(h) lethal_weapon (4,4e57, 1,6 M itérations) : plancher du dd.**
+    Ce n'est PAS la précision d'orbite (292 b == 1172 b au tier f64 ; monter
+    la marge aurait fait passer l'axe precision sans corriger un pixel — les
+    deux rendus comparés par l'axe sont faux). Le f64 est faux sur ~47 % des
+    pixels (60 % flaggés → frame dd, correct), et le dd lui-même sur ~10 %
+    (échantillons vs GMP convergé : dd sans BLA 70/78 justes). Même le GMP à
+    la précision de la formule (286 b) est faux sur 2 pixels à 96². Avec le
+    garde-fou (f) ces pixels partent au GMP par pixel (~6 s chacun) : coût à
+    mesurer et à borner — cf. note en cours. Un tier quad-double fermerait
+    le cas proprement.
   *Métriques* : profil `post %` + `fiab. %` (e50, e113, dragon, spiral),
   `trend --case e50`, bench `cpu_perturb_dd`. *Done* : post < 10 % du wall
   sur e50 sans perdre un pixel vs GMP (quality 16/16, e50 PASS).
@@ -3454,8 +3485,49 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   37 cas 25,6 → 7,1 s ; e401 0,203 → 0,058 s, e318/e634/safari ×7. Avec
   G14.10(a) et la boucle HP de G14.2, **e401 256² : pixels 0,84 → 0,058 s
   (×14) dans la nuit**. Seul écart d'arithmétique connu, jamais observé :
-  l'abandon à ≥ 54 binades de `FloatExp::add`. Non porté : mode suivi par le
-  traqueur exp (garde l'ancienne boucle), Julia.
+  l'abandon à ≥ 54 binades de `FloatExp::add`. **Traqueur porté dans la
+  boucle scaled** (même nuit, puisque G14.13 l'active par défaut) : hooks
+  `direct_scaled` / `bla_scaled` en f64 dans le cadre 2^e, même borne au bit
+  près (mantisse et exposant) et mêmes pixels flaggés que la boucle FloatExp
+  tracée — 17 cas à 256² : PNG identiques, comptes `flagged` identiques ;
+  phase pixels ×1,5 à ×4,7 (traqueur actif des deux côtés). Le traqueur
+  coûte +40 à +130 % dans la boucle scaled (chaîne de la borne : une racine
+  et un `FloatExp::new` par pas) — prochain levier du tier exp. Non porté :
+  Julia.
+- [x] **G14.13 — Traqueur de fiabilité : trois défauts fermés (correction,
+  2026-11-06)** — trouvés en comparant le rendu de PRODUCTION au tier dd sur
+  le corpus `toml/` (aucun juge de routine ne le faisait : quality juge des
+  presets, precision juge l'orbite). (1) **Troncature BLA = l·ε, pas ε** :
+  chacun des l pas fusionnés abandonne jusqu'à ε ; la borne sous-estimait
+  l'erreur réelle ~40× → pixels faux non flaggés à 256² : e227 384,
+  golden_spider 169, rug 86, e50 10 (après : 1 / 13 / 5 / 5) ; dragon 128²
+  36 → 3. Le hook `bla` prend `l`. (2) **Borne exp emballée qui retombait à
+  « fiable »** : le terme E² double l'exposant i32 du FloatExp à chaque pas,
+  il débordait (plafond collant). (3) **Test de détermination à l'évasion**
+  (`escape_undetermined` : E ≥ ||z|−R|), actif au tier exp, opt-in en f64
+  (`FRACTALL_F64_MARGIN=1`, +75-195 % de temps pour ramener les résidus à
+  0-5 px). **Traqueur du tier exp actif par défaut**
+  (`FRACTALL_RELIABILITY_EXP=0`) : à 256² sans lui e401 6, olbaid2 48, e1298
+  18 pixels faux → 0. **Harmonic LA** : rayon de validité 2⁻²⁴ → 2⁻⁵³
+  (leaded_glass 227 faux → 0, all_seeing_eye 56 → 0 ; golden
+  `mandelbrot_glitch_test_2_harmonic` régénéré : 11 px ≠ GMP pur → 1). Coût
+  mesuré (256², min de 3) : e50 inchangé, golden_spider +27 %, e227 +40 %,
+  dragon ×2 (472 pixels escaladés contre 80 ; ~1/3 étaient réellement faux).
+  *Reste* : le modèle l·ε est un majorant grossier (faux positifs = coût) ;
+  résidus f64 de quelques pixels (e227, golden_spider, rug, e50, e113) ;
+  le chemin harmonic n'a toujours pas de traqueur (chantier en cours) ;
+  fuzz PerpBS 4 WARN (pixels mal conditionnés en c, classe G3).
+- [x] **G14.14 — Fast-paths perturbation Julia / Burning Ship / Tricorn
+  (2026-11-06)** — la boucle rapide de Mandelbrot prend son pas d'un noyau
+  monomorphisé (`DirectKernel`) : Julia (δ₀ ≠ 0, dc = 0) ×1,9 ; Burning Ship
+  ×1,4 ; Tricorn ×1,7 ; tous bit-identiques à la boucle générique (verrous
+  `julia_fast_path_matches_generic_loop`, `static_kernels_match_delta_state`,
+  `static_kernel_fast_path_matches_generic_loop`). *Réfutés par la mesure* :
+  la boucle rapide avec le pas bytecode non spécialisé (0 % — le coût est
+  le dispatch d'opcode) ; un `diffabs` sans branche (+17 % : les branches
+  étaient prédites). Celtic / Buffalo / Perp. BS ne passent pas par la
+  perturbation → pas de noyau. Pas générique sans dérivée quand elle n'est
+  pas demandée (`step_delta_only`).
 - [ ] **G14.8 — Re-baseline standard au schéma 2** sur la machine de
   développement (i7, F3 dispo) : `score --tier standard` (profil + bench
   inclus) puis `baseline` — sans quoi `speed_self`, `ns/iter` et `bench` n'ont
