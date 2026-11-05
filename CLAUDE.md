@@ -156,12 +156,14 @@ src/
 │   ├── bytecode/        # Moteur unifié Fraktaler-3 (P3.1, défaut)
 │   │   ├── mod.rs          # Op, Phase, Formula
 │   │   ├── compile.rs      # compile_formula + compile_hybrid_formula + formula_for_params (G4)
-│   │   ├── interp.rs       # iterate_bytecode_f64
+│   │   ├── interp.rs       # iterate_bytecode_f64 (scalaire, référence)
+│   │   ├── interp_batch.rs # idem PAR LOTS, 8 voies entrelacées (path std, défaut)
 │   │   ├── interp_gmp.rs   # interpréteur GMP pour orbite référence
 │   │   ├── delta_form.rs   # DeltaState f64 + DeltaStateExp ComplexExp
 │   │   ├── bla_dual.rs     # BLA mat2 unifié via dual-numbers
 │   │   ├── pixel_loop.rs   # BLA + delta-form + rebasing F3 (f64)
-│   │   ├── pixel_loop_exp.rs # idem ComplexExp (deep zoom > 1e13)
+│   │   ├── pixel_loop_exp.rs # idem ComplexExp (tier exp, boucle FloatExp de référence)
+│   │   ├── pixel_loop_scaled.rs # tier exp en « double mis à l'échelle » (défaut)
 │   │   ├── pixel_loop_dd.rs # tier double-double ~106b (float128-like), opt-in
 │   │   └── bla_dd.rs       # table BLA à coefficients dd (skip sans perte 106b)
 │   └── perturbation/    # Path GMP + ponts vers bytecode
@@ -479,8 +481,20 @@ Modes forcés : StandardF64 | Perturbation | ReferenceGmp
 
 Si `params.use_bytecode_engine` ET `compile_formula(type, power)` réussit :
 
-- **CPU f64 standard** : `iterations.rs::iterate_via_bytecode`. Supporte
-  distance estimation, interior detection, orbit traps via tracking de `dz`.
+- **CPU f64 standard** : par défaut **par lots** —
+  `bytecode/interp_batch.rs::iterate_bytecode_f64_batch` (2026-11-06) : les
+  points à calculer d'une TUILE avancent à 8 en lockstep (chaque opcode
+  appliqué à toutes les voies, voie rechargée dès qu'elle sort). Chaque voie
+  fait la suite d'opérations exacte du scalaire → **bit-identique** (verrou
+  `batch_matches_scalar_interpreter_bit_for_bit`), ×4,5 à ×7 sur la phase
+  pixel (la boucle scalaire était bornée par la LATENCE de la chaîne z→z²+c,
+  pas par le débit). Conditions : formule mono-phase, sans canal annexe.
+  Sinon scalaire `iterations.rs::iterate_via_bytecode` (hybrides ; distance,
+  intérieur, orbit traps via suivi de `dz`), formule compilée UNE fois par
+  rendu (`standard_formula` + `iterate_point_with_formula` — `iterate_point`
+  la recompilait deux fois par pixel). `FRACTALL_STD_BATCH=0` = scalaire.
+  ⚠️ Toute nouvelle sémantique d'opcode doit être portée dans les DEUX
+  interpréteurs (le verrou compare les deux sur toutes les familles).
 - **CPU perturbation** : `perturbation/delta.rs::try_bytecode_unified_path`
   → `bytecode/pixel_loop.rs` (f64) ou `pixel_loop_exp.rs` (ComplexExp,
   deep zoom > 1e13). **Rebasing F3 strict** (`|Z[m] + δ|² < |δ|²` **OU bout de
@@ -723,7 +737,23 @@ pseudo-orbites de même précision, aucune n'est « plus vraie » (écarts au ju
 inchangés. Dragon : orbite −35 %, total −12 %. `FRACTALL_ORBIT_FAST_SQR=0`
 revient à `mpc_sqr` (A/B).
 
-**Cache** (`ReferenceOrbitCache`) : orbite + BLA réutilisées si même
+**Cache de table BLA** (`delta.rs`, `GLOBAL_BLA` + thread-local) : clé =
+identité de l'orbite (**adresse + longueur + empreinte de contenu**, cf.
+`OrbitIdentity`) + `c_norm` + type/puissance/seuil/tier dd. ⚠️ Ni l'adresse
+seule (une orbite libérée puis une autre réallouée au même endroit
+retrouverait la table de l'ancienne) ni l'oubli de `c_norm` (orbite
+réutilisée pour une vue plus large → rayons de merge sur-permissifs) ne sont
+acceptables : verrou `bla_cache_key_follows_orbit_content_and_view_radius`.
+Le chemin par pixel ne clone PAS l'`Arc` de l'entrée (poignée `Rc` par
+thread) et ne compile pas de `Formula` : sur les vues peu chères c'était
+jusqu'à 85 % du temps pixel. Règle générale tirée de cette nuit : **rien de
+ce qui est constant sur le rendu ne doit être recalculé dans
+`try_bytecode_unified_path`** — `effective_pixel_size` y relisait les spans
+HP en GMP à chaque pixel au-delà de 1e308 (mémo depuis, verrou
+`hp_pixel_size_memo_follows_its_key`) ; l'outil pour le voir est
+`harness.py hotspots`.
+
+**Cache d'orbite** (`ReferenceOrbitCache`) : orbite + BLA réutilisées si même
 centre / type / précision. ⚠️ **Régime atom-domain** (`is_valid_for` +
 `can_subset_reuse` → `atom_regime_scale_mismatch`) : la troncature atom-domain
 de la référence dépend de l'ÉCHELLE de vue (`atom_radius_sqr = span_vue²`), donc
@@ -954,10 +984,22 @@ fractall-cli --type N --output FILE [OPTIONS]
   Pixels `flags=2` (non fiables) recalculés sur le CPU
   (`perturbation::recompute_pixels_cpu`, mêmes plafonds que le plein cadre —
   sans `with_uncapped_perturb_limits` ils sortaient à 1024) ; frame entière
-  CPU au-delà de 25 %. lavapipe vs GMP : **PASS** max_diff 1 à 1e4/3e5/1e6/
+  CPU au-delà d'un seuil qui dépend du chemin CPU concurrent (0,45 s'il
+  ferait de la perturbation, 0,25 s'il ferait du std f64). **Mesuré sur
+  Metal (Apple M4, 2026-11-06)** : PASS vs GMP de 1e4 à 1e20 ; 4-13× le CPU
+  sur les scènes à < 1 % de pixels renvoyés (e13, e17, minibrot e18),
+  1,3-2,3× sur les spirales à 27-42 % ; perd sous 1e12 (CPU en std) ; le
+  coût est dominé par la correction CPU, pas par le kernel. Sonde BLA
+  ASCENDANTE dans le kernel (le rayon ne croît pas avec le niveau ; ×4 sur
+  le temps kernel, sorties identiques au bit — non portée dans
+  `perturbation.wgsl` f64, non testable sur Metal). `cabs_small` : modules
+  mis à l'échelle 2⁵⁶ (|δ|² sous-débordait en f32 au-delà de ~1e19). Routage
+  Auto : clés wisdom `gpu_perturb_f32` vs `cpu_perturb_f64_mid` (MÊME vue des
+  deux côtés), donc seulement après `fractall-cli --wisdom-bench` sur la
+  machine. Outil : `fractall-quality gpu-bench`. lavapipe vs GMP : **PASS** max_diff 1 à 1e4/3e5/1e6/
   e13 (kernel f64 : WARN max_diff 442 à 1e6), mais 11-16 % de pixels
   renvoyés au CPU sur le bord chaotique seahorse (0,2 % à e13 ; 1e8 → CPU
-  entier). Perf réelle sur Metal NON mesurée.
+  entier).
 
 **Rotation/transform** : seul le path bytecode applique K sur GPU. Les autres
 paths GPU (perturbation, shaders f32 dédiés) retombent sur le CPU quand
