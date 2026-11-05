@@ -220,12 +220,38 @@ impl ShadowTrackerExp {
     }
 }
 
+/// Plafond de l'exposant (base 2) de la borne exp : bien au-delà de
+/// l'emballement (1e30 ≈ 2¹⁰⁰), bien en deçà du débordement `i32`.
+///
+/// ⚠️ Sans ce plafond la borne emballée REVENAIT à « fiable » : dans le
+/// régime emballé le terme `E²` double l'exposant de `E` à chaque pas
+/// (`FloatExp::sqr` = `exponent * 2`) ; ~22 pas après 1e196 l'exposant `i32`
+/// déborde, s'enroule (arithmétique enveloppante en release) et la borne
+/// retombe à ~1e-14. Mesuré olbaid2 96² : 7/9 pixels faux (jusqu'à 531
+/// itérations d'écart vs GMP) avaient une borne emballée puis effondrée.
+const EXP_ERR_CAP: i32 = 1 << 16;
+
+impl ShadowTrackerExp {
+    /// Borne emballée = COLLANTE : plafonnée à 2^EXP_ERR_CAP, elle reste
+    /// au-dessus de tout seuil d'emballement jusqu'à la fin du pixel.
+    #[inline(always)]
+    fn saturate(&mut self) {
+        if self.err.exponent > EXP_ERR_CAP {
+            self.err = FloatExp {
+                mantissa: 0.5,
+                exponent: EXP_ERR_CAP,
+            };
+        }
+    }
+}
+
 impl StepObserverExp for ShadowTrackerExp {
     #[inline(always)]
     fn direct(&mut self, z: ComplexExp, two_z_delta: ComplexExp, delta_old: ComplexExp) {
         let z_abs = z.norm_sqr_fexp().sqrt();
         let local = (l1_exp(two_z_delta) + delta_old.norm_sqr_fexp() + self.dc_l1) * GAMMA;
         self.err = self.err * (z_abs * 2.0 + self.err) + local;
+        self.saturate();
     }
 
     #[inline(always)]
@@ -247,6 +273,7 @@ impl StepObserverExp for ShadowTrackerExp {
         };
         let local = (l1_exp(a_delta) + l1_exp(b_dc)) * (self.bla_epsilon + GAMMA);
         self.err = sigma * self.err + local;
+        self.saturate();
     }
 
     #[inline(always)]
@@ -407,6 +434,34 @@ mod tests {
             t.direct(z.norm_sqr(), Complex64::new(0.0, 0.0), z.norm_sqr());
             z = z * z + c;
         }
+        assert!(t.error_bound() as f64 >= DEFAULT_RUNAWAY);
+    }
+
+    /// Tier exp : une borne emballée doit RESTER emballée. Le régime `E²`
+    /// double l'exposant FloatExp à chaque pas ; sans plafond, l'exposant
+    /// `i32` déborde après ~30 pas, s'enroule, et la borne retombe sous le
+    /// seuil — le pixel faux était alors déclaré fiable (olbaid2 : 7/9 pixels
+    /// faux ainsi blanchis).
+    #[test]
+    fn exp_bound_stays_runaway_through_exponent_overflow() {
+        let dc = ComplexExp::from_complex64(Complex64::new(1e-300, 0.0));
+        let mut t = ShadowTrackerExp::new(dc, 0.0);
+        t.err = FloatExp::from_f64(2.0);
+        let z = ComplexExp::from_complex64(Complex64::new(0.5, 0.0));
+        let zero = ComplexExp::zero();
+        for step in 0..200 {
+            t.direct(z, zero, zero);
+            assert!(
+                t.error_bound() as f64 >= DEFAULT_RUNAWAY || step < 8,
+                "pas {step} : borne retombée à {:e} (exposant {})",
+                t.error_bound(),
+                t.err.exponent
+            );
+        }
+        // Les autres hooks ne la font pas retomber non plus.
+        let a = Mat2Exp::identity();
+        t.bla(&a, &a, zero, zero);
+        t.rebase(z, z);
         assert!(t.error_bound() as f64 >= DEFAULT_RUNAWAY);
     }
 }
