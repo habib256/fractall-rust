@@ -222,9 +222,18 @@ def _regression_gaps(card: dict, base: dict) -> list[dict]:
         cp = card.get("profile", {}).get("cases", {}) or {}
         bp = base.get("profile", {}).get("cases", {}) or {}
         for name, c in cp.items():
-            cur, prev = c.get("ns_per_iter"), (bp.get(name) or {}).get("ns_per_iter")
-            if cur and prev and cur > prev * NS_ITER_REGRESSION \
-                    and c.get("path") == bp[name].get("path"):
+            b = bp.get(name) or {}
+            cur, prev = c.get("ns_per_iter"), b.get("ns_per_iter")
+            # Comparable seulement si les DEUX côtés portent le ns/iter précis
+            # (recalculé par le harness — l'ancien, lu à 0,1 ns près, donnait
+            # « 0.3 » pour 0,34) et si la phase pixel dépasse le plancher de
+            # mesure : sous 50 ms (test5 : 5 ms) le ratio n'est que du bruit.
+            precise = (c.get("ns_per_iter_thread") is not None
+                       and b.get("ns_per_iter_thread") is not None)
+            px_s = (c.get("secs") or {}).get("pixels") or 0.0
+            if cur and prev and precise and px_s > SELF_SPEED_FLOOR_S \
+                    and cur > prev * NS_ITER_REGRESSION \
+                    and c.get("path") == b.get("path"):
                 out.append(_gap("profile", name, "ns_per_iter", cur, prev, 3,
                                 f"RÉGRESSION boucle pixel {cur/prev:.2f}× "
                                 f"(même path {c.get('path')})"))

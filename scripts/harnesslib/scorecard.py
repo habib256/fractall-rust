@@ -220,8 +220,11 @@ def build_scorecard_md(card: dict, base: dict | None) -> str:
             cs = pr.get("cumulative_share_pct") or {}
             L.append("- **répartition cumulée** : "
                      + " · ".join(f"{k} {cs.get(k)} %" for k in
-                                  ("orbit", "pixels", "post", "save", "other"))
-                     + f" (sur {pr.get('n_ok')} cas)")
+                                  ("orbit", "bla", "pixels", "post", "save", "other")
+                                  if k in cs)
+                     + f" (sur {pr.get('n_ok')} cas"
+                     + (f", {pr['threads']} threads" if pr.get("threads") else "")
+                     + ")")
             dc = pr.get("dominant_counts") or {}
             if dc:
                 L.append("- **phase dominante** : "
@@ -234,20 +237,22 @@ def build_scorecard_md(card: dict, base: dict | None) -> str:
                      + (f" · pic RSS max {pr['peak_rss_mb_max']:.0f} MB"
                         if pr.get("peak_rss_mb_max") else ""))
             L.append("")
-            L.append("| Cas | path | variantes | wall (s) | orbite % | pixels % | "
-                     "post % | save % | autre % | ns/iter | iter/px | esc.dd | "
-                     "fiab. % | RSS (MB) |")
-            L.append("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|")
+            L.append("| Cas | path | variantes | wall (s) | orbite % | BLA % | pixels % | "
+                     "post % | save % | autre % | ns/iter | ns/iter·thread | iter/px | "
+                     "esc.dd | fiab. % | RSS (MB) |")
+            L.append("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|")
             for name, c in pr.get("cases", {}).items():
                 if c.get("status") != "ok":
-                    L.append(f"| `{name}` | — ({c.get('status')}) | | | | | | | | | | | | |")
+                    L.append(f"| `{name}` | — ({c.get('status')}) | | | | | | | | | | | | | | |")
                     continue
                 sh = c.get("share_pct") or {}
                 rel = c.get("reliability_flagged_pct")
                 L.append(f"| `{name}` | {c.get('path') or '?'} | {c.get('variants') or '—'} | "
-                         f"{c.get('wall_s'):.3f} | {sh.get('orbit')} | {sh.get('pixels')} | "
+                         f"{c.get('wall_s'):.3f} | {sh.get('orbit')} | "
+                         f"{sh.get('bla', '—')} | {sh.get('pixels')} | "
                          f"{sh.get('post')} | {sh.get('save')} | {sh.get('other')} | "
                          f"{_fmt(c.get('ns_per_iter'))} | "
+                         f"{_fmt(c.get('ns_per_iter_thread'))} | "
                          f"{_fmt0(c.get('avg_iter_px'))} | "
                          f"{'oui' if c.get('dd_escalation') else ''} | "
                          f"{(f'{rel:.2f}' if rel is not None else '—')} | "

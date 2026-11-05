@@ -31,10 +31,11 @@ try:
 except ImportError:  # pragma: no cover
     tomllib = None
 
-# Phases rapportées par le moteur (secondes). `other` = résidu du wall-clock
-# (démarrage process, colorisation, compilation bytecode, build BLA inclus dans
-# `orbit` côté moteur…).
-PHASES = ("orbit", "pixels", "post", "save", "other")
+# Phases rapportées par le moteur (secondes). `bla` = build de la table BLA
+# (prewarm, chronométré à part depuis G14.4a — absent des sorties antérieures,
+# où il tombait dans `other`). `other` = résidu du wall-clock (démarrage
+# process, colorisation, compilation bytecode…).
+PHASES = ("orbit", "bla", "pixels", "post", "save", "other")
 
 _RE_FRACTALL = re.compile(
     r"\[FRACTALL\] type=(?P<type>\S+) path=(?P<path>\S+) prec=(?P<prec>\d+)b "
@@ -43,7 +44,8 @@ _RE_FRACTALL = re.compile(
     r"pixels=(?P<pixels_s>[\d.]+)s total=(?P<total_s>[\d.]+)s")
 _RE_PERF = re.compile(
     r"\[PERTURB PERF\] \d+x\d+ pixels=\d+ zoom=\S+ small_image=\S+ "
-    r"orbit=(?P<orbit>[\d.]+)s pixels=(?P<pixels>[\d.]+)s post=(?P<post>[\d.]+)s "
+    r"orbit=(?P<orbit>[\d.]+)s (?:bla=(?P<bla>[\d.]+)s )?"
+    r"pixels=(?P<pixels>[\d.]+)s post=(?P<post>[\d.]+)s "
     r"total=(?P<total>[\d.]+)s avg_iter/px=(?P<avg>[\d.]+) max_iter/px=(?P<max>\d+) "
     r"ns/iter=(?P<ns>[\d.]+) glitched_initial=(?P<glitched>\d+) "
     r"corrections=(?P<corr>\d+) fallback_ratio=(?P<fallback>[\d.]+)")
@@ -66,7 +68,7 @@ def parse_profile_output(text: str) -> dict:
     `[FRACTALL]` retenu est le DERNIER (path final)."""
     out: dict = {"path": None, "algo": None, "tier": None, "device": None,
                  "ns_per_iter": None, "avg_iter_px": None, "max_iter_px": None,
-                 "orbit_s": None, "pixels_s": None, "post_s": None,
+                 "orbit_s": None, "bla_s": None, "pixels_s": None, "post_s": None,
                  "variants": None,
                  "render_s": None, "save_s": None, "gen_total_s": None,
                  "dd_escalation": "[DD-ESCALATION]" in text,
@@ -84,6 +86,8 @@ def parse_profile_output(text: str) -> dict:
     if perf:
         out["n_perf_lines"] = len(perf)
         out["orbit_s"] = round(sum(float(m["orbit"]) for m in perf), 4)
+        if any(m["bla"] is not None for m in perf):
+            out["bla_s"] = round(sum(float(m["bla"] or 0.0) for m in perf), 4)
         out["pixels_s"] = round(sum(float(m["pixels"]) for m in perf), 4)
         out["post_s"] = round(sum(float(m["post"]) for m in perf), 4)
         out["perturb_fallback_ratio"] = float(perf[-1]["fallback"])
@@ -121,6 +125,7 @@ def phase_breakdown(prof: dict, wall_s: float | None) -> dict:
     Sans `[PERTURB PERF]` (path f64 standard) : tout le rendu est `pixels`."""
     total = wall_s or prof.get("gen_total_s") or 0.0
     orbit = prof.get("orbit_s") or 0.0
+    bla = prof.get("bla_s") or 0.0
     post = prof.get("post_s") or 0.0
     render = prof.get("render_s")
     if prof.get("pixels_s") is not None:
@@ -128,9 +133,9 @@ def phase_breakdown(prof: dict, wall_s: float | None) -> dict:
     else:
         pixels = render or 0.0
     save = prof.get("save_s") or 0.0
-    other = max(0.0, total - orbit - pixels - post - save)
-    secs = {"orbit": orbit, "pixels": pixels, "post": post, "save": save,
-            "other": other}
+    other = max(0.0, total - orbit - bla - pixels - post - save)
+    secs = {"orbit": orbit, "bla": bla, "pixels": pixels, "post": post,
+            "save": save, "other": other}
     share = {k: (round(100.0 * v / total, 1) if total > 0 else None)
              for k, v in secs.items()}
     dominant = max(secs, key=lambda k: secs[k]) if total > 0 else None
@@ -150,6 +155,31 @@ RSS_WRAPPER = (
     "sys.exit(rc if rc >= 0 else 128 - rc)"
 )
 _RE_RSS = re.compile(r"\[HARNESS-RSS-KB\] (\d+)")
+
+
+def effective_threads(env: dict | None = None) -> int:
+    """Threads rayon du moteur : `RAYON_NUM_THREADS` s'il est posé, sinon le
+    nombre de CPU logiques (défaut rayon)."""
+    raw = (env if env is not None else os.environ).get("RAYON_NUM_THREADS", "")
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    return os.cpu_count() or 1
+
+
+def precise_ns_per_iter(prof: dict, n_pixels: int, threads: int) -> None:
+    """Le `ns/iter=` du moteur est imprimé à 0,1 ns près : sur les cas à gros
+    sauts BLA il s'affiche « 0.0 ». Recalcul depuis `pixels_s` et le nombre
+    d'itérations (avg_iter/px × pixels), puis normalisation PAR THREAD
+    (`ns_per_iter_thread`) — la seule forme comparable d'une machine à l'autre.
+    Sans phases mesurées (path std : pas de `[PERTURB PERF]`) : inchangé."""
+    prof["threads"] = threads
+    prof["ns_per_iter_thread"] = None
+    px_s, avg = prof.get("pixels_s"), prof.get("avg_iter_px")
+    if px_s is None or not avg or n_pixels <= 0:
+        return
+    ns = px_s * 1e9 / (avg * n_pixels)
+    prof["ns_per_iter"] = round(ns, 4)
+    prof["ns_per_iter_thread"] = round(ns * threads, 4)
 
 
 def wrap_rss(cmd: list[str]) -> list[str]:
@@ -219,11 +249,12 @@ def axis_profile(cases: list[str], width: int, height: int, timeout: float,
         prof["wall_s"] = round(wall, 4)
         rss_kb = parse_rss_kb(proc.stdout or "")
         prof["peak_rss_mb"] = round(rss_kb / 1024, 1) if rss_kb else None
+        precise_ns_per_iter(prof, width * height, effective_threads(env))
         prof.update(phase_breakdown(prof, wall))
         results[name] = prof
         sh = prof["share_pct"]
         print(f"{prof['path'] or '?':28s} wall={wall:.3f}s "
-              f"orb={sh['orbit']}% px={sh['pixels']}% post={sh['post']}% "
+              f"orb={sh['orbit']}% bla={sh['bla']}% px={sh['pixels']}% post={sh['post']}% "
               f"save={sh['save']}% ns/it={prof['ns_per_iter']} "
               f"rss={prof['peak_rss_mb']}MB"
               f"{' DD-ESC' if prof['dd_escalation'] else ''}")
@@ -239,6 +270,7 @@ def axis_profile(cases: list[str], width: int, height: int, timeout: float,
             dominant_counts[d] = dominant_counts.get(d, 0) + 1
     rss = [r["peak_rss_mb"] for r in ok if r.get("peak_rss_mb")]
     return {"status": "ok", "cases": results, "n_ok": len(ok),
+            "threads": effective_threads(env),
             "peak_rss_mb_max": max(rss) if rss else None,
             "cumulative_secs": cum, "cumulative_share_pct": cum_share,
             "dominant_counts": dominant_counts,

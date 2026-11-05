@@ -844,9 +844,13 @@ pub fn render_perturbation_with_cache(
     // `cache.orbit` est l'orbite que `iterate_pixel` utilisera (branche
     // non-hybride, même ptr → hit cache). Sur les hybrides multi-phase, le pixel
     // loop consomme d'autres orbites → on saute (le build se fera comme avant).
+    // Chronométré à part (`bla=` de la ligne `[PERTURB PERF]`) : ce build n'est
+    // ni de l'orbite ni de la boucle pixel, il disparaissait dans le résidu.
+    let t_bla_start = Instant::now();
     if cache.hybrid_refs.is_none() {
         crate::fractal::perturbation::delta::prewarm_bla_entry(params, &cache.orbit);
     }
+    let t_bla = t_bla_start.elapsed();
 
     // ── COMPRESS phase 2 (FRACTALL_COMPRESS_REF=1) : la boucle pixel lit la
     // réf via le décompresseur à waypoints (routage delta.rs) → les tableaux
@@ -1513,13 +1517,14 @@ pub fn render_perturbation_with_cache(
                 0.0
             };
             eprintln!(
-                "[PERTURB PERF] {}x{} pixels={} zoom={:.2e} small_image={} orbit={:.3}s pixels={:.3}s post={:.3}s total={:.3}s avg_iter/px={:.0} max_iter/px={} ns/iter={:.1} glitched_initial={} corrections={} fallback_ratio={:.3}",
+                "[PERTURB PERF] {}x{} pixels={} zoom={:.2e} small_image={} orbit={:.3}s bla={:.3}s pixels={:.3}s post={:.3}s total={:.3}s avg_iter/px={:.0} max_iter/px={} ns/iter={:.1} glitched_initial={} corrections={} fallback_ratio={:.3}",
                 params.width,
                 params.height,
                 pixel_count,
                 zoom,
                 small_image,
                 t_orbit.as_secs_f64(),
+                t_bla.as_secs_f64(),
                 t_pixels.as_secs_f64(),
                 t_post.as_secs_f64(),
                 total,
