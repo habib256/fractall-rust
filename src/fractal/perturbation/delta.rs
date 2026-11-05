@@ -795,7 +795,21 @@ fn try_bytecode_unified_path(
                     ref_exhausted: res_exp.ref_exhausted,
                 });
             }
-            let res_exp = iterate_pixel_unified_exp(
+            // Prototype opt-in `FRACTALL_EXP_SCALED=1` : même path HP Mandelbrot,
+            // δ en double mis à l'échelle (`pixel_loop_scaled`, résultat identique).
+            let scaled = crate::fractal::bytecode::pixel_loop_scaled::scaled_enabled()
+                && !is_julia
+                && atom_hp_enabled()
+                && crate::fractal::bytecode::pixel_loop_scaled::is_plain_mandelbrot(&entry.formula);
+            let res_exp = if scaled {
+                crate::fractal::bytecode::pixel_loop_scaled::iterate_pixel_scaled_exp_mandelbrot(
+                    ref_orbit,
+                    bla_exp,
+                    dc_for_add_exp,
+                    *delta0,
+                    crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
+                )
+            } else { iterate_pixel_unified_exp(
                 ref_orbit,
                 bla,
                 bla_exp,
@@ -804,7 +818,7 @@ fn try_bytecode_unified_path(
                 dc_for_add_exp,
                 *delta0,
                 crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
-            );
+            ) };
             // Conversion vers UnifiedPixelResult (même shape, juste typage).
             return Some(crate::fractal::bytecode::pixel_loop::UnifiedPixelResult {
                 iteration: res_exp.iteration,
