@@ -197,7 +197,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let delta_abs = cabs_small(delta);
         var stepped = false;
         if (use_bla) {
-            var level: i32 = i32(params.bla_levels);
+            // Sonde ASCENDANTE du plus haut niveau valide. Le rayon de validité
+            // est non croissant avec le niveau à m fixé (fusion F3 `bla.h:37` :
+            // R = min(R_x, …)) et les longueurs de niveau décroissent : si un
+            // niveau échoue, tous les niveaux supérieurs échouent. La descente
+            // ci-dessous part donc de `top` au lieu du sommet de la table —
+            // même saut choisi au bit près, mais un pas direct (cas dominant
+            // hors des zones lisses) ne lit plus qu'UN nœud au lieu de
+            // `bla_levels` (jusqu'à 17 lectures mémoire par itération).
+            var top: i32 = -1;
+            for (var probe: u32 = 0u; probe < params.bla_levels; probe = probe + 1u) {
+                if (m >= bla_meta.level_lengths[probe]) {
+                    break;
+                }
+                if (delta_abs >= bla_nodes[bla_meta.level_offsets[probe] + m].validity) {
+                    break;
+                }
+                top = i32(probe);
+            }
+            var level: i32 = top + 1;
             loop {
                 level = level - 1;
                 if (level < 0) {
