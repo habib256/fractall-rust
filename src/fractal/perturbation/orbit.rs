@@ -89,6 +89,44 @@ fn gmp_low_part(z: &Complex, zc: ComplexExp, scratch: &mut [Float; 2]) -> Comple
     Complex64::new(re, im)
 }
 
+/// Pas GMP z²+c Mandelbrot de l'orbite (G14.3) : `re' = (re+im)(re−im) + cr`,
+/// `im' = 2·re·im + ci` — 2 mults MPFR, tampons `t1`/`t2` à la précision de
+/// `z`. Partagé par la boucle d'orbite et sa relecture `lazy_low_parts` :
+/// une seule définition garantit des valeurs bit-identiques.
+#[inline]
+fn fast_sqr_step(z: &mut Complex, cref: &Complex, t1: &mut Float, t2: &mut Float) {
+    use rug::Assign;
+    let (re, im) = z.as_mut_real_imag();
+    t1.assign(&*re + &*im);
+    t2.assign(&*re - &*im);
+    *im *= &*re;
+    *im <<= 1;
+    *im += cref.imag();
+    re.assign(&*t1 * &*t2);
+    *re += cref.real();
+}
+
+/// Espacement des points de contrôle GMP de la capture PARESSEUSE de la
+/// partie basse (G9.6 / G14.1). La capture eager (`gmp_low_part` à chaque
+/// itération) coûtait ~+25-40 % de l'orbite single-thread de dragon et
+/// 16 o/iter, sur CHAQUE frame — alors que la plupart des frames n'ont aucun
+/// pixel à corriger. On ne garde qu'un `Z` GMP toutes les 1024 itérations
+/// (dragon, 2 M iters : 2 k points, < 1 Mo) ; la correction rejoue l'orbite
+/// en parallèle depuis ces points (`lazy_low_parts`).
+const LO_CHECKPOINT_INTERVAL: usize = 1024;
+
+/// `FRACTALL_LAZY_LO=0` revient à la capture eager (A/B).
+fn lazy_lo_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        !matches!(
+            std::env::var("FRACTALL_LAZY_LO").ok().as_deref().map(str::trim),
+            Some("0") | Some("off")
+        )
+    })
+}
+
 /// Partie basse d'un Z double-double (fast-path dd) : `Z − hi` en f64.
 fn dd_low_part(z: super::dd::ComplexDDExp, zc: ComplexExp) -> Complex64 {
     use super::dd::{DoubleDouble, DoubleDoubleExp as DdE};
@@ -423,7 +461,14 @@ impl ReferenceOrbit {
     /// ~50 o/iter de pic mémoire pour rien (dragon, 2 M iters : ~100 Mo).
     pub fn with_dd_from_lo(&self) -> Option<ReferenceOrbit> {
         use super::dd::{ComplexDDExp, DoubleDouble, DoubleDoubleExp};
-        if self.z_ref_lo.is_empty() || self.z_ref_lo.len() != self.z_ref.len() {
+        let lazy;
+        let low: &[Complex64] = if self.z_ref_lo.is_empty() {
+            lazy = self.lazy_low_parts()?;
+            &lazy
+        } else {
+            &self.z_ref_lo
+        };
+        if low.len() != self.z_ref.len() {
             return None;
         }
         // Reconstruit depuis `z_ref` (mantisse + exposant ÉTENDU) et non
@@ -442,7 +487,7 @@ impl ReferenceOrbit {
         let z_ref_dd = self
             .z_ref
             .par_iter()
-            .zip(&self.z_ref_lo)
+            .zip(low)
             .map(|(h, l)| ComplexDDExp {
                 re: dd(h.re, l.re),
                 im: dd(h.im, l.im),
@@ -466,6 +511,40 @@ impl ReferenceOrbit {
             compressed_f64: None,
             hybrid_phase_refs: Vec::new(),
         })
+    }
+
+    /// Partie basse RECALCULÉE depuis les points de contrôle de la capture
+    /// paresseuse (`LO_CHECKPOINT_INTERVAL`) : chaque tranche rejoue
+    /// `fast_sqr_step` depuis son point (mêmes précisions, mêmes opérations ⇒
+    /// mêmes `Z` au bit près que la boucle d'orbite) et applique
+    /// `gmp_low_part` — exactement ce que la capture eager stockait. Tranches
+    /// en parallèle. `None` si l'orbite n'a pas été bâtie en mode paresseux.
+    pub(crate) fn lazy_low_parts(&self) -> Option<Vec<Complex64>> {
+        use rayon::prelude::*;
+        let n = self.z_ref.len();
+        let iv = LO_CHECKPOINT_INTERVAL;
+        if n == 0
+            || self.data_storage_interval != iv
+            || !self.z_ref_gmp.is_empty()
+            || self.high_precision_data.len() != n.div_ceil(iv)
+            || !fast_orbit_sqr_enabled()
+        {
+            return None;
+        }
+        let mut low = vec![Complex64::new(0.0, 0.0); n];
+        low.par_chunks_mut(iv).enumerate().for_each(|(k, chunk)| {
+            let mut z = self.high_precision_data[k].clone();
+            let prec = z.prec().0;
+            let (mut t1, mut t2) = (Float::new(prec), Float::new(prec));
+            let mut scratch = [Float::new(64), Float::new(53)];
+            for (j, out) in chunk.iter_mut().enumerate() {
+                if j > 0 {
+                    fast_sqr_step(&mut z, &self.cref_gmp, &mut t1, &mut t2);
+                }
+                *out = gmp_low_part(&z, self.z_ref[k * iv + j], &mut scratch);
+            }
+        });
+        Some(low)
     }
 
     /// Get the effective length of the reference orbit for this phase
@@ -1895,6 +1974,13 @@ fn compute_reference_orbit_phase(
     // Partie basse (G9.6) : cf. `ReferenceOrbit::z_ref_lo`. Jamais en même
     // temps que `build_dd` (qui stocke déjà la référence dd entière).
     let build_lo = !build_dd && phase_start == 0 && wants_dd_lo(params);
+    // Capture PARESSEUSE (cf. `LO_CHECKPOINT_INTERVAL`) : seulement des points
+    // de contrôle GMP ; la partie basse est recalculée à la demande. Exige
+    // l'itération `fast_sqr_step` (rejouée à l'identique par
+    // `lazy_low_parts`) et pas d'orbite GMP dense (qui occupe
+    // `high_precision_data`).
+    let lazy_lo = build_lo && !force_dense_gmp && fast_orbit_sqr_enabled() && lazy_lo_enabled();
+    let build_lo = build_lo && !lazy_lo;
     let mut z_ref_lo: Vec<Complex64> = Vec::with_capacity(if build_lo {
         orbit_reserve(params.iteration_max as usize + 1)
     } else {
@@ -1916,14 +2002,16 @@ fn compute_reference_orbit_phase(
     // Inspired by rust-fractal-core's data_storage_interval:
     // Store high-precision orbit data at intervals to reduce memory usage.
     // For orbits with >100k iterations, store every 10th; for >1M, every 100th.
-    let data_storage_interval = if params.iteration_max > 1_000_000 {
+    let data_storage_interval = if lazy_lo {
+        LO_CHECKPOINT_INTERVAL
+    } else if params.iteration_max > 1_000_000 {
         100
     } else if params.iteration_max > 100_000 {
         10
     } else {
         1
     };
-    let mut high_precision_data = Vec::with_capacity(if store_dense_gmp {
+    let mut high_precision_data = Vec::with_capacity(if store_dense_gmp || lazy_lo {
         orbit_reserve((params.iteration_max as usize / data_storage_interval) + 2)
     } else {
         0
@@ -1945,6 +2033,9 @@ fn compute_reference_orbit_phase(
     if store_dense_gmp {
         z_ref_gmp.push(z.clone());
         high_precision_data.push(z.clone());
+    }
+    if lazy_lo {
+        high_precision_data.push(z.clone()); // point de contrôle d'index 0
     }
 
     // Period detection state for early termination (inspired by rust-fractal-core).
@@ -2188,17 +2279,7 @@ fn compute_reference_orbit_phase(
         }
 
         if let Some((t1, t2)) = fast_sqr_scratch.as_mut() {
-            // Fast-path z²+c Mandelbrot mono-phase (cf. `fast_sqr_scratch`) :
-            // re' = (re+im)(re−im) + cr ; im' = 2·re·im + ci — 2 mults MPFR.
-            use rug::Assign;
-            let (re, im) = z.as_mut_real_imag();
-            t1.assign(&*re + &*im);
-            t2.assign(&*re - &*im);
-            *im *= &*re;
-            *im <<= 1;
-            *im += cref.imag();
-            re.assign(&*t1 * &*t2);
-            *re += cref.real();
+            fast_sqr_step(&mut z, &cref, t1, t2);
         } else if let (Some(state), Some(formula), Some(c_phase)) = (
             bytecode_state.as_mut(),
             bytecode_formula.as_ref(),
@@ -2264,6 +2345,9 @@ fn compute_reference_orbit_phase(
         }
         if build_lo {
             z_ref_lo.push(gmp_low_part(&z, *z_ref.last().unwrap(), &mut lo_scratch));
+        }
+        if lazy_lo && (z_ref.len() - 1) % LO_CHECKPOINT_INTERVAL == 0 {
+            high_precision_data.push(z.clone());
         }
         // GMP dense sauté hors correction glitch (cf. `store_dense_gmp`).
         if store_dense_gmp {
@@ -2692,11 +2776,20 @@ mod dd_orbit_tests {
                 crate::fractal::perturbation::compute_perturbation_precision_bits(&params);
 
             let (plain, _, _) = compute_reference_orbit(&params, None, false).expect("orbite");
-            assert_eq!(
-                plain.z_ref_lo.len(),
-                plain.z_ref_f64.len(),
-                "{label}: capture"
-            );
+            // Boucle GMP : capture PARESSEUSE (points de contrôle, partie
+            // basse rejouée par `lazy_low_parts`) ; fast-path dd : eager.
+            let captured = if plain.z_ref_lo.is_empty() {
+                assert_eq!(label, "GMP", "{label}: seule la boucle GMP est paresseuse");
+                assert!(
+                    plain.z_ref_f64.len() > 2 * LO_CHECKPOINT_INTERVAL,
+                    "{label}: orbite trop courte ({}) pour couvrir plusieurs tranches",
+                    plain.z_ref_f64.len()
+                );
+                plain.lazy_low_parts().expect("capture paresseuse").len()
+            } else {
+                plain.z_ref_lo.len()
+            };
+            assert_eq!(captured, plain.z_ref_f64.len(), "{label}: capture");
             let rebuilt = plain.with_dd_from_lo().expect("reconstruction");
 
             let mut dd_params = params.clone();
