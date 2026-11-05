@@ -56,8 +56,18 @@ use super::pixel_loop::UnifiedPixelResult;
 use crate::fractal::perturbation::compress::chebyshev_norm;
 use crate::fractal::perturbation::orbit::ReferenceOrbit;
 
-/// `LAStep::ValidRadiusScale` (HarmonicMLA.h:17) : marge de validité 2⁻²⁴.
-const VALID_RADIUS_SCALE: f64 = 1.0 / 16_777_216.0; // 2^-24, exact
+/// `LAStep::ValidRadiusScale` : marge de validité **2⁻⁵³** (u f64), PAS les
+/// 2⁻²⁴ d'Imagina (HarmonicMLA.h:17).
+///
+/// ⚠️ ÉCART VOLONTAIRE vs Imagina, payé par une mesure : à 2⁻²⁴ le terme
+/// abandonné par chaque pas linéarisé vaut jusqu'à 2⁻²⁴ du terme gardé — 2²⁹
+/// fois l'arrondi f64 — et ce chemin n'a PAS de traqueur de fiabilité (aucune
+/// escalade possible). Jugé contre le tier dd (lui-même == GMP pur, vérifié
+/// pixel par pixel sur leaded_glass), le routage harmonic AUTO rendait des
+/// pixels faux à 256² : leaded_glass 227, all_seeing_eye 56, glitch_test_2 33,
+/// peanuts 13 — 0 / 0 / 1 / 0 à 2⁻⁵³ (le chemin BLA, lui, en a 0). Même
+/// classe que l'ε BLA du tier exp (2⁻²⁴ → 2⁻⁵³, `EXP_BLA_EPSILON`).
+const VALID_RADIUS_SCALE: f64 = 1.0 / 9_007_199_254_740_992.0; // 2^-53, exact
 
 /// `PeriodDetectionThreshold` (HarmonicMLA.h:83) : période détectée quand le
 /// min courant de cheb|Z| chute sous `prevMin · 2⁻⁴`. (Variante MLA.)
@@ -1177,5 +1187,59 @@ mod tests {
             mismatches <= 1,
             "≥ 99 % attendu : {mismatches}/{total} divergents (max diff {max_diff})"
         );
+    }
+
+    /// VERROU du rayon de validité 2⁻⁵³ : vue glitch_test_2 (1.5e115, 160×100,
+    /// période atom ~35 → routée harmonic par défaut). À 2⁻²⁴ (Imagina) ces
+    /// pixels sortaient faux (7688 / 7743 / 7632 / 8074) ; les valeurs
+    /// attendues sont la VÉRITÉ (GMP pur par pixel pour (37,13) et (16,57),
+    /// tier dd — lui-même == GMP — pour les autres), égales au chemin BLA.
+    #[test]
+    fn lla_valid_radius_matches_gmp_truth_glitch_test_2() {
+        use rug::Float;
+        let toml = std::fs::read_to_string("toml/glitch_test_2.toml").expect("toml");
+        let field = |k: &str| -> String {
+            let line = toml
+                .lines()
+                .find(|l| l.trim_start().starts_with(k))
+                .expect("champ toml");
+            line.split('=').nth(1).unwrap().trim().trim_matches('"').to_string()
+        };
+        let (width, height) = (160u32, 100u32);
+        let iter_max: u32 = field("iterations").parse().unwrap();
+        let zoom = Float::with_val(1024, Float::parse(field("zoom")).unwrap());
+        let span_x = Float::with_val(1024, 4.0) / &zoom;
+        let span_y = Float::with_val(1024, &span_x * height) / width;
+
+        let mut params = default_params_for_type(FractalType::Mandelbrot, width, height);
+        params.center_x_hp = Some(field("real"));
+        params.center_y_hp = Some(field("imag"));
+        params.center_x = params.center_x_hp.as_ref().unwrap().parse().unwrap();
+        params.center_y = params.center_y_hp.as_ref().unwrap().parse().unwrap();
+        params.span_x_hp = Some(span_x.to_string_radix(10, None));
+        params.span_y_hp = Some(span_y.to_string_radix(10, None));
+        params.span_x = span_x.to_f64();
+        params.span_y = span_y.to_f64();
+        params.iteration_max = iter_max;
+        params.engine.algorithm_mode = AlgorithmMode::Perturbation;
+        params.engine.precision_bits = 512;
+        let (orbit, _, _) =
+            compute_reference_orbit(&params, None, false).expect("compute_reference_orbit");
+        let table = build_harmonic_lla_table(&orbit.z_ref_f64).expect("table Harmonic LLA");
+
+        // (i, j, vérité)
+        let cases = [(37u32, 13u32, 7673u32), (16, 57, 7784), (42, 1, 7631), (44, 67, 8083)];
+        let mut wrong = Vec::new();
+        for &(i, j, truth) in &cases {
+            let dc = Complex64::new(
+                params.span_x * ((i as f64 + 0.5) / width as f64 - 0.5),
+                params.span_y * ((j as f64 + 0.5) / height as f64 - 0.5),
+            );
+            let r = iterate_pixel_harmonic_mla(&orbit, &table, dc, iter_max, 25.0, 0);
+            if r.iteration != truth {
+                wrong.push((i, j, r.iteration, truth));
+            }
+        }
+        assert!(wrong.is_empty(), "pixels harmonic faux (i, j, rendu, vérité) : {wrong:?}");
     }
 }
