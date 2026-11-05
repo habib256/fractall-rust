@@ -89,6 +89,25 @@ enum Command {
     /// Parité GPU↔CPU sur l'échelle de presets GPU (verrou G9.4/9.5).
     /// Rapports sous <output-dir>/gpu/ ; "pert" = GPU, "gmp" = juge GMP pur.
     GpuSuite,
+    /// Chronométrage GPU vs CPU (G14.5) : temps total GPU (+ correction CPU
+    /// des pixels non fiables, + repli plein cadre éventuel) contre le CPU
+    /// seul (Auto, et perturbation forcée en option), runs entrelacés,
+    /// ventilation orbite / upload / GPU / readback / correction. Accord des
+    /// images GPU↔CPU rapporté (le juge GMP reste `gpu-suite`).
+    GpuBench {
+        /// Cas `preset[@zoom]` (presets CPU ou GPU) ; défaut : échelle 1e4→1e25.
+        #[arg(long = "case")]
+        cases: Vec<String>,
+        /// Tailles carrées (px de côté).
+        #[arg(long, value_delimiter = ',', default_value = "512,1024,2048")]
+        sizes: Vec<u32>,
+        /// Runs par bras (entrelacés).
+        #[arg(long, default_value_t = 5)]
+        runs: usize,
+        /// Bras CPU perturbation forcée en plus de CPU Auto.
+        #[arg(long)]
+        cpu_perturbation: bool,
+    },
     /// Parité GPU↔CPU sur une scène personnalisée (mêmes options que compare).
     GpuCompare {
         /// Type de fractale (id entier ; GPU : Mandelbrot/Julia/BurningShip)
@@ -346,6 +365,15 @@ fn main() {
                 gpu_dir.display()
             );
         }
+        Command::GpuBench {
+            cases,
+            sizes,
+            runs,
+            cpu_perturbation,
+        } => {
+            let renderer = gpu_renderer_or_exit();
+            run_gpu_bench(&renderer, &cases, &sizes, runs, cpu_perturbation, &opt);
+        }
         Command::GpuCompare {
             fractal_type,
             center_x_hp,
@@ -406,6 +434,178 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+        }
+    }
+}
+
+/// Cas par défaut de `gpu-bench` : plage du kernel perturbation f32
+/// (span ≥ 1e-28) — seahorse 1e4→1e8, e13, e17, centre e30 dézoomé, Julia.
+const GPU_BENCH_DEFAULT_CASES: &[&str] = &[
+    "gpu-seahorse-1e4",
+    "gpu-seahorse-1e6",
+    "gpu-seahorse-1e8",
+    "gpu-mandelbrot-e13",
+    "mandelbrot-e17",
+    "mandelbrot-e30@1e20@20000",
+    "mandelbrot-e30@1e25@20000",
+    "julia-siegel-disk",
+];
+
+fn find_any_preset(name: &str) -> Option<&'static presets::Preset> {
+    presets::find(name).or_else(|| presets::GPU_PRESETS.iter().find(|p| p.name == name))
+}
+
+fn median_of(v: &[f64]) -> f64 {
+    let mut v = v.to_vec();
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    v.get(v.len() / 2).copied().unwrap_or(f64::NAN)
+}
+
+fn min_of(v: &[f64]) -> f64 {
+    v.iter().cloned().fold(f64::INFINITY, f64::min)
+}
+
+fn run_gpu_bench(
+    renderer: &gpu::GpuRenderer,
+    cases: &[String],
+    sizes: &[u32],
+    runs: usize,
+    cpu_perturbation: bool,
+    opt: &ComparisonOptions,
+) {
+    use std::sync::atomic::AtomicBool;
+    use std::time::Instant;
+    let cases: Vec<String> = if cases.is_empty() {
+        GPU_BENCH_DEFAULT_CASES.iter().map(|s| s.to_string()).collect()
+    } else {
+        cases.to_vec()
+    };
+    println!(
+        "# gpu-bench — {} — kernel perturbation {} — {} runs/bras (entrelacés)",
+        renderer.adapter_label(),
+        if renderer.perturbation_kernel_is_f32() { "f32+fiabilité" } else { "f64" },
+        runs
+    );
+    println!(
+        "| cas | taille | GPU total min/med (s) | orbite | upload | GPU | readback | fix CPU | px→CPU | repli | CPU Auto min/med (s) | CPU pert min/med (s) | gain (min) | px ≠ CPU |"
+    );
+    println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+    for case in &cases {
+        // `preset[@zoom[@itérations]]`
+        let mut parts = case.split('@');
+        let name = parts.next().unwrap_or_default();
+        let zoom = parts.next().filter(|z| !z.is_empty());
+        let iters: Option<u32> = parts.next().and_then(|i| i.parse().ok());
+        let Some(preset) = find_any_preset(name) else {
+            eprintln!("cas inconnu : {name}");
+            continue;
+        };
+        for &size in sizes {
+            let o = ComparisonOptions {
+                width: size,
+                height: size,
+                max_iterations: opt.max_iterations,
+                precision_bits: opt.precision_bits,
+                ..Default::default()
+            };
+            let mut params = params_from_preset(preset, &o);
+            if let Some(z) = zoom {
+                apply_zoom(&mut params, z);
+            }
+            if let Some(n) = iters {
+                params.iteration_max = n;
+            }
+            let mut pert_params = params.clone();
+            pert_params.engine.algorithm_mode = fractal::AlgorithmMode::Perturbation;
+            let cancel = AtomicBool::new(false);
+            let (mut t_gpu, mut t_cpu, mut t_pert) = (Vec::new(), Vec::new(), Vec::new());
+            let mut tims = Vec::new();
+            let mut gpu_iters: Option<Vec<u32>> = None;
+            let mut cpu_iters: Option<Vec<u32>> = None;
+            let mut fell_back_runs = 0usize;
+            let mut gpu_unavailable = false;
+            for _ in 0..runs {
+                // Bras GPU = ce que fait `fractall-cli --gpu` : dispatch GPU,
+                // puis repli CPU plein cadre si `None`.
+                let t0 = Instant::now();
+                let r = renderer.render_dispatch(
+                    render::GpuRenderPlan::for_params(&params),
+                    &params,
+                    &cancel,
+                    None,
+                    None,
+                );
+                let tim = renderer.take_last_perturb_timings();
+                let iters = match r {
+                    Some(r) => r.iterations,
+                    None => {
+                        if tim.map_or(true, |t| !t.fell_back) {
+                            gpu_unavailable = true;
+                        }
+                        fell_back_runs += 1;
+                        render::render_escape_time(&params).iterations
+                    }
+                };
+                t_gpu.push(t0.elapsed().as_secs_f64());
+                if let Some(t) = tim {
+                    tims.push(t);
+                }
+                gpu_iters.get_or_insert(iters);
+
+                let t0 = Instant::now();
+                let out = render::render_escape_time(&params);
+                t_cpu.push(t0.elapsed().as_secs_f64());
+                cpu_iters.get_or_insert(out.iterations);
+
+                if cpu_perturbation {
+                    let t0 = Instant::now();
+                    let _ = render::render_escape_time(&pert_params);
+                    t_pert.push(t0.elapsed().as_secs_f64());
+                }
+            }
+            let avg = |f: &dyn Fn(&gpu::GpuPerturbTimings) -> f64| {
+                if tims.is_empty() {
+                    f64::NAN
+                } else {
+                    tims.iter().map(f).sum::<f64>() / tims.len() as f64
+                }
+            };
+            let frac = avg(&|t| t.unreliable as f64 / t.pixels.max(1) as f64);
+            let diff = match (&gpu_iters, &cpu_iters) {
+                (Some(a), Some(b)) => {
+                    a.iter().zip(b).filter(|(x, y)| x.abs_diff(**y) > 1).count() as f64
+                        / a.len().max(1) as f64
+                }
+                _ => f64::NAN,
+            };
+            let pert_cell = if cpu_perturbation {
+                format!("{:.3} / {:.3}", min_of(&t_pert), median_of(&t_pert))
+            } else {
+                "-".into()
+            };
+            println!(
+                "| {} | {}² | {:.3} / {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.2}% | {} | {:.3} / {:.3} | {} | {:.2}× | {:.3}% |",
+                case,
+                size,
+                min_of(&t_gpu),
+                median_of(&t_gpu),
+                avg(&|t| t.ref_s),
+                avg(&|t| t.upload_s),
+                avg(&|t| t.gpu_s),
+                avg(&|t| t.readback_s),
+                avg(&|t| t.cpu_fix_s),
+                100.0 * frac,
+                if gpu_unavailable {
+                    "GPU n/a".to_string()
+                } else {
+                    format!("{}/{}", fell_back_runs, runs)
+                },
+                min_of(&t_cpu),
+                median_of(&t_cpu),
+                pert_cell,
+                min_of(&t_cpu) / min_of(&t_gpu),
+                100.0 * diff,
+            );
         }
     }
 }

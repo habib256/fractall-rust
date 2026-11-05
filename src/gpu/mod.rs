@@ -37,6 +37,31 @@ pub struct GpuDispatchResult {
     pub used_perturbation: bool,
 }
 
+/// Ventilation du dernier rendu perturbation GPU (G14.5, mesure Metal) :
+/// lue par `fractall-quality gpu-bench` pour séparer le temps GPU, le
+/// recalcul CPU des pixels non fiables et le repli plein cadre. Pure
+/// observation — n'influence aucun choix de rendu.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GpuPerturbTimings {
+    /// Kernel f32 + traqueur (`perturbation_f32.wgsl`) plutôt que f64 natif.
+    pub kernel_f32: bool,
+    /// Orbite référence + BLA (cache inclus).
+    pub ref_s: f64,
+    /// Préparation hôte + upload (buffers orbite/BLA/sortie/params).
+    pub upload_s: f64,
+    /// Soumission → buffer de readback mappé (kernel + copie device).
+    pub gpu_s: f64,
+    /// Lecture du buffer mappé → Vec hôte.
+    pub readback_s: f64,
+    /// Recalcul CPU des pixels `flags = 2` (et glitchs GMP `flags = 1`).
+    pub cpu_fix_s: f64,
+    /// Pixels `flags = 2` renvoyés au CPU.
+    pub unreliable: usize,
+    pub pixels: usize,
+    /// Frame abandonnée (fraction non fiable > seuil) → `None` → CPU plein cadre.
+    pub fell_back: bool,
+}
+
 fn env_flag(name: &str) -> bool {
     match std::env::var(name) {
         Ok(v) => matches!(
@@ -116,9 +141,36 @@ pub struct GpuRenderer {
     /// Cache des buffers GPU pour la perturbation (zref, bla, meta)
     /// Utilise Mutex pour permettre l'accès mutable depuis &self (interior mutability)
     perturbation_cache: Mutex<Option<PerturbationBufferCache>>,
+    /// Ventilation du dernier rendu perturbation (diagnostic, G14.5).
+    last_perturb_timings: Mutex<Option<GpuPerturbTimings>>,
+    adapter_label: String,
 }
 
 impl GpuRenderer {
+    /// Ventilation du dernier rendu perturbation GPU (consommée et remise à
+    /// `None`) — `None` si le dernier dispatch n'est pas allé jusqu'au kernel.
+    pub fn take_last_perturb_timings(&self) -> Option<GpuPerturbTimings> {
+        self.last_perturb_timings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
+
+    /// Nom de l'adaptateur wgpu (ex. « Apple M4 (Metal) »).
+    pub fn adapter_label(&self) -> &str {
+        &self.adapter_label
+    }
+
+    /// `true` si le kernel perturbation disponible est le f32 + fiabilité
+    /// (pas de `SHADER_F64`, ou forcé par `FRACTALL_GPU_PERTURB_F32`).
+    pub fn perturbation_kernel_is_f32(&self) -> bool {
+        match (&self.pipeline_perturbation, &self.pipeline_perturbation_f32) {
+            (Some(_), _) if !env_flag("FRACTALL_GPU_PERTURB_F32") => false,
+            (_, Some(_)) => true,
+            _ => false,
+        }
+    }
+
     pub fn new() -> Option<Self> {
         // Capturer les panics de wgpu lors de l'initialisation EGL
         // pour permettre à l'application de démarrer sans GPU
@@ -147,6 +199,7 @@ impl GpuRenderer {
                 // Sur Apple Silicon, info.name contient le CPU/GPU unifié (ex: "Apple M1")
                 // et info.backend contient le backend (Metal)
                 eprintln!("[GPU] {} ({:?})", info.name, info.backend);
+                let adapter_label = format!("{} ({:?})", info.name, info.backend);
 
                 // SHADER_F64 requis par le kernel perturbation (f64 natif — le
                 // double-float 2×f32 est non-sound sur la stack WGSL→SPIR-V,
@@ -467,6 +520,8 @@ impl GpuRenderer {
                     bind_group_layout_bytecode,
                     supports_f64,
                     perturbation_cache: Mutex::new(None),
+                    last_perturb_timings: Mutex::new(None),
+                    adapter_label,
                 })
             })
         })
@@ -603,6 +658,7 @@ impl GpuRenderer {
     ) -> Option<((Vec<u32>, Vec<Complex64>), Arc<ReferenceOrbitCache>)> {
         let stats = env_flag("FRACTALL_GPU_PERTURB_STATS") || env_flag("FRACTALL_PERTURB_STATS");
         let t_all = Instant::now();
+        let _ = self.take_last_perturb_timings();
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return None;
         }
@@ -676,6 +732,7 @@ impl GpuRenderer {
         let cache =
             compute_reference_orbit_cached(&orbit_params, Some(cancel), orbit_cache, None, false)?;
         let dt_ref = t_ref.elapsed();
+        let t_upload = Instant::now();
         let ref_orbit = &cache.orbit;
         let supports_bla = matches!(
             params.fractal_type,
@@ -1035,6 +1092,7 @@ impl GpuRenderer {
         }
 
         let t_gpu = Instant::now();
+        let upload_s = t_upload.elapsed().as_secs_f64();
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1082,6 +1140,8 @@ impl GpuRenderer {
             }
         }
 
+        let gpu_s = t_gpu.elapsed().as_secs_f64();
+        let t_readback = Instant::now();
         let data = buffer_slice.get_mapped_range();
         let pixels: &[PixelOut] = bytemuck::cast_slice(&data);
         let mut iterations = Vec::with_capacity(output_count);
@@ -1155,6 +1215,19 @@ impl GpuRenderer {
         }
         drop(data);
         readback_buffer.unmap();
+        let readback_s = t_readback.elapsed().as_secs_f64();
+        let t_fix = Instant::now();
+        let mut timings = GpuPerturbTimings {
+            kernel_f32: use_f32,
+            ref_s: dt_ref.as_secs_f64(),
+            upload_s,
+            gpu_s,
+            readback_s,
+            cpu_fix_s: 0.0,
+            unreliable: unreliable_gpu.len(),
+            pixels: output_count,
+            fell_back: false,
+        };
 
         let dt_gpu = t_gpu.elapsed();
         if stats {
@@ -1352,6 +1425,12 @@ impl GpuRenderer {
         // d'une fraction élevée, le GPU n'a rien économisé : la frame entière
         // repart au CPU (`None` → dispatcher unique), plus simple et pas plus
         // lent qu'un recalcul pixel par pixel.
+        // Diagnostic (G14.5) : `FRACTALL_GPU_F32_RAW=1` garde les valeurs GPU
+        // brutes des pixels flaggés (ni correction ni repli) — mesure de la
+        // justesse du détecteur contre le juge GMP, jamais pour un rendu.
+        if !unreliable_gpu.is_empty() && env_flag("FRACTALL_GPU_F32_RAW") {
+            unreliable_gpu.clear();
+        }
         if !unreliable_gpu.is_empty() {
             let ratio = unreliable_gpu.len() as f64 / total_pixels;
             if stats {
@@ -1361,7 +1440,9 @@ impl GpuRenderer {
                     100.0 * ratio
                 );
             }
-            if ratio > GPU_F32_CPU_FALLBACK_RATIO {
+            if ratio > gpu_f32_cpu_fallback_ratio() {
+                timings.fell_back = true;
+                self.record_perturb_timings(timings);
                 return None;
             }
             if cancel.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1377,8 +1458,17 @@ impl GpuRenderer {
                 zs[idx] = z_final;
             }
         }
+        timings.cpu_fix_s = t_fix.elapsed().as_secs_f64();
+        self.record_perturb_timings(timings);
 
         Some(((iterations, zs), cache))
+    }
+
+    fn record_perturb_timings(&self, t: GpuPerturbTimings) {
+        *self
+            .last_perturb_timings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(t);
     }
 
     fn render_mandelbrot_f32(
@@ -2052,6 +2142,16 @@ struct PixelOut {
 /// Kernel f32 (G9.6) : fraction de pixels non fiables au-delà de laquelle la
 /// frame est rendue entièrement sur le CPU plutôt que corrigée pixel à pixel.
 const GPU_F32_CPU_FALLBACK_RATIO: f64 = 0.25;
+
+/// Seuil effectif ; `FRACTALL_GPU_F32_FALLBACK_RATIO` le surcharge (A/B de
+/// mesure G14.5 : 1.0 = toujours corriger pixel à pixel).
+fn gpu_f32_cpu_fallback_ratio() -> f64 {
+    std::env::var("FRACTALL_GPU_F32_FALLBACK_RATIO")
+        .ok()
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .unwrap_or(GPU_F32_CPU_FALLBACK_RATIO)
+}
 
 /// Z de référence arrondi f32 (kernel `perturbation_f32.wgsl`, vec2<f32>).
 #[repr(C)]
