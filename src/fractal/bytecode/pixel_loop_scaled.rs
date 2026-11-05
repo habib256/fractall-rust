@@ -1,6 +1,11 @@
 //! Boucle pixel « double mis à l'échelle » (scaled double) pour le tier exp
-//! (zoom > 1e280), Mandelbrot atom-tronqué — prototype **opt-in**
-//! (`FRACTALL_EXP_SCALED=1`).
+//! (zoom > 1e280), Mandelbrot atom-tronqué — **par défaut** depuis le
+//! 2026-11-06 (`FRACTALL_EXP_SCALED=0` revient à la boucle FloatExp).
+//!
+//! Activation décidée sur preuve d'identité : PNG identiques à l'octet à la
+//! boucle FloatExp sur les 37 cas du tier exp du corpus `toml/` à 192² (tous
+//! sauf e52465, hors budget temps), 17 à 256², 5 à 1024² — pour un temps de
+//! phase pixel cumulé de 25,6 → 7,1 s (×2 à ×7 par cas).
 //!
 //! Le path HP de référence (`pixel_loop_exp::iterate_pixel_unified_exp_
 //! mandelbrot_hp_impl`) itère `δ` en `ComplexExp` : chaque opération `FloatExp`
@@ -40,10 +45,11 @@ use crate::fractal::perturbation::counter::PixelCounter;
 use crate::fractal::perturbation::orbit::ReferenceOrbit;
 use crate::fractal::perturbation::types::{ComplexExp, FloatExp};
 
-/// Opt-in `FRACTALL_EXP_SCALED=1` (lu une fois).
+/// Actif par défaut ; `FRACTALL_EXP_SCALED=0` (lu une fois) le coupe (A/B,
+/// diagnostic — la boucle FloatExp reste la référence du verrou d'identité).
 pub fn scaled_enabled() -> bool {
     static F: OnceLock<bool> = OnceLock::new();
-    *F.get_or_init(|| std::env::var("FRACTALL_EXP_SCALED").ok().as_deref() == Some("1"))
+    *F.get_or_init(|| std::env::var("FRACTALL_EXP_SCALED").ok().as_deref() != Some("0"))
 }
 
 /// Diagnostic `FRACTALL_EXP_SCALED_STATS=1` : ventilation des tours de boucle.

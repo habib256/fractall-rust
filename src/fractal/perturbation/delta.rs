@@ -795,8 +795,9 @@ fn try_bytecode_unified_path(
                     ref_exhausted: res_exp.ref_exhausted,
                 });
             }
-            // Prototype opt-in `FRACTALL_EXP_SCALED=1` : même path HP Mandelbrot,
-            // δ en double mis à l'échelle (`pixel_loop_scaled`, résultat identique).
+            // Même path HP Mandelbrot, δ en double mis à l'échelle
+            // (`pixel_loop_scaled`, résultat identique à l'octet sur le corpus ;
+            // défaut, `FRACTALL_EXP_SCALED=0` = boucle FloatExp).
             let scaled = crate::fractal::bytecode::pixel_loop_scaled::scaled_enabled()
                 && !is_julia
                 && atom_hp_enabled()
