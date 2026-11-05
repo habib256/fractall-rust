@@ -3244,10 +3244,58 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
     0-2 px détectés par cas. Résidus exp restants : 3-9 px à 96² (hard,
     olbaid2, wfs_mb, safari, e1298) dont la borne ne s'emballe pas ;
     axe precision 9/9 PASS (×4).
+  - [x] **(e) Correction dd allégée + chemin rapide dd, 2026-11-06** (agent,
+    4 commits) — (1) `correct_pixels_dd` ne reconstruit plus les tables BLA
+    f64 (jamais lues en dd) ni la pyramide BLA dd complète (niveaux
+    < `BLA_SKIP_LEVELS` composés à la volée, verrou
+    `direct_build_matches_full_pyramid`), et `with_dd_from_lo` ne clone plus
+    l'orbite : **pic RSS dragon 1 063 → 329 Mo**. (2) Boucle dd en
+    double-double « nu » (sans exposant, mise à l'échelle 2^s jusqu'à ~1e271),
+    bit-identique à la boucle `DoubleDoubleExp` (verrou
+    `fast_dd_loop_matches_ddexp_loop_bitwise` + `.fmap` identiques sur 39
+    scènes) : bench `cpu_perturb_dd` 8,0 → 3,5 ns/iter, quality e50 plein
+    cadre dd 15,6 → 3,7 s. `FRACTALL_DD_FAST=0` = ancienne boucle. (3) Capture
+    PARESSEUSE de la partie basse (un Z GMP toutes les 1024 itérations,
+    relecture parallèle seulement si une correction est nécessaire ;
+    `FRACTALL_LAZY_LO=0` = capture eager) : orbite dragon 0,84 → 0,49 s.
+    Mesuré après intégration (256², machine chargée, 4 runs entrelacés) :
+    **e50 post 0,25 → 0,10-0,16 s** (total 1,12 → 0,94-1,06 s) ; **dragon
+    total 2,0 → 1,6-1,87 s**. PNG identiques. Le critère « post < 10 % sur
+    e50 » est atteint au minimum (7 %), pas en médiane sous charge → à
+    re-mesurer machine calme. Rejeté par raisonnement : reprise du dd depuis
+    un point de contrôle f64 (l'état f64 n'est jamais au niveau dd).
+    Reste : le traqueur dans la boucle f64 (+25 %), et le tier dd plein
+    cadre qui bâtit encore ses tables f64 inutiles.
+  - [ ] **(f) Le tier dd n'a pas de garde-fou** (trouvé 2026-11-06) :
+    seahorse 1e6 256², pixel (117,17) — GMP 1598 (convergé 256 = 768 b), dd
+    1838, f64 872. Un pixel dont la sensibilité dépasse 106 bits est
+    « corrigé » en dd et reste faux, sans signal. Chantier en cours :
+    traqueur de borne au niveau dd (u = 2⁻¹⁰⁴) + escalade GMP par pixel.
   *Métriques* : profil `post %` + `fiab. %` (e50, e113, dragon, spiral),
   `trend --case e50`, bench `cpu_perturb_dd`. *Done* : post < 10 % du wall
   sur e50 sans perdre un pixel vs GMP (quality 16/16, e50 PASS).
-- [ ] **G14.2 — Boucle pixel f64 (76 % du wall e50, dominante sur 8/10
+- [~] **G14.2 — Boucle pixel f64** — **2026-11-06 : mesuré, objectif −25 %
+  NON atteint en bit-identique ; tier exp traité à la place.**
+  *Instrumentation* (e50 256²) : 12,5 k tours de boucle par pixel dont 95 %
+  de pas DIRECTS (les 644 sauts BLA couvrent 250 itérations chacun) ; table
+  BLA 2,08 Mo (tient en L2), ~2 sondes par lookup aligné → **la table n'est
+  PAS le goulot** (l'hypothèse « memory-bound » de ce TODO était fausse sur
+  ce cas ; dragon : 49 Mo). Coût : ~94 instructions et ~18 cycles par tour,
+  chaîne δ→δ' ~13 cycles. *Réfuté par la mesure* (tout reverté) : rayons BLA
+  en SoA (+5 % de cycles sur dragon) ; rognage d'instructions de la boucle
+  (−14 % d'instructions, 0 % de cycles : la boucle est bornée par la
+  LATENCE) ; entrelacement du fast-path à 4 voies façon `interp_batch`
+  (×0,58-0,64 = plus lent : état des voies sur la pile, traqueur avec une
+  racine par voie). *Reste* : un entrelacement écrit à la main (SoA, traqueur
+  inliné dans `reliability.rs`, site d'appel par lot dans
+  `perturbation/mod.rs`) — prototype et tests de bit-identité conservés par
+  l'agent dans `bench/g14.2-proto/` de son worktree. *Constat inexpliqué* :
+  un pas direct coûte 3,9 ns avec la vraie table et 6,5-12 ns avec une table
+  vide. **Livré côté exp** (même agent, bit-identique, 24 scènes) : boucle HP
+  atom-tronquée — normes réutilisées, δ² sauté quand l'addition l'absorbe,
+  `2·Z` par incrément d'exposant, rejet des `m` non alignés avant le calcul
+  de norme : e401 pixels −28 %, e1000 −22 % (256², après intégration).
+  Texte d'origine : **Boucle pixel f64 (76 % du wall e50, dominante sur 8/10
   cas)**. `ns/iter` effectif 0.1-0.2 (skips BLA inclus) ; bench
   `cpu_perturb_f64` 0.17 ns/iter à 4 threads = ~0.7 ns/iter/thread. Leviers :
   **SIMD 4-wide f64** (AVX2/NEON) sur le fast-path Mandelbrot `δ' = 2Zδ + δ²
@@ -3302,7 +3350,33 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   `spiral` (zoom shallow, hors perturbation) sort `path=?` dans le profil
   faute de diagnostic — le dispatcher doit nommer son path dans tous les
   cas. *Done* : quatre colonnes/lignes de plus dans §Profil, verrou parseur.
-- [ ] **G14.5 — GPU : mesurer avant de croire**. Le kernel perturbation f64
+- [x] **G14.5 — GPU : mesurer avant de croire** — **DÉCISION 2026-11-06
+  (Apple M4, Metal, première exécution sur du vrai Metal)** :
+  **poursuivre** sur la plage perturbation f32 (zoom ~1e13 → ~1e27,
+  Mandelbrot) — 4 à 13× le CPU sur les scènes faciles (< 1 % de pixels
+  renvoyés au CPU : e13, e17, minibrot e18), 1,3 à 2,3× sur les spirales
+  difficiles (27-42 % renvoyés), image juste (PASS vs GMP, ou les mêmes WARN
+  que le CPU) ; **geler** sous 1e12 (CPU en std f64 : le GPU perd à 1e4 et
+  1e8 — et le path std CPU a été accéléré ×5 la même nuit, G14.9) et au-delà
+  de span 1e-28 (dès 1e27, 68 % de pixels flaggés). Livré : (1) bug —
+  sous-dépassement f32 de |δ|² au-delà de ~1e19 dans `perturbation_f32.wgsl`
+  (`cabs_small`, mise à l'échelle 2⁵⁶) ; (2) perf — sonde BLA ASCENDANTE
+  (le rayon ne croît pas avec le niveau) : kernel 2048² 3,46 → 0,81 s,
+  sorties identiques au bit ; (3) seuil de repli plein cadre selon le chemin
+  CPU concurrent (0,45 vs perturbation, 0,25 vs std) ; (4) `fractall-quality
+  gpu-bench` (temps kernel / correction CPU / % renvoyé) ; (5) clés wisdom
+  `gpu_perturb_f32` + `cpu_perturb_f64_mid` (MÊME vue des deux côtés : le
+  débit effectif dépend de la vue d'un facteur 7-10) → `select_device` route
+  le GPU en Auto dans la plage f32 **après un `fractall-cli --wisdom-bench`
+  sur la machine** (bench M4 : 2,25e9 vs 9,4e8 iters/s). Le coût GPU est
+  dominé par la CORRECTION CPU des pixels flaggés (GMP par pixel), pas par
+  le kernel ni le transfert (readback 2048² ≈ 15 ms). *Reste* : porter la
+  sonde ascendante dans `perturbation.wgsl` (f64, à mesurer sur la GeForce —
+  non testable sur Metal) ; correction des pixels flaggés en dd puis GMP
+  (possible une fois G14.1 f livré) ; Julia à référence échappée, rotation,
+  Burning Ship = repli CPU. Donnée : le shader std f32 n'est JAMAIS identique
+  au CPU f64 (0,13 % de pixels ≠ à zoom 1, 4,7 % à 1e2, 20 % à 1e4).
+  Texte d'origine : Le kernel perturbation f64
   wgpu est ~2× plus lent que le CPU 16t sur GeForce (f64 1:64) ; le kernel
   **f32 + fiabilité** (`perturbation_f32.wgsl`, Metal/Apple Silicon) n'a
   **jamais été chronométré** sur Metal. L'axe `bench` capte `gpu_std_f32` /
@@ -3361,6 +3435,20 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   (2) `c_norm` hors clé : orbite réutilisée pour une vue plus large → rayons
   de merge sur-permissifs. Verrou
   `bla_cache_key_follows_orbit_content_and_view_radius`.
+- [x] **G14.12 — Tier exp en « double mis à l'échelle » (2026-11-06)** —
+  `bytecode/pixel_loop_scaled.rs` : δ = d·2^e (d en `Complex64`, UN exposant
+  commun), pas direct et saut BLA en arithmétique f64 pure, renormalisation
+  seulement quand d sort de sa plage ; toute garde qui échoue (Z minuscule
+  près de la fermeture de période, composante sous-normale, bout de
+  référence) refait le tour par une copie EXACTE du pas FloatExp. Défaut
+  depuis le 2026-11-06 (`FRACTALL_EXP_SCALED=0` = boucle FloatExp), décidé
+  sur preuve : PNG identiques à l'octet sur les 37 cas du tier exp du corpus
+  à 192² (tous sauf e52465), 17 à 256², 5 à 1024². Phase pixels cumulée des
+  37 cas 25,6 → 7,1 s ; e401 0,203 → 0,058 s, e318/e634/safari ×7. Avec
+  G14.10(a) et la boucle HP de G14.2, **e401 256² : pixels 0,84 → 0,058 s
+  (×14) dans la nuit**. Seul écart d'arithmétique connu, jamais observé :
+  l'abandon à ≥ 54 binades de `FloatExp::add`. Non porté : mode suivi par le
+  traqueur exp (garde l'ancienne boucle), Julia.
 - [ ] **G14.8 — Re-baseline standard au schéma 2** sur la machine de
   développement (i7, F3 dispo) : `score --tier standard` (profil + bench
   inclus) puis `baseline` — sans quoi `speed_self`, `ns/iter` et `bench` n'ont
