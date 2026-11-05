@@ -175,10 +175,19 @@ pub trait StepObserverExp: Copy {
     /// Pas direct : `z` = `Z[m] + δ_old`, `two_z_delta` = `2·Z[m]·δ_old`.
     #[inline(always)]
     fn direct(&mut self, _z: ComplexExp, _two_z_delta: ComplexExp, _delta_old: ComplexExp) {}
-    /// Saut BLA accepté `δ' = A·δ + B·dc` (matrices et opérandes bruts : la
-    /// boucle de production ne calcule rien de plus pour l'observateur nul).
+    /// Saut BLA accepté `δ' = A·δ + B·dc` de `l` itérations (matrices et
+    /// opérandes bruts : la boucle de production ne calcule rien de plus pour
+    /// l'observateur nul).
     #[inline(always)]
-    fn bla(&mut self, _a: &Mat2Exp, _b: &Mat2Exp, _delta_old: ComplexExp, _dc: ComplexExp) {}
+    fn bla(
+        &mut self,
+        _a: &Mat2Exp,
+        _b: &Mat2Exp,
+        _delta_old: ComplexExp,
+        _dc: ComplexExp,
+        _l: u32,
+    ) {
+    }
     /// Rebase `δ ← Z + δ`.
     #[inline(always)]
     fn rebase(&mut self, _z_ref: ComplexExp, _z_new: ComplexExp) {}
@@ -255,7 +264,7 @@ impl StepObserverExp for ShadowTrackerExp {
     }
 
     #[inline(always)]
-    fn bla(&mut self, a: &Mat2Exp, b: &Mat2Exp, d: ComplexExp, dc: ComplexExp) {
+    fn bla(&mut self, a: &Mat2Exp, b: &Mat2Exp, d: ComplexExp, dc: ComplexExp, l: u32) {
         let a_delta = ComplexExp {
             re: a.m00 * d.re + a.m01 * d.im,
             im: a.m10 * d.re + a.m11 * d.im,
@@ -271,7 +280,15 @@ impl StepObserverExp for ShadowTrackerExp {
         } else {
             (a.m00.sqr() + a.m01.sqr() + a.m10.sqr() + a.m11.sqr()).sqrt()
         };
-        let local = (l1_exp(a_delta) + l1_exp(b_dc)) * (self.bla_epsilon + GAMMA);
+        // Troncature : CHACUN des `l` pas fusionnés abandonne un terme δ² ≤ ε
+        // fois son terme linéaire (rayon de validité F3), transporté jusqu'au
+        // bout du saut par les pas suivants ⇒ ≈ l·ε relatif à l'arrivée, pas
+        // ε. Avec `ε` seul la borne SOUS-estimait l'erreur réelle d'un
+        // facteur ~40 sur les orbites à longs sauts (olbaid2 (12,25), tracé
+        // contre GMP pur) : elle ne s'emballait jamais avant l'évasion et les
+        // pixels faux passaient pour fiables.
+        let trunc = self.bla_epsilon * l as f64 + GAMMA;
+        let local = (l1_exp(a_delta) + l1_exp(b_dc)) * trunc;
         self.err = sigma * self.err + local;
         self.saturate();
     }
@@ -437,6 +454,24 @@ mod tests {
         assert!(t.error_bound() as f64 >= DEFAULT_RUNAWAY);
     }
 
+    /// Tier exp : un saut BLA de `l` itérations cumule la troncature de ses
+    /// `l` pas (≈ l·ε relatif), pas d'un seul. Avec ε seul, la borne sous-
+    /// estimait l'erreur réelle ~40× (olbaid2 (12,25) tracé vs GMP pur).
+    #[test]
+    fn exp_bla_truncation_scales_with_jump_length() {
+        let eps = 1.0 / (1u64 << 53) as f64;
+        let one = ComplexExp::from_complex64(Complex64::new(1.0, 0.0));
+        let zero = ComplexExp::zero();
+        let a = Mat2Exp::identity();
+        let mut t = ShadowTrackerExp::new(zero, eps);
+        t.bla(&a, &a, one, zero, 1024);
+        let e = t.err.to_f64();
+        assert!(e >= 1024.0 * eps, "borne {e:e} < l·ε = {:e}", 1024.0 * eps);
+        let mut t1 = ShadowTrackerExp::new(zero, eps);
+        t1.bla(&a, &a, one, zero, 1);
+        assert!(t1.err.to_f64() < 8.0 * eps);
+    }
+
     /// Tier exp : une borne emballée doit RESTER emballée. Le régime `E²`
     /// double l'exposant FloatExp à chaque pas ; sans plafond, l'exposant
     /// `i32` déborde après ~30 pas, s'enroule, et la borne retombe sous le
@@ -460,7 +495,7 @@ mod tests {
         }
         // Les autres hooks ne la font pas retomber non plus.
         let a = Mat2Exp::identity();
-        t.bla(&a, &a, zero, zero);
+        t.bla(&a, &a, zero, zero, 1);
         t.rebase(z, z);
         assert!(t.error_bound() as f64 >= DEFAULT_RUNAWAY);
     }

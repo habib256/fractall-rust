@@ -676,7 +676,7 @@ fn iterate_pixel_unified_exp_mandelbrot_hp_impl<O: StepObserverExp>(
                             !(z_end.norm_sqr_fexp() < bailout_sqr_fexp)
                         };
                         if !overshoots_escape {
-                            obs.bla(&a, &b, delta, dc);
+                            obs.bla(&a, &b, delta, dc, node.l);
                             delta = cand;
                             c = cand_c;
                             bla_steps += 1;
