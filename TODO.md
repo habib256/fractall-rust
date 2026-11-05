@@ -10,7 +10,33 @@
 
 ---
 
-## 🧭 État actuel (2026-11-03) — lire ceci en premier
+## 🧭 État actuel (2026-11-06) — lire ceci en premier
+
+**2026-11-06 — nuit d'optimisation sur l'Apple M4 (branche `nuit-20261105`).**
+Première session sur cette machine : baseline quick figée
+(`harness/baselines/apple-m4-10t.json`), harness corrigé pour macOS (nom de
+machine, RAM, F3 non lançable détecté). Méthode : **profil échantillonné avec
+un binaire symbolisé** (`sample`, cf. HARNESS.md §Profil échantillonné) — il a
+trouvé en une heure trois coûts que le profil par phase ne pouvait pas voir,
+parce qu'ils étaient DANS la phase « pixels » :
+1. **Tier exp (> 1e308) : parse GMP à chaque pixel** — `effective_pixel_size`
+   relisait les chaînes HP (parse décimal + ln 1024 b) deux fois par pixel :
+   45 % (e401) à 70 % (e1000) de la boucle pixel. Mémo → **e401 ×3,0, e1000
+   ×6,1**, PNG identiques.
+2. **Cache de table BLA** : `Arc` cloné et `Formula` compilée par pixel (ligne
+   de cache du compteur rebondissant entre workers) → **test5 ×7**, flake /
+   floral −27 %. Au passage deux trous de CORRECTION fermés : clé d'orbite par
+   adresse seule (table périmée possible après réallocation) et `c_norm`
+   absent de la clé (rayons sur-permissifs sur vue élargie à orbite
+   réutilisée).
+3. **Path f64 standard** (toute navigation < 1e13) : formule recompilée deux
+   fois par pixel + interpréteur point par point → **noyau par lots à 8 voies
+   entrelacées, bit-identique, ×4,5 à ×7** (Mandelbrot 1440p 0,31 → 0,057 s).
+Détail et mesures : G14.9-G14.11 ci-dessous. Résultats des agents (boucle
+perturbation, correction dd, GPU Metal, chasse aux erreurs, scaled double) :
+G14.1/2/5 et G14.12.
+
+**2026-11-03 (état précédent).**
 
 **2026-11-03 — harnais prêt pour la campagne d'optimisation (G14).** Le
 harness mesure désormais SANS F3 : vitesse intrinsèque par cas vs baseline
@@ -3257,7 +3283,13 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   PTWithCompression). *Métriques* : profil `orbit %` sur e1000/e1121/e1200
   (tier standard), `trend --case e1000`. *Done* : orbite ≤ 10 % du wall
   jusqu'à 1e1200 et vidéo deep sans recalcul d'orbite par keyframe.
-- [~] **G14.4 — Instrumentation manquante (harness)** — (b) pic RSS et (d)
+- [x] **G14.4 — Instrumentation manquante (harness)** — **SOLDÉ 2026-11-06** :
+  (a) `[PERTURB PERF]` porte `bla=` (prewarm chronométré, phase `bla` du
+  profil — dragon 2,3 % du wall, e401 0,5 %) ; (c) colonne `ns/iter·thread`
+  + ns/iter recalculé par le harness (le moteur l'imprime à 0,1 ns près : e50
+  affichait « 0.0 », il vaut 0,079) ; gap « régression boucle pixel » borné
+  (phase pixel > 50 ms, ns/iter précis des deux côtés). Texte d'origine :
+  (b) pic RSS et (d)
   ligne `[FRACTALL]` std LIVRÉS 2026-11-03 ; restent (a) et (c). (a) **temps de build
   BLA** séparé : la ligne cache-miss affiche `bla=0.000s` car le prewarm
   tourne sous le lock au premier pixel → compté dans `pixels` ; exposer
@@ -3283,13 +3315,52 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   regen de 21 goldens + **décision utilisateur** (les rendus bougent de
   quelques px, correction jamais pire vs GMP). À rouvrir quand G14.4(b)
   mesure le pic RSS dans le profil.
-- [ ] **G14.7 — Démarrage / cas courts**. test5 : wall 18 ms dont pixels
+- [x] **G14.7 — Démarrage / cas courts** — **MESURÉ 2026-11-06, sans objet
+  pour la vidéo.** Rendu `fractall-video` de 168 keyframes 320×180 vers 1e50
+  (location e50, itérations 2000 → 262 k) : sur 230 s, perturbation 207,6 s
+  = pixels 168,4 + post 37,1 + orbite 2,0 + BLA 0,1 ; le reste (34 keyframes
+  std f64 + frais fixes) ≈ 22 s, soit **aucun coût de démarrage mesurable par
+  keyframe**. Le levier vidéo est la boucle pixel (73 %) puis le post dd
+  (16 %) ; l'orbite pèse 0,9 % → la réutilisation d'orbite inter-keyframes
+  (G14.3 reste) ne vaut que pour les locations à millions d'itérations.
+  Les cas courts eux-mêmes ont été traités par G14.10 (coût fixe par pixel).
+  Texte d'origine : test5 : wall 18 ms dont pixels
   11 ms, `other` 38 % (lancement process, compilation bytecode, PNG) — et
   c'est le SEUL cas où F3 gagne sur 4 cœurs (ratio 1.10 : 37 ms vs 34 ms ;
   0.27 sur l'i7 16t). Sans
   objet pour l'excellence deep-zoom ; pertinent pour la vidéo (milliers de
   frames courtes) → mesurer `other` cumulé sur un `render` vidéo avant de
   toucher quoi que ce soit.
+- [x] **G14.9 — Path f64 standard par lots (2026-11-06)** —
+  `bytecode/interp_batch.rs` : 8 points en lockstep, opcode appliqué à toutes
+  les voies (boucle à borne fixe, vectorisable), rechargement de voie à la
+  sortie ; chaque voie exécute la suite d'opérations exacte du scalaire →
+  **bit-identique** (verrou `batch_matches_scalar_interpreter_bit_for_bit`, 6
+  familles + Multibrot entiers + opcodes rot, NaN/inf, plafonds 0/1/2/7/300).
+  Branché par TUILE dans `render_escape_time_f64…` (mono-phase, sans canal
+  annexe ; sinon scalaire avec formule compilée une fois). A/B entrelacé M4,
+  phase pixels : Mandelbrot défaut 1440p 0,312 → 0,057 s (×5,5), seahorse 1e6
+  5000 it. 16,65 → 2,43 s (×6,8), Burning Ship ×5,6, Tricorn ×4,6, Multibrot³
+  ×4,5, Julia ×2,5, spiral ×4,6. `FRACTALL_STD_BATCH=0` = scalaire.
+  **Suite ouverte** : (i) la COLORISATION pèse maintenant 70-85 % du temps de
+  rendu f64 (`bench_colorize` : 62 ms à 1440p — `hypot` + 2 `ln` par pixel) ;
+  l'accélérer change des bits de couleur → regen goldens, décision utilisateur ;
+  (ii) le même entrelacement s'applique à la boucle Harmonic LLA (91 % du
+  temps de floral/flake) et au fast-path perturbation (G14.2).
+- [x] **G14.10 — Coûts fixes par pixel du path perturbation (2026-11-06)** —
+  (a) `effective_pixel_size` mémorisée quand elle doit relire les spans HP
+  (au-delà de 1e308) : e401 pixels 0,838 → 0,277 s, e1000 0,585 → 0,096 s,
+  PNG identiques (verrou `hp_pixel_size_memo_follows_its_key`) ; (b) cache
+  BLA : poignée `Rc` par thread au lieu d'un clone d'`Arc` par pixel, formule
+  compilée seulement si le thread-local manque : test5 2048² 0,424 → 0,060 s,
+  flake −27 %, floral −28 %, glitch_test_2 −11 %, cas profonds inchangés.
+- [x] **G14.11 — Clé du cache BLA durcie (correction, 2026-11-06)** — la clé
+  était (adresse, longueur) de `z_ref_f64` : (1) une orbite libérée puis une
+  autre de même longueur réallouée au même endroit retrouvait la table de
+  l'ancienne (non reproduit, fermé par une empreinte de contenu O(1)) ;
+  (2) `c_norm` hors clé : orbite réutilisée pour une vue plus large → rayons
+  de merge sur-permissifs. Verrou
+  `bla_cache_key_follows_orbit_content_and_view_radius`.
 - [ ] **G14.8 — Re-baseline standard au schéma 2** sur la machine de
   développement (i7, F3 dispo) : `score --tier standard` (profil + bench
   inclus) puis `baseline` — sans quoi `speed_self`, `ns/iter` et `bench` n'ont
