@@ -393,6 +393,45 @@ impl ShadowTrackerDd {
 /// Suivi du tier **dd** : ACTIF par défaut dès que le détecteur l'est ;
 /// `FRACTALL_RELIABILITY_DD=0` le coupe (A/B).
 pub fn reliability_tracks_dd() -> bool {
+    reliability_tracks_dd_inner()
+}
+
+/// Fraction par défaut du plafond de l'escalade dd → GMP (cf.
+/// [`gmp_escalation_allowed`]).
+pub const DEFAULT_GMP_MAX_FRACTION: f64 = 0.01;
+/// Plancher absolu du plafond : une poignée de pixels part toujours au GMP.
+pub const GMP_MIN_PIXELS: usize = 16;
+
+/// Plafond de l'escalade dd → GMP en FRACTION de pixels de la frame
+/// (`FRACTALL_RELIABILITY_GMP_MAX_FRACTION`, ≥ 1 = illimité). Jamais en
+/// temps : un budget temps rendrait la sortie dépendante de la machine.
+pub fn reliability_gmp_max_fraction() -> f64 {
+    use std::sync::OnceLock;
+    static F: OnceLock<f64> = OnceLock::new();
+    *F.get_or_init(|| {
+        std::env::var("FRACTALL_RELIABILITY_GMP_MAX_FRACTION")
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|f| f.is_finite() && *f >= 0.0)
+            .unwrap_or(DEFAULT_GMP_MAX_FRACTION)
+    })
+}
+
+/// Décision TOUT OU RIEN de l'escalade dd → GMP : `n_unreliable` pixels dont
+/// la borne dd s'emballe partent au GMP ssi `n ≤ max(16, ⌊f·N⌋)` (ou
+/// `f ≥ 1`). Au-delà, aucun n'y part (l'image ne dépend d'aucun ordre de
+/// traitement) : ils gardent leur valeur dd de meilleur effort.
+/// Motif : le GMP par pixel coûte ~1 µs/itération — lethal_weapon (1,6 M
+/// itérations) 48² : 406 px (17,6 %) = 73 s, des heures en 1080p.
+pub fn gmp_escalation_allowed(n_unreliable: usize, frame_pixels: usize, max_fraction: f64) -> bool {
+    if max_fraction >= 1.0 {
+        return true;
+    }
+    let cap = ((max_fraction * frame_pixels as f64).floor() as usize).max(GMP_MIN_PIXELS);
+    n_unreliable <= cap
+}
+
+fn reliability_tracks_dd_inner() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| {
@@ -704,6 +743,25 @@ mod tests {
             m11: -7.0,
         };
         assert!((spectral_norm(&m) - 7.0).abs() < 1e-12);
+    }
+
+    /// Verrou du plafond de l'escalade dd → GMP : plafond en fraction,
+    /// plancher 16, illimité à f ≥ 1, décision binaire sur le TOTAL.
+    #[test]
+    fn gmp_escalation_cap_decision() {
+        // 256² à 1 % : plafond 655.
+        assert!(gmp_escalation_allowed(655, 65536, 0.01));
+        assert!(!gmp_escalation_allowed(656, 65536, 0.01));
+        // Petite frame : le plancher 16 domine (48² à 1 % = 23 ; 16² → 2).
+        assert!(gmp_escalation_allowed(16, 256, 0.01));
+        assert!(!gmp_escalation_allowed(17, 256, 0.01));
+        assert!(gmp_escalation_allowed(23, 2304, 0.01));
+        assert!(!gmp_escalation_allowed(406, 2304, 0.01));
+        // f ≥ 1 : illimité ; f = 0 : seul le plancher.
+        assert!(gmp_escalation_allowed(1_000_000, 10, 1.0));
+        assert!(gmp_escalation_allowed(16, 1 << 20, 0.0));
+        assert!(!gmp_escalation_allowed(17, 1 << 20, 0.0));
+        assert!(gmp_escalation_allowed(0, 0, 0.01));
     }
 
     #[test]
