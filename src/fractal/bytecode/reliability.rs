@@ -300,6 +300,110 @@ impl StepObserverExp for ShadowTrackerExp {
     }
 }
 
+// ─── Tier dd (~106 b) ───────────────────────────────────────────────────────
+//
+// Même récurrence et même critère (emballement) que [`ShadowTracker`], à
+// l'unité d'arrondi double-double. La borne elle-même est calculée en f64 à
+// partir des parties hautes (une magnitude n'a pas besoin de 106 bits) : la
+// boucle dd fournit des normes/modules f64. Prouvé nécessaire : seahorse 1e6,
+// pixel (117,17) — le dd rendait 1838 itérations, GMP convergé 1598, sans
+// rien signaler (sensibilité au-delà de 106 bits).
+//
+// Limite connue : f64 sous-déborde sous ~1e-308 ; au-delà de ~1e290 de zoom
+// (tier dd demandé en exp) la borne peut s'annuler et le traqueur devenir
+// aveugle — le tier f64 (seul consommateur de l'escalade) s'arrête à 1e280.
+
+/// Unité d'arrondi du double-double (≈ 2⁻¹⁰⁴, quelques ulp de marge sur 2⁻¹⁰⁶).
+pub const U_DD: f64 = 4.930_380_657_631_324e-32; // 2^-104
+/// Constante d'arrondi locale d'un pas complexe dd.
+const GAMMA_DD: f64 = 4.0 * U_DD;
+
+/// Traqueur de fiabilité du tier dd : borne d'erreur absolue `E` sur `z`
+/// (f64), unité `U_DD`, ε BLA de la table dd (`DD_BLA_EPSILON`).
+#[derive(Clone, Copy, Debug)]
+pub struct ShadowTrackerDd {
+    pub err: f64,
+    dc_abs: f64,
+    bla_epsilon: f64,
+    /// Seuil d'emballement (borne collante au-delà).
+    cap: f64,
+}
+
+impl ShadowTrackerDd {
+    pub fn new(dc_abs: f64, bla_epsilon: f64) -> Self {
+        Self {
+            err: 0.0,
+            dc_abs,
+            bla_epsilon,
+            cap: reliability_runaway(),
+        }
+    }
+
+    /// Pas direct : `z_abs` = |Z[m] + δ_old|, `two_z_delta_l1` ≥ |2·Z·δ_old|,
+    /// `delta_norm_sqr` = |δ_old|². Mêmes termes que [`ShadowTracker`].
+    #[inline(always)]
+    pub fn direct(&mut self, z_abs: f64, two_z_delta_l1: f64, delta_norm_sqr: f64) {
+        let local = GAMMA_DD * (two_z_delta_l1 + delta_norm_sqr + self.dc_abs);
+        self.err = self.err * (2.0 * z_abs + self.err) + local;
+        self.stick();
+    }
+
+    /// Saut BLA de `l` pas : `sigma_a` = σ₁(A), `a_delta_l1` ≥ |A·δ|,
+    /// `b_dc_l1` ≥ |B·dc|. Troncature cumulée `l·ε` (cf. [`ShadowTrackerExp`]).
+    #[inline(always)]
+    pub fn bla(&mut self, sigma_a: f64, a_delta_l1: f64, b_dc_l1: f64, l: u32) {
+        let local = (self.bla_epsilon * l as f64 + GAMMA_DD) * (a_delta_l1 + b_dc_l1);
+        self.err = sigma_a * self.err + local;
+        self.stick();
+    }
+
+    /// Borne emballée COLLANTE : au-delà du seuil d'emballement elle passe à
+    /// `+∞` et y reste (un saut BLA à σ₁ < 1 ne peut plus la faire
+    /// redescendre sous le seuil ; `∞·0` donne NaN, lui aussi « emballé »).
+    #[inline(always)]
+    fn stick(&mut self) {
+        if !(self.err < self.cap) {
+            self.err = f64::INFINITY;
+        }
+    }
+
+    /// Rebase `δ ← Z + δ` (arrondi dd de la référence devenu absolu).
+    #[inline(always)]
+    pub fn rebase(&mut self, z_ref_l1: f64, z_new_l1: f64) {
+        self.err += U_DD * (z_ref_l1 + z_new_l1);
+        self.stick();
+    }
+
+    /// Emballée (≥ seuil ou NaN) ?
+    #[inline(always)]
+    pub fn runaway(&self, threshold: f64) -> bool {
+        !(self.err < threshold)
+    }
+
+    /// Borne finale saturée en f32 (`+∞` si NaN), même canal que le f64.
+    pub fn error_bound(&self) -> f32 {
+        if self.err.is_nan() {
+            f32::INFINITY
+        } else {
+            self.err as f32
+        }
+    }
+}
+
+/// Suivi du tier **dd** : ACTIF par défaut dès que le détecteur l'est ;
+/// `FRACTALL_RELIABILITY_DD=0` le coupe (A/B).
+pub fn reliability_tracks_dd() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        reliability_mode().tracks()
+            && !matches!(
+                std::env::var("FRACTALL_RELIABILITY_DD").ok().as_deref().map(str::trim),
+                Some("0") | Some("off") | Some("false")
+            )
+    })
+}
+
 /// Mode du détecteur, lu une fois depuis `FRACTALL_RELIABILITY` :
 /// - `off` / `0` : détecteur inactif (boucle de production intacte) ;
 /// - `observe` : détecte et rapporte (`[RELIABILITY]`), ne corrige rien ;

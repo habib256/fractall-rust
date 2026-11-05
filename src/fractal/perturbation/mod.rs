@@ -216,6 +216,8 @@ fn correct_pixels_dd(
         crate::fractal::bytecode::bla_dd::DD_BLA_EPSILON,
     );
     let limits = crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(&dd_params);
+    let track_dd = crate::fractal::bytecode::reliability::reliability_tracks_dd();
+    let runaway = crate::fractal::bytecode::reliability::reliability_runaway() as f32;
     let t_bla = t1.elapsed();
     let t2 = Instant::now();
     let width = params.width.max(1) as usize;
@@ -259,22 +261,28 @@ fn correct_pixels_dd(
                 // `iterate_pixel_with_dd` pour un Mandelbrot `use_dd_tier` à
                 // orbite dd : mêmes arguments, `glitched` = `ref_exhausted`,
                 // toujours faux en dd).
-                let r = crate::fractal::bytecode::pixel_loop_dd::iterate_pixel_unified_ddexp_mandelbrot(
-                    &orbit,
-                    Some(&dd_table),
-                    dc_dd,
-                    ComplexDDExp::ZERO,
-                    limits,
-                );
-                (idx, r.iteration, r.z_final, r.ref_exhausted)
+                // Détecteur de fiabilité au niveau dd : un pixel dont la borne
+                // dd s'emballe ENCORE (sensibilité > 106 b) est rendu
+                // « encore glitché » → l'appelant le recalcule en GMP.
+                let (r, bound) =
+                    crate::fractal::bytecode::pixel_loop_dd::iterate_pixel_unified_ddexp_mandelbrot_tracked(
+                        &orbit,
+                        Some(&dd_table),
+                        dc_dd,
+                        ComplexDDExp::ZERO,
+                        limits,
+                        track_dd,
+                    );
+                (idx, r.iteration, r.z_final, r.ref_exhausted || !(bound < runaway))
             })
             .collect::<Vec<_>>(),
     )
-    .inspect(|_| {
+    .inspect(|res| {
         if perf_enabled() {
             eprintln!(
-                "[RELIABILITY-DD] px={} orbit={:.3}s bla={:.3}s pixels={:.3}s",
+                "[RELIABILITY-DD] px={} dd_runaway={} orbit={:.3}s bla={:.3}s pixels={:.3}s",
                 indices.len(),
+                res.iter().filter(|r| r.3).count(),
                 t_orbit.as_secs_f64(),
                 t_bla.as_secs_f64(),
                 t2.elapsed().as_secs_f64()
@@ -1367,6 +1375,7 @@ pub fn render_perturbation_with_cache(
             glitched_indices.iter().copied().collect();
 
         if !to_correct.is_empty() {
+            let t_gmp_corr = Instant::now();
             let prec = compute_perturbation_precision_bits(params);
             let width_u32 = params.width;
             // Relatif à la référence pour `iterate_pixel_gmp` (compute_dc_ref) ;
@@ -1494,7 +1503,15 @@ pub fn render_perturbation_with_cache(
                     zs[idx] = z_final;
                 }
             }
-        }
+                    if perf_enabled() {
+                eprintln!(
+                    "[RELIABILITY-GMP] px={} (glitched={}) time={:.3}s",
+                    to_correct.len(),
+                    glitched_indices.len(),
+                    t_gmp_corr.elapsed().as_secs_f64()
+                );
+            }
+}
         let t_post = t_post_start.elapsed();
 
         if perf {
@@ -2285,6 +2302,43 @@ mod tests {
             &[(0, 4), (2, 2), (4, 0)],
             1,
         );
+    }
+
+    /// Verrou du détecteur de fiabilité **dd** : seahorse 1e6 256², pixel
+    /// (117,17) — sensibilité au-delà de 106 bits. GMP pur (aussi à 768 b) :
+    /// 1598 itérations ; le tier dd rendait 1838 SANS rien signaler, en
+    /// frame dd entière comme en correction des pixels flaggés par le f64.
+    /// Avec le traqueur dd, la borne s'emballe → recalcul GMP par pixel.
+    #[test]
+    fn dd_tracker_escalates_pixel_beyond_dd_precision() {
+        use crate::fractal::bytecode::reliability::{reliability_mode, ReliabilityMode};
+        // NB : PAS de court-circuit sur `FRACTALL_RELIABILITY_DD=0` — le test
+        // doit alors ÉCHOUER (1838) : c'est la preuve qu'il verrouille le
+        // traqueur dd.
+        if reliability_mode() != ReliabilityMode::Escalate {
+            return; // détecteur coupé par l'environnement du test
+        }
+        let span_hp = "4.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000013e-6";
+        for dd_tier in [false, true] {
+            let mut p = default_params_for_type(FractalType::Mandelbrot, 256, 256);
+            p.center_x = -0.743643887037158;
+            p.center_y = 0.131825904205311;
+            p.center_x_hp = Some("-0.743643887037158".into());
+            p.center_y_hp = Some("0.131825904205311".into());
+            p.span_x = 4e-6;
+            p.span_y = 4e-6;
+            p.span_x_hp = Some(span_hp.into());
+            p.span_y_hp = Some(span_hp.into());
+            p.iteration_max = 5000;
+            p.bailout = 25.0;
+            p.engine.precision_bits = 256;
+            p.engine.algorithm_mode = AlgorithmMode::Perturbation;
+            p.engine.use_dd_tier = dd_tier;
+            let cancel = Arc::new(AtomicBool::new(false));
+            let (iters, _, _) =
+                render_perturbation_cancellable_with_reuse(&p, &cancel, None).expect("rendu");
+            assert_eq!(iters[17 * 256 + 117], 1598, "dd_tier={dd_tier}");
+        }
     }
 
     #[test]

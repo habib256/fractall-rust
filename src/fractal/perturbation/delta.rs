@@ -740,14 +740,18 @@ fn try_bytecode_unified_path(
                 .copied()
                 .unwrap_or_else(|| ComplexDDExp::from_complex_exp(*dc));
             let delta0_dd = ComplexDDExp::from_complex_exp(*delta0);
-            let res_dd =
-                crate::fractal::bytecode::pixel_loop_dd::iterate_pixel_unified_ddexp_mandelbrot(
+            // Détecteur de fiabilité au niveau dd : borne emballée ⇒ le pixel
+            // repart en GMP par pixel (post de `render_perturbation_with_cache`).
+            let (res_dd, bound_dd) =
+                crate::fractal::bytecode::pixel_loop_dd::iterate_pixel_unified_ddexp_mandelbrot_tracked(
                     ref_orbit,
                     entry.dd_table.as_ref(),
                     dc_dd,
                     delta0_dd,
                     crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
+                    crate::fractal::bytecode::reliability::reliability_tracks_dd(),
                 );
+            error_bound = bound_dd;
             return Some(crate::fractal::bytecode::pixel_loop::UnifiedPixelResult {
                 iteration: res_dd.iteration,
                 z_final: res_dd.z_final,

@@ -54,30 +54,103 @@ pub fn iterate_pixel_unified_ddexp_mandelbrot(
     delta_initial: ComplexDDExp,
     limits: crate::fractal::bytecode::pixel_loop::PixelLoopLimits,
 ) -> UnifiedPixelResultExp {
+    iterate_pixel_unified_ddexp_mandelbrot_tracked(ref_orbit, bla, dc, delta_initial, limits, false).0
+}
+
+/// Variante avec **détecteur de fiabilité dd** (`track`) : renvoie en plus la
+/// borne d'erreur finale (`0` si non suivie ; `≥ reliability_runaway()` ou
+/// `+∞` ⇒ pixel non fiable même en dd, à recalculer en GMP). En mode
+/// escalade, la boucle s'ARRÊTE dès l'emballement (le résultat partiel est
+/// alors sans objet : l'appelant recalcule le pixel).
+///
+/// **Second essai SANS BLA** avant de déclarer le pixel non fiable : la
+/// troncature des sauts BLA dd (`l·ε`, ε = 2⁻⁸⁰) domine de très loin
+/// l'arrondi dd (2⁻¹⁰⁴) dans la borne, et la borne la compte au pire cas.
+/// Mesuré (256², escalade par défaut) : e50 3/3 et dragon 1/1 pixels dont la
+/// borne s'emballait AVEC BLA rendaient au GMP exactement la valeur dd — faux
+/// positifs, chacun payant une orbite GMP dense (dragon : +4,3 s, +700 Mo).
+/// En pas directs purs (`bla = None`) la borne ne contient plus que
+/// l'arrondi dd : si elle tient, le résultat sans BLA est garanti au même
+/// titre ; sinon (seahorse 1e6 (117,17), sensibilité > 106 b) le pixel part
+/// au GMP. Coût : un pixel dd sans saut (~10 ns/itération).
+pub fn iterate_pixel_unified_ddexp_mandelbrot_tracked(
+    ref_orbit: &ReferenceOrbit,
+    bla: Option<&BlaTableDd>,
+    dc: ComplexDDExp,
+    delta_initial: ComplexDDExp,
+    limits: crate::fractal::bytecode::pixel_loop::PixelLoopLimits,
+    track: bool,
+) -> (UnifiedPixelResultExp, f32) {
+    let first = tracked_once(ref_orbit, bla, dc, delta_initial, limits, track);
+    let runaway = crate::fractal::bytecode::reliability::reliability_runaway() as f32;
+    if track && bla.is_some() && !(first.1 < runaway) && dd_retry_without_bla() {
+        return tracked_once(ref_orbit, None, dc, delta_initial, limits, track);
+    }
+    first
+}
+
+/// `FRACTALL_DD_RETRY_NOBLA=0` coupe le second essai sans BLA (A/B).
+fn dd_retry_without_bla() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        !matches!(std::env::var("FRACTALL_DD_RETRY_NOBLA").as_deref(), Ok("0") | Ok("off"))
+    })
+}
+
+fn tracked_once(
+    ref_orbit: &ReferenceOrbit,
+    bla: Option<&BlaTableDd>,
+    dc: ComplexDDExp,
+    delta_initial: ComplexDDExp,
+    limits: crate::fractal::bytecode::pixel_loop::PixelLoopLimits,
+    track: bool,
+) -> (UnifiedPixelResultExp, f32) {
+    use crate::fractal::bytecode::reliability as rel;
     let ref_len = ref_orbit.z_ref_dd.len();
     // Garde : le tier dd exige une orbite dd non vide et de longueur cohérente.
     if ref_len < 2 {
-        return UnifiedPixelResultExp {
-            iteration: 0,
-            z_final: Complex64::new(0.0, 0.0),
-            rebase_count: 0,
-            bla_steps: 0,
-            ref_exhausted: false,
-        };
+        return (
+            UnifiedPixelResultExp {
+                iteration: 0,
+                z_final: Complex64::new(0.0, 0.0),
+                rebase_count: 0,
+                bla_steps: 0,
+                ref_exhausted: false,
+            },
+            0.0,
+        );
     }
+    let stop = if rel::reliability_mode() == rel::ReliabilityMode::Escalate {
+        rel::reliability_runaway()
+    } else {
+        f64::INFINITY
+    };
     let mut st = DdLoopState {
         delta: delta_initial,
         c: PixelCounter::new(),
         rebase_count: 0,
         bla_steps: 0,
         iters_ptb: 0,
+        tr: track.then(|| {
+            rel::ShadowTrackerDd::new(
+                dc.to_complex64_approx().norm(),
+                super::bla_dd::DD_BLA_EPSILON,
+            )
+        }),
+        stop,
     };
     if fast_dd_enabled() {
         if let Some(r) = fast::run(ref_orbit, bla, dc, &mut st, limits) {
-            return r;
+            return (r, st.tr.map_or(0.0, |t| t.error_bound()));
         }
     }
     ddexp_loop(ref_orbit, bla, dc, st, limits)
+}
+
+/// Borne L1 (≥ module) d'un complexe dd, en f64.
+#[inline(always)]
+fn l1c(z: ComplexDDExp) -> f64 {
+    z.re.to_f64().abs() + z.im.to_f64().abs()
 }
 
 /// État de la boucle dd, transférable du chemin rapide (`fast`) vers la
@@ -89,6 +162,10 @@ struct DdLoopState {
     rebase_count: u32,
     bla_steps: u32,
     iters_ptb: u32,
+    /// Détecteur de fiabilité dd (G9.6 au niveau dd), `None` = non suivi.
+    tr: Option<crate::fractal::bytecode::reliability::ShadowTrackerDd>,
+    /// Seuil d'arrêt anticipé (emballement, mode escalade), sinon +∞.
+    stop: f64,
 }
 
 /// Chemin rapide dd sans exposant (`fast`) actif ? Défaut oui ;
@@ -108,7 +185,7 @@ fn ddexp_loop(
     dc: ComplexDDExp,
     st: DdLoopState,
     limits: crate::fractal::bytecode::pixel_loop::PixelLoopLimits,
-) -> UnifiedPixelResultExp {
+) -> (UnifiedPixelResultExp, f32) {
     let crate::fractal::bytecode::pixel_loop::PixelLoopLimits {
         iteration_max,
         bailout,
@@ -125,8 +202,13 @@ fn ddexp_loop(
         mut rebase_count,
         mut bla_steps,
         mut iters_ptb,
+        mut tr,
+        stop,
     } = st;
     const REDUCE_INTERVAL: u32 = 250;
+    let bound = |tr: &Option<crate::fractal::bytecode::reliability::ShadowTrackerDd>| {
+        tr.map_or(0.0, |t| t.error_bound())
+    };
 
     while c.keep_iterating(iteration_max)
         && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
@@ -147,11 +229,17 @@ fn ddexp_loop(
                     delta = zz;
                     c.rebase();
                     rebase_count += 1;
+                    if let Some(t) = tr.as_mut() {
+                        t.rebase(l1c(z_m0), l1c(zz));
+                    }
                 }
             } else if zz.norm_sqr() < delta.norm_sqr() {
                 delta = zz;
                 c.rebase();
                 rebase_count += 1;
+                if let Some(t) = tr.as_mut() {
+                    t.rebase(l1c(z_m0), l1c(zz));
+                }
             }
         }
 
@@ -159,13 +247,16 @@ fn ddexp_loop(
         // Bailout : |Z[m] + δ|² ≥ bailout² (tout en dd, pas de saturation f64).
         let z_abs = z_m.add(delta);
         if !(z_abs.norm_sqr() < bailout_sqr) {
-            return UnifiedPixelResultExp {
-                iteration: c.n(),
-                z_final: z_abs.to_complex64_approx(),
-                rebase_count,
-                bla_steps,
-                ref_exhausted: false,
-            };
+            return (
+                UnifiedPixelResultExp {
+                    iteration: c.n(),
+                    z_final: z_abs.to_complex64_approx(),
+                    rebase_count,
+                    bla_steps,
+                    ref_exhausted: false,
+                },
+                bound(&tr),
+            );
         }
 
         // Pas BLA dd si disponible et valide : δ := A·δ + B·dc, saute `l` iters.
@@ -188,12 +279,30 @@ fn ddexp_loop(
                         .add(delta.im.mul_dd(a.m11))
                         .add(dc.re.mul_dd(b.m10))
                         .add(dc.im.mul_dd(b.m11));
+                    if let Some(t) = tr.as_mut() {
+                        let sa = a.m00.to_f64().hypot(a.m10.to_f64());
+                        let sb = b.m00.to_f64().hypot(b.m10.to_f64());
+                        t.bla(sa, sa * l1c(delta), sb * l1c(dc), node.l);
+                    }
                     delta = ComplexDDExp {
                         re: new_re,
                         im: new_im,
                     };
                     c = cand_c;
                     bla_steps += 1;
+                    if tr.is_some_and(|t| t.runaway(stop)) {
+                        let m = c.m_usize().min(ref_len - 1);
+                        return (
+                            UnifiedPixelResultExp {
+                                iteration: c.n(),
+                                z_final: z_ref_dd[m].add(delta).to_complex64_approx(),
+                                rebase_count,
+                                bla_steps,
+                                ref_exhausted: false,
+                            },
+                            bound(&tr),
+                        );
+                    }
                     if c.n() % REDUCE_INTERVAL == 0 {
                         delta.reduce();
                     }
@@ -207,19 +316,27 @@ fn ddexp_loop(
             re: z_m.re.mul_f64(2.0),
             im: z_m.im.mul_f64(2.0),
         };
+        if let Some(t) = tr.as_mut() {
+            let za = z_abs.to_complex64_approx().norm();
+            let d = delta.to_complex64_approx();
+            t.direct(za, 2.0 * l1c(z_m) * (d.re.abs() + d.im.abs()), d.norm_sqr());
+        }
         delta = delta.mul(two_z).add(delta.sqr()).add(dc);
         c.step();
         iters_ptb += 1;
 
-        if !delta.is_finite() {
+        if !delta.is_finite() || tr.is_some_and(|t| t.runaway(stop)) {
             let m_read = c.m_usize().min(ref_len - 1);
-            return UnifiedPixelResultExp {
-                iteration: c.n(),
-                z_final: z_ref_dd[m_read].add(delta).to_complex64_approx(),
-                rebase_count,
-                bla_steps,
-                ref_exhausted: false,
-            };
+            return (
+                UnifiedPixelResultExp {
+                    iteration: c.n(),
+                    z_final: z_ref_dd[m_read].add(delta).to_complex64_approx(),
+                    rebase_count,
+                    bla_steps,
+                    ref_exhausted: false,
+                },
+                bound(&tr),
+            );
         }
 
         if c.n() % REDUCE_INTERVAL == 0 {
@@ -228,13 +345,16 @@ fn ddexp_loop(
     }
 
     let final_m = c.m_usize().min(ref_len - 1);
-    UnifiedPixelResultExp {
-        iteration: c.n(),
-        z_final: z_ref_dd[final_m].add(delta).to_complex64_approx(),
-        rebase_count,
-        bla_steps,
-        ref_exhausted: false,
-    }
+    (
+        UnifiedPixelResultExp {
+            iteration: c.n(),
+            z_final: z_ref_dd[final_m].add(delta).to_complex64_approx(),
+            rebase_count,
+            bla_steps,
+            ref_exhausted: false,
+        },
+        bound(&tr),
+    )
 }
 
 /// Chemin rapide de la boucle dd : **double-double SANS exposant** (valeurs
@@ -510,6 +630,10 @@ mod fast {
         let mut rebase_count = st.rebase_count;
         let mut bla_steps = st.bla_steps;
         let mut iters_ptb = st.iters_ptb;
+        let mut tr = st.tr;
+        let stop = st.stop;
+        // dc à l'échelle 1, borne L1 (terme BLA du traqueur).
+        let dc_l1 = (dcr.hi.abs() + dci.hi.abs()) * down;
 
         macro_rules! bail {
             () => {{
@@ -521,7 +645,29 @@ mod fast {
                 st.rebase_count = rebase_count;
                 st.bla_steps = bla_steps;
                 st.iters_ptb = iters_ptb;
+                st.tr = tr;
                 return None;
+            }};
+        }
+        // Sortie anticipée sur emballement de la borne (mode escalade).
+        macro_rules! runaway_exit {
+            () => {{
+                if tr.is_some_and(|t| t.runaway(stop)) {
+                    st.tr = tr;
+                    let zm = z_ref_dd[c.m_usize().min(ref_len - 1)];
+                    return Some(UnifiedPixelResultExp {
+                        iteration: c.n(),
+                        z_final: zm
+                            .add(ComplexDDExp {
+                                re: to_ddexp_s(dr, s),
+                                im: to_ddexp_s(di, s),
+                            })
+                            .to_complex64_approx(),
+                        rebase_count,
+                        bla_steps,
+                        ref_exhausted: false,
+                    });
+                }
             }};
         }
 
@@ -579,6 +725,12 @@ mod fast {
                 di = scale(zzi, up);
                 c.rebase();
                 rebase_count += 1;
+                if let Some(t) = tr.as_mut() {
+                    t.rebase(
+                        zr0.hi.abs() + zi0.hi.abs(),
+                        zzr.hi.abs() + zzi.hi.abs(),
+                    );
+                }
             }
 
             // Évasion `|Z+δ|² < bailout²` (même bande, échelle 1). Une
@@ -594,6 +746,7 @@ mod fast {
                 !less(norm(zzr, zzi), bailout_sqr)
             };
             if escaped {
+                st.tr = tr;
                 return Some(UnifiedPixelResultExp {
                     iteration: c.n(),
                     z_final: Complex64::new(to_f64_e(zzr), to_f64_e(zzi)),
@@ -650,10 +803,17 @@ mod fast {
                             add_e(add_e(dr.mul(a.m10), di.mul(a.m11)), dcr.mul(b.m10)),
                             dci.mul(b.m11),
                         );
+                        if let Some(t) = tr.as_mut() {
+                            let sa = a.m00.hi.hypot(a.m10.hi);
+                            let sb = b.m00.hi.hypot(b.m10.hi);
+                            let d_l1 = (dr.hi.abs() + di.hi.abs()) * down;
+                            t.bla(sa, sa * d_l1, sb * dc_l1, node.l);
+                        }
                         dr = nr;
                         di = ni;
                         c = cand_c;
                         bla_steps += 1;
+                        runaway_exit!();
                         continue;
                     }
                 }
@@ -665,6 +825,14 @@ mod fast {
             // que `Dd::sqr(x)·2^s` (produits croisés égaux, somme doublée
             // exacte) sans dépasser la plage quand δ_s est grand.
             let (ur, ui) = (scale(dr, down), scale(di, down));
+            if let Some(t) = tr.as_mut() {
+                let d_l1 = ur.hi.abs() + ui.hi.abs();
+                t.direct(
+                    nz1.sqrt(),
+                    2.0 * (zr.hi.abs() + zi.hi.abs()) * d_l1,
+                    ur.hi * ur.hi + ui.hi * ui.hi,
+                );
+            }
             let tzr = zr.mul_f64(2.0);
             let tzi = zi.mul_f64(2.0);
             let pr = sub_e(dr.mul(tzr), di.mul(tzi));
@@ -675,6 +843,7 @@ mod fast {
             di = add_e(add_e(pi, si), dci);
             c.step();
             iters_ptb += 1;
+            runaway_exit!();
             // |δ| est borné par l'évasion du tour (|Z| < 1e5, |Z+δ| < bailout) :
             // pas de non-fini possible ici, contrairement à `ddexp_loop` dont
             // ce chemin n'a donc pas besoin de la sortie `!is_finite`.
@@ -690,6 +859,7 @@ mod fast {
                 im: to_ddexp_s(di, s),
             })
             .to_complex64_approx();
+        st.tr = tr;
         Some(UnifiedPixelResultExp {
             iteration: c.n(),
             z_final,
@@ -840,15 +1010,17 @@ mod tests {
                         rebase_count: 0,
                         bla_steps: 0,
                         iters_ptb: 0,
+                        tr: None,
+                        stop: f64::INFINITY,
                     };
-                    let reference = ddexp_loop(&orbit, Some(&table), dc, st0, limits);
+                    let reference = ddexp_loop(&orbit, Some(&table), dc, st0, limits).0;
                     let mut st = st0;
                     let got = match fast::run(&orbit, Some(&table), dc, &mut st, limits) {
                         Some(r) => {
                             fast_done += 1;
                             r
                         }
-                        None => ddexp_loop(&orbit, Some(&table), dc, st, limits),
+                        None => ddexp_loop(&orbit, Some(&table), dc, st, limits).0,
                     };
                     assert_eq!(got.iteration, reference.iteration, "{zoom} px ({i},{j})");
                     assert_eq!(
