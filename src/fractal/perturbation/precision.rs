@@ -99,6 +99,13 @@ pub(crate) fn effective_spans_dd(
 /// Taille de pixel effective, reconstruite depuis les spans HP lorsque le f64
 /// sous-flue. Une sentinelle positive représente les profondeurs au-delà de la
 /// plage f64 afin que les comparaisons de seuil restent correctes.
+///
+/// ⚠️ Appelée PAR PIXEL (`delta::try_bytecode_unified_path`, deux fois, dont
+/// une via `bla_c_norm`). Tant que le span f64 est représentable c'est une
+/// division ; au-delà de ~1e308 il vaut 0 et il faut repasser par les chaînes
+/// HP — parse décimal GMP de centaines de chiffres + `ln` à 1024 bits, soit
+/// plusieurs microsecondes. Répété à chaque pixel, c'était 45 % (e401) à 70 %
+/// (e1000) du temps de la boucle pixel du tier exp : d'où le mémo ci-dessous.
 pub(crate) fn effective_pixel_size(params: &FractalParams) -> f64 {
     if params.width == 0 || params.height == 0 {
         return 0.0;
@@ -108,20 +115,64 @@ pub(crate) fn effective_pixel_size(params: &FractalParams) -> f64 {
     if pixel_size_f64.is_finite() && pixel_size_f64 > 0.0 {
         return pixel_size_f64;
     }
+    let Some(sx_hp) = params.span_x_hp.as_deref() else {
+        return 0.0;
+    };
+    let sy_hp = params.span_y_hp.as_deref();
 
+    // Mémo par thread, clé = CONTENU des chaînes HP + dimensions (jamais leur
+    // adresse : un `String` libéré puis réalloué au même endroit mentirait).
+    // La comparaison de contenu coûte un memcmp de quelques centaines d'octets,
+    // contre un parse + ln GMP.
+    HP_PIXEL_SIZE_MEMO.with(|cell| {
+        let mut memo = cell.borrow_mut();
+        if let Some(m) = memo.as_ref() {
+            if m.width == params.width
+                && m.height == params.height
+                && m.span_x_hp == sx_hp
+                && m.span_y_hp.as_deref() == sy_hp
+            {
+                return m.value;
+            }
+        }
+        let value = pixel_size_from_hp(sx_hp, sy_hp.unwrap_or(sx_hp), params.width, params.height);
+        *memo = Some(HpPixelSizeMemo {
+            span_x_hp: sx_hp.to_owned(),
+            span_y_hp: sy_hp.map(str::to_owned),
+            width: params.width,
+            height: params.height,
+            value,
+        });
+        value
+    })
+}
+
+struct HpPixelSizeMemo {
+    span_x_hp: String,
+    span_y_hp: Option<String>,
+    width: u32,
+    height: u32,
+    value: f64,
+}
+
+thread_local! {
+    static HP_PIXEL_SIZE_MEMO: std::cell::RefCell<Option<HpPixelSizeMemo>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Chemin lent de [`effective_pixel_size`] : spans lus en GMP.
+fn pixel_size_from_hp(sx_hp: &str, sy_hp: &str, width: u32, height: u32) -> f64 {
     let parse = |value: &str| -> Option<Float> {
         let raw = Float::parse(value).ok()?;
         Some(Float::with_val(1024, raw))
     };
-    let sx_hp = params.span_x_hp.as_deref();
-    let sy_hp = params.span_y_hp.as_deref().or(sx_hp);
-    let (Some(sx), Some(sy)) = (sx_hp.and_then(parse), sy_hp.and_then(parse)) else {
+    let (Some(sx), Some(sy)) = (parse(sx_hp), parse(sy_hp)) else {
         return 0.0;
     };
     let mut x_size = sx.abs();
-    x_size /= Float::with_val(1024, params.width as f64);
+    x_size /= Float::with_val(1024, width as f64);
     let mut y_size = sy.abs();
-    y_size /= Float::with_val(1024, params.height as f64);
+    y_size /= Float::with_val(1024, height as f64);
     let pixel = if x_size > y_size { x_size } else { y_size };
     if pixel.is_zero() || !pixel.is_finite() {
         return 0.0;
@@ -271,4 +322,76 @@ pub fn should_use_full_gmp_perturbation(params: &FractalParams) -> bool {
     // ComplexExp couvre les magnitudes usuelles du corpus. GMP complet reste
     // le garde-fou des formules hors bytecode au-delà de ce seuil extrême.
     pixel_size < 1e-300
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fractal::{default_params_for_type, FractalType};
+
+    /// Span f64 nul, vérité dans les chaînes HP (le chemin lent). Les
+    /// profondeurs du test restent représentables en f64 pour que les valeurs
+    /// se DISTINGUENT : au-delà de 1e308 tout rend la même sentinelle
+    /// `f64::MIN_POSITIVE` et un mémo collant passerait inaperçu.
+    fn deep_params(span_hp: &str, width: u32, height: u32) -> FractalParams {
+        let mut p = default_params_for_type(FractalType::Mandelbrot, width, height);
+        p.span_x = 0.0;
+        p.span_y = 0.0;
+        p.span_x_hp = Some(span_hp.to_owned());
+        p.span_y_hp = Some(span_hp.to_owned());
+        p
+    }
+
+    /// Verrou du mémo de `effective_pixel_size` : la valeur mémorisée est celle
+    /// du calcul GMP direct, et TOUT changement de la clé (chaîne HP, largeur,
+    /// hauteur, absence du span y) la recalcule. Un mémo trop collant donnerait
+    /// la taille de pixel de la vue précédente — tier et rayon BLA faux.
+    #[test]
+    fn hp_pixel_size_memo_follows_its_key() {
+        let a = deep_params("4e-200", 256, 256);
+        let direct_a = pixel_size_from_hp("4e-200", "4e-200", 256, 256);
+        assert!(direct_a > 0.0);
+        assert_eq!(effective_pixel_size(&a), direct_a);
+        assert_eq!(effective_pixel_size(&a), direct_a, "second appel = mémo");
+
+        // Autre profondeur, même longueur de chaîne.
+        let b = deep_params("4e-250", 256, 256);
+        let direct_b = pixel_size_from_hp("4e-250", "4e-250", 256, 256);
+        assert_ne!(direct_a, direct_b);
+        assert_eq!(effective_pixel_size(&b), direct_b);
+
+        // Mêmes chaînes, autre taille d'image.
+        let c = deep_params("4e-250", 512, 128);
+        assert_eq!(
+            effective_pixel_size(&c),
+            pixel_size_from_hp("4e-250", "4e-250", 512, 128)
+        );
+
+        // Span y absent → repli sur x ; span y différent → il compte.
+        let mut d = deep_params("4e-250", 512, 128);
+        d.span_y_hp = None;
+        assert_eq!(
+            effective_pixel_size(&d),
+            pixel_size_from_hp("4e-250", "4e-250", 512, 128)
+        );
+        d.span_y_hp = Some("4e-230".to_owned());
+        assert_eq!(
+            effective_pixel_size(&d),
+            pixel_size_from_hp("4e-250", "4e-230", 512, 128)
+        );
+
+        // Retour à la première vue : pas de valeur périmée.
+        assert_eq!(effective_pixel_size(&a), direct_a);
+    }
+
+    /// Sans span HP et sans span f64 : zéro, sans passer par le mémo.
+    #[test]
+    fn pixel_size_without_any_span_is_zero() {
+        let mut p = default_params_for_type(FractalType::Mandelbrot, 64, 64);
+        p.span_x = 0.0;
+        p.span_y = 0.0;
+        p.span_x_hp = None;
+        p.span_y_hp = None;
+        assert_eq!(effective_pixel_size(&p), 0.0);
+    }
 }
