@@ -134,6 +134,7 @@ fn scaled_matches_floatexp_loop_on_deep_grid() {
             total.fast_direct += st.fast_direct;
             total.fast_jump += st.fast_jump;
             total.slow_iter += st.slow_iter;
+            total.fast_rebase += st.fast_rebase;
             escaped += (got.iteration < iters) as u32;
             n += 1;
         }
@@ -141,6 +142,9 @@ fn scaled_matches_floatexp_loop_on_deep_grid() {
     eprintln!("scaled grid: n={n} escaped={escaped} ref_len={} {total:?}", orbit.z_ref.len());
     // Anti-vacuité : le cas exerce les trois régimes et des pixels qui
     // s'échappent.
-    assert!(total.fast_direct > 0 && total.fast_jump > 0 && total.slow_iter > 0, "{total:?}");
+    assert!(
+        total.fast_direct > 0 && total.fast_jump > 0 && total.slow_iter > 0 && total.fast_rebase > 0,
+        "{total:?}"
+    );
     assert!(escaped > 0 && n > 0);
 }

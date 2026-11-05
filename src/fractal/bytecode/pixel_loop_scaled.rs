@@ -91,8 +91,11 @@ const NZ_MIN: f64 = f64::from_bits(((-850 + 1023) as u64) << 52);
 const MARGIN: f64 = 1.0 + 1.0 / (1u64 << 30) as f64;
 /// Exposant sentinelle d'un coefficient nul (→ terme 0 exact).
 const NEG: i32 = -(1 << 28);
-/// Exposant de cadre maximal toléré (évite tout débordement de d²·2^e).
-const E_MAX: i32 = 200;
+/// Exposant de cadre maximal toléré : évite tout débordement de d²·2^e ET
+/// garantit qu'un produit `d.re·d.im` sous-débordé (< 2⁻¹⁰²²) reste, après
+/// ×2^e, < 2⁻⁹²⁰ — négligeable devant un partenaire ≥ T (en pratique e ≤ ~70 :
+/// |δ| < ER et composante max ≥ 2⁻⁶⁴).
+const E_MAX: i32 = 100;
 
 /// `δ = d · 2^e`, exposant commun aux deux composantes.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -170,6 +173,45 @@ fn renorm(d: Complex64, e: i32) -> Option<Scaled> {
 #[inline(always)]
 fn big(a: f64, b: f64) -> bool {
     a.abs() >= T || b.abs() >= T
+}
+
+/// Seuil abaissé (2⁻⁹⁶⁰) : un opérande sous-débordé (< 2⁻¹⁰²²) reste à ≥ 62
+/// binades du partenaire (abandon FloatExp ET arrondi f64 à l'identique), et
+/// le résultat reste normal (≥ 2⁻¹⁰¹³).
+const T2: f64 = f64::from_bits(((-960 + 1023) as u64) << 52);
+
+#[inline(always)]
+fn big2(a: f64, b: f64) -> bool {
+    a.abs() >= T2 || b.abs() >= T2
+}
+
+/// Pas direct quand Z est EXACTEMENT nul (m = 0, juste après un rebase) :
+/// FloatExp calcule `2·Z·δ = 0` exact puis `0 + δ² = δ²` exact, donc
+/// `δ' = δ² + dc`. Gardes : δ² sans perte (normal, ou zéro vrai) puis
+/// partenaire de l'addition de `dc`.
+#[inline(always)]
+fn direct_fast_zero_z(s: Scaled, dcs: Scaled) -> Option<Scaled> {
+    let kc = dcs.e - s.e;
+    if s.e > E_MAX || kc > 900 {
+        return None;
+    }
+    let d = s.d;
+    let sc = p2(s.e);
+    let diff = d.re * d.re - d.im * d.im;
+    let q_re = diff * sc;
+    let pr = d.re * d.im;
+    let q_im = (pr + d.im * d.re) * sc;
+    let t = p2(kc);
+    let c_re = dcs.d.re * t;
+    let c_im = dcs.d.im * t;
+    let ok = (diff == 0.0 || q_re.abs() >= MIN_COMP)
+        & (pr == 0.0 || (pr.abs() >= MIN_COMP && q_im.abs() >= MIN_COMP))
+        & big(q_re, c_re)
+        & big(q_im, c_im);
+    if !ok {
+        return None;
+    }
+    renorm(Complex64::new(q_re + c_re, q_im + c_im), s.e)
 }
 
 /// Pas direct `δ' = 2·Z·δ + δ² + dc` dans le cadre de `s`, même ordre
@@ -259,6 +301,7 @@ pub struct ScaledStats {
     pub fast_jump: u64,
     pub slow_iter: u64,
     pub fallback: u64,
+    pub fast_rebase: u64,
     /// Causes des replis : [bout de réf, |Z| petit, rebase possible, bailout
     /// proche, garde arithmétique].
     pub reasons: [u64; 5],
@@ -476,11 +519,15 @@ pub fn iterate_pixel_scaled_with_stats(
         && (max_bla_steps == 0 || bla_steps < max_bla_steps)
     {
         if let (Some(s), Some(dcs)) = (fast, dcs) {
-            if let Some((next, next_c, jumped)) =
+            if let Some((next, next_c, jumped, rebased)) =
                 fast_iter(s, dcs, c, ref_orbit, z_ref_f64, bla, iteration_max, bailout_fast, bailout_sqr_fexp)
             {
                 fast = Some(next);
                 c = next_c;
+                if rebased {
+                    rebase_count += 1;
+                    st.fast_rebase += 1;
+                }
                 if jumped {
                     bla_steps += 1;
                     st.fast_jump += 1;
@@ -549,22 +596,49 @@ fn fast_iter(
     iteration_max: u32,
     bailout_fast: f64,
     bailout_sqr_fexp: FloatExp,
-) -> Option<(Scaled, PixelCounter, bool)> {
-    let m = c.m_usize();
+) -> Option<(Scaled, PixelCounter, bool, bool)> {
     let ref_len = z_ref_f64.len();
-    if m + 1 >= ref_len {
+    if c.m_usize() + 1 >= ref_len {
         return None; // bout de référence : wrap/rebase-at-end en lent
     }
-    let z = z_ref_f64[m];
-    let nz = z.re * z.re + z.im * z.im;
-    let nd = s.d.re * s.d.re + s.d.im * s.d.im;
-    // Rebase trivialement faux si |δ| ≤ |Z|/4 ; bailout trivialement non
-    // atteint si 2(|Z|²+|δ|²) < ER² (marge).
-    let nd16 = nd * p2(2 * s.e + 4);
+    let mut s = s;
+    let mut c = c;
+    let mut rebased = false;
+    let mut z = z_ref_f64[c.m_usize()];
+    let mut nz = z.re * z.re + z.im * z.im;
+    let mut nd = s.d.re * s.d.re + s.d.im * s.d.im;
+    // 1. Rebase. Trivialement faux si |δ| ≤ |Z|/4 ; sinon test EXACT en f64
+    //    (δ ramené en f64 absolu ; gardes « partenaire ≥ 2⁻⁹⁶⁰ » sur chaque
+    //    addition de `Z+δ` et des deux normes ⇒ mêmes arrondis que FloatExp,
+    //    comparaison de deux valeurs normales exactes).
+    if !(nz >= NZ_MIN && nd * p2(2 * s.e + 4) < nz) {
+        if s.e < -900 || s.e > E_MAX {
+            return None;
+        }
+        let se = p2(s.e);
+        let (dr, di) = (s.d.re * se, s.d.im * se);
+        let (zr, zi) = (z.re + dr, z.im + di);
+        let (zr2, zi2, dr2, di2) = (zr * zr, zi * zi, dr * dr, di * di);
+        let ok = big2(z.re, dr) & big2(z.im, di) & big2(zr2, zi2) & big2(dr2, di2);
+        if !ok {
+            return None;
+        }
+        if zr2 + zi2 < dr2 + di2 {
+            // δ := Z + δ (valeurs f64 exactes), m := 0.
+            s = renorm(Complex64::new(zr, zi), 0)?;
+            c.rebase();
+            rebased = true;
+            z = z_ref_f64[0];
+            nz = z.re * z.re + z.im * z.im;
+            nd = s.d.re * s.d.re + s.d.im * s.d.im;
+        }
+    }
+    // 2. Bailout trivialement non atteint si 2(|Z|²+|δ|²) < ER² (marge).
     let n_delta = nd * p2(2 * s.e);
-    if !(nz >= NZ_MIN && nd16 < nz && 2.0 * (nz + n_delta) < bailout_fast) {
+    if !(2.0 * (nz + n_delta) < bailout_fast) {
         return None;
     }
+    let m = c.m_usize();
     if let Some(bla) = bla {
         // Norme FloatExp identique à `delta.norm_sqr_fexp()` (re²+im², même
         // ordre ; la composante max ≥ 2⁻⁶⁴ garantit un partenaire normal).
@@ -585,15 +659,23 @@ fn fast_iter(
                     }
                 };
                 if !overshoots {
-                    return Some((cand, cand_c, true));
+                    return Some((cand, cand_c, true, rebased));
                 }
             }
         }
     }
-    let next = direct_fast(s, z, dcs)?;
-    let mut nc = c;
-    nc.step();
-    Some((next, nc, false))
+    let next = if z.re == 0.0 && z.im == 0.0 {
+        // Z f64 nul : chemin dédié seulement si Z est EXACTEMENT nul (Z₀).
+        let zx = ref_orbit.z_ref[m];
+        if zx.re.mantissa != 0.0 || zx.im.mantissa != 0.0 {
+            return None;
+        }
+        direct_fast_zero_z(s, dcs)?
+    } else {
+        direct_fast(s, z, dcs)?
+    };
+    c.step();
+    Some((next, c, false, rebased))
 }
 
 #[cfg(test)]
