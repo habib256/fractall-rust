@@ -1440,7 +1440,7 @@ impl GpuRenderer {
                     100.0 * ratio
                 );
             }
-            if ratio > gpu_f32_cpu_fallback_ratio() {
+            if ratio > gpu_f32_cpu_fallback_ratio(params) {
                 timings.fell_back = true;
                 self.record_perturb_timings(timings);
                 return None;
@@ -2140,27 +2140,36 @@ struct PixelOut {
 }
 
 /// Kernel f32 (G9.6) : fraction de pixels non fiables au-delà de laquelle la
-/// frame est rendue entièrement sur le CPU plutôt que corrigée pixel à pixel.
-///
-/// 0.25 → 0.5 (G14.5, mesuré Apple M4 / Metal, `gpu-bench`, min de 5) : le
-/// repli jette le travail GPU ET l'orbite, puis paie le plein cadre CPU — il
-/// ne gagne jamais (spirale 27-42 % flaggés : 0.93-0.95× le CPU seul). La
-/// correction pixel à pixel coûte ~1.3× un pixel moyen du CPU perturbation
-/// (spirale e30 dézoomée : fix/CPU = 0.43 à 34 %, 0.32 à 27 %, 0.55 à 42 %
-/// flaggés), soit un point mort vers ~75 % ; contre le CPU std f64 (1e8),
-/// ~2.3× un pixel moyen, point mort ~44 %. GPU + correction mesurés : 1.8-2.9×
-/// le CPU seul (spirale 1e16-1e25, 27-42 %), 1.1-1.3× (seahorse 1e8, 30 %),
-/// images identiques au CPU / PASS contre GMP.
-const GPU_F32_CPU_FALLBACK_RATIO: f64 = 0.5;
+/// frame est rendue entièrement sur le CPU plutôt que corrigée pixel à pixel,
+/// quand le CPU rendrait cette frame en std f64 (zoom < ~1e12-13). Un pixel
+/// flaggé y coûte ~4× un pixel moyen du CPU std (correction perturbation +
+/// escalade GMP) : point mort ~25 %. Mesuré Apple M4, seahorse 1e8 (30 %
+/// flaggés) : correction 0.75-0.83× le CPU seul, repli 0.9-1.1×.
+const GPU_F32_CPU_FALLBACK_RATIO_VS_STD: f64 = 0.25;
 
-/// Seuil effectif ; `FRACTALL_GPU_F32_FALLBACK_RATIO` le surcharge (A/B de
-/// mesure G14.5 : 1.0 = toujours corriger pixel à pixel).
-fn gpu_f32_cpu_fallback_ratio() -> f64 {
+/// Idem quand le CPU rendrait la frame en PERTURBATION (seule plage où l'Auto
+/// route le GPU, `wisdom::select_device`). Le repli jette le travail GPU ET
+/// l'orbite puis paie le plein cadre : 0.93-0.95× le CPU seul (spirale e30
+/// dézoomée 1e16/1e20/1e25, 27-42 % flaggés). La correction coûte ~1.5-1.8×
+/// un pixel moyen du CPU perturbation (point mort ~55 %) : GPU + correction
+/// = 2.2-2.3× (27 %), 1.65-1.7× (34 %), 1.3× (42 %) le CPU seul, 512²/1024²,
+/// min de 5 (`gpu-bench`, G14.5) ; images identiques au CPU, PASS vs GMP.
+const GPU_F32_CPU_FALLBACK_RATIO_VS_PERTURB: f64 = 0.45;
+
+/// Seuil effectif pour cette frame ; `FRACTALL_GPU_F32_FALLBACK_RATIO` le
+/// surcharge (A/B de mesure G14.5 : 1.0 = toujours corriger pixel à pixel).
+fn gpu_f32_cpu_fallback_ratio(params: &FractalParams) -> f64 {
+    use crate::fractal::wisdom::{select_algorithm, Algorithm, Device};
+    let default = if select_algorithm(params, Device::Cpu) == Algorithm::Perturbation {
+        GPU_F32_CPU_FALLBACK_RATIO_VS_PERTURB
+    } else {
+        GPU_F32_CPU_FALLBACK_RATIO_VS_STD
+    };
     std::env::var("FRACTALL_GPU_F32_FALLBACK_RATIO")
         .ok()
         .and_then(|v| v.trim().parse::<f64>().ok())
         .filter(|v| v.is_finite())
-        .unwrap_or(GPU_F32_CPU_FALLBACK_RATIO)
+        .unwrap_or(default)
 }
 
 /// Z de référence arrondi f32 (kernel `perturbation_f32.wgsl`, vec2<f32>).
@@ -2288,4 +2297,31 @@ fn build_reuse<'a>(
         width,
         ratio: ratio_x,
     })
+}
+
+#[cfg(test)]
+mod fallback_ratio_tests {
+    use super::*;
+
+    fn frame(zoom: f64) -> FractalParams {
+        let mut p = crate::fractal::default_params_for_type(FractalType::Mandelbrot, 256, 256);
+        p.center_x = -0.75;
+        p.span_x = 4.0 / zoom;
+        p.span_y = 4.0 / zoom;
+        p
+    }
+
+    /// G14.5 : le seuil de repli plein cadre dépend du chemin CPU concurrent
+    /// (std f64 → 0.25, perturbation → 0.45), cf. constantes.
+    #[test]
+    fn fallback_ratio_follows_cpu_competitor() {
+        if std::env::var_os("FRACTALL_GPU_F32_FALLBACK_RATIO").is_some() {
+            return;
+        }
+        assert_eq!(gpu_f32_cpu_fallback_ratio(&frame(1e8)), GPU_F32_CPU_FALLBACK_RATIO_VS_STD);
+        assert_eq!(
+            gpu_f32_cpu_fallback_ratio(&frame(1e20)),
+            GPU_F32_CPU_FALLBACK_RATIO_VS_PERTURB
+        );
+    }
 }
