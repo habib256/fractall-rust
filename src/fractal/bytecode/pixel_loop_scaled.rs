@@ -308,7 +308,12 @@ pub struct ScaledStats {
 }
 
 /// Diagnostic : cause du repli d'un tour rapide (mêmes tests que `fast_iter`).
-fn fallback_reason(s: Scaled, c: PixelCounter, z_ref_f64: &[Complex64], bailout_fast: f64) -> usize {
+fn fallback_reason(
+    s: Scaled,
+    c: PixelCounter,
+    z_ref_f64: &[Complex64],
+    bailout_fast: f64,
+) -> usize {
     let m = c.m_usize();
     if m + 1 >= z_ref_f64.len() {
         return 0;
@@ -421,8 +426,10 @@ fn slow_iter(
                 if cand_c.n() <= iteration_max && cand_c.m_usize() < ref_len {
                     let a = node.a;
                     let b = node.b;
-                    let new_re = a.m00 * delta.re + a.m01 * delta.im + b.m00 * dc.re + b.m01 * dc.im;
-                    let new_im = a.m10 * delta.re + a.m11 * delta.im + b.m10 * dc.re + b.m11 * dc.im;
+                    let new_re =
+                        a.m00 * delta.re + a.m01 * delta.im + b.m00 * dc.re + b.m01 * dc.im;
+                    let new_im =
+                        a.m10 * delta.re + a.m11 * delta.im + b.m10 * dc.re + b.m11 * dc.im;
                     let cand = ComplexExp {
                         re: new_re,
                         im: new_im,
@@ -519,9 +526,17 @@ pub fn iterate_pixel_scaled_with_stats(
         && (max_bla_steps == 0 || bla_steps < max_bla_steps)
     {
         if let (Some(s), Some(dcs)) = (fast, dcs) {
-            if let Some((next, next_c, jumped, rebased)) =
-                fast_iter(s, dcs, c, ref_orbit, z_ref_f64, bla, iteration_max, bailout_fast, bailout_sqr_fexp)
-            {
+            if let Some((next, next_c, jumped, rebased)) = fast_iter(
+                s,
+                dcs,
+                c,
+                ref_orbit,
+                z_ref_f64,
+                bla,
+                iteration_max,
+                bailout_fast,
+                bailout_sqr_fexp,
+            ) {
                 fast = Some(next);
                 c = next_c;
                 if rebased {

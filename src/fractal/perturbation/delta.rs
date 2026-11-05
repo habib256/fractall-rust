@@ -809,16 +809,18 @@ fn try_bytecode_unified_path(
                     *delta0,
                     crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
                 )
-            } else { iterate_pixel_unified_exp(
-                ref_orbit,
-                bla,
-                bla_exp,
-                &entry.formula,
-                c_for_add,
-                dc_for_add_exp,
-                *delta0,
-                crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
-            ) };
+            } else {
+                iterate_pixel_unified_exp(
+                    ref_orbit,
+                    bla,
+                    bla_exp,
+                    &entry.formula,
+                    c_for_add,
+                    dc_for_add_exp,
+                    *delta0,
+                    crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
+                )
+            };
             // Conversion vers UnifiedPixelResult (même shape, juste typage).
             return Some(crate::fractal::bytecode::pixel_loop::UnifiedPixelResult {
                 iteration: res_exp.iteration,

@@ -31,7 +31,10 @@ fn scaled_cexp_round_trip_is_exact() {
         let s = Scaled::from_cexp(v).expect("représentable");
         assert_eq!(s.to_cexp(), v, "aller-retour exact pour {v:?}");
         let mx = s.d.re.abs().max(s.d.im.abs());
-        assert!((0.5..1.0).contains(&mx), "composante max normalisée : {s:?}");
+        assert!(
+            (0.5..1.0).contains(&mx),
+            "composante max normalisée : {s:?}"
+        );
     }
     // δ = 0 et écart de composantes > 900 binades : non représentables.
     assert!(Scaled::from_cexp(ComplexExp::zero()).is_none());
@@ -58,7 +61,12 @@ fn toml_field(text: &str, key: &str) -> String {
         .lines()
         .find(|l| l.trim_start().starts_with(&format!("{key} ")))
         .unwrap_or_else(|| panic!("clé {key}"));
-    line.split_once('=').unwrap().1.trim().trim_matches('"').to_string()
+    line.split_once('=')
+        .unwrap()
+        .1
+        .trim()
+        .trim_matches('"')
+        .to_string()
 }
 
 /// Verrou principal : sur une grille de pixels d'un cas PROFOND du corpus
@@ -123,13 +131,22 @@ fn scaled_matches_floatexp_loop_on_deep_grid() {
             );
             let (got, st) =
                 iterate_pixel_scaled_with_stats(&orbit, Some(&bla), dc, ComplexExp::zero(), limits);
-            assert_eq!(got.iteration, reference.iteration, "pixel ({i},{j}) itération");
+            assert_eq!(
+                got.iteration, reference.iteration,
+                "pixel ({i},{j}) itération"
+            );
             assert_eq!(
                 (got.z_final.re.to_bits(), got.z_final.im.to_bits()),
-                (reference.z_final.re.to_bits(), reference.z_final.im.to_bits()),
+                (
+                    reference.z_final.re.to_bits(),
+                    reference.z_final.im.to_bits()
+                ),
                 "pixel ({i},{j}) z_final"
             );
-            assert_eq!(got.rebase_count, reference.rebase_count, "pixel ({i},{j}) rebases");
+            assert_eq!(
+                got.rebase_count, reference.rebase_count,
+                "pixel ({i},{j}) rebases"
+            );
             assert_eq!(got.bla_steps, reference.bla_steps, "pixel ({i},{j}) sauts");
             total.fast_direct += st.fast_direct;
             total.fast_jump += st.fast_jump;
@@ -139,11 +156,17 @@ fn scaled_matches_floatexp_loop_on_deep_grid() {
             n += 1;
         }
     }
-    eprintln!("scaled grid: n={n} escaped={escaped} ref_len={} {total:?}", orbit.z_ref.len());
+    eprintln!(
+        "scaled grid: n={n} escaped={escaped} ref_len={} {total:?}",
+        orbit.z_ref.len()
+    );
     // Anti-vacuité : le cas exerce les trois régimes et des pixels qui
     // s'échappent.
     assert!(
-        total.fast_direct > 0 && total.fast_jump > 0 && total.slow_iter > 0 && total.fast_rebase > 0,
+        total.fast_direct > 0
+            && total.fast_jump > 0
+            && total.slow_iter > 0
+            && total.fast_rebase > 0,
         "{total:?}"
     );
     assert!(escaped > 0 && n > 0);
