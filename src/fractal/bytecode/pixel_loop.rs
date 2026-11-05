@@ -26,6 +26,7 @@ use num_complex::Complex64;
 use super::bla_dual::BlaTableUnified;
 use super::reliability::{NoObserve, ShadowTracker, StepObserver};
 use super::delta_form::DeltaState;
+use crate::fractal::perturbation::delta::diffabs;
 use super::{Formula, Phase};
 use crate::fractal::orbit_traps::{OrbitData, OrbitTrapType};
 use crate::fractal::perturbation::counter::PixelCounter;
@@ -482,6 +483,11 @@ pub fn iterate_pixel_unified_multi_phase(
     }
 }
 
+fn phase_fast_enabled() -> bool {
+    static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *F.get_or_init(|| std::env::var("FRACTALL_PHASE_FAST").as_deref() != Ok("0"))
+}
+
 fn julia_fast_enabled() -> bool {
     static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *F.get_or_init(|| std::env::var("FRACTALL_JULIA_FAST").as_deref() != Ok("0"))
@@ -530,6 +536,15 @@ fn iterate_pixel_unified_single_phase(
         && julia_fast_enabled()
     {
         return iterate_pixel_unified_julia(ref_orbit, bla, delta_initial, limits);
+    }
+    // Burning Ship et Tricorn : boucle rapide + noyau statique. `FRACTALL_PHASE_FAST=0` garde la boucle
+    // générique (A/B).
+    if no_dual_features && !is_mandelbrot_phase && phase_fast_enabled() {
+        if let Some(res) =
+            iterate_pixel_unified_static_kernel(ref_orbit, bla, phase, dc, delta_initial, limits)
+        {
+            return res;
+        }
     }
 
     let bailout_sqr = bailout * bailout;
@@ -918,6 +933,7 @@ pub fn iterate_pixel_unified_mandelbrot(
         cursor: 0,
     };
     iterate_pixel_unified_mandelbrot_impl(
+        MandelbrotKernel,
         ref_orbit,
         &mut src,
         ref_len,
@@ -930,6 +946,133 @@ pub fn iterate_pixel_unified_mandelbrot(
         max_bla_steps,
         &mut NoObserve,
     )
+}
+
+/// Pas direct de la boucle rapide, monomorphisé. Renvoie `(δ', terme
+/// linéaire)` — le second n'est lu que par le traqueur de fiabilité
+/// (Mandelbrot) ; les autres noyaux rendent zéro et tournent sans traqueur.
+trait DirectKernel: Copy {
+    fn step(&self, z_m: Complex64, delta: Complex64, dc: Complex64) -> (Complex64, Complex64);
+}
+
+/// `δ' = 2·Z·δ + δ² + dc`, inline. Mêmes opérandes et même ordre que le pas
+/// `DeltaState` [Sqr, Add] : bit-identique.
+#[derive(Clone, Copy)]
+struct MandelbrotKernel;
+
+impl DirectKernel for MandelbrotKernel {
+    #[inline(always)]
+    fn step(&self, z_m: Complex64, delta: Complex64, dc: Complex64) -> (Complex64, Complex64) {
+        let two_zm = z_m * 2.0;
+        let two_zm_delta = two_zm * delta;
+        (two_zm_delta + delta * delta + dc, two_zm_delta)
+    }
+}
+
+// ── Noyaux statiques : Burning Ship et Tricorn ─────────────────────────────
+// Chaque noyau reproduit, opération pour opération et dans le même ordre, ce
+// que fait `DeltaState::step_delta_only` sur la phase correspondante (verrou
+// `static_kernels_match_delta_state`). Le gain vient de la disparition du
+// dispatch d'opcode par pas et des mises à jour de `z_ref` jetées : mesuré
+// ×1,65 sur Burning Ship — alors que la même boucle rapide avec le pas
+// bytecode NON spécialisé ne gagne rien (mesuré aussi, d'où l'absence de
+// noyau générique ici : une phase sans noyau garde la boucle générique).
+
+/// Burning Ship `[AbsX, AbsY, Sqr, Add]`.
+#[derive(Clone, Copy)]
+struct BurningShipKernel;
+
+impl DirectKernel for BurningShipKernel {
+    #[inline(always)]
+    fn step(&self, z_m: Complex64, delta: Complex64, dc: Complex64) -> (Complex64, Complex64) {
+        let d = Complex64::new(diffabs(z_m.re, delta.re), diffabs(z_m.im, delta.im));
+        let z = Complex64::new(z_m.re.abs(), z_m.im.abs());
+        (sqr_delta(z, d) + dc, Complex64::new(0.0, 0.0))
+    }
+}
+
+/// Tricorn `[NegY, Sqr, Add]`.
+#[derive(Clone, Copy)]
+struct TricornKernel;
+
+impl DirectKernel for TricornKernel {
+    #[inline(always)]
+    fn step(&self, z_m: Complex64, delta: Complex64, dc: Complex64) -> (Complex64, Complex64) {
+        let d = Complex64::new(delta.re, -delta.im);
+        let z = Complex64::new(z_m.re, -z_m.im);
+        (sqr_delta(z, d) + dc, Complex64::new(0.0, 0.0))
+    }
+}
+
+/// `Op::Sqr` côté δ : `2·Z·δ + δ²` (mêmes opérandes que `DeltaState`).
+#[inline(always)]
+fn sqr_delta(z: Complex64, delta: Complex64) -> Complex64 {
+    let two_z = z * 2.0;
+    two_z * delta + delta * delta
+}
+
+/// Boucle rapide avec un noyau donné, sans traqueur.
+#[inline(always)]
+fn run_fast_kernel<K: DirectKernel>(
+    kernel: K,
+    ref_orbit: &ReferenceOrbit,
+    bla: &BlaTableUnified,
+    dc: Complex64,
+    delta_initial: Complex64,
+    limits: PixelLoopLimits,
+) -> UnifiedPixelResult {
+    let PixelLoopLimits {
+        iteration_max,
+        bailout,
+        max_perturb_iterations,
+        max_bla_steps,
+    } = limits;
+    let ref_len = ref_orbit.z_ref_f64.len();
+    let mut src = SliceSource {
+        z: &ref_orbit.z_ref_f64,
+        cursor: 0,
+    };
+    iterate_pixel_unified_mandelbrot_impl(
+        kernel,
+        ref_orbit,
+        &mut src,
+        ref_len,
+        bla,
+        dc,
+        delta_initial,
+        iteration_max,
+        bailout,
+        max_perturb_iterations,
+        max_bla_steps,
+        &mut NoObserve,
+    )
+}
+
+/// Boucle rapide pour les phases qui ont un noyau statique (Burning Ship,
+/// Tricorn — conventions Mandelbrot ET Julia) ; `None` pour toute autre phase.
+/// Résultat bit-identique à la boucle générique (verrou
+/// `static_kernel_fast_path_matches_generic_loop`).
+fn iterate_pixel_unified_static_kernel(
+    ref_orbit: &ReferenceOrbit,
+    bla: &BlaTableUnified,
+    phase: &Phase,
+    dc: Complex64,
+    delta_initial: Complex64,
+    limits: PixelLoopLimits,
+) -> Option<UnifiedPixelResult> {
+    use super::Op::{AbsX, AbsY, Add, NegY, Sqr};
+    // Celtic, Buffalo et Perp. Burning Ship n'ont pas de noyau : ces familles
+    // ne passent pas par la perturbation (pas d'orbite de référence), un noyau
+    // y serait du code mort.
+    Some(match phase.ops.as_slice() {
+        [AbsX, AbsY, Sqr, Add] => {
+            run_fast_kernel(BurningShipKernel, ref_orbit, bla, dc, delta_initial, limits)
+        }
+        [NegY, Sqr, Add] => {
+            run_fast_kernel(TricornKernel, ref_orbit, bla, dc, delta_initial, limits)
+        }
+        _ => return None,
+    })
 }
 
 /// Fast-path **Julia** : la même boucle inline que Mandelbrot, avec
@@ -956,6 +1099,7 @@ pub fn iterate_pixel_unified_julia(
         cursor: 0,
     };
     iterate_pixel_unified_mandelbrot_impl(
+        MandelbrotKernel,
         ref_orbit,
         &mut src,
         ref_len,
@@ -1009,6 +1153,7 @@ pub fn iterate_pixel_unified_mandelbrot_tracked(
     };
     let mut tracker = ShadowTracker::new(dc, bla_epsilon);
     let result = iterate_pixel_unified_mandelbrot_impl(
+        MandelbrotKernel,
         ref_orbit,
         &mut src,
         ref_len,
@@ -1051,6 +1196,7 @@ pub fn iterate_pixel_unified_mandelbrot_compressed(
         dec: crate::fractal::perturbation::compress::ReferenceDecompressor::new(compressed),
     };
     iterate_pixel_unified_mandelbrot_impl(
+        MandelbrotKernel,
         ref_orbit,
         &mut src,
         ref_len,
@@ -1071,7 +1217,8 @@ pub fn iterate_pixel_unified_mandelbrot_compressed(
 /// verrouillé par les goldens). `ref_len` est passé explicitement (longueur
 /// logique pour la source compressée ; `z_ref_f64` peut être vide).
 #[allow(clippy::too_many_arguments)]
-fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source, O: StepObserver>(
+fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source, O: StepObserver, K: DirectKernel>(
+    kernel: K,
     ref_orbit: &ReferenceOrbit,
     src: &mut S,
     ref_len: usize,
@@ -1215,12 +1362,11 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source, O: StepObserver>(
             // BLA voulait sauter trop loin → on tombe sur le pas perturbation.
         }
 
-        // Étape 2 : pas perturbation Mandelbrot
-        // δ_{n+1} = 2·Z[m]·δ + δ² + dc
-        let two_zm = z_m * 2.0;
-        let two_zm_delta = two_zm * delta;
-        obs.direct(z_abs_norm_sqr, two_zm_delta, delta_norm_sqr);
-        delta = two_zm_delta + delta * delta + dc;
+        // Étape 2 : pas perturbation direct (noyau monomorphisé — Mandelbrot :
+        // δ_{n+1} = 2·Z[m]·δ + δ² + dc ; autres formules : phase bytecode).
+        let (delta_next, linear_term) = kernel.step(z_m, delta, dc);
+        obs.direct(z_abs_norm_sqr, linear_term, delta_norm_sqr);
+        delta = delta_next;
         c.step();
         iters_ptb += 1;
 
@@ -2359,6 +2505,169 @@ mod tests {
             mismatches, 0,
             "Unified pixel loop doit classifier comme l'itération directe"
         );
+    }
+
+    fn bits_eq(a: Complex64, b: Complex64) -> bool {
+        a.re.to_bits() == b.re.to_bits() && a.im.to_bits() == b.im.to_bits()
+    }
+
+    /// Verrou des noyaux statiques : chacun rend EXACTEMENT le δ que rend
+    /// `DeltaState::step_delta_only` sur la phase compilée de sa famille —
+    /// des deux côtés de chaque pli, zéros signés compris.
+    #[test]
+    fn static_kernels_match_delta_state() {
+        fn check<K: DirectKernel>(kernel: K, ty: FractalType) {
+            let formula = compile_formula(ty, 2.0).unwrap();
+            let phase = &formula.phases[0];
+            let vals = [0.7, -0.7, 0.3, -0.3, 1e-9, -1e-9, 0.0, -0.0, 1.5, -1.5];
+            let deltas = [1e-3, -1e-3, 2.0, -2.0, 1e-12, -1e-12, 0.0, -0.0];
+            let c_ref = Complex64::new(-0.3, 0.11);
+            for &zr in &vals {
+                for &zi in &vals {
+                    for &dr in &deltas {
+                        for &di in &deltas {
+                            for dc in [Complex64::new(1e-4, -2e-4), Complex64::new(0.0, 0.0)] {
+                                let (z, d) = (Complex64::new(zr, zi), Complex64::new(dr, di));
+                                let mut st = DeltaState::new(z, d);
+                                st.step_delta_only(phase, c_ref, dc);
+                                let (got, _) = kernel.step(z, d, dc);
+                                assert!(
+                                    bits_eq(got, st.delta),
+                                    "{ty:?} z={z:?} δ={d:?} dc={dc:?} : noyau {got:?} ≠ DeltaState {:?}",
+                                    st.delta
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        check(BurningShipKernel, FractalType::BurningShip);
+        check(TricornKernel, FractalType::Tricorn);
+        // Les variantes Julia compilent la même phase.
+        for (m, j) in [
+            (FractalType::BurningShip, FractalType::BurningShipJulia),
+            (FractalType::Tricorn, FractalType::TricornJulia),
+        ] {
+            assert_eq!(
+                compile_formula(m, 2.0).unwrap().phases[0],
+                compile_formula(j, 2.0).unwrap().phases[0]
+            );
+        }
+    }
+
+    /// Verrou de bout de boucle : pour chaque famille à noyau statique, la
+    /// boucle rapide rend bit pour bit (itération, z final, rebases, sauts
+    /// BLA) ce que rend la boucle générique — atteinte en demandant la
+    /// distance, qui désactive le dispatch rapide. Vues des presets QA.
+    #[test]
+    fn static_kernel_fast_path_matches_generic_loop() {
+        use crate::fractal::perturbation::{effective_pixel_size, orbit::compute_reference_orbit};
+        let (width, height) = (40u32, 40u32);
+        let views = [
+            (FractalType::BurningShip, -1.7492060, -0.0286762, 2000u32),
+            (FractalType::Tricorn, -0.7, 0.15, 1500),
+        ];
+        // Plusieurs échelles par famille : au moins une doit montrer de la
+        // structure (les vues profondes des presets sont uniformes à 40²).
+        for (ty, cx, cy, iter_max) in views {
+            let mut family_distinct = 0usize;
+            let centers = [
+                (cx, cy),
+                (-0.5, 0.05),
+                (0.2, 0.3),
+                (-1.0, 0.05),
+                (0.0, 0.6),
+                (-0.1, -0.7),
+            ];
+            for (cx, cy) in centers {
+            for zoom in [30.0f64, 1e3, 1e6] {
+            let mut params = default_params_for_type(ty, width, height);
+            params.center_x = cx;
+            params.center_y = cy;
+            let span = 4.0 / zoom;
+            params.span_x = span;
+            params.span_y = span;
+            params.iteration_max = iter_max;
+            params.bailout = 25.0;
+            params.engine.algorithm_mode = AlgorithmMode::Perturbation;
+            // Pas d'orbite exploitable à cette échelle (référence qui
+            // s'évade d'emblée) : échelle suivante.
+            let Some((orbit, _, _)) = compute_reference_orbit(&params, None, true) else {
+                continue;
+            };
+            if orbit.z_ref_f64.len() < 16 {
+                continue;
+            }
+            let formula = compile_formula(ty, 2.0).unwrap();
+            let c_norm = effective_pixel_size(&params)
+                * ((width as f64).powi(2) + (height as f64).powi(2)).sqrt();
+            let limits = PixelLoopLimits {
+                iteration_max: iter_max,
+                bailout: 25.0,
+                max_perturb_iterations: iter_max,
+                max_bla_steps: iter_max,
+            };
+            let mut distinct = std::collections::BTreeSet::new();
+            for eps in [6e-8f64, 1.0 / (1u64 << 53) as f64] {
+                let tables = build_bla_table_for_formula(&formula, &orbit.z_ref_f64, c_norm, eps)
+                    .expect("table BLA");
+                let bla = &tables[0];
+                for j in 0..height {
+                    for i in 0..width {
+                        let dc = Complex64::new(
+                            ((i as f64 + 0.5) / width as f64 - 0.5) * span,
+                            ((j as f64 + 0.5) / height as f64 - 0.5) * span,
+                        );
+                        let zero = Complex64::new(0.0, 0.0);
+                        let fast = iterate_pixel_unified_static_kernel(
+                            &orbit,
+                            bla,
+                            &formula.phases[0],
+                            dc,
+                            zero,
+                            limits,
+                        )
+                        .expect("noyau statique attendu");
+                        let generic = iterate_pixel_unified_single_phase(
+                            &orbit,
+                            bla,
+                            &formula.phases[0],
+                            orbit.cref,
+                            dc,
+                            zero,
+                            limits,
+                            UnifiedOptions {
+                                enable_distance: true,
+                                ..Default::default()
+                            },
+                        );
+                        assert!(
+                            fast.iteration == generic.iteration
+                                && bits_eq(fast.z_final, generic.z_final)
+                                && fast.rebase_count == generic.rebase_count
+                                && fast.bla_steps == generic.bla_steps
+                                && fast.ref_exhausted == generic.ref_exhausted,
+                            "{ty:?} ε {eps:e} pixel ({i},{j}) : rapide ({}, {:?}, rb {}, bla {}) \
+                             ≠ générique ({}, {:?}, rb {}, bla {})",
+                            fast.iteration,
+                            fast.z_final,
+                            fast.rebase_count,
+                            fast.bla_steps,
+                            generic.iteration,
+                            generic.z_final,
+                            generic.rebase_count,
+                            generic.bla_steps
+                        );
+                        distinct.insert(fast.iteration);
+                    }
+                }
+            }
+            family_distinct = family_distinct.max(distinct.len());
+            }
+            }
+            assert!(family_distinct > 8, "{ty:?} : vues uniformes ({family_distinct}), test vide");
+        }
     }
 
     /// Verrou du fast-path Julia : la boucle inline (δ₀ ≠ 0, dc = 0) rend,
