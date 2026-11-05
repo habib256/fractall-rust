@@ -322,25 +322,29 @@ impl ReliabilityMode {
     }
 }
 
-/// Suivi du tier **exp** (> 1e280) — OPT-IN `FRACTALL_RELIABILITY_EXP=1`.
-/// Mesuré 2026-11-05 (corpus profond 96-128²) : +25-45 % de temps pixel
-/// (`ShadowTrackerExp` en FloatExp) pour 0-2 pixels détectés par cas.
-/// Les résidus exp « à borne qui ne s'emballe pas » (3-9 px vs dd) venaient
-/// de TROIS défauts du traqueur (2026-11-06) : débordement d'exposant qui
-/// blanchissait la borne emballée, troncature BLA comptée ε au lieu de l·ε,
-/// et pas de test de détermination à l'évasion (`escape_undetermined`).
-/// Corrigés, le traqueur rend 31 cas profonds 96² pixel-exacts vs dd (dont
-/// 12 qui avaient 1-9 pixels faux) — reste OPT-IN : coût non arbitré.
-/// Les vraies sources d'erreur du tier exp étaient ailleurs (span f64
-/// sous-normal, ε BLA 2⁻²⁴) et sont corrigées à la racine.
+/// Suivi du tier **exp** (> 1e280) — ACTIF PAR DÉFAUT depuis 2026-11-06
+/// (`FRACTALL_RELIABILITY_EXP=0|off|false` le coupe ; `FRACTALL_RELIABILITY=off`
+/// coupe tous les tiers).
+///
+/// Historique : opt-in le 2026-11-05 car « +25-45 % pour 0-2 pixels
+/// détectés, les résidus (3-9 px vs dd) ont une borne qui ne s'emballe pas ».
+/// Ces résidus venaient de TROIS défauts du traqueur : débordement d'exposant
+/// qui blanchissait la borne emballée, troncature BLA comptée ε au lieu de
+/// l·ε, et pas de test de détermination à l'évasion (`escape_undetermined`).
+/// Corrigés : 31 cas profonds 96² pixel-exacts vs dd (12 avaient 1-9 pixels
+/// faux) ; à 256², sans traqueur e401 6, olbaid2 48, e1298 18 pixels faux →
+/// 0 avec, pour +24-28 % de temps (e1000 inchangé).
 pub fn reliability_tracks_exp() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| {
         reliability_mode().tracks()
-            && matches!(
-                std::env::var("FRACTALL_RELIABILITY_EXP").ok().as_deref(),
-                Some("1") | Some("on") | Some("true")
+            && !matches!(
+                std::env::var("FRACTALL_RELIABILITY_EXP")
+                    .ok()
+                    .map(|v| v.trim().to_ascii_lowercase())
+                    .as_deref(),
+                Some("0") | Some("off") | Some("false")
             )
     })
 }
