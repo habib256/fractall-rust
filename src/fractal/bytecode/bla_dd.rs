@@ -18,10 +18,17 @@ use crate::fractal::bytecode::bla_dual::BLA_SKIP_LEVELS;
 use crate::fractal::perturbation::dd::{ComplexDDExp, DoubleDouble};
 use crate::fractal::perturbation::types::FloatExp;
 
-/// Epsilon de validité de la table BLA dd = **2⁻⁸⁰** (calibrage et
-/// justification : commentaire de `delta::build_bla_entry`). Partagé par le
-/// tier dd plein cadre et la correction dd des pixels non fiables (G9.6).
-pub const DD_BLA_EPSILON: f64 = 8.271_806_125_530_277e-25; // 2^-80
+/// Epsilon de validité de la table BLA dd = **2⁻¹⁰⁶** (u du double-double).
+/// Partagé par le tier dd plein cadre et la correction dd des pixels non
+/// fiables (G9.6).
+///
+/// ⚠️ N'était 2⁻⁸⁰ que par calibrage sur les presets QA, sous l'hypothèse
+/// « erreur par saut ~ε/2 quelle que soit sa longueur » — FAUSSE : chacun des
+/// l pas fusionnés abandonne jusqu'à ε, soit ≈ l·ε par saut. Jugé contre GMP
+/// pur convergé (lethal_weapon 96², 1,6 M itérations, vérité stable de 400 à
+/// 4688 b) : à 2⁻⁸⁰ le tier dd rendait ~15 % de pixels faux (échantillon
+/// 41/48 justes) ; à 2⁻¹⁰⁶ 29/30, autant que le dd SANS BLA (29/30).
+pub const DD_BLA_EPSILON: f64 = 1.232_595_164_407_831e-32; // 2^-106
 
 /// Matrice 2×2 à coefficients `DoubleDouble` (~106 b). Range f64 (pas
 /// d'exposant séparé) : suffit car les `A` réellement CONSULTÉS restent bornés
@@ -266,6 +273,17 @@ mod tests {
     use super::*;
     use crate::fractal::perturbation::dd::DoubleDoubleExp;
     use num_complex::Complex64;
+
+    /// VERROU : l'ε BLA dd ne doit pas dépasser l'u du double-double. À 2⁻⁸⁰
+    /// (calibrage presets) le tier dd rendait des pixels faux vs GMP pur :
+    /// lethal_weapon 96² ~24 % (59/78 justes) contre ~10 % à 2⁻¹⁰⁶ (= dd sans
+    /// BLA) ; en escalade de production, golden_spider 256² 24 px et e227
+    /// 22 px changent et la nouvelle valeur est juste sur 16/20 contrôlés (0/20
+    /// pour l'ancienne).
+    #[test]
+    fn dd_bla_epsilon_is_double_double_unit_roundoff() {
+        assert!(DD_BLA_EPSILON <= 2f64.powi(-106), "ε dd = {DD_BLA_EPSILON:e}");
+    }
 
     fn cdd(re: f64, im: f64) -> ComplexDDExp {
         ComplexDDExp {
