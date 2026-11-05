@@ -184,6 +184,26 @@ def build_scorecard_md(card: dict, base: dict | None) -> str:
                          f"zoom {c['zoom']} iters {c['iterations']}")
             L.append("")
 
+    # Précision d'orbite (juge ×4)
+    pc = card.get("precision")
+    if pc and pc.get("status") not in (None, "skipped"):
+        L += ["## Précision d'orbite (juge ×4)", ""]
+        if pc.get("status") != "ok":
+            L.append(f"_axe indisponible : {pc.get('status')}._\n")
+        else:
+            L.append(f"- {pc['n_cases']} cas à {pc['size']}² → **{pc['n_pass']} PASS · "
+                     f"{pc['n_warn']} WARN · {pc['n_fail']} FAIL** "
+                     f"(itérations brutes vs orbite à précision ×{pc['judge_factor']})")
+            L += ["", "| Cas | prec | juge | pixels ≠ | % | verdict |",
+                  "|---|---:|---:|---:|---:|---|"]
+            for name, c in pc["cases"].items():
+                if c.get("status") != "ok":
+                    continue
+                tag = " ⚑" if c.get("sentinel") else ""
+                L.append(f"| `{name}`{tag} | {c['prec']} | {c['judge_prec']} | "
+                         f"{c['diff_px']} | {100 * c['frac']:.3f} | {c['verdict']} |")
+            L.append("\n_⚑ = sentinelle (précision F3 nue : 2-4 % faux avant la marge +64 b)._\n")
+
     # Goldens
     g = card.get("goldens")
     if g and g.get("status") != "skipped":

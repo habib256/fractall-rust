@@ -158,6 +158,103 @@ impl StepObserver for ShadowTracker {
     }
 }
 
+// ─── Tier exp (> 1e280) ─────────────────────────────────────────────────────
+//
+// Même récurrence que [`ShadowTracker`], mais la borne est en `FloatExp` :
+// à cette profondeur z frôle 0 à ~1e-1000 près (grazes) et les erreurs
+// d'arrondi locales sont du même ordre — une borne f64 sous-dépasserait à 0
+// et le traqueur deviendrait aveugle. Mesuré (2026-11-05, rendu exp vs tier
+// dd, lui-même == GMP pur sur e318) : 24/35 cas profonds du corpus avaient
+// des pixels faux non signalés, jusqu'à 4,8 % (e318).
+
+use super::bla_dual_exp::Mat2Exp;
+use crate::fractal::perturbation::types::{ComplexExp, FloatExp};
+
+/// Hooks du pas de la boucle exp haute précision (mirror de [`StepObserver`]).
+pub trait StepObserverExp: Copy {
+    /// Pas direct : `z` = `Z[m] + δ_old`, `two_z_delta` = `2·Z[m]·δ_old`.
+    #[inline(always)]
+    fn direct(&mut self, _z: ComplexExp, _two_z_delta: ComplexExp, _delta_old: ComplexExp) {}
+    /// Saut BLA accepté `δ' = A·δ + B·dc` (matrices et opérandes bruts : la
+    /// boucle de production ne calcule rien de plus pour l'observateur nul).
+    #[inline(always)]
+    fn bla(&mut self, _a: &Mat2Exp, _b: &Mat2Exp, _delta_old: ComplexExp, _dc: ComplexExp) {}
+    /// Rebase `δ ← Z + δ`.
+    #[inline(always)]
+    fn rebase(&mut self, _z_ref: ComplexExp, _z_new: ComplexExp) {}
+}
+
+impl StepObserverExp for NoObserve {}
+
+#[inline(always)]
+fn l1_exp(z: ComplexExp) -> FloatExp {
+    z.re.abs() + z.im.abs()
+}
+
+/// Traqueur de fiabilité du tier exp : borne d'erreur absolue `E` en FloatExp.
+#[derive(Clone, Copy, Debug)]
+pub struct ShadowTrackerExp {
+    pub err: FloatExp,
+    dc_l1: FloatExp,
+    bla_epsilon: f64,
+}
+
+impl ShadowTrackerExp {
+    pub fn new(dc: ComplexExp, bla_epsilon: f64) -> Self {
+        Self {
+            err: FloatExp::zero(),
+            dc_l1: l1_exp(dc),
+            bla_epsilon,
+        }
+    }
+
+    /// Borne finale saturée en f32 (`+∞` au-delà) — même canal et même seuil
+    /// d'emballement que le tier f64 (`DeltaResult::error_bound`).
+    pub fn error_bound(&self) -> f32 {
+        let v = self.err.to_f64();
+        if v.is_nan() {
+            f32::INFINITY
+        } else {
+            v as f32
+        }
+    }
+}
+
+impl StepObserverExp for ShadowTrackerExp {
+    #[inline(always)]
+    fn direct(&mut self, z: ComplexExp, two_z_delta: ComplexExp, delta_old: ComplexExp) {
+        let z_abs = z.norm_sqr_fexp().sqrt();
+        let local = (l1_exp(two_z_delta) + delta_old.norm_sqr_fexp() + self.dc_l1) * GAMMA;
+        self.err = self.err * (z_abs * 2.0 + self.err) + local;
+    }
+
+    #[inline(always)]
+    fn bla(&mut self, a: &Mat2Exp, b: &Mat2Exp, d: ComplexExp, dc: ComplexExp) {
+        let a_delta = ComplexExp {
+            re: a.m00 * d.re + a.m01 * d.im,
+            im: a.m10 * d.re + a.m11 * d.im,
+        };
+        let b_dc = ComplexExp {
+            re: b.m00 * dc.re + b.m01 * dc.im,
+            im: b.m10 * dc.re + b.m11 * dc.im,
+        };
+        // σ₁(A) : |a| pour une A conforme (Mandelbrot), sinon la borne
+        // Frobenius (surestime au plus √2 — cas non conforme hors fast-path).
+        let sigma = if a.m00 == a.m11 && a.m01 == FloatExp::zero() - a.m10 {
+            (a.m00.sqr() + a.m10.sqr()).sqrt()
+        } else {
+            (a.m00.sqr() + a.m01.sqr() + a.m10.sqr() + a.m11.sqr()).sqrt()
+        };
+        let local = (l1_exp(a_delta) + l1_exp(b_dc)) * (self.bla_epsilon + GAMMA);
+        self.err = sigma * self.err + local;
+    }
+
+    #[inline(always)]
+    fn rebase(&mut self, z_ref: ComplexExp, z_new: ComplexExp) {
+        self.err = self.err + (l1_exp(z_ref) + l1_exp(z_new)) * U;
+    }
+}
+
 /// Mode du détecteur, lu une fois depuis `FRACTALL_RELIABILITY` :
 /// - `off` / `0` : détecteur inactif (boucle de production intacte) ;
 /// - `observe` : détecte et rapporte (`[RELIABILITY]`), ne corrige rien ;
@@ -178,6 +275,24 @@ impl ReliabilityMode {
     pub fn tracks(self) -> bool {
         !matches!(self, ReliabilityMode::Off)
     }
+}
+
+/// Suivi du tier **exp** (> 1e280) — OPT-IN `FRACTALL_RELIABILITY_EXP=1`.
+/// Mesuré 2026-11-05 (corpus profond 96-128²) : +25-45 % de temps pixel
+/// (`ShadowTrackerExp` en FloatExp) pour 0-2 pixels détectés par cas ; les
+/// résidus exp restants (3-9 px vs dd) ont une borne qui ne s'emballe pas.
+/// Les vraies sources d'erreur du tier exp étaient ailleurs (span f64
+/// sous-normal, ε BLA 2⁻²⁴) et sont corrigées à la racine.
+pub fn reliability_tracks_exp() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        reliability_mode().tracks()
+            && matches!(
+                std::env::var("FRACTALL_RELIABILITY_EXP").ok().as_deref(),
+                Some("1") | Some("on") | Some("true")
+            )
+    })
 }
 
 pub fn reliability_mode() -> ReliabilityMode {

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .axes_f3 import axis_parity, axis_speed
 from .axes_perf import axis_bench, axis_profile
+from .axes_precision import axis_precision
 from .axes_truth import axis_fuzz, axis_goldens, axis_quality
 from .config import (
     ADJUDICATIONS, BASELINE, BASELINES_DIR, BENCH, CRASH_JOURNAL, HISTORY_DIR,
@@ -88,6 +89,7 @@ def cmd_score(args) -> None:
         "parity": {"status": "skipped"},
         "quality": {"status": "skipped"},
         "fuzz": {"status": "skipped"},
+        "precision": {"status": "skipped"},
         "goldens": {"status": "skipped"},
         "profile": {"status": "skipped"},
         "bench": {"status": "skipped"},
@@ -120,6 +122,12 @@ def cmd_score(args) -> None:
         card["meta"]["fuzz_seed"] = args.fuzz_seed
         card["fuzz"] = axis_fuzz(cfg.get("fuzz_probes", 3), args.fuzz_seed,
                                  mem_limit_mb=mem_limit_mb)
+    if "precision" in axes:
+        print("\n== PRECISION (juge orbite ×4) ==")
+        card["precision"] = axis_precision(
+            cases, cfg.get("precision_size", 96), timeout,
+            mem_limit_mb=mem_limit_mb, quarantined=quarantined,
+            slow_safe=slow_safe)
     if "goldens" in axes:
         print("\n== GOLDENS ==")
         card["goldens"] = axis_goldens()

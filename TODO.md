@@ -3193,6 +3193,31 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
     croît à basse résolution » NON vérifiée sur e50 (0,46 % à 48×32, 0,28 %
     à 96×64) et aucun cas du corpus entre 5 et 50 % : changement de
     principe, sans gain mesuré à ce jour.
+  - [x] **(d) Tier exp (> 1e280), 2026-11-05** — trois défauts de véracité
+    trouvés en jugeant l'exp contre le dd (lui-même == GMP pur, vérifié
+    32² liiiines 0/1024, 48² e318) :
+    1. **ε BLA exp 2⁻²⁴ → 2⁻⁵³** (`EXP_BLA_EPSILON`) : 21/32 cas profonds
+       avaient des pixels faux (safari 80, e634 66, e890 57…) ; ≈ +5 %.
+    2. **Span f64 SOUS-NORMAL** (`effective_spans_fexp`) : entre 1e308 et
+       ~1e324 le span f64 est non nul mais à ~10 bits de mantisse → échelle
+       fausse de ~0,2 %, pixels de bord décalés de ~0,1 px. liiiines
+       138 → 0, e318 446 → 0 px faux (96²), coût nul. Même classe que le
+       span dd (`DoubleDoubleExp::from_gmp`, dc nul au-delà de 1e308).
+       Le traqueur ne POUVAIT pas le voir : l'arithmétique est juste,
+       c'est l'entrée qui est fausse.
+    3. **Partie basse relative au f64** : près de la période atom-domain
+       |Z| ~ 1e-1200 → `z_ref_f64 = 0` → `with_dd_from_lo` reconstruisait
+       Z = 0 exact → correction dd fausse sur ~tous les pixels (bulk test
+       olbaid3 1167/1170). `z_ref_lo` est désormais à l'échelle de la
+       mantisse de `z_ref` (verrou `low_part_survives_f64_underflow`).
+    + correction dd **avec rotation** (K appliquée au dc dd) : olbaid3
+    (rotate 20°) partait au GMP par pixel, 1,9 → 14 s pour 1 pixel ;
+    → 2,7 s, pixel identique au GMP.
+    **Traqueur exp** (`ShadowTrackerExp`, boucle HP monomorphisée) :
+    OPT-IN `FRACTALL_RELIABILITY_EXP=1` — +25-45 % de temps pixel pour
+    0-2 px détectés par cas. Résidus exp restants : 3-9 px à 96² (hard,
+    olbaid2, wfs_mb, safari, e1298) dont la borne ne s'emballe pas ;
+    axe precision 9/9 PASS (×4).
   *Métriques* : profil `post %` + `fiab. %` (e50, e113, dragon, spiral),
   `trend --case e50`, bench `cpu_perturb_dd`. *Done* : post < 10 % du wall
   sur e50 sans perdre un pixel vs GMP (quality 16/16, e50 PASS).
@@ -3207,7 +3232,20 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   mémoire de la table BLA (memory-bound, cf. G2). *Métriques* : bench
   `cpu_perturb_f64`, profil `pixels %`. *Done* : ns/iter −25 % bit-identique
   (goldens verts sans regen).
-- [ ] **G14.3 — Orbite de référence GMP (single-thread)**. Part `orbit %`
+- [~] **G14.3 — Orbite de référence GMP (single-thread)** —
+  **LIVRÉ 2026-11-05 (itération + précision)** : (1) le plancher n'était
+  pas l'orbite mais `mpc_sqr` lui-même (~700 ns à 676 b, mesuré hors
+  moteur) ; itération en 2 mults MPFR (`fast_sqr_scratch`) → ~410 ns, orbite
+  dragon 2,27 → 1,73 s, total −12 % (harness ab 3 runs) ; (2) DÉCOUVERTE
+  véracité en arbitrant ce changement : la formule de précision F3 nue
+  laisse 2-4 % de pixels faux (golden_spider ~340, e227 ~228,
+  evolution_trees ~245 px à 96² vs juge ×4 convergé) quelle que soit
+  l'arithmétique ; +64 bits de marge (`ORBIT_PRECISION_MARGIN_BITS`) →
+  vérité au pixel près sur les 7 scènes divergentes. Goldens e113 (2 px),
+  glitch_test_2 atom/harmonic (1 px) régénérés : nouveaux == juge ×4,
+  anciens faux. Reste (texte d'origine ci-dessous) : cache inter-runs / vidéo,
+  compression streaming.
+- **G14.3 (texte d'origine)**. Part `orbit %`
   faible sur le quick (≤ 2 % à e50, 1-5 % attendu e1000) mais **dominante en
   ultra-deep** (e52465 : 660 s, slow-safe). F3 fait pareil (MPFR séquentiel) ;
   FractalShark passe par le GPU (NTT). Leviers réalistes : précision

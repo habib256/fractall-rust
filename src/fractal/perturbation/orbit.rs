@@ -45,15 +45,23 @@ fn z_ref_complexexp(z: &Complex, z_f64: Complex64) -> ComplexExp {
 /// Convertit un `Float` GMP en `DoubleDoubleExp` (~106 bits) : `hi` = arrondi
 /// f64, `lo` = reste (value − hi) arrondi f64. Capte min(106, prec(value)) bits.
 fn gmp_float_to_ddexp(value: &Float) -> super::dd::DoubleDoubleExp {
-    use super::dd::{DoubleDouble, DoubleDoubleExp};
-    let hi = value.to_f64();
-    if hi == 0.0 || !hi.is_finite() {
-        return DoubleDoubleExp::from_f64(hi);
-    }
-    let mut rem = value.clone();
-    rem -= hi;
-    let lo = rem.to_f64();
-    DoubleDoubleExp::normalized(DoubleDouble::new(hi, lo), 0)
+    super::dd::DoubleDoubleExp::from_gmp(value)
+}
+
+/// Fast-path d'itération GMP de l'orbite (2 mults au lieu de `mpc_sqr`).
+/// `FRACTALL_ORBIT_FAST_SQR=0` revient à `mpc_sqr` (A/B, diagnostic).
+fn fast_orbit_sqr_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        !matches!(
+            std::env::var("FRACTALL_ORBIT_FAST_SQR")
+                .ok()
+                .as_deref()
+                .map(str::trim),
+            Some("0") | Some("off")
+        )
+    })
 }
 
 /// Partie basse d'un Z GMP : `Z − hi` par composante, `hi` = l'arrondi f64
@@ -61,27 +69,44 @@ fn gmp_float_to_ddexp(value: &Float) -> super::dd::DoubleDoubleExp {
 /// est un Float de 64 bits réutilisé : MPFR arrondit `Z − hi` correctement
 /// DIRECTEMENT à cette précision — sans le clone pleine précision par
 /// itération qui coûtait +50 % sur l'orbite de dragon.
-fn gmp_low_part(z: &Complex, hi: Complex64, scratch: &mut Float) -> Complex64 {
+fn gmp_low_part(z: &Complex, zc: ComplexExp, scratch: &mut [Float; 2]) -> Complex64 {
     use rug::Assign;
-    let mut lo = |v: &Float, h: f64| {
-        if h == 0.0 || !h.is_finite() {
+    let [diff, hi] = scratch;
+    let mut lo = |v: &Float, h: FloatExp| {
+        if h.mantissa == 0.0 || !h.mantissa.is_finite() {
             return 0.0;
         }
-        scratch.assign(v - h);
-        scratch.to_f64()
+        // `hi = m·2^e` exact (53 b), `v − hi` arrondi une fois à 64 b, puis
+        // ramené à l'échelle de la mantisse (décalage exact).
+        hi.assign(h.mantissa);
+        *hi <<= h.exponent;
+        diff.assign(v - &*hi);
+        *diff >>= h.exponent;
+        diff.to_f64()
     };
-    let re = lo(z.real(), hi.re);
-    let im = lo(z.imag(), hi.im);
+    let re = lo(z.real(), zc.re);
+    let im = lo(z.imag(), zc.im);
     Complex64::new(re, im)
 }
 
 /// Partie basse d'un Z double-double (fast-path dd) : `Z − hi` en f64.
-fn dd_low_part(z: super::dd::ComplexDDExp, hi: Complex64) -> Complex64 {
-    use super::dd::DoubleDoubleExp as DdE;
-    Complex64::new(
-        z.re.sub(DdE::from_f64(hi.re)).to_f64(),
-        z.im.sub(DdE::from_f64(hi.im)).to_f64(),
-    )
+fn dd_low_part(z: super::dd::ComplexDDExp, zc: ComplexExp) -> Complex64 {
+    use super::dd::{DoubleDouble, DoubleDoubleExp as DdE};
+    let lo = |v: DdE, h: FloatExp| {
+        if h.mantissa == 0.0 {
+            return 0.0;
+        }
+        let d = v.sub(DdE::normalized(
+            DoubleDouble::new(h.mantissa, 0.0),
+            h.exponent,
+        ));
+        DdE {
+            mantissa: d.mantissa,
+            exponent: d.exponent - h.exponent,
+        }
+        .to_f64()
+    };
+    Complex64::new(lo(z.re, zc.re), lo(z.im, zc.im))
 }
 
 /// La référence doit-elle capturer sa partie basse (`z_ref_lo`) ? Oui quand
@@ -98,9 +123,11 @@ pub(crate) fn wants_dd_lo(params: &FractalParams) -> bool {
         && !params.engine.find_nucleus
         && !params.is_hybrid_formula()
         && !crate::fractal::wisdom::compression_active(params)
-        // Seul le tier f64 est suivi : au-delà (exp, > 1e280) aucun pixel
-        // n'est flaggé, la capture serait du temps perdu.
-        && !crate::fractal::wisdom::wants_exp(super::effective_pixel_size(params))
+        // Tier exp (> 1e280) : seulement si son traqueur (opt-in) est actif ;
+        // sans la partie basse, corriger UN pixel reconstruisait toute
+        // l'orbite dd (olbaid3 96² : 1,9 → 14 s pour 1 pixel).
+        && (crate::fractal::bytecode::reliability::reliability_tracks_exp()
+            || !crate::fractal::wisdom::wants_exp(super::effective_pixel_size(params)))
 }
 
 /// Orbite référence Mandelbrot itérée en **double-double** (~106 bits) au lieu de
@@ -151,7 +178,7 @@ fn dd_reference_orbit(
         z_ref_dd.push(z);
     }
     if build_lo {
-        z_ref_lo.push(dd_low_part(z, zf));
+        z_ref_lo.push(dd_low_part(z, ComplexExp::from_complex64(zf)));
     }
     for i in 0..iteration_max {
         if let Some(cancel) = cancel {
@@ -174,7 +201,7 @@ fn dd_reference_orbit(
             z_ref_dd.push(z);
         }
         if build_lo {
-            z_ref_lo.push(dd_low_part(z, zf));
+            z_ref_lo.push(dd_low_part(z, ComplexExp::from_complex64(zf)));
         }
     }
     Some((z_ref, z_ref_f64, z_ref_dd, z_ref_lo))
@@ -324,10 +351,12 @@ pub struct ReferenceOrbit {
     /// arrondi f64 (2⁻⁵²·|Z|) capperait sinon la précision. Construite depuis
     /// l'orbite GMP (via `gmp_float_to_ddexp`) ou l'itération dd.
     pub z_ref_dd: Vec<super::dd::ComplexDDExp>,
-    /// Partie BASSE de la référence (`lo = Z_gmp − f64(Z)`, ~53 b de plus que
-    /// `z_ref_f64`), capturée pendant le calcul de l'orbite quand l'escalade
+    /// Partie BASSE de la référence, ~53 b de plus que `z_ref`, À L'ÉCHELLE
+    /// DE SA MANTISSE : `Z = (m + lo)·2^e` pour `z_ref[i] = m·2^e` (exposant
+    /// étendu — un `lo` relatif au f64 perdait les |Z| < 1e-308). Capturée
+    /// pendant le calcul de l'orbite quand l'escalade
     /// de fiabilité (G9.6) peut avoir à corriger des pixels au tier dd
-    /// (`wants_dd_lo`). `z_ref_f64[i] + z_ref_lo[i]` = Z en double-double :
+    /// (`wants_dd_lo`). `z_ref[i]` + `z_ref_lo[i]` = Z en double-double :
     /// la correction reconstruit l'orbite dd (`with_dd_from_lo`) au lieu de
     /// RE-CALCULER l'orbite GMP (dragon : 2,5 s économisées pour 16 o/iter).
     /// Vide sinon.
@@ -388,19 +417,24 @@ impl ReferenceOrbit {
     /// dd près) à une orbite recalculée avec `use_dd_tier`.
     pub fn with_dd_from_lo(&self) -> Option<ReferenceOrbit> {
         use super::dd::{ComplexDDExp, DoubleDouble, DoubleDoubleExp};
-        if self.z_ref_lo.is_empty() || self.z_ref_lo.len() != self.z_ref_f64.len() {
+        if self.z_ref_lo.is_empty() || self.z_ref_lo.len() != self.z_ref.len() {
             return None;
         }
-        let dd = |hi: f64, lo: f64| {
-            if hi == 0.0 || !hi.is_finite() {
-                DoubleDoubleExp::from_f64(hi)
+        // Reconstruit depuis `z_ref` (mantisse + exposant ÉTENDU) et non
+        // `z_ref_f64` : près de la période atom-domain |Z| descend sous 1e-308
+        // (olbaid3 : ~1e-1200), le f64 vaut 0 et la reconstruction remplaçait
+        // Z par 0 exact → correction dd fausse sur ~tous les pixels (bug
+        // 2026-11-05). `z_ref_lo` est exprimé à l'échelle de cette mantisse.
+        let dd = |h: FloatExp, lo: f64| {
+            if h.mantissa == 0.0 || !h.mantissa.is_finite() {
+                DoubleDoubleExp::from_f64(h.mantissa)
             } else {
-                DoubleDoubleExp::normalized(DoubleDouble::new(hi, lo), 0)
+                DoubleDoubleExp::normalized(DoubleDouble::new(h.mantissa, lo), h.exponent)
             }
         };
         let mut orbit = self.clone();
         orbit.z_ref_dd = self
-            .z_ref_f64
+            .z_ref
             .iter()
             .zip(&self.z_ref_lo)
             .map(|(h, l)| ComplexDDExp {
@@ -1844,7 +1878,7 @@ fn compute_reference_orbit_phase(
     } else {
         0
     });
-    let mut lo_scratch = Float::new(64);
+    let mut lo_scratch = [Float::new(64), Float::new(53)];
     let mut z_ref_dd = Vec::with_capacity(if build_dd {
         orbit_reserve(params.iteration_max as usize + 1)
     } else {
@@ -1884,7 +1918,7 @@ fn compute_reference_orbit_phase(
         });
     }
     if build_lo {
-        z_ref_lo.push(gmp_low_part(&z, z_f64, &mut lo_scratch));
+        z_ref_lo.push(gmp_low_part(&z, *z_ref.last().unwrap(), &mut lo_scratch));
     }
     if store_dense_gmp {
         z_ref_gmp.push(z.clone());
@@ -2051,6 +2085,18 @@ fn compute_reference_orbit_phase(
         None
     };
 
+    // Fast-path de l'itération GMP z²+c (G14.3) : `mpc_sqr` garantit l'arrondi
+    // correct de z² exact et coûte ~700 ns à 676 b ; l'identité
+    // `(re+im)(re−im) + i·2·re·im` en 2 multiplications MPFR (tampons
+    // réutilisés) coûte ~410 ns. Les deux sont des pseudo-orbites à la même
+    // précision : leur écart (~ulp × amplification de Lyapunov) est du même
+    // ordre que leur erreur commune vs l'orbite exacte, que la formule de
+    // précision F3 dimensionne déjà. Mandelbrot mono-phase seulement (les
+    // autres formules restent sur l'interpréteur / le `match`).
+    let mut fast_sqr_scratch: Option<(Float, Float)> =
+        (matches!(ftype, FractalType::Mandelbrot) && !is_hybrid && fast_orbit_sqr_enabled())
+            .then(|| (Float::new(prec), Float::new(prec)));
+
     for i in 0..params.iteration_max {
         if let Some(cancel) = cancel {
             if i % 256 == 0 && cancel.load(Ordering::Relaxed) {
@@ -2119,7 +2165,19 @@ fn compute_reference_orbit_phase(
             }
         }
 
-        if let (Some(state), Some(formula), Some(c_phase)) = (
+        if let Some((t1, t2)) = fast_sqr_scratch.as_mut() {
+            // Fast-path z²+c Mandelbrot mono-phase (cf. `fast_sqr_scratch`) :
+            // re' = (re+im)(re−im) + cr ; im' = 2·re·im + ci — 2 mults MPFR.
+            use rug::Assign;
+            let (re, im) = z.as_mut_real_imag();
+            t1.assign(&*re + &*im);
+            t2.assign(&*re - &*im);
+            *im *= &*re;
+            *im <<= 1;
+            *im += cref.imag();
+            re.assign(&*t1 * &*t2);
+            *re += cref.real();
+        } else if let (Some(state), Some(formula), Some(c_phase)) = (
             bytecode_state.as_mut(),
             bytecode_formula.as_ref(),
             bytecode_c,
@@ -2183,7 +2241,7 @@ fn compute_reference_orbit_phase(
             });
         }
         if build_lo {
-            z_ref_lo.push(gmp_low_part(&z, z_f64, &mut lo_scratch));
+            z_ref_lo.push(gmp_low_part(&z, *z_ref.last().unwrap(), &mut lo_scratch));
         }
         // GMP dense sauté hors correction glitch (cf. `store_dense_gmp`).
         if store_dense_gmp {
@@ -2612,22 +2670,84 @@ mod dd_orbit_tests {
                 crate::fractal::perturbation::compute_perturbation_precision_bits(&params);
 
             let (plain, _, _) = compute_reference_orbit(&params, None, false).expect("orbite");
-            assert_eq!(plain.z_ref_lo.len(), plain.z_ref_f64.len(), "{label}: capture");
+            assert_eq!(
+                plain.z_ref_lo.len(),
+                plain.z_ref_f64.len(),
+                "{label}: capture"
+            );
             let rebuilt = plain.with_dd_from_lo().expect("reconstruction");
 
             let mut dd_params = params.clone();
             dd_params.engine.use_dd_tier = true;
             let (dd, _, _) = compute_reference_orbit(&dd_params, None, false).expect("orbite dd");
-            assert_eq!(rebuilt.z_ref_dd.len(), dd.z_ref_dd.len(), "{label}: longueur");
+            assert_eq!(
+                rebuilt.z_ref_dd.len(),
+                dd.z_ref_dd.len(),
+                "{label}: longueur"
+            );
             let mismatches = rebuilt
                 .z_ref_dd
                 .iter()
                 .zip(&dd.z_ref_dd)
-                .filter(|(a, b)| a.to_complex64_approx() != b.to_complex64_approx()
-                    || (a.re.sub(b.re).to_f64() != 0.0)
-                    || (a.im.sub(b.im).to_f64() != 0.0))
+                .filter(|(a, b)| {
+                    a.to_complex64_approx() != b.to_complex64_approx()
+                        || (a.re.sub(b.re).to_f64() != 0.0)
+                        || (a.im.sub(b.im).to_f64() != 0.0)
+                })
                 .count();
-            assert_eq!(mismatches, 0, "{label}: {mismatches} valeurs dd différentes");
+            assert_eq!(
+                mismatches, 0,
+                "{label}: {mismatches} valeurs dd différentes"
+            );
+        }
+    }
+
+    /// Verrou (bug 2026-11-05) : la partie basse doit survivre à |Z| < 1e-308.
+    /// Près de la période atom-domain du tier exp, |Z| tombe à ~1e-1200 : un
+    /// `lo` relatif au f64 (qui vaut 0) reconstruisait Z = 0 exact, et la
+    /// correction dd était fausse sur ~tous les pixels (olbaid3). Comparaison
+    /// sur mantisse/exposant — un test via `to_f64` ne voit RIEN à ces
+    /// échelles (c'est ce qui avait masqué le bug).
+    #[test]
+    fn low_part_survives_f64_underflow() {
+        use super::super::dd::DoubleDoubleExp as DdE;
+        use rug::ops::Pow;
+        let prec = 4096;
+        for exp10 in [-5i32, -400, -1200] {
+            let mut re = Float::with_val(prec, 10);
+            re = re.pow(exp10);
+            re *= Float::with_val(
+                prec,
+                Float::parse("1.2345678901234567890123456789012345").unwrap(),
+            );
+            let im = Float::with_val(prec, -&re) / 3u32;
+            let z = Complex::with_val(prec, (re, im));
+            let zc = z_ref_complexexp(&z, complex_to_complex64(&z));
+            let mut scratch = [Float::new(64), Float::new(53)];
+            let lo = gmp_low_part(&z, zc, &mut scratch);
+            let mut params = default_params_for_type(FractalType::Mandelbrot, 8, 8);
+            params.iteration_max = 4;
+            let (mut orbit, _, _) = compute_reference_orbit(&params, None, false).expect("orbite");
+            orbit.z_ref = vec![zc];
+            orbit.z_ref_f64 = vec![complex_to_complex64(&z)];
+            orbit.z_ref_lo = vec![lo];
+            let rebuilt = orbit.with_dd_from_lo().expect("reconstruction").z_ref_dd[0];
+            for (got, want) in [
+                (rebuilt.re, DdE::from_gmp(z.real())),
+                (rebuilt.im, DdE::from_gmp(z.imag())),
+            ] {
+                let d = got.sub(want);
+                let rel = if d.mantissa.hi == 0.0 {
+                    f64::NEG_INFINITY
+                } else {
+                    (d.exponent - want.exponent) as f64 + d.mantissa.hi.abs().log2()
+                };
+                assert!(want.mantissa.hi != 0.0, "1e{exp10}: juge nul");
+                assert!(
+                    rel < -100.0,
+                    "1e{exp10}: écart relatif 2^{rel:.1} (attendu < 2^-100)"
+                );
+            }
         }
     }
 
@@ -2686,7 +2806,7 @@ mod dd_orbit_tests {
         let seed_dd = ComplexDDExp::from_complex64(params.seed);
         let (_, dd_f64, _, _) =
             dd_reference_orbit(z0, seed_dd, params.iteration_max, None, false, false)
-            .expect("orbite dd Julia");
+                .expect("orbite dd Julia");
 
         assert_orbit_close(&orbit_gmp.z_ref_f64, &dd_f64, 1e-9);
     }

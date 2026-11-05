@@ -146,17 +146,13 @@ fn build_bla_entry(
     // **pixel-exactes GMP** (e15/e20 max_diff=0) et e30 tombe à div 3e-4 (=
     // niveau du pas direct sans BLA / du kernel GPU f64). Coût : rayons plus
     // petits → moins de skips longs (BLA moins agressive) mais correcte.
-    // NB : ne concerne QUE le tier f64. Le tier **exp** (FloatExp, `bla_exp`
-    // plus bas) garde DÉLIBÉRÉMENT `bla_threshold`=2⁻²⁴ : le porter à 2⁻⁵³ a été
-    // MESURÉ et **RÉFUTÉ 2× (2026-07-15 puis 2026-07-18, cf. TODO G9)** — aux
-    // zooms exp (> 1e280) la réf est atom-tronquée + CYCLÉE (période courte),
-    // la BLA ne fait donc pas les longs sauts qui stressent le rayon de validité
-    // (l'over-skip epsilon est une pathologie des réfs LONGUES du tier f64). À
-    // 2⁻⁵³ : ZÉRO gain correction sur les vraies scènes exp (e1000 pixel-
-    // identique, liiiines div 0.004 identique) mais +10-30 % de temps (e401,
-    // e1000). ⚠️ NE PAS re-tenter sur la base d'un e30 FORCÉ en exp
-    // (`FRACTALL_EXP_THRESHOLD=1`) : réf LONGUE artificielle, non représentative
-    // — c'est le piège qui a fait re-dériver ce faux fix. Le dd a son 2⁻⁸⁰.
+    // NB : le tier **exp** (FloatExp, `bla_exp` plus bas) est passé à 2⁻⁵³
+    // AUSSI le 2026-11-05 (`EXP_BLA_EPSILON`). L'ancienne « réfutation 2× »
+    // (e1000 pixel-identique, liiiines inchangé) était juste sur ces deux cas
+    // mais fausse en général : jugé contre le tier dd (== GMP pur), 2⁻²⁴
+    // laissait des pixels faux sur 21/32 cas profonds (safari 80, e634 66…)
+    // que 2⁻⁵³ corrige. liiiines/e318 relèvent d'une autre cause (plancher δ,
+    // détecteur de fiabilité). Le dd a son 2⁻⁸⁰.
     const F64_BLA_EPSILON: f64 = 1.0 / (1u64 << 53) as f64; // 2⁻⁵³ ≈ 1.11e-16
                                                             // G4 jalon 5b : pour un hybride multi-phase, `tables[p]` est bâtie CYCLÉE
                                                             // sur la réf de phase p (F3 `hybrid_blas` : `blasR2calc(Z[phase], opss, …,
@@ -215,16 +211,19 @@ fn build_bla_entry(
     } else {
         None
     };
-    // Table BLA FloatExp (path atom-tronqué HP, gated FRACTALL_ATOM_PERIOD=1).
+    // Table BLA FloatExp (path atom-tronqué HP, défaut au-delà de ~1e280).
     // Construite depuis `ref_orbit.z_ref` (ComplexExp) — préserve les grazes
-    // ~1e-8000. Mêmes epsilon (`bla_threshold`=2⁻²⁴) et c_norm que le build f64,
-    // convertis en FloatExp (le c_norm f64 underflow à 0 en deep zoom, donc on
-    // recalcule un c_norm FloatExp fidèle via les spans HP).
+    // ~1e-8000. c_norm recalculé en FloatExp via les spans HP (le c_norm f64
+    // underflow à 0 en deep zoom).
     //
-    // ⚠️ L'epsilon reste 2⁻²⁴ (PAS le 2⁻⁵³ du tier f64) DÉLIBÉRÉMENT : porter
-    // 2⁻⁵³ ici a été mesuré et RÉFUTÉ 2× (cf. `F64_BLA_EPSILON` plus haut +
-    // TODO G9) — les vraies scènes exp ont une réf atom-tronquée courte, donc
-    // pas d'over-skip epsilon, et 2⁻⁵³ ne coûte que du temps (+10-30 %).
+    // ⚠️ Epsilon **2⁻⁵³** (`EXP_BLA_EPSILON`, 2026-11-05) et non plus
+    // `bla_threshold` = 2⁻²⁴. L'ancienne conclusion « 2⁻⁵³ réfuté 2×, zéro gain
+    // de correction » était FAUSSE : elle comparait l'exp à lui-même faute de
+    // juge fiable aux grandes profondeurs. Contre le tier dd (lui-même == GMP
+    // pur, vérifié e318), sur 32 cas profonds du corpus à 96² : ε = 2⁻²⁴ →
+    // pixels faux sur 21 cas (safari 80, e634 66, e890 57, olbaid3 47…) ;
+    // ε = 2⁻⁵³ → résidu ≤ 9 px hors plancher δ (e318/liiiines, traités par le
+    // détecteur de fiabilité). Coût mesuré ≈ +5 % cumulé.
     //
     // ⚠️ PERF : `bla_exp` n'est LU que par le path pixel `use_exp_path`
     // (`try_bytecode_unified_path`, `pixel_size < pixel_size_exp_threshold()`,
@@ -240,7 +239,7 @@ fn build_bla_entry(
         && matches!(params.fractal_type, FractalType::Mandelbrot)
         && ref_orbit.z_ref.len() >= 2
     {
-        let epsilon_fexp = FloatExp::from_f64(params.perturbation.bla_threshold);
+        let epsilon_fexp = FloatExp::from_f64(EXP_BLA_EPSILON);
         let c_norm_fexp = {
             let (sx, sy) = crate::fractal::perturbation::effective_spans_fexp(params);
             let px = sx
@@ -560,6 +559,9 @@ pub(crate) fn harmonic_entry_active(params: &FractalParams, orbit: &ReferenceOrb
         .unwrap_or(false)
 }
 
+/// Epsilon de la table BLA FloatExp du tier exp (cf. son build) — 2⁻⁵³.
+pub(crate) const EXP_BLA_EPSILON: f64 = 1.0 / (1u64 << 53) as f64;
+
 /// Epsilon de la table BLA f64 (miroir de `F64_BLA_EPSILON` du build) : erreur
 /// de troncature par saut, consommée par le détecteur de fiabilité.
 const F64_BLA_EPSILON_PIXEL: f64 = 1.0 / (1u64 << 53) as f64;
@@ -670,6 +672,44 @@ fn try_bytecode_unified_path(
             // (FRACTALL_ATOM_PERIOD=1). `None` sinon → path HP correctness-ref
             // lent (sans skip) / path exp f64 par défaut inchangé.
             let bla_exp = entry.bla_exp.as_ref().map(|v| &v[0]);
+            // Détecteur de fiabilité, tier exp (G9.6) : mêmes conditions que le
+            // path HP Mandelbrot de `iterate_pixel_unified_exp` (atom-tronqué,
+            // défaut) ; boucle identique, borne d'erreur en FloatExp.
+            if crate::fractal::bytecode::reliability::reliability_tracks_exp()
+                && !is_julia
+                && crate::fractal::perturbation::delta::atom_hp_enabled()
+                && entry.formula.phases.len() == 1
+                && entry.formula.phases[0].ops.len() == 2
+                && matches!(
+                    entry.formula.phases[0].ops[0],
+                    crate::fractal::bytecode::Op::Sqr
+                )
+                && matches!(
+                    entry.formula.phases[0].ops[1],
+                    crate::fractal::bytecode::Op::Add
+                )
+            {
+                let (res_exp, tracker) =
+                    crate::fractal::bytecode::pixel_loop_exp::iterate_pixel_unified_exp_mandelbrot_hp_tracked(
+                        ref_orbit,
+                        bla_exp,
+                        dc_for_add_exp,
+                        *delta0,
+                        crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
+                        EXP_BLA_EPSILON,
+                    );
+                error_bound = tracker.error_bound();
+                return Some(crate::fractal::bytecode::pixel_loop::UnifiedPixelResult {
+                    iteration: res_exp.iteration,
+                    z_final: res_exp.z_final,
+                    rebase_count: res_exp.rebase_count,
+                    bla_steps: res_exp.bla_steps,
+                    orbit: None,
+                    distance: None,
+                    is_interior: false,
+                    ref_exhausted: res_exp.ref_exhausted,
+                });
+            }
             let res_exp = iterate_pixel_unified_exp(
                 ref_orbit,
                 bla,
@@ -823,8 +863,14 @@ fn try_bytecode_unified_path(
             && delta_init.norm_sqr() == 0.0
             && entry.formula.phases.len() == 1
             && entry.formula.phases[0].ops.len() == 2
-            && matches!(entry.formula.phases[0].ops[0], crate::fractal::bytecode::Op::Sqr)
-            && matches!(entry.formula.phases[0].ops[1], crate::fractal::bytecode::Op::Add)
+            && matches!(
+                entry.formula.phases[0].ops[0],
+                crate::fractal::bytecode::Op::Sqr
+            )
+            && matches!(
+                entry.formula.phases[0].ops[1],
+                crate::fractal::bytecode::Op::Add
+            )
         {
             let (res, tracker) =
                 crate::fractal::bytecode::pixel_loop::iterate_pixel_unified_mandelbrot_tracked(
@@ -1946,7 +1992,8 @@ pub fn iterate_pixel_with_dd(request: PerturbPixelRequest<'_>) -> DeltaResult {
     // let center_threshold = pixel_size_sqr * 0.01;
     // let delta_threshold = pixel_size_sqr * 1e-8;
     // let is_center_like = dc_norm_sqr < center_threshold && delta_norm_sqr_initial < delta_threshold;
-    let adaptive_tolerance = compute_adaptive_glitch_tolerance(pixel_size, params.perturbation.glitch_tolerance);
+    let adaptive_tolerance =
+        compute_adaptive_glitch_tolerance(pixel_size, params.perturbation.glitch_tolerance);
     let glitch_tolerance_sqr = adaptive_tolerance * adaptive_tolerance;
     let is_julia = params.fractal_type == FractalType::Julia;
     let is_burning_ship = params.fractal_type == FractalType::BurningShip;
@@ -1980,7 +2027,8 @@ pub fn iterate_pixel_with_dd(request: PerturbPixelRequest<'_>) -> DeltaResult {
     // of iterations based on its position in the image. Pixels near the center
     // can often skip more iterations than edge pixels.
     if let Some(table) = series_table {
-        if params.perturbation.series_standalone && !is_burning_ship && !is_multibrot && !is_tricorn {
+        if params.perturbation.series_standalone && !is_burning_ship && !is_multibrot && !is_tricorn
+        {
             // Compute per-pixel series skip using tiled validation if available
             let pixel_max_skip = if let Some(ref tiled) = table.tiled_validation {
                 // Estimate pixel position from dc (reuse pre-cached dc_f64)
@@ -2887,9 +2935,11 @@ mod tests {
             params, None, None, None, false,
         )
         .expect("orbite référence");
-        let formula =
-            crate::fractal::bytecode::compile_formula(params.fractal_type, params.formula.multibrot_power)
-                .expect("formule compilable");
+        let formula = crate::fractal::bytecode::compile_formula(
+            params.fractal_type,
+            params.formula.multibrot_power,
+        )
+        .expect("formule compilable");
         let pixel_size = crate::fractal::perturbation::effective_pixel_size(params);
         let diag_px = ((params.width as f64).powi(2) + (params.height as f64).powi(2)).sqrt();
         let c_norm = pixel_size * diag_px;

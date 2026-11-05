@@ -92,7 +92,9 @@ Axes **contre Fraktaler-3** (exigent F3 + numpy/OpenEXR) : **vitesse-ratio**
 EXR N0/NF). Axes **intrinsèques** (tournent partout, dont CI/conteneur) :
 **vitesse auto-relative** (temps fractall par cas vs baseline même machine),
 **qualité** (`fractall-quality` vs ground truth GMP + goldens), **fuzz**
-(sondes pert-vs-GMP), **profil** (où va le temps : path exécuté + ventilation
+(sondes pert-vs-GMP), **precision** (juge orbite à précision ×4 — seul axe
+qui voit une précision d'orbite insuffisante : le juge GMP de quality partage
+la formule du moteur), **profil** (où va le temps : path exécuté + ventilation
 orbite/pixels/post/sauvegarde + ns/iter + % fiabilité), **bench** (iters/s par
 technique via `--wisdom-bench` isolé).
 
@@ -688,7 +690,13 @@ pixels flaggés recalculés au **tier dd** sur ces seuls pixels
 (`correct_pixels_dd`, orbite dd reconstruite depuis la partie basse
 `z_ref_lo` capturée avec l'orbite primaire — jamais re-calculée ; repli
 GMP), frame entière dd au-delà de 50 % seulement (le pixel par pixel est
-toujours moins cher en dessous). Coût
+toujours moins cher en dessous). Tier **exp** : traqueur
+`ShadowTrackerExp` opt-in `FRACTALL_RELIABILITY_EXP=1` (+25-45 % pour 0-2 px ;
+les vraies erreurs exp étaient l'ε BLA 2⁻²⁴ → 2⁻⁵³ et le span f64
+**sous-normal** 1e308-1e324 — `effective_spans_fexp` exige `is_normal`).
+⚠️ `z_ref_lo` est à l'échelle de la MANTISSE de `z_ref` (ComplexExp), pas du
+f64 : |Z| ~ 1e-1200 près de la période atom-domain. Correction dd : K (rotation)
+appliquée au dc dd. Coût
 (seahorse 1e8 512²) : boucle 2,0 → 2,5 ns/iter (traqueur gardé en LOCAL —
 derrière `&mut` il coûtait ×3), total 0,72 → 1,10 s. Mesuré vs GMP :
 seahorse WARN max_diff 437 → PASS ; e30 5/5, e50 17/18 pixels faux
@@ -698,8 +706,21 @@ hybrides, harmonic, Julia, DE) : pas de suivi.
 ### Précision GMP perturbation
 
 Formule C++ Fraktaler-3 : `bits = max(24, 24 + floor(log2(zoom * height)))`,
-clamp `[128, 65536]`. Cf. `compute_perturbation_precision_bits()` ; le champ
-utilisateur `precision_bits` sert de plancher.
+**+ 64 bits de marge** (`ORBIT_PRECISION_MARGIN_BITS`, 2026-11-05) ; clamp
+`[128, …]`. Cf. `compute_perturbation_precision_bits()` ; le champ
+utilisateur `precision_bits` sert de plancher. ⚠️ La formule F3 NUE laisse
+2-4 % de pixels FAUX sur des scènes du corpus (golden_spider, e227,
+evolution_trees — mesuré contre une orbite à précision ×4, juge convergé
+×2 == ×4) ; +64 b les ramène à la vérité au pixel près.
+
+**Itération GMP de l'orbite** (`orbit.rs::fast_sqr_scratch`, Mandelbrot
+mono-phase) : `re' = (re+im)(re−im) + cr`, `im' = 2·re·im + ci` en 2
+multiplications MPFR à tampons réutilisés, au lieu de `mpc_sqr` (arrondi
+correct de z² exact, ~700 ns à 676 b contre ~410). Les deux sont des
+pseudo-orbites de même précision, aucune n'est « plus vraie » (écarts au juge
+×4 équivalents) ; 31/38 cas du corpus pixel-identiques, 25 goldens
+inchangés. Dragon : orbite −35 %, total −12 %. `FRACTALL_ORBIT_FAST_SQR=0`
+revient à `mpc_sqr` (A/B).
 
 **Cache** (`ReferenceOrbitCache`) : orbite + BLA réutilisées si même
 centre / type / précision. ⚠️ **Régime atom-domain** (`is_valid_for` +

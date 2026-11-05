@@ -159,7 +159,8 @@ fn report_reliability(
 /// (`recompute_pixels_cpu` : oublié, il rendait 1024 sur l'hôte GPU f32).
 fn with_uncapped_perturb_limits(params: &FractalParams) -> FractalParams {
     let mut p = params.clone();
-    p.perturbation.max_perturb_iterations = p.perturbation.max_perturb_iterations.max(p.iteration_max);
+    p.perturbation.max_perturb_iterations =
+        p.perturbation.max_perturb_iterations.max(p.iteration_max);
     p.perturbation.max_bla_steps = p.perturbation.max_bla_steps.max(p.iteration_max);
     p
 }
@@ -169,7 +170,7 @@ fn with_uncapped_perturb_limits(params: &FractalParams) -> FractalParams {
 /// pixels désignés — la même arithmétique que l'escalade frame entière
 /// (`use_dd_tier`), sans payer les pixels fiables. ~25× moins cher qu'une
 /// correction GMP par pixel sur les orbites longues. Hypothèses (gardées par
-/// l'appelant) : Mandelbrot bytecode, sans transformation K ni nucleus.
+/// l'appelant) : Mandelbrot bytecode, sans nucleus (K appliquée au dc dd).
 ///
 /// Renvoie `(index, iterations, z_final, encore_glitché)`, ou `None` si
 /// l'orbite dd n'a pu être construite (annulation).
@@ -180,6 +181,7 @@ fn correct_pixels_dd(
     indices: &[usize],
     aa_uniform: [f64; 2],
     aa_jitter: Option<(u64, f64)>,
+    rot: Option<(f64, f64, f64, f64)>,
 ) -> Option<Vec<(usize, u32, Complex64, bool)>> {
     use crate::fractal::perturbation::dd::{ComplexDDExp, DoubleDoubleExp as DdE};
     let mut dd_params = params.clone();
@@ -194,8 +196,7 @@ fn correct_pixels_dd(
     let (orbit, legacy_bla) = match base.orbit.with_dd_from_lo() {
         Some(o) => (o, &base.bla_table),
         None => {
-            rebuilt =
-                compute_reference_orbit_cached(&dd_params, Some(cancel), None, None, false)?;
+            rebuilt = compute_reference_orbit_cached(&dd_params, Some(cancel), None, None, false)?;
             (rebuilt.orbit.clone(), &rebuilt.bla_table)
         }
     };
@@ -233,6 +234,16 @@ fn correct_pixels_dd(
                     re = re.add(jit_re.mul(DdE::from_f64(jx)));
                     im = im.add(jit_im.mul(DdE::from_f64(jy)));
                 }
+                // Rotation/transform K (coefficients f64, comme le plein
+                // cadre) appliquée au dc dd : sans elle, une scène tournée
+                // (olbaid3) partait au GMP par pixel — 11 s pour 1 pixel.
+                let (re, im) = match rot {
+                    Some((a, b, c, d)) => (
+                        re.mul_f64(a).add(im.mul_f64(b)),
+                        re.mul_f64(c).add(im.mul_f64(d)),
+                    ),
+                    None => (re, im),
+                };
                 let dc_dd = ComplexDDExp { re, im };
                 // dc 53 b (repli si le dispatch ne prend pas la branche dd).
                 let dc = ComplexExp {
@@ -1313,7 +1324,6 @@ pub fn render_perturbation_with_cache(
                 && !params.engine.use_dd_tier
                 && !params.engine.find_nucleus
                 && matches!(params.fractal_type, FractalType::Mandelbrot)
-                && rot.is_none()
                 && cache.hybrid_refs.is_none();
             let fixed = if dd_ok {
                 correct_pixels_dd(
@@ -1323,6 +1333,7 @@ pub fn render_perturbation_with_cache(
                     &unreliable_indices,
                     [aa_dx, aa_dy],
                     aa_jit,
+                    rot,
                 )
             } else {
                 None
@@ -1399,8 +1410,8 @@ pub fn render_perturbation_with_cache(
             let glitched_corrections = corrections
                 .iter()
                 .filter(|&&(idx, _, _, _)| glitched_set.contains(&idx));
-            let (saturated_count, glitched_count) =
-                glitched_corrections.fold((0usize, 0usize), |(sat, tot), &(_, it, _, _)| {
+            let (saturated_count, glitched_count) = glitched_corrections
+                .fold((0usize, 0usize), |(sat, tot), &(_, it, _, _)| {
                     (sat + usize::from(it >= cap_iter), tot + 1)
                 });
             let need_pure_gmp = bytecode_path
@@ -1851,7 +1862,8 @@ mod tests {
         // Verrou 2026-08-23 : un changement de FORMULE au même centre
         // invalide la réutilisation subset (comme is_valid_for).
         let mut hybrid = view.clone();
-        hybrid.formula.hybrid_phases = Some(vec![FractalType::Mandelbrot, FractalType::BurningShip]);
+        hybrid.formula.hybrid_phases =
+            Some(vec![FractalType::Mandelbrot, FractalType::BurningShip]);
         assert!(!cache_big.can_subset_reuse(&hybrid), "hybride ≠ z²+c");
         assert!(!cache_big.is_valid_for(&hybrid));
         let mut opcodes = view.clone();
