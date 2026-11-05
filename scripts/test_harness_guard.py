@@ -18,8 +18,10 @@ from harnesslib import guard  # noqa: E402
 from harnesslib import gaps as gaps_mod  # noqa: E402
 from harnesslib import axes_perf  # noqa: E402
 from harnesslib import config  # noqa: E402
+from harnesslib import cli as harnesslib_cli  # noqa: E402
 from harnesslib import axes_precision  # noqa: E402
 from harnesslib import hotspots  # noqa: E402
+from harnesslib import axes_ddtruth  # noqa: E402
 
 
 def _use_tmp(tmp: Path):
@@ -108,6 +110,7 @@ def run():
     run_baseline_resolution()
     run_precision_axis()
     run_hotspots_parsing()
+    run_truth_axis()
 
     print("\nTOUS LES TESTS PASSENT ✅")
 
@@ -395,6 +398,30 @@ def run_hotspots_parsing():
            "hotspots : part calculée sur le temps occupé")
     _check(hotspots.demangle("__gmpn_submul_1") == "__gmpn_submul_1",
            "hotspots : symbole C rendu tel quel")
+
+def run_truth_axis():
+    """Verrou de l'axe truth : décompte des pixels ≠ juge dd, verdicts, et gap
+    de correction (sévérité 1) sur un FAIL."""
+    print("\n== axe truth ==")
+    _check(axes_ddtruth.count_diff([1, 2, 3, 4], [1, 2, 9, 4]) == 1,
+           "truth : pixels différents comptés")
+    _check(axes_ddtruth.count_diff([1, 2, 3], [1, 2]) == 1,
+           "truth : longueurs différentes comptées")
+    card = {"meta": {"machine": {"cpu": "x", "nproc": 1}}, "truth": {"status": "ok", "cases": {
+        "e227": {"status": "ok", "verdict": "FAIL", "diff_px": 384, "frac": 0.0059,
+                 "path": "bytecode_f64"},
+        "e50": {"status": "ok", "verdict": "PASS", "diff_px": 1, "frac": 0.0001,
+                "path": "bytecode_f64"},
+        "rug": {"status": "ok", "verdict": "WARN", "diff_px": 20, "frac": 0.002,
+                "path": "bytecode_f64"},
+        "spiral": {"status": "n/a", "path": "std_f64"}}}}
+    g = {(x["axis"], x["case"]): x["severity"] for x in gaps_mod.compute_gaps(card, None)}
+    _check(g.get(("truth", "e227")) == 1, "truth : FAIL → gap correction (sévérité 1)")
+    _check(g.get(("truth", "rug")) == 4, "truth : WARN → gap qualité (sévérité 4)")
+    _check(("truth", "e50") not in g and ("truth", "spiral") not in g,
+           "truth : PASS et n/a → aucun gap")
+    _check("truth" in harnesslib_cli.ALL_AXES.split(","), "truth : axe déclaré")
+
 
 if __name__ == "__main__":
     try:

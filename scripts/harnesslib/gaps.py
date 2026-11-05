@@ -91,6 +91,15 @@ def compute_gaps(card: dict, base: dict | None) -> list[dict]:
                          sev,
                          f"pixels ≠ juge précision ×{pr.get('judge_factor')} "
                          f"({100 * c.get('frac', 0):.2f} %, prec {c.get('prec')} b)"))
+    # --- truth (rendu de production vs tier dd) ---
+    tr = card.get("truth", {})
+    for name, c in (tr.get("cases") or {}).items():
+        if c.get("status") != "ok" or c.get("verdict") == "PASS":
+            continue
+        sev = 1 if c["verdict"] == "FAIL" else 4
+        gaps.append(_gap("truth", name, "diff_px", c.get("diff_px"), None, sev,
+                         f"pixels du rendu par défaut ≠ tier dd "
+                         f"({100 * c.get('frac', 0):.2f} %, path {c.get('path')})"))
     # --- parity ---
     adjudications = load_adjudications()
     p = card.get("parity", {})

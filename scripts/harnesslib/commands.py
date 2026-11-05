@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .axes_f3 import axis_parity, axis_speed
 from .axes_perf import axis_bench, axis_profile
+from .axes_ddtruth import axis_ddtruth
 from .axes_precision import axis_precision
 from .axes_truth import axis_fuzz, axis_goldens, axis_quality
 from .config import (
@@ -90,6 +91,7 @@ def cmd_score(args) -> None:
         "quality": {"status": "skipped"},
         "fuzz": {"status": "skipped"},
         "precision": {"status": "skipped"},
+        "truth": {"status": "skipped"},
         "goldens": {"status": "skipped"},
         "profile": {"status": "skipped"},
         "bench": {"status": "skipped"},
@@ -125,6 +127,12 @@ def cmd_score(args) -> None:
     if "precision" in axes:
         print("\n== PRECISION (juge orbite ×4) ==")
         card["precision"] = axis_precision(
+            cases, cfg.get("precision_size", 96), timeout,
+            mem_limit_mb=mem_limit_mb, quarantined=quarantined,
+            slow_safe=slow_safe)
+    if "truth" in axes:
+        print("\n== TRUTH (production vs tier dd) ==")
+        card["truth"] = axis_ddtruth(
             cases, cfg.get("precision_size", 96), timeout,
             mem_limit_mb=mem_limit_mb, quarantined=quarantined,
             slow_safe=slow_safe)

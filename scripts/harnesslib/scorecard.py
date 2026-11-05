@@ -204,6 +204,27 @@ def build_scorecard_md(card: dict, base: dict | None) -> str:
                          f"{c['diff_px']} | {100 * c['frac']:.3f} | {c['verdict']} |")
             L.append("\n_⚑ = sentinelle (précision F3 nue : 2-4 % faux avant la marge +64 b)._\n")
 
+    # Vérité : production vs tier dd
+    tc = card.get("truth")
+    if tc and tc.get("status") not in (None, "skipped"):
+        L += ["## Vérité (rendu de production vs tier dd)", ""]
+        if tc.get("status") != "ok":
+            L.append(f"_axe indisponible : {tc.get('status')}._\n")
+        else:
+            L.append(f"- {tc['n_cases']} cas à {tc['size']}² → **{tc['n_pass']} PASS · "
+                     f"{tc['n_warn']} WARN · {tc['n_fail']} FAIL** "
+                     f"(itérations brutes du rendu par défaut vs frame `--dd-tier`)")
+            L += ["", "| Cas | path | pixels ≠ | % | verdict |", "|---|---|---:|---:|---|"]
+            for name, c in tc["cases"].items():
+                if c.get("status") != "ok":
+                    continue
+                tag = " ⚑" if c.get("sentinel") else ""
+                L.append(f"| `{name}`{tag} | {c.get('path')} | {c['diff_px']} | "
+                         f"{100 * c['frac']:.3f} | {c['verdict']} |")
+            L.append("\n_⚑ = sentinelle (rendu par défaut faux avant les correctifs "
+                     "du 2026-11-06). Un FAIL se juge contre le GMP pur : le dd a "
+                     "son propre plancher._\n")
+
     # Goldens
     g = card.get("goldens")
     if g and g.get("status") != "skipped":

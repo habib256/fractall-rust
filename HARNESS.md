@@ -107,6 +107,24 @@ numpy). Les paths sans orbite GMP (`std_f64`) sont `n/a`. Verdicts : PASS
 corrigé les PASS (0-1 px). Juge convergé : ×2 == ×4 au pixel près.
 - Gap : FAIL = sévérité 1 (correction) ; WARN = 4.
 
+### 4 ter. Vérité — production vs tier dd (`truth`, 2026-11-06)
+**Le juge qui manquait** : aucun autre axe ne compare la sortie PAR DÉFAUT à
+la vérité sur les cas `toml/` (quality juge 16 presets, precision juge
+l'orbite, fuzz des scènes shallow). Par cas (tier + 5 **sentinelles** e227 /
+golden_spider / rug / olbaid2 / leaded_glass) : rendu de production →
+`.fmap`, rendu juge `--dd-tier` (frame double-double, gardée par son traqueur
++ repli GMP par pixel, plafond de budget levé), comparaison des itérations
+brutes. Mêmes seuils que precision (PASS ≤ 0,05 %, FAIL ≥ 0,5 %), même taille
+(96² quick, 128² sinon). Paths `std_*` = `n/a`.
+- Puissance vérifiée : le binaire d'AVANT les correctifs du 2026-11-06
+  (troncature BLA comptée ε au lieu de l·ε, rayon harmonic 2⁻²⁴) donne e227
+  **FAIL** (67 px, 0,73 % à 96²) et golden_spider / rug / olbaid2 /
+  leaded_glass **WARN** (9-29 px) ; le binaire corrigé PASS les 14 cas
+  (résidus : e113 1, e227 3, rug 4 px).
+- Le dd n'est pas la vérité absolue (plancher à ~1,6 M itérations, cf.
+  lethal_weapon) : un FAIL s'adjuge contre le GMP pur sur quelques pixels.
+- Gap : FAIL = sévérité 1 (correction) ; WARN = 4.
+
 ### 5. Profil — où va le temps (`profile`, 2026-11)
 Rend chaque cas du tier **une fois** en capturant les diagnostics du moteur
 (`[FRACTALL] path=… ns/iter=…`, `[PERTURB PERF] orbit= pixels= post=`,
@@ -205,7 +223,7 @@ sur les cas profonds. Adjugés au 2026-07-14 : test5 (`both_match_gmp`), rug
 ```bash
 python3 scripts/harness.py doctor            # prérequis, axes mesurables ICI, baseline
 python3 scripts/harness.py score [--tier quick|standard|full] \
-        [--axes speed,parity,quality,fuzz,precision,goldens,profile,bench] [--cases a,b]
+        [--axes speed,parity,quality,fuzz,precision,truth,goldens,profile,bench] [--cases a,b]
 python3 scripts/harness.py ab --cases e50 --env FRACTALL_RELIABILITY=off,escalate --runs 3
                                              # A/B isolé (méthode G14) : médiane, bruit, phases, sortie ≡
 python3 scripts/harness.py hotspots --case e1000 --size 1200
