@@ -113,9 +113,46 @@ def find_f3() -> Path | None:
     candidates += [d / "fraktaler-3-3.1.linux", d / "fraktaler-3.linux",
                    d / "fraktaler-3.macos"]
     for c in candidates:
-        if c.exists() and os.access(c, os.X_OK) and binary_runs_here(c):
+        if (c.exists() and os.access(c, os.X_OK) and binary_runs_here(c)
+                and not missing_dylibs(c)):
             return c
     return None
+
+
+def f3_unlaunchable() -> tuple[Path, list[str]] | None:
+    """Premier binaire F3 du bon format mais NON lançable (dylibs absentes) —
+    pour que `doctor` dise POURQUOI les axes F3 sont éteints."""
+    d = REPO / "fraktaler-3-3.1"
+    for c in (d / "fraktaler-3-3.1.linux", d / "fraktaler-3.linux",
+              d / "fraktaler-3.macos"):
+        if c.exists() and os.access(c, os.X_OK) and binary_runs_here(c):
+            missing = missing_dylibs(c)
+            if missing:
+                return c, missing
+    return None
+
+
+def missing_dylibs(path: Path) -> list[str]:
+    """macOS : dylibs référencées par chemin absolu et ABSENTES du disque
+    (`otool -L`). Un binaire F3 lié à une version Homebrew disparue
+    (`libOpenEXR-3_4.33.dylib`) est « trouvé » mais meurt dans dyld : 10 cas
+    `f3_aborted` et un score sans ratio, sans rien signaler. Les chemins
+    système (`/usr/lib`, `/System`) vivent dans le cache dyld, pas sur disque
+    → ignorés. Ailleurs que macOS : [] (pas de sonde)."""
+    if sys.platform != "darwin":
+        return []
+    try:
+        out = subprocess.check_output(["otool", "-L", str(path)], text=True,
+                                      stderr=subprocess.DEVNULL, timeout=10)
+    except Exception:
+        return []
+    missing = []
+    for line in out.splitlines()[1:]:
+        lib = line.strip().split(" (", 1)[0]
+        if (lib.startswith("/") and not lib.startswith(("/usr/lib/", "/System/"))
+                and not Path(lib).exists()):
+            missing.append(lib)
+    return missing
 
 
 def binary_runs_here(path: Path) -> bool:
@@ -210,6 +247,32 @@ def git_dirty() -> bool:
     except Exception:
         return False
 
+def sysctl_value(name: str) -> str | None:
+    """Valeur `sysctl -n <name>` (macOS/BSD) ; None ailleurs ou en échec."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        out = subprocess.check_output(["sysctl", "-n", name], text=True,
+                                      stderr=subprocess.DEVNULL, timeout=5)
+        return out.strip() or None
+    except Exception:
+        return None
+
+
+def mem_total_mb() -> int | None:
+    """RAM physique en Mo : /proc/meminfo (Linux) ou `hw.memsize` (macOS)."""
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemTotal:"):
+                return int(int(line.split()[1]) / 1024)
+    except Exception:
+        pass
+    raw = sysctl_value("hw.memsize")
+    if raw and raw.isdigit():
+        return int(int(raw) / 1024 / 1024)
+    return None
+
+
 def machine_info() -> dict:
     cpu = platform.processor() or platform.machine()
     try:
@@ -219,6 +282,11 @@ def machine_info() -> dict:
                 break
     except Exception:
         pass
+    # macOS : `platform.processor()` ne rend que « arm »/« i386 » — deux Mac
+    # différents partageraient la même baseline. Le nom commercial distingue.
+    brand = sysctl_value("machdep.cpu.brand_string")
+    if brand:
+        cpu = brand
     return {"cpu": cpu, "nproc": os.cpu_count(),
             "os": f"{platform.system()} {platform.release()}"}
 
