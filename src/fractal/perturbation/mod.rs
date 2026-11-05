@@ -294,7 +294,8 @@ fn correct_pixels_dd(
 /// Recalcule des pixels isolés sur le CPU (perturbation f64, même boucle que
 /// le rendu plein cadre), pour l'hôte GPU : les pixels que le kernel f32
 /// (G9.6) déclare non fiables. Un pixel que le CPU f64 juge LUI AUSSI non
-/// fiable (borne emballée) est escaladé au GMP pur par point. Hypothèses
+/// fiable (borne emballée) est escaladé au tier dd (Mandelbrot bytecode),
+/// puis au GMP pur par point s'il reste glitché. Hypothèses
 /// de l'appelant (vérifiées par l'hôte GPU) : pas de transformation K, pas
 /// d'hybride, référence `cache` construite pour `params`.
 ///
@@ -358,6 +359,34 @@ pub fn recompute_pixels_cpu(
         .filter(|r| !r.3)
         .map(|&(idx, it, z, _)| (idx, it, z))
         .collect();
+    // Escalade préférée : tier dd sur les seuls pixels que le f64 juge aussi
+    // non fiables (même arithmétique que l'escalade du plein cadre, ~25× moins
+    // chère que le GMP par point) ; ce qui reste glitché en dd passe au GMP.
+    // Mesuré Apple M4, hôte GPU f32, 1024² : coût d'escalade seahorse 1e6
+    // 0,54 → 0,15 s, 1e8 1,92 → 0,74 s, spirale e20 3,49 → 1,08 s.
+    let mut escalate = escalate;
+    if !escalate.is_empty()
+        && params.engine.use_bytecode_engine
+        && !params.engine.use_dd_tier
+        && !params.engine.find_nucleus
+        && params.fractal_type == FractalType::Mandelbrot
+        && cache.hybrid_refs.is_none()
+    {
+        let cancel = AtomicBool::new(false);
+        if let Some(fixed) =
+            correct_pixels_dd(params, cache, &cancel, &escalate, [0.0, 0.0], aa_jit, None)
+        {
+            let mut still = Vec::new();
+            for (idx, it, z, glitched) in fixed {
+                if glitched {
+                    still.push(idx);
+                } else {
+                    out.push((idx, it, z));
+                }
+            }
+            escalate = still;
+        }
+    }
     if !escalate.is_empty() {
         let prec = compute_perturbation_precision_bits(params);
         let mut orbit_params = params.clone();
