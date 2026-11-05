@@ -691,7 +691,7 @@ impl GpuRenderer {
         }
         // Kernel f32 : δ ~ pixel doit rester un f32 NORMAL et |dz/dc| sous
         // f32::MAX — au-delà, fallback CPU.
-        const GPU_F32_SPAN_MIN: f64 = 1e-28;
+        use crate::fractal::wisdom::GPU_F32_SPAN_MIN;
         if use_f32 && !(params.span_x.abs().min(params.span_y.abs()) >= GPU_F32_SPAN_MIN) {
             if stats {
                 eprintln!(
@@ -2141,7 +2141,17 @@ struct PixelOut {
 
 /// Kernel f32 (G9.6) : fraction de pixels non fiables au-delà de laquelle la
 /// frame est rendue entièrement sur le CPU plutôt que corrigée pixel à pixel.
-const GPU_F32_CPU_FALLBACK_RATIO: f64 = 0.25;
+///
+/// 0.25 → 0.5 (G14.5, mesuré Apple M4 / Metal, `gpu-bench`, min de 5) : le
+/// repli jette le travail GPU ET l'orbite, puis paie le plein cadre CPU — il
+/// ne gagne jamais (spirale 27-42 % flaggés : 0.93-0.95× le CPU seul). La
+/// correction pixel à pixel coûte ~1.3× un pixel moyen du CPU perturbation
+/// (spirale e30 dézoomée : fix/CPU = 0.43 à 34 %, 0.32 à 27 %, 0.55 à 42 %
+/// flaggés), soit un point mort vers ~75 % ; contre le CPU std f64 (1e8),
+/// ~2.3× un pixel moyen, point mort ~44 %. GPU + correction mesurés : 1.8-2.9×
+/// le CPU seul (spirale 1e16-1e25, 27-42 %), 1.1-1.3× (seahorse 1e8, 30 %),
+/// images identiques au CPU / PASS contre GMP.
+const GPU_F32_CPU_FALLBACK_RATIO: f64 = 0.5;
 
 /// Seuil effectif ; `FRACTALL_GPU_F32_FALLBACK_RATIO` le surcharge (A/B de
 /// mesure G14.5 : 1.0 = toujours corriger pixel à pixel).
