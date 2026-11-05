@@ -20,7 +20,7 @@
 use super::reliability::{NoObserve, ShadowTrackerExp, StepObserverExp};
 use num_complex::Complex64;
 
-use super::bla_dual::BlaTableUnified;
+use super::bla_dual::{BlaTableUnified, ALIGN_MASK};
 use super::bla_dual_exp::BlaTableUnifiedExp;
 use super::delta_form::DeltaStateExp;
 use super::{Formula, Op, Phase};
@@ -42,6 +42,40 @@ fn atom_nobla_debug() -> bool {
     use std::sync::OnceLock;
     static F: OnceLock<bool> = OnceLock::new();
     *F.get_or_init(|| std::env::var("FRACTALL_ATOM_NOBLA").ok().as_deref() == Some("1"))
+}
+
+/// `x + x` en FloatExp, sans passer par l'add générique : pour une mantisse
+/// normalisée `m ∈ ±[0.5, 1)`, `add` calcule `new(m + m·2⁰, e)` = `2m` exact,
+/// renormalisé en `(m, e + 1)`. Toute autre représentation (zéro, mantisse
+/// non normalisée — p. ex. un `from_gmp` arrondi à 1.0) passe par l'add
+/// d'origine. **Bit-identique** (verrou `double_fexp_matches_add`).
+#[inline(always)]
+fn double_fexp(x: FloatExp) -> FloatExp {
+    let a = x.mantissa.abs();
+    if (0.5..1.0).contains(&a) {
+        FloatExp {
+            mantissa: x.mantissa,
+            exponent: x.exponent + 1,
+        }
+    } else {
+        x + x
+    }
+}
+
+/// Vrai si `two_z_delta.add(δ²) == two_z_delta` bit à bit, décidé SANS
+/// calculer δ² : borne sup de l'exposant de δ², et l'add FloatExp renvoie
+/// `self` dès que l'écart d'exposants est ≥ 54. Borne : chaque produit de
+/// mantisses ∈ [0.25, 1] (1 inclus : mantisse non normalisée ±1.0 possible
+/// après un rebase qui recopie une valeur de réf) se renormalise à au plus
+/// `e₁+e₂+1`, la somme ajoute au plus 1 ⇒ `2·max(exp δ) + 2` (le path exp f64
+/// prend +1, ses δ étant toujours normalisés). Les deux composantes de 2Zδ
+/// doivent être non nulles (l'add d'un zéro renverrait l'autre opérande).
+#[inline(always)]
+fn skip_delta_sq(delta: ComplexExp, two_z_delta: ComplexExp) -> bool {
+    let dsq_exp_ub = 2 * delta.re.exponent.max(delta.im.exponent) + 2;
+    two_z_delta.re.mantissa != 0.0
+        && two_z_delta.im.mantissa != 0.0
+        && two_z_delta.re.exponent.min(two_z_delta.im.exponent) - dsq_exp_ub >= 54
 }
 
 /// Phase Mandelbrot = exactement [Sqr, Add]. Détection au runtime pour
@@ -551,7 +585,19 @@ fn iterate_pixel_unified_exp_mandelbrot_hp_impl<O: StepObserverExp>(
         let end_of_ref = c.m_usize() + 1 >= ref_len;
         let z_m0 = ref_orbit.z_ref[c.m_usize()];
         let z_curr = z_m0.add(delta);
-        let rebase_mid = !end_of_ref && z_curr.norm_sqr_fexp() < delta.norm_sqr_fexp();
+        // Normes du test de rebase, gardées pour la suite du tour (G14.2) :
+        // sans rebase ni bout de réf, `m` et `δ` sont inchangés, donc le
+        // `z_abs = Z[m]+δ` du bailout EST `z_curr` (mêmes opérandes, même
+        // opération ⇒ mêmes bits) et la norme de δ du lookup BLA est
+        // `delta_norm` — deux normes FloatExp et un add complexe épargnés.
+        let (rebase_mid, z_curr_norm, delta_norm) = if end_of_ref {
+            (false, FloatExp::zero(), FloatExp::zero())
+        } else {
+            let zc = z_curr.norm_sqr_fexp();
+            let dn = delta.norm_sqr_fexp();
+            (zc < dn, zc, dn)
+        };
+        let unchanged = !end_of_ref && !rebase_mid;
         if end_of_ref {
             if let Some(m_wrapped) = ref_orbit.wrap_periodic(c.m()) {
                 c.set_ref_index(m_wrapped);
@@ -569,9 +615,14 @@ fn iterate_pixel_unified_exp_mandelbrot_hp_impl<O: StepObserverExp>(
         }
 
         // 2. Bailout : |Z[m] + δ|² (état POST-rebase, F3 `Zz2 < ER2`).
-        let z_m = ref_orbit.z_ref[c.m_usize()];
-        let z_abs = z_m.add(delta);
-        if !(z_abs.norm_sqr_fexp() < bailout_sqr_fexp) {
+        let (z_m, z_abs, z_abs_norm) = if unchanged {
+            (z_m0, z_curr, z_curr_norm)
+        } else {
+            let z_m = ref_orbit.z_ref[c.m_usize()];
+            let z_abs = z_m.add(delta);
+            (z_m, z_abs, z_abs.norm_sqr_fexp())
+        };
+        if !(z_abs_norm < bailout_sqr_fexp) {
             let delta_approx = delta.to_complex64_approx();
             return UnifiedPixelResultExp {
                 iteration: c.n(),
@@ -587,8 +638,23 @@ fn iterate_pixel_unified_exp_mandelbrot_hp_impl<O: StepObserverExp>(
         //    DEBUG: `FRACTALL_ATOM_NOBLA=1` désactive le skip (path direct pur).
         if use_bla {
             if let Some(bla) = bla_exp {
-                let delta_norm_sqr_fexp = delta.norm_sqr_fexp();
-                if let Some(node) = bla.lookup_fexp(c.m_usize(), delta_norm_sqr_fexp) {
+                // Rejet rapide des index non alignés AVANT le calcul de norme
+                // (aucun niveau consultable : cf. `ALIGN_MASK`).
+                let m_idx = c.m_usize();
+                let node = if m_idx & ALIGN_MASK != 0 {
+                    None
+                } else {
+                    let delta_norm_sqr_fexp = if unchanged {
+                        delta_norm
+                    } else if rebase_mid {
+                        // δ := z_curr ⇒ |δ|² = |z_curr|², déjà calculée.
+                        z_curr_norm
+                    } else {
+                        delta.norm_sqr_fexp()
+                    };
+                    bla.lookup_fexp(m_idx, delta_norm_sqr_fexp)
+                };
+                if let Some(node) = node {
                     let cand_c = c.after_jump(node.l);
                     if cand_c.n() <= iteration_max && cand_c.m_usize() < ref_len {
                         let a = node.a;
@@ -627,13 +693,22 @@ fn iterate_pixel_unified_exp_mandelbrot_hp_impl<O: StepObserverExp>(
         // 4. Pas perturbation Mandelbrot direct : δ' = 2·Z·δ + δ² + dc (ComplexExp).
         //    (Le rebase du prochain tour de boucle traite `|Z+δ|<|δ|`/bout de réf.)
         let two_z = ComplexExp {
-            re: z_m.re + z_m.re,
-            im: z_m.im + z_m.im,
+            re: double_fexp(z_m.re),
+            im: double_fexp(z_m.im),
         };
         let two_z_delta = delta.mul(two_z);
         obs.direct(z_abs, two_z_delta, delta);
-        let delta_sq = delta.mul(delta);
-        delta = two_z_delta.add(delta_sq).add(dc);
+        // δ² absorbé par l'add dès que |2Zδ| ≫ |δ²| (mirror du saut de δ² du
+        // path exp f64, cf. `iterate_pixel_unified_exp_mandelbrot`) :
+        // **bit-identique**, l'add FloatExp renvoyant `self` inchangé quand
+        // l'écart d'exposants est ≥ 54 (borne sup d'exposant de δ² sans le
+        // calculer : `2·max(exp δ) + 1`).
+        delta = if skip_delta_sq(delta, two_z_delta) {
+            two_z_delta.add(dc)
+        } else {
+            let delta_sq = delta.mul(delta);
+            two_z_delta.add(delta_sq).add(dc)
+        };
         c.step();
         iters_ptb += 1;
 
@@ -1045,6 +1120,56 @@ mod tests {
     use crate::fractal::bytecode::{build_bla_table_for_formula, compile_formula};
     use crate::fractal::perturbation::orbit::compute_reference_orbit;
     use crate::fractal::{default_params_for_type, AlgorithmMode, FractalType};
+
+    fn same_fexp(a: FloatExp, b: FloatExp) -> bool {
+        a.mantissa.to_bits() == b.mantissa.to_bits() && a.exponent == b.exponent
+    }
+
+    /// Valeurs FloatExp de test : normalisées, zéros signés, mantisses non
+    /// normalisées (±1.0, comme un `from_gmp` arrondi), exposants extrêmes.
+    fn fexp_samples() -> Vec<FloatExp> {
+        let mut v = vec![
+            FloatExp::zero(),
+            FloatExp { mantissa: -0.0, exponent: 0 },
+            FloatExp { mantissa: 1.0, exponent: -3000 },
+            FloatExp { mantissa: -1.0, exponent: 17 },
+        ];
+        let mut x = 0.123_456_789f64;
+        for k in 0..400 {
+            x = (x * 3.7 + 0.31).fract();
+            let m = if k % 2 == 0 { x } else { -x };
+            v.push(FloatExp::new(m, (k as i32 - 200) * 37));
+        }
+        v
+    }
+
+    #[test]
+    fn double_fexp_matches_add() {
+        for x in fexp_samples() {
+            assert!(same_fexp(double_fexp(x), x + x), "{x:?}");
+        }
+    }
+
+    /// Quand `skip_delta_sq` dit vrai, l'add de δ² est bien un no-op bit à bit.
+    #[test]
+    fn skip_delta_sq_is_exact() {
+        let s = fexp_samples();
+        let mut skipped = 0;
+        for (i, &a) in s.iter().enumerate() {
+            for (j, &b) in s.iter().enumerate().step_by(7) {
+                let delta = ComplexExp { re: a, im: b };
+                for &(zr, zi) in &[(s[(i + 3) % s.len()], s[(j + 5) % s.len()])] {
+                    let tzd = ComplexExp { re: zr, im: zi };
+                    if skip_delta_sq(delta, tzd) {
+                        skipped += 1;
+                        let full = tzd.add(delta.mul(delta));
+                        assert!(same_fexp(full.re, tzd.re) && same_fexp(full.im, tzd.im));
+                    }
+                }
+            }
+        }
+        assert!(skipped > 100, "test vacant ({skipped})");
+    }
 
     fn make_ref_orbit(center_x: f64, center_y: f64, zoom: f64, iter_max: u32) -> ReferenceOrbit {
         let mut params = default_params_for_type(FractalType::Mandelbrot, 160, 100);
