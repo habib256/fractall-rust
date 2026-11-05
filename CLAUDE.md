@@ -496,8 +496,15 @@ Si `params.use_bytecode_engine` ET `compile_formula(type, power)` réussit :
   ⚠️ Toute nouvelle sémantique d'opcode doit être portée dans les DEUX
   interpréteurs (le verrou compare les deux sur toutes les familles).
 - **CPU perturbation** : `perturbation/delta.rs::try_bytecode_unified_path`
-  → `bytecode/pixel_loop.rs` (f64) ou `pixel_loop_exp.rs` (ComplexExp,
-  deep zoom > 1e13). **Rebasing F3 strict** (`|Z[m] + δ|² < |δ|²` **OU bout de
+  → `bytecode/pixel_loop.rs` (f64), ou au tier exp (pixel < 1e-280)
+  `pixel_loop_scaled.rs` — δ = d·2^e en f64, pas FloatExp exact en repli,
+  PNG identiques à `pixel_loop_exp.rs` sur les 37 cas exp du corpus, ×2-7 ;
+  `FRACTALL_EXP_SCALED=0` = boucle FloatExp. La boucle rapide f64 prend son
+  pas direct d'un noyau monomorphisé (`DirectKernel`) : Mandelbrot (tracé),
+  Julia, Burning Ship, Tricorn — bit-identiques à la boucle générique, qui
+  ne sert plus qu'aux canaux annexes et aux autres phases. ⚠️ Un noyau
+  statique gagne ×1,4-1,9 ; la même boucle avec le pas bytecode non
+  spécialisé ne gagne RIEN (mesuré) : le coût est le dispatch d'opcode. **Rebasing F3 strict** (`|Z[m] + δ|² < |δ|²` **OU bout de
   référence**) remplace la glitch detection Pauldelbrot legacy. Le **rebase-at-end**
   (F3 `hybrid.cc:301` : `z := Z+δ, m := 0` quand la réf est épuisée) garde les
   centres escape-time profonds sur le path perturbation au lieu de tomber en GMP
@@ -692,8 +699,8 @@ Le fast-path f64 Mandelbrot rendait des comptes FAUX sans rien signaler
 **Traqueur de borne d'erreur** injecté par monomorphisation (`StepObserver` ;
 production = `NoObserve` ZST, verrou bit-identique
 `tracked_mandelbrot_loop_is_bit_identical_and_quiet`) : borne absolue `E` sur
-z propagée (pas direct `E·(2|z|+E)+γ·local`, saut BLA `σ₁(A)·E+(ε+γ)·…`,
-rebase `+u·(|Z|+|z|)`) ; pixel non fiable si la borne **s'EMBALLE**
+z propagée (pas direct `E·(2|z|+E)+γ·local`, saut BLA de `l` pas
+`σ₁(A)·E+(l·ε+γ)·…`, rebase `+u·(|Z|+|z|)`) ; pixel non fiable si la borne **s'EMBALLE**
 (`error_bound ≥ 1e30` ou NaN, `DeltaResult::error_bound`).
 ⚠️ Calibration (étude vs GMP, `quality::reliability_study`) : TOUS les pixels
 faux ont une borne emballée ; un seuil z-space MODÉRÉ flagge 1-8 % (rejeté) ;
@@ -706,17 +713,50 @@ pixels flaggés recalculés au **tier dd** sur ces seuls pixels
 `z_ref_lo` capturée avec l'orbite primaire — jamais re-calculée ; repli
 GMP), frame entière dd au-delà de 50 % seulement (le pixel par pixel est
 toujours moins cher en dessous). Tier **exp** : traqueur
-`ShadowTrackerExp` opt-in `FRACTALL_RELIABILITY_EXP=1` (+25-45 % pour 0-2 px ;
-les vraies erreurs exp étaient l'ε BLA 2⁻²⁴ → 2⁻⁵³ et le span f64
-**sous-normal** 1e308-1e324 — `effective_spans_fexp` exige `is_normal`).
+`ShadowTrackerExp` **actif par défaut** depuis 2026-11-06
+(`FRACTALL_RELIABILITY_EXP=0` le coupe) — à 256² sans lui e401 6, olbaid2 48,
+e1298 18 pixels faux, 0 avec ; porté dans la boucle scaled
+(`direct_scaled` / `bla_scaled`, même borne au bit près). (Les erreurs exp
+d'entrée — ε BLA 2⁻²⁴ → 2⁻⁵³, span f64 **sous-normal** 1e308-1e324,
+`effective_spans_fexp` exige `is_normal` — avaient été corrigées avant.)
+⚠️ **Trois règles payées par des pixels faux (2026-11-06)**, valables pour
+tout traqueur : (1) la troncature d'un saut BLA de `l` pas vaut **l·ε**, pas
+ε (chaque pas fusionné abandonne jusqu'à ε : avec ε seul la borne
+sous-estimait l'erreur réelle ~40× — e227 384 pixels faux non flaggés à
+256², golden_spider 169, dragon 36 à 128²) ; (2) une borne emballée doit
+être **collante** (au tier exp l'exposant i32 débordait et la borne
+retombait à « fiable ») ; (3) un pixel qui s'évade quand `E ≥ ||z|−R|`
+n'est pas déterminé (`escape_undetermined`, actif en exp, opt-in f64
+`FRACTALL_F64_MARGIN=1`).
+**Tier dd : même garde-fou un niveau au-dessus** (`ShadowTrackerDd`, unité
+2⁻¹⁰⁴) — le dd n'est PAS la vérité : seahorse 1e6, pixel (117,17), GMP
+convergé 1598, dd 1838. Pixel dd dont la borne s'emballe → second essai
+SANS BLA (borne réduite à l'arrondi dd ; évite d'envoyer au GMP des pixels
+que le dd rend juste) → GMP par pixel. Vaut en correction, en frame dd
+(`--dd-tier`, `[DD-ESCALATION]`) et pour les pixels flaggés du kernel GPU
+f32. `FRACTALL_RELIABILITY_DD=0`. ε de la BLA dd = **2⁻¹⁰⁶** (2⁻⁸⁰ laissait
+des pixels dd faux). Limite connue : lethal_weapon (1,6 M itérations) reste
+faux sur ~10 % des pixels même en dd — cf. TODO G14.1 (h).
 ⚠️ `z_ref_lo` est à l'échelle de la MANTISSE de `z_ref` (ComplexExp), pas du
 f64 : |Z| ~ 1e-1200 près de la période atom-domain. Correction dd : K (rotation)
 appliquée au dc dd. Coût
 (seahorse 1e8 512²) : boucle 2,0 → 2,5 ns/iter (traqueur gardé en LOCAL —
 derrière `&mut` il coûtait ×3), total 0,72 → 1,10 s. Mesuré vs GMP :
 seahorse WARN max_diff 437 → PASS ; e30 5/5, e50 17/18 pixels faux
-détectés, 0 faux positif sur e13/e17/e18/e100. Hors fast-path (exp,
-hybrides, harmonic, Julia, DE) : pas de suivi.
+détectés, 0 faux positif sur e13/e17/e18/e100. Suivis : fast-path f64
+Mandelbrot, tier exp Mandelbrot, tier dd. **Sans suivi** : hybrides, Julia,
+Burning Ship / Tricorn, DE, Harmonic LA (voir TODO). ⚠️ Le juge de ces
+défauts n'était AUCUN axe de routine : c'est le rendu de production comparé
+au tier dd (lui-même vérifié contre GMP) sur le corpus `toml/` qui les a
+trouvés — quality juge 16 presets, precision juge l'orbite.
+
+**Correction dd (2026-11-06)** : boucle dd en double-double « nu » mis à
+l'échelle 2^s (`pixel_loop_dd.rs`, bit-identique à la boucle
+`DoubleDoubleExp`, ×2-5 ; `FRACTALL_DD_FAST=0`) ; la correction ne bâtit que
+la table BLA dd, niveaux ≥ `BLA_SKIP_LEVELS` (pic RSS dragon 1 063 → 329
+Mo) ; partie basse capturée PARESSEUSEMENT (un Z GMP toutes les 1024
+itérations dans `high_precision_data`, relecture parallèle seulement si un
+pixel est flaggé ; `FRACTALL_LAZY_LO=0`).
 
 ### Précision GMP perturbation
 
