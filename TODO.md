@@ -3295,6 +3295,13 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   atom-tronquée — normes réutilisées, δ² sauté quand l'addition l'absorbe,
   `2·Z` par incrément d'exposant, rejet des `m` non alignés avant le calcul
   de norme : e401 pixels −28 %, e1000 −22 % (256², après intégration).
+  **Réfuté aussi (2026-11-06) : abaisser `BLA_SKIP_LEVELS`** (sauts de 4 ou
+  2 pas entre deux tentatives alignées sur 8, envisageable depuis que
+  ε = 2⁻⁵³) — 128², min de 3 runs, juge tier dd : phase pixels e50 0,211 →
+  0,203 (niveau 2) → 0,183 s (niveau 1), e113/e227/golden_spider/rug
+  inchangés ; pixels faux e227 0 → 7, golden_spider 2 → 7-8, rug 0 → 1. Les
+  rayons des niveaux bas ne sont guère plus grands (dominés par le plus
+  petit |Z| du bloc) : on garde 3.
   Texte d'origine : **Boucle pixel f64 (76 % du wall e50, dominante sur 8/10
   cas)**. `ns/iter` effectif 0.1-0.2 (skips BLA inclus) ; bench
   `cpu_perturb_f64` 0.17 ns/iter à 4 threads = ~0.7 ns/iter/thread. Leviers :
