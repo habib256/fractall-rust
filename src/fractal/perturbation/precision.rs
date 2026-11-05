@@ -321,10 +321,13 @@ pub fn should_use_full_gmp_perturbation(params: &FractalParams) -> bool {
     if params.width == 0 || params.height == 0 {
         return false;
     }
-    if matches!(
-        std::env::var("FRACTALL_FORCE_GMP_PERTURB").as_deref(),
-        Ok("1" | "true")
-    ) {
+    static FORCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *FORCE.get_or_init(|| {
+        matches!(
+            std::env::var("FRACTALL_FORCE_GMP_PERTURB").as_deref(),
+            Ok("1" | "true")
+        )
+    }) {
         return true;
     }
     // Le pixel-loop bytecode couvre les tiers f64/exp et évite le fallback

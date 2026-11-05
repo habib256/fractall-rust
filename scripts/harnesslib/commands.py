@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from .config import (
     ADJUDICATIONS, BASELINE, BASELINES_DIR, BENCH, CRASH_JOURNAL, HISTORY_DIR,
     REPO, SCHEMA, SCORECARD, baseline_path_for, load_baseline, machine_slug,
     SEVERITY_LABEL, TOML_DIR, _now_iso, cargo_build, find_f3, git_dirty,
-    git_sha, load_compare_f3, machine_info, tier_config,
+    git_sha, load_compare_f3, machine_info, tier_config, CLI, QUALITY,
 )
 from .gaps import compute_gaps, load_adjudications, self_speed_ratio, sort_gaps
 from .guard import (
@@ -25,6 +26,20 @@ from .guard import (
     load_quarantine, load_slow_safe, reconcile_quarantine_from_journal,
 )
 from .scorecard import load_history, build_scorecard_md, latest_history, write_history
+
+def warm_binaries(f3_bin=None) -> None:
+    """Lance chaque binaire une fois À BLANC avant toute mesure. Le premier
+    lancement d'un exécutable fraîchement bâti paie des coûts qui ne sont pas
+    du rendu (macOS : vérification de signature / XProtect, ~0,3 s ; partout :
+    cache de pages froid) — sans cela le PREMIER cas chronométré les endosse
+    (mesuré : test5 0,313 s au lieu de 0,018 s, « régression ×17 » fantôme)."""
+    for exe in (CLI, QUALITY, f3_bin):
+        if exe and Path(exe).exists():
+            try:
+                subprocess.run([str(exe), "--help"], stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=30)
+            except Exception:
+                pass
 
 def cmd_score(args) -> None:
     cfg = tier_config(args.tier)
@@ -101,6 +116,7 @@ def cmd_score(args) -> None:
           f"runs={runs} timeout={timeout}s axes={axes}")
     print(f"→ F3: {f3_bin or 'INDISPONIBLE (speed/parity dégradés)'}")
 
+    warm_binaries(f3_bin)
     if "speed" in axes:
         print("\n== SPEED ==")
         card["speed"] = axis_speed(cases, width, height, runs, timeout, f3_bin,

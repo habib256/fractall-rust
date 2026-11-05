@@ -1032,7 +1032,7 @@ fn try_bytecode_unified_path(
                     crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
                     F64_BLA_EPSILON_PIXEL,
                 );
-            error_bound = if std::env::var_os("FRACTALL_F64_MARGIN").is_some() {
+            error_bound = if f64_escape_margin_enabled() {
                 escape_undetermined(tracker.error_bound(), res.z_final, params.bailout)
             } else {
                 tracker.error_bound()
@@ -1097,6 +1097,17 @@ fn try_bytecode_unified_path(
         phase_changed: false,
         smooth_iteration,
     })
+}
+
+/// Opt-in `FRACTALL_F64_MARGIN` (test de détermination à l'évasion au tier
+/// f64), lu UNE fois. ⚠️ Ce site est sur le chemin par pixel : lue à chaque
+/// pixel, la variable d'environnement coûtait ~250 ns/pixel (verrou global de
+/// l'environnement, contention entre workers) — test5 256² : phase pixels
+/// 1 ms → 17 ms, flake 5 → 28 ms.
+#[inline]
+fn f64_escape_margin_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("FRACTALL_F64_MARGIN").is_some())
 }
 
 fn rebase_stride() -> u32 {
