@@ -274,10 +274,18 @@ fn ex(x: FloatExp) -> i32 {
     }
 }
 
+/// Termes du saut pour le hook `bla_scaled` du traqueur (cadre 2^ep).
+#[derive(Clone, Copy)]
+struct JumpTerms {
+    ad: Complex64,
+    bt: [f64; 4],
+    ep: i32,
+}
+
 /// Saut BLA `δ' = A·δ + B·dc` (mêmes produits et même ordre d'additions que
 /// `pixel_loop_exp`), cadre de sortie = plus grand exposant de terme.
 #[inline(always)]
-fn jump_fast(s: Scaled, dcs: Scaled, a: &Mat2Exp, b: &Mat2Exp) -> Option<Scaled> {
+fn jump_fast(s: Scaled, dcs: Scaled, a: &Mat2Exp, b: &Mat2Exp) -> Option<(Scaled, JumpTerms)> {
     let ea = ex(a.m00).max(ex(a.m01)).max(ex(a.m10)).max(ex(a.m11));
     let eb = ex(b.m00).max(ex(b.m01)).max(ex(b.m10)).max(ex(b.m11));
     if ea == NEG && eb == NEG {
@@ -304,7 +312,12 @@ fn jump_fast(s: Scaled, dcs: Scaled, a: &Mat2Exp, b: &Mat2Exp) -> Option<Scaled>
     if !ok {
         return None;
     }
-    renorm(Complex64::new(re, im), ep)
+    let terms = JumpTerms {
+        ad: Complex64::new(s1, w1),
+        bt: [t3, t4, v3, v4],
+        ep,
+    };
+    Some((renorm(Complex64::new(re, im), ep)?, terms))
 }
 
 #[path = "pixel_loop_scaled_stats.rs"]
@@ -322,6 +335,18 @@ pub trait ScaledObs: StepObserverExp {
     fn direct_scaled(&mut self, _z: Complex64, _d: Complex64, _e: i32, _tzd: Complex64) -> bool {
         false
     }
+    /// Hook `bla` en f64 (cadre 2^ep) ; `false` ⇒ hook ComplexExp.
+    #[inline(always)]
+    fn bla_scaled(
+        &mut self,
+        _a: &Mat2Exp,
+        _ad: Complex64,
+        _bt: [f64; 4],
+        _ep: i32,
+        _l: u32,
+    ) -> bool {
+        false
+    }
 }
 
 impl ScaledObs for NoObserve {
@@ -333,6 +358,10 @@ impl ScaledObs for ShadowTrackerExp {
     #[inline(always)]
     fn direct_scaled(&mut self, z: Complex64, d: Complex64, e: i32, tzd: Complex64) -> bool {
         ShadowTrackerExp::direct_scaled(self, z, d, e, tzd)
+    }
+    #[inline(always)]
+    fn bla_scaled(&mut self, a: &Mat2Exp, ad: Complex64, bt: [f64; 4], ep: i32, l: u32) -> bool {
+        ShadowTrackerExp::bla_scaled(self, a, ad, bt, ep, l)
     }
 }
 
@@ -465,8 +494,7 @@ pub fn iterate_pixel_scaled_exp_mandelbrot(
 
 /// Variante avec **détecteur de fiabilité** (tier exp) : MÊME résultat et MÊME
 /// borne que `pixel_loop_exp::iterate_pixel_unified_exp_mandelbrot_hp_tracked`
-/// — le [`ShadowTrackerExp`] reçoit les mêmes hooks, aux mêmes événements, avec
-/// les mêmes valeurs ComplexExp (reconstruites exactement depuis (d, e)).
+/// — mêmes hooks, mêmes événements, mêmes valeurs (f64 exact sous gardes).
 pub fn iterate_pixel_scaled_exp_mandelbrot_tracked(
     ref_orbit: &ReferenceOrbit,
     bla_exp: Option<&BlaTableUnifiedExp>,
@@ -658,8 +686,7 @@ fn fast_iter<O: ScaledObs>(
     if c.m_usize() + 1 >= ref_len {
         return None; // bout de référence : wrap/rebase-at-end en lent
     }
-    // Hooks du traqueur sur une COPIE, validée seulement si le tour aboutit
-    // (un repli refait le tour en lent, qui rappelle les hooks).
+    // Hooks sur une COPIE, validée si le tour aboutit (un repli les rappelle).
     let mut o = *obs;
     let mut s = s;
     let mut c = c;
@@ -713,7 +740,7 @@ fn fast_iter<O: ScaledObs>(
         if let Some(node) = bla.lookup_fexp(m, nfx) {
             let cand_c = c.after_jump(node.l);
             if cand_c.n() <= iteration_max && cand_c.m_usize() < ref_len {
-                let cand = jump_fast(s, dcs, &node.a, &node.b)?;
+                let (cand, jt) = jump_fast(s, dcs, &node.a, &node.b)?;
                 let overshoots = node.l >= 2 && {
                     let ze = z_ref_f64[cand_c.m_usize()];
                     let nze = ze.re * ze.re + ze.im * ze.im;
@@ -727,7 +754,9 @@ fn fast_iter<O: ScaledObs>(
                 };
                 if !overshoots {
                     if O::TRACKS {
-                        o.bla(&node.a, &node.b, s.to_cexp(), dc, node.l);
+                        if !o.bla_scaled(&node.a, jt.ad, jt.bt, jt.ep, node.l) {
+                            o.bla(&node.a, &node.b, s.to_cexp(), dc, node.l);
+                        }
                         *obs = o;
                     }
                     return Some((cand, cand_c, true, rebased));

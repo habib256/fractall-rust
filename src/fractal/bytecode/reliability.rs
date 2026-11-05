@@ -485,6 +485,100 @@ impl ShadowTrackerExp {
         self.saturate();
         true
     }
+
+    /// Hook `bla` pour la boucle scaled-double : `ad` = A·δ (sommes `t1+t2`,
+    /// `v1+v2` du saut, exactes sous ses gardes) et `bt` = les quatre termes
+    /// `b00·dc.re, b01·dc.im, b10·dc.re, b11·dc.im`, tous dans le cadre 2^ep.
+    /// Mêmes opérations que [`StepObserverExp::bla`] ⇒ même borne au bit près
+    /// sous gardes ; sinon `false`, rien n'est modifié.
+    #[inline(always)]
+    pub fn bla_scaled(
+        &mut self,
+        a: &Mat2Exp,
+        ad: Complex64,
+        bt: [f64; 4],
+        ep: i32,
+        l: u32,
+    ) -> bool {
+        #[inline(always)]
+        fn p2(k: i32) -> f64 {
+            if k < -1022 {
+                0.0
+            } else if k > 1023 {
+                f64::INFINITY
+            } else {
+                f64::from_bits(((k + 1023) as u64) << 52)
+            }
+        }
+        const T2: f64 = f64::from_bits(((-960 + 1023) as u64) << 52);
+        const MINN: f64 = f64::from_bits(((-1000 + 1023) as u64) << 52);
+        const SUB: f64 = f64::MIN_POSITIVE;
+        #[inline(always)]
+        fn big(a: f64, b: f64) -> bool {
+            a.abs() >= T2 || b.abs() >= T2
+        }
+        #[inline(always)]
+        fn ex(x: FloatExp) -> i32 {
+            if x.mantissa == 0.0 {
+                -(1 << 28)
+            } else {
+                x.exponent
+            }
+        }
+        // σ₁(A) dans le cadre 2^es (es = plus grand exposant des coefficients
+        // sommés) : la plus grande composante y vaut ≥ ½, son carré ≥ ¼ ; les
+        // termes sous-débordés (< 2⁻¹⁰²²) sont abandonnés à l'identique.
+        let conformal = a.m00 == a.m11 && a.m01 == FloatExp::zero() - a.m10;
+        let es = if conformal {
+            ex(a.m00).max(ex(a.m10))
+        } else {
+            ex(a.m00).max(ex(a.m01)).max(ex(a.m10)).max(ex(a.m11))
+        };
+        if es < -(1 << 27) {
+            return false;
+        }
+        let f = |x: FloatExp| x.mantissa * p2(ex(x) - es);
+        let n = if conformal {
+            let (x0, x1) = (f(a.m00), f(a.m10));
+            x0 * x0 + x1 * x1
+        } else {
+            let (x0, x1, x2, x3) = (f(a.m00), f(a.m01), f(a.m10), f(a.m11));
+            x0 * x0 + x1 * x1 + x2 * x2 + x3 * x3
+        };
+        let sf = n.sqrt();
+        // local = (|Aδ|₁ + |B·dc|₁)·(l·ε + γ), cadre 2^ep.
+        let l1a = ad.re.abs() + ad.im.abs();
+        let (b_re, b_im) = (bt[0] + bt[1], bt[2] + bt[3]);
+        let l1b = b_re.abs() + b_im.abs();
+        let exact_b = big(bt[0], bt[1]) & big(bt[2], bt[3]) & big(l1a, l1b);
+        let negligible_b = (bt[0].abs() < SUB)
+            & (bt[1].abs() < SUB)
+            & (bt[2].abs() < SUB)
+            & (bt[3].abs() < SUB)
+            & (l1a >= T2);
+        let s = l1a + l1b;
+        let trunc = self.bla_epsilon * l as f64 + GAMMA;
+        let local = s * trunc;
+        // E' = σ·E + local.
+        let (em, ee) = (self.err.mantissa, self.err.exponent);
+        if em != 0.0 && ee + es - ep > 900 {
+            return false;
+        }
+        let prod = if em == 0.0 {
+            0.0
+        } else {
+            sf * (em * p2(ee + es - ep))
+        };
+        let r = prod + local;
+        let ok =
+            (exact_b | negligible_b) & (big(prod, local) || (em == 0.0 && local.abs() >= MINN));
+        if !ok {
+            return false;
+        }
+        self.err = FloatExp::new(r, ep);
+        self.saturate();
+        true
+    }
 }
 
 /// Mode du détecteur, lu une fois depuis `FRACTALL_RELIABILITY` :
