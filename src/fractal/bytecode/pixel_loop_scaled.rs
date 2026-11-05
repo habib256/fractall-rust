@@ -40,6 +40,7 @@ use num_complex::Complex64;
 
 use super::bla_dual_exp::{BlaTableUnifiedExp, Mat2Exp};
 use super::pixel_loop_exp::UnifiedPixelResultExp;
+use super::reliability::{NoObserve, ShadowTrackerExp, StepObserverExp};
 use super::{Formula, Op};
 use crate::fractal::perturbation::counter::PixelCounter;
 use crate::fractal::perturbation::orbit::ReferenceOrbit;
@@ -196,7 +197,7 @@ fn big2(a: f64, b: f64) -> bool {
 /// `δ' = δ² + dc`. Gardes : δ² sans perte (normal, ou zéro vrai) puis
 /// partenaire de l'addition de `dc`.
 #[inline(always)]
-fn direct_fast_zero_z(s: Scaled, dcs: Scaled) -> Option<Scaled> {
+fn direct_fast_zero_z(s: Scaled, dcs: Scaled) -> Option<(Scaled, f64, f64)> {
     let kc = dcs.e - s.e;
     if s.e > E_MAX || kc > 900 {
         return None;
@@ -217,13 +218,19 @@ fn direct_fast_zero_z(s: Scaled, dcs: Scaled) -> Option<Scaled> {
     if !ok {
         return None;
     }
-    renorm(Complex64::new(q_re + c_re, q_im + c_im), s.e)
+    Some((
+        renorm(Complex64::new(q_re + c_re, q_im + c_im), s.e)?,
+        0.0,
+        0.0,
+    ))
 }
 
 /// Pas direct `δ' = 2·Z·δ + δ² + dc` dans le cadre de `s`, même ordre
 /// d'opérations que `ComplexExp::mul/add`. `None` si une garde échoue.
 #[inline(always)]
-fn direct_fast(s: Scaled, z: Complex64, dcs: Scaled) -> Option<Scaled> {
+/// Renvoie aussi `2·Z·δ` dans le cadre de `s` (exact sous les gardes : entrée
+/// du hook `direct` du traqueur).
+fn direct_fast(s: Scaled, z: Complex64, dcs: Scaled) -> Option<(Scaled, f64, f64)> {
     let kc = dcs.e - s.e;
     if s.e > E_MAX || kc > 900 {
         return None;
@@ -255,7 +262,7 @@ fn direct_fast(s: Scaled, z: Complex64, dcs: Scaled) -> Option<Scaled> {
     if !ok {
         return None;
     }
-    renorm(Complex64::new(r_re, r_im), s.e)
+    Some((renorm(Complex64::new(r_re, r_im), s.e)?, tzd_re, tzd_im))
 }
 
 #[inline(always)]
@@ -300,74 +307,32 @@ fn jump_fast(s: Scaled, dcs: Scaled, a: &Mat2Exp, b: &Mat2Exp) -> Option<Scaled>
     renorm(Complex64::new(re, im), ep)
 }
 
-/// Compteurs de tours de boucle (diagnostic `FRACTALL_EXP_SCALED_STATS`).
-#[derive(Default, Clone, Copy, Debug)]
-pub struct ScaledStats {
-    pub fast_direct: u64,
-    pub fast_jump: u64,
-    pub slow_iter: u64,
-    pub fallback: u64,
-    pub fast_rebase: u64,
-    /// Causes des replis : [bout de réf, |Z| petit, rebase possible, bailout
-    /// proche, garde arithmétique].
-    pub reasons: [u64; 5],
-}
+#[path = "pixel_loop_scaled_stats.rs"]
+mod stats;
+pub use stats::ScaledStats;
+use stats::{fallback_reason, flush_stats};
 
-/// Diagnostic : cause du repli d'un tour rapide (mêmes tests que `fast_iter`).
-fn fallback_reason(
-    s: Scaled,
-    c: PixelCounter,
-    z_ref_f64: &[Complex64],
-    bailout_fast: f64,
-) -> usize {
-    let m = c.m_usize();
-    if m + 1 >= z_ref_f64.len() {
-        return 0;
-    }
-    let z = z_ref_f64[m];
-    let nz = z.re * z.re + z.im * z.im;
-    let nd = s.d.re * s.d.re + s.d.im * s.d.im;
-    if nz < NZ_MIN {
-        1
-    } else if nd * p2(2 * s.e + 4) >= nz {
-        2
-    } else if 2.0 * (nz + nd * p2(2 * s.e)) >= bailout_fast {
-        3
-    } else {
-        4
+/// Observateur de la boucle scaled : les hooks de [`StepObserverExp`] (même
+/// traqueur, mêmes entrées ComplexExp que la boucle FloatExp) + `TRACKS` pour
+/// ne PAS calculer ces entrées sans traqueur.
+pub trait ScaledObs: StepObserverExp {
+    const TRACKS: bool;
+    /// Hook `direct` en f64 dans le cadre 2^e ; `false` ⇒ hook ComplexExp.
+    #[inline(always)]
+    fn direct_scaled(&mut self, _z: Complex64, _d: Complex64, _e: i32, _tzd: Complex64) -> bool {
+        false
     }
 }
 
-fn flush_stats(st: &ScaledStats) {
-    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-    #[allow(clippy::declare_interior_mutable_const)]
-    const Z: AtomicU64 = AtomicU64::new(0);
-    static C: [AtomicU64; 5] = [Z; 5];
-    static R: [AtomicU64; 5] = [Z; 5];
-    for (r, v) in R.iter().zip(st.reasons) {
-        r.fetch_add(v, Relaxed);
-    }
-    C[0].fetch_add(st.fast_direct, Relaxed);
-    C[1].fetch_add(st.fast_jump, Relaxed);
-    C[2].fetch_add(st.slow_iter, Relaxed);
-    C[3].fetch_add(st.fallback, Relaxed);
-    let px = C[4].fetch_add(1, Relaxed) + 1;
-    if px % 65536 == 0 {
-        let (fd, fj, sl, fb) = (
-            C[0].load(Relaxed),
-            C[1].load(Relaxed),
-            C[2].load(Relaxed),
-            C[3].load(Relaxed),
-        );
-        let tot = (fd + fj + sl).max(1) as f64;
-        eprintln!(
-            "[EXP-SCALED] pixels={px} fast_direct={fd} ({:.1}%) fast_jump={fj} ({:.1}%) \
-             slow={sl} ({:.2}%) fallback={fb} causes[fin_ref,Z_petit,rebase,bailout,garde]={:?}",
-            100.0 * fd as f64 / tot,
-            100.0 * fj as f64 / tot,
-            100.0 * sl as f64 / tot,
-            R.iter().map(|r| r.load(Relaxed)).collect::<Vec<_>>()
-        );
+impl ScaledObs for NoObserve {
+    const TRACKS: bool = false;
+}
+
+impl ScaledObs for ShadowTrackerExp {
+    const TRACKS: bool = true;
+    #[inline(always)]
+    fn direct_scaled(&mut self, z: Complex64, d: Complex64, e: i32, tzd: Complex64) -> bool {
+        ShadowTrackerExp::direct_scaled(self, z, d, e, tzd)
     }
 }
 
@@ -380,7 +345,8 @@ enum Slow {
 /// `iterate_pixel_unified_exp_mandelbrot_hp_impl` (observateur `NoObserve`).
 #[allow(clippy::too_many_arguments)]
 #[inline(never)]
-fn slow_iter(
+fn slow_iter<O: ScaledObs>(
+    obs: &mut O,
     ref_orbit: &ReferenceOrbit,
     bla_exp: Option<&BlaTableUnifiedExp>,
     dc: ComplexExp,
@@ -402,11 +368,13 @@ fn slow_iter(
         if let Some(m_wrapped) = ref_orbit.wrap_periodic(c.m()) {
             c.set_ref_index(m_wrapped);
         } else {
+            obs.rebase(z_m0, z_curr);
             *delta = z_curr;
             c.rebase();
             *rebase_count += 1;
         }
     } else if rebase_mid {
+        obs.rebase(z_m0, z_curr);
         *delta = z_curr;
         c.rebase();
         *rebase_count += 1;
@@ -445,6 +413,7 @@ fn slow_iter(
                         !(z_end.norm_sqr_fexp() < bailout_sqr_fexp)
                     };
                     if !overshoots_escape {
+                        obs.bla(&a, &b, *delta, dc, node.l);
                         *delta = cand;
                         *c = cand_c;
                         *bla_steps += 1;
@@ -462,6 +431,7 @@ fn slow_iter(
         im: z_m.im + z_m.im,
     };
     let two_z_delta = delta.mul(two_z);
+    obs.direct(z_abs, two_z_delta, *delta);
     let delta_sq = delta.mul(*delta);
     *delta = two_z_delta.add(delta_sq).add(dc);
     c.step();
@@ -479,11 +449,38 @@ pub fn iterate_pixel_scaled_exp_mandelbrot(
     delta_initial: ComplexExp,
     limits: crate::fractal::bytecode::pixel_loop::PixelLoopLimits,
 ) -> UnifiedPixelResultExp {
-    let (res, st) = iterate_pixel_scaled_with_stats(ref_orbit, bla_exp, dc, delta_initial, limits);
+    let (res, st) = scaled_impl(
+        ref_orbit,
+        bla_exp,
+        dc,
+        delta_initial,
+        limits,
+        &mut NoObserve,
+    );
     if stats_enabled() {
         flush_stats(&st);
     }
     res
+}
+
+/// Variante avec **détecteur de fiabilité** (tier exp) : MÊME résultat et MÊME
+/// borne que `pixel_loop_exp::iterate_pixel_unified_exp_mandelbrot_hp_tracked`
+/// — le [`ShadowTrackerExp`] reçoit les mêmes hooks, aux mêmes événements, avec
+/// les mêmes valeurs ComplexExp (reconstruites exactement depuis (d, e)).
+pub fn iterate_pixel_scaled_exp_mandelbrot_tracked(
+    ref_orbit: &ReferenceOrbit,
+    bla_exp: Option<&BlaTableUnifiedExp>,
+    dc: ComplexExp,
+    delta_initial: ComplexExp,
+    limits: crate::fractal::bytecode::pixel_loop::PixelLoopLimits,
+    bla_epsilon: f64,
+) -> (UnifiedPixelResultExp, ShadowTrackerExp) {
+    let mut tracker = ShadowTrackerExp::new(dc, bla_epsilon);
+    let (res, st) = scaled_impl(ref_orbit, bla_exp, dc, delta_initial, limits, &mut tracker);
+    if stats_enabled() {
+        flush_stats(&st);
+    }
+    (res, tracker)
 }
 
 /// Corps de la boucle, avec la ventilation des tours (rapide/lent).
@@ -493,6 +490,40 @@ pub fn iterate_pixel_scaled_with_stats(
     dc: ComplexExp,
     delta_initial: ComplexExp,
     limits: crate::fractal::bytecode::pixel_loop::PixelLoopLimits,
+) -> (UnifiedPixelResultExp, ScaledStats) {
+    scaled_impl(
+        ref_orbit,
+        bla_exp,
+        dc,
+        delta_initial,
+        limits,
+        &mut NoObserve,
+    )
+}
+
+/// Corps générique (observateur copié en local, réécrit à la sortie).
+pub fn scaled_impl<O: ScaledObs>(
+    ref_orbit: &ReferenceOrbit,
+    bla_exp: Option<&BlaTableUnifiedExp>,
+    dc: ComplexExp,
+    delta_initial: ComplexExp,
+    limits: crate::fractal::bytecode::pixel_loop::PixelLoopLimits,
+    obs_out: &mut O,
+) -> (UnifiedPixelResultExp, ScaledStats) {
+    let mut obs = *obs_out;
+    let r = scaled_body(ref_orbit, bla_exp, dc, delta_initial, limits, &mut obs);
+    *obs_out = obs;
+    r
+}
+
+#[inline(always)]
+fn scaled_body<O: ScaledObs>(
+    ref_orbit: &ReferenceOrbit,
+    bla_exp: Option<&BlaTableUnifiedExp>,
+    dc: ComplexExp,
+    delta_initial: ComplexExp,
+    limits: crate::fractal::bytecode::pixel_loop::PixelLoopLimits,
+    obs: &mut O,
 ) -> (UnifiedPixelResultExp, ScaledStats) {
     let crate::fractal::bytecode::pixel_loop::PixelLoopLimits {
         iteration_max,
@@ -533,8 +564,10 @@ pub fn iterate_pixel_scaled_with_stats(
     {
         if let (Some(s), Some(dcs)) = (fast, dcs) {
             if let Some((next, next_c, jumped, rebased)) = fast_iter(
+                obs,
                 s,
                 dcs,
+                dc,
                 c,
                 ref_orbit,
                 z_ref_f64,
@@ -567,6 +600,7 @@ pub fn iterate_pixel_scaled_with_stats(
         }
         st.slow_iter += 1;
         match slow_iter(
+            obs,
             ref_orbit,
             bla,
             dc,
@@ -607,9 +641,11 @@ pub fn iterate_pixel_scaled_with_stats(
 /// lent depuis l'état INCHANGÉ).
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
-fn fast_iter(
+fn fast_iter<O: ScaledObs>(
+    obs: &mut O,
     s: Scaled,
     dcs: Scaled,
+    dc: ComplexExp,
     c: PixelCounter,
     ref_orbit: &ReferenceOrbit,
     z_ref_f64: &[Complex64],
@@ -622,6 +658,9 @@ fn fast_iter(
     if c.m_usize() + 1 >= ref_len {
         return None; // bout de référence : wrap/rebase-at-end en lent
     }
+    // Hooks du traqueur sur une COPIE, validée seulement si le tour aboutit
+    // (un repli refait le tour en lent, qui rappelle les hooks).
+    let mut o = *obs;
     let mut s = s;
     let mut c = c;
     let mut rebased = false;
@@ -646,6 +685,13 @@ fn fast_iter(
         }
         if zr2 + zi2 < dr2 + di2 {
             // δ := Z + δ (valeurs f64 exactes), m := 0.
+            if O::TRACKS {
+                let z_new = ComplexExp {
+                    re: FloatExp::from_f64(zr),
+                    im: FloatExp::from_f64(zi),
+                };
+                o.rebase(ref_orbit.z_ref[c.m_usize()], z_new);
+            }
             s = renorm(Complex64::new(zr, zi), 0)?;
             c.rebase();
             rebased = true;
@@ -680,12 +726,16 @@ fn fast_iter(
                     }
                 };
                 if !overshoots {
+                    if O::TRACKS {
+                        o.bla(&node.a, &node.b, s.to_cexp(), dc, node.l);
+                        *obs = o;
+                    }
                     return Some((cand, cand_c, true, rebased));
                 }
             }
         }
     }
-    let next = if z.re == 0.0 && z.im == 0.0 {
+    let (next, tzd_re, tzd_im) = if z.re == 0.0 && z.im == 0.0 {
         // Z f64 nul : chemin dédié seulement si Z est EXACTEMENT nul (Z₀).
         let zx = ref_orbit.z_ref[m];
         if zx.re.mantissa != 0.0 || zx.im.mantissa != 0.0 {
@@ -695,6 +745,22 @@ fn fast_iter(
     } else {
         direct_fast(s, z, dcs)?
     };
+    if O::TRACKS {
+        // Entrées du hook EXACTEMENT celles de la boucle FloatExp : δ_old,
+        // `2·Z·δ_old` (exact sous les gardes de `direct_fast`, 0 exact si Z₀ = 0)
+        // et `Z[m] + δ_old` calculé en FloatExp. Chemin f64 d'abord (même
+        // borne au bit près sous gardes), ComplexExp sinon.
+        if !o.direct_scaled(z, s.d, s.e, Complex64::new(tzd_re, tzd_im)) {
+            let delta_old = s.to_cexp();
+            let two_z_delta = ComplexExp {
+                re: FloatExp::new(tzd_re, s.e),
+                im: FloatExp::new(tzd_im, s.e),
+            };
+            let z_abs = ref_orbit.z_ref[m].add(delta_old);
+            o.direct(z_abs, two_z_delta, delta_old);
+        }
+        *obs = o;
+    }
     c.step();
     Some((next, c, false, rebased))
 }

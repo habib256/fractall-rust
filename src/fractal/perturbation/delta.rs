@@ -795,15 +795,27 @@ fn try_bytecode_unified_path(
                     crate::fractal::bytecode::Op::Add
                 )
             {
-                let (res_exp, tracker) =
+                let limits = crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params);
+                // Boucle scaled tracée (défaut) : même résultat ET même borne.
+                let (res_exp, tracker) = if crate::fractal::bytecode::pixel_loop_scaled::scaled_enabled() {
+                    crate::fractal::bytecode::pixel_loop_scaled::iterate_pixel_scaled_exp_mandelbrot_tracked(
+                        ref_orbit,
+                        bla_exp,
+                        dc_for_add_exp,
+                        *delta0,
+                        limits,
+                        EXP_BLA_EPSILON,
+                    )
+                } else {
                     crate::fractal::bytecode::pixel_loop_exp::iterate_pixel_unified_exp_mandelbrot_hp_tracked(
                         ref_orbit,
                         bla_exp,
                         dc_for_add_exp,
                         *delta0,
-                        crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
+                        limits,
                         EXP_BLA_EPSILON,
-                    );
+                    )
+                };
                 error_bound =
                     escape_undetermined(tracker.error_bound(), res_exp.z_final, params.bailout);
                 return Some(crate::fractal::bytecode::pixel_loop::UnifiedPixelResult {

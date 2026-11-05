@@ -76,15 +76,40 @@ fn toml_field(text: &str, key: &str) -> String {
 /// bien les deux chemins (rapide et lent).
 #[test]
 fn scaled_matches_floatexp_loop_on_deep_grid() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/toml/e401.toml");
-    let text = std::fs::read_to_string(path).expect("toml/e401.toml");
+    let (n, escaped, _, total) = check_grid("e401", 64, 5);
+    // Anti-vacuité : le cas exerce les trois régimes et des pixels qui
+    // s'échappent.
+    assert!(
+        total.fast_direct > 0
+            && total.fast_jump > 0
+            && total.slow_iter > 0
+            && total.fast_rebase > 0,
+        "{total:?}"
+    );
+    assert!(escaped > 0 && n > 0);
+}
+
+/// Verrou du drapeau de fiabilité : olbaid2 (216 pixels non fiables / 65 536
+/// à 256²). La grille DOIT contenir des pixels flaggés, que la boucle scaled
+/// tracée flagge à l'identique (borne au bit près).
+#[test]
+fn scaled_tracked_flags_same_pixels_as_floatexp_on_olbaid2() {
+    let (_, _, flagged, _) = check_grid("olbaid2", 256, 4);
+    assert!(flagged > 0, "grille sans pixel non fiable : verrou vide");
+}
+
+/// Grille (pas `step`) d'une vue `w`×`w` du cas `stem` : boucle scaled vs
+/// FloatExp, non tracée ET tracée. Renvoie (n, évadés, flaggés, stats).
+fn check_grid(stem: &str, w: u32, step: usize) -> (u32, u32, u32, ScaledStats) {
+    let path = format!("{}/toml/{stem}.toml", env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(&path).expect("toml");
     let (re, im, zoom) = (
         toml_field(&text, "real"),
         toml_field(&text, "imag"),
         toml_field(&text, "zoom"),
     );
     let iters: u32 = toml_field(&text, "iterations").parse().unwrap();
-    let (w, h) = (64u32, 64u32);
+    let h = w;
     let mut params = default_params_for_type(FractalType::Mandelbrot, w, h);
     let view = ViewHp::from_center_and_zoom(&re, &im, &zoom, w, h, 1024).expect("vue");
     view.write_to_params(&mut params);
@@ -110,9 +135,11 @@ fn scaled_matches_floatexp_loop_on_deep_grid() {
 
     let mut total = ScaledStats::default();
     let mut escaped = 0;
+    let mut flagged = 0u32;
+    let eps_f64 = 1.0 / (1u64 << 53) as f64;
     let mut n = 0;
-    for j in (0..h).step_by(5) {
-        for i in (0..w).step_by(5) {
+    for j in (0..h).step_by(step) {
+        for i in (0..w).step_by(step) {
             let fx = (i as f64 + 0.5) / w as f64 - 0.5;
             let fy = (j as f64 + 0.5) / h as f64 - 0.5;
             let dc = ComplexExp {
@@ -148,6 +175,42 @@ fn scaled_matches_floatexp_loop_on_deep_grid() {
                 "pixel ({i},{j}) rebases"
             );
             assert_eq!(got.bla_steps, reference.bla_steps, "pixel ({i},{j}) sauts");
+
+            // Variante TRACÉE (détecteur de fiabilité, défaut) : même résultat
+            // ET même borne au bit près ⇒ même drapeau fiable / non fiable.
+            let (rt, tr) = crate::fractal::bytecode::pixel_loop_exp::iterate_pixel_unified_exp_mandelbrot_hp_tracked(
+                &orbit, Some(&bla), dc, ComplexExp::zero(), limits, eps_f64,
+            );
+            let (gt, tg) = iterate_pixel_scaled_exp_mandelbrot_tracked(
+                &orbit,
+                Some(&bla),
+                dc,
+                ComplexExp::zero(),
+                limits,
+                eps_f64,
+            );
+            assert_eq!(gt.iteration, rt.iteration, "tracé ({i},{j}) itération");
+            assert_eq!(
+                (gt.z_final.re.to_bits(), gt.z_final.im.to_bits()),
+                (rt.z_final.re.to_bits(), rt.z_final.im.to_bits()),
+                "tracé ({i},{j}) z_final"
+            );
+            assert_eq!(
+                (tg.err.mantissa.to_bits(), tg.err.exponent),
+                (tr.err.mantissa.to_bits(), tr.err.exponent),
+                "tracé ({i},{j}) borne"
+            );
+            let flag = |b: f32, z| {
+                crate::fractal::perturbation::delta::escape_undetermined(b, z, limits.bailout)
+                    >= crate::fractal::bytecode::reliability::reliability_runaway() as f32
+            };
+            let f_ref = flag(tr.error_bound(), rt.z_final);
+            assert_eq!(
+                flag(tg.error_bound(), gt.z_final),
+                f_ref,
+                "tracé ({i},{j}) drapeau"
+            );
+            flagged += f_ref as u32;
             total.fast_direct += st.fast_direct;
             total.fast_jump += st.fast_jump;
             total.slow_iter += st.slow_iter;
@@ -157,17 +220,8 @@ fn scaled_matches_floatexp_loop_on_deep_grid() {
         }
     }
     eprintln!(
-        "scaled grid: n={n} escaped={escaped} ref_len={} {total:?}",
+        "scaled grid {stem}: n={n} escaped={escaped} flagged={flagged} ref_len={} {total:?}",
         orbit.z_ref.len()
     );
-    // Anti-vacuité : le cas exerce les trois régimes et des pixels qui
-    // s'échappent.
-    assert!(
-        total.fast_direct > 0
-            && total.fast_jump > 0
-            && total.slow_iter > 0
-            && total.fast_rebase > 0,
-        "{total:?}"
-    );
-    assert!(escaped > 0 && n > 0);
+    (n, escaped, flagged, total)
 }

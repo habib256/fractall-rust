@@ -404,6 +404,89 @@ pub fn reliability_tracks_dd() -> bool {
     })
 }
 
+impl ShadowTrackerExp {
+    /// Hook `direct` pour la boucle scaled-double (`pixel_loop_scaled`, δ =
+    /// d·2^e, `2·Z·δ = tzd·2^e`, `Z[m]` = `z_ref` f64) : MÊMES opérations, même
+    /// ordre, que [`StepObserverExp::direct`], mais en f64 dans le cadre 2^e —
+    /// donc la MÊME borne au bit près tant que chaque addition a un partenaire
+    /// ≥ 2⁻⁹⁶⁰ (un opérande sous-débordé, < 2⁻¹⁰²², est alors abandonné à
+    /// l'identique par FloatExp et par l'arrondi f64) et qu'aucun produit
+    /// significatif ne sous-déborde. Gardes non tenues ⇒ `false`, rien n'est
+    /// modifié : le caller appelle le hook ComplexExp.
+    #[inline(always)]
+    pub fn direct_scaled(
+        &mut self,
+        z_ref: Complex64,
+        d: Complex64,
+        e: i32,
+        tzd: Complex64,
+    ) -> bool {
+        #[inline(always)]
+        fn p2(k: i32) -> f64 {
+            if k < -1022 {
+                0.0
+            } else if k > 1023 {
+                f64::INFINITY
+            } else {
+                f64::from_bits(((k + 1023) as u64) << 52)
+            }
+        }
+        const T2: f64 = f64::from_bits(((-960 + 1023) as u64) << 52);
+        const ZBIG: f64 = f64::from_bits(((-700 + 1023) as u64) << 52);
+        const MINN: f64 = f64::from_bits(((-1000 + 1023) as u64) << 52);
+        #[inline(always)]
+        fn big(a: f64, b: f64) -> bool {
+            a.abs() >= T2 || b.abs() >= T2
+        }
+        let (em, ee) = (self.err.mantissa, self.err.exponent);
+        let (cm, ce) = (self.dc_l1.mantissa, self.dc_l1.exponent);
+        if e > 100 || (em != 0.0 && (ee > 900 || ee - e > 900)) || (cm != 0.0 && ce - e > 900) {
+            return false;
+        }
+        // z = Z + δ (FloatExp, absolu). Pour e < −900, |δ| < 2⁻⁸³⁶ est
+        // abandonné devant des composantes de Z ≥ 2⁻⁷⁰⁰.
+        let (zr, zi, ok_z) = if e >= -900 {
+            let se = p2(e);
+            let (dr, di) = (d.re * se, d.im * se);
+            (
+                z_ref.re + dr,
+                z_ref.im + di,
+                big(z_ref.re, dr) & big(z_ref.im, di),
+            )
+        } else {
+            let ok = (z_ref.re.abs() >= ZBIG) & (z_ref.im.abs() >= ZBIG);
+            (z_ref.re, z_ref.im, ok)
+        };
+        let (zr2, zi2) = (zr * zr, zi * zi);
+        let z_abs = (zr2 + zi2).sqrt();
+        // local = (|2Zδ|₁ + |δ|² + |dc|₁)·γ, dans le cadre 2^e.
+        let l1 = tzd.re.abs() + tzd.im.abs();
+        let nd = (d.re * d.re + d.im * d.im) * p2(e);
+        let dcf = if cm == 0.0 { 0.0 } else { cm * p2(ce - e) };
+        let s1 = l1 + nd;
+        let s2 = s1 + dcf;
+        let local = s2 * GAMMA;
+        // E' = E·(2|z| + E) + local (E absolu dans le facteur, cadre 2^e sinon).
+        let err_abs = if em == 0.0 { 0.0 } else { em * p2(ee) };
+        let w = z_abs * 2.0 + err_abs;
+        let err_f = if em == 0.0 { 0.0 } else { em * p2(ee - e) };
+        let prod = err_f * w;
+        let r = prod + local;
+        let ok = ok_z
+            & big(zr2, zi2)
+            & big(l1, nd)
+            & big(s1, dcf)
+            & big(z_abs, err_abs)
+            & (big(prod, local) || (em == 0.0 && local.abs() >= MINN));
+        if !ok {
+            return false;
+        }
+        self.err = FloatExp::new(r, e);
+        self.saturate();
+        true
+    }
+}
+
 /// Mode du détecteur, lu une fois depuis `FRACTALL_RELIABILITY` :
 /// - `off` / `0` : détecteur inactif (boucle de production intacte) ;
 /// - `observe` : détecte et rapporte (`[RELIABILITY]`), ne corrige rien ;
