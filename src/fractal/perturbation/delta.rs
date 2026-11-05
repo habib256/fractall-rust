@@ -636,6 +636,23 @@ pub(crate) fn harmonic_entry_active(params: &FractalParams, orbit: &ReferenceOrb
 }
 
 /// Epsilon de la table BLA FloatExp du tier exp (cf. son build) — 2⁻⁵³.
+/// Critère de DÉTERMINATION de l'évasion (complète l'emballement) : le compte
+/// d'itération n'est fixé par l'arithmétique que si `|z_final|` reste du MÊME
+/// côté du rayon d'évasion à la borne `E` près. Une borne qui n'a pas eu le
+/// temps de s'emballer (le pixel s'évade dès que E ~ |z|) passait sinon pour
+/// fiable : mesuré tier exp (wfs_mb 96², 2 pixels faux à borne 1..1e30).
+/// Renvoie `+∞` (non fiable) si `E ≥ ||z_final| − R|`, la borne sinon.
+#[inline]
+pub(crate) fn escape_undetermined(bound: f32, z_final: Complex64, bailout: f64) -> f32 {
+    let e = bound as f64;
+    let margin = (z_final.norm() - bailout).abs();
+    if e.is_finite() && e >= margin {
+        f32::INFINITY
+    } else {
+        bound
+    }
+}
+
 pub(crate) const EXP_BLA_EPSILON: f64 = 1.0 / (1u64 << 53) as f64;
 
 /// Epsilon de la table BLA f64 (miroir de `F64_BLA_EPSILON` du build) : erreur
@@ -783,7 +800,8 @@ fn try_bytecode_unified_path(
                         crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
                         EXP_BLA_EPSILON,
                     );
-                error_bound = tracker.error_bound();
+                error_bound =
+                    escape_undetermined(tracker.error_bound(), res_exp.z_final, params.bailout);
                 return Some(crate::fractal::bytecode::pixel_loop::UnifiedPixelResult {
                     iteration: res_exp.iteration,
                     z_final: res_exp.z_final,
@@ -982,7 +1000,11 @@ fn try_bytecode_unified_path(
                     crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
                     F64_BLA_EPSILON_PIXEL,
                 );
-            error_bound = tracker.error_bound();
+            error_bound = if std::env::var_os("FRACTALL_F64_MARGIN").is_some() {
+                escape_undetermined(tracker.error_bound(), res.z_final, params.bailout)
+            } else {
+                tracker.error_bound()
+            };
             return Some(res);
         }
 
@@ -2962,6 +2984,21 @@ mod tests {
     use super::*;
     use crate::fractal::definitions::default_params_for_type;
     use crate::fractal::{FractalParams, FractalType};
+
+    /// Une borne qui chevauche le rayon d'évasion rend le compte INDÉTERMINÉ,
+    /// même loin de l'emballement (wfs_mb exp : 2 pixels faux à borne finie).
+    #[test]
+    fn escape_undetermined_when_bound_straddles_bailout() {
+        let r = 25.0;
+        // évadé de justesse : |z| = 26, borne 2 ⇒ indéterminé
+        assert!(escape_undetermined(2.0, Complex64::new(26.0, 0.0), r).is_infinite());
+        // évadé franchement : borne 0,5 < 1 ⇒ conservée
+        assert_eq!(escape_undetermined(0.5, Complex64::new(26.0, 0.0), r), 0.5);
+        // non évadé mais tout près : |z| = 24,8, borne 0,5 ⇒ indéterminé
+        assert!(escape_undetermined(0.5, Complex64::new(24.8, 0.0), r).is_infinite());
+        // borne déjà infinie : inchangée
+        assert!(escape_undetermined(f32::INFINITY, Complex64::new(100.0, 0.0), r).is_infinite());
+    }
 
     #[test]
     fn diffabs_stable_computation() {

@@ -324,8 +324,13 @@ impl ReliabilityMode {
 
 /// Suivi du tier **exp** (> 1e280) — OPT-IN `FRACTALL_RELIABILITY_EXP=1`.
 /// Mesuré 2026-11-05 (corpus profond 96-128²) : +25-45 % de temps pixel
-/// (`ShadowTrackerExp` en FloatExp) pour 0-2 pixels détectés par cas ; les
-/// résidus exp restants (3-9 px vs dd) ont une borne qui ne s'emballe pas.
+/// (`ShadowTrackerExp` en FloatExp) pour 0-2 pixels détectés par cas.
+/// Les résidus exp « à borne qui ne s'emballe pas » (3-9 px vs dd) venaient
+/// de TROIS défauts du traqueur (2026-11-06) : débordement d'exposant qui
+/// blanchissait la borne emballée, troncature BLA comptée ε au lieu de l·ε,
+/// et pas de test de détermination à l'évasion (`escape_undetermined`).
+/// Corrigés, le traqueur rend 31 cas profonds 96² pixel-exacts vs dd (dont
+/// 12 qui avaient 1-9 pixels faux) — reste OPT-IN : coût non arbitré.
 /// Les vraies sources d'erreur du tier exp étaient ailleurs (span f64
 /// sous-normal, ε BLA 2⁻²⁴) et sont corrigées à la racine.
 pub fn reliability_tracks_exp() -> bool {
