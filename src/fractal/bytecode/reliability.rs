@@ -121,15 +121,33 @@ fn l1(z: Complex64) -> f64 {
 /// Cas CONFORME (Mandelbrot : `A` représente un complexe `a`, m00 = m11 et
 /// m01 = −m10) : `σ₁ = |a|`, une seule racine au lieu de deux — le hook BLA
 /// est sur le chemin chaud des scènes à longs sauts (e50).
+///
+/// ⚠️ Débordement : un long saut a `|A| = ∏|2Z|` qui dépasse 1e154 dès les
+/// zooms ~1e150 ; `m00² + m10²` valait alors +∞ et la borne avec — le pixel
+/// était flaggé quelle que soit son erreur réelle (faux positif payé d'une
+/// correction dd). Le carré n'est pris que s'il reste fini ; sinon `hypot`
+/// (conforme) ou une mise à l'échelle par le plus grand coefficient.
 #[inline]
 fn spectral_norm(m: &Mat2) -> f64 {
     if m.m00 == m.m11 && m.m01 == -m.m10 {
-        return (m.m00 * m.m00 + m.m10 * m.m10).sqrt();
+        let s = m.m00 * m.m00 + m.m10 * m.m10;
+        // Chemin chaud : une racine. `hypot` seulement hors plage (carré
+        // infini, ou sous-normal → précision perdue).
+        return if s.is_finite() && s >= f64::MIN_POSITIVE {
+            s.sqrt()
+        } else {
+            m.m00.hypot(m.m10)
+        };
     }
-    let f2 = m.m00 * m.m00 + m.m01 * m.m01 + m.m10 * m.m10 + m.m11 * m.m11;
-    let det = m.m00 * m.m11 - m.m01 * m.m10;
+    let scale = m.m00.abs().max(m.m01.abs()).max(m.m10.abs()).max(m.m11.abs());
+    if !(scale > 0.0) || !scale.is_finite() {
+        return scale;
+    }
+    let (a, b, c, d) = (m.m00 / scale, m.m01 / scale, m.m10 / scale, m.m11 / scale);
+    let f2 = a * a + b * b + c * c + d * d;
+    let det = a * d - b * c;
     let disc = (f2 * f2 - 4.0 * det * det).max(0.0);
-    ((f2 + disc.sqrt()) * 0.5).sqrt()
+    scale * ((f2 + disc.sqrt()) * 0.5).sqrt()
 }
 
 impl StepObserver for ShadowTracker {
@@ -411,8 +429,18 @@ pub fn reliability_tracks_dd() -> bool {
 }
 
 /// Fraction par défaut du plafond de l'escalade dd → GMP (cf.
-/// [`gmp_escalation_allowed`]).
-pub const DEFAULT_GMP_MAX_FRACTION: f64 = 0.01;
+/// [`gmp_escalation_allowed`]) : **0,1 %** des pixels de la frame.
+///
+/// Calibration (2026-11-06, Apple M4) : les scènes dont quelques pixels
+/// dépassent la précision dd en ont 0,008 à 0,015 % (e227 5 px et
+/// golden_spider 10 px à 256²) — dix fois sous le plafond, donc corrigées à
+/// toute résolution. Le coût n'est pas négligeable pour autant : un pixel GMP
+/// de e227 (~1 M itérations) prend ~3 s de thread, soit 1,8 → 4,8 s de wall
+/// à 256² pour 5 pixels. À 1 % le pire cas autorisé était déraisonnable
+/// (~100 min en 1080p sur une scène de ce coût) ; à 0,1 % il reste borné à
+/// ~10 min, et lethal_weapon (17 % de pixels au-delà du dd) reste plafonné
+/// avec son avertissement.
+pub const DEFAULT_GMP_MAX_FRACTION: f64 = 0.001;
 /// Plancher absolu du plafond : une poignée de pixels part toujours au GMP.
 pub const GMP_MIN_PIXELS: usize = 16;
 
@@ -735,6 +763,45 @@ pub const UNRELIABLE_FRAME_THRESHOLD: f64 = 0.5;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spectral_norm_survives_huge_and_tiny_coefficients() {
+        // Conforme, |a| = 5e200 : le carré déborde, la norme non.
+        let m = Mat2 {
+            m00: 3e200,
+            m01: -4e200,
+            m10: 4e200,
+            m11: 3e200,
+        };
+        let n = spectral_norm(&m);
+        assert!(n.is_finite() && (n / 5e200 - 1.0).abs() < 1e-12, "σ₁ = {n:e}");
+        // Conforme minuscule : pas d'annulation par sous-dépassement.
+        let t = Mat2 {
+            m00: 3e-200,
+            m01: -4e-200,
+            m10: 4e-200,
+            m11: 3e-200,
+        };
+        let n = spectral_norm(&t);
+        assert!((n / 5e-200 - 1.0).abs() < 1e-12, "σ₁ = {n:e}");
+        // Non conforme diagonal énorme : σ₁ = plus grand coefficient.
+        let d = Mat2 {
+            m00: 2e200,
+            m01: 0.0,
+            m10: 0.0,
+            m11: 1e190,
+        };
+        let n = spectral_norm(&d);
+        assert!((n / 2e200 - 1.0).abs() < 1e-12, "σ₁ = {n:e}");
+        // Valeurs ordinaires inchangées au bit près (chemin chaud).
+        let o = Mat2 {
+            m00: 3.0,
+            m01: -4.0,
+            m10: 4.0,
+            m11: 3.0,
+        };
+        assert_eq!(spectral_norm(&o).to_bits(), 5.0f64.to_bits());
+    }
 
     #[test]
     fn spectral_norm_of_conformal_matrix_is_modulus() {

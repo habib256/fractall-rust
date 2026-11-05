@@ -220,6 +220,9 @@ const CASES: &[Case] = &[
     // harmonic sur-permissifs laissaient des pixels faux indétectables).
     // Adjugé vs GMP pur sur la frame entière (160×100) : ancien golden 11
     // pixels ≠ GMP, nouveau 1 (7664 pour 7662) ; dd == GMP sur les 16000.
+    // RÉGÉNÉRÉ une seconde fois le même jour : traqueur de fiabilité sur le
+    // chemin harmonic (le pixel restant est flaggé puis corrigé en dd) →
+    // (141,12) 7664 → 7662 ; la frame entière == GMP pur (0 pixel ≠).
     // Régression du routage (cas plus routé → pixels BLA) = cette golden casse.
     Case {
         name: "mandelbrot_glitch_test_2_harmonic",
