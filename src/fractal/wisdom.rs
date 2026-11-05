@@ -317,6 +317,44 @@ const GPU_SPEED_MARGIN: f64 = 1.25;
 /// GPU est incapable → CPU.
 const GPU_SPAN_F32_MIN: f64 = 1e-37;
 
+/// Plancher de span (min des deux axes) du kernel perturbation **f32 +
+/// fiabilité** (`perturbation_f32.wgsl`, GPU sans `SHADER_F64`) : en deçà, δ
+/// et |dz/dc| sortent de la plage f32 → l'hôte GPU renvoie `None`. Source
+/// UNIQUE, lue par `gpu/mod.rs` et par l'arbitrage ([`gpu_perturb_bench_keys`]).
+pub const GPU_F32_SPAN_MIN: f64 = 1e-28;
+
+/// Paires (clé GPU, clé CPU de référence) à arbitrer pour CETTE frame, par
+/// ordre de préférence (G14.5) ; la première paire dont les DEUX débits sont
+/// benchés décide. `None` côté CPU = la clé de la technique CPU choisie
+/// (tier). Dans la plage du kernel f32 (span ≥ [`GPU_F32_SPAN_MIN`],
+/// Mandelbrot/Julia — les seuls types du kernel f32), `gpu_perturb_f32` mesure
+/// le path GPU qu'une telle frame prend réellement (kernel f32 + correction CPU
+/// sur Metal, kernel f64 ailleurs) et se compare à `cpu_perturb_f64_mid`,
+/// benché sur la MÊME vue (le débit effectif dépend de la vue : comparer à la
+/// clé e50 fausserait l'arbitrage d'un facteur ~7). Repli : `gpu_perturb_f64`
+/// contre la clé du tier CPU (fichiers wisdom antérieurs, GPU f64). Hors de
+/// cette plage : `gpu_perturb_f64` seule — absente sur un GPU sans
+/// `SHADER_F64`, donc CPU.
+pub fn gpu_perturb_bench_keys(
+    params: &FractalParams,
+) -> &'static [(
+    crate::fractal::wisdom_bench::BenchKey,
+    Option<crate::fractal::wisdom_bench::BenchKey>,
+)] {
+    use crate::fractal::wisdom_bench::BenchKey;
+    let span = params.span_x.abs().min(params.span_y.abs());
+    let f32_kernel_range = span >= GPU_F32_SPAN_MIN
+        && matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia);
+    if f32_kernel_range {
+        &[
+            (BenchKey::GpuPerturbF32, Some(BenchKey::CpuPerturbF64Mid)),
+            (BenchKey::GpuPerturbF64, None),
+        ]
+    } else {
+        &[(BenchKey::GpuPerturbF64, None)]
+    }
+}
+
 /// **Auto-sélection du device (G9.5)** — CPU ou GPU par ARBITRAGE de débit
 /// benché sur CETTE machine, sous contrainte STRICTE de correction.
 ///
@@ -330,6 +368,11 @@ const GPU_SPAN_F32_MIN: f64 = 1e-37;
 /// au débit de la technique CPU choisie ; GPU seulement s'il gagne d'au moins
 /// [`GPU_SPEED_MARGIN`] (sur GPU grand public f64 1:64 il perd → CPU ; sur GPU
 /// pro f64 rapide il gagne → GPU). Sans bench GPU-perturb → conservateur (CPU).
+/// Sur un GPU sans `SHADER_F64` (Metal), le kernel f32 + fiabilité couvre la
+/// plage span ≥ [`GPU_F32_SPAN_MIN`] (Mandelbrot/Julia) : son débit benché
+/// INCLUT la correction CPU des pixels non fiables (clé `gpu_perturb_f32`,
+/// cf. [`gpu_perturb_bench_keys`]) — l'image routée est donc celle, jugée
+/// contre GMP, de l'hôte GPU, pas celle du f32 brut.
 ///
 /// `gpu_available` = GPU initialisé ET path requis supporté (SHADER_F64). Les
 /// overrides `--gpu`/`--no-gpu` sont appliqués par le caller AUTOUR de l'auto.
@@ -356,17 +399,18 @@ pub fn select_device(params: &FractalParams, gpu_available: bool) -> Device {
     if cpu_algo != Algorithm::Perturbation {
         return Device::Cpu;
     }
-    let cpu_bench = crate::fractal::wisdom_bench::lookup_iters_per_sec(
-        Device::Cpu,
-        Algorithm::Perturbation,
-        number_tier(params),
-    );
-    let gpu_bench = crate::fractal::wisdom_bench::lookup_iters_per_sec(
-        Device::Gpu,
-        Algorithm::Perturbation,
-        None,
-    );
-    arbitrate_device(gpu_bench, cpu_bench)
+    use crate::fractal::wisdom_bench::{lookup_iters_per_sec, lookup_key_iters_per_sec};
+    let tier_cpu_bench =
+        || lookup_iters_per_sec(Device::Cpu, Algorithm::Perturbation, number_tier(params));
+    let measured = gpu_perturb_bench_keys(params).iter().find_map(|&(gpu_key, cpu_key)| {
+        let gpu = lookup_key_iters_per_sec(gpu_key)?;
+        let cpu = match cpu_key {
+            Some(k) => lookup_key_iters_per_sec(k)?,
+            None => tier_cpu_bench()?,
+        };
+        Some((gpu, cpu))
+    });
+    arbitrate_device(measured.map(|m| m.0), measured.map(|m| m.1))
 }
 
 /// Vrai si le rendu demande des canaux/tiers que le GPU ne produit pas :
@@ -529,9 +573,15 @@ pub fn plan_for(params: &FractalParams, device: Device) -> WisdomPlan {
         algorithm,
         tier,
         variants,
-        bench_iters_per_sec: crate::fractal::wisdom_bench::lookup_iters_per_sec(
-            device, algorithm, tier,
-        ),
+        // GPU-perturbation : la clé dépend de la plage de la frame (kernel f32
+        // ou f64, cf. `gpu_perturb_bench_keys`) — même source que l'arbitrage.
+        bench_iters_per_sec: if device == Device::Gpu && algorithm == Algorithm::Perturbation {
+            gpu_perturb_bench_keys(params)
+                .iter()
+                .find_map(|&(k, _)| crate::fractal::wisdom_bench::lookup_key_iters_per_sec(k))
+        } else {
+            crate::fractal::wisdom_bench::lookup_iters_per_sec(device, algorithm, tier)
+        },
         pixel_size: effective_pixel_size(params),
         required_exponent: log2_zoom(params),
         required_precision: required_precision_bits(params),
@@ -737,6 +787,26 @@ mod tests {
             Algorithm::Perturbation
         );
         assert_eq!(select_device(&frame(1e8), true), Device::Cpu);
+    }
+
+    #[test]
+    fn gpu_perturb_bench_keys_follow_f32_kernel_range() {
+        // G14.5 : la clé `gpu_perturb_f32` n'est consultée QUE dans la plage
+        // du kernel f32 (span ≥ 1e-28, Mandelbrot/Julia) ; au-delà, ou pour
+        // Burning Ship (absent du kernel f32), seule `gpu_perturb_f64` compte
+        // — absente sur Metal → CPU, jamais un dispatch GPU voué au repli.
+        use crate::fractal::wisdom_bench::BenchKey;
+        let f32_pair = (BenchKey::GpuPerturbF32, Some(BenchKey::CpuPerturbF64Mid));
+        let f64_pair = (BenchKey::GpuPerturbF64, None);
+        assert_eq!(gpu_perturb_bench_keys(&frame(1e20)), &[f32_pair, f64_pair]);
+        let mut julia = frame(1e20);
+        julia.fractal_type = FractalType::Julia;
+        assert_eq!(gpu_perturb_bench_keys(&julia)[0], f32_pair);
+        // span 4e-30 < 1e-28 : hors kernel f32.
+        assert_eq!(gpu_perturb_bench_keys(&frame(1e30)), &[f64_pair]);
+        let mut bs = frame(1e20);
+        bs.fractal_type = FractalType::BurningShip;
+        assert_eq!(gpu_perturb_bench_keys(&bs), &[f64_pair]);
     }
 
     #[test]

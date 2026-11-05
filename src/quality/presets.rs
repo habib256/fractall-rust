@@ -394,6 +394,24 @@ pub const GPU_PRESETS: &[Preset] = &[
         julia_seed: None,
         precision_bits: None,
     },
+    // Verrou kernel f32 + fiabilité (G14.5, Metal) : spirale e30 dézoomée à
+    // 1e20, DANS la plage du kernel f32 (span ≥ 1e-28) — scène difficile,
+    // ~27 % de pixels renvoyés au CPU sur Apple M4 ; le f32 BRUT y diverge de
+    // GMP sur ~7 % des pixels (div 0.069). Exerce la correction CPU (repli
+    // plein cadre sous 50 %) que la route Auto GPU paie. PASS max_diff=1 sur
+    // M4. Sur GPU f64 : kernel f64.
+    Preset {
+        name: "gpu-spiral-e20",
+        description: "Parité GPU — spirale e30 dézoomée à 1e20 (kernel f32 + correction CPU sur Metal).",
+        fractal_type: FractalType::Mandelbrot,
+        center_x_hp: "-0.0494700290631040937516922267273536301187457124882248793181049402326421947726869034279915499747594190000000000000000000",
+        center_y_hp: "-0.6747875758446753640113920531305976563347707068224034806979997947909941983454845111514208499540310299999999999999999880",
+        zoom: "1e20",
+        iterations: 20000,
+        multibrot_power: None,
+        julia_seed: None,
+        precision_bits: None,
+    },
     // Verrou rebase-at-end kernel (G9.4b) : réf ATOM-TRONQUÉE (11177 iters ≪
     // iter_max) — exerce le wrap fin-de-référence F3 (`hybrid.cc:301`) + guard
     // BLA `lands_on_ref_end` portés en WGSL. ⚠️ Scène ultra-sensible (le CPU

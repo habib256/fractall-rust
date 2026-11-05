@@ -57,16 +57,34 @@ pub enum BenchKey {
     /// `--wisdom-bench` ne le mesure pas → l'arbitrage retombe conservativement
     /// sur le CPU (jalon suivant : mesure GPU-perturb dans `run_bench`).
     GpuPerturbF64,
+    /// GPU perturbation dans la plage du kernel **f32 + fiabilité**
+    /// (`perturbation_f32.wgsl`, span ≥ 1e-28 — G9.6/G14.5), correction CPU
+    /// des pixels non fiables INCLUSE dans le temps mesuré (c'est le coût réel
+    /// d'une frame). Mesurée via `render_dispatch` sur une vue de cette plage :
+    /// sur un GPU sans `SHADER_F64` (Metal) c'est le kernel f32 ; sur un GPU
+    /// f64 c'est le kernel f64 que la frame y prendrait — dans les deux cas le
+    /// débit du path GPU qu'une frame de cette plage exécute réellement.
+    /// Vue DIFFICILE à dessein (spirale e30 dézoomée à 4e-20 : ~27 % de pixels
+    /// renvoyés au CPU sur Apple M4) : un gain mesuré ici minore le gain des
+    /// scènes faciles (e13/e17 : < 1 % renvoyés).
+    GpuPerturbF32,
+    /// CPU perturbation f64 sur la MÊME vue que [`BenchKey::GpuPerturbF32`] :
+    /// le débit effectif (sauts BLA comptés) dépend de la vue d'un facteur
+    /// ~×7 (e50 vs spirale e20 sur Apple M4) — l'arbitrage de la plage f32
+    /// compare donc les deux devices sur une frame identique.
+    CpuPerturbF64Mid,
 }
 
 impl BenchKey {
-    pub const ALL: [BenchKey; 6] = [
+    pub const ALL: [BenchKey; 8] = [
         BenchKey::CpuStdF64,
         BenchKey::CpuPerturbF64,
         BenchKey::CpuPerturbExp,
         BenchKey::CpuPerturbDd,
         BenchKey::GpuStdF32,
         BenchKey::GpuPerturbF64,
+        BenchKey::GpuPerturbF32,
+        BenchKey::CpuPerturbF64Mid,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -77,6 +95,8 @@ impl BenchKey {
             BenchKey::CpuPerturbDd => "cpu_perturb_dd",
             BenchKey::GpuStdF32 => "gpu_std_f32",
             BenchKey::GpuPerturbF64 => "gpu_perturb_f64",
+            BenchKey::GpuPerturbF32 => "gpu_perturb_f32",
+            BenchKey::CpuPerturbF64Mid => "cpu_perturb_f64_mid",
         }
     }
 
@@ -171,6 +191,11 @@ pub fn lookup_iters_per_sec(
     tier: Option<NumberTier>,
 ) -> Option<f64> {
     let key = BenchKey::for_plan(device, algorithm, tier)?;
+    lookup_key_iters_per_sec(key)
+}
+
+/// Débit benché d'une clé précise, si mesuré sur cette machine.
+pub fn lookup_key_iters_per_sec(key: BenchKey) -> Option<f64> {
     Some(cached()?.lookup(key)?.iters_per_sec)
 }
 
@@ -219,6 +244,11 @@ fn bench_frame(key: BenchKey, size: u32) -> FractalParams {
         // e50 hors-plage). Débit f64-perturbation comparable à `CpuPerturbF64`
         // (rate ≈ constante machine, frame-indépendante au 1er ordre).
         BenchKey::GpuPerturbF64 => deep_frame(E50_RE, E50_IM, "4e-30", 40_000, size),
+        // GPU-perturb plage f32 : même spirale, span 4e-20 (≥ 1e-28, plancher
+        // du kernel f32). 20 000 itérations : orbite non tronquée par escape.
+        BenchKey::GpuPerturbF32 | BenchKey::CpuPerturbF64Mid => {
+            deep_frame(E50_RE, E50_IM, "4e-20", 20_000, size)
+        }
         BenchKey::CpuPerturbExp => deep_frame(E318_RE, E318_IM, "1e-318", 212_138, size),
         BenchKey::CpuPerturbDd => {
             let mut p = deep_frame(E50_RE, E50_IM, "4e-50", 263_010, size);
@@ -283,6 +313,7 @@ pub fn run_bench(
         BenchKey::CpuPerturbF64,
         BenchKey::CpuPerturbExp,
         BenchKey::CpuPerturbDd,
+        BenchKey::CpuPerturbF64Mid,
     ] {
         eprintln!("[WISDOM-BENCH] {} …", key.as_str());
         if let Some(entry) = measure_cpu(key, target_seconds) {
@@ -299,7 +330,7 @@ pub fn run_bench(
     // `None` si le GPU ne peut pas la clé (ex. Metal sans SHADER_F64 pour la
     // perturbation) → pas d'entrée → arbitrage conservateur (CPU).
     if let Some(render) = gpu_render {
-        for key in [BenchKey::GpuStdF32, BenchKey::GpuPerturbF64] {
+        for key in [BenchKey::GpuStdF32, BenchKey::GpuPerturbF64, BenchKey::GpuPerturbF32] {
             eprintln!("[WISDOM-BENCH] {} …", key.as_str());
             if let Some(entry) = measure_gpu(key, render, target_seconds) {
                 eprintln!(
@@ -443,5 +474,20 @@ mod tests {
         let f = bench_frame(BenchKey::GpuPerturbF64, 128);
         assert_eq!(wisdom::select_algorithm(&f, Device::Gpu), Algorithm::Perturbation);
         assert!(crate::fractal::perturbation::effective_pixel_size(&f) >= 1e-37);
+        // GPU-perturb plage f32 : perturbation des DEUX côtés (arbitrage
+        // apples-to-apples), span dans la plage du kernel f32, et la clé
+        // choisie par l'arbitrage pour cette frame est bien la sienne.
+        let f = bench_frame(BenchKey::GpuPerturbF32, 128);
+        assert_eq!(wisdom::select_algorithm(&f, Device::Gpu), Algorithm::Perturbation);
+        assert_eq!(wisdom::select_algorithm(&f, Device::Cpu), Algorithm::Perturbation);
+        assert!(f.span_x.abs().min(f.span_y.abs()) >= wisdom::GPU_F32_SPAN_MIN);
+        assert_eq!(
+            wisdom::gpu_perturb_bench_keys(&f)[0],
+            (BenchKey::GpuPerturbF32, Some(BenchKey::CpuPerturbF64Mid))
+        );
+        // La référence CPU de la paire rend la MÊME frame, en perturbation f64.
+        let c = bench_frame(BenchKey::CpuPerturbF64Mid, 128);
+        assert_eq!(serde_json::to_string(&c).ok(), serde_json::to_string(&f).ok());
+        assert_eq!(wisdom::number_tier(&c), Some(NumberTier::F64));
     }
 }
