@@ -252,10 +252,18 @@ fn ddexp_loop(
 /// exposants diffèrent de ≥ 108 — reproduite telle quelle (`add_e`, exposants
 /// lus dans les bits, `frexp` exact en sous-normal).
 ///
+/// **Mise à l'échelle** : δ et dc sont stockés multipliés par `2^s`
+/// (`s = −exposant(dc)` dès que dc < 2⁻³⁰⁰, plafonné à 900) — sans quoi
+/// δ ~ 2⁻⁶⁴⁰ (dragon 1e191) sous-déborderait dans δ². Les termes linéaires
+/// (2Zδ, pas BLA, + dc) sont homogènes en `2^s` ; le carré est formé comme
+/// `δ·δ_s` ; les normes comparées sont ramenées à une échelle commune. Une
+/// multiplication par 2^k est exacte hors sous-normal : mêmes bits.
+///
 /// Gardes (conservatrices) qui tiennent tout produit loin du sous-normal ;
 /// échec ⇒ on rend la main à `ddexp_loop`, état converti exactement :
-/// - composantes de δ et de dc : 0 ou |·| ≥ 2⁻³⁵⁰ (produits ≥ 2⁻⁷⁰⁰, termes
-///   d'erreur ≥ 2⁻⁸⁰⁶) ;
+/// - composantes de δ_s et de dc_s : 0 ou |·| ≥ 2⁻³⁵⁰, et |δ| ≥ 2⁻⁹⁶⁰ à
+///   l'échelle 1 (produits ≥ 2⁻⁷⁰⁰, termes d'erreur ≥ 2⁻⁸⁰⁶ ; un δ² qui
+///   sous-déborde est de toute façon abandonné à 108 binades de dc_s) ;
 /// - composantes de Z : 0 ou |·| ≥ 2⁻³⁰⁰ ;
 /// - pas BLA : chaque produit coefficient × opérande entre 2⁻⁷⁰⁰ et 2⁹⁰⁰,
 ///   coefficient ≥ 2⁻⁶⁰⁰ (la boucle `DoubleDoubleExp` multiplie la MANTISSE
@@ -289,6 +297,8 @@ mod fast {
     const MIN_COEF: f64 = 2.409_919_865_102_884e-181;
     /// Demi-largeur relative de la bande où une norme f64 ne suffit pas.
     const BAND: f64 = 2.842_170_943_040_401e-14; // 2^-45
+    /// Échelle maximale de δ/dc (dc ≥ 2⁻⁹⁰⁰ ≈ 1e-271 : tout le tier f64).
+    const MAX_SCALE: i32 = 900;
     /// 2⁻¹⁰²¹.
     const MIN_TO_F64: f64 = 4.450_147_717_014_403e-308;
 
@@ -402,6 +412,54 @@ mod fast {
         c.hi.abs() >= MIN_COEF && (-700..=900).contains(&(fexp(x.hi) + fexp(c.hi)))
     }
 
+    /// δ et dc mis à l'échelle `2^s` : valeurs stockées `δ_s = δ·2^s`.
+    #[inline(always)]
+    fn scale(d: Dd, f: f64) -> Dd {
+        Dd {
+            hi: d.hi * f,
+            lo: d.lo * f,
+        }
+    }
+
+    /// `DoubleDoubleExp` → dd mis à l'échelle `2^s`, si la garde `min` tient.
+    #[inline(always)]
+    fn plain_s(x: DoubleDoubleExp, s: i32, min: f64) -> Option<Dd> {
+        if x.mantissa.hi == 0.0 {
+            return Some(Dd::ZERO);
+        }
+        let e = x.exponent + s;
+        if !(-1000..=1000).contains(&e) {
+            return None;
+        }
+        let d = scale(x.mantissa, crate::fractal::perturbation::types::pow2i(e));
+        (d.hi.abs() >= min && d.hi.is_finite()).then_some(d)
+    }
+
+    /// dd à l'échelle `2^s` → `DoubleDoubleExp` de la valeur réelle (exact).
+    #[inline]
+    fn to_ddexp_s(d: Dd, s: i32) -> DoubleDoubleExp {
+        let x = to_ddexp(d);
+        if x.mantissa.hi == 0.0 {
+            x
+        } else {
+            DoubleDoubleExp {
+                mantissa: x.mantissa,
+                exponent: x.exponent - s,
+            }
+        }
+    }
+
+    /// Exposant `frexp` de la plus grande composante (0 si δ = 0).
+    #[inline(always)]
+    fn kmax(r: Dd, i: Dd) -> i32 {
+        let m = r.hi.abs().max(i.hi.abs());
+        if m == 0.0 {
+            0
+        } else {
+            fexp(m)
+        }
+    }
+
     /// Exécute le pixel en dd plage f64. `Some(résultat)` si terminé ; `None`
     /// si une garde échoue — `st` contient alors l'état exact à un point de
     /// reprise de `ddexp_loop` (cf. doc du module).
@@ -412,6 +470,7 @@ mod fast {
         st: &mut DdLoopState,
         limits: crate::fractal::bytecode::pixel_loop::PixelLoopLimits,
     ) -> Option<UnifiedPixelResultExp> {
+        use crate::fractal::perturbation::types::pow2i;
         let crate::fractal::bytecode::pixel_loop::PixelLoopLimits {
             iteration_max,
             bailout,
@@ -426,10 +485,25 @@ mod fast {
         {
             return None;
         }
-        let dcr = plain(dc.re, MIN_DELTA)?;
-        let dci = plain(dc.im, MIN_DELTA)?;
-        let mut dr = plain(st.delta.re, MIN_DELTA)?;
-        let mut di = plain(st.delta.im, MIN_DELTA)?;
+        // Échelle : dc ramené vers O(1) dès qu'il passe sous 2⁻³⁰⁰ (zooms
+        // profonds du tier f64 : dragon 1e191, dc ~ 2⁻⁶³⁵). δ_s = δ·2^s.
+        let e_dc = [dc.re, dc.im]
+            .iter()
+            .filter(|x| x.mantissa.hi != 0.0)
+            .map(|x| x.exponent)
+            .max()?;
+        if e_dc < -MAX_SCALE {
+            return None;
+        }
+        let s: i32 = if e_dc < -300 { -e_dc } else { 0 };
+        let up = pow2i(s);
+        let down = pow2i(-s);
+        // Garde δ : |δ_s| ≥ 2⁻³⁵⁰ ET |δ| (non mis à l'échelle) ≥ 2⁻⁹⁶⁰.
+        let min_d = MIN_DELTA.max(pow2i(s - 960));
+        let dcr = plain_s(dc.re, s, min_d)?;
+        let dci = plain_s(dc.im, s, min_d)?;
+        let mut dr = plain_s(st.delta.re, s, min_d)?;
+        let mut di = plain_s(st.delta.im, s, min_d)?;
         let bailout_sqr = DoubleDoubleExp::from_f64(bailout * bailout).to_dd();
         let bailout_f = bailout_sqr.hi;
         let mut c = st.c;
@@ -440,8 +514,8 @@ mod fast {
         macro_rules! bail {
             () => {{
                 st.delta = ComplexDDExp {
-                    re: to_ddexp(dr),
-                    im: to_ddexp(di),
+                    re: to_ddexp_s(dr, s),
+                    im: to_ddexp_s(di, s),
                 };
                 st.c = c;
                 st.rebase_count = rebase_count;
@@ -455,7 +529,7 @@ mod fast {
             && (max_perturb_iterations == 0 || iters_ptb < max_perturb_iterations)
             && (max_bla_steps == 0 || bla_steps < max_bla_steps)
         {
-            if !ok(dr, MIN_DELTA) || !ok(di, MIN_DELTA) {
+            if !ok(dr, min_d) || !ok(di, min_d) {
                 bail!();
             }
             let z0 = z_ref_dd[c.m_usize()];
@@ -464,53 +538,57 @@ mod fast {
             };
 
             // Rebase F3 (cf. `ddexp_loop`). `cycle_period == 0` : pas de wrap.
-            // `zz = Z[m] + δ` est AUSSI le `Z + δ` du test d'évasion : sans
-            // rebase m est inchangé ; avec, δ := zz et Z[0] = 0.
-            let zzr = add_e(zr0, dr);
-            let zzi = add_e(zi0, di);
+            // `zz = Z[m] + δ` (valeurs réelles, δ ramené à l'échelle 1 —
+            // exact, |δ| ≥ 2⁻⁹⁶⁰) est AUSSI le `Z + δ` du test d'évasion :
+            // sans rebase m est inchangé ; avec, δ := zz et Z[0] = 0.
+            let zzr = add_e(zr0, scale(dr, down));
+            let zzi = add_e(zi0, scale(di, down));
             // Normes en f64 sur les parties hautes (erreur relative < 2⁻⁵⁰,
-            // |lo| ≤ 2⁻⁵³|hi|) : décident seules hors d'une bande ±2⁻⁴⁵ — la
-            // comparaison dd exacte n'est faite que dans la bande, donc même
-            // décision que `DoubleDoubleExp`. Un sous-dépassement des carrés
-            // ne touche que des normes < 2⁻¹⁰²¹, déjà « plus petites » que
-            // tout ce à quoi elles sont comparées (|δ|² ≥ 2⁻⁷⁰⁰, 625).
-            let nz = zzr.hi * zzr.hi + zzi.hi * zzi.hi;
+            // |lo| ≤ 2⁻⁵³|hi|), ramenées à l'échelle de δ (2^-kd) : décident
+            // seules hors d'une bande ±2⁻⁴⁵ ; dans la bande, comparaison
+            // exacte en `DoubleDoubleExp` — même décision. Sous/dépassement
+            // d'un carré : |zz| ≪ |δ| (vrai) ou ≫ (faux), sans ambiguïté.
             let rebase = if c.m_usize() + 1 >= ref_len {
                 true
             } else {
-                let nd = dr.hi * dr.hi + di.hi * di.hi;
+                let kd = kmax(dr, di);
+                let f = pow2i(s - kd);
+                let g = pow2i(-kd);
+                let (a, b) = (zzr.hi * f, zzi.hi * f);
+                let (x, y) = (dr.hi * g, di.hi * g);
+                let nz = a * a + b * b;
+                let nd = x * x + y * y;
                 if nz < nd * (1.0 - BAND) {
                     true
                 } else if nz > nd * (1.0 + BAND) {
                     false
-                } else if ok(zzr, MIN_DELTA) && ok(zzi, MIN_DELTA) {
-                    less(norm(zzr, zzi), norm(dr, di))
                 } else {
-                    // Composante minuscule : comparaison en DoubleDoubleExp.
                     let zz = ComplexDDExp {
                         re: to_ddexp(zzr),
                         im: to_ddexp(zzi),
                     };
                     let d = ComplexDDExp {
-                        re: to_ddexp(dr),
-                        im: to_ddexp(di),
+                        re: to_ddexp_s(dr, s),
+                        im: to_ddexp_s(di, s),
                     };
                     zz.norm_sqr() < d.norm_sqr()
                 }
             };
             if rebase {
-                dr = zzr;
-                di = zzi;
+                dr = scale(zzr, up);
+                di = scale(zzi, up);
                 c.rebase();
                 rebase_count += 1;
             }
 
-            // Évasion `|Z+δ|² < bailout²` (même bande). Une composante
-            // minuscule de Z+δ ne peut pas changer l'issue (abandonnée à 108
-            // binades d'une composante ~bailout, ou les deux minuscules).
-            let escaped = if nz < bailout_f * (1.0 - BAND) {
+            // Évasion `|Z+δ|² < bailout²` (même bande, échelle 1). Une
+            // composante minuscule de Z+δ ne peut pas changer l'issue
+            // (abandonnée à 108 binades d'une composante ~bailout, ou les
+            // deux minuscules).
+            let nz1 = zzr.hi * zzr.hi + zzi.hi * zzi.hi;
+            let escaped = if nz1 < bailout_f * (1.0 - BAND) {
                 false
-            } else if nz > bailout_f * (1.0 + BAND) {
+            } else if nz1 > bailout_f * (1.0 + BAND) {
                 true
             } else {
                 !less(norm(zzr, zzi), bailout_sqr)
@@ -527,7 +605,7 @@ mod fast {
             let (zr, zi) = if rebase { (Dd::ZERO, Dd::ZERO) } else { (zr0, zi0) };
 
             // δ issu d'un rebase : composantes éventuellement minuscules.
-            if !ok(dr, MIN_DELTA) || !ok(di, MIN_DELTA) {
+            if !ok(dr, min_d) || !ok(di, min_d) {
                 bail!();
             }
 
@@ -541,8 +619,15 @@ mod fast {
                         >= crate::fractal::bytecode::bla_dual::BLA_SKIP_LEVELS
             });
             if let Some(table) = bla {
-                let n = norm(dr, di);
-                if let Some(node) = table.lookup_fexp(c.m_usize(), FloatExp::new(n.hi + n.lo, 0)) {
+                // |δ|² calculé sur δ·2^-kd (composante max ∈ [0.5, 1) : ni
+                // sous- ni dépassement ; une petite composante qui
+                // sous-déborde est abandonnée à 108 binades par la règle
+                // d'addition, comme en `DoubleDoubleExp`).
+                let kd = kmax(dr, di);
+                let g = pow2i(-kd);
+                let n = norm(scale(dr, g), scale(di, g));
+                let n_fexp = FloatExp::new(n.hi + n.lo, 2 * (kd - s));
+                if let Some(node) = table.lookup_fexp(c.m_usize(), n_fexp) {
                     let cand_c = c.after_jump(node.l);
                     if cand_c.n() <= iteration_max && cand_c.m_usize() < ref_len {
                         let (a, b) = (node.a, node.b);
@@ -575,13 +660,17 @@ mod fast {
             }
 
             // Pas direct δ' = 2·Z·δ + δ² + dc, même ordre d'opérations que
-            // `ComplexDDExp::{mul, sqr, add}`.
+            // `ComplexDDExp::{mul, sqr, add}`. Le carré est formé comme
+            // δ·δ_s (= δ²·2^s) : `Dd::mul(x, x·2^s)` donne les mêmes bits
+            // que `Dd::sqr(x)·2^s` (produits croisés égaux, somme doublée
+            // exacte) sans dépasser la plage quand δ_s est grand.
+            let (ur, ui) = (scale(dr, down), scale(di, down));
             let tzr = zr.mul_f64(2.0);
             let tzi = zi.mul_f64(2.0);
             let pr = sub_e(dr.mul(tzr), di.mul(tzi));
             let pi = add_e(dr.mul(tzi), di.mul(tzr));
-            let sr = sub_e(dr.sqr(), di.sqr());
-            let si = dr.mul(di).mul_f64(2.0);
+            let sr = sub_e(ur.mul(dr), ui.mul(di));
+            let si = ur.mul(di).mul_f64(2.0);
             dr = add_e(add_e(pr, sr), dcr);
             di = add_e(add_e(pi, si), dci);
             c.step();
@@ -592,17 +681,15 @@ mod fast {
             debug_assert!(dr.hi.is_finite() && di.hi.is_finite());
         }
 
-        // Sortie par les plafonds (cf. fin de `ddexp_loop`).
+        // Sortie par les plafonds (cf. fin de `ddexp_loop`) : une fois par
+        // pixel, en `DoubleDoubleExp` (δ éventuellement minuscule ici).
         let zm = z_ref_dd[c.m_usize().min(ref_len - 1)];
-        let z_final = match (plain(zm.re, MIN_Z), plain(zm.im, MIN_Z)) {
-            (Some(zr), Some(zi)) => Complex64::new(to_f64_e(add_e(zr, dr)), to_f64_e(add_e(zi, di))),
-            _ => zm
-                .add(ComplexDDExp {
-                    re: to_ddexp(dr),
-                    im: to_ddexp(di),
-                })
-                .to_complex64_approx(),
-        };
+        let z_final = zm
+            .add(ComplexDDExp {
+                re: to_ddexp_s(dr, s),
+                im: to_ddexp_s(di, s),
+            })
+            .to_complex64_approx();
         Some(UnifiedPixelResultExp {
             iteration: c.n(),
             z_final,
@@ -695,6 +782,20 @@ mod tests {
                 "-0.6747875758446753640113920531305976563347707068224034806979997947909941983454845111514208499540310299999999999999999880",
                 "1e30",
                 40000u32,
+            ),
+            // Même spirale à 1e100 : dc ~ 2⁻³³⁰, chemin rapide MIS À L'ÉCHELLE.
+            (
+                "-0.0494700290631040937516922267273536301187457124882248793181049402326421947726869034279915499747594190000000000000000000",
+                "-0.6747875758446753640113920531305976563347707068224034806979997947909941983454845111514208499540310299999999999999999880",
+                "1e100",
+                20000u32,
+            ),
+            // dragon (1e191, dc ~ 2⁻⁶⁴⁰) : échelle 2⁶⁴⁰, orbite tronquée courte.
+            (
+                "-0.749999987350877481864108888020013802837969258626230419972587823828734338471228477079750588709551510361714463695461745528645748607681279674273355384334270208362211787387351792878073779449767292692440",
+                "0.001000038688236832013124581230049849132759425863378894883003211011278068229551274712347955044740933397589760194545872789087012331273586364914484522575986336846199522726507205442204060303594956029930",
+                "3.7e191",
+                30000u32,
             ),
         ] {
             let (w, h) = (24u32, 16u32);
