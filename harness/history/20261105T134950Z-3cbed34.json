@@ -1,0 +1,180 @@
+{
+  "schema": 2,
+  "meta": {
+    "date_utc": "2026-11-05T13:49:50+00:00",
+    "stamp": "20261105T134950Z",
+    "git_sha": "3cbed34",
+    "git_dirty": true,
+    "machine": {
+      "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+      "nproc": 4,
+      "os": "Linux 6.18.44-fc-v236"
+    },
+    "tier": "quick",
+    "axes": [
+      "precision"
+    ],
+    "width": 256,
+    "height": 256,
+    "quality_width": 96,
+    "quality_height": 96,
+    "runs": 1,
+    "f3_bin": null,
+    "mem_limit_mb": 13673,
+    "quarantined": [],
+    "slow_safe": [
+      "e52465"
+    ],
+    "baseline_file": "harness/baseline.json"
+  },
+  "speed": {
+    "status": "skipped"
+  },
+  "parity": {
+    "status": "skipped"
+  },
+  "quality": {
+    "status": "skipped"
+  },
+  "fuzz": {
+    "status": "skipped"
+  },
+  "precision": {
+    "status": "ok",
+    "size": 96,
+    "judge_factor": 4,
+    "n_cases": 12,
+    "n_pass": 12,
+    "n_warn": 0,
+    "n_fail": 0,
+    "cases": {
+      "test5": {
+        "status": "ok",
+        "prec": 256,
+        "judge_prec": 1024,
+        "diff_px": 0,
+        "frac": 0.0,
+        "verdict": "PASS",
+        "sentinel": false
+      },
+      "spiral": {
+        "status": "n/a",
+        "path": "std_f64"
+      },
+      "flake": {
+        "status": "ok",
+        "prec": 624,
+        "judge_prec": 2496,
+        "diff_px": 0,
+        "frac": 0.0,
+        "verdict": "PASS",
+        "sentinel": false
+      },
+      "glitch_test_2": {
+        "status": "ok",
+        "prec": 475,
+        "judge_prec": 1900,
+        "diff_px": 0,
+        "frac": 0.0,
+        "verdict": "PASS",
+        "sentinel": false
+      },
+      "e50": {
+        "status": "ok",
+        "prec": 267,
+        "judge_prec": 1068,
+        "diff_px": 0,
+        "frac": 0.0,
+        "verdict": "PASS",
+        "sentinel": false
+      },
+      "e113": {
+        "status": "ok",
+        "prec": 478,
+        "judge_prec": 1912,
+        "diff_px": 0,
+        "frac": 0.0,
+        "verdict": "PASS",
+        "sentinel": false
+      },
+      "e401": {
+        "status": "ok",
+        "prec": 1433,
+        "judge_prec": 5732,
+        "diff_px": 0,
+        "frac": 0.0,
+        "verdict": "PASS",
+        "sentinel": false
+      },
+      "e1000": {
+        "status": "ok",
+        "prec": 3423,
+        "judge_prec": 13692,
+        "diff_px": 0,
+        "frac": 0.0,
+        "verdict": "PASS",
+        "sentinel": false
+      },
+      "floral_fantasy": {
+        "status": "ok",
+        "prec": 384,
+        "judge_prec": 1536,
+        "diff_px": 0,
+        "frac": 0.0,
+        "verdict": "PASS",
+        "sentinel": false
+      },
+      "dragon": {
+        "status": "ok",
+        "prec": 737,
+        "judge_prec": 2948,
+        "diff_px": 0,
+        "frac": 0.0,
+        "verdict": "PASS",
+        "sentinel": false
+      },
+      "golden_spider": {
+        "status": "ok",
+        "prec": 605,
+        "judge_prec": 2420,
+        "diff_px": 0,
+        "frac": 0.0,
+        "verdict": "PASS",
+        "sentinel": true
+      },
+      "e227": {
+        "status": "ok",
+        "prec": 857,
+        "judge_prec": 3428,
+        "diff_px": 1,
+        "frac": 0.000109,
+        "verdict": "PASS",
+        "sentinel": true
+      },
+      "evolution_trees": {
+        "status": "ok",
+        "prec": 858,
+        "judge_prec": 3432,
+        "diff_px": 0,
+        "frac": 0.0,
+        "verdict": "PASS",
+        "sentinel": true
+      }
+    }
+  },
+  "goldens": {
+    "status": "skipped"
+  },
+  "profile": {
+    "status": "skipped"
+  },
+  "bench": {
+    "status": "skipped"
+  },
+  "beyond_f3": {
+    "speed_wins": [],
+    "correctness_wins": []
+  },
+  "speed_self": {},
+  "gaps": []
+}

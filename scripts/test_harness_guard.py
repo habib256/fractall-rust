@@ -18,6 +18,7 @@ from harnesslib import guard  # noqa: E402
 from harnesslib import gaps as gaps_mod  # noqa: E402
 from harnesslib import axes_perf  # noqa: E402
 from harnesslib import config  # noqa: E402
+from harnesslib import axes_precision  # noqa: E402
 
 
 def _use_tmp(tmp: Path):
@@ -104,6 +105,7 @@ def run():
     run_profile_parsing()
     run_self_speed_gates()
     run_baseline_resolution()
+    run_precision_axis()
 
     print("\nTOUS LES TESTS PASSENT ✅")
 
@@ -273,6 +275,44 @@ def run_baseline_resolution():
                "baseline propre prioritaire sur le repli")
         _check(config.load_baseline(i7)["meta"]["git_sha"] == "legacy",
                "l'autre machine garde le repli")
+
+
+def run_precision_axis():
+    """Verrou (2026-11-05) de l'axe `precision` (juge orbite ×4) : lecteur
+    `.fmap` stdlib conforme au layout `io/fmap.rs`, seuils de verdict, et
+    gap de sévérité « correction » sur FAIL."""
+    import struct
+    import zlib
+    print("\n== axe precision ==")
+    iters = [0, 7, 4096, 2**32 - 1]
+    raw = struct.pack(f"<{len(iters)}I", *iters)
+    js = b'{"width":2}'
+    blob = bytearray(b"FMAP") + struct.pack("<I", 1) + struct.pack("<I", len(js)) + js
+    blob += struct.pack("<I", 2)
+    zs = zlib.compress(b"\x00" * 64)  # canal zs AVANT itérations : ordre libre
+    blob += bytes([1]) + struct.pack("<QQ", 64, len(zs)) + zs
+    comp = zlib.compress(raw)
+    blob += bytes([0]) + struct.pack("<QQ", len(raw), len(comp)) + comp
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "t.fmap"
+        p.write_bytes(bytes(blob))
+        _check(axes_precision.read_fmap_iterations(p) == iters,
+               "lecture du canal itérations d'un .fmap (canaux dans le désordre)")
+    _check(axes_precision.verdict_for(0.0) == "PASS", "0 px → PASS")
+    _check(axes_precision.verdict_for(1 / 9216) == "PASS",
+           "1 px à 96² (résidu e227) → PASS")
+    _check(axes_precision.verdict_for(0.04) == "FAIL",
+           "4 % (précision F3 nue, sentinelles) → FAIL")
+    card = {"meta": {"tier": "quick", "machine": {}},
+            "precision": {"judge_factor": 4, "cases": {
+                "golden_spider": {"status": "ok", "verdict": "FAIL",
+                                  "diff_px": 466, "frac": 0.05, "prec": 541},
+                "e113": {"status": "ok", "verdict": "PASS", "diff_px": 0,
+                         "frac": 0.0, "prec": 478}}}}
+    gp = [g for g in gaps_mod.compute_gaps(card, None) if g["axis"] == "precision"]
+    _check(len(gp) == 1 and gp[0]["case"] == "golden_spider"
+           and gp[0]["severity"] == 1,
+           "FAIL précision → gap correction (sévérité 1), PASS → aucun gap")
 
 
 if __name__ == "__main__":

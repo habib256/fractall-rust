@@ -27,7 +27,7 @@ F3 auto-détecté (F3_BIN sinon fraktaler-3-3.1/) ; sans lui speed/parity sont
 """
 
 
-ALL_AXES = "speed,parity,quality,fuzz,goldens,profile,bench"
+ALL_AXES = "speed,parity,quality,fuzz,precision,goldens,profile,bench"
 DEFAULT_AXES = ALL_AXES
 
 

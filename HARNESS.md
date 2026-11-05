@@ -33,7 +33,7 @@
 Deux familles. **Contre F3** (speed-ratio, parity) : exigent le binaire F3 et
 les deps Python EXR — sans eux ces axes sont marqués `f3_unavailable` /
 `f3_deps_missing` et **tout le reste tourne**. **Intrinsèques** (speed
-auto-relative, quality, fuzz, goldens, profile, bench) : ne dépendent que du
+auto-relative, quality, fuzz, precision, goldens, profile, bench) : ne dépendent que du
 repo et de cargo — ce sont eux qui font tourner la boucle sur une machine
 neuve ou un conteneur CI, et eux qui détectent une régression de vitesse sans
 F3.
@@ -91,6 +91,21 @@ full=8 sondes. La **seed est committée** (`FUZZ_SEED_DEFAULT`, affichée dans
 le scorecard) → chaque score rejoue les mêmes scènes ; la faire **tourner au
 rebaseline** (`--fuzz-seed`) pour élargir la couverture au fil du temps.
 - Gap : FAIL fuzz = sévérité 1 (correction) ; WARN = 4 ; ERROR (rendu KO) = 2.
+
+### 4 bis. Précision d'orbite — juge ×4 (`precision`, G14.3 2026-11-05)
+**Angle mort que quality/fuzz ne peuvent PAS voir** : leur juge GMP est
+calculé avec la MÊME formule de précision que le moteur, donc une précision
+d'orbite insuffisante y passe inaperçue. Par cas (tier + 3 **sentinelles**
+golden_spider/e227/evolution_trees) : rendu de production → `.fmap`, rendu
+juge avec `--precision-bits 4·P` (P lu dans `[FRACTALL] prec=`) et
+`FRACTALL_ORBIT_FAST_SQR=0` (arithmétique d'orbite indépendante, `mpc_sqr`),
+puis comparaison des **itérations brutes** (lecteur `.fmap` stdlib, sans
+numpy). Les paths sans orbite GMP (`std_f64`) sont `n/a`. Verdicts : PASS
+≤ 0,05 % de pixels ≠ juge, FAIL ≥ 0,5 %, WARN entre. 96² (quick), 128²
+(standard/full). Puissance vérifiée : le binaire d'AVANT la marge +64 b
+(formule F3 nue) FAIL les 3 sentinelles (4-5 % de pixels faux), le binaire
+corrigé les PASS (0-1 px). Juge convergé : ×2 == ×4 au pixel près.
+- Gap : FAIL = sévérité 1 (correction) ; WARN = 4.
 
 ### 5. Profil — où va le temps (`profile`, 2026-11)
 Rend chaque cas du tier **une fois** en capturant les diagnostics du moteur
@@ -163,7 +178,7 @@ sur les cas profonds. Adjugés au 2026-07-14 : test5 (`both_match_gmp`), rug
 ```bash
 python3 scripts/harness.py doctor            # prérequis, axes mesurables ICI, baseline
 python3 scripts/harness.py score [--tier quick|standard|full] \
-        [--axes speed,parity,quality,fuzz,goldens,profile,bench] [--cases a,b]
+        [--axes speed,parity,quality,fuzz,precision,goldens,profile,bench] [--cases a,b]
 python3 scripts/harness.py ab --cases e50 --env FRACTALL_RELIABILITY=off,escalate --runs 3
                                              # A/B isolé (méthode G14) : médiane, bruit, phases, sortie ≡
 python3 scripts/harness.py render [history]  # re-génère SCORECARD.md sans re-mesurer
@@ -181,7 +196,8 @@ python3 scripts/test_harness_guard.py        # verrous du harness lui-même (CI)
 
 - **Structure** : `harness.py` est une enveloppe ; la logique vit dans
   `scripts/harnesslib/` (`config` chemins/registres/tiers · `guard` garde-fou ·
-  `axes_f3` speed+parity · `axes_truth` quality+fuzz+goldens · `axes_perf`
+  `axes_f3` speed+parity · `axes_truth` quality+fuzz+goldens ·
+  `axes_precision` juge orbite ×4 · `axes_perf`
   profile+bench · `gaps` · `scorecard` · `commands*` · `wisdom_opt` · `cli`),
   chaque fichier < 800 lignes (pilier 5 — le harness respecte l'invariant
   qu'il impose). `compare_f3` (numpy/OpenEXR) est importé **paresseusement** :

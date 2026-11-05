@@ -81,6 +81,16 @@ def compute_gaps(card: dict, base: dict | None) -> list[dict]:
     for name in f.get("warn_cases", []):
         gaps.append(_gap("fuzz", name, "verdict", "WARN", None, 4,
                          f"fuzz WARN — divergence éparse (seed {f.get('seed')})"))
+    # --- precision (juge orbite ×4 : précision d'orbite insuffisante) ---
+    pr = card.get("precision", {})
+    for name, c in (pr.get("cases") or {}).items():
+        if c.get("status") != "ok" or c.get("verdict") == "PASS":
+            continue
+        sev = 1 if c["verdict"] == "FAIL" else 4
+        gaps.append(_gap("precision", name, "diff_px", c.get("diff_px"), None,
+                         sev,
+                         f"pixels ≠ juge précision ×{pr.get('judge_factor')} "
+                         f"({100 * c.get('frac', 0):.2f} %, prec {c.get('prec')} b)"))
     # --- parity ---
     adjudications = load_adjudications()
     p = card.get("parity", {})

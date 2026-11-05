@@ -180,17 +180,17 @@ def tier_config(tier: str) -> dict:
         return {"cases": list(QUICK_CASES), "width": 256, "height": 256,
                 "runs": 1, "timeout": 120.0,
                 "quality_width": 96, "quality_height": 96,
-                "fuzz_probes": 3}
+                "fuzz_probes": 3, "precision_size": 96}
     if tier == "standard":
         return {"cases": QUICK_CASES + STANDARD_EXTRA, "width": 256,
                 "height": 256, "runs": 3, "timeout": 300.0,
                 "quality_width": 256, "quality_height": 256,
-                "fuzz_probes": 6}
+                "fuzz_probes": 6, "precision_size": 128}
     if tier == "full":
         return {"cases": all_toml_stems(), "width": 256, "height": 256,
                 "runs": 1, "timeout": 600.0,
                 "quality_width": 256, "quality_height": 256,
-                "fuzz_probes": 8}
+                "fuzz_probes": 8, "precision_size": 128}
     raise SystemExit(f"tier inconnu: {tier}")
 
 def git_sha() -> str:

@@ -92,7 +92,9 @@ Axes **contre Fraktaler-3** (exigent F3 + numpy/OpenEXR) : **vitesse-ratio**
 EXR N0/NF). Axes **intrinsèques** (tournent partout, dont CI/conteneur) :
 **vitesse auto-relative** (temps fractall par cas vs baseline même machine),
 **qualité** (`fractall-quality` vs ground truth GMP + goldens), **fuzz**
-(sondes pert-vs-GMP), **profil** (où va le temps : path exécuté + ventilation
+(sondes pert-vs-GMP), **precision** (juge orbite à précision ×4 — seul axe
+qui voit une précision d'orbite insuffisante : le juge GMP de quality partage
+la formule du moteur), **profil** (où va le temps : path exécuté + ventilation
 orbite/pixels/post/sauvegarde + ns/iter + % fiabilité), **bench** (iters/s par
 technique via `--wisdom-bench` isolé).
 
