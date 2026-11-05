@@ -416,7 +416,7 @@ pub fn iterate_pixel_unified_multi_phase(
             delta = two_zm * delta + delta * delta + dc;
         } else {
             let mut state = super::delta_form::DeltaState::new(z_m, delta);
-            state.step(&formula.phases[ph_idx], c_ref, dc);
+            state.step_delta_only(&formula.phases[ph_idx], c_ref, dc);
             delta = state.delta;
         }
         c.step();
@@ -660,7 +660,8 @@ fn iterate_pixel_unified_single_phase(
         if track_ddelta {
             state.step_with_julia(phase, c_ref, dc, options.is_julia);
         } else {
-            state.step(phase, c_ref, dc);
+            // Sans distance ni intérieur : pas de dérivée à propager.
+            state.step_delta_only(phase, c_ref, dc);
         }
         delta = state.delta;
         if track_ddelta {
