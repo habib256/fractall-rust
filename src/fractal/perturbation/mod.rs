@@ -397,7 +397,7 @@ pub fn recompute_pixels_cpu(
         && params.engine.use_bytecode_engine
         && !params.engine.use_dd_tier
         && !params.engine.find_nucleus
-        && params.fractal_type == FractalType::Mandelbrot
+        && crate::fractal::wisdom::dd_tier_applicable(params)
         && cache.hybrid_refs.is_none()
     {
         let cancel = AtomicBool::new(false);
@@ -869,7 +869,7 @@ pub fn render_perturbation_with_cache(
     // pixels de bord (grand |dc|). En dd : span depuis la string HP (106 b) et
     // fraction pixel via division dd. Vide sinon (path ComplexExp inchangé).
     let build_dc_dd = params.engine.use_dd_tier
-        && matches!(params.fractal_type, FractalType::Mandelbrot)
+        && crate::fractal::wisdom::dd_tier_applicable(params)
         && rot.is_none();
     #[allow(clippy::type_complexity)]
     let (dc_re_dd, dc_im_dd, jit_re_dd, jit_im_dd): (
@@ -1284,7 +1284,7 @@ pub fn render_perturbation_with_cache(
             && unreliable_ratio > crate::fractal::bytecode::reliability::UNRELIABLE_FRAME_THRESHOLD
             && bytecode_path
             && !params.engine.use_dd_tier
-            && matches!(params.fractal_type, FractalType::Mandelbrot)
+            && crate::fractal::wisdom::dd_tier_applicable(params)
         {
             let mut dd_params = params.clone();
             dd_params.engine.use_dd_tier = true;
@@ -1317,7 +1317,7 @@ pub fn render_perturbation_with_cache(
             // blittée en entier par l'appelant (pas de double-stream du sink).
             if bytecode_path
                 && !params.engine.use_dd_tier
-                && matches!(params.fractal_type, FractalType::Mandelbrot)
+                && crate::fractal::wisdom::dd_tier_applicable(params)
             {
                 let mut dd_params = params.clone();
                 dd_params.engine.use_dd_tier = true;
@@ -1398,7 +1398,7 @@ pub fn render_perturbation_with_cache(
         let frame_dd = bytecode_path
             && params.engine.use_dd_tier
             && !params.engine.find_nucleus
-            && matches!(params.fractal_type, FractalType::Mandelbrot)
+            && crate::fractal::wisdom::dd_tier_applicable(params)
             && cache.hybrid_refs.is_none()
             && cache.orbit.has_dd();
         if escalate_unreliable && !unreliable_indices.is_empty() && frame_dd {
@@ -1411,7 +1411,7 @@ pub fn render_perturbation_with_cache(
             let dd_ok = bytecode_path
                 && !params.engine.use_dd_tier
                 && !params.engine.find_nucleus
-                && matches!(params.fractal_type, FractalType::Mandelbrot)
+                && crate::fractal::wisdom::dd_tier_applicable(params)
                 && cache.hybrid_refs.is_none();
             let fixed = if dd_ok {
                 correct_pixels_dd(

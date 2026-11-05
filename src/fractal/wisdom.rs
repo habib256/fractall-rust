@@ -180,7 +180,20 @@ pub struct WisdomPlan {
 /// retombe sur le split exp/f64 par `pixel_size`.
 #[inline]
 pub fn dd_requested(params: &FractalParams) -> bool {
-    params.engine.use_dd_tier && matches!(params.fractal_type, FractalType::Mandelbrot)
+    params.engine.use_dd_tier && dd_tier_applicable(params)
+}
+
+/// Le tier dd sait-il rendre cette formule ? Sa boucle et son orbite sont
+/// `z² + c` codés en dur : Mandelbrot SEULEMENT, et pas une formule hybride
+/// ou à opcodes — celles-ci portent `fractal_type == Mandelbrot` (convention
+/// d'appel) sans être `z² + c`. Prédicat unique de TOUTE entrée dans le tier
+/// dd (`--dd-tier`, escalade `[DD-ESCALATION]`, correction par pixel).
+/// Trouvé par l'axe `truth` du harness (2026-11-06) : `--dd-tier` sur
+/// `opcodes = "sqr rot{30} add"` rendait un Mandelbrot nu, 93 % de pixels
+/// faux, sous le label `bytecode_dd`.
+#[inline]
+pub fn dd_tier_applicable(params: &FractalParams) -> bool {
+    matches!(params.fractal_type, FractalType::Mandelbrot) && !params.is_hybrid_formula()
 }
 
 /// Faut-il le tier ComplexExp plutôt que f64 pour ce `pixel_size` ?
@@ -682,6 +695,17 @@ mod tests {
         p.engine.use_dd_tier = true;
         assert!(!dd_requested(&p));
         assert_eq!(number_tier(&p), Some(NumberTier::F64));
+        // Ni pour une formule hybride ou à opcodes : elle porte
+        // `fractal_type == Mandelbrot` sans être z²+c (bug `--dd-tier` +
+        // `--opcodes` : 93 % de pixels faux sous le label `bytecode_dd`).
+        let mut h = default_params_for_type(FractalType::Mandelbrot, 64, 64);
+        h.engine.use_dd_tier = true;
+        assert!(dd_requested(&h), "Mandelbrot nu : dd demandé");
+        h.formula.hybrid_opcodes = Some("sqr rot{30} add".to_owned());
+        assert!(!dd_requested(&h) && !dd_tier_applicable(&h));
+        h.formula.hybrid_opcodes = None;
+        h.formula.hybrid_phases = Some(vec![FractalType::Mandelbrot, FractalType::BurningShip]);
+        assert!(!dd_requested(&h) && !dd_tier_applicable(&h));
     }
 
     #[test]

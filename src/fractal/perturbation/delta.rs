@@ -218,7 +218,7 @@ fn build_bla_entry(
     // peu profonds (seahorse/misiurewicz/minibrot) inchangés (leurs δ
     // relatifs restent au-dessus des rayons, avant comme après).
     let dd_table = if params.engine.use_dd_tier
-        && matches!(params.fractal_type, FractalType::Mandelbrot)
+        && crate::fractal::wisdom::dd_tier_applicable(params)
         && ref_orbit.has_dd()
     {
         use crate::fractal::bytecode::bla_dd::DD_BLA_EPSILON; // 2^-80
