@@ -9,6 +9,7 @@ from .commands import (
     cmd_adjudicate, cmd_baseline, cmd_gaps, cmd_journal, cmd_score,
 )
 from .ab import cmd_ab
+from .hotspots import cmd_hotspots
 from .commands_insight import cmd_doctor, cmd_trend
 from .commands_guard import cmd_preflight, cmd_quarantine, cmd_slow_safe
 from .config import FUZZ_SEED_DEFAULT
@@ -157,6 +158,22 @@ def main() -> None:
     ab.add_argument("--timeout", type=float, default=None)
     ab.add_argument("--no-rebuild", action="store_true")
     ab.set_defaults(func=cmd_ab)
+
+    hs = sub.add_parser("hotspots",
+                        help="Profil ÉCHANTILLONNÉ d'un cas : quelles fonctions "
+                             "consomment le temps (binaire symbolisé + sample/"
+                             "perf). Complète le profil par phase.")
+    hs.add_argument("--case", required=True, help="stem toml/")
+    hs.add_argument("--size", type=int, default=1024,
+                    help="côté de l'image — assez grand pour durer quelques "
+                         "secondes (défaut 1024)")
+    hs.add_argument("--seconds", type=float, default=3.0,
+                    help="durée d'échantillonnage (défaut 3)")
+    hs.add_argument("--delay", type=float, default=0.0,
+                    help="attendre N s avant d'échantillonner (sauter l'orbite)")
+    hs.add_argument("--top", type=int, default=15)
+    hs.add_argument("--no-rebuild", action="store_true")
+    hs.set_defaults(func=cmd_hotspots)
 
     dr = sub.add_parser("doctor",
                         help="Prérequis machine, axes mesurables ici, état de "

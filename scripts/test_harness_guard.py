@@ -19,6 +19,7 @@ from harnesslib import gaps as gaps_mod  # noqa: E402
 from harnesslib import axes_perf  # noqa: E402
 from harnesslib import config  # noqa: E402
 from harnesslib import axes_precision  # noqa: E402
+from harnesslib import hotspots  # noqa: E402
 
 
 def _use_tmp(tmp: Path):
@@ -106,6 +107,7 @@ def run():
     run_self_speed_gates()
     run_baseline_resolution()
     run_precision_axis()
+    run_hotspots_parsing()
 
     print("\nTOUS LES TESTS PASSENT ✅")
 
@@ -351,6 +353,48 @@ def run_precision_axis():
            and gp[0]["severity"] == 1,
            "FAIL précision → gap correction (sévérité 1), PASS → aucun gap")
 
+
+SAMPLE_REPORT = """\
+Call graph:
+    2984 Thread_1   DispatchQueue_1: com.apple.main-thread  (serial)
+      2984 start  (in dyld) + 6992  [0x198e3eb50]
+
+Total number in stack (recursive counted multiple, when >=5):
+
+Sort by top of stack, same collapsed (when >= 5):
+        _RNvNtNtNtCs2eIBBeHrl05_12fractall_cli7fractal8bytecode14pixel_loop_exp38iterate_pixel_unified_exp_single_phase  (in fractall-cli)        3020
+        __psynch_cvwait  (in libsystem_kernel.dylib)        2989
+        _RNvNtNtCsbT3fELgpM5P_3rug5float3big5parse  (in fractall-cli)        2239
+        __gmpn_submul_1  (in fractall-cli)        1657
+        ???  (in fractall-cli)  load address 0x102094000 + 0x3597c4  [0x1023ed7c4]        209
+        swtch_pri  (in libsystem_kernel.dylib)        100
+
+Binary Images:
+       0x100960000 -        0x100da88af +fractall-cli (0) <0614B602> /Users/x/fractall-cli
+"""
+
+
+def run_hotspots_parsing():
+    """Verrou de `harness.py hotspots` : lecture d'un rapport `sample` réel
+    (format macOS), démanglage Rust v0, exclusion de l'attente des workers."""
+    print("\n== hotspots ==")
+    rows = hotspots.parse_sample_top(SAMPLE_REPORT)
+    _check(len(rows) == 6, "hotspots : 6 sommets de pile lus")
+    _check(rows[0][0] == "fractal::bytecode::pixel_loop_exp::"
+           "iterate_pixel_unified_exp_single_phase" and rows[0][2] == 3020,
+           "hotspots : symbole Rust v0 démanglé en chemin de module")
+    _check(rows[2][0] == "rug::float::big::parse",
+           "hotspots : symbole d'une autre crate démanglé")
+    _check(rows[4][0].startswith("???") and rows[4][2] == 209,
+           "hotspots : adresse non symbolisée conservée avec son compte")
+    summ = hotspots.summarize(rows)
+    _check(summ["idle"] == 2989 + 100 and summ["busy"] == 3020 + 2239 + 1657 + 209,
+           "hotspots : attente des workers exclue du temps occupé")
+    top = summ["rows"][0]
+    _check(top[1] == 3020 and abs(top[2] - 100.0 * 3020 / 7125) < 1e-9,
+           "hotspots : part calculée sur le temps occupé")
+    _check(hotspots.demangle("__gmpn_submul_1") == "__gmpn_submul_1",
+           "hotspots : symbole C rendu tel quel")
 
 if __name__ == "__main__":
     try:
