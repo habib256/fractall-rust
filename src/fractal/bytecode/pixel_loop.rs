@@ -482,6 +482,11 @@ pub fn iterate_pixel_unified_multi_phase(
     }
 }
 
+fn julia_fast_enabled() -> bool {
+    static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *F.get_or_init(|| std::env::var("FRACTALL_JULIA_FAST").as_deref() != Ok("0"))
+}
+
 fn iterate_pixel_unified_single_phase(
     ref_orbit: &ReferenceOrbit,
     bla: &BlaTableUnified,
@@ -514,6 +519,17 @@ fn iterate_pixel_unified_single_phase(
     {
         let _ = c_ref;
         return iterate_pixel_unified_mandelbrot(ref_orbit, bla, dc, limits);
+    }
+    // Julia : même phase [Sqr, Add], δ₀ ≠ 0 et dc = 0 (le caller passe
+    // `dc_for_add = 0`). `FRACTALL_JULIA_FAST=0` garde le pas générique (A/B).
+    if is_mandelbrot_phase
+        && no_dual_features
+        && options.is_julia
+        && dc.re == 0.0
+        && dc.im == 0.0
+        && julia_fast_enabled()
+    {
+        return iterate_pixel_unified_julia(ref_orbit, bla, delta_initial, limits);
     }
 
     let bailout_sqr = bailout * bailout;
@@ -907,6 +923,45 @@ pub fn iterate_pixel_unified_mandelbrot(
         ref_len,
         bla,
         dc,
+        Complex64::new(0.0, 0.0),
+        iteration_max,
+        bailout,
+        max_perturb_iterations,
+        max_bla_steps,
+        &mut NoObserve,
+    )
+}
+
+/// Fast-path **Julia** : la même boucle inline que Mandelbrot, avec
+/// `δ₀ = pixel − centre` et `dc = 0` (c = seed constant) — soit exactement le
+/// pas `δ' = 2·Z·δ + δ²` du chemin générique `DeltaState` (qui ajoute lui aussi
+/// `dc = 0` en fin de phase : mêmes opérations, même ordre → bit-identique,
+/// verrou `julia_fast_path_matches_generic_loop`). Sans traqueur de
+/// fiabilité : la correction dd n'existe que pour Mandelbrot.
+pub fn iterate_pixel_unified_julia(
+    ref_orbit: &ReferenceOrbit,
+    bla: &BlaTableUnified,
+    delta_initial: Complex64,
+    limits: PixelLoopLimits,
+) -> UnifiedPixelResult {
+    let PixelLoopLimits {
+        iteration_max,
+        bailout,
+        max_perturb_iterations,
+        max_bla_steps,
+    } = limits;
+    let ref_len = ref_orbit.z_ref_f64.len();
+    let mut src = SliceSource {
+        z: &ref_orbit.z_ref_f64,
+        cursor: 0,
+    };
+    iterate_pixel_unified_mandelbrot_impl(
+        ref_orbit,
+        &mut src,
+        ref_len,
+        bla,
+        Complex64::new(0.0, 0.0),
+        delta_initial,
         iteration_max,
         bailout,
         max_perturb_iterations,
@@ -959,6 +1014,7 @@ pub fn iterate_pixel_unified_mandelbrot_tracked(
         ref_len,
         bla,
         dc,
+        Complex64::new(0.0, 0.0),
         iteration_max,
         bailout,
         max_perturb_iterations,
@@ -1000,6 +1056,7 @@ pub fn iterate_pixel_unified_mandelbrot_compressed(
         ref_len,
         bla,
         dc,
+        Complex64::new(0.0, 0.0),
         iteration_max,
         bailout,
         max_perturb_iterations,
@@ -1020,6 +1077,7 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source, O: StepObserver>(
     ref_len: usize,
     bla: &BlaTableUnified,
     dc: Complex64,
+    delta_initial: Complex64,
     iteration_max: u32,
     bailout: f64,
     max_perturb_iterations: u32,
@@ -1048,7 +1106,7 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source, O: StepObserver>(
         };
     }
 
-    let mut delta = Complex64::new(0.0, 0.0);
+    let mut delta = delta_initial;
     let mut c = PixelCounter::new();
     let mut rebase_count = 0u32;
     let mut bla_steps = 0u32;
@@ -2301,6 +2359,109 @@ mod tests {
             mismatches, 0,
             "Unified pixel loop doit classifier comme l'itération directe"
         );
+    }
+
+    /// Verrou du fast-path Julia : la boucle inline (δ₀ ≠ 0, dc = 0) rend,
+    /// bit pour bit, ce que rend la boucle générique `DeltaState`. Celle-ci est
+    /// atteinte ici en demandant la distance (`enable_distance` désactive le
+    /// dispatch rapide ; son pas propage la dérivée mais calcule le même δ,
+    /// cf. `step_delta_only_is_bit_identical_to_step`). Deux tables BLA :
+    /// ε large (sauts exercés) et ε de production.
+    #[test]
+    fn julia_fast_path_matches_generic_loop() {
+        use crate::fractal::perturbation::{effective_pixel_size, orbit::compute_reference_orbit};
+        let (width, height) = (48u32, 48u32);
+        // Vue centrée sur le point fixe RÉPULSIF z* = (1 + √(1−4c))/2 : il est
+        // sur l'ensemble de Julia, donc la vue a de la structure à tout zoom,
+        // et l'orbite de référence finit par s'en échapper (rebases exercés).
+        let seed = Complex64::new(-0.8, 0.156);
+        let fixed = (Complex64::new(1.0, 0.0) + (Complex64::new(1.0, 0.0) - seed * 4.0).sqrt()) * 0.5;
+        // Troisième vue : centre 0 (disque de Siegel), longue et lisse — c'est
+        // elle qui exerce les sauts BLA.
+        let origin = Complex64::new(0.0, 0.0);
+        let mut total_jumps = 0u64;
+        let mut max_distinct = 0usize;
+        for (center, zoom, iter_max) in
+            [(fixed, 1e10f64, 3000u32), (fixed, 1e6, 800), (origin, 1e10, 3000)]
+        {
+            let mut params = default_params_for_type(FractalType::Julia, width, height);
+            params.center_x = center.re;
+            params.center_y = center.im;
+            params.seed = seed;
+            let span = 4.0 / zoom;
+            params.span_x = span;
+            params.span_y = span;
+            params.iteration_max = iter_max;
+            params.bailout = 25.0;
+            params.engine.algorithm_mode = AlgorithmMode::Perturbation;
+            let (orbit, _, _) =
+                compute_reference_orbit(&params, None, true).expect("orbite Julia");
+            let formula = compile_formula(FractalType::Julia, 2.0).unwrap();
+            let c_norm = effective_pixel_size(&params)
+                * ((width as f64).powi(2) + (height as f64).powi(2)).sqrt();
+            let limits = PixelLoopLimits {
+                iteration_max: iter_max,
+                bailout: 25.0,
+                max_perturb_iterations: iter_max,
+                max_bla_steps: iter_max,
+            };
+            let mut jumps = 0u64;
+            let mut distinct = std::collections::BTreeSet::new();
+            for eps in [6e-8f64, 1.0 / (1u64 << 53) as f64] {
+                let tables =
+                    build_bla_table_for_formula(&formula, &orbit.z_ref_f64, c_norm, eps)
+                        .expect("table BLA Julia");
+                let bla = &tables[0];
+                for j in 0..height {
+                    for i in 0..width {
+                        let d0 = Complex64::new(
+                            ((i as f64 + 0.5) / width as f64 - 0.5) * span,
+                            ((j as f64 + 0.5) / height as f64 - 0.5) * span,
+                        );
+                        let fast = iterate_pixel_unified_julia(&orbit, bla, d0, limits);
+                        let generic = iterate_pixel_unified_single_phase(
+                            &orbit,
+                            bla,
+                            &formula.phases[0],
+                            params.seed,
+                            Complex64::new(0.0, 0.0),
+                            d0,
+                            limits,
+                            UnifiedOptions {
+                                is_julia: true,
+                                enable_distance: true,
+                                ..Default::default()
+                            },
+                        );
+                        assert!(
+                            fast.iteration == generic.iteration
+                                && fast.z_final.re.to_bits() == generic.z_final.re.to_bits()
+                                && fast.z_final.im.to_bits() == generic.z_final.im.to_bits()
+                                && fast.rebase_count == generic.rebase_count
+                                && fast.bla_steps == generic.bla_steps
+                                && fast.ref_exhausted == generic.ref_exhausted,
+                            "zoom {zoom:e} ε {eps:e} pixel ({i},{j}) : fast ({}, {:?}, rb {}, bla {}) \
+                             ≠ générique ({}, {:?}, rb {}, bla {})",
+                            fast.iteration,
+                            fast.z_final,
+                            fast.rebase_count,
+                            fast.bla_steps,
+                            generic.iteration,
+                            generic.z_final,
+                            generic.rebase_count,
+                            generic.bla_steps
+                        );
+                        jumps += fast.bla_steps as u64;
+                        distinct.insert(fast.iteration);
+                    }
+                }
+            }
+            total_jumps += jumps;
+            max_distinct = max_distinct.max(distinct.len());
+        }
+        // Anti-vacuité : au moins une vue structurée, et la BLA exercée.
+        assert!(max_distinct > 8, "aucune vue structurée ({max_distinct} comptes distincts)");
+        assert!(total_jumps > 0, "aucun saut BLA exercé");
     }
 
     /// Verrou anti-régression du guard BLA over-skip (Julia siegel disk).
