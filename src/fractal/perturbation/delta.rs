@@ -128,7 +128,7 @@ impl BlaUnifiedCacheEntry {
 /// hybride, jalon 5f), la grille de δc est étirée d'un facteur σ₁ ≥ 1 — sans
 /// lui, max |δc| est sous-estimé → rayons de merge sur-permissifs → over-skip
 /// BLA. σ₁ = 1 (rotation pure / pas de transform) → no-op bit-identique.
-fn bla_c_norm(params: &FractalParams) -> f64 {
+pub(crate) fn bla_c_norm(params: &FractalParams) -> f64 {
     bla_c_norm_for(
         params,
         crate::fractal::perturbation::effective_pixel_size(params),
@@ -221,7 +221,7 @@ fn build_bla_entry(
         && matches!(params.fractal_type, FractalType::Mandelbrot)
         && ref_orbit.has_dd()
     {
-        const DD_BLA_EPSILON: f64 = 8.271_806_125_530_277e-25; // 2^-80
+        use crate::fractal::bytecode::bla_dd::DD_BLA_EPSILON; // 2^-80
         Some(
             crate::fractal::bytecode::bla_dd::BlaTableDd::build_mandelbrot(
                 &ref_orbit.z_ref_dd,

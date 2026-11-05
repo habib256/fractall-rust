@@ -193,11 +193,11 @@ fn correct_pixels_dd(
     // RE-CALCULÉE (dragon : 2,5 s). Le repli couvre les orbites sans
     // capture (compression, cache GUI bâti avant l'activation).
     let rebuilt;
-    let (orbit, legacy_bla) = match base.orbit.with_dd_from_lo() {
-        Some(o) => (o, &base.bla_table),
+    let orbit = match base.orbit.with_dd_from_lo() {
+        Some(o) => o,
         None => {
             rebuilt = compute_reference_orbit_cached(&dd_params, Some(cancel), None, None, false)?;
-            (rebuilt.orbit.clone(), &rebuilt.bla_table)
+            rebuilt.orbit.clone()
         }
     };
     if !orbit.has_dd() {
@@ -205,7 +205,17 @@ fn correct_pixels_dd(
     }
     let t_orbit = t0.elapsed();
     let t1 = Instant::now();
-    delta::prewarm_bla_entry(&dd_params, &orbit);
+    // Table BLA dd SEULE, bâtie ici : passer par l'entrée du cache BLA
+    // (`prewarm_bla_entry` avec `use_dd_tier`) reconstruisait AUSSI les tables
+    // f64 de l'orbite entière, que la boucle dd ne lit jamais (dragon : ~½ du
+    // temps « bla » de la correction). Mêmes entrées (`z_ref_dd`, `c_norm`,
+    // ε = 2⁻⁸⁰) que la table du tier dd plein cadre ⇒ même table.
+    let dd_table = crate::fractal::bytecode::bla_dd::BlaTableDd::build_mandelbrot(
+        &orbit.z_ref_dd,
+        delta::bla_c_norm(&dd_params),
+        crate::fractal::bytecode::bla_dd::DD_BLA_EPSILON,
+    );
+    let limits = crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(&dd_params);
     let t_bla = t1.elapsed();
     let t2 = Instant::now();
     let width = params.width.max(1) as usize;
@@ -245,23 +255,18 @@ fn correct_pixels_dd(
                     None => (re, im),
                 };
                 let dc_dd = ComplexDDExp { re, im };
-                // dc 53 b (repli si le dispatch ne prend pas la branche dd).
-                let dc = ComplexExp {
-                    re: FloatExp::new(dc_dd.re.mantissa.hi, dc_dd.re.exponent),
-                    im: FloatExp::new(dc_dd.im.mantissa.hi, dc_dd.im.exponent),
-                };
-                let r = iterate_pixel_with_dd(delta::PerturbPixelRequest {
-                    params: &dd_params,
-                    ref_orbit: &orbit,
-                    bla_table: legacy_bla,
-                    series_table: None,
-                    delta0: ComplexExp::zero(),
-                    dc,
-                    dc_dd: Some(dc_dd),
-                    current_phase: None,
-                    hybrid_refs: None,
-                });
-                (idx, r.iteration, r.z_final, r.glitched)
+                // Boucle dd appelée DIRECTEMENT (c'est la branche que prend
+                // `iterate_pixel_with_dd` pour un Mandelbrot `use_dd_tier` à
+                // orbite dd : mêmes arguments, `glitched` = `ref_exhausted`,
+                // toujours faux en dd).
+                let r = crate::fractal::bytecode::pixel_loop_dd::iterate_pixel_unified_ddexp_mandelbrot(
+                    &orbit,
+                    Some(&dd_table),
+                    dc_dd,
+                    ComplexDDExp::ZERO,
+                    limits,
+                );
+                (idx, r.iteration, r.z_final, r.ref_exhausted)
             })
             .collect::<Vec<_>>(),
     )

@@ -411,10 +411,16 @@ impl ReferenceOrbit {
         !self.z_ref_dd.is_empty()
     }
 
-    /// Copie de l'orbite munie de sa référence double-double reconstruite
-    /// depuis `z_ref_f64 + z_ref_lo` (G9.6, cf. `z_ref_lo`). `None` si la
-    /// partie basse n'a pas été capturée. Valeurs identiques (au dernier ulp
-    /// dd près) à une orbite recalculée avec `use_dd_tier`.
+    /// Orbite **dd seule** reconstruite depuis `z_ref + z_ref_lo` (G9.6, cf.
+    /// `z_ref_lo`). `None` si la partie basse n'a pas été capturée. Valeurs
+    /// identiques (au dernier ulp dd près) à une orbite recalculée avec
+    /// `use_dd_tier`.
+    ///
+    /// ⚠️ Orbite MAIGRE : seuls `z_ref_dd` et les champs de cyclage
+    /// (`cycle_period`, `cycle_start`, `atom_truncated`, `cref`) sont remplis —
+    /// c'est tout ce que lit la boucle dd (`pixel_loop_dd`). Les tableaux
+    /// `z_ref`/`z_ref_f64`/`z_ref_gmp` restent VIDES : les cloner coûtait
+    /// ~50 o/iter de pic mémoire pour rien (dragon, 2 M iters : ~100 Mo).
     pub fn with_dd_from_lo(&self) -> Option<ReferenceOrbit> {
         use super::dd::{ComplexDDExp, DoubleDouble, DoubleDoubleExp};
         if self.z_ref_lo.is_empty() || self.z_ref_lo.len() != self.z_ref.len() {
@@ -432,18 +438,34 @@ impl ReferenceOrbit {
                 DoubleDoubleExp::normalized(DoubleDouble::new(h.mantissa, lo), h.exponent)
             }
         };
-        let mut orbit = self.clone();
-        orbit.z_ref_dd = self
+        use rayon::prelude::*;
+        let z_ref_dd = self
             .z_ref
-            .iter()
+            .par_iter()
             .zip(&self.z_ref_lo)
             .map(|(h, l)| ComplexDDExp {
                 re: dd(h.re, l.re),
                 im: dd(h.im, l.im),
             })
             .collect();
-        orbit.z_ref_lo = Vec::new();
-        Some(orbit)
+        Some(ReferenceOrbit {
+            cref: self.cref,
+            z_ref: Vec::new(),
+            z_ref_f64: Vec::new(),
+            z_ref_gmp: Vec::new(),
+            cref_gmp: self.cref_gmp.clone(),
+            phase_offset: self.phase_offset,
+            extended_iterations: Vec::new(),
+            high_precision_data: Vec::new(),
+            data_storage_interval: self.data_storage_interval,
+            cycle_period: self.cycle_period,
+            cycle_start: self.cycle_start,
+            z_ref_dd,
+            z_ref_lo: Vec::new(),
+            atom_truncated: self.atom_truncated,
+            compressed_f64: None,
+            hybrid_phase_refs: Vec::new(),
+        })
     }
 
     /// Get the effective length of the reference orbit for this phase
