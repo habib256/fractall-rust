@@ -135,7 +135,12 @@ def doctor_report() -> dict:
     }
     rec = ["python3 scripts/harness.py score --tier quick"]
     if not f3:
-        rec.append("bash scripts/build_f3_linux.sh      # rallume speed-ratio + parity")
+        rec.append(("brew install openexr imath       # dylibs du F3 macOS versionné"
+                    if broken else
+                    "cd fraktaler-3-3.1 && make SYSTEM=macos-batch"
+                    if sys.platform == "darwin" else
+                    "bash scripts/build_f3_linux.sh")
+                   + "      # rallume speed-ratio + parity")
     if missing:
         rec.append("pip3 install numpy OpenEXR Pillow   # parité + adjudicate")
     if not base or not _same_machine({"meta": {"machine": mi}}, base):

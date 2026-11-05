@@ -191,6 +191,24 @@ fn pixel_size_from_hp(sx_hp: &str, sy_hp: &str, width: u32, height: u32) -> f64 
     }
 }
 
+/// Zoom en notation scientifique (`1.02e401`) depuis son log2 — pour les
+/// diagnostics : un f64 ne porte pas un zoom au-delà de 1e308. `None`
+/// (zoom ≤ 1 ou vue dégénérée) → `0.00e0`, comme l'ancien affichage.
+pub(crate) fn format_zoom_sci(log2_zoom: Option<f64>) -> String {
+    let Some(l2) = log2_zoom.filter(|v| v.is_finite()) else {
+        return "0.00e0".to_owned();
+    };
+    let l10 = l2 * std::f64::consts::LOG10_2;
+    let mut exp = l10.floor();
+    let mut mantissa = 10f64.powf(l10 - exp);
+    // 9.996… s'arrondirait en « 10.00e49 ».
+    if mantissa >= 9.995 {
+        mantissa = 1.0;
+        exp += 1.0;
+    }
+    format!("{mantissa:.2}e{}", exp as i64)
+}
+
 /// `log2(zoom)` HP-aware, avec `zoom = 4 / pixel_size`.
 pub(crate) fn log2_zoom(params: &FractalParams) -> Option<f64> {
     if params.width == 0 || params.height == 0 {
@@ -382,6 +400,21 @@ mod tests {
 
         // Retour à la première vue : pas de valeur périmée.
         assert_eq!(effective_pixel_size(&a), direct_a);
+    }
+
+    #[test]
+    fn zoom_is_printed_beyond_the_f64_range() {
+        assert_eq!(format_zoom_sci(None), "0.00e0");
+        assert_eq!(format_zoom_sci(Some(50.0 / std::f64::consts::LOG10_2)), "1.00e50");
+        // 1.0167e401 : hors plage f64.
+        let l2 = (401.0 + 1.0167f64.log10()) / std::f64::consts::LOG10_2;
+        assert_eq!(format_zoom_sci(Some(l2)), "1.02e401");
+        // Mantisse qui s'arrondirait à 10.00.
+        let l2 = (49.0 + 9.999f64.log10()) / std::f64::consts::LOG10_2;
+        assert_eq!(format_zoom_sci(Some(l2)), "1.00e50");
+        // Bout en bout sur une vue HP.
+        let p = deep_params("4e-400", 256, 256);
+        assert_eq!(format_zoom_sci(log2_zoom(&p)), "2.56e402");
     }
 
     /// Sans span HP et sans span f64 : zéro, sans passer par le mémo.

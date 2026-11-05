@@ -1491,13 +1491,9 @@ pub fn render_perturbation_with_cache(
         let t_post = t_post_start.elapsed();
 
         if perf {
-            let pixel_size = (params.span_x.abs() / params.width.max(1) as f64)
-                .max(params.span_y.abs() / params.height.max(1) as f64);
-            let zoom = if pixel_size.is_finite() && pixel_size > 0.0 {
-                4.0 / pixel_size
-            } else {
-                0.0
-            };
+            // Zoom HP-aware : au-delà de 1e308 le span f64 vaut 0 et la ligne
+            // affichait « zoom=0.00e0 » pour tous les cas profonds.
+            let zoom = precision::format_zoom_sci(precision::log2_zoom(params));
             // Effective work per pixel = smoking gun for BLA / rebasing efficiency.
             // avg ≪ params.iteration_max → BLA + rebasing skipping correctly.
             // avg ≈ params.iteration_max → BLA not helping, the pixel loop is
@@ -1517,7 +1513,7 @@ pub fn render_perturbation_with_cache(
                 0.0
             };
             eprintln!(
-                "[PERTURB PERF] {}x{} pixels={} zoom={:.2e} small_image={} orbit={:.3}s bla={:.3}s pixels={:.3}s post={:.3}s total={:.3}s avg_iter/px={:.0} max_iter/px={} ns/iter={:.1} glitched_initial={} corrections={} fallback_ratio={:.3}",
+                "[PERTURB PERF] {}x{} pixels={} zoom={} small_image={} orbit={:.3}s bla={:.3}s pixels={:.3}s post={:.3}s total={:.3}s avg_iter/px={:.0} max_iter/px={} ns/iter={:.1} glitched_initial={} corrections={} fallback_ratio={:.3}",
                 params.width,
                 params.height,
                 pixel_count,
