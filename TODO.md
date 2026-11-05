@@ -3299,9 +3299,21 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
     pixels (60 % flaggés → frame dd, correct), et le dd lui-même sur ~10 %
     (échantillons vs GMP convergé : dd sans BLA 70/78 justes). Même le GMP à
     la précision de la formule (286 b) est faux sur 2 pixels à 96². Avec le
-    garde-fou (f) ces pixels partent au GMP par pixel (~6 s chacun) : coût à
-    mesurer et à borner — cf. note en cours. Un tier quad-double fermerait
-    le cas proprement.
+    garde-fou (f) ces pixels partiraient au GMP par pixel : mesuré 48² →
+    406 px (17,6 %), 73 s de GMP pour 12,8 s de frame dd (~40 min à 256²).
+    **Plafond déterministe livré** (`reliability::gmp_escalation_allowed`) :
+    les pixels dd non fiables partent au GMP ssi leur nombre ≤ max(16,
+    0,1 % × pixels), TOUT OU RIEN (aucun budget temps : la sortie ne dépend
+    pas de la machine) ; au-delà ils sont refaits en dd sans traqueur (valeur
+    de meilleur effort, celle d'avant le garde-fou) et un avertissement
+    stderr inconditionnel le dit. `FRACTALL_RELIABILITY_GMP_MAX_FRACTION`
+    (≥ 1 = illimité). Calibration : e227 et golden_spider ont 0,008-0,015 %
+    de pixels au-delà du dd (5 et 10 px à 256²) → corrigés à toute
+    résolution, mais ce n'est pas gratuit : **un pixel GMP de e227 coûte
+    ~3 s de thread, 256² passe de 1,8 à 4,8 s pour 5 pixels**. Sonde
+    d'annulation ajoutée dans l'escalade GMP (GUI). Un tier quad-double
+    fermerait ces cas proprement et à moindre coût — prochain chantier de
+    correction.
   *Métriques* : profil `post %` + `fiab. %` (e50, e113, dragon, spiral),
   `trend --case e50`, bench `cpu_perturb_dd`. *Done* : post < 10 % du wall
   sur e50 sans perdre un pixel vs GMP (quality 16/16, e50 PASS).
@@ -3513,10 +3525,36 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   `mandelbrot_glitch_test_2_harmonic` régénéré : 11 px ≠ GMP pur → 1). Coût
   mesuré (256², min de 3) : e50 inchangé, golden_spider +27 %, e227 +40 %,
   dragon ×2 (472 pixels escaladés contre 80 ; ~1/3 étaient réellement faux).
+  **Traqueur sur le chemin Harmonic LA** (même nuit) : hooks par
+  monomorphisation dans `iterate_pixel_harmonic_mla` (observateur nul =
+  bit-identique), segment = pas direct exact + saut de `length` pas à
+  troncature length·ε, pixel emballé → escalade dd. Harmonic FORCÉ à 128² :
+  golden_spider 417 pixels faux → 0, rug 124 → 0, e50 50 → 2 ; routage par
+  défaut : 15 cas du corpus à 0 pixel faux (glitch_test_2 1 → 0, golden ==
+  GMP pur sur la frame entière), surcoût pixels +5 à +20 %, harmonic toujours
+  plus rapide que la BLA sur 13/15. Au passage : `spectral_norm` débordait à
+  +∞ pour |A| > 1e154 (mitosis 1e270 : 100 % de pixels flaggés) → corrigé à
+  la source.
+  **Coût fixe réintroduit puis retiré** : le correctif (3) lisait
+  `FRACTALL_F64_MARGIN` par `std::env::var_os` à CHAQUE pixel (~250 ns +
+  verrou global : test5 256² phase pixels 1 → 17 ms). Trouvé par bissection
+  quand le score a montré test5 hors baseline ; verrou de source
+  `hot_path_sources_only_read_env_through_once_lock`.
   *Reste* : le modèle l·ε est un majorant grossier (faux positifs = coût) ;
-  résidus f64 de quelques pixels (e227, golden_spider, rug, e50, e113) ;
-  le chemin harmonic n'a toujours pas de traqueur (chantier en cours) ;
-  fuzz PerpBS 4 WARN (pixels mal conditionnés en c, classe G3).
+  résidus f64 de quelques pixels (e227 3, rug 4, e113 1 à 96² vs dd) ;
+  fuzz PerpBS 4 WARN (pixels mal conditionnés en c, classe G3) ; Julia,
+  Burning Ship, Tricorn et hybrides restent sans traqueur.
+- [x] **G14.15 — Axe `truth` du harness + bug `--dd-tier` hybride
+  (2026-11-06)** — le juge qui manquait : rendu de production vs frame
+  `--dd-tier` sur les cas du corpus (`scripts/harnesslib/axes_ddtruth.py`,
+  HARNESS.md §4 ter). Puissance vérifiée (binaire d'avant G14.13 : e227 FAIL,
+  4 sentinelles WARN ; après : PASS). Passé sur 82 cas du corpus à 96² :
+  74 PASS, 6 n/a (std), 1 timeout juge (super_dense), **1 FAIL qui était un
+  bug du JUGE** : `--dd-tier` sur une formule à opcodes mono-phase
+  (`hybrid_rot_smooth_e13`, `sqr rot{30} add`) rendait un Mandelbrot z²+c nu
+  sous le label `bytecode_dd` (93 % de pixels ≠). Corrigé par un prédicat
+  unique `wisdom::dd_tier_applicable` (Mandelbrot ET non hybride) à toutes
+  les entrées du tier dd.
 - [x] **G14.14 — Fast-paths perturbation Julia / Burning Ship / Tricorn
   (2026-11-06)** — la boucle rapide de Mandelbrot prend son pas d'un noyau
   monomorphisé (`DirectKernel`) : Julia (δ₀ ≠ 0, dc = 0) ×1,9 ; Burning Ship

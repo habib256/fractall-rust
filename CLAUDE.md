@@ -737,8 +737,16 @@ SANS BLA (borne réduite à l'arrondi dd ; évite d'envoyer au GMP des pixels
 que le dd rend juste) → GMP par pixel. Vaut en correction, en frame dd
 (`--dd-tier`, `[DD-ESCALATION]`) et pour les pixels flaggés du kernel GPU
 f32. `FRACTALL_RELIABILITY_DD=0`. ε de la BLA dd = **2⁻¹⁰⁶** (2⁻⁸⁰ laissait
-des pixels dd faux). Limite connue : lethal_weapon (1,6 M itérations) reste
-faux sur ~10 % des pixels même en dd — cf. TODO G14.1 (h).
+des pixels dd faux). **Plafond de l'escalade GMP** : tout ou rien, ssi le
+nombre de pixels dd non fiables ≤ max(16, 0,1 % × pixels)
+(`gmp_escalation_allowed`, `FRACTALL_RELIABILITY_GMP_MAX_FRACTION`, ≥ 1 =
+illimité) ; au-delà, valeur dd de meilleur effort + avertissement stderr
+inconditionnel — lethal_weapon (1,6 M itérations, 17 % de pixels au-delà du
+dd) prendrait des heures sinon. ⚠️ Même sous le plafond le GMP par pixel est
+cher (e227 : ~3 s de thread par pixel) : un tier quad-double est le vrai
+remède (TODO G14.1 h). **Entrée dans le tier dd = `wisdom::
+dd_tier_applicable`** (Mandelbrot ET non hybride/opcodes) partout —
+`--dd-tier` sur `--opcodes` rendait un z²+c nu.
 ⚠️ `z_ref_lo` est à l'échelle de la MANTISSE de `z_ref` (ComplexExp), pas du
 f64 : |Z| ~ 1e-1200 près de la période atom-domain. Correction dd : K (rotation)
 appliquée au dc dd. Coût
@@ -746,8 +754,12 @@ appliquée au dc dd. Coût
 derrière `&mut` il coûtait ×3), total 0,72 → 1,10 s. Mesuré vs GMP :
 seahorse WARN max_diff 437 → PASS ; e30 5/5, e50 17/18 pixels faux
 détectés, 0 faux positif sur e13/e17/e18/e100. Suivis : fast-path f64
-Mandelbrot, tier exp Mandelbrot, tier dd. **Sans suivi** : hybrides, Julia,
-Burning Ship / Tricorn, DE, Harmonic LA (voir TODO). ⚠️ Le juge de ces
+Mandelbrot, Harmonic LA, tier exp Mandelbrot (boucle scaled), tier dd.
+**Sans suivi** : hybrides, Julia, Burning Ship / Tricorn, DE.
+⚠️ **Aucune lecture d'environnement hors `OnceLock` dans les fichiers du
+chemin par pixel** (verrou de source
+`hot_path_sources_only_read_env_through_once_lock`) : `std::env::var` par
+pixel = ~250 ns + verrou global — réintroduit puis retiré la même nuit. ⚠️ Le juge de ces
 défauts n'était AUCUN axe de routine : c'est le rendu de production comparé
 au tier dd (lui-même vérifié contre GMP) sur le corpus `toml/` qui les a
 trouvés — quality juge 16 presets, precision juge l'orbite.
