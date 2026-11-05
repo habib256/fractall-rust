@@ -377,6 +377,8 @@ pub fn recompute_pixels_cpu(
 
 #[cfg(test)]
 pub mod debug_pure_f3;
+#[cfg(test)]
+mod diag_exp;
 pub mod delta;
 pub mod nonconformal;
 pub mod nucleus;
