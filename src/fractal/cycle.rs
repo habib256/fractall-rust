@@ -34,7 +34,8 @@ const CHECK_PERIOD: u32 = 8;
 /// Motif binaire qu'aucun état atteignable ne porte (NaN à charge pleine).
 const NO_CHECKPOINT: u64 = u64::MAX;
 
-fn enabled() -> bool {
+/// Raccourci actif ? (`FRACTALL_STD_CYCLE=0` le coupe.)
+pub(crate) fn shortcut_enabled() -> bool {
     #[cfg(test)]
     if FORCE_OFF.with(|f| f.get()) {
         return false;
@@ -70,7 +71,7 @@ impl<const N: usize> CycleCut<N> {
         Self {
             ck: [NO_CHECKPOINT; N],
             ck_iter: 0,
-            ck_next: if enabled() { CHECK_PERIOD } else { u32::MAX },
+            ck_next: if shortcut_enabled() { CHECK_PERIOD } else { u32::MAX },
         }
     }
 

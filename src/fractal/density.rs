@@ -262,6 +262,8 @@ struct F64Sampler {
     span_y: f64,
     scale_x: f64,
     scale_y: f64,
+    /// Abandon des orbites EXACTEMENT périodiques (cf. [`F64Sampler::trace`]).
+    cycle_cut: bool,
 }
 
 impl F64Sampler {
@@ -275,6 +277,7 @@ impl F64Sampler {
             span_y,
             scale_x: f64::from(params.width) / span_x,
             scale_y: f64::from(params.height) / span_y,
+            cycle_cut: crate::fractal::cycle::shortcut_enabled(),
         }
     }
 
@@ -312,6 +315,19 @@ impl Sampler for F64Sampler {
         let mut z = Complex64::new(0.0, 0.0);
         let mut escaped = false;
         let mut escape_iter = 0u32;
+        // Orbites qui ne s'échappent pas, quand seules celles qui s'échappent
+        // sont retenues (Buddhabrot, Nebulabrot) : elles coûtaient `iter_max`
+        // itérations ET autant de points empilés, pour être jetées — l'essentiel
+        // du temps d'un tirage uniforme (un `c` sur huit est dans l'ensemble,
+        // et chacun y pèse cent fois une orbite qui s'échappe). Dès que `z`
+        // reprend BIT POUR BIT une valeur déjà visitée (Brent, test tous les 8
+        // pas), l'orbite est exactement périodique : elle ne s'échappera
+        // jamais, on l'abandonne. Issue identique à l'itération complète
+        // (`kept == false`, trajectoire non lue par les appelants). Sans objet
+        // pour l'Anti-Buddhabrot, qui DÉPOSE ces orbites point par point.
+        let cut = self.cycle_cut && spec.keep_escaped;
+        let mut checkpoint = [u64::MAX; 2];
+        let mut checkpoint_next = 8u32;
 
         for iter in 0..spec.iter_max {
             z = z * z + c;
@@ -330,6 +346,17 @@ impl Sampler for F64Sampler {
                 escaped = true;
                 escape_iter = iter;
                 break;
+            }
+
+            if cut && iter % 8 == 7 {
+                let bits = [z.re.to_bits(), z.im.to_bits()];
+                if bits == checkpoint {
+                    break;
+                }
+                if iter >= checkpoint_next {
+                    checkpoint = bits;
+                    checkpoint_next = iter.saturating_mul(2);
+                }
             }
         }
 
@@ -1146,4 +1173,72 @@ fn step_chain<S: Sampler>(
 thread_local! {
     static TRAJECTORY: std::cell::RefCell<Trajectory> =
         const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+mod cycle_cut_tests {
+    use super::*;
+    use crate::fractal::definitions::default_params_for_type;
+    use crate::fractal::FractalType;
+
+    /// Abandonner une orbite exactement périodique ne change l'issue d'AUCUN
+    /// tirage : même verdict `kept`, même itération d'évasion, et — pour les
+    /// orbites retenues, les seules dont la trajectoire est lue — mêmes
+    /// points. L'Anti-Buddhabrot (orbites prisonnières retenues) n'est pas
+    /// raccourci du tout.
+    #[test]
+    fn abandoning_periodic_orbits_changes_no_outcome() {
+        let params = default_params_for_type(FractalType::Nebulabrot, 64, 48);
+        let mut on = F64Sampler::new(&params);
+        on.cycle_cut = true;
+        let mut off = F64Sampler::new(&params);
+        off.cycle_cut = false;
+        let spec = |iter_max: u32, early_exit_at: Option<u32>, keep_escaped: bool| OrbitSpec {
+            iter_max,
+            bailout_sq: 16.0,
+            early_exit_at,
+            nan_counts_as_escape: !keep_escaped,
+            keep_escaped,
+        };
+        let specs = [
+            spec(5000, None, true),
+            spec(2000, Some(50), true),
+            spec(7, None, true),
+            spec(3000, None, false),
+        ];
+        let mut rng = ChainRng::new(0x5EED_CAFE);
+        let mut points: Vec<Complex64> = (0..3000).map(|_| on.uniform_chain(&mut rng)).collect();
+        points.extend([
+            Complex64::new(0.0, 0.0),
+            Complex64::new(-1.0, 0.0),
+            Complex64::new(-0.1226, 0.7449),
+            Complex64::new(0.25, 0.0),
+            Complex64::new(-0.75, 0.0),
+            Complex64::new(-2.0, 0.0),
+            Complex64::new(-1.7548776662466927, 0.0),
+        ]);
+        let (mut a, mut b) = (Trajectory::new(), Trajectory::new());
+        let mut abandoned = 0usize;
+        for s in &specs {
+            for c in &points {
+                let ta = on.trace(c, s, &mut a);
+                let tb = off.trace(c, s, &mut b);
+                assert_eq!(ta.kept, tb.kept, "kept ≠ pour c={c:?}");
+                assert_eq!(ta.escape_iter, tb.escape_iter, "escape_iter ≠ pour c={c:?}");
+                if ta.kept {
+                    assert!(
+                        a.len() == b.len()
+                            && a.iter().zip(&b).all(|(p, q)| {
+                                p.0.to_bits() == q.0.to_bits() && p.1.to_bits() == q.1.to_bits()
+                            }),
+                        "trajectoire retenue ≠ pour c={c:?}"
+                    );
+                } else if a.len() < b.len() {
+                    assert!(s.keep_escaped, "une orbite prisonnière retenue a été raccourcie");
+                    abandoned += 1;
+                }
+            }
+        }
+        assert!(abandoned > 300, "raccourci inopérant : {abandoned} orbites abandonnées");
+    }
 }
