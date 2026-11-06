@@ -10,47 +10,62 @@ technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
 
 ## [Unreleased] — nuit d'optimisation et de correction (2026-11-06, Apple M4)
 
-### Performance
-- **Path f64 standard par lots** (`bytecode/interp_batch.rs`) : 8 points en
-  lockstep, bit-identique à l'interpréteur scalaire — phase pixel ×4,5 à ×7
-  (Mandelbrot 1440p 0,31 → 0,057 s ; seahorse 1e6 16,6 → 2,4 s). C'est le
-  chemin de toute navigation sous ~1e13. `FRACTALL_STD_BATCH=0` = scalaire.
-- **Tier exp (> 1e280)** : parse GMP du span HP sorti de la boucle pixel
-  (e401 ×3, e1000 ×6) ; boucle HP allégée (−22 à −28 %) ; boucle « double mis
-  à l'échelle » (`bytecode/pixel_loop_scaled.rs`, ×2 à ×7, PNG identiques sur
-  les 37 cas du tier exp du corpus). `FRACTALL_EXP_SCALED=0` = boucle FloatExp.
-- **Coût fixe par pixel de la perturbation** : plus d'`Arc` cloné ni de
-  `Formula` compilée par pixel (test5 ×7, flake/floral −27 %).
-- **Correction dd** : chemin rapide double-double sans exposant (boucle dd
-  ×2-5, bit-identique), tables BLA inutiles supprimées, capture paresseuse de
-  la partie basse — pic RSS dragon 1 063 → 329 Mo, orbite dragon −40 %.
-- **Pas perturbation générique** (Julia, Burning Ship, hybrides) sans dérivée
-  quand elle n'est pas demandée : Julia −20 %.
-- **GPU Metal** : sonde BLA ascendante dans le kernel f32 (×4 sur le temps
-  kernel) ; routage Auto du GPU dans la plage perturbation f32 après
-  `--wisdom-bench` (4-13× sur les scènes faciles, 1,3-2,3× sur les spirales).
+Mesures : Apple M4 10 threads, A/B entrelacés, images comparées à l'octet ou
+aux itérations brutes. Détail et chiffres par item : `TODO.md` G14.
 
-### Corrigé
-- **Détecteur de fiabilité** : la troncature d'un saut BLA de `l` pas vaut
-  l·ε (elle était comptée ε : e227 avait 384 pixels faux non flaggés à 256²,
-  golden_spider 169, dragon 36 à 128²) ; borne exp emballée qui retombait à
+### Corrigé (justesse des images)
+- **Détecteur de fiabilité** — la troncature d'un saut BLA de `l` pas vaut
+  l·ε (elle était comptée ε, sous-estimée ~40×) : le rendu par défaut avait
+  des pixels faux non signalés (e227 384 à 256², golden_spider 169, dragon
+  36 à 128², 12 cas du tier exp). Borne exp emballée qui retombait à
   « fiable » par débordement d'exposant ; test de détermination à l'évasion.
-  Le traqueur du tier exp est actif par défaut (`FRACTALL_RELIABILITY_EXP=0`).
-- **Harmonic LA** : rayon de validité 2⁻²⁴ → 2⁻⁵³ (leaded_glass 227 pixels
-  faux → 0) ; golden `mandelbrot_glitch_test_2_harmonic` régénéré (l'ancien
-  avait 11 pixels ≠ GMP pur, le nouveau 1).
-- **Cache de table BLA** : clé par contenu d'orbite + rayon de vue (une
-  table périmée pouvait être réutilisée après réallocation ou sur vue
-  élargie).
-- **GPU f32** : sous-dépassement de |δ|² au-delà de ~1e19.
-- Diagnostics : zoom affiché au-delà de 1e308 ; harness sous macOS (nom de
-  machine, RAM, binaire F3 non lançable détecté).
+  Traqueur du tier exp actif par défaut.
+- **Tier dd gardé** — le double-double n'est pas la vérité (seahorse 1e6 :
+  un pixel à 1838 itérations pour 1598 en GMP convergé) : traqueur au niveau
+  dd, second essai sans BLA, puis GMP par pixel sous un plafond déterministe
+  (0,1 % des pixels, sinon avertissement explicite).
+- **Harmonic LA** — rayon de validité 2⁻²⁴ → 2⁻⁵³ et traqueur de fiabilité
+  (leaded_glass 227 pixels faux → 0 ; golden
+  `mandelbrot_glitch_test_2_harmonic` régénéré deux fois : 11 pixels ≠ GMP
+  pur → 1 → 0).
+- **`--dd-tier` sur une formule hybride ou à opcodes** rendait un Mandelbrot
+  nu (93 % de pixels faux) : prédicat unique `dd_tier_applicable`.
+- **Cache de table BLA** : clé par contenu d'orbite + rayon de vue.
+- **GPU f32** : sous-dépassement de |δ|² au-delà de ~1e19 ;
+  `spectral_norm` qui débordait pour |A| > 1e154.
+- Diagnostics : zoom affiché au-delà de 1e308.
+
+### Performance
+- **Path f64 standard par lots** (`bytecode/interp_batch.rs`, 8 voies
+  entrelacées, bit-identique) : ×4,5 à ×7 sur la phase pixel — toute la
+  navigation sous ~1e13 (Mandelbrot 1440p 0,31 → 0,057 s).
+- **Tier exp (> 1e280)** : parse GMP du span sorti de la boucle pixel, boucle
+  HP allégée, puis boucle « double mis à l'échelle »
+  (`bytecode/pixel_loop_scaled.rs`, traqueur compris) — e401 256² 0,46 →
+  0,08 s, e1000 0,40 → 0,05 s, images identiques à l'octet sur les 37 cas du
+  tier exp du corpus.
+- **Coût fixe par pixel de la perturbation** : plus d'`Arc` cloné, de
+  `Formula` compilée ni de variable d'environnement lue par pixel.
+- **Julia ×1,9, Burning Ship ×1,4, Tricorn ×1,7** en perturbation (noyaux de
+  pas monomorphisés dans la boucle rapide, bit-identiques).
+- **Correction dd** : chemin rapide double-double (×2-5), tables inutiles
+  supprimées, capture paresseuse de la partie basse — pic RSS dragon 1 063 →
+  329 Mo.
+- **GPU Metal** : sonde BLA ascendante (kernel ×4) ; Auto route le GPU dans
+  la plage perturbation f32 après `--wisdom-bench` (4-13× sur les scènes
+  faciles).
+- Coût assumé des correctifs de justesse sur les scènes f64 qui escaladent :
+  e227 256² 1,0 → 5,3 s (7 pixels au GMP), golden_spider 0,36 → 1,0 s.
 
 ### Ajouté
+- **Harness : axe `truth`** — rendu de production contre le tier dd sur les
+  cas du corpus (le juge qui a trouvé les défauts ci-dessus).
 - **Harness : `hotspots`** — profil échantillonné d'un cas avec un binaire
-  symbolisé (`sample`/`perf`) : quelles fonctions consomment le temps.
-  Phase `bla` et `ns/iter·thread` dans le profil.
-- `fractall-quality gpu-bench` (temps kernel / correction CPU / % renvoyé).
+  symbolisé ; phase `bla`, `ns/iter·thread`, lancement à blanc des binaires.
+- `fractall-quality gpu-bench` ; clés wisdom `gpu_perturb_f32` /
+  `cpu_perturb_f64_mid`.
+- Harness utilisable sous macOS (nom de machine, RAM, F3 non lançable
+  détecté) ; baseline de l'Apple M4.
 
 ## [Unreleased, précédent] — harnais d'optimisation
 
