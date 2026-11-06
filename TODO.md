@@ -113,7 +113,10 @@ ratio qu'en perturbation). Un seuil plus bas ne sert à rien (E ≥ 1 : 66,7 %
 de la frame signalée pour 29 pixels de plus). Reste à faire : la brancher
 dans `interp_batch.rs` sans casser la vectorisation, recalculer les pixels
 signalés (perturbation tracée par pixel ou GMP sous plafond), mesurer le
-surcoût et les faux positifs sur les points intérieurs.
+surcoût. Vue par DÉFAUT (zoom 1, 2500 it., 256×160), même prototype :
+8 pixels faux en Auto, 10 signalés, **8 sur 8 attrapés, 2 faux positifs** —
+la borne ne s'emballe pas sur les points intérieurs (orbite attirée par un
+cycle : produit des 2|z| < 1), donc pas de faux positifs en masse.
 
 **Prochains chantiers** : (a) Tricorn / Burning Ship profonds rendus en GMP
 plein cadre quand la référence s'échappe (G14.21 — une piste essayée et
