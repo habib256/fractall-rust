@@ -3998,6 +3998,11 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   d'orbite tient une tâche : `TAKEN → DONE` par échange, pour ne pas écraser
   `QUIT` ; (D4) les retards de test d'`orbit_par` étaient globaux au
   processus de tests → armés par un drapeau, désarmés par une garde RAII.
+  **Troisième relecture, courte, sur les derniers commits** (raccourci de
+  cycle GMP, test de cycle par itération, D1-D4) : aucun défaut. Deux
+  limites notées, antérieures : une Julia au tier exp n'a pas de table BLA
+  exp (pas directs purs — lent, juste) ; graine non nulle + transformation
+  de plan reste en f64 entre 1e13 et 1e16.
 - [x] **G14.20 — Boucles GMP pures : ni allocation ni norme pleine précision
   par itération (2026-11-06 matin)** — profil échantillonné d'un rendu GMP
   pur : ~60 % du temps dans `malloc`/`free` (deux clones + `mpc_mul`, qui
@@ -4025,6 +4030,9 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   20 000 it. à 256 b 0,59 → 0,08 s (×7), à 128 b ×11, Tricorn ×6, 2500 it.
   ×1,8 ; rien sur une vue sans intérieur ; ≤ 1,5 % de surcoût sur les juges
   profonds (un minibrot profond ne converge pas à 256 bits avant le plafond).
+  **+ carré en place dans l'interpréteur bytecode GMP**
+  (`GmpInterpState::step`) : orbites de référence Julia / Burning Ship /
+  Tricorn / hybrides — [M,M] e50 0,053 → 0,035 s, PNG identiques.
 - [ ] **G14.21 — Tricorn / Burning Ship profonds en GMP plein cadre** —
   constat de la sonde G14.18 : dès que la référence s'échappe avant le
   plafond, > 30 % des pixels sont « référence épuisée » et la frame entière
