@@ -1451,6 +1451,12 @@ pub fn render_perturbation_with_cache(
         // meilleur effort, avec un avertissement. Mesuré : lethal_weapon 48²
         // envoyait 406 px (17,6 %) au GMP, 73 s.
         let mut dd_left_unreliable = 0usize;
+        // Pixels au-delà de la précision du dd admis au GMP : ils vont DROIT
+        // à l'itération GMP pure (`iterate_point_mpc`, un carré par
+        // itération), pas à la perturbation GMP — celle-ci coûte deux produits
+        // complexes par itération ET exige l'orbite GMP DENSE, à reconstruire
+        // (dragon : +4,3 s et +700 Mo pour un seul pixel).
+        let mut pure_first: Vec<usize> = Vec::new();
         if !dd_unreliable.is_empty() {
             use crate::fractal::bytecode::reliability as rel;
             let frame_pixels = width * height;
@@ -1459,7 +1465,7 @@ pub fn render_perturbation_with_cache(
                 frame_pixels,
                 rel::reliability_gmp_max_fraction(),
             ) {
-                to_correct.extend_from_slice(&dd_unreliable);
+                pure_first.extend_from_slice(&dd_unreliable);
             } else {
                 let best = correct_pixels_dd(
                     params,
@@ -1502,7 +1508,7 @@ pub fn render_perturbation_with_cache(
         let glitched_set: std::collections::HashSet<usize> =
             glitched_indices.iter().copied().collect();
 
-        if !to_correct.is_empty() {
+        if !to_correct.is_empty() || !pure_first.is_empty() {
             let t_gmp_corr = Instant::now();
             let prec = compute_perturbation_precision_bits(params);
             let width_u32 = params.width;
@@ -1517,7 +1523,7 @@ pub fn render_perturbation_with_cache(
             // → valeurs GMP bit-identiques à l'ancien stockage eager. Orbite
             // courte sur les cas qui glitchent (cusp ~2500 iters → ms) ; jamais
             // atteint sur un deep zoom nominal sans glitch (dragon).
-            let rebuilt_gmp_orbit = if cache.orbit.z_ref_gmp.is_empty() {
+            let rebuilt_gmp_orbit = if !to_correct.is_empty() && cache.orbit.z_ref_gmp.is_empty() {
                 compute_reference_orbit(params, Some(cancel.as_ref()), true).map(|r| r.0)
             } else {
                 None
@@ -1587,12 +1593,13 @@ pub fn render_perturbation_with_cache(
             //    référence résout ces pixels (cf. fuzz mandelbrot -0.615+0.401i
             //    zoom 6e7 : blob intérieur au z_pert bit-identique, faussement
             //    évadé à iter 304 vs 2048 réel).
-            let escalate: Vec<usize> = corrections
+            let mut escalate: Vec<usize> = corrections
                 .iter()
                 .filter_map(|&(idx, _, _, g)| {
                     (g || (need_pure_gmp && glitched_set.contains(&idx))).then_some(idx)
                 })
                 .collect();
+            escalate.extend_from_slice(&pure_first);
             let escalate_set: std::collections::HashSet<usize> = escalate.iter().copied().collect();
             // Applique les corrections GMP-delta rapides pour les pixels résolus.
             for (idx, iter_val, z_final, _) in &corrections {
@@ -1648,7 +1655,7 @@ pub fn render_perturbation_with_cache(
                     if perf_enabled() {
                 eprintln!(
                     "[RELIABILITY-GMP] px={} (glitched={}) dd_left_unreliable={} time={:.3}s",
-                    to_correct.len(),
+                    to_correct.len() + pure_first.len(),
                     glitched_indices.len(),
                     dd_left_unreliable,
                     t_gmp_corr.elapsed().as_secs_f64()
