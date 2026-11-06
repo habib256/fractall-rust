@@ -91,6 +91,17 @@ pixels ≠ en perturbation forcée, aux zooms 1e4 · 1e7 · 1e10) :
 Le défaut croît avec le plafond d'itérations et la profondeur, et dépend
 fortement du lieu (spirales ≫ minibrot) : au plafond par défaut il atteint
 déjà plusieurs pour cent à 1e10.
+Coût d'un simple re-routage (720p, 2500 it., min de 3, Auto → perturbation
+forcée) : vue par défaut 0,02 → 1,00 s (×50), seahorse 1e4 0,02 → 0,11 s,
+seahorse 1e7 0,19 → 1,07 s, éléphants 1e7 0,04 → 0,21 s, minibrot 1e7
+0,03 → 0,13 s — soit ×4 à ×6 hors vue par défaut. ⇒ la piste (1) est trop
+chère en bloc ; la bonne forme est la piste (2), un suivi dans le noyau par
+lots avec recalcul des SEULS pixels signalés (en perturbation ou en dd).
+NB : la bascule Auto → perturbation dépend de la taille du pixel, pas du
+zoom — à 1e10 une image de 1280 px est déjà en perturbation (0,61 s des deux
+côtés) alors qu'une image de 256 px est encore en f64 (7,8 % de pixels
+faux) : les rendus basse résolution (passes progressives, miniatures,
+keyframes vidéo 320×180) sont les plus exposés.
 
 **Prochains chantiers** : (a) Tricorn / Burning Ship profonds rendus en GMP
 plein cadre quand la référence s'échappe (G14.21 — une piste essayée et
