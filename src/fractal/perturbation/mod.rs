@@ -2637,6 +2637,13 @@ mod tests {
             let (iters, _, _) =
                 render_perturbation_cancellable_with_reuse(&p, &cancel, None).expect("rendu");
             assert_eq!(iters[17 * 256 + 117], 1598, "dd_tier={dd_tier}");
+            // Même pixel par le chemin de l'hôte GPU (f64 → dd → qd → GMP).
+            if !dd_tier {
+                let cache = super::orbit::compute_reference_orbit_cached(&p, None, None, None, false).expect("orbite");
+                let out = super::recompute_pixels_cpu(&p, &cache, &[17 * 256 + 117]);
+                assert_eq!(out.len(), 1);
+                assert_eq!(out[0].1, 1598, "recompute_pixels_cpu");
+            }
         }
     }
 
