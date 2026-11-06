@@ -1,6 +1,6 @@
 use num_complex::Complex64;
 
-use crate::fractal::bytecode::{formula_for_params, iterate_bytecode_f64, Formula};
+use crate::fractal::bytecode::{formula_for_params, Formula};
 use crate::fractal::{FractalParams, FractalResult, FractalType};
 use crate::fractal::orbit_traps::OrbitData;
 
@@ -179,7 +179,13 @@ fn iterate_via_bytecode(
         };
     }
 
-    let r = iterate_bytecode_f64(formula, z0, c, params.iteration_max, params.bailout);
+    let r = crate::fractal::bytecode::interp::iterate_bytecode_f64_cut(
+        formula,
+        z0,
+        c,
+        params.iteration_max,
+        params.bailout,
+    );
     FractalResult {
         iteration: r.iteration,
         z: r.z,
@@ -1137,6 +1143,17 @@ mod cycle_cut_tests {
                 p.engine.use_bytecode_engine = false;
                 cases.push((format!("{ty:?}^{power} historique"), p));
             }
+        }
+        // Path scalaire bytecode : hybrides multi-phase (2 et 3 phases) et
+        // opcodes à rotation — comparés aussi à l'interpréteur de référence.
+        for phases in [
+            vec![FractalType::Mandelbrot, FractalType::BurningShip],
+            vec![FractalType::Mandelbrot, FractalType::Mandelbrot, FractalType::Celtic],
+            vec![FractalType::Tricorn, FractalType::Mandelbrot],
+        ] {
+            let mut p = default_params_for_type(FractalType::Mandelbrot, 64, 48);
+            p.formula.hybrid_phases = Some(phases.clone());
+            cases.push((format!("hybride {phases:?}"), p));
         }
         let mut shortened = 0usize;
         for (label, base) in &cases {

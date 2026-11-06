@@ -145,6 +145,7 @@ src/
 │   ├── types.rs         # FractalType, FractalParams, AlgorithmMode, …
 │   ├── definitions.rs   # constantes par type + LyapunovPreset
 │   ├── iterations.rs    # escape-time f64 + dispatch bytecode unifié
+│   ├── cycle.rs         # raccourci des cycles EXACTS (points intérieurs, boucles scalaires)
 │   ├── jitter.rs        # AA : radical_inverse + triangle + burtle_hash décorr. par pixel (port F3)
 │   ├── xaos.rs          # G10.4 réutilisation pixels inter-frame (XaoS)
 │   ├── gmp.rs           # précision arbitraire (rug / mpc)
@@ -172,6 +173,7 @@ src/
 │       ├── mod.rs          # render_perturbation_cancellable_with_reuse
 │       ├── types.rs        # ComplexExp, FloatExp (mantisse + exposant)
 │       ├── orbit.rs        # ReferenceOrbit{,Cache}, HybridBlaReferences
+│       ├── orbit_par.rs    # itération GMP de l'orbite sur deux cœurs (bit-identique)
 │       ├── nucleus.rs      # Atom-domain period + Newton (port F3)
 │       ├── bla.rs          # BlaTable conformal (path GMP deep zoom)
 │       ├── nonconformal.rs # BLA matriciel (path GMP)
@@ -497,6 +499,31 @@ Si `params.use_bytecode_engine` ET `compile_formula(type, power)` réussit :
   la recompilait deux fois par pixel). `FRACTALL_STD_BATCH=0` = scalaire.
   ⚠️ Toute nouvelle sémantique d'opcode doit être portée dans les DEUX
   interpréteurs (le verrou compare les deux sur toutes les familles).
+  **Points intérieurs : raccourci des cycles EXACTS** (2026-11-06) — un
+  point qui ne s'évade pas coûtait `iteration_max` passes. Une orbite
+  attirée par un cycle devient exactement périodique en flottant : dès que
+  l'état `(z, registre)` d'une voie reprend BIT POUR BIT un point de contrôle
+  (Brent, test tous les 16 passes hors du corps chaud), la voie saute un
+  nombre entier de cycles et finit normalement les passes restantes — même
+  compte et même z final, par construction (verrou
+  `cycle_shortcut_matches_full_iteration_bit_for_bit`). Vue Mandelbrot par
+  défaut 1440p : phase pixels 0,140 → 0,058 s ; à 20 000 itérations ×11, à
+  200 000 ×78 ; 0 % d'instructions en plus sur une vue sans intérieur.
+  Même mécanisme pour les boucles scalaires des types sans bytecode
+  (`fractal/cycle.rs::CycleCut` : Newton, Magnet, Multibrot non entier,
+  Mandelbulb, Sin, Phoenix, Barnsley, Alpha, Pickover — Magnet Julia 720p
+  6,15 → 0,06 s) et pour le path scalaire bytecode des hybrides
+  (`interp::iterate_bytecode_f64_cut`, état relevé en début de cycle de
+  phases ; [M,BS] 720p 0,64 → 0,10 s). `iterate_bytecode_f64` reste
+  l'interpréteur de RÉFÉRENCE sans raccourci, contre lequel les verrous
+  comparent. ⚠️ Ce n'est PAS un test de convergence : aucune tolérance
+  (une quasi-période n'est pas un cycle). Conditions pour équiper une
+  boucle : l'état comparé contient TOUT ce que lit le pas suivant (Phoenix :
+  z ET y) et la boucle ne cumule rien qui dépende du nombre de passages (un
+  min/max d'orbite est permis, une somme non — d'où l'absence de raccourci
+  sur les canaux distance / pièges d'orbite). `FRACTALL_STD_CYCLE=0`.
+  Sans objet en perturbation : les pixels intérieurs y sont déjà sautés par
+  la BLA (dragon : 2,5 M itérations × 16 k pixels en 0,02 s).
 - **CPU perturbation** : `perturbation/delta.rs::try_bytecode_unified_path`
   → `bytecode/pixel_loop.rs` (f64), ou au tier exp (pixel < 1e-280)
   `pixel_loop_scaled.rs` — δ = d·2^e en f64, pas FloatExp exact en repli,
@@ -799,6 +826,9 @@ Tous lus UNE fois (`OnceLock`). Défaut = comportement de production.
 | Variable | Effet |
 |---|---|
 | `FRACTALL_STD_BATCH=0` | path f64 standard : interpréteur scalaire au lieu du noyau par lots |
+| `FRACTALL_STD_CYCLE=0` | path f64 standard (lots ET boucles scalaires) : pas de raccourci des cycles exacts — chaque point intérieur itère jusqu'au plafond |
+| `FRACTALL_ORBIT_PAR=0` | orbite de référence : itération GMP sur un seul cœur |
+| `FRACTALL_ORBIT_PAR_MIN_BITS=n` | précision à partir de laquelle l'orbite utilise le fil assistant (défaut 2048) |
 | `FRACTALL_EXP_SCALED=0` | tier exp : boucle FloatExp au lieu du « double mis à l'échelle » |
 | `FRACTALL_EXP_SCALED_STATS=1` | ventilation des tours de la boucle scaled (rapide / lent / causes de repli) |
 | `FRACTALL_JULIA_FAST=0` | Julia en perturbation : pas générique au lieu du fast-path inline |
@@ -835,6 +865,21 @@ pseudo-orbites de même précision, aucune n'est « plus vraie » (écarts au ju
 ×4 équivalents) ; 31/38 cas du corpus pixel-identiques, 25 goldens
 inchangés. Dragon : orbite −35 %, total −12 %. `FRACTALL_ORBIT_FAST_SQR=0`
 revient à `mpc_sqr` (A/B).
+
+**Orbite sur DEUX cœurs** (`perturbation/orbit_par.rs`, 2026-11-06) :
+l'orbite de référence est le seul travail strictement séquentiel du rendu et
+c'est ELLE qui fait le temps des zooms très profonds (corpus à 64² :
+triangle 14 s sur 17, wfs_extended 16 s sur 19). Les deux multiplications du
+pas sont indépendantes : `im' = 2·re·im + ci` part sur un fil assistant
+(attente active, `Float` transférés par une case — aucun `unsafe`) pendant
+que le fil appelant calcule `(re+im)(re−im)`. Mêmes opérations MPFR ⇒ orbite
+**identique au bit près** (verrou `par_sqr_matches_serial_step_bit_for_bit`).
+Garde-fous : reprise de la tâche si l'assistant ne l'a pas prise ; fenêtre
+série à doublement exponentiel, assistant endormi, quand la machine est
+saturée ; seuil de précision (sous ~2000 bits la synchronisation coûte plus
+que la multiplication épargnée). ⚠️ `rayon::join` ne convient PAS ici
+(mesuré ×0,14-0,67) : une itération dure ~1 µs, un réveil de fil 10-50 µs.
+Banc : `cargo run --release --example bench_orbit_join -- <bits> <iters>`.
 
 **Cache de table BLA** (`delta.rs`, `GLOBAL_BLA` + thread-local) : clé =
 identité de l'orbite (**adresse + longueur + empreinte de contenu**, cf.

@@ -31,7 +31,40 @@ pub fn iterate_bytecode_f64(
     iteration_max: u32,
     bailout: f64,
 ) -> BytecodeResult {
+    iterate_impl::<false>(formula, z0, c, iteration_max, bailout)
+}
+
+/// [`iterate_bytecode_f64`] avec le **raccourci des cycles exacts**
+/// (`fractal/cycle.rs`) : mêmes sorties au bit près, mais un point attiré
+/// par un cycle ne paie plus `iteration_max` passes. C'est la variante de
+/// PRODUCTION du path scalaire (hybrides multi-phase) ; `iterate_bytecode_f64`
+/// reste l'interpréteur de référence, sans raccourci, contre lequel les
+/// verrous comparent.
+///
+/// L'état comparé est `(z, registre)` relevé en DÉBUT de cycle de phases
+/// (`phase_idx == 0`) : la longueur d'un cycle détecté est donc un multiple
+/// du nombre de phases, et le saut du compteur garde l'alignement des phases.
+#[inline]
+pub fn iterate_bytecode_f64_cut(
+    formula: &Formula,
+    z0: Complex64,
+    c: Complex64,
+    iteration_max: u32,
+    bailout: f64,
+) -> BytecodeResult {
+    iterate_impl::<true>(formula, z0, c, iteration_max, bailout)
+}
+
+#[inline(always)]
+fn iterate_impl<const CUT: bool>(
+    formula: &Formula,
+    z0: Complex64,
+    c: Complex64,
+    iteration_max: u32,
+    bailout: f64,
+) -> BytecodeResult {
     let bailout_sqr = bailout * bailout;
+    let mut cyc = CUT.then(crate::fractal::cycle::CycleCut::<4>::new);
     let mut z = z0;
     let mut stored = z; // registre `Store`, valeur initiale arbitraire
     let mut iter = 0u32;
@@ -95,6 +128,11 @@ pub fn iterate_bytecode_f64(
         }
         if z.norm_sqr() >= bailout_sqr {
             break;
+        }
+        if phase_idx == 0 {
+            if let Some(cyc) = cyc.as_mut() {
+                cyc.observe(&mut iter, iteration_max, [z.re, z.im, stored.re, stored.im]);
+            }
         }
     }
 
