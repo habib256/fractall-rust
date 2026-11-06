@@ -1,9 +1,9 @@
 {
   "schema": 2,
   "meta": {
-    "date_utc": "2026-11-06T01:01:26+00:00",
-    "stamp": "20261106T010126Z",
-    "git_sha": "4bfbdba",
+    "date_utc": "2026-11-06T06:11:44+00:00",
+    "stamp": "20261106T061144Z",
+    "git_sha": "e3ff8be",
     "git_dirty": true,
     "machine": {
       "cpu": "Apple M4",
@@ -37,99 +37,99 @@
     "baseline_file": "harness/baselines/apple-m4-10t.json"
   },
   "speed": {
-    "fractall_total_s": 2.2797,
+    "fractall_total_s": 2.2924,
     "n_measured": 10,
     "status": "f3_unavailable",
     "cases": {
       "test5": {
-        "fractall_s": 0.0118,
+        "fractall_s": 0.0123,
         "f3_s": null,
         "ratio": null,
         "status": "f3_unavailable",
         "f3_exr_ok": false,
-        "fractall_s_min": 0.0112,
-        "fractall_s_spread": 0.1312
+        "fractall_s_min": 0.0121,
+        "fractall_s_spread": 0.887
       },
       "spiral": {
-        "fractall_s": 0.012,
+        "fractall_s": 0.011,
         "f3_s": null,
         "ratio": null,
         "status": "f3_unavailable",
         "f3_exr_ok": false,
-        "fractall_s_min": 0.0111,
-        "fractall_s_spread": 0.078
+        "fractall_s_min": 0.0107,
+        "fractall_s_spread": 0.1139
       },
       "flake": {
-        "fractall_s": 0.0495,
+        "fractall_s": 0.0496,
         "f3_s": null,
         "ratio": null,
         "status": "f3_unavailable",
         "f3_exr_ok": false,
-        "fractall_s_min": 0.0452,
-        "fractall_s_spread": 0.0928
+        "fractall_s_min": 0.0494,
+        "fractall_s_spread": 0.0071
       },
       "glitch_test_2": {
-        "fractall_s": 0.0443,
+        "fractall_s": 0.026,
         "f3_s": null,
         "ratio": null,
         "status": "f3_unavailable",
         "f3_exr_ok": false,
-        "fractall_s_min": 0.0254,
-        "fractall_s_spread": 0.5025
+        "fractall_s_min": 0.0257,
+        "fractall_s_spread": 0.0175
       },
       "e50": {
-        "fractall_s": 0.6085,
+        "fractall_s": 0.6167,
         "f3_s": null,
         "ratio": null,
         "status": "f3_unavailable",
         "f3_exr_ok": false,
-        "fractall_s_min": 0.6031,
-        "fractall_s_spread": 0.0846
+        "fractall_s_min": 0.6047,
+        "fractall_s_spread": 0.0816
       },
       "e113": {
-        "fractall_s": 0.0884,
+        "fractall_s": 0.0941,
         "f3_s": null,
         "ratio": null,
         "status": "f3_unavailable",
         "f3_exr_ok": false,
-        "fractall_s_min": 0.0883,
-        "fractall_s_spread": 0.0066
+        "fractall_s_min": 0.0864,
+        "fractall_s_spread": 0.1039
       },
       "e401": {
-        "fractall_s": 0.0863,
+        "fractall_s": 0.0901,
         "f3_s": null,
         "ratio": null,
         "status": "f3_unavailable",
         "f3_exr_ok": false,
-        "fractall_s_min": 0.0814,
-        "fractall_s_spread": 0.1411
+        "fractall_s_min": 0.079,
+        "fractall_s_spread": 0.1563
       },
       "e1000": {
-        "fractall_s": 0.0488,
+        "fractall_s": 0.0501,
         "f3_s": null,
         "ratio": null,
         "status": "f3_unavailable",
         "f3_exr_ok": false,
-        "fractall_s_min": 0.0487,
-        "fractall_s_spread": 0.0136
+        "fractall_s_min": 0.0493,
+        "fractall_s_spread": 0.1253
       },
       "floral_fantasy": {
-        "fractall_s": 0.0252,
+        "fractall_s": 0.0247,
         "f3_s": null,
         "ratio": null,
         "status": "f3_unavailable",
         "f3_exr_ok": false,
-        "fractall_s_min": 0.0245,
-        "fractall_s_spread": 0.0306
+        "fractall_s_min": 0.0241,
+        "fractall_s_spread": 0.0452
       },
       "dragon": {
-        "fractall_s": 1.3049,
+        "fractall_s": 1.3178,
         "f3_s": null,
         "ratio": null,
         "status": "f3_unavailable",
         "f3_exr_ok": false,
-        "fractall_s_min": 1.2846,
-        "fractall_s_spread": 0.0272
+        "fractall_s_min": 1.317,
+        "fractall_s_spread": 0.002
       }
     },
     "geomean_ratio": null,
@@ -152,7 +152,7 @@
   },
   "quality": {
     "status": "ok",
-    "n_pass": 16,
+    "n_pass": 17,
     "n_warn": 0,
     "n_fail": 0,
     "fail_presets": [],
@@ -164,8 +164,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 81.978917,
-        "time_gmp_ms": 664.709083
+        "time_pert_ms": 82.49199999999999,
+        "time_gmp_ms": 365.300125
       },
       {
         "name": "mandelbrot-e13",
@@ -173,8 +173,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 6.922791999999999,
-        "time_gmp_ms": 185.505583
+        "time_pert_ms": 6.826916,
+        "time_gmp_ms": 93.703333
       },
       {
         "name": "mandelbrot-e17",
@@ -182,8 +182,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 4.6895,
-        "time_gmp_ms": 225.938458
+        "time_pert_ms": 4.509499999999999,
+        "time_gmp_ms": 109.54679200000001
       },
       {
         "name": "misiurewicz-m32",
@@ -191,8 +191,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 3.3218330000000003,
-        "time_gmp_ms": 196.781167
+        "time_pert_ms": 3.147833,
+        "time_gmp_ms": 94.007458
       },
       {
         "name": "julia-siegel-disk",
@@ -200,8 +200,17 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 1.931875,
-        "time_gmp_ms": 112.431208
+        "time_pert_ms": 1.923125,
+        "time_gmp_ms": 50.293499999999995
+      },
+      {
+        "name": "julia-edge-e20",
+        "verdict": "PASS",
+        "max_iter_diff": null,
+        "p99_iter_diff": null,
+        "divergence_ratio": 0.0,
+        "time_pert_ms": 31.734540999999997,
+        "time_gmp_ms": 697.268958
       },
       {
         "name": "burning-ship-antenna",
@@ -209,8 +218,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 0.8203750000000001,
-        "time_gmp_ms": 14.02125
+        "time_pert_ms": 0.962375,
+        "time_gmp_ms": 6.668708
       },
       {
         "name": "tricorn-spiral",
@@ -218,8 +227,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 0.581459,
-        "time_gmp_ms": 5.133459
+        "time_pert_ms": 0.642375,
+        "time_gmp_ms": 3.0980410000000003
       },
       {
         "name": "celtic-fold-edge",
@@ -227,8 +236,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 4.096041,
-        "time_gmp_ms": 1887.3991669999998
+        "time_pert_ms": 5.234417,
+        "time_gmp_ms": 1476.890875
       },
       {
         "name": "buffalo-fold-edge",
@@ -236,8 +245,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 4.55825,
-        "time_gmp_ms": 1977.7749999999999
+        "time_pert_ms": 5.080417000000001,
+        "time_gmp_ms": 1521.917083
       },
       {
         "name": "perpbs-escape-band",
@@ -245,8 +254,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 3.293916,
-        "time_gmp_ms": 1404.296875
+        "time_pert_ms": 3.786125,
+        "time_gmp_ms": 1106.930292
       },
       {
         "name": "mandelbrot-e18-minibrot",
@@ -254,8 +263,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 5.812458,
-        "time_gmp_ms": 194.014208
+        "time_pert_ms": 5.834167000000001,
+        "time_gmp_ms": 87.006125
       },
       {
         "name": "mandelbrot-e30",
@@ -263,8 +272,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 1241.844542,
-        "time_gmp_ms": 11021.941042
+        "time_pert_ms": 1238.131,
+        "time_gmp_ms": 4988.231084
       },
       {
         "name": "mandelbrot-e50",
@@ -272,8 +281,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 1941.3778750000001,
-        "time_gmp_ms": 88451.554875
+        "time_pert_ms": 1908.766042,
+        "time_gmp_ms": 42173.735667
       },
       {
         "name": "mandelbrot-e100",
@@ -281,8 +290,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 126.963083,
-        "time_gmp_ms": 10140.369791
+        "time_pert_ms": 127.68766600000001,
+        "time_gmp_ms": 4734.260875
       },
       {
         "name": "single-ref-glitch-interior",
@@ -290,8 +299,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 23.207625,
-        "time_gmp_ms": 882.8917080000001
+        "time_pert_ms": 20.520083000000003,
+        "time_gmp_ms": 400.858292
       },
       {
         "name": "mandelbrot-interior-ref",
@@ -299,16 +308,16 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 280.731958,
-        "time_gmp_ms": 856.594834
+        "time_pert_ms": 144.5285,
+        "time_gmp_ms": 375.815542
       }
     ]
   },
   "fuzz": {
     "status": "ok",
     "seed": 20260714,
-    "n_probes": 3,
-    "n_pass": 3,
+    "n_probes": 4,
+    "n_pass": 4,
     "n_warn": 0,
     "n_fail": 0,
     "cases": {
@@ -334,6 +343,14 @@
         "center_x": "0.25293623520216574",
         "center_y": "-0.10817046263643233",
         "zoom": "9.216840e+09",
+        "iterations": 2048
+      },
+      "fuzz-20260714-j0-julia": {
+        "verdict": "PASS",
+        "type": "julia",
+        "center_x": "0.3732660172196725",
+        "center_y": "-0.07684915326535716",
+        "zoom": "3.390705e+09",
         "iterations": 2048
       }
     },
@@ -618,8 +635,8 @@
         "perturb_fallback_ratio": 0.0,
         "n_perf_lines": 1,
         "status": "ok",
-        "wall_s": 0.0258,
-        "peak_rss_mb": 11.6,
+        "wall_s": 0.0251,
+        "peak_rss_mb": 11.7,
         "threads": 10,
         "ns_per_iter_thread": 25.4313,
         "secs": {
@@ -628,15 +645,15 @@
           "pixels": 0.001,
           "post": 0.0,
           "save": 0.0,
-          "other": 0.0248
+          "other": 0.0241
         },
         "share_pct": {
           "orbit": 0.0,
           "bla": 0.0,
-          "pixels": 3.9,
+          "pixels": 4.0,
           "post": 0.0,
           "save": 0.0,
-          "other": 96.1
+          "other": 96.0
         },
         "dominant": "other"
       },
@@ -662,7 +679,7 @@
         "perturb_fallback_ratio": null,
         "n_perf_lines": 0,
         "status": "ok",
-        "wall_s": 0.0258,
+        "wall_s": 0.0259,
         "peak_rss_mb": 15.5,
         "threads": 10,
         "ns_per_iter_thread": null,
@@ -672,7 +689,7 @@
           "pixels": 0.0,
           "post": 0.0,
           "save": 0.0,
-          "other": 0.0258
+          "other": 0.0259
         },
         "share_pct": {
           "orbit": 0.0,
@@ -706,7 +723,7 @@
         "perturb_fallback_ratio": 0.0,
         "n_perf_lines": 1,
         "status": "ok",
-        "wall_s": 0.0539,
+        "wall_s": 0.0519,
         "peak_rss_mb": 12.7,
         "threads": 10,
         "ns_per_iter_thread": 0.1332,
@@ -716,15 +733,15 @@
           "pixels": 0.027,
           "post": 0.0,
           "save": 0.0,
-          "other": 0.0249
+          "other": 0.0229
         },
         "share_pct": {
-          "orbit": 3.7,
+          "orbit": 3.9,
           "bla": 0.0,
-          "pixels": 50.1,
+          "pixels": 52.0,
           "post": 0.0,
           "save": 0.0,
-          "other": 46.2
+          "other": 44.1
         },
         "dominant": "pixels"
       },
@@ -750,7 +767,7 @@
         "perturb_fallback_ratio": 0.0,
         "n_perf_lines": 1,
         "status": "ok",
-        "wall_s": 0.0444,
+        "wall_s": 0.0442,
         "peak_rss_mb": 12.1,
         "threads": 10,
         "ns_per_iter_thread": 0.3923,
@@ -760,15 +777,15 @@
           "pixels": 0.02,
           "post": 0.001,
           "save": 0.0,
-          "other": 0.0234
+          "other": 0.0232
         },
         "share_pct": {
           "orbit": 0.0,
           "bla": 0.0,
-          "pixels": 45.0,
+          "pixels": 45.2,
           "post": 2.3,
           "save": 0.0,
-          "other": 52.7
+          "other": 52.5
         },
         "dominant": "other"
       },
@@ -777,13 +794,13 @@
         "algo": "Perturbation",
         "tier": "bytecode_f64",
         "device": "Cpu",
-        "ns_per_iter": 0.042,
+        "ns_per_iter": 0.0424,
         "avg_iter_px": 172455.0,
         "max_iter_px": 187251,
         "orbit_s": 0.014,
         "bla_s": 0.001,
-        "pixels_s": 0.475,
-        "post_s": 0.101,
+        "pixels_s": 0.479,
+        "post_s": 0.099,
         "variants": "harmonic_lla",
         "render_s": 0.59,
         "save_s": 0.0,
@@ -794,25 +811,25 @@
         "perturb_fallback_ratio": 0.0,
         "n_perf_lines": 1,
         "status": "ok",
-        "wall_s": 0.6149,
-        "peak_rss_mb": 29.5,
+        "wall_s": 0.6176,
+        "peak_rss_mb": 29.6,
         "threads": 10,
-        "ns_per_iter_thread": 0.4203,
+        "ns_per_iter_thread": 0.4238,
         "secs": {
           "orbit": 0.014,
           "bla": 0.001,
-          "pixels": 0.475,
-          "post": 0.101,
+          "pixels": 0.479,
+          "post": 0.099,
           "save": 0.0,
-          "other": 0.0239
+          "other": 0.0246
         },
         "share_pct": {
           "orbit": 2.3,
           "bla": 0.2,
-          "pixels": 77.3,
-          "post": 16.4,
+          "pixels": 77.6,
+          "post": 16.0,
           "save": 0.0,
-          "other": 3.9
+          "other": 4.0
         },
         "dominant": "pixels"
       },
@@ -838,8 +855,8 @@
         "perturb_fallback_ratio": 0.0,
         "n_perf_lines": 1,
         "status": "ok",
-        "wall_s": 0.085,
-        "peak_rss_mb": 13.8,
+        "wall_s": 0.0849,
+        "peak_rss_mb": 14.0,
         "threads": 10,
         "ns_per_iter_thread": 0.3827,
         "secs": {
@@ -848,7 +865,7 @@
           "pixels": 0.057,
           "post": 0.002,
           "save": 0.0,
-          "other": 0.024
+          "other": 0.0239
         },
         "share_pct": {
           "orbit": 2.4,
@@ -856,7 +873,7 @@
           "pixels": 67.1,
           "post": 2.4,
           "save": 0.0,
-          "other": 28.2
+          "other": 28.1
         },
         "dominant": "pixels"
       },
@@ -865,42 +882,42 @@
         "algo": "Perturbation",
         "tier": "bytecode_exp",
         "device": "Cpu",
-        "ns_per_iter": 0.0304,
+        "ns_per_iter": 0.0277,
         "avg_iter_px": 27584.0,
         "max_iter_px": 28021,
         "orbit_s": 0.009,
         "bla_s": 0.002,
-        "pixels_s": 0.055,
+        "pixels_s": 0.05,
         "post_s": 0.003,
         "variants": "bla",
-        "render_s": 0.07,
+        "render_s": 0.06,
         "save_s": 0.0,
-        "gen_total_s": 0.07,
+        "gen_total_s": 0.06,
         "dd_escalation": false,
         "reliability_flagged_pct": 0.0397,
         "nucleus_period": null,
         "perturb_fallback_ratio": 0.0,
         "n_perf_lines": 1,
         "status": "ok",
-        "wall_s": 0.0928,
-        "peak_rss_mb": 48.7,
+        "wall_s": 0.0876,
+        "peak_rss_mb": 51.0,
         "threads": 10,
-        "ns_per_iter_thread": 0.3042,
+        "ns_per_iter_thread": 0.2766,
         "secs": {
           "orbit": 0.009,
           "bla": 0.002,
-          "pixels": 0.055,
+          "pixels": 0.05,
           "post": 0.003,
           "save": 0.0,
-          "other": 0.0238
+          "other": 0.0236
         },
         "share_pct": {
-          "orbit": 9.7,
-          "bla": 2.2,
-          "pixels": 59.3,
-          "post": 3.2,
+          "orbit": 10.3,
+          "bla": 2.3,
+          "pixels": 57.1,
+          "post": 3.4,
           "save": 0.0,
-          "other": 25.7
+          "other": 27.0
         },
         "dominant": "pixels"
       },
@@ -909,15 +926,15 @@
         "algo": "Perturbation",
         "tier": "bytecode_exp",
         "device": "Cpu",
-        "ns_per_iter": 0.0275,
+        "ns_per_iter": 0.0248,
         "avg_iter_px": 16634.0,
         "max_iter_px": 16799,
         "orbit_s": 0.007,
         "bla_s": 0.001,
-        "pixels_s": 0.03,
+        "pixels_s": 0.027,
         "post_s": 0.0,
         "variants": "bla",
-        "render_s": 0.04,
+        "render_s": 0.03,
         "save_s": 0.0,
         "gen_total_s": 0.04,
         "dd_escalation": false,
@@ -926,25 +943,25 @@
         "perturb_fallback_ratio": 0.0,
         "n_perf_lines": 1,
         "status": "ok",
-        "wall_s": 0.0638,
-        "peak_rss_mb": 23.8,
+        "wall_s": 0.0604,
+        "peak_rss_mb": 23.9,
         "threads": 10,
-        "ns_per_iter_thread": 0.2752,
+        "ns_per_iter_thread": 0.2477,
         "secs": {
           "orbit": 0.007,
           "bla": 0.001,
-          "pixels": 0.03,
+          "pixels": 0.027,
           "post": 0.0,
           "save": 0.0,
-          "other": 0.0258
+          "other": 0.0254
         },
         "share_pct": {
-          "orbit": 11.0,
-          "bla": 1.6,
-          "pixels": 47.1,
+          "orbit": 11.6,
+          "bla": 1.7,
+          "pixels": 44.7,
           "post": 0.0,
           "save": 0.0,
-          "other": 40.4
+          "other": 42.0
         },
         "dominant": "pixels"
       },
@@ -970,8 +987,8 @@
         "perturb_fallback_ratio": 0.0,
         "n_perf_lines": 1,
         "status": "ok",
-        "wall_s": 0.0357,
-        "peak_rss_mb": 12.0,
+        "wall_s": 0.0343,
+        "peak_rss_mb": 11.9,
         "threads": 10,
         "ns_per_iter_thread": 0.637,
         "secs": {
@@ -980,15 +997,15 @@
           "pixels": 0.009,
           "post": 0.0,
           "save": 0.0,
-          "other": 0.0267
+          "other": 0.0253
         },
         "share_pct": {
           "orbit": 0.0,
           "bla": 0.0,
-          "pixels": 25.2,
+          "pixels": 26.2,
           "post": 0.0,
           "save": 0.0,
-          "other": 74.8
+          "other": 73.8
         },
         "dominant": "other"
       },
@@ -997,40 +1014,40 @@
         "algo": "Perturbation",
         "tier": "bytecode_f64",
         "device": "Cpu",
-        "ns_per_iter": 0.0016,
+        "ns_per_iter": 0.0017,
         "avg_iter_px": 3921444.0,
         "max_iter_px": 5000000,
-        "orbit_s": 0.454,
+        "orbit_s": 0.455,
         "bla_s": 0.013,
-        "pixels_s": 0.422,
-        "post_s": 0.378,
+        "pixels_s": 0.426,
+        "post_s": 0.326,
         "variants": "harmonic_lla",
-        "render_s": 1.27,
+        "render_s": 1.22,
         "save_s": 0.0,
-        "gen_total_s": 1.27,
+        "gen_total_s": 1.22,
         "dd_escalation": false,
         "reliability_flagged_pct": 0.7202,
         "nucleus_period": null,
         "perturb_fallback_ratio": 0.0,
         "n_perf_lines": 1,
         "status": "ok",
-        "wall_s": 1.2942,
+        "wall_s": 1.2462,
         "peak_rss_mb": 329.2,
         "threads": 10,
-        "ns_per_iter_thread": 0.0164,
+        "ns_per_iter_thread": 0.0166,
         "secs": {
-          "orbit": 0.454,
+          "orbit": 0.455,
           "bla": 0.013,
-          "pixels": 0.422,
-          "post": 0.378,
+          "pixels": 0.426,
+          "post": 0.326,
           "save": 0.0,
-          "other": 0.0272
+          "other": 0.0262
         },
         "share_pct": {
-          "orbit": 35.1,
+          "orbit": 36.5,
           "bla": 1.0,
-          "pixels": 32.6,
-          "post": 29.2,
+          "pixels": 34.2,
+          "post": 26.2,
           "save": 0.0,
           "other": 2.1
         },
@@ -1041,20 +1058,20 @@
     "threads": 10,
     "peak_rss_mb_max": 329.2,
     "cumulative_secs": {
-      "orbit": 0.488,
+      "orbit": 0.489,
       "bla": 0.017,
       "pixels": 1.096,
-      "post": 0.485,
+      "post": 0.431,
       "save": 0.0,
-      "other": 0.2503
+      "other": 0.2451
     },
     "cumulative_share_pct": {
-      "orbit": 20.9,
+      "orbit": 21.5,
       "bla": 0.7,
-      "pixels": 46.9,
-      "post": 20.8,
+      "pixels": 48.1,
+      "post": 18.9,
       "save": 0.0,
-      "other": 10.7
+      "other": 10.8
     },
     "dominant_counts": {
       "other": 4,
@@ -1073,81 +1090,81 @@
     "status": "ok",
     "entries": {
       "cpu_std_f64": {
-        "iters_per_sec": 8624704883.227175,
+        "iters_per_sec": 15910360053.883692,
         "width": 1024,
         "height": 1024,
-        "seconds": 0.0313215,
-        "ns_per_iter": 0.116
+        "seconds": 0.016978792,
+        "ns_per_iter": 0.063
       },
       "cpu_perturb_f64": {
-        "iters_per_sec": 19721201058.237946,
+        "iters_per_sec": 19750474287.929302,
         "width": 512,
         "height": 512,
-        "seconds": 2.292357417,
+        "seconds": 2.288959792,
         "ns_per_iter": 0.051
       },
       "cpu_perturb_exp": {
-        "iters_per_sec": 48824862379.05017,
+        "iters_per_sec": 56152057157.90041,
         "width": 1024,
         "height": 1024,
-        "seconds": 2.308322791,
-        "ns_per_iter": 0.02
+        "seconds": 2.007113333,
+        "ns_per_iter": 0.018
       },
       "cpu_perturb_dd": {
-        "iters_per_sec": 849562575.9219558,
+        "iters_per_sec": 851836604.1802454,
         "width": 128,
         "height": 128,
-        "seconds": 3.325861042,
-        "ns_per_iter": 1.177
+        "seconds": 3.316982459,
+        "ns_per_iter": 1.174
       },
       "cpu_perturb_f64_mid": {
-        "iters_per_sec": 1994854859.2906215,
+        "iters_per_sec": 1993752113.5286748,
         "width": 1024,
         "height": 1024,
-        "seconds": 4.44448875,
-        "ns_per_iter": 0.501
+        "seconds": 4.446947,
+        "ns_per_iter": 0.502
       },
       "gpu_std_f32": {
-        "iters_per_sec": 10573149097.451874,
+        "iters_per_sec": 10645311978.263979,
         "width": 2048,
         "height": 2048,
-        "seconds": 0.102192833,
-        "ns_per_iter": 0.095
+        "seconds": 0.101500084,
+        "ns_per_iter": 0.094
       },
       "gpu_perturb_f32": {
-        "iters_per_sec": 5107839748.597018,
+        "iters_per_sec": 5119964544.090272,
         "width": 1024,
         "height": 1024,
-        "seconds": 1.735784666,
-        "ns_per_iter": 0.196
+        "seconds": 1.731674084,
+        "ns_per_iter": 0.195
       }
     },
-    "wall_s": 17.968
+    "wall_s": 17.554
   },
   "beyond_f3": {
     "speed_wins": [],
     "correctness_wins": []
   },
   "speed_self": {
-    "geomean": 0.6948,
+    "geomean": 0.9568,
     "n": 10,
     "worst": {
-      "case": "flake",
-      "ratio": 2.1336
+      "case": "e113",
+      "ratio": 1.0645
     },
     "ratios": {
-      "test5": 0.6667,
-      "spiral": 0.4839,
-      "flake": 2.1336,
-      "glitch_test_2": 1.7104,
-      "e50": 0.9043,
-      "e113": 1.0462,
-      "e401": 0.1877,
-      "e1000": 0.1235,
-      "floral_fantasy": 1.037,
-      "dragon": 0.9796
+      "test5": 1.0424,
+      "spiral": 0.9167,
+      "flake": 1.002,
+      "glitch_test_2": 0.5869,
+      "e50": 1.0135,
+      "e113": 1.0645,
+      "e401": 1.044,
+      "e1000": 1.0266,
+      "floral_fantasy": 0.9802,
+      "dragon": 1.0099
     },
-    "baseline_sha": "98dc47a"
+    "baseline_sha": "4bfbdba"
   },
   "gaps": []
 }
