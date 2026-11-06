@@ -18,17 +18,30 @@ use crate::fractal::bytecode::bla_dual::BLA_SKIP_LEVELS;
 use crate::fractal::perturbation::dd::{ComplexDDExp, DoubleDouble};
 use crate::fractal::perturbation::types::FloatExp;
 
-/// Epsilon de validité de la table BLA dd = **2⁻¹⁰⁶** (u du double-double).
-/// Partagé par le tier dd plein cadre et la correction dd des pixels non
-/// fiables (G9.6).
+/// Epsilon de validité de la table BLA dd = **2⁻⁸⁰**, GARDÉ par le traqueur
+/// de fiabilité du tier dd. Partagé par le tier dd plein cadre et la
+/// correction dd des pixels non fiables (G9.6).
 ///
-/// ⚠️ N'était 2⁻⁸⁰ que par calibrage sur les presets QA, sous l'hypothèse
-/// « erreur par saut ~ε/2 quelle que soit sa longueur » — FAUSSE : chacun des
-/// l pas fusionnés abandonne jusqu'à ε, soit ≈ l·ε par saut. Jugé contre GMP
-/// pur convergé (lethal_weapon 96², 1,6 M itérations, vérité stable de 400 à
-/// 4688 b) : à 2⁻⁸⁰ le tier dd rendait ~15 % de pixels faux (échantillon
-/// 41/48 justes) ; à 2⁻¹⁰⁶ 29/30, autant que le dd SANS BLA (29/30).
-pub const DD_BLA_EPSILON: f64 = 1.232_595_164_407_831e-32; // 2^-106
+/// Histoire en trois temps (2026-11-06), à ne pas refaire :
+/// 1. 2⁻⁸⁰ SANS garde-fou laissait des pixels dd faux : l'hypothèse « erreur
+///    par saut ~ε quelle que soit sa longueur » est fausse, un saut de l pas
+///    en abandonne ≈ l·ε (lethal_weapon 96² vs GMP convergé : 59/78 justes).
+/// 2. Passé à 2⁻¹⁰⁶ : justesse du dd sans BLA (70/78)… et son coût — à cet ε
+///    la table ne saute presque plus rien (+24 à +35 % sur les scènes qui
+///    escaladent : e50 0,61 → 0,75 s, dragon 1,25 → 1,46 s à 256²).
+/// 3. Le tier dd a reçu son propre traqueur (`ShadowTrackerDd`, troncature
+///    l·ε) avec second essai SANS BLA puis GMP. Un saut dont la troncature
+///    compte fait s'emballer la borne, et le pixel est refait exactement : ε
+///    peut donc redevenir 2⁻⁸⁰. Vérifié : cartes d'itérations IDENTIQUES à
+///    celles de 2⁻¹⁰⁶ sur e50, dragon, e227, golden_spider, rug, magic à
+///    256², et mêmes écarts au juge dd (pixel pour pixel en nombre) sur 75
+///    cas du corpus à 96².
+/// ⚠️ Cet ε n'est sûr QUE sous le traqueur dd (`FRACTALL_RELIABILITY=off` ou
+/// `FRACTALL_RELIABILITY_DD=0` le retire : on retrouve alors l'état 1). Le
+/// traqueur lit cette constante pour son terme l·ε : ne pas les désaccorder.
+/// Contrepartie mesurée : quelques pixels de plus s'emballent et partent au
+/// GMP (e227 5 → 7, golden_spider 10 → 16 à 256²).
+pub const DD_BLA_EPSILON: f64 = 8.271_806_125_530_277e-25; // 2^-80
 
 /// Matrice 2×2 à coefficients `DoubleDouble` (~106 b). Range f64 (pas
 /// d'exposant séparé) : suffit car les `A` réellement CONSULTÉS restent bornés
@@ -274,15 +287,21 @@ mod tests {
     use crate::fractal::perturbation::dd::DoubleDoubleExp;
     use num_complex::Complex64;
 
-    /// VERROU : l'ε BLA dd ne doit pas dépasser l'u du double-double. À 2⁻⁸⁰
-    /// (calibrage presets) le tier dd rendait des pixels faux vs GMP pur :
-    /// lethal_weapon 96² ~24 % (59/78 justes) contre ~10 % à 2⁻¹⁰⁶ (= dd sans
-    /// BLA) ; en escalade de production, golden_spider 256² 24 px et e227
-    /// 22 px changent et la nouvelle valeur est juste sur 16/20 contrôlés (0/20
-    /// pour l'ancienne).
+    /// VERROU d'accord entre la table et le traqueur : l'ε de la BLA dd vaut
+    /// 2⁻⁸⁰ et le traqueur dd est actif par défaut — l'un sans l'autre rend
+    /// des pixels faux (cf. la doc de `DD_BLA_EPSILON`). Qui change l'ε doit
+    /// re-vérifier la justesse (axe `truth` du harness) ; qui coupe le
+    /// traqueur par défaut doit repasser l'ε à 2⁻¹⁰⁶.
     #[test]
-    fn dd_bla_epsilon_is_double_double_unit_roundoff() {
-        assert!(DD_BLA_EPSILON <= 2f64.powi(-106), "ε dd = {DD_BLA_EPSILON:e}");
+    fn dd_bla_epsilon_is_paired_with_the_dd_tracker() {
+        assert_eq!(DD_BLA_EPSILON, 2f64.powi(-80));
+        // Le traqueur compte bien la troncature l·ε avec CET ε : un saut de
+        // 2²⁰ pas depuis une borne nulle laisse au moins l·ε·|Aδ|.
+        use crate::fractal::bytecode::reliability::ShadowTrackerDd;
+        let l = 1u32 << 20;
+        let mut tracker = ShadowTrackerDd::new(0.0, DD_BLA_EPSILON);
+        tracker.bla(1.0, 1.0, 0.0, l);
+        assert!(tracker.err >= DD_BLA_EPSILON * l as f64, "borne {:e}", tracker.err);
     }
 
     fn cdd(re: f64, im: f64) -> ComplexDDExp {

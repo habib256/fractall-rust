@@ -221,7 +221,7 @@ fn build_bla_entry(
         && crate::fractal::wisdom::dd_tier_applicable(params)
         && ref_orbit.has_dd()
     {
-        use crate::fractal::bytecode::bla_dd::DD_BLA_EPSILON; // 2^-80
+        use crate::fractal::bytecode::bla_dd::DD_BLA_EPSILON;
         Some(
             crate::fractal::bytecode::bla_dd::BlaTableDd::build_mandelbrot(
                 &ref_orbit.z_ref_dd,
