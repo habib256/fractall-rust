@@ -17,7 +17,7 @@
 use num_complex::Complex64;
 
 use super::ScaledObs;
-use crate::fractal::bytecode::bla_dual_exp::Mat2Exp;
+use crate::fractal::bytecode::bla_dual_exp::{Mat2Exp, SIGMA_E_NONE};
 use crate::fractal::bytecode::reliability::{ShadowTrackerExp, StepObserverExp, EXP_TRACK_GAMMA};
 use crate::fractal::perturbation::types::{ComplexExp, FloatExp};
 
@@ -46,6 +46,9 @@ const M_HI: f64 = f64::from_bits(((200 + 1023) as u64) << 52);
 /// Au-delà, E absolu > 2⁶⁰⁰ (emballé) : traqueur exact.
 const EE_MAX: i32 = 600;
 
+/// `fe` invalide (aucun exposant de cadre réel ne l'atteint).
+const FE_NONE: i32 = i32::MIN;
+
 /// Traqueur scaled : la borne vit dans `(em, ee)` ; `trk.err` n'est à jour
 /// qu'après [`ScaledTracker::sync`].
 #[derive(Clone, Copy, Debug)]
@@ -56,6 +59,12 @@ pub struct ScaledTracker {
     dcm: f64,
     dce: i32,
     exact: bool,
+    /// Cache du pas direct, valable pour le cadre `2^fe` de δ : `fe == e`
+    /// garantit `!exact`, `e ≤ 100` et `dce − e ≤ 900` (gardes du hook), et
+    /// `fdcf = dcm·2^(dce−e)`. Ne dépend que de `e`, qui ne change qu'aux
+    /// renormalisations de δ (≥ 64 binades) : recalculé hors du chemin chaud.
+    fe: i32,
+    fdcf: f64,
 }
 
 impl ScaledTracker {
@@ -68,6 +77,8 @@ impl ScaledTracker {
             dcm: dc.mantissa,
             dce: ex(dc),
             exact: false,
+            fe: FE_NONE,
+            fdcf: 0.0,
         };
         t.reload();
         t
@@ -88,6 +99,42 @@ impl ScaledTracker {
         self.em = e.mantissa;
         self.ee = e.exponent;
         self.exact = e.mantissa != 0.0 && e.exponent > EE_MAX;
+        self.fe = FE_NONE;
+    }
+
+    /// Renormalisation paresseuse de `(em, ee)` hors de `[M_LO, M_HI]` (queue
+    /// de [`Self::combine`], partagée par le pas direct chaud).
+    #[inline(always)]
+    fn renorm_tail(&mut self) {
+        let a = self.em.abs();
+        if !(M_LO..=M_HI).contains(&a) {
+            self.renorm_slow(a);
+        }
+    }
+
+    #[inline(never)]
+    #[cold]
+    fn renorm_slow(&mut self, a: f64) {
+        let biased = ((a.to_bits() >> 52) & 0x7ff) as i32;
+        if a == 0.0 {
+            self.ee = 0;
+        } else if biased == 0 || biased == 0x7ff {
+            // sous-normal / non fini : retour au traqueur exact
+            let f = FloatExp::from_f64(self.em);
+            self.trk.set_err(f.mantissa, f.exponent + self.ee);
+            self.reload();
+            self.exact = true;
+            return;
+        } else {
+            let k = biased - 1023;
+            self.em *= p2(-k);
+            self.ee += k;
+        }
+        if self.ee > EE_MAX {
+            self.sync();
+            self.reload();
+            self.exact = true;
+        }
     }
 
     /// `E ← E·mul·2^mul_e + lf·2^e`, puis renormalisation paresseuse.
@@ -161,6 +208,23 @@ impl ScaledObs for ScaledTracker {
     /// Pas direct : `z = Z + δ`, `local = (|2Zδ|₁ + |δ|² + |dc|₁)·γ` (cadre 2^e).
     #[inline(always)]
     fn direct_scaled(&mut self, z: Complex64, d: Complex64, e: i32, tzd: Complex64) -> bool {
+        if e == self.fe && e == self.ee {
+            // Chemin chaud : borne déjà dans le cadre de δ (ee == e). Mêmes
+            // opérations au bit près que le chemin général ci-dessous :
+            // `p2(ee) = p2(e)`, `combine` sans alignement (e == ee) et
+            // `lf·p2(0) = lf` exact ; em = 0 ⇒ `0·w + lf = lf` (w fini : |z| <
+            // ER sous la garde de bailout du tour rapide).
+            let se = p2(e);
+            let (zr, zi) = (z.re + d.re * se, z.im + d.im * se);
+            let z_abs = (zr * zr + zi * zi).sqrt();
+            let w = z_abs * 2.0 + self.em * se;
+            let l1 = tzd.re.abs() + tzd.im.abs();
+            let nd = (d.re * d.re + d.im * d.im) * se;
+            let lf = (l1 + nd + self.fdcf) * EXP_TRACK_GAMMA;
+            self.em = self.em * w + lf;
+            self.renorm_tail();
+            return true;
+        }
         if self.exact || e > 100 || (self.dcm != 0.0 && self.dce - e > 900) {
             return false;
         }
@@ -174,33 +238,21 @@ impl ScaledObs for ScaledTracker {
         let dcf = self.dcm * p2(self.dce - e);
         let lf = (l1 + nd + dcf) * EXP_TRACK_GAMMA;
         self.combine(w, 0, lf, e);
+        if !self.exact {
+            self.fe = e;
+            self.fdcf = dcf;
+        }
         true
     }
 
     /// Saut BLA : `E ← σ₁(A)·E + (|Aδ|₁ + |B·dc|₁)·(l·ε + γ)` (cadre 2^ep).
     #[inline(always)]
-    fn bla_scaled(&mut self, a: &Mat2Exp, ad: Complex64, bt: [f64; 4], ep: i32, l: u32) -> bool {
-        if self.exact {
+    fn bla_scaled(&mut self, sigma: (f64, i32), ad: Complex64, bt: [f64; 4], ep: i32, l: u32) -> bool {
+        // σ₁(A) précalculé à la construction de la table (`sigma_scaled`).
+        let (sf, es) = sigma;
+        if self.exact || es < SIGMA_E_NONE {
             return false;
         }
-        let conformal = a.m00 == a.m11 && a.m01 == FloatExp::zero() - a.m10;
-        let es = if conformal {
-            ex(a.m00).max(ex(a.m10))
-        } else {
-            ex(a.m00).max(ex(a.m01)).max(ex(a.m10)).max(ex(a.m11))
-        };
-        if es < -(1 << 27) {
-            return false;
-        }
-        let f = |x: FloatExp| x.mantissa * p2(ex(x) - es);
-        let n = if conformal {
-            let (x0, x1) = (f(a.m00), f(a.m10));
-            x0 * x0 + x1 * x1
-        } else {
-            let (x0, x1, x2, x3) = (f(a.m00), f(a.m01), f(a.m10), f(a.m11));
-            x0 * x0 + x1 * x1 + x2 * x2 + x3 * x3
-        };
-        let sf = n.sqrt();
         let l1a = ad.re.abs() + ad.im.abs();
         let l1b = (bt[0] + bt[1]).abs() + (bt[2] + bt[3]).abs();
         let trunc = self.trk.bla_epsilon() * l as f64 + EXP_TRACK_GAMMA;

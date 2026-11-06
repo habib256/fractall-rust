@@ -335,6 +335,54 @@ pub fn build_bla_single_step_exp(
     }
 }
 
+/// Exposant sentinelle d'un σ₁ inutilisable (A nulle) : `sigma_e` en dessous
+/// ⇒ le traqueur scaled passe par son hook ComplexExp.
+pub const SIGMA_E_NONE: i32 = -(1 << 27);
+
+/// σ₁(A) du traqueur exp, dans le cadre `2^es` (`es` = plus grand exposant
+/// des coefficients sommés) : `(sf, es)` avec `σ₁ = sf·2^es`. Formule EXACTE
+/// des hooks `bla_scaled` (|a| si A est conforme — Mandelbrot —, Frobenius
+/// sinon) ; ne dépend que du nœud, d'où son précalcul à la construction de
+/// la table (il était refait à chaque saut). `es < SIGMA_E_NONE` ⇒ A nulle.
+pub fn sigma_scaled(a: &Mat2Exp) -> (f64, i32) {
+    #[inline(always)]
+    fn p2(k: i32) -> f64 {
+        if k < -1022 {
+            0.0
+        } else if k > 1023 {
+            f64::INFINITY
+        } else {
+            f64::from_bits(((k + 1023) as u64) << 52)
+        }
+    }
+    #[inline(always)]
+    fn ex(x: FloatExp) -> i32 {
+        if x.mantissa == 0.0 {
+            -(1 << 28)
+        } else {
+            x.exponent
+        }
+    }
+    let conformal = a.m00 == a.m11 && a.m01 == FloatExp::zero() - a.m10;
+    let es = if conformal {
+        ex(a.m00).max(ex(a.m10))
+    } else {
+        ex(a.m00).max(ex(a.m01)).max(ex(a.m10)).max(ex(a.m11))
+    };
+    if es < SIGMA_E_NONE {
+        return (0.0, es);
+    }
+    let f = |x: FloatExp| x.mantissa * p2(ex(x) - es);
+    let n = if conformal {
+        let (x0, x1) = (f(a.m00), f(a.m10));
+        x0 * x0 + x1 * x1
+    } else {
+        let (x0, x1, x2, x3) = (f(a.m00), f(a.m01), f(a.m10), f(a.m11));
+        x0 * x0 + x1 * x1 + x2 * x2 + x3 * x3
+    };
+    (n.sqrt(), es)
+}
+
 /// BLA multi-step FloatExp (mirror de `BlaMultiStep`).
 #[derive(Clone, Copy, Debug)]
 pub struct BlaMultiStepExp {
@@ -342,17 +390,37 @@ pub struct BlaMultiStepExp {
     pub b: Mat2Exp,
     pub r2: FloatExp,
     pub l: u32,
+    /// σ₁(A) précalculé (cf. [`sigma_scaled`]) : `sigma_m · 2^sigma_e`.
+    /// `sigma_e` loge dans le remplissage après `l` ; +8 octets par nœud.
+    pub sigma_e: i32,
+    pub sigma_m: f64,
 }
 
 impl BlaMultiStepExp {
+    /// Nœud de coefficients `a`, `b` ; σ₁(A) n'est PAS calculé ici (la
+    /// construction fusionne tous les niveaux, dont les bas niveaux jamais
+    /// consultés) : [`BlaTableUnifiedExp::build`] le remplit sur les niveaux
+    /// conservés ([`Self::with_sigma`]).
+    pub fn new(a: Mat2Exp, b: Mat2Exp, r2: FloatExp, l: u32) -> Self {
+        Self {
+            a,
+            b,
+            r2,
+            l,
+            sigma_e: SIGMA_E_NONE - 1,
+            sigma_m: 0.0,
+        }
+    }
+
+    /// Pose σ₁(A) ([`sigma_scaled`]).
+    pub fn with_sigma(mut self) -> Self {
+        (self.sigma_m, self.sigma_e) = sigma_scaled(&self.a);
+        self
+    }
+
     /// Promotion d'un single-step (avec `B = I`, `l = 1`).
     pub fn from_single(s: BlaSingleStepExp) -> Self {
-        Self {
-            a: s.a,
-            b: Mat2Exp::identity(),
-            r2: s.r2,
-            l: 1,
-        }
+        Self::new(s.a, Mat2Exp::identity(), s.r2, 1)
     }
 
     /// Compose deux BLAs adjacents `T_z = T_y ∘ T_x`. Formules F3 identiques à
@@ -388,12 +456,7 @@ impl BlaMultiStepExp {
             (ry - sup_bx * c).max(zero).div(sup_ax)
         };
         let rz = rx.min(inner);
-        Self {
-            a: az_x,
-            b: bz,
-            r2: rz.sqr(),
-            l: x.l + y.l,
-        }
+        Self::new(az_x, bz, rz.sqr(), x.l + y.l)
     }
 }
 
@@ -438,6 +501,10 @@ impl BlaTableUnifiedExp {
         for l in 0..BLA_SKIP_LEVELS.min(levels.len()) {
             levels[l] = Vec::new();
             levels[l].shrink_to_fit();
+        }
+        // σ₁(A) des niveaux consultés (les seuls que `lookup_fexp` renvoie).
+        for node in levels.iter_mut().flatten() {
+            *node = node.with_sigma();
         }
         Self { levels }
     }

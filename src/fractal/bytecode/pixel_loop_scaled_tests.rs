@@ -98,6 +98,71 @@ fn scaled_tracked_flags_same_pixels_as_floatexp_on_olbaid2() {
     assert!(flagged > 0, "grille sans pixel non fiable : verrou vide");
 }
 
+#[path = "pixel_loop_scaled_track_ref.rs"]
+mod track_ref;
+
+/// Verrou du traqueur léger optimisé (chemin chaud du pas direct, σ₁(A)
+/// précalculé dans la table) : MÊME borne au bit près (mantisse ET exposant)
+/// et même résultat que le code d'avant ([`track_ref::RefTracker`]), pixel
+/// par pixel, sur des cas profonds du corpus qui exercent sauts, rebases,
+/// tours lents et pixels flaggés. Et σ₁ précalculé == σ₁ recalculé à chaque
+/// saut, sur TOUS les nœuds consultables de la table.
+#[test]
+fn light_tracker_matches_reference_bit_for_bit() {
+    let eps_f64 = 1.0 / (1u64 << 53) as f64;
+    for (stem, step) in [("e401", 5), ("olbaid2", 4), ("e1298", 6)] {
+        let g = grid_setup(stem, 256, step);
+        let mut nodes = 0usize;
+        for node in g.bla.levels.iter().flatten() {
+            let want = track_ref::sigma_reference(&node.a);
+            let got = (node.sigma_e >= crate::fractal::bytecode::bla_dual_exp::SIGMA_E_NONE)
+                .then_some((node.sigma_m, node.sigma_e));
+            assert_eq!(
+                got.map(|(m, e)| (m.to_bits(), e)),
+                want.map(|(m, e)| (m.to_bits(), e)),
+                "{stem} σ₁ du nœud l={}",
+                node.l
+            );
+            nodes += 1;
+        }
+        assert!(nodes > 0, "{stem} : table vide");
+        let mut nonzero = 0u32;
+        let mut flagged = 0u32;
+        for &dc in &g.dcs {
+            let z0 = ComplexExp::zero();
+            let mut new = ScaledTracker::new(ShadowTrackerExp::new(dc, eps_f64));
+            let (rn, _) = scaled_impl(&g.orbit, Some(&g.bla), dc, z0, g.limits, &mut new);
+            new.sync();
+            let mut old = track_ref::RefTracker::new(ShadowTrackerExp::new(dc, eps_f64));
+            let (ro, _) = scaled_impl(&g.orbit, Some(&g.bla), dc, z0, g.limits, &mut old);
+            old.sync();
+            assert_eq!(rn.iteration, ro.iteration, "{stem} {dc:?} itération");
+            assert_eq!(
+                (rn.z_final.re.to_bits(), rn.z_final.im.to_bits()),
+                (ro.z_final.re.to_bits(), ro.z_final.im.to_bits()),
+                "{stem} {dc:?} z_final"
+            );
+            assert_eq!(
+                (new.trk.err.mantissa.to_bits(), new.trk.err.exponent),
+                (old.trk.err.mantissa.to_bits(), old.trk.err.exponent),
+                "{stem} {dc:?} borne"
+            );
+            nonzero += (new.trk.err.mantissa != 0.0) as u32;
+            flagged += (crate::fractal::perturbation::delta::escape_undetermined(
+                old.trk.error_bound(),
+                ro.z_final,
+                g.limits.bailout,
+            ) >= crate::fractal::bytecode::reliability::reliability_runaway() as f32)
+                as u32;
+        }
+        eprintln!("{stem}: {} pixels, {nodes} nœuds, {flagged} flaggés", g.dcs.len());
+        assert!(nonzero as usize == g.dcs.len(), "{stem} : bornes nulles");
+        if stem == "olbaid2" {
+            assert!(flagged > 0, "olbaid2 : aucun pixel flaggé, verrou vide");
+        }
+    }
+}
+
 /// Diagnostic de coût du traqueur (`FRACTALL_SCALED_TIMING=1`, cas
 /// `FRACTALL_SCALED_CASE`, défaut e318) : boucle scaled nue vs tracée.
 #[test]

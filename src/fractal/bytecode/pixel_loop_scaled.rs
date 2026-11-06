@@ -338,11 +338,12 @@ pub trait ScaledObs: StepObserverExp {
     fn direct_scaled(&mut self, _z: Complex64, _d: Complex64, _e: i32, _tzd: Complex64) -> bool {
         false
     }
-    /// Hook `bla` en f64 (cadre 2^ep) ; `false` ⇒ hook ComplexExp.
+    /// Hook `bla` en f64 (cadre 2^ep) ; `sigma` = σ₁(A) précalculé du nœud
+    /// (`BlaMultiStepExp::sigma_m · 2^sigma_e`) ; `false` ⇒ hook ComplexExp.
     #[inline(always)]
     fn bla_scaled(
         &mut self,
-        _a: &Mat2Exp,
+        _sigma: (f64, i32),
         _ad: Complex64,
         _bt: [f64; 4],
         _ep: i32,
@@ -363,8 +364,8 @@ impl ScaledObs for ShadowTrackerExp {
         ShadowTrackerExp::direct_scaled(self, z, d, e, tzd)
     }
     #[inline(always)]
-    fn bla_scaled(&mut self, a: &Mat2Exp, ad: Complex64, bt: [f64; 4], ep: i32, l: u32) -> bool {
-        ShadowTrackerExp::bla_scaled(self, a, ad, bt, ep, l)
+    fn bla_scaled(&mut self, sigma: (f64, i32), ad: Complex64, bt: [f64; 4], ep: i32, l: u32) -> bool {
+        ShadowTrackerExp::bla_scaled(self, sigma, ad, bt, ep, l)
     }
 }
 
@@ -764,7 +765,8 @@ fn fast_iter<O: ScaledObs>(
                         if let Some((zr, zn)) = pending_rebase {
                             obs.rebase(zr, zn);
                         }
-                        if !obs.bla_scaled(&node.a, jt.ad, jt.bt, jt.ep, node.l) {
+                        let sigma = (node.sigma_m, node.sigma_e);
+                        if !obs.bla_scaled(sigma, jt.ad, jt.bt, jt.ep, node.l) {
                             obs.bla(&node.a, &node.b, s.to_cexp(), dc, node.l);
                         }
                     }

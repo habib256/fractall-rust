@@ -632,7 +632,7 @@ impl ShadowTrackerExp {
     #[inline(always)]
     pub fn bla_scaled(
         &mut self,
-        a: &Mat2Exp,
+        sigma: (f64, i32),
         ad: Complex64,
         bt: [f64; 4],
         ep: i32,
@@ -655,35 +655,15 @@ impl ShadowTrackerExp {
         fn big(a: f64, b: f64) -> bool {
             a.abs() >= T2 || b.abs() >= T2
         }
-        #[inline(always)]
-        fn ex(x: FloatExp) -> i32 {
-            if x.mantissa == 0.0 {
-                -(1 << 28)
-            } else {
-                x.exponent
-            }
-        }
-        // σ₁(A) dans le cadre 2^es (es = plus grand exposant des coefficients
-        // sommés) : la plus grande composante y vaut ≥ ½, son carré ≥ ¼ ; les
-        // termes sous-débordés (< 2⁻¹⁰²²) sont abandonnés à l'identique.
-        let conformal = a.m00 == a.m11 && a.m01 == FloatExp::zero() - a.m10;
-        let es = if conformal {
-            ex(a.m00).max(ex(a.m10))
-        } else {
-            ex(a.m00).max(ex(a.m01)).max(ex(a.m10)).max(ex(a.m11))
-        };
-        if es < -(1 << 27) {
+        // σ₁(A) = sf·2^es, précalculé à la construction de la table
+        // (`bla_dual_exp::sigma_scaled` : es = plus grand exposant des
+        // coefficients sommés, la plus grande composante y vaut ≥ ½, son carré
+        // ≥ ¼ ; les termes sous-débordés (< 2⁻¹⁰²²) sont abandonnés à
+        // l'identique de la FloatExp).
+        let (sf, es) = sigma;
+        if es < crate::fractal::bytecode::bla_dual_exp::SIGMA_E_NONE {
             return false;
         }
-        let f = |x: FloatExp| x.mantissa * p2(ex(x) - es);
-        let n = if conformal {
-            let (x0, x1) = (f(a.m00), f(a.m10));
-            x0 * x0 + x1 * x1
-        } else {
-            let (x0, x1, x2, x3) = (f(a.m00), f(a.m01), f(a.m10), f(a.m11));
-            x0 * x0 + x1 * x1 + x2 * x2 + x3 * x3
-        };
-        let sf = n.sqrt();
         // local = (|Aδ|₁ + |B·dc|₁)·(l·ε + γ), cadre 2^ep.
         let l1a = ad.re.abs() + ad.im.abs();
         let (b_re, b_im) = (bt[0] + bt[1], bt[2] + bt[3]);
