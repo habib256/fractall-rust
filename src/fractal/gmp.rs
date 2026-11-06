@@ -1139,6 +1139,19 @@ fn magnet_mandelbrot_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
 fn burning_ship_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     let mut z = g.seed.clone();
     let mut i = 0u32;
+    // En place (cf. `mandelbrot_mpc`) quand `z` est à la précision `g.prec`
+    // — sinon la boucle d'origine, qui ré-arrondit à `g.prec` à chaque tour.
+    if z.prec() == (g.prec, g.prec) {
+        let mut sq = sqr_scratch(&z);
+        while i < g.iteration_max && mpc_below_bailout(&z, g) {
+            z.mut_real().abs_mut();
+            z.mut_imag().abs_mut();
+            sqr_in_place(&mut z, &mut sq);
+            z += z_pixel;
+            i += 1;
+        }
+        return (i, z);
+    }
     while i < g.iteration_max && mpc_below_bailout(&z, g) {
         let re = z.real().clone().abs();
         let im = z.imag().clone().abs();
@@ -1539,6 +1552,19 @@ mod mpc_loop_tests {
                 }
                 (i, z)
             }
+            FractalType::BurningShip => {
+                let mut z = g.seed.clone();
+                while i < g.iteration_max && exact(&z) {
+                    let re = z.real().clone().abs();
+                    let im = z.imag().clone().abs();
+                    let mut z_temp = complex_from_xy(g.prec, re, im);
+                    z_temp *= z_temp.clone();
+                    z_temp += z_pixel;
+                    z = z_temp;
+                    i += 1;
+                }
+                (i, z)
+            }
             other => panic!("pas de référence pour {other:?}"),
         }
     }
@@ -1548,7 +1574,7 @@ mod mpc_loop_tests {
     /// au bit près, que les boucles d'origine — elles sont le juge de la QA.
     #[test]
     fn in_place_mpc_loops_match_original_loops_bit_for_bit() {
-        for ty in [FractalType::Mandelbrot, FractalType::Julia, FractalType::Tricorn] {
+        for ty in [FractalType::Mandelbrot, FractalType::Julia, FractalType::Tricorn, FractalType::BurningShip] {
             for prec in [64u32, 128, 300, 1024] {
                 for max in [0u32, 1, 2, 50, 400] {
                     let mut params = default_params_for_type(ty, 16, 12);
