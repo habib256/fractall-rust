@@ -12,8 +12,8 @@
 
 ## 🧭 État actuel (2026-11-06) — lire ceci en premier
 
-**2026-11-06, matin — branche `matin-20261106` (au-dessus de `main`, NON
-fusionnée), cinq agents Opus en worktrees + relecture indépendante.** Score
+**2026-11-06, matin — branche `matin-20261106` (67 commits, fusionnée dans
+`main`), cinq agents Opus en worktrees + relectures indépendantes.** Score
 quick après fusion (`harness/history/20261106T043955Z-0473296.json`) : 0 gap,
 quality **17/17**, truth 14/14, precision 12/12, goldens verts ; bench
 `cpu_std_f64` ×1,8, `cpu_perturb_exp` +15 %. Ce que la matinée a établi :
