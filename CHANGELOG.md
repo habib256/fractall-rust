@@ -8,6 +8,58 @@ regroupement par type (Ajouté / Corrigé / Performance / Modifié), et sections
 jalon (`Gx`) pour l'historique. Ce fichier est un résumé actionnable — le détail
 technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
 
+## [Unreleased] — matinée du 2026-11-06 : Julia, points intérieurs, orbite sur deux cœurs
+
+Branche `matin-20261106`. Mesures : Apple M4 10 threads, machine calme, images
+comparées à l'octet ou aux itérations brutes. Détail : `TODO.md` G14.17 à
+G14.21.
+
+### Corrigé (justesse des images)
+- **Julia en perturbation, vue non centrée en 0** — la référence Julia part
+  du centre de la vue (`Z[0] ≠ 0`) et toutes les boucles rebasaient comme si
+  `Z[0] = 0` : 92 à 99 % de pixels faux vs GMP pur dès 1e4, sur CPU et sur
+  GPU. Rebase relatif à `Z[0]` sur tous les chemins (f64, tier exp, GMP,
+  kernels GPU f32 et f64), formé `(Z[m] − Z[0]) + δ` — l'autre ordre rendait
+  100 % de pixels faux sur une vue centrée sur un point périodique.
+- **Traqueur de fiabilité Julia** actif par défaut : il restait 0,7 % de
+  pixels faux non signalés sur les bords à fort nombre d'itérations ;
+  correction en GMP pur sous budget.
+- **Famille Mandelbrot-like à graine non nulle** (métadonnées éditées) :
+  même classe de défaut (19 % de pixels faux) — jamais routée en
+  perturbation, GMP par pixel au-delà de ~1e13.
+- **Chemin GMP hérité** : la sortie finale rendait l'index de référence au
+  lieu de l'itération absolue.
+
+### Performance (toutes sorties identiques au bit)
+- **Points intérieurs : raccourci des cycles exacts** — un point qui ne
+  s'évade pas ne coûte plus `iteration_max` : dès que son état reprend bit
+  pour bit une valeur déjà visitée, le compteur saute un nombre entier de
+  cycles. Vue Mandelbrot par défaut 1440p ×2 ; à 20 000 itérations ×10 ;
+  Magnet Julia ×51, Magnet ×15, Mandelbulb ×11, Multibrot Julia ×9,
+  Newton ×5, Multibrot 2,5 ×5, Nebulabrot ×5, hybrides ×3.
+- **Orbite de référence sur deux cœurs** au-delà de 2048 bits : ×1,1 à
+  2 800 bits, ×1,4 à 5 000, ×1,8-1,9 au-delà de 10 000 (e8000 : 1,28 →
+  0,69 s).
+- **Tier quad-double** entre le double-double et le GMP par pixel : e227
+  256² 3,5 → 2,35 s, golden_spider 1,0 → 0,62 s.
+- **Boucles GMP pures** sans allocation ni norme pleine précision par
+  itération : ×1,8 à ×2,3 (juge de la QA, corrections par pixel, rendus
+  GMP) ; le score standard du harness passe de 18 à 8 minutes.
+- **Traqueur de fiabilité du tier exp** : +42 % → +24 % d'instructions.
+
+### Ajouté
+- CLI : `--julia-re` / `--julia-im` (graine des types Julia).
+- Harness : sondes Julia hors centre dans l'axe fuzz ; outil
+  `scripts/reliability_confusion.py` ; `examples/probe_truth`.
+- Preset quality `julia-edge-e20` ; quatre goldens (Julia hors centre ×2,
+  intérieur à 20 000 itérations, Magnet).
+
+### Mesuré puis écarté
+- Traqueur f64 « moins pessimiste » (le terme l·ε est ce qui attrape les
+  pixels faux) ; boucle f64 à deux voies (−7 % sur e50) ; entrelacement du
+  pas double-double (×1,3, borné par le débit flottant) ; troncature
+  atom-domain pour Tricorn / Burning Ship ; `rayon::join` pour l'orbite.
+
 ## [Unreleased] — nuit d'optimisation et de correction (2026-11-06, Apple M4)
 
 Mesures : Apple M4 10 threads, A/B entrelacés, images comparées à l'octet ou
