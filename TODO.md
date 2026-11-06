@@ -52,12 +52,18 @@ cœurs au-delà de 15 000 bits (G14.3) ; (d) Newton degré ≥ 4 par `powc`
 (décision : change des bits) ; (e) traqueur Julia au tier exp, hybrides
 toujours sans suivi ; (f) chemins hors défaut qui gardent l'ancien rebase
 Julia : `--no-bytecode` (`delta.rs`) et la boucle exp non-HP
-(`FRACTALL_ATOM_PERIOD=0`) ; (g) Mandelbrot à graine non nulle (métadonnées
-éditées) : même classe que Julia, non traité ; (h) calibrer la sonde dd
-(G14.1 k, inchangé).
+(`FRACTALL_ATOM_PERIOD=0`) — contrôle fait sur 9 scènes Julia hors centre :
+`--no-bytecode` == GMP pur, donc peu urgent ; (g) canaux distance /
+intérieur en perturbation : pas de suivi de fiabilité (Julia de bord 1e14 et
+1e20 : 27-28 pixels ≠ GMP sur 4096 avec `--enable-distance-estimation`,
+0 sans) ; (h) calibrer la sonde dd (G14.1 k, inchangé).
+*(Fermé le même matin : Mandelbrot / hybride à graine non nulle — même
+classe que Julia, 19 % de pixels faux mesurés en perturbation ; le sélecteur
+ne les y route plus, verrou
+`seeded_mandelbrot_is_never_rendered_by_perturbation`.)*
 
 **2026-11-06 — nuit d'optimisation ET de correction sur l'Apple M4 (branche
-`nuit-20261105`, ~65 commits au-dessus de `main`, non fusionnée).** Score
+`nuit-20261105`, ~65 commits, fusionnée dans `main` par 33fd601).** Score
 final (`harness/history/20261106T010126Z-4bfbdba.json`, quick, 3 runs,
 machine calme) : **0 gap** ; temps cumulé des 10 cas 3,06 → 2,28 s,
 géomoyenne **0,695×** la baseline du début de nuit ; quality 16/16, fuzz 3/3,

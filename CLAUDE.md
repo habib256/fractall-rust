@@ -844,6 +844,11 @@ voir) ; (2) `z − Z[0]` doit être formé `(Z[m] − Z[0]) + δ`, JAMAIS
 d'un zoom auto-similaire) le pixel rebasait sur δ = 0 — 100 % de pixels
 faux. Verrous `julia_rebase_is_relative_to_reference_origin`,
 `julia_view_centred_on_a_fixed_point_matches_gmp`, preset `julia-edge-e20`.
+Même classe : une famille Mandelbrot-like à **graine non nulle** (z₀ = seed,
+métadonnées éditées) a aussi `Z[0] ≠ 0` — `wisdom::select_algorithm` ne la
+route JAMAIS en perturbation (19 % de pixels faux mesurés ; verrou
+`seeded_mandelbrot_is_never_rendered_by_perturbation`). L'axe fuzz du
+harness sonde désormais Julia HORS CENTRE (`fuzz_scenes.generate_julia`).
 ⚠️ **Aucune lecture d'environnement hors `OnceLock` dans les fichiers du
 chemin par pixel** (verrou de source
 `hot_path_sources_only_read_env_through_once_lock`) : `std::env::var` par

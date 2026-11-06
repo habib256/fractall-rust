@@ -284,8 +284,11 @@ pub fn select_algorithm(params: &FractalParams, device: Device) -> Algorithm {
     // StandardF64 (`iterate_bytecode_f64` cycle aussi les phases). Le GMP
     // par-pixel (`iterate_point_mpc`) ne cycle pas → jamais routé pour un hybride.
     if params.is_hybrid_formula() {
+        // (Graine non nulle : même garde que plus bas — `Z[0] ≠ 0`.)
         if params.engine.algorithm_mode != crate::fractal::types::AlgorithmMode::StandardF64
             && should_use_perturbation(params, false)
+            && params.seed.re == 0.0
+            && params.seed.im == 0.0
         {
             return Algorithm::Perturbation;
         }
@@ -294,8 +297,18 @@ pub fn select_algorithm(params: &FractalParams, device: Device) -> Algorithm {
     // Perturbation viable : famille escape-time supportée + plan Mu (le delta
     // ne commute pas avec les transformations de plan). Miroir exact de l'ancien
     // inline du dispatcher CPU.
-    let perturbation_viable =
-        perturbation_family(params.fractal_type) && params.plane_transform == PlaneTransform::Mu;
+    //
+    // Graine NON NULLE sur une famille Mandelbrot-like (z₀ = seed ≠ 0, cas
+    // de métadonnées éditées) : la référence part alors de `Z[0] = seed` et
+    // les boucles de ces familles rebasent comme si `Z[0] = 0` — même classe
+    // que le défaut Julia fermé le 2026-11-06 (mesuré : 19 % de pixels faux
+    // vs GMP pur, verrou `seeded_mandelbrot_is_never_rendered_by_perturbation`).
+    // Seule Julia, dont le noyau rebase relativement à `Z[0]`, reste viable.
+    let origin_ok = matches!(params.fractal_type, FractalType::Julia)
+        || (params.seed.re == 0.0 && params.seed.im == 0.0);
+    let perturbation_viable = perturbation_family(params.fractal_type)
+        && params.plane_transform == PlaneTransform::Mu
+        && origin_ok;
     match params.engine.algorithm_mode {
         AlgorithmMode::ReferenceGmp => Algorithm::ReferenceGmp,
         AlgorithmMode::StandardF64 => Algorithm::StandardF64,

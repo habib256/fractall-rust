@@ -2648,6 +2648,63 @@ mod tests {
         }
     }
 
+    /// VERROU (2026-11-06) : Mandelbrot à graine NON NULLE (z₀ = seed ≠ 0,
+    /// atteignable par des métadonnées PNG / TOML éditées). Sa référence part
+    /// de `Z[0] = seed`, alors que les boucles Mandelbrot rebasent comme si
+    /// `Z[0] = 0` — la même classe que le défaut Julia. Le sélecteur ne doit
+    /// donc JAMAIS router ce cas en perturbation : même forcée, la vue est
+    /// rendue par un chemin exact et égale le GMP pur.
+    #[test]
+    fn seeded_mandelbrot_is_never_rendered_by_perturbation() {
+        use crate::render::escape_time::render_escape_time;
+        let seed = Complex64::new(0.21, -0.13);
+        let mut base = crate::fractal::default_params_for_type(FractalType::Mandelbrot, 48, 48);
+        base.seed = seed;
+        base.iteration_max = 600;
+        // Descente ×6 sur la cellule de bord la plus « lente » (f64 standard).
+        let (mut cx, mut cy, mut span) = (base.center_x, base.center_y, base.span_x);
+        for _ in 0..7 {
+            let mut p = base.clone();
+            p.engine.algorithm_mode = AlgorithmMode::StandardF64;
+            (p.center_x, p.center_y, p.span_x, p.span_y) = (cx, cy, span, span);
+            let it = render_escape_time(&p).iterations;
+            let (mut best, mut at) = (0u32, (24usize, 24usize));
+            for j in 1..47usize {
+                for i in 1..47usize {
+                    let v = it[j * 48 + i];
+                    let mixed = [it[j * 48 + i - 1], it[j * 48 + i + 1], it[(j - 1) * 48 + i], it[(j + 1) * 48 + i]]
+                        .iter()
+                        .any(|&n| n >= p.iteration_max);
+                    if v < p.iteration_max && mixed && v > best {
+                        best = v;
+                        at = (i, j);
+                    }
+                }
+            }
+            cx += span * ((at.0 as f64 + 0.5) / 48.0 - 0.5);
+            cy += span * ((at.1 as f64 + 0.5) / 48.0 - 0.5);
+            span /= 6.0;
+        }
+        let mut view = base.clone();
+        (view.center_x, view.center_y, view.span_x, view.span_y) = (cx, cy, span, span);
+        let mut forced = view.clone();
+        forced.engine.algorithm_mode = AlgorithmMode::Perturbation;
+        assert_ne!(
+            crate::fractal::wisdom::select_algorithm(&forced, crate::fractal::wisdom::Device::Cpu),
+            crate::fractal::wisdom::Algorithm::Perturbation,
+            "Mandelbrot à graine non nulle routé en perturbation"
+        );
+        let prod = render_escape_time(&forced).iterations;
+        let mut gmp = view.clone();
+        gmp.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
+        gmp.engine.use_gmp = true;
+        let truth = render_escape_time(&gmp).iterations;
+        let structured = truth.iter().collect::<std::collections::BTreeSet<_>>().len();
+        assert!(structured > 15, "scène sans structure ({structured} comptes)");
+        let wrong = prod.iter().zip(&truth).filter(|(a, b)| a != b).count();
+        assert!(wrong * 50 <= prod.len(), "{wrong}/{} pixels ≠ GMP pur", prod.len());
+    }
+
     #[test]
     fn perturbation_matches_f64_burning_ship() {
         let mut params = base_params(FractalType::BurningShip);
