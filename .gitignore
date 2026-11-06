@@ -60,3 +60,6 @@ Thumbs.db
 
 ## Staging AppImage (AppDir + linuxdeploy/appimagetool téléchargés)
 /build-appimage/
+
+## Worktrees des sous-agents Claude Code (branches locales, artefacts de build)
+/.claude/worktrees/
