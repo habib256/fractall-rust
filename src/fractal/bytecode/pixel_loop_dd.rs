@@ -198,6 +198,25 @@ fn tracked_once(
         }),
         stop,
     };
+    // Tier exp (|dc| < 2⁻⁹⁰⁰, garde d'entrée du chemin rapide qui n'aurait
+    // donc pas tourné) : le traqueur f64 y sous-déborde et resterait à 0 —
+    // borne à exposant étendu (G14.1 i, `reliability_dd_exp`).
+    if st.tr.is_some() && super::reliability_dd_exp::wants_exp_tracker(dc) {
+        let st_x = DdLoopState {
+            delta: st.delta,
+            c: st.c,
+            rebase_count: st.rebase_count,
+            bla_steps: st.bla_steps,
+            iters_ptb: st.iters_ptb,
+            tr: Some(super::reliability_dd_exp::ShadowTrackerDdExp::new(
+                dc,
+                super::bla_dd::DD_BLA_EPSILON,
+                rel::reliability_runaway(),
+            )),
+            stop: st.stop,
+        };
+        return ddexp_loop(ref_orbit, bla, dc, st_x, limits);
+    }
     if fast_dd_enabled() {
         if let Some(r) = fast::run(ref_orbit, bla, dc, &mut st, limits) {
             return (r, st.tr.map_or(0.0, |t| t.error_bound()));
@@ -206,23 +225,17 @@ fn tracked_once(
     ddexp_loop(ref_orbit, bla, dc, st, limits)
 }
 
-/// Borne L1 (≥ module) d'un complexe dd, en f64.
-#[inline(always)]
-fn l1c(z: ComplexDDExp) -> f64 {
-    z.re.to_f64().abs() + z.im.to_f64().abs()
-}
-
 /// État de la boucle dd, transférable du chemin rapide (`fast`) vers la
 /// boucle `DoubleDoubleExp` au point EXACT où le premier s'arrête.
 #[derive(Clone, Copy)]
-struct DdLoopState {
+struct DdLoopState<T = crate::fractal::bytecode::reliability::ShadowTrackerDd> {
     delta: ComplexDDExp,
     c: PixelCounter,
     rebase_count: u32,
     bla_steps: u32,
     iters_ptb: u32,
     /// Détecteur de fiabilité dd (G9.6 au niveau dd), `None` = non suivi.
-    tr: Option<crate::fractal::bytecode::reliability::ShadowTrackerDd>,
+    tr: Option<T>,
     /// Seuil d'arrêt anticipé (emballement, mode escalade), sinon +∞.
     stop: f64,
 }
@@ -238,11 +251,11 @@ fn fast_dd_enabled() -> bool {
 /// Boucle dd de référence en `DoubleDoubleExp` (mantisse dd + exposant
 /// `i32`, normalisée à chaque opération) — la sémantique que le chemin
 /// rapide reproduit au bit près. Reprend depuis `st` (début de tour).
-fn ddexp_loop(
+fn ddexp_loop<T: super::reliability_dd_exp::DdTrack>(
     ref_orbit: &ReferenceOrbit,
     bla: Option<&BlaTableDd>,
     dc: ComplexDDExp,
-    st: DdLoopState,
+    st: DdLoopState<T>,
     limits: crate::fractal::bytecode::pixel_loop::PixelLoopLimits,
 ) -> (UnifiedPixelResultExp, f32) {
     let crate::fractal::bytecode::pixel_loop::PixelLoopLimits {
@@ -265,7 +278,7 @@ fn ddexp_loop(
         stop,
     } = st;
     const REDUCE_INTERVAL: u32 = 250;
-    let bound = |tr: &Option<crate::fractal::bytecode::reliability::ShadowTrackerDd>| {
+    let bound = |tr: &Option<T>| {
         tr.map_or(0.0, |t| t.error_bound())
     };
 
@@ -289,7 +302,7 @@ fn ddexp_loop(
                     c.rebase();
                     rebase_count += 1;
                     if let Some(t) = tr.as_mut() {
-                        t.rebase(l1c(z_m0), l1c(zz));
+                        t.on_rebase(z_m0, zz);
                     }
                 }
             } else if zz.norm_sqr() < delta.norm_sqr() {
@@ -297,7 +310,7 @@ fn ddexp_loop(
                 c.rebase();
                 rebase_count += 1;
                 if let Some(t) = tr.as_mut() {
-                    t.rebase(l1c(z_m0), l1c(zz));
+                    t.on_rebase(z_m0, zz);
                 }
             }
         }
@@ -339,9 +352,7 @@ fn ddexp_loop(
                         .add(dc.re.mul_dd(b.m10))
                         .add(dc.im.mul_dd(b.m11));
                     if let Some(t) = tr.as_mut() {
-                        let sa = a.m00.to_f64().hypot(a.m10.to_f64());
-                        let sb = b.m00.to_f64().hypot(b.m10.to_f64());
-                        t.bla(sa, sa * l1c(delta), sb * l1c(dc), node.l);
+                        t.on_bla(&a, &b, delta, dc, node.l);
                     }
                     delta = ComplexDDExp {
                         re: new_re,
@@ -376,9 +387,7 @@ fn ddexp_loop(
             im: z_m.im.mul_f64(2.0),
         };
         if let Some(t) = tr.as_mut() {
-            let za = z_abs.to_complex64_approx().norm();
-            let d = delta.to_complex64_approx();
-            t.direct(za, 2.0 * l1c(z_m) * (d.re.abs() + d.im.abs()), d.norm_sqr());
+            t.on_direct(z_abs, z_m, delta);
         }
         delta = delta.mul(two_z).add(delta.sqr()).add(dc);
         c.step();

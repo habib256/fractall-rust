@@ -341,21 +341,24 @@ impl StepObserverExp for ShadowTrackerExp {
 // pixel (117,17) — le dd rendait 1838 itérations, GMP convergé 1598, sans
 // rien signaler (sensibilité au-delà de 106 bits).
 //
-// ⚠️ LIMITE CONNUE, OUVERTE : les entrées du traqueur sont des f64. Sous
-// ~1e-308 elles valent 0 — au tier exp (pixel < 1e-280) δ, dc et les Z de
-// frôlement atom-domain (~1e-1200) sous-débordent, tous les termes ajoutent
-// exactement 0 et la borne reste nulle : le traqueur dd y est AVEUGLE. Or la
-// correction dd y est bien appelée (le traqueur exp est actif par défaut et
-// envoie ses pixels flaggés en dd) : au tier exp le dd rend donc `Ok` sans
-// garde-fou, comme avant le 2026-11-06. Mesuré à ce jour : 0 pixel faux vs
-// juge sur 31 cas exp à 96² — mais ce n'est pas une garantie. Remède : borne
-// en `FloatExp` (comme `ShadowTrackerExp`) dans la boucle `DoubleDoubleExp`.
-// Cf. TODO G14.1 (i).
+// Domaine : les entrées de ce traqueur sont des f64. Sous ~1e-308 elles
+// valent 0 — au tier exp (pixel < 1e-280) δ, dc et les Z de frôlement
+// atom-domain (~1e-1200) sous-débordent, tous les termes ajoutent 0 et la
+// borne resterait nulle (AVEUGLE, constaté jusqu'au 2026-11-06). Depuis
+// G14.1 (i), un pixel dont |dc| < 2⁻⁹⁰⁰ (garde d'entrée du chemin rapide dd)
+// est suivi par `reliability_dd_exp::ShadowTrackerDdExp` — même récurrence,
+// mêmes constantes, borne et magnitudes en `FloatExp` — dans la boucle
+// `DoubleDoubleExp`. Ce type-ci ne sert plus qu'au-dessus de 2⁻⁹⁰⁰, où il
+// est bit-identique à ce qu'il était.
+// Limite résiduelle : les coefficients BLA dd (`Mat2Dd`, sans exposant) sont
+// lus en f64 par les deux traqueurs (σ₁ conforme), comme par la boucle dd
+// elle-même — un coefficient hors plage f64 casserait la boucle avant la
+// borne. Le seuil d'emballement reste absolu (1e30, espace z).
 
 /// Unité d'arrondi du double-double (≈ 2⁻¹⁰⁴, quelques ulp de marge sur 2⁻¹⁰⁶).
 pub const U_DD: f64 = 4.930_380_657_631_324e-32; // 2^-104
 /// Constante d'arrondi locale d'un pas complexe dd.
-const GAMMA_DD: f64 = 4.0 * U_DD;
+pub const GAMMA_DD: f64 = 4.0 * U_DD;
 
 /// Traqueur de fiabilité du tier dd : borne d'erreur absolue `E` sur `z`
 /// (f64), unité `U_DD`, ε BLA de la table dd (`DD_BLA_EPSILON`).
