@@ -102,6 +102,18 @@ zoom — à 1e10 une image de 1280 px est déjà en perturbation (0,61 s des deu
 côtés) alors qu'une image de 256 px est encore en f64 (7,8 % de pixels
 faux) : les rendus basse résolution (passes progressives, miniatures,
 keyframes vidéo 320×180) sont les plus exposés.
+**Preuve de faisabilité de la piste (2)** (prototype numpy, hors dépôt :
+`bench/g14-std-tracker-proto/trk.py` ; il reproduit le rendu f64 du CLI à
+100 % des pixels) : la borne d'erreur de l'itération DIRECTE
+`E' = E·(2|z| + E) + 3u·(|z|² + |c|)`, même critère d'emballement que le
+traqueur de perturbation (E ≥ 1e30), sur seahorse 1e10, 2500 it., 256×160 —
+**3149 des 3179 pixels faux attrapés (99,1 %)** pour 6364 pixels signalés
+(15,5 % de la frame, soit un signalé sur deux réellement faux, le même
+ratio qu'en perturbation). Un seuil plus bas ne sert à rien (E ≥ 1 : 66,7 %
+de la frame signalée pour 29 pixels de plus). Reste à faire : la brancher
+dans `interp_batch.rs` sans casser la vectorisation, recalculer les pixels
+signalés (perturbation tracée par pixel ou GMP sous plafond), mesurer le
+surcoût et les faux positifs sur les points intérieurs.
 
 **Prochains chantiers** : (a) Tricorn / Burning Ship profonds rendus en GMP
 plein cadre quand la référence s'échappe (G14.21 — une piste essayée et
