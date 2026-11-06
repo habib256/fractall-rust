@@ -229,7 +229,20 @@ pub fn iterate_pixel_gmp(request: GmpPixelRequest<'_>) -> DeltaResult {
 
         // Check for rebasing: when |Z_m + z_n| < |z_n|
         let delta_norm_sqr = complex_norm_sqr(&delta, prec);
-        if z_curr_norm_sqr.is_sign_positive()
+        if is_julia {
+            // Julia : la référence part de `Z[0] = centre` (≠ 0) — rebase
+            // relatif à Z[0] (cf. `pixel_loop::DirectKernel::REF_ORIGIN_NONZERO`).
+            if let Some(z0) = ref_orbit.get_z_ref_gmp(0) {
+                let mut rel = z_curr.clone();
+                rel -= z0;
+                let rel_norm_sqr = complex_norm_sqr(&rel, prec);
+                if delta_norm_sqr.is_sign_positive() && rel_norm_sqr < delta_norm_sqr {
+                    delta = rel;
+                    c.rebase();
+                    continue;
+                }
+            }
+        } else if z_curr_norm_sqr.is_sign_positive()
             && delta_norm_sqr.is_sign_positive()
             && z_curr_norm_sqr < delta_norm_sqr
         {

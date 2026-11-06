@@ -567,6 +567,13 @@ fn iterate_pixel_unified_exp_mandelbrot_hp_impl<O: StepObserverExp>(
     let mut bla_steps = 0u32;
     let mut iters_ptb = 0u32;
     const REDUCE_INTERVAL: u32 = 250;
+    // Origine de la référence : 0 sauf Julia (`Z[0]` = centre de la vue).
+    let origin = ref_orbit.z_ref[0];
+    let origin_nonzero = origin.re.mantissa != 0.0 || origin.im.mantissa != 0.0;
+    let neg_origin = ComplexExp {
+        re: FloatExp::zero() - origin.re,
+        im: FloatExp::zero() - origin.im,
+    };
 
     // Structure de boucle F3 (`hybrid.cc:287-345`) : le **rebase** (`|Z+δ|²<|δ|²`
     // OU bout de référence) est testé au DÉBUT de chaque itération, AVANT le
@@ -592,6 +599,12 @@ fn iterate_pixel_unified_exp_mandelbrot_hp_impl<O: StepObserverExp>(
         // `delta_norm` — deux normes FloatExp et un add complexe épargnés.
         let (rebase_mid, z_curr_norm, delta_norm) = if end_of_ref {
             (false, FloatExp::zero(), FloatExp::zero())
+        } else if origin_nonzero {
+            // Julia : rebase relatif à `Z[0] ≠ 0` (cf. pixel_loop.rs
+            // `DirectKernel::REF_ORIGIN_NONZERO`) ; jamais pris si Z[0] = 0.
+            let zc = z_curr.norm_sqr_fexp();
+            let dn = delta.norm_sqr_fexp();
+            (z_curr.add(neg_origin).norm_sqr_fexp() < dn, zc, dn)
         } else {
             let zc = z_curr.norm_sqr_fexp();
             let dn = delta.norm_sqr_fexp();
@@ -603,13 +616,13 @@ fn iterate_pixel_unified_exp_mandelbrot_hp_impl<O: StepObserverExp>(
                 c.set_ref_index(m_wrapped);
             } else {
                 obs.rebase(z_m0, z_curr);
-                delta = z_curr;
+                delta = if origin_nonzero { z_curr.add(neg_origin) } else { z_curr };
                 c.rebase();
                 rebase_count += 1;
             }
         } else if rebase_mid {
             obs.rebase(z_m0, z_curr);
-            delta = z_curr;
+            delta = if origin_nonzero { z_curr.add(neg_origin) } else { z_curr };
             c.rebase();
             rebase_count += 1;
         }

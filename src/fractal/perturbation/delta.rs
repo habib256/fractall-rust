@@ -1075,6 +1075,41 @@ fn try_bytecode_unified_path(
             return Some(res);
         }
 
+        // ── Même détecteur pour Julia / Burning Ship / Tricorn (2026-11-06) ──
+        // Boucles rapides à noyau statique, monomorphisées avec le traqueur
+        // (résultat bit-identique à la boucle non suivie). Les pixels flaggés
+        // sont recalculés en GMP pur par l'appelant (pas de tier dd pour ces
+        // familles). Julia par défaut ; Burning Ship / Tricorn en opt-in
+        // (`FRACTALL_RELIABILITY_FAMILY=all`, cf. `family_tracking_enabled`).
+        if reliability.tracks()
+            && family_tracking_enabled(is_julia)
+            && !params.channels.enable_orbit_traps
+            && !params.channels.enable_distance_estimation
+            && !params.channels.enable_interior_detection
+            && !params.is_hybrid_formula()
+            && entry.formula.phases.len() == 1
+        {
+            if let Some((res, tracker)) =
+                crate::fractal::bytecode::pixel_loop::iterate_pixel_unified_family_tracked(
+                    ref_orbit,
+                    bla,
+                    &entry.formula.phases[0],
+                    is_julia,
+                    dc_for_add,
+                    delta_init,
+                    crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
+                    F64_BLA_EPSILON_PIXEL,
+                )
+            {
+                error_bound = if f64_escape_margin_enabled() {
+                    escape_undetermined(tracker.error_bound(), res.z_final, params.bailout)
+                } else {
+                    tracker.error_bound()
+                };
+                return Some(res);
+            }
+        }
+
         let options = crate::fractal::bytecode::pixel_loop::UnifiedOptions {
             orbit_trap: if params.channels.enable_orbit_traps {
                 Some(params.channels.orbit_trap_type)
@@ -1140,6 +1175,34 @@ fn try_bytecode_unified_path(
 /// l'environnement, contention entre workers) — test5 256² : phase pixels
 /// 1 ms → 17 ms, flake 5 → 28 ms.
 #[inline]
+/// Suivi de fiabilité des familles hors Mandelbrot (`FRACTALL_RELIABILITY_FAMILY`) :
+/// - défaut : **Julia seulement** — l'étude du 2026-11-06 (sonde
+///   `examples/probe_truth`, GMP 256 b == 512 b) y a mesuré 0,7 % de pixels
+///   faux non signalés (jusqu'à 812 itérations d'écart), tous rattrapés ;
+/// - `all` : Julia + Burning Ship + Tricorn. Pour ces deux familles la sonde
+///   n'a trouvé AUCUN pixel faux adjudicable : scènes profondes de bord soit
+///   à vérité GMP non convergée (12-70 % des pixels changent entre 256 et
+///   512 b — chaos, le traqueur y flagge ~100 % et la correction est hors
+///   budget), soit rendues en GMP plein cadre par le repli « référence
+///   épuisée » (pas de boucle f64 à surveiller). Surcoût mesuré BS +1,5 %.
+/// - `0` : aucun suivi (A/B).
+pub(crate) fn family_tracking_enabled(is_julia: bool) -> bool {
+    // (Julia, BS/Tricorn)
+    static ON: OnceLock<(bool, bool)> = OnceLock::new();
+    let (julia, others) = *ON.get_or_init(|| {
+        match std::env::var("FRACTALL_RELIABILITY_FAMILY").as_deref() {
+            Ok("0") => (false, false),
+            Ok("all") => (true, true),
+            _ => (true, false),
+        }
+    });
+    if is_julia {
+        julia
+    } else {
+        others
+    }
+}
+
 fn f64_escape_margin_enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("FRACTALL_F64_MARGIN").is_some())
