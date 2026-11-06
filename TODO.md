@@ -3419,6 +3419,13 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
     et la sonde la laisserait au f64. Pour l'activer par défaut : balayer le
     corpus en `--tier full` avec `harness.py ab --env FRACTALL_DD_PROBE=0,1`
     et juger au GMP les scènes où la sonde tranche « sans espoir ».
+    Premier balayage fait (87 cas du corpus à 64², sonde active, aucun
+    plantage ni timeout) : SEULS deux cas entrent dans le régime d'escalade
+    frame — lethal_weapon (61,7 % signalés en f64, sonde 88/253 = 35 % →
+    frame dd gardée) et super_dense (90,7 %, sonde 169/248 = 68 % → f64
+    gardé) ; aucun autre cas ne dépasse 20 % de pixels f64 signalés. Le
+    corpus ne contient donc aucune scène ENTRE 35 % et 68 % pour placer le
+    seuil : il faut en fabriquer (fuzz autour de scènes à > 1 M itérations).
   - [ ] **(j) Dernier pixel faux connu de la suite quality : seahorse-valley
     1e8 à 256², pixel (160,70)** — GMP 2084 itérations (256 b == 1024 b), dd
     1947 ; le traqueur f64 le flagge, le dd le « corrige » mal, et la borne
