@@ -92,6 +92,24 @@ pub const PRESETS: &[Preset] = &[
         julia_seed: Some((-0.8, 0.156)),
         precision_bits: None,
     },
+    // Sentinelle Julia (2026-11-06) : centre de BORD ≠ 0 en perturbation.
+    // Avant : 99 % de pixels faux (rebase relatif à 0 au lieu de Z[0]) ; après
+    // ce correctif, 68 pixels faux à 96² (jusqu'à 812 itérations d'écart, GMP
+    // 256 b == 512 b) que seul le traqueur de fiabilité Julia signale ; après
+    // traqueur + correction GMP : 0. Le preset `julia-siegel-disk`, centré en
+    // 0 (Z[0] = 0), ne voyait ni l'un ni l'autre.
+    Preset {
+        name: "julia-edge-e20",
+        description: "Julia c=-0.8+0.156i, off-centre boundary at zoom 1e20 — Julia rebase origin + reliability tracker.",
+        fractal_type: FractalType::Julia,
+        center_x_hp: "1.42279534109440317773666336881783446850630340e-1",
+        center_y_hp: "5.17774645170123477959332321568757233266599329e-1",
+        zoom: "1e20",
+        iterations: 8192,
+        multibrot_power: None,
+        julia_seed: Some((-0.8, 0.156)),
+        precision_bits: None,
+    },
     Preset {
         name: "burning-ship-antenna",
         description: "Burning Ship antenna at zoom 1e9 — non-conformal BLA (matrix 2x2).",
