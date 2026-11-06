@@ -89,6 +89,12 @@ fn judge(ty: FractalType, seed: Complex64, sx: &str, sy: &str, z_str: &str, iter
         Ok("pert") => p.engine.algorithm_mode = AlgorithmMode::Perturbation,
         _ => {}
     }
+    if let Ok(v) = std::env::var("PROBE_SERIES") {
+        p.perturbation.series_order = v.parse().unwrap();
+    }
+    if let Ok(v) = std::env::var("PROBE_BLA_SCALE") {
+        p.perturbation.bla_validity_scale = v.parse().unwrap();
+    }
     let (prod, t_prod) = render(&p);
     if std::env::var_os("PROBE_NOJUDGE").is_some() {
         println!("PROD t_prod={t_prod:.4}");
@@ -105,6 +111,22 @@ fn judge(ty: FractalType, seed: Complex64, sx: &str, sy: &str, z_str: &str, iter
     let g1 = load_or(&format!("{h:016x}.g1"), || render(&p).0);
     let t_g1 = t1.elapsed().as_secs_f64();
     let diff1: Vec<usize> = (0..prod.len()).filter(|&k| prod[k] != g1[k]).collect();
+    if std::env::var_os("PROBE_DIFFS").is_some() {
+        // Histogramme (production, GMP) des pixels en désaccord.
+        let mut h = std::collections::BTreeMap::new();
+        for &k in &diff1 {
+            *h.entry((prod[k], g1[k])).or_insert(0u32) += 1;
+        }
+        let mut v: Vec<_> = h.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1));
+        for ((a, b), n) in v.iter().take(8) {
+            println!("DIFF prod={a} gmp={b} n={n}");
+        }
+        for &k in diff1.iter().take(3) {
+            println!("DIFFPX i={} j={} prod={} gmp={}", k as u32 % size, k as u32 / size, prod[k], g1[k]);
+        }
+        println!("SPAN {} {}", p.span_x_hp.as_deref().unwrap_or("?"), p.span_y_hp.as_deref().unwrap_or("?"));
+    }
     let (mut nconv, mut wrong, mut maxd) = (0usize, 0usize, 0u32);
     let mut t_g2 = 0.0;
     if !diff1.is_empty() {
