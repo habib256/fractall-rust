@@ -48,7 +48,10 @@ quality 16 PASS + 1 WARN connu (seahorse-valley 256², 1 pixel), **fuzz 8/8**
 dont 4 nouveaux) ; le score standard dure 8 min au lieu de 18 depuis que le
 juge GMP est allégé. Score quick à 3 runs (`…T061144Z-e3ff8be.json`) : 0 gap,
 géomoyenne 0,957× la baseline de la nuit ; **baseline Apple M4 re-figée** sur
-cet état. 522 tests unitaires.
+cet état. 522 tests unitaires. Axe vérité étendu hors tier (production vs
+frame dd, 96²) : **51 cas du corpus, 51 PASS** (résidus connus de 2 à
+4 pixels sur dragon_detail, verstoppertje, e227, rug). Pipeline vidéo
+rejoué de bout en bout (54 keyframes vers 1e16, 1621 frames).
 
 **Prochains chantiers** : (a) Tricorn / Burning Ship profonds rendus en GMP
 plein cadre quand la référence s'échappe (G14.21 — une piste essayée et
