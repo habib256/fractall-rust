@@ -908,7 +908,7 @@ fn mpc_below_bailout(z: &Complex, g: &MpcParams) -> bool {
 /// Valeurs finies seulement (c'est le cas dans les boucles : `z` est sous le
 /// rayon d'évasion à l'entrée). Verrou `in_place_square_matches_mpc_sqr`.
 #[inline]
-fn sqr_in_place(z: &mut Complex, sq: &mut (Float, Float)) {
+pub(crate) fn sqr_in_place(z: &mut Complex, sq: &mut (Float, Float)) {
     use rug::Assign;
     let (re, im) = z.as_mut_real_imag();
     sq.0.assign(re.square_ref());
@@ -921,7 +921,7 @@ fn sqr_in_place(z: &mut Complex, sq: &mut (Float, Float)) {
 /// Tampons de [`sqr_in_place`] pour un `z` donné (précision double de la
 /// plus grande de ses deux composantes).
 #[inline]
-fn sqr_scratch(z: &Complex) -> (Float, Float) {
+pub(crate) fn sqr_scratch(z: &Complex) -> (Float, Float) {
     let (pr, pi) = z.prec();
     let p = pr.max(pi).saturating_mul(2);
     (Float::new(p), Float::new(p))
