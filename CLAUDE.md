@@ -22,7 +22,7 @@ Prérequis natifs : GMP / MPFR / MPC (pour `rug`).
 
 ## Tests
 
-- **Unit tests** : `cargo test --release --lib` (~400 tests). ⚠️ Cible **lib**
+- **Unit tests** : `cargo test --release --lib` (~530 tests). ⚠️ Cible **lib**
   (`src/lib.rs`) : les binaires ne sont que des enveloppes, les tests des
   modules ne tournent plus en triple sous `--bin`.
   Couvre `perturbation/{bla,delta,series,nonconformal,distance,interior,
@@ -168,12 +168,16 @@ src/
 │   │   ├── pixel_loop_exp.rs # idem ComplexExp (tier exp, boucle FloatExp de référence)
 │   │   ├── pixel_loop_scaled.rs # tier exp en « double mis à l'échelle » (défaut)
 │   │   ├── pixel_loop_dd.rs # tier double-double ~106b (float128-like), opt-in
+│   │   ├── pixel_loop_qd.rs # tier quad-double ~212b : pixels au-delà du dd, avant le GMP
 │   │   └── bla_dd.rs       # table BLA à coefficients dd (skip sans perte 106b)
 │   └── perturbation/    # Path GMP + ponts vers bytecode
 │       ├── mod.rs          # render_perturbation_cancellable_with_reuse
 │       ├── types.rs        # ComplexExp, FloatExp (mantisse + exposant)
 │       ├── orbit.rs        # ReferenceOrbit{,Cache}, HybridBlaReferences
 │       ├── orbit_par.rs    # itération GMP de l'orbite sur deux cœurs (bit-identique)
+│       ├── qd.rs           # arithmétique quad-double (QD « sloppy », ~210 b mesurés)
+│       ├── orbit_qd.rs     # orbite qd rejouée depuis les points de contrôle GMP
+│       ├── correct_qd.rs   # étage qd de l'escalade (dc en GMP exact, plafond)
 │       ├── nucleus.rs      # Atom-domain period + Newton (port F3)
 │       ├── bla.rs          # BlaTable conformal (path GMP deep zoom)
 │       ├── nonconformal.rs # BLA matriciel (path GMP)
@@ -745,7 +749,16 @@ toujours moins cher en dessous). Tier **exp** : traqueur
 `ShadowTrackerExp` **actif par défaut** depuis 2026-11-06
 (`FRACTALL_RELIABILITY_EXP=0` le coupe) — à 256² sans lui e401 6, olbaid2 48,
 e1298 18 pixels faux, 0 avec ; porté dans la boucle scaled
-(`direct_scaled` / `bla_scaled`, même borne au bit près). (Les erreurs exp
+(`direct_scaled` / `bla_scaled`, même borne au bit près). ⚠️ La boucle
+scaled est bornée par le DÉBIT d'instructions (IPC ~7, ~250 instr./tour),
+pas par la latence : chaque instruction du traqueur se paie. Son coût
+(+42 % → +24 % d'instructions, 2026-11-06) était le chemin général du pas
+direct (3-4 puissances de 2 et les gardes à chaque pas), PAS la racine (la
+retirer : 0 %) ni σ₁ : puissances de 2 en cache par (cadre de δ, cadre de la
+borne) — la borne vit le plus souvent AU-DESSUS du cadre de δ —, |d|² du
+tour réutilisé, σ₁(A) précalculé par nœud (`BlaMultiStepExp::sigma_m/
+sigma_e`). Verrou `light_tracker_matches_reference_bit_for_bit` (ancien
+traqueur conservé verbatim dans `pixel_loop_scaled_track_ref.rs`). (Les erreurs exp
 d'entrée — ε BLA 2⁻²⁴ → 2⁻⁵³, span f64 **sous-normal** 1e308-1e324,
 `effective_spans_fexp` exige `is_normal` — avaient été corrigées avant.)
 ⚠️ **Trois règles payées par des pixels faux (2026-11-06)**, valables pour
@@ -773,9 +786,24 @@ nombre de pixels dd non fiables ≤ max(16, 0,1 % × pixels)
 (`gmp_escalation_allowed`, `FRACTALL_RELIABILITY_GMP_MAX_FRACTION`, ≥ 1 =
 illimité) ; au-delà, valeur dd de meilleur effort + avertissement stderr
 inconditionnel — lethal_weapon (1,6 M itérations, 17 % de pixels au-delà du
-dd) prendrait des heures sinon. ⚠️ Même sous le plafond le GMP par pixel est
-cher (e227 : ~3 s de thread par pixel) : un tier quad-double est le vrai
-remède (TODO G14.1 h). **Entrée dans le tier dd = `wisdom::
+dd) prendrait des heures sinon. **Tier quad-double (~212 b) entre le dd et
+le GMP** (2026-11-06, `pixel_loop_qd.rs` + `perturbation/{qd,orbit_qd,
+correct_qd}.rs`) : chaîne complète **f64 signalé → dd tracé → dd sans BLA →
+qd → GMP sous plafond**. Boucle en pas directs sans BLA, orbite qd rejouée
+EN PARALLÈLE depuis les points de contrôle GMP de la capture paresseuse, dc
+construit en GMP exact (K, jitter AA et `centre_vue − cref` compris), son
+propre plafond tout ou rien (`FRACTALL_QD_MAX_FRACTION`, défaut 1 % des
+pixels, plancher 16), domaine |dc| ≥ 2⁻⁸⁴⁰ (au-delà : GMP). Itérations
+identiques au GMP pur sur e227 (7/7), golden_spider (16/16), rug,
+seahorse 1e6 ; e227 256² −25 % de cycles, golden_spider −20 %.
+`FRACTALL_QD=0`. ⚠️ **Piège payé par des pixels faux** : le traqueur qd doit
+compter l'arrondi de la RÉFÉRENCE (`2^-(prec−2)·|Z[m+1]|` par pas) — le
+pixel hérite de l'arrondi de la pseudo-orbite ; sans ce terme, sur
+lethal_weapon (orbite 290 b), 376 pixels étaient déclarés fiables dont 245
+faux vs GMP 580 b (avec : 91 fiables, 91 justes). ⚠️ À la précision de
+formule le GMP pur donne des ITÉRATIONS justes mais un z final non convergé
+sur les pixels au-delà du dd (golden_spider : 605 b ≠ 1210 b == 2420 b) :
+ne jamais juger ces pixels sur `zs`. **Entrée dans le tier dd = `wisdom::
 dd_tier_applicable`** (Mandelbrot ET non hybride/opcodes) partout —
 `--dd-tier` sur `--opcodes` rendait un z²+c nu.
 ⚠️ `z_ref_lo` est à l'échelle de la MANTISSE de `z_ref` (ComplexExp), pas du
@@ -786,7 +814,32 @@ derrière `&mut` il coûtait ×3), total 0,72 → 1,10 s. Mesuré vs GMP :
 seahorse WARN max_diff 437 → PASS ; e30 5/5, e50 17/18 pixels faux
 détectés, 0 faux positif sur e13/e17/e18/e100. Suivis : fast-path f64
 Mandelbrot, Harmonic LA, tier exp Mandelbrot (boucle scaled), tier dd.
-**Sans suivi** : hybrides, Julia, Burning Ship / Tricorn, DE.
+**Julia : suivie par défaut** (fast-path f64, 2026-11-06 — 0,7 % de pixels
+faux non signalés sans elle, jusqu'à 812 itérations d'écart) ; pas de tier
+dd pour cette famille : pixels signalés recalculés en GMP pur
+(`iterate_point_mpc`) sous le plafond 0,1 % OU un budget de 5 % des
+itérations de la frame (`FAMILY_GMP_ITER_BUDGET`), valeur f64 + avertissement
+au-delà. Burning Ship / Tricorn : opt-in `FRACTALL_RELIABILITY_FAMILY=all`
+(107 scènes sondées, aucun pixel faux adjudicable). **Sans suivi** :
+hybrides, DE, Julia au tier exp.
+⚠️ **Ne pas chercher à resserrer le terme `l·ε` du saut BLA f64** : à
+ε = 2⁻⁵³ la troncature réelle est négligeable (borne du second ordre
+implémentée et testée : la substituer revient à retirer le terme) et c'est
+CE terme qui attrape les pixels faux — sans lui e227 1 → 390 faux non
+signalés. Il sert de proxy de la masse d'erreur des `l` pas sautés. Environ
+un pixel signalé sur deux est réellement faux ; le levier coût est le prix
+de la correction, pas le détecteur (`scripts/reliability_confusion.py`).
+⚠️ **Référence dont `Z[0] ≠ 0` (Julia : elle part du centre de la vue) :
+le rebase est RELATIF à `Z[0]`** — critère `|z − Z[0]| < |δ|`,
+`δ := z − Z[0]`, sur TOUS les chemins (fast-path, générique, HP exp, GMP,
+kernels GPU f32 et f64). Deux défauts fermés le 2026-11-06 : (1) rebaser
+comme si `Z[0] = 0` rendait 92-99 % de pixels faux sur toute vue Julia non
+centrée en 0 (le preset `julia-siegel-disk`, centré en 0, ne pouvait pas le
+voir) ; (2) `z − Z[0]` doit être formé `(Z[m] − Z[0]) + δ`, JAMAIS
+`(Z[m] + δ) − Z[0]` : δ y est absorbé, et sur un centre PÉRIODIQUE (cible
+d'un zoom auto-similaire) le pixel rebasait sur δ = 0 — 100 % de pixels
+faux. Verrous `julia_rebase_is_relative_to_reference_origin`,
+`julia_view_centred_on_a_fixed_point_matches_gmp`, preset `julia-edge-e20`.
 ⚠️ **Aucune lecture d'environnement hors `OnceLock` dans les fichiers du
 chemin par pixel** (verrou de source
 `hot_path_sources_only_read_env_through_once_lock`) : `std::env::var` par
@@ -836,6 +889,9 @@ Tous lus UNE fois (`OnceLock`). Défaut = comportement de production.
 | `FRACTALL_RELIABILITY=off\|observe\|escalate` | détecteur de fiabilité (défaut `escalate`) |
 | `FRACTALL_RELIABILITY_EXP=0` | coupe le traqueur du tier exp |
 | `FRACTALL_RELIABILITY_DD=0` | coupe le traqueur du tier dd (⚠️ rend l'ε 2⁻⁸⁰ de la BLA dd non gardé) |
+| `FRACTALL_RELIABILITY_FAMILY=0\|all` | suivi de fiabilité hors Mandelbrot : défaut Julia seule ; `all` ajoute Burning Ship et Tricorn ; `0` coupe |
+| `FRACTALL_QD=0` | pas de tier quad-double : les pixels au-delà du dd vont droit au GMP |
+| `FRACTALL_QD_MAX_FRACTION=f` | plafond du tier qd (défaut 0,01 ; plancher 16 pixels ; ≥ 1 = illimité) |
 | `FRACTALL_DD_RETRY_NOBLA=0` | pas de second essai dd sans BLA avant le GMP |
 | `FRACTALL_RELIABILITY_GMP_MAX_FRACTION=f` | plafond de l'escalade dd → GMP (défaut 0,001 ; ≥ 1 = illimité) |
 | `FRACTALL_DD_PROBE=1` | sonde dd avant l'escalade frame (opt-in) : scène dont la majorité des pixels non fiables échappe aussi au dd ⇒ f64 gardé avec avertissement, frame dd non rendue |
@@ -1333,9 +1389,11 @@ d'échappement, temps pert vs GMP.
 reste rapporté dans `report.md`. Override : `--pass-max-iter-diff`,
 `--fail-p99-iter-diff`, `--warn-divergence-ratio`.
 
-**14 presets** (`src/quality/presets.rs`) : Mandelbrot (seahorse 1e8,
+**17 presets** (`src/quality/presets.rs`) : Mandelbrot (seahorse 1e8,
 activation 1e13, GMP perturbation 1e17, Misiurewicz 1e12, minibrot 1e18,
-spirales profondes e30/e50/e100), Julia (seed -0.8+0.156i à 1e10), Burning
+spirales profondes e30/e50/e100), Julia (seed -0.8+0.156i à 1e10, et
+`julia-edge-e20` : bord HORS CENTRE à 1e20, sentinelle du rebase relatif à
+`Z[0]` et du traqueur Julia), Burning
 Ship antenna 1e9 (non-conformal BLA), Tricorn spiral 1e8, et frontières
 lisses hors axes de pliage Celtic/Buffalo/PerpBS 1e9 (G3 2026-07-13 — les
 frontières hirsutes de ces familles sont à sensibilité de précision extrême,
