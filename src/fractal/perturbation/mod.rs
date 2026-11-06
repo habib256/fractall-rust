@@ -2694,6 +2694,19 @@ mod tests {
             crate::fractal::wisdom::Algorithm::Perturbation,
             "Mandelbrot à graine non nulle routé en perturbation"
         );
+        // Là où la perturbation aurait pris le relais du f64 (~1e13 → 1e16,
+        // avant le seuil GMP ordinaire), la graine non nulle va au GMP par
+        // pixel — pas au f64 standard, mantisse épuisée.
+        let mut deep = view.clone();
+        (deep.span_x, deep.span_y) = (4e-14, 4e-14);
+        for mode in [AlgorithmMode::Auto, AlgorithmMode::Perturbation] {
+            deep.engine.algorithm_mode = mode;
+            assert_eq!(
+                crate::fractal::wisdom::select_algorithm(&deep, crate::fractal::wisdom::Device::Cpu),
+                crate::fractal::wisdom::Algorithm::ReferenceGmp,
+                "graine non nulle à 1e14, mode {mode:?}"
+            );
+        }
         let prod = render_escape_time(&forced).iterations;
         let mut gmp = view.clone();
         gmp.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;

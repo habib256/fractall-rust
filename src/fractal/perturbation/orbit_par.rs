@@ -143,7 +143,16 @@ fn helper_loop(sh: &Shared) {
                         .expect("tâche réclamée mais case vide");
                     imag_half(&mut im, &re, &sh.ci);
                     *sh.result.lock().unwrap() = Some((im, re));
-                    sh.state.store(DONE, Ordering::Release);
+                    // `TAKEN → DONE` par échange : si l'appelant a été lâché
+                    // entre-temps (`QUIT` posé par `Drop` pendant le
+                    // déroulement d'une panique), ne pas l'écraser — sortir.
+                    if sh
+                        .state
+                        .compare_exchange(TAKEN, DONE, Ordering::AcqRel, Ordering::Acquire)
+                        .is_err()
+                    {
+                        return;
+                    }
                     spins = 0;
                     continue;
                 }
@@ -178,6 +187,11 @@ fn test_delay(_point: DelayPoint) {}
 
 #[cfg(test)]
 fn test_delay(point: DelayPoint) {
+    // Hors du test de préemption : un seul chargement atomique (les autres
+    // tests du processus ne paient ni verrou ni retard).
+    if !TEST_DELAY_ARMED.load(Ordering::Relaxed) {
+        return;
+    }
     let (target, every, micros) = *TEST_DELAY.lock().unwrap();
     if target == Some(point) {
         let n = TEST_DELAY_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -191,6 +205,8 @@ fn test_delay(point: DelayPoint) {
 static TEST_DELAY: Mutex<(Option<DelayPoint>, u32, u64)> = Mutex::new((None, 1, 0));
 #[cfg(test)]
 static TEST_DELAY_COUNT: AtomicU32 = AtomicU32::new(0);
+#[cfg(test)]
+static TEST_DELAY_ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Pas d'orbite `z ← z² + c` sur deux cœurs, bit-identique à
 /// `orbit::fast_sqr_step`.
@@ -436,6 +452,18 @@ mod tests {
         // Un seul test à la fois règle les retards (état global de test).
         static SERIAL: Mutex<()> = Mutex::new(());
         let _guard = SERIAL.lock().unwrap();
+        // Désarme les retards à la sortie, y compris sur panique du test.
+        struct Disarm;
+        impl Drop for Disarm {
+            fn drop(&mut self) {
+                TEST_DELAY_ARMED.store(false, Ordering::Relaxed);
+                if let Ok(mut d) = TEST_DELAY.lock() {
+                    *d = (None, 1, 0);
+                }
+            }
+        }
+        let _disarm = Disarm;
+        TEST_DELAY_ARMED.store(true, Ordering::Relaxed);
         let prec = 256u32;
         let c = Complex::with_val(prec, (-0.1234567891234, 0.6543219876543));
         let points = [

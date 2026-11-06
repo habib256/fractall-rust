@@ -309,13 +309,19 @@ pub fn select_algorithm(params: &FractalParams, device: Device) -> Algorithm {
     let perturbation_viable = perturbation_family(params.fractal_type)
         && params.plane_transform == PlaneTransform::Mu
         && origin_ok;
+    // … et là où la perturbation aurait pris le relais du f64 (au-delà de
+    // ~1e13), une graine non nulle va au GMP par pixel — pas au f64 standard,
+    // dont la mantisse est épuisée bien avant le seuil GMP de 1e16.
+    let seeded_needs_gmp = !origin_ok
+        && perturbation_family(params.fractal_type)
+        && should_use_perturbation(params, false);
     match params.engine.algorithm_mode {
         AlgorithmMode::ReferenceGmp => Algorithm::ReferenceGmp,
         AlgorithmMode::StandardF64 => Algorithm::StandardF64,
         AlgorithmMode::Perturbation => {
             if perturbation_viable {
                 Algorithm::Perturbation
-            } else if params.engine.use_gmp {
+            } else if params.engine.use_gmp || seeded_needs_gmp {
                 Algorithm::ReferenceGmp
             } else {
                 Algorithm::StandardF64
@@ -324,7 +330,7 @@ pub fn select_algorithm(params: &FractalParams, device: Device) -> Algorithm {
         AlgorithmMode::Auto => {
             if perturbation_viable && should_use_perturbation(params, device == Device::Gpu) {
                 Algorithm::Perturbation
-            } else if should_use_gmp_reference(params) {
+            } else if should_use_gmp_reference(params) || seeded_needs_gmp {
                 Algorithm::ReferenceGmp
             } else {
                 Algorithm::StandardF64

@@ -51,9 +51,8 @@ prix est celui du dd, G14.13 c) ; (c) multiplication GMP découpée sur trois
 cœurs au-delà de 15 000 bits (G14.3) ; (d) Newton degré ≥ 4 par `powc`
 (décision : change des bits) ; (e) traqueur Julia au tier exp, hybrides
 toujours sans suivi ; (f) chemins hors défaut qui gardent l'ancien rebase
-Julia : `--no-bytecode` (`delta.rs`) et la boucle exp non-HP
-(`FRACTALL_ATOM_PERIOD=0`) — contrôle fait sur 9 scènes Julia hors centre :
-`--no-bytecode` == GMP pur, donc peu urgent ; (g) canaux distance /
+Julia : `--no-bytecode` (`delta.rs`) — contrôle fait sur 9 scènes Julia hors
+centre : `--no-bytecode` == GMP pur, donc peu urgent ; (g) canaux distance /
 intérieur en perturbation : pas de suivi de fiabilité (Julia de bord 1e14 et
 1e20 : 27-28 pixels ≠ GMP sur 4096 avec `--enable-distance-estimation`,
 0 sans) ; (h) calibrer la sonde dd (G14.1 k, inchangé).
@@ -3978,6 +3977,17 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   sites du raccourci des cycles exacts et la densité, la bit-identité de
   l'orbite sur deux cœurs, l'arithmétique qd et la construction du dc, la
   correction GMP des familles, le traqueur exp allégé.
+  **Seconde relecture (même matin), ciblée sur le code écrit APRÈS la
+  première** : aucun défaut en production par défaut. Traités : (D1) Julia
+  au tier exp sous `FRACTALL_ATOM_PERIOD=0` prenait une boucle sans rebase
+  relatif → toute référence à `Z[0] ≠ 0` passe par la boucle HP, quel que
+  soit l'interrupteur (PASS vs GMP à 1e290 et 1e305, Mandelbrot exp
+  inchangé) ; (D2) graine non nulle entre ~1e13 et 1e16 : la garde la
+  renvoyait au f64 standard, mantisse épuisée → GMP par pixel dès que la
+  perturbation aurait pris le relais ; (D3) `Drop` pendant qu'un assistant
+  d'orbite tient une tâche : `TAKEN → DONE` par échange, pour ne pas écraser
+  `QUIT` ; (D4) les retards de test d'`orbit_par` étaient globaux au
+  processus de tests → armés par un drapeau, désarmés par une garde RAII.
 - [x] **G14.20 — Boucles GMP pures : ni allocation ni norme pleine précision
   par itération (2026-11-06 matin)** — profil échantillonné d'un rendu GMP
   pur : ~60 % du temps dans `malloc`/`free` (deux clones + `mpc_mul`, qui

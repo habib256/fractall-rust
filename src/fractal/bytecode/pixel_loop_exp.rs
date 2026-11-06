@@ -179,7 +179,14 @@ fn iterate_pixel_unified_exp_single_phase(
     if phase_is_mandelbrot(phase) {
         // Path atom-tronqué (`FRACTALL_ATOM_PERIOD`) : variant HP ComplexExp
         // ref + BLA FloatExp (réf f64/BLA f64 zéroent les grazes ~1e-8000).
-        if atom_hp_enabled() {
+        // … et TOUTE référence dont `Z[0] ≠ 0` (Julia), même sous
+        // `FRACTALL_ATOM_PERIOD=0` : seule la boucle HP rebase relativement à
+        // `Z[0]` (cf. pixel_loop.rs `DirectKernel::REF_ORIGIN_NONZERO`).
+        let origin_nonzero = ref_orbit
+            .z_ref
+            .first()
+            .is_some_and(|z| z.re.mantissa != 0.0 || z.im.mantissa != 0.0);
+        if atom_hp_enabled() || origin_nonzero {
             return iterate_pixel_unified_exp_mandelbrot_hp(
                 ref_orbit,
                 bla_exp,
