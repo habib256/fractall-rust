@@ -13,6 +13,17 @@
 //! exact ; seuls les arrondis diffèrent. Rebases, tours lents et régime
 //! emballé (E absolu > 2⁶⁰⁰) passent par le traqueur exact
 //! (synchronisation `em·2^ee` ↔ `FloatExp`).
+//!
+//! **Coût** (2026-11-06) : la boucle scaled est bornée par le DÉBIT
+//! d'instructions (IPC ~7 sur M4, ~250 instructions par tour), pas par la
+//! latence de la chaîne δ → δ' : le traqueur se paie à l'instruction. D'où
+//! le chemin chaud du pas direct (puissances de 2 en cache par (cadre de δ,
+//! cadre de la borne), |d|² du tour réutilisé) et σ₁(A) précalculé par nœud
+//! de la table (`BlaMultiStepExp::sigma_m/sigma_e`). Borne identique au bit
+//! au code d'avant (verrou `light_tracker_matches_reference_bit_for_bit`).
+//! Réfutés (mesurés) : retirer la racine du pas direct (0 %) ; garder
+//! l'observateur en registres par copie locale / hooks par valeur (+1 à +5 %
+//! d'instructions, pression de registres).
 
 use num_complex::Complex64;
 
