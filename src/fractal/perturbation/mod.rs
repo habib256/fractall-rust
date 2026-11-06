@@ -2549,6 +2549,37 @@ mod tests {
         assert_close_iterations(&params, &[(1, 1), (2, 2), (3, 3)], 5);
     }
 
+    /// **Julia : rendu de PRODUCTION == GMP pur** sur une scène de bord où la
+    /// boucle f64 rend des pixels faux sans le signaler (preset sentinelle
+    /// `julia-edge-e20` à 64²). Sans le traqueur Julia : 28 pixels faux
+    /// (jusqu'à 293 itérations d'écart ; GMP 256 b == 512 b) ; avec traqueur +
+    /// correction GMP pure : 0. Avant le correctif de rebase (Z[0] ≠ 0), ~99 %.
+    #[test]
+    fn julia_edge_default_render_matches_pure_gmp() {
+        use crate::render::escape_time::render_escape_time;
+        let (cx, cy) = (
+            "1.42279534109440317773666336881783446850630340e-1",
+            "5.17774645170123477959332321568757233266599329e-1",
+        );
+        let mut params = crate::fractal::default_params_for_type(FractalType::Julia, 64, 64);
+        params.seed = Complex64::new(-0.8, 0.156);
+        params.iteration_max = 8192;
+        params.center_x_hp = Some(cx.to_string());
+        params.center_y_hp = Some(cy.to_string());
+        crate::fractal::ViewHp::from_center_and_zoom(cx, cy, "1e20", 64, 64, 1024)
+            .expect("vue")
+            .write_to_params(&mut params);
+        let prod = render_escape_time(&params).iterations;
+        let mut gmp = params.clone();
+        gmp.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
+        gmp.engine.use_gmp = true;
+        let truth = render_escape_time(&gmp).iterations;
+        let wrong = prod.iter().zip(&truth).filter(|(a, b)| a != b).count();
+        let structured = truth.iter().collect::<std::collections::BTreeSet<_>>().len();
+        assert!(structured > 50, "scène sans structure ({structured} comptes distincts)");
+        assert_eq!(wrong, 0, "{wrong} pixels du rendu par défaut ≠ GMP pur");
+    }
+
     #[test]
     fn perturbation_matches_f64_burning_ship() {
         let mut params = base_params(FractalType::BurningShip);
