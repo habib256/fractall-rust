@@ -3290,8 +3290,15 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
     escalade de production à 256² : golden_spider 24 px et e227 22 px
     changent, la nouvelle valeur est juste 16/20 vs GMP, l'ancienne 0/20.
     Coût +24 à +35 % sur les scènes qui escaladent (e50 0,67 → 0,85 s,
-    dragon 1,40 → 1,74 s). Verrou
-    `dd_bla_epsilon_is_double_double_unit_roundoff`.
+    dragon 1,40 → 1,74 s). **Puis revenu à 2⁻⁸⁰ une fois le garde-fou (f)
+    en place** : un saut dont la troncature compte emballe la borne dd et le
+    pixel est refait sans BLA — vérifié avant bascule : cartes d'itérations
+    identiques à 2⁻¹⁰⁶ sur 6 scènes à 256², mêmes écarts au juge dd sur 75
+    cas du corpus, seahorse 1e6 toujours == GMP. e50 0,754 → 0,608 s, dragon
+    1,464 → 1,249 s (tous deux SOUS leur baseline du début de nuit) ;
+    contrepartie e227 5 → 7 px et golden_spider 10 → 16 px au GMP. ⚠️ ε et
+    traqueur sont APPARIÉS (verrou
+    `dd_bla_epsilon_is_paired_with_the_dd_tracker`).
   - [ ] **(h) lethal_weapon (4,4e57, 1,6 M itérations) : plancher du dd.**
     Ce n'est PAS la précision d'orbite (292 b == 1172 b au tier f64 ; monter
     la marge aurait fait passer l'axe precision sans corriger un pixel — les

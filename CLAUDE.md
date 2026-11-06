@@ -736,8 +736,12 @@ convergé 1598, dd 1838. Pixel dd dont la borne s'emballe → second essai
 SANS BLA (borne réduite à l'arrondi dd ; évite d'envoyer au GMP des pixels
 que le dd rend juste) → GMP par pixel. Vaut en correction, en frame dd
 (`--dd-tier`, `[DD-ESCALATION]`) et pour les pixels flaggés du kernel GPU
-f32. `FRACTALL_RELIABILITY_DD=0`. ε de la BLA dd = **2⁻¹⁰⁶** (2⁻⁸⁰ laissait
-des pixels dd faux). **Plafond de l'escalade GMP** : tout ou rien, ssi le
+f32. `FRACTALL_RELIABILITY_DD=0`. ε de la BLA dd = **2⁻⁸⁰, APPARIÉ au
+traqueur dd** : nu, il laissait des pixels dd faux (troncature l·ε) ; à
+2⁻¹⁰⁶ la table ne saute plus rien (+24-35 %) ; sous le traqueur un saut
+dont la troncature compte emballe la borne et le pixel est refait sans BLA
+— mêmes itérations que 2⁻¹⁰⁶ sur 75 cas du corpus. Ne jamais changer l'un
+sans l'autre. **Plafond de l'escalade GMP** : tout ou rien, ssi le
 nombre de pixels dd non fiables ≤ max(16, 0,1 % × pixels)
 (`gmp_escalation_allowed`, `FRACTALL_RELIABILITY_GMP_MAX_FRACTION`, ≥ 1 =
 illimité) ; au-delà, valeur dd de meilleur effort + avertissement stderr
@@ -771,6 +775,29 @@ la table BLA dd, niveaux ≥ `BLA_SKIP_LEVELS` (pic RSS dragon 1 063 → 329
 Mo) ; partie basse capturée PARESSEUSEMENT (un Z GMP toutes les 1024
 itérations dans `high_precision_data`, relecture parallèle seulement si un
 pixel est flaggé ; `FRACTALL_LAZY_LO=0`).
+
+### Interrupteurs d'environnement (A/B et diagnostic)
+
+Tous lus UNE fois (`OnceLock`). Défaut = comportement de production.
+
+| Variable | Effet |
+|---|---|
+| `FRACTALL_STD_BATCH=0` | path f64 standard : interpréteur scalaire au lieu du noyau par lots |
+| `FRACTALL_EXP_SCALED=0` | tier exp : boucle FloatExp au lieu du « double mis à l'échelle » |
+| `FRACTALL_EXP_SCALED_STATS=1` | ventilation des tours de la boucle scaled (rapide / lent / causes de repli) |
+| `FRACTALL_JULIA_FAST=0` | Julia en perturbation : pas générique au lieu du fast-path inline |
+| `FRACTALL_PHASE_FAST=0` | Burning Ship / Tricorn : boucle générique au lieu des noyaux statiques |
+| `FRACTALL_RELIABILITY=off\|observe\|escalate` | détecteur de fiabilité (défaut `escalate`) |
+| `FRACTALL_RELIABILITY_EXP=0` | coupe le traqueur du tier exp |
+| `FRACTALL_RELIABILITY_DD=0` | coupe le traqueur du tier dd (⚠️ rend l'ε 2⁻⁸⁰ de la BLA dd non gardé) |
+| `FRACTALL_DD_RETRY_NOBLA=0` | pas de second essai dd sans BLA avant le GMP |
+| `FRACTALL_RELIABILITY_GMP_MAX_FRACTION=f` | plafond de l'escalade dd → GMP (défaut 0,001 ; ≥ 1 = illimité) |
+| `FRACTALL_F64_MARGIN=1` | test de détermination à l'évasion au tier f64 (opt-in, +75-195 %) |
+| `FRACTALL_DD_FAST=0` | boucle `DoubleDoubleExp` au lieu du chemin rapide dd |
+| `FRACTALL_LAZY_LO=0` | capture eager de la partie basse de l'orbite |
+| `FRACTALL_HARMONIC_LA=auto\|1\|0` | routage Harmonic LA |
+| `FRACTALL_GPU_PERTURB_F32=1`, `FRACTALL_GPU_F32_RAW=1`, `FRACTALL_GPU_F32_FALLBACK_RATIO` | kernel GPU f32 : forçage, sortie brute sans correction, seuil de repli |
+| `FRACTALL_PERTURB_STATS=1`, `FRACTALL_WISDOM=1` | lignes `[PERTURB PERF]` / `[RELIABILITY*]` / `[FRACTALL]`, `[WISDOM]` |
 
 ### Précision GMP perturbation
 
