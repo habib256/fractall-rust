@@ -117,6 +117,11 @@ surcoût. Vue par DÉFAUT (zoom 1, 2500 it., 256×160), même prototype :
 8 pixels faux en Auto, 10 signalés, **8 sur 8 attrapés, 2 faux positifs** —
 la borne ne s'emballe pas sur les points intérieurs (orbite attirée par un
 cycle : produit des 2|z| < 1), donc pas de faux positifs en masse.
+Autres vues, même prototype (2500 it., 256×160 ; pixels faux attrapés /
+part de la frame signalée) : seahorse 1e4 176 / 185 (95 %), 0,7 % ;
+seahorse 1e7 440 / 444 (99 %), 2,1 % ; éléphants 1e10 573 / 611 (94 %),
+2,1 %. Le coût d'une correction par pixel serait donc de l'ordre de 1 à 2 %
+de la frame recalculée, 15 % dans le pire cas mesuré.
 
 **Prochains chantiers** : (a) Tricorn / Burning Ship profonds rendus en GMP
 plein cadre quand la référence s'échappe (G14.21 — une piste essayée et
