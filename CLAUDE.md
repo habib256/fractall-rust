@@ -763,7 +763,16 @@ Mandelbrot, Harmonic LA, tier exp Mandelbrot (boucle scaled), tier dd.
 ⚠️ **Aucune lecture d'environnement hors `OnceLock` dans les fichiers du
 chemin par pixel** (verrou de source
 `hot_path_sources_only_read_env_through_once_lock`) : `std::env::var` par
-pixel = ~250 ns + verrou global — réintroduit puis retiré la même nuit. ⚠️ Le juge de ces
+pixel = ~250 ns + verrou global — réintroduit puis retiré la même nuit.
+⚠️ **Tout chemin qui recalcule un pixel doit ajouter `centre_vue − cref`
+au dc** (`resolved_sampling.ref_offset`, non nul quand l'orbite du cache est
+réutilisée hors centre — `can_subset_reuse`, GUI seulement) : le plein cadre
+et la correction GMP le faisaient, `correct_pixels_dd` non (39 pixels
+corrigés sur 39 faux, verrou
+`panned_view_with_reused_orbit_matches_fresh_render`). Les rendus sans cache
+d'orbite (CLI, quality, harness) ne peuvent PAS voir cette classe de défaut.
+⚠️ Le traqueur dd est aveugle au tier exp (entrées f64 sous-débordées) :
+limite ouverte, TODO G14.1 (i). ⚠️ Le juge de ces
 défauts n'était AUCUN axe de routine : c'est le rendu de production comparé
 au tier dd (lui-même vérifié contre GMP) sur le corpus `toml/` qui les a
 trouvés — quality juge 16 presets, precision juge l'orbite.
@@ -820,7 +829,8 @@ revient à `mpc_sqr` (A/B).
 
 **Cache de table BLA** (`delta.rs`, `GLOBAL_BLA` + thread-local) : clé =
 identité de l'orbite (**adresse + longueur + empreinte de contenu**, cf.
-`OrbitIdentity`) + `c_norm` + type/puissance/seuil/tier dd. ⚠️ Ni l'adresse
+`OrbitIdentity`) + `c_norm` + empreinte de la formule hybride/opcodes
+(`[M,M]` et `[M]` ont la même orbite primaire) + type/puissance/seuil/tier dd. ⚠️ Ni l'adresse
 seule (une orbite libérée puis une autre réallouée au même endroit
 retrouverait la table de l'ancienne) ni l'oubli de `c_norm` (orbite
 réutilisée pour une vue plus large → rayons de merge sur-permissifs) ne sont

@@ -30,7 +30,11 @@ aux itérations brutes. Détail et chiffres par item : `TODO.md` G14.
   pur → 1 → 0).
 - **`--dd-tier` sur une formule hybride ou à opcodes** rendait un Mandelbrot
   nu (93 % de pixels faux) : prédicat unique `dd_tier_applicable`.
-- **Cache de table BLA** : clé par contenu d'orbite + rayon de vue.
+- **Correction dd sur orbite réutilisée** (GUI, zoom avant ancré) : le
+  décalage centre − référence manquait — tous les pixels corrigés étaient
+  recalculés au mauvais point (39 sur 39 sur la scène du verrou).
+- **Cache de table BLA** : clé par contenu d'orbite + rayon de vue +
+  formule hybride.
 - **GPU f32** : sous-dépassement de |δ|² au-delà de ~1e19 ;
   `spectral_norm` qui débordait pour |A| > 1e154.
 - Diagnostics : zoom affiché au-delà de 1e308.

@@ -3327,6 +3327,14 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
     golden_spider ~1,0 s (0,36 s, 169 faux). Un tier quad-double (~212 b,
     ~10× le dd contre ~60× pour le GMP) fermerait ces cas proprement —
     prochain chantier de correction.
+  - [ ] **(i) Traqueur dd AVEUGLE au tier exp** (trouvé à la relecture,
+    2026-11-06) : ses entrées sont des f64 ; sous ~1e-308 (δ, dc, Z de
+    frôlement atom-domain) tout terme vaut 0 et la borne reste nulle. Or la
+    correction dd est appelée au tier exp (le traqueur exp, actif par défaut,
+    y envoie ses pixels flaggés) : le dd y rend `Ok` sans garde-fou — état
+    d'avant la nuit pour ce tier. Mesuré : 0 pixel faux vs juge sur 31 cas exp
+    à 96², donc pas de défaut observé, mais pas de garantie. Remède : borne en
+    `FloatExp` dans la boucle `DoubleDoubleExp` (modèle `ShadowTrackerExp`).
   *Métriques* : profil `post %` + `fiab. %` (e50, e113, dragon, spiral),
   `trend --case e50`, bench `cpu_perturb_dd`. *Done* : post < 10 % du wall
   sur e50 sans perdre un pixel vs GMP (quality 16/16, e50 PASS).
@@ -3579,6 +3587,30 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   étaient prédites). Celtic / Buffalo / Perp. BS ne passent pas par la
   perturbation → pas de noyau. Pas générique sans dérivée quand elle n'est
   pas demandée (`step_delta_only`).
+- [x] **G14.16 — Relecture du diff de la nuit par un agent neuf + traqueur
+  scaled allégé (2026-11-06)** — relecture en lecture seule, cinq
+  trouvailles, toutes traitées :
+  (1) **correction dd sans le décalage centre − référence** — défaut
+  ANTÉRIEUR à la nuit : sur une vue dont l'orbite du cache est réutilisée
+  hors centre (`can_subset_reuse` : zoom avant ancré contenu dans
+  l'empreinte précédente, GUI), `correct_pixels_dd` recalculait les pixels
+  flaggés au point cref + grille ; mesuré sur le verrou : 39 pixels faux sur
+  39 corrigés (seahorse 1e8, zoom ×2 ancré 10 px hors centre), 1 après
+  (`panned_view_with_reused_orbit_matches_fresh_render`) ; (2) traqueur dd
+  aveugle au tier exp → G14.1 (i), ouvert ; (3) l'axe `truth` comptait PASS
+  les types que le dd ne sait pas rendre (le juge refaisait le rendu de
+  production) → `n/a` ; (4) clé du cache BLA sans la formule hybride ([M,M]
+  et [M] ont la même orbite primaire) ; (5) le mode `observe` corrigeait
+  (second essai dd sans BLA). Zones relues sans défaut : noyau par lots,
+  mémo de taille de pixel, noyaux de pas, boucle scaled, chemin rapide dd,
+  phase post, capture paresseuse.
+  **Traqueur allégé dans la boucle scaled** : borne portée comme `em·2^ee`
+  (f64 + exposant propre), renormalisée seulement hors de [2⁻²⁰⁰, 2²⁰⁰] ;
+  rebases, tours lents et régime emballé par le traqueur exact — phase
+  pixels −10 à −19 % (e318 0,167 → 0,140 s, safari 0,205 → 0,167 s), mêmes
+  pixels flaggés et PNG identiques sur 17 cas. Il coûte encore ~+43 % dans
+  cette boucle (une racine par pas direct ; σ₁(A) recalculé à chaque saut
+  alors qu'il ne dépend que du nœud → à précalculer dans `bla_dual_exp.rs`).
 - [ ] **G14.8 — Re-baseline standard au schéma 2** sur la machine de
   développement (i7, F3 dispo) : `score --tier standard` (profil + bench
   inclus) puis `baseline` — sans quoi `speed_self`, `ns/iter` et `bench` n'ont
