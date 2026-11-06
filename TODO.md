@@ -12,6 +12,45 @@
 
 ## 🧭 État actuel (2026-11-06) — lire ceci en premier
 
+**2026-11-06, matin — branche `matin-20261106` (au-dessus de `main`, NON
+fusionnée), cinq agents Opus en worktrees + relecture indépendante.** Score
+quick après fusion (`harness/history/20261106T043955Z-0473296.json`) : 0 gap,
+quality **17/17**, truth 14/14, precision 12/12, goldens verts ; bench
+`cpu_std_f64` ×1,8, `cpu_perturb_exp` +15 %. Ce que la matinée a établi :
+1. **Julia en perturbation était FAUSSE hors centre** (G14.18) : le rebase
+   supposait `Z[0] = 0` alors que la référence Julia part du centre de la vue
+   — 92-99 % de pixels faux sur toute vue non centrée en 0, CPU et GPU, depuis
+   toujours (le seul preset Julia était centré en 0). Corrigé sur tous les
+   chemins, plus un second défaut trouvé en portant le correctif au GPU
+   (ordre des opérations : vue centrée sur un point périodique = 100 % faux).
+   Julia a désormais son traqueur de fiabilité.
+2. **Les points intérieurs ne coûtent plus `iteration_max`** (G14.17) :
+   raccourci des cycles EXACTS, sorties identiques au bit — vue par défaut
+   ×2,4, ×11 à 20 000 itérations, Magnet / Mandelbulb / Multibrot non entier /
+   Nebulabrot ×4 à ×100.
+3. **Orbite de référence sur deux cœurs** (G14.3) : ×1,1 à 2 800 bits, ×1,4
+   à 5 000, ×1,8-1,9 au-delà de 10 000, bit-identique.
+4. **Tier quad-double** (G14.1 h) entre le dd et le GMP : e227 256²
+   3,5 → 2,35 s, golden_spider 1,0 → 0,62 s, mêmes itérations que le GMP pur.
+5. **Traqueur du tier exp** : +42 % → +24 % d'instructions, bit-identique.
+6. **Deux pistes fermées par la mesure** : traqueur f64 « moins pessimiste »
+   (G14.13 c) et boucle f64 à 2 voies (G14.2 : −7 % sur e50, sous la porte).
+7. **La relecture a trouvé un blocage** dans le protocole de l'orbite sur
+   deux cœurs (écrit le matin même) — corrigé avant toute fusion vers `main`.
+
+**Prochains chantiers** : (a) Tricorn / Burning Ship profonds rendus en GMP
+plein cadre quand la référence s'échappe (12-30 s à 96²) — pas de rebase de
+fin de référence pour ces familles ; (b) la correction dd elle-même (e227 :
+4323 pixels signalés, dont la moitié de faux positifs irréductibles — le
+prix est celui du dd, G14.13 c) ; (c) multiplication GMP découpée sur trois
+cœurs au-delà de 15 000 bits (G14.3) ; (d) Newton degré ≥ 4 par `powc`
+(décision : change des bits) ; (e) traqueur Julia au tier exp, hybrides
+toujours sans suivi ; (f) chemins hors défaut qui gardent l'ancien rebase
+Julia : `--no-bytecode` (`delta.rs`) et la boucle exp non-HP
+(`FRACTALL_ATOM_PERIOD=0`) ; (g) Mandelbrot à graine non nulle (métadonnées
+éditées) : même classe que Julia, non traité ; (h) calibrer la sonde dd
+(G14.1 k, inchangé).
+
 **2026-11-06 — nuit d'optimisation ET de correction sur l'Apple M4 (branche
 `nuit-20261105`, ~65 commits au-dessus de `main`, non fusionnée).** Score
 final (`harness/history/20261106T010126Z-4bfbdba.json`, quick, 3 runs,
@@ -3426,6 +3465,32 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
     gardé) ; aucun autre cas ne dépasse 20 % de pixels f64 signalés. Le
     corpus ne contient donc aucune scène ENTRE 35 % et 68 % pour placer le
     seuil : il faut en fabriquer (fuzz autour de scènes à > 1 M itérations).
+  - [x] **(l) Tier QUAD-DOUBLE entre le dd et le GMP — LIVRÉ 2026-11-06
+    (matin, agent ; répond au (h)).** `perturbation/{qd,orbit_qd,
+    correct_qd}.rs` + `bytecode/pixel_loop_qd.rs` : arithmétique QD
+    « sloppy » (~210 b mesurés contre rug), boucle en pas directs sans BLA,
+    orbite qd rejouée en parallèle depuis les points de contrôle GMP, dc en
+    GMP exact, traqueur collant (unité 2⁻²⁰⁶), plafond propre
+    (`FRACTALL_QD_MAX_FRACTION`, 1 %, plancher 16 px). Chaîne : f64 signalé →
+    dd tracé → dd sans BLA → qd → GMP. `FRACTALL_QD=0`. Mesuré au calme,
+    256² : **e227 3,5 → 2,35 s** (7 px en qd, 0 au GMP), **golden_spider
+    1,0 → 0,62 s** (16 px, 1 au GMP), rug inchangé ; itérations == GMP pur
+    sur tous ces pixels, PNG identiques ; seahorse 1e6 (117,17) : 1598 = GMP.
+    Porte de décision : ×2,5 seulement au micro-banc contre le GMP à 605 b,
+    mais ×3,4 à ×5,8 en production (le GMP par pixel y alloue à chaque
+    itération). ⚠️ Le traqueur qd compte l'arrondi de la pseudo-orbite GMP
+    (`2^-(prec−2)·|Z|` par pas) : sans lui, lethal_weapon 376 pixels déclarés
+    fiables dont 245 faux. **Plancher « arrondi de la conversion qd » proposé
+    à la relecture : essayé et refusé** — ce n'est pas un résidu absolu (terme
+    croisé 2·δ·ρ, déjà couvert) ; avec lui la borne des 23 pixels qd d'e227 et
+    golden_spider s'emballe alors que leurs valeurs sont justes. *Non
+    retenu* : `FRACTALL_DD_ESCAPE_REL=0.1` par défaut (corrige le pixel du
+    (j) via le qd, mais e227 +78 % de cycles, dragon +10 %, 0 autre valeur
+    changée) ; relever le plafond pour lethal_weapon (la scène dépasse aussi
+    la précision de formule : GMP 290 b et 580 b ne s'accordent que sur
+    122/418 pixels au-delà du dd). *Reste* : `mandelbrot_mpc` alloue à chaque
+    itération et n'utilise pas `fast_sqr_step` (4-6× plus lent qu'au
+    micro-banc) — l'accélérer change les arrondis des pixels GMP.
   - [ ] **(j) Dernier pixel faux connu de la suite quality : seahorse-valley
     1e8 à 256², pixel (160,70)** — GMP 2084 itérations (256 b == 1024 b), dd
     1947 ; le traqueur f64 le flagge, le dd le « corrige » mal, et la borne
@@ -3470,6 +3535,24 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   inchangés ; pixels faux e227 0 → 7, golden_spider 2 → 7-8, rug 0 → 1. Les
   rayons des niveaux bas ne sont guère plus grands (dominés par le plus
   petit |Z| du bloc) : on garde 3.
+  **Réfuté aussi (2026-11-06, matin, agent) : entrelacement 2 voies écrit à
+  la main du fast-path f64 tracé** (prototype bit-identique, branché par
+  tuile : `bench/g14.2-proto/lanes-2voies-tracke/`). Phase pixels
+  mono-thread 128² : e50 −7 %, e113 −15 % ; 256² 4 threads, total : e50 −8 %,
+  e113 −14 %, rug −12 %. Porte −15 % non franchie sur e50. **L'IPC reste
+  ≈ 4,8 en scalaire comme en 2 voies : la boucle n'est PAS bornée par la
+  latence de δ** (hypothèse de ce TODO réfutée), ni par le débit flottant
+  (~10,5 cycles théoriques contre 17-18 mesurés) ; suspect principal : les
+  erreurs de prédiction de branche (acceptation d'un saut BLA ~40 % aux
+  index alignés), non mesurables ici sans compteurs matériels. Le traqueur
+  ne coûte que +7 % de cycles en micro (pas +25 %). Pièges : un banc dont le
+  puits ignore le traqueur laisse LLVM l'éliminer (faux −23 %) ; la boucle
+  inlinée dans la boucle de tuiles fait +18 % d'instructions ; seul un état
+  de voie réduit (Z[m] relu, z_abs dérivé, `iters_ptb` supprimé) évite de
+  déverser δ sur la pile ; 3 voies ×0,52, tableaux ×0,8. Même constat côté
+  dd (micro-banc de l'orchestrateur) : l'entrelacement du pas dd direct
+  plafonne à ×1,3 — il est borné par le débit des 4 unités flottantes
+  (~270 opérations par pas), pas par la latence.
   Texte d'origine : **Boucle pixel f64 (76 % du wall e50, dominante sur 8/10
   cas)**. `ns/iter` effectif 0.1-0.2 (skips BLA inclus) ; bench
   `cpu_perturb_f64` 0.17 ns/iter à 4 threads = ~0.7 ns/iter/thread. Leviers :
@@ -3754,6 +3837,21 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   pixels flaggés et PNG identiques sur 17 cas. Il coûte encore ~+43 % dans
   cette boucle (une racine par pas direct ; σ₁(A) recalculé à chaque saut
   alors qu'il ne dépend que du nœud → à précalculer dans `bla_dual_exp.rs`).
+  **Fait le 2026-11-06 (matin, agent) : coût ramené de +42 % à +24 %
+  d'instructions.** Mesure d'abord : la boucle scaled est bornée par le
+  DÉBIT d'instructions (IPC ~7, ~250 instr./tour), pas par la latence ; le
+  traqueur coûtait ~105 instr./tour, et son coût était le chemin général du
+  pas direct (3-4 puissances de 2 + gardes à chaque pas) — PAS la racine
+  (la retirer : 0 %) et à peine σ₁. Livré, bit-identique à l'ancien code
+  (verrou `light_tracker_matches_reference_bit_for_bit`, référence verbatim
+  `pixel_loop_scaled_track_ref.rs`) : cache du pas direct indexé par (cadre
+  de δ, cadre de la borne) — la borne vit le plus souvent AU-DESSUS du cadre
+  de δ, un cache `ee == e` ratait 42-67 % des pas —, |d|² du tour réutilisé,
+  σ₁(A) précalculé par nœud (+8 o). Phase pixels 512² −12 à −18 % (e401
+  0,376 → 0,309 s) ; PNG et comptes `flagged` identiques sur 23 cas exp à
+  256² et 5 à 1024². Réfutés : observateur gardé en registres par copie
+  locale ou hooks par valeur (+1-5 % d'instructions). Reste : un pas général
+  après chaque saut BLA (~10 instr./saut).
 - [x] **G14.17 — Raccourci des cycles EXACTS : les points intérieurs du path
   f64 standard (2026-11-06, matin)** — un point qui ne s'évade pas coûtait
   `iteration_max` passes, et c'est lui qui faisait le temps de toute vue
@@ -3799,6 +3897,60 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   entières par multiplications le rendraient ~×10 plus rapide mais changent
   les derniers bits (golden `newton_default`) ; Lyapunov (2,8 s à 720p) : un
   `ln` par itération.
+- [x] **G14.18 — Véracité Julia / Burning Ship / Tricorn en perturbation
+  (correction, 2026-11-06 matin)** — agent + orchestrateur.
+  (1) **Rebase Julia relatif à `Z[0]`.** La référence Julia part du centre
+  de la vue (`Z[0] ≠ 0`) ; toutes les boucles rebasaient `δ := z` comme si
+  `Z[0] = 0`. Mesuré vs GMP pur, 64², centre de bord : **92 à 99 % de pixels
+  faux de 1e4 à 1e13**. Invisible jusque-là : `julia-siegel-disk`, seul
+  preset Julia, est centré en 0. Corrigé (`JuliaKernel`,
+  `REF_ORIGIN_NONZERO`) : fast-path f64, boucle générique, boucle HP du tier
+  exp, `iterate_pixel_gmp`.
+  (2) **Ordre des opérations** (trouvé en portant (1) au GPU) : `z − Z[0]`
+  calculé `(Z[m] + δ) − Z[0]` absorbe δ ; sur une vue centrée sur un point
+  PÉRIODIQUE de l'ensemble (cible d'un zoom auto-similaire) l'orbite repasse
+  exactement par `Z[0]` et le pixel rebasait sur δ = 0 — **100 % de pixels
+  faux de 1e15 à 1e30** sur le point fixe répulsif de c = 0,36228 − 0,0777i.
+  Formé `(Z[m] − Z[0]) + δ` : PASS max_diff 0 jusqu'à 1e40.
+  (3) **Kernels GPU f32 et f64** : même défaut que (1), 86 % de pixels faux
+  sur Metal (dont 14 % seulement signalés). Corrigés ; à 1e8 le traqueur f32
+  signale alors 39 % des pixels → repli CPU ; PASS à 1e14. Kernel f64 validé
+  par naga seulement (pas de `SHADER_F64` sur Metal).
+  (4) **Traqueur Julia actif par défaut** : après (1) il restait 0,7 % de
+  pixels faux non signalés (jusqu'à 812 itérations d'écart, GMP 256 b ==
+  512 b) → 0 sur 18 scènes de 1e13 à 1e40. Correction en GMP pur sous
+  plafond 0,1 % OU budget de 5 % des itérations de la frame ; phase pixels
+  +27 %, total ×4-5 sur les scènes de bord à fort nombre d'itérations.
+  Burning Ship / Tricorn : 107 scènes sondées, aucun pixel faux adjudicable
+  (vérité non convergée, ou rendu en GMP plein cadre, ou juste) → suivi en
+  opt-in `FRACTALL_RELIABILITY_FAMILY=all`.
+  Verrous : `julia_rebase_is_relative_to_reference_origin` (f64 + exp),
+  `julia_view_centred_on_a_fixed_point_matches_gmp`,
+  `julia_edge_default_render_matches_pure_gmp`,
+  `tracked_family_loops_are_bit_identical`, preset `julia-edge-e20`. Outil :
+  `examples/probe_truth`.
+  *Reste* : Tricorn / Burning Ship profonds rendus en GMP plein cadre quand
+  la référence s'échappe (> 30 % de pixels « référence épuisée ») ;
+  indétermination du test d'évasion f64 sur les vues plates (Tricorn 1e25 :
+  33 % des pixels à ±1, |z|² à 2,5e-13 du rayon) ; traqueur Julia au tier
+  exp ; hybrides non jugés ; chemins hors défaut (`--no-bytecode`, boucle exp
+  non-HP sous `FRACTALL_ATOM_PERIOD=0`) encore sur l'ancien rebase ;
+  `FRACTALL_JULIA_FAST=0` / `FRACTALL_PHASE_FAST=0` ne ramènent plus à la
+  boucle générique sur le chemin suivi.
+- [x] **G14.19 — Relecture indépendante du diff du matin (2026-11-06)** —
+  agent neuf, lecture seule, six zones. Trouvé : (1) **blocage possible de
+  l'orbite sur deux cœurs** — l'assistant vidait la case de tâche sur la foi
+  d'un état lu plus tôt ; deux retards de l'ordre de la µs suffisaient à
+  laisser l'appelant attendre pour toujours (reproduit sur modèle). Corrigé :
+  une tâche se réclame par `compare_exchange`, seul le gagnant vide la case
+  (`claimed_handoff_survives_preemption_at_every_step`). (2) rebase Julia du
+  GPU et forme du rebase au tier exp — déjà corrigés entre-temps (G14.18).
+  (3) plancher du traqueur qd — examiné, essayé, refusé (G14.1 l). (4)
+  `iterate_pixel_gmp` rendait l'index de référence au lieu de l'itération
+  absolue — corrigé par inspection. Zones relues sans défaut : les trois
+  sites du raccourci des cycles exacts et la densité, la bit-identité de
+  l'orbite sur deux cœurs, l'arithmétique qd et la construction du dc, la
+  correction GMP des familles, le traqueur exp allégé.
 - [x] **G14.8 — Re-baseline (2026-11-06, Apple M4)** : score standard
   archivé (25 cas, 4,76 s cumulés) et baseline quick re-figée sur l'état
   final (`harness/baselines/apple-m4-10t.json`). La machine i7 + F3 reste à
