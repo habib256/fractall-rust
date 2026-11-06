@@ -320,6 +320,9 @@ fn jump_fast(s: Scaled, dcs: Scaled, a: &Mat2Exp, b: &Mat2Exp) -> Option<(Scaled
     Some((renorm(Complex64::new(re, im), ep)?, terms))
 }
 
+#[path = "pixel_loop_scaled_track.rs"]
+mod track;
+pub use track::ScaledTracker;
 #[path = "pixel_loop_scaled_stats.rs"]
 mod stats;
 pub use stats::ScaledStats;
@@ -503,6 +506,8 @@ pub fn iterate_pixel_scaled_exp_mandelbrot_tracked(
     limits: crate::fractal::bytecode::pixel_loop::PixelLoopLimits,
     bla_epsilon: f64,
 ) -> (UnifiedPixelResultExp, ShadowTrackerExp) {
+    // Traqueur léger (borne em·2^ee, cf. `pixel_loop_scaled_track`) : mêmes
+    // décisions, pas la même borne au bit.
     let mut tracker = ShadowTrackerExp::new(dc, bla_epsilon);
     let (res, st) = scaled_impl(ref_orbit, bla_exp, dc, delta_initial, limits, &mut tracker);
     if stats_enabled() {
@@ -686,8 +691,9 @@ fn fast_iter<O: ScaledObs>(
     if c.m_usize() + 1 >= ref_len {
         return None; // bout de référence : wrap/rebase-at-end en lent
     }
-    // Hooks sur une COPIE, validée si le tour aboutit (un repli les rappelle).
-    let mut o = *obs;
+    // Hooks appliqués seulement si le tour aboutit (un repli les rappelle) :
+    // le rebase est différé jusqu'au commit (pas de copie de l'observateur).
+    let mut pending_rebase: Option<(ComplexExp, ComplexExp)> = None;
     let mut s = s;
     let mut c = c;
     let mut rebased = false;
@@ -717,7 +723,7 @@ fn fast_iter<O: ScaledObs>(
                     re: FloatExp::from_f64(zr),
                     im: FloatExp::from_f64(zi),
                 };
-                o.rebase(ref_orbit.z_ref[c.m_usize()], z_new);
+                pending_rebase = Some((ref_orbit.z_ref[c.m_usize()], z_new));
             }
             s = renorm(Complex64::new(zr, zi), 0)?;
             c.rebase();
@@ -754,10 +760,12 @@ fn fast_iter<O: ScaledObs>(
                 };
                 if !overshoots {
                     if O::TRACKS {
-                        if !o.bla_scaled(&node.a, jt.ad, jt.bt, jt.ep, node.l) {
-                            o.bla(&node.a, &node.b, s.to_cexp(), dc, node.l);
+                        if let Some((zr, zn)) = pending_rebase {
+                            obs.rebase(zr, zn);
                         }
-                        *obs = o;
+                        if !obs.bla_scaled(&node.a, jt.ad, jt.bt, jt.ep, node.l) {
+                            obs.bla(&node.a, &node.b, s.to_cexp(), dc, node.l);
+                        }
                     }
                     return Some((cand, cand_c, true, rebased));
                 }
@@ -779,16 +787,18 @@ fn fast_iter<O: ScaledObs>(
         // `2·Z·δ_old` (exact sous les gardes de `direct_fast`, 0 exact si Z₀ = 0)
         // et `Z[m] + δ_old` calculé en FloatExp. Chemin f64 d'abord (même
         // borne au bit près sous gardes), ComplexExp sinon.
-        if !o.direct_scaled(z, s.d, s.e, Complex64::new(tzd_re, tzd_im)) {
+        if let Some((zr, zn)) = pending_rebase {
+            obs.rebase(zr, zn);
+        }
+        if !obs.direct_scaled(z, s.d, s.e, Complex64::new(tzd_re, tzd_im)) {
             let delta_old = s.to_cexp();
             let two_z_delta = ComplexExp {
                 re: FloatExp::new(tzd_re, s.e),
                 im: FloatExp::new(tzd_im, s.e),
             };
             let z_abs = ref_orbit.z_ref[m].add(delta_old);
-            o.direct(z_abs, two_z_delta, delta_old);
+            obs.direct(z_abs, two_z_delta, delta_old);
         }
-        *obs = o;
     }
     c.step();
     Some((next, c, false, rebased))

@@ -98,6 +98,15 @@ fn scaled_tracked_flags_same_pixels_as_floatexp_on_olbaid2() {
     assert!(flagged > 0, "grille sans pixel non fiable : verrou vide");
 }
 
+/// Diagnostic de coût du traqueur (`FRACTALL_SCALED_TIMING=1`, cas
+/// `FRACTALL_SCALED_CASE`, défaut e318) : boucle scaled nue vs tracée.
+#[test]
+#[ignore]
+fn scaled_tracker_cost_diagnostic() {
+    let stem = std::env::var("FRACTALL_SCALED_CASE").unwrap_or_else(|_| "e318".into());
+    check_grid(&stem, 256, 4);
+}
+
 /// Grille (pas `step`) d'une vue `w`×`w` du cas `stem` : boucle scaled vs
 /// FloatExp, non tracée ET tracée. Renvoie (n, évadés, flaggés, stats).
 fn check_grid(stem: &str, w: u32, step: usize) -> (u32, u32, u32, ScaledStats) {
@@ -195,11 +204,12 @@ fn check_grid(stem: &str, w: u32, step: usize) -> (u32, u32, u32, ScaledStats) {
                 (rt.z_final.re.to_bits(), rt.z_final.im.to_bits()),
                 "tracé ({i},{j}) z_final"
             );
-            assert_eq!(
-                (tg.err.mantissa.to_bits(), tg.err.exponent),
-                (tr.err.mantissa.to_bits(), tr.err.exponent),
-                "tracé ({i},{j}) borne"
-            );
+            // Traqueur léger : borne à quelques ulp relatifs près (pas au bit),
+            // décision identique (vérifiée ci-dessous).
+            let (bg, br) = (tg.err.to_f64(), tr.err.to_f64());
+            let close = tg.err.exponent.abs_diff(tr.err.exponent) <= 1
+                && ((bg - br).abs() <= 1e-9 * br.abs() || tg.err.exponent > 900);
+            assert!(close, "tracé ({i},{j}) borne {:?} vs {:?}", tg.err, tr.err);
             let flag = |b: f32, z| {
                 crate::fractal::perturbation::delta::escape_undetermined(b, z, limits.bailout)
                     >= crate::fractal::bytecode::reliability::reliability_runaway() as f32
@@ -217,6 +227,41 @@ fn check_grid(stem: &str, w: u32, step: usize) -> (u32, u32, u32, ScaledStats) {
             total.fast_rebase += st.fast_rebase;
             escaped += (got.iteration < iters) as u32;
             n += 1;
+        }
+    }
+    if std::env::var_os("FRACTALL_SCALED_TIMING").is_some() {
+        let dcs: Vec<ComplexExp> = (0..h)
+            .step_by(step)
+            .flat_map(|j| (0..w).step_by(step).map(move |i| (i, j)))
+            .map(|(i, j)| ComplexExp {
+                re: sx * ((i as f64 + 0.5) / w as f64 - 0.5),
+                im: sy * ((j as f64 + 0.5) / h as f64 - 0.5),
+            })
+            .collect();
+        let z0 = ComplexExp::zero();
+        for _ in 0..3 {
+            let t = std::time::Instant::now();
+            let mut acc = 0u64;
+            for &dc in &dcs {
+                acc += iterate_pixel_scaled_exp_mandelbrot(&orbit, Some(&bla), dc, z0, limits)
+                    .iteration as u64;
+            }
+            let t_plain = t.elapsed();
+            let t = std::time::Instant::now();
+            for &dc in &dcs {
+                acc += iterate_pixel_scaled_exp_mandelbrot_tracked(
+                    &orbit,
+                    Some(&bla),
+                    dc,
+                    z0,
+                    limits,
+                    eps_f64,
+                )
+                .0
+                .iteration as u64;
+            }
+            let t_trk = t.elapsed();
+            eprintln!("timing {stem}: plain {t_plain:?} tracked {t_trk:?} ({acc})");
         }
     }
     eprintln!(

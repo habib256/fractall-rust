@@ -667,7 +667,27 @@ impl ShadowTrackerExp {
         self.saturate();
         true
     }
+
+    /// `|dc|₁` (borne locale constante du pixel) — traqueur « léger » de la
+    /// boucle scaled (`pixel_loop_scaled_track`).
+    pub fn dc_l1(&self) -> FloatExp {
+        self.dc_l1
+    }
+
+    /// ε de troncature BLA par pas fusionné.
+    pub fn bla_epsilon(&self) -> f64 {
+        self.bla_epsilon
+    }
+
+    /// Pose la borne (normalisée) puis applique le plafond collant.
+    pub fn set_err(&mut self, mantissa: f64, exponent: i32) {
+        self.err = FloatExp::new(mantissa, exponent);
+        self.saturate();
+    }
 }
+
+/// γ (arrondi local) du traqueur exp, exposé à la boucle scaled.
+pub const EXP_TRACK_GAMMA: f64 = GAMMA;
 
 /// Mode du détecteur, lu une fois depuis `FRACTALL_RELIABILITY` :
 /// - `off` / `0` : détecteur inactif (boucle de production intacte) ;
