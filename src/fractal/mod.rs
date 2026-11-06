@@ -1,6 +1,7 @@
 pub mod types;
 pub mod definitions;
 pub mod iterations;
+pub mod cycle;
 pub mod jitter;
 pub mod bytecode;
 pub mod gmp;
