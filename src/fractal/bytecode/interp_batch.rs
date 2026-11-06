@@ -22,6 +22,29 @@
 //! Limite : formule **mono-phase** (un hybride fait avancer chaque point dans
 //! une phase qui dépend de SON compteur d'itérations — les voies ne
 //! partageraient plus le même opcode).
+//!
+//! ## Points intérieurs : cycle EXACT (2026-11-06)
+//!
+//! Un point qui ne s'évade pas coûtait `iteration_max` passes — à lui seul le
+//! temps de rendu des vues qui montrent l'intérieur de l'ensemble avec un
+//! plafond élevé. Or une orbite attirée par un cycle devient, en arithmétique
+//! flottante, **exactement périodique** : l'état `(z, registre)` reprend à
+//! l'identique, bit pour bit, une valeur déjà visitée (médiane mesurée :
+//! 250 à 1000 itérations dans le cardioïde, un bulbe ou un minibrot). La
+//! passe étant une fonction déterministe de cet état (et de `c`, constant),
+//! la suite se répète alors pour toujours : le point n'atteindra jamais
+//! l'évasion, et son état à `iteration_max` est celui qu'il a `(reste) mod
+//! (longueur du cycle)` passes plus loin. La voie SAUTE donc son compteur
+//! d'un nombre entier de cycles et termine les quelques passes restantes
+//! normalement : **même compte d'itérations et même z final que sans le
+//! saut**, par construction (verrou
+//! `cycle_shortcut_matches_full_iteration_bit_for_bit`).
+//!
+//! Détection façon Brent, tous les [`CYCLE_CHECK_PERIOD`] passes seulement
+//! (le test est hors du corps chaud) : comparaison BINAIRE de l'état à un
+//! point de contrôle par voie, rafraîchi quand le compteur a doublé. Aucune
+//! tolérance — une quasi-période n'est pas un cycle, et `NaN` ne s'égale
+//! jamais. `FRACTALL_STD_CYCLE=0` coupe le raccourci (A/B).
 
 use num_complex::Complex64;
 
@@ -34,6 +57,26 @@ pub const LANES: usize = 8;
 
 /// Voie sans point (lot épuisé) : elle continue d'itérer des zéros inoffensifs.
 const NO_SLOT: usize = usize::MAX;
+
+/// Nombre de passes entre deux tests de cycle. Puissance de deux. Un cycle
+/// de longueur `L` est vu au plus `ppcm(L, période)` passes après son
+/// installation : 16 garde le test sous ~5 % des instructions de la boucle.
+pub const CYCLE_CHECK_PERIOD: u32 = 16;
+
+/// Motif binaire qu'aucun état atteignable ne porte (NaN à charge pleine) :
+/// point de contrôle « vide » d'une voie fraîchement chargée.
+const NO_CHECKPOINT: u64 = u64::MAX;
+
+/// Raccourci des cycles exacts actif ? (`FRACTALL_STD_CYCLE=0` le coupe.)
+fn cycle_shortcut_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        !matches!(
+            std::env::var("FRACTALL_STD_CYCLE").ok().as_deref().map(str::trim),
+            Some("0") | Some("off")
+        )
+    })
+}
 
 /// Itère `points` avec la phase `phase`, écrit le compte d'itérations et le z
 /// final de chaque point dans `out_iter` / `out_z` (mêmes indices).
@@ -54,6 +97,33 @@ pub fn iterate_bytecode_f64_batch(
     out_iter: &mut [u32],
     out_z: &mut [Complex64],
 ) {
+    iterate_batch_impl(
+        phase,
+        points,
+        seed,
+        is_julia,
+        iteration_max,
+        bailout,
+        out_iter,
+        out_z,
+        cycle_shortcut_enabled(),
+    );
+}
+
+/// Corps de [`iterate_bytecode_f64_batch`] ; `cycle_shortcut` explicite pour
+/// les tests (les deux réglages rendent les mêmes sorties).
+#[allow(clippy::too_many_arguments)]
+fn iterate_batch_impl(
+    phase: &Phase,
+    points: &[Complex64],
+    seed: Complex64,
+    is_julia: bool,
+    iteration_max: u32,
+    bailout: f64,
+    out_iter: &mut [u32],
+    out_z: &mut [Complex64],
+    cycle_shortcut: bool,
+) {
     let n = points.len();
     assert_eq!(out_iter.len(), n);
     assert_eq!(out_z.len(), n);
@@ -71,6 +141,12 @@ pub fn iterate_bytecode_f64_batch(
     let mut iter = [0u32; LANES];
     let mut slot = [NO_SLOT; LANES];
     let mut done = [false; LANES];
+    // Point de contrôle par voie (état binaire + compteur) et compteur à
+    // partir duquel le rafraîchir — cf. doc du module.
+    let mut ck = [[NO_CHECKPOINT; 4]; LANES];
+    let mut ck_iter = [0u32; LANES];
+    let mut ck_next = [CYCLE_CHECK_PERIOD; LANES];
+    let mut passes = 0u32;
 
     let mut next = 0usize;
     let mut live = 0usize;
@@ -89,6 +165,9 @@ pub fn iterate_bytecode_f64_batch(
             c_re[l] = 0.0;
             c_im[l] = 0.0;
             iter[l] = 0;
+            ck[l] = [NO_CHECKPOINT; 4];
+            ck_iter[l] = 0;
+            ck_next[l] = CYCLE_CHECK_PERIOD;
             while next < n {
                 let i = next;
                 next += 1;
@@ -194,6 +273,33 @@ pub fn iterate_bytecode_f64_batch(
             }
             if any {
                 break;
+            }
+            passes = passes.wrapping_add(1);
+            if cycle_shortcut && passes % CYCLE_CHECK_PERIOD == 0 {
+                for l in 0..LANES {
+                    let state = [
+                        re[l].to_bits(),
+                        im[l].to_bits(),
+                        stored_re[l].to_bits(),
+                        stored_im[l].to_bits(),
+                    ];
+                    if state == ck[l] {
+                        // État revu à l'identique `len` itérations plus
+                        // tard : cycle exact. Saut d'un nombre ENTIER de
+                        // cycles en gardant ≥ 1 itération avant le plafond ;
+                        // les passes restantes (< un cycle) s'exécutent.
+                        if slot[l] != NO_SLOT {
+                            let len = iter[l] - ck_iter[l];
+                            let k = (iteration_max - 1 - iter[l]) / len;
+                            iter[l] += k * len;
+                            ck_next[l] = u32::MAX;
+                        }
+                    } else if iter[l] >= ck_next[l] {
+                        ck[l] = state;
+                        ck_iter[l] = iter[l];
+                        ck_next[l] = iter[l].saturating_mul(2);
+                    }
+                }
             }
         }
         for l in 0..LANES {
@@ -361,6 +467,142 @@ mod tests {
             false,
             200,
             2.0,
+        );
+    }
+
+    /// Raccourci des cycles exacts : sur des points INTÉRIEURS (cardioïde,
+    /// bulbes, minibrot, bord lent) et un plafond élevé, le lot avec
+    /// raccourci rend exactement ce que rend l'itération complète — scalaire
+    /// ET lot sans raccourci — et il a bien raccourci quelque chose.
+    #[test]
+    fn cycle_shortcut_matches_full_iteration_bit_for_bit() {
+        let mut r = rng(0xC0FF_EE11_2233_4455);
+        let mut pts: Vec<Complex64> = Vec::new();
+        // Cardioïde et disque de période 2 (cycles courts, convergence rapide
+        // au centre, lente au bord).
+        pts.extend((0..160).map(|_| Complex64::new(r() * 1.6 - 1.3, r() * 1.2 - 0.6)));
+        // Bulbe de période 3 et son voisinage.
+        pts.extend((0..80).map(|_| Complex64::new(-0.1226 + 0.2 * (r() - 0.5), 0.7449 + 0.2 * (r() - 0.5))));
+        // Minibrot de période 3 de l'axe réel (cycles longs).
+        pts.extend((0..80).map(|_| {
+            Complex64::new(-1.7548776662466927 + 0.03 * (r() - 0.5), 0.03 * (r() - 0.5))
+        }));
+        // Centres exacts (super-attractifs) et zéros signés.
+        pts.extend([
+            Complex64::new(0.0, 0.0),
+            Complex64::new(-0.0, -0.0),
+            Complex64::new(-1.0, 0.0),
+            Complex64::new(-0.1225611668766536, 0.7448617666197442),
+            Complex64::new(0.25, 0.0),
+            Complex64::new(-0.75, 0.0),
+            Complex64::new(-2.0, 0.0),
+        ]);
+        let cases: Vec<(String, Formula, Complex64, bool, f64)> = vec![
+            (
+                "Mandelbrot".into(),
+                compile_formula(FractalType::Mandelbrot, 2.0).unwrap(),
+                Complex64::new(0.0, 0.0),
+                false,
+                25.0,
+            ),
+            (
+                "Julia".into(),
+                compile_formula(FractalType::Mandelbrot, 2.0).unwrap(),
+                Complex64::new(-0.12, 0.74),
+                true,
+                25.0,
+            ),
+            (
+                "BurningShip".into(),
+                compile_formula(FractalType::BurningShip, 2.0).unwrap(),
+                Complex64::new(0.0, 0.0),
+                false,
+                25.0,
+            ),
+            (
+                "Multibrot^3".into(),
+                compile_formula(FractalType::Multibrot, 3.0).unwrap(),
+                Complex64::new(0.0, 0.0),
+                false,
+                25.0,
+            ),
+            (
+                "opcodes store/mul".into(),
+                parse_opcodes_formula("store sqr mul add").unwrap(),
+                Complex64::new(0.0, 0.0),
+                false,
+                2.0,
+            ),
+        ];
+        for (label, formula, seed, is_julia, bailout) in &cases {
+            // Plafonds qui tombent à des positions variées dans le cycle.
+            for max in [1u32, 15, 16, 17, 33, 1000, 1001, 4096, 20_003] {
+                let run = |shortcut: bool| {
+                    let mut it = vec![u32::MAX; pts.len()];
+                    let mut zs = vec![Complex64::new(f64::NAN, f64::NAN); pts.len()];
+                    iterate_batch_impl(
+                        &formula.phases[0],
+                        &pts,
+                        *seed,
+                        *is_julia,
+                        max,
+                        *bailout,
+                        &mut it,
+                        &mut zs,
+                        shortcut,
+                    );
+                    (it, zs)
+                };
+                let (it_s, zs_s) = run(true);
+                let (it_f, zs_f) = run(false);
+                for i in 0..pts.len() {
+                    assert!(
+                        it_s[i] == it_f[i]
+                            && same(zs_s[i].re, zs_f[i].re)
+                            && same(zs_s[i].im, zs_f[i].im),
+                        "{label} point #{i} {:?} max={max} : raccourci ({}, {:?}) ≠ complet ({}, {:?})",
+                        pts[i],
+                        it_s[i],
+                        zs_s[i],
+                        it_f[i],
+                        zs_f[i]
+                    );
+                }
+            }
+            // … et contre l'interpréteur scalaire (qui n'a pas de raccourci).
+            assert_batch_matches_scalar(label, formula, &pts, *seed, *is_julia, 5000, *bailout);
+        }
+    }
+
+    /// Le raccourci RACCOURCIT : sur des points intérieurs et un plafond de
+    /// dix millions, le lot termine en un temps sans rapport avec le plafond
+    /// (l'itération complète prendrait des minutes), avec le bon compte.
+    #[test]
+    fn cycle_shortcut_ends_interior_points_early() {
+        let formula = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
+        let pts: Vec<Complex64> = (0..64)
+            .map(|k| Complex64::new(-0.2 + 0.005 * k as f64, 0.1))
+            .collect();
+        let max = 10_000_000u32;
+        let mut it = vec![0u32; pts.len()];
+        let mut zs = vec![Complex64::new(0.0, 0.0); pts.len()];
+        let t = std::time::Instant::now();
+        iterate_batch_impl(
+            &formula.phases[0],
+            &pts,
+            Complex64::new(0.0, 0.0),
+            false,
+            max,
+            25.0,
+            &mut it,
+            &mut zs,
+            true,
+        );
+        assert!(it.iter().all(|&i| i == max), "points intérieurs : plafond attendu");
+        assert!(
+            t.elapsed().as_secs_f64() < 2.0,
+            "raccourci inopérant : {:.1} s pour 64 points intérieurs",
+            t.elapsed().as_secs_f64()
         );
     }
 
