@@ -1177,6 +1177,8 @@ fractall-cli --type N --output FILE [OPTIONS]
                           #   GPU seulement plage deep both-perturbation)
   --enable-distance-estimation / --enable-interior-detection
   --multibrot-power F / --lyapunov-preset NAME
+  --julia-re F / --julia-im F   # graine c des types Julia (ex. --julia-re=-0.8
+                          #   --julia-im=0.156) ; ignorée ailleurs
   --toml FILE             # charge real/imag/zoom/iterations/rotate/phases/
                           # opcodes + blocs [[formula]] F3 natifs
                           # format léger rust-fractal-core

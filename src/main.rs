@@ -134,6 +134,15 @@ struct Cli {
     #[arg(long)]
     multibrot_power: Option<f64>,
 
+    /// Graine d'un type Julia : partie réelle de c (ex. --julia-re=-0.8).
+    /// Sans effet sur les types Mandelbrot-like.
+    #[arg(long, allow_hyphen_values = true)]
+    julia_re: Option<f64>,
+
+    /// Graine d'un type Julia : partie imaginaire de c (ex. --julia-im=0.156).
+    #[arg(long, allow_hyphen_values = true)]
+    julia_im: Option<f64>,
+
     /// Preset Lyapunov (standard, zircon-city, jellyfish, asymmetric, spaceship, heavy-blocks)
     #[arg(long)]
     lyapunov_preset: Option<String>,
@@ -856,6 +865,24 @@ fn main() {
     if let Some(multibrot_power) = cli.multibrot_power {
         if multibrot_power > 0.0 {
             params.formula.multibrot_power = multibrot_power;
+        }
+    }
+    // Graine Julia (c constant, le pixel est z₀) : seulement pour les types
+    // dont la convention est Julia — ailleurs `seed` est le z₀ de l'orbite et
+    // le déplacer changerait de fractale.
+    if cli.julia_re.is_some() || cli.julia_im.is_some() {
+        if fractall_cli::fractal::bytecode::Formula::is_julia_for(params.fractal_type) {
+            if let Some(re) = cli.julia_re.filter(|v| v.is_finite()) {
+                params.seed.re = re;
+            }
+            if let Some(im) = cli.julia_im.filter(|v| v.is_finite()) {
+                params.seed.im = im;
+            }
+        } else {
+            eprintln!(
+                "--julia-re / --julia-im ignorés : {:?} n'est pas un type Julia",
+                params.fractal_type
+            );
         }
     }
 

@@ -3931,6 +3931,15 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   Burning Ship / Tricorn : 107 scènes sondées, aucun pixel faux adjudicable
   (vérité non convergée, ou rendu en GMP plein cadre, ou juste) → suivi en
   opt-in `FRACTALL_RELIABILITY_FAMILY=all`.
+  (5) **Pour que la classe ne reste plus invisible** : sondes Julia hors
+  centre dans l'axe fuzz du harness (`fuzz_scenes.generate_julia`, six
+  graines à ensemble rempli ; puissance vérifiée — binaire de `main` 5 FAIL
+  sur 6 à 79-93 % de pixels faux, HEAD 6 PASS max_diff 0) ; options CLI
+  `--julia-re` / `--julia-im` (le CLI ne savait rendre que la graine par
+  défaut). Contrôles croisés au CLI sur ces six scènes, vs GMP pur :
+  perturbation forcée, + distance, + détection d'intérieur, `--no-bytecode`
+  → 0 pixel ≠ partout. Tier exp : vue du point fixe à 1e290 et 1e305, PASS
+  max_diff 0.
   Verrous : `julia_rebase_is_relative_to_reference_origin` (f64 + exp),
   `julia_view_centred_on_a_fixed_point_matches_gmp`,
   `julia_edge_default_render_matches_pure_gmp`,
