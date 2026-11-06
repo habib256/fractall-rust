@@ -113,6 +113,15 @@ pub mod bla;
 pub mod compress;
 pub mod counter;
 pub mod dd;
+pub mod qd;
+pub mod orbit_qd;
+mod correct_qd;
+use correct_qd::qd_stage;
+
+/// Budget de la correction GMP pure des familles sans tier dd (Julia,
+/// Burning Ship, Tricorn) : Σ itérations des pixels non fiables (pondérée par
+/// la précision) ≤ cette fraction des itérations de la frame.
+const FAMILY_GMP_ITER_BUDGET: f64 = 0.05;
 
 /// Rapport du détecteur de fiabilité (G9.6) : ligne `[RELIABILITY]` (quand
 /// le suivi est actif et que les stats perturbation — `FRACTALL_PERTURB_STATS`,
@@ -427,6 +436,24 @@ pub fn recompute_pixels_cpu(
                 }
             }
             escalate = still;
+            // Tier qd entre le dd et le GMP (G14.1 h), même plafond que le
+            // plein cadre.
+            use crate::fractal::bytecode::pixel_loop_qd as q;
+            if !escalate.is_empty()
+                && q::qd_enabled()
+                && q::qd_escalation_allowed(escalate.len(), width * params.height.max(1) as usize, q::qd_max_fraction())
+            {
+                if let Some(fixed) = correct_qd::correct_pixels_qd(params, cache, &cancel, &escalate) {
+                    escalate.clear();
+                    for (idx, it, z, ok) in fixed {
+                        if ok {
+                            out.push((idx, it, z));
+                        } else {
+                            escalate.push(idx);
+                        }
+                    }
+                }
+            }
         }
     }
     if !escalate.is_empty() {
@@ -462,6 +489,7 @@ pub mod delta;
 pub mod nonconformal;
 pub mod nucleus;
 pub mod orbit;
+mod orbit_par;
 pub mod pixel_math;
 mod precision;
 mod progress;
@@ -1448,6 +1476,8 @@ pub fn render_perturbation_with_cache(
         // Pixels au-delà de la précision du tier dd (borne dd emballée) :
         // GMP par pixel SOUS PLAFOND seulement (cf. plus bas).
         let mut dd_unreliable: Vec<usize> = Vec::new();
+        // Pixels envoyés DROIT au GMP pur (`iterate_point_mpc`), cf. plus bas.
+        let mut pure_first: Vec<usize> = Vec::new();
         // Frame dd : les pixels non fiables sont ceux du traqueur DD.
         let frame_dd = bytecode_path
             && params.engine.use_dd_tier
@@ -1467,7 +1497,59 @@ pub fn render_perturbation_with_cache(
                 && !params.engine.find_nucleus
                 && crate::fractal::wisdom::dd_tier_applicable(params)
                 && cache.hybrid_refs.is_none();
-            let fixed = if dd_ok {
+            // Julia / Burning Ship / Tricorn (pas de tier dd) : les pixels
+            // non fiables vont DROIT au GMP pur (`iterate_point_mpc`, le
+            // juge de `fractall-quality`), sous le même plafond que
+            // l'escalade dd → GMP ; au-delà, valeur f64 gardée + avertissement.
+            // (La perturbation GMP par pixel n'est pas une correction sûre ici :
+            // elle rebasait Julia relativement à 0 et ne connaît que le critère
+            // de glitch Pauldelbrot.)
+            let family_pure = !dd_ok
+                && !params.is_hybrid_formula()
+                && matches!(
+                    params.fractal_type,
+                    crate::fractal::FractalType::Julia
+                        | crate::fractal::FractalType::BurningShip
+                        | crate::fractal::FractalType::Tricorn
+                );
+            if family_pure {
+                use crate::fractal::bytecode::reliability as rel;
+                // Plafond : celui de l'escalade dd → GMP (0,1 % des pixels),
+                // OU un budget en ITÉRATIONS — le GMP est ici le PREMIER
+                // recours (pas de dd), et ces pixels coûtent leur compte f64 :
+                // Σ itérations des pixels non fiables, pondérée par la
+                // précision (coût GMP/itération ∝ bits au-delà de 256), ≤ 5 %
+                // des itérations de la frame. Mesuré Julia 96² 1e13 : 1,8 %
+                // de pixels flaggés, 2,3 % des itérations, correction 0,03 s
+                // pour une phase pixels de 0,03 s — tous les pixels faux
+                // (73) corrigés. Déterministe (aucune mesure de temps).
+                let prec_weight =
+                    (compute_perturbation_precision_bits(params) as f64 / 256.0).max(1.0);
+                let flagged_iters: f64 = unreliable_indices
+                    .iter()
+                    .map(|&idx| iterations[idx] as f64)
+                    .sum::<f64>()
+                    * prec_weight;
+                let frame_iters: f64 = iterations.iter().map(|&n| n as f64).sum();
+                if rel::gmp_escalation_allowed(
+                    unreliable_indices.len(),
+                    width * height,
+                    rel::reliability_gmp_max_fraction(),
+                ) || flagged_iters <= FAMILY_GMP_ITER_BUDGET * frame_iters
+                {
+                    pure_first.extend_from_slice(&unreliable_indices);
+                } else {
+                    eprintln!(
+                        "[RELIABILITY] {} pixels ({:.2} %) non fiables laissés à leur valeur f64 (type {:?}, pas de tier dd) — recalcul GMP estimé hors budget ; FRACTALL_RELIABILITY_GMP_MAX_FRACTION=1 pour tout corriger",
+                        unreliable_indices.len(),
+                        100.0 * unreliable_ratio,
+                        params.fractal_type
+                    );
+                }
+            }
+            let fixed = if family_pure {
+                Some(Vec::new())
+            } else if dd_ok {
                 correct_pixels_dd(
                     params,
                     &cache,
@@ -1510,8 +1592,14 @@ pub fn render_perturbation_with_cache(
         // à l'itération GMP pure (`iterate_point_mpc`, un carré par
         // itération), pas à la perturbation GMP — celle-ci coûte deux produits
         // complexes par itération ET exige l'orbite GMP DENSE, à reconstruire
-        // (dragon : +4,3 s et +700 Mo pour un seul pixel).
-        let mut pure_first: Vec<usize> = Vec::new();
+        // (dragon : +4,3 s et +700 Mo pour un seul pixel). (Déclaré plus
+        // haut : les familles sans tier dd y versent leurs pixels non fiables.)
+        // Tier qd (~212 b, G14.1 h) AVANT le GMP : sous son propre plafond
+        // déterministe ; ce qu'il rend fiable est réglé, le reste (borne qd
+        // emballée, hors domaine) suit la politique GMP ci-dessous.
+        if !dd_unreliable.is_empty() {
+            dd_unreliable = qd_stage(params, &cache, cancel.as_ref(), dd_unreliable, width * height, &mut iterations, &mut zs)?;
+        }
         if !dd_unreliable.is_empty() {
             use crate::fractal::bytecode::reliability as rel;
             let frame_pixels = width * height;
@@ -2490,6 +2578,146 @@ mod tests {
         assert_close_iterations(&params, &[(1, 1), (2, 2), (3, 3)], 5);
     }
 
+    /// **Julia : rendu de PRODUCTION == GMP pur** sur une scène de bord où la
+    /// boucle f64 rend des pixels faux sans le signaler (preset sentinelle
+    /// `julia-edge-e20` à 64²). Sans le traqueur Julia : 28 pixels faux
+    /// (jusqu'à 293 itérations d'écart ; GMP 256 b == 512 b) ; avec traqueur +
+    /// correction GMP pure : 0. Avant le correctif de rebase (Z[0] ≠ 0), ~99 %.
+    #[test]
+    fn julia_edge_default_render_matches_pure_gmp() {
+        use crate::render::escape_time::render_escape_time;
+        let (cx, cy) = (
+            "1.42279534109440317773666336881783446850630340e-1",
+            "5.17774645170123477959332321568757233266599329e-1",
+        );
+        let mut params = crate::fractal::default_params_for_type(FractalType::Julia, 64, 64);
+        params.seed = Complex64::new(-0.8, 0.156);
+        params.iteration_max = 8192;
+        params.center_x_hp = Some(cx.to_string());
+        params.center_y_hp = Some(cy.to_string());
+        crate::fractal::ViewHp::from_center_and_zoom(cx, cy, "1e20", 64, 64, 1024)
+            .expect("vue")
+            .write_to_params(&mut params);
+        let prod = render_escape_time(&params).iterations;
+        let mut gmp = params.clone();
+        gmp.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
+        gmp.engine.use_gmp = true;
+        let truth = render_escape_time(&gmp).iterations;
+        let wrong = prod.iter().zip(&truth).filter(|(a, b)| a != b).count();
+        let structured = truth.iter().collect::<std::collections::BTreeSet<_>>().len();
+        assert!(structured > 50, "scène sans structure ({structured} comptes distincts)");
+        assert_eq!(wrong, 0, "{wrong} pixels du rendu par défaut ≠ GMP pur");
+    }
+
+    /// VERROU (2026-11-06) : vue Julia centrée sur un point PÉRIODIQUE de
+    /// l'ensemble (ici le point fixe répulsif de c = 0,36228 − 0,0777i, la
+    /// cible d'un zoom auto-similaire). L'orbite de référence repasse alors
+    /// exactement par `Z[0]` à chaque pas ; le rebase relatif à `Z[0]` formé
+    /// comme `(Z[m] + δ) − Z[0]` y absorbait δ et rebasait le pixel sur δ = 0 :
+    /// 100 % de pixels faux vs GMP pur, de 1e15 à 1e30. Formé comme
+    /// `(Z[m] − Z[0]) + δ`, le rendu par défaut égale le GMP pur.
+    #[test]
+    fn julia_view_centred_on_a_fixed_point_matches_gmp() {
+        use crate::render::escape_time::render_escape_time;
+        let (cx, cy) = (
+            "0.38985610044883755171257630877868839385202331242396118850684663074760495785995127",
+            "-0.35272039721050518557877671863632904493924129254397061795699969009747042512071816",
+        );
+        for zoom in ["1e15", "1e20", "1e30"] {
+            let mut params = crate::fractal::default_params_for_type(FractalType::Julia, 48, 48);
+            params.seed = Complex64::new(0.36228, -0.0777);
+            params.iteration_max = 3000;
+            params.center_x_hp = Some(cx.to_string());
+            params.center_y_hp = Some(cy.to_string());
+            crate::fractal::ViewHp::from_center_and_zoom(cx, cy, zoom, 48, 48, 1024)
+                .expect("vue")
+                .write_to_params(&mut params);
+            let prod = render_escape_time(&params).iterations;
+            let mut gmp = params.clone();
+            gmp.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
+            gmp.engine.use_gmp = true;
+            let truth = render_escape_time(&gmp).iterations;
+            let wrong = prod.iter().zip(&truth).filter(|(a, b)| a != b).count();
+            let structured = truth.iter().collect::<std::collections::BTreeSet<_>>().len();
+            assert!(structured > 20, "zoom {zoom} : scène sans structure ({structured} comptes)");
+            assert!(
+                wrong * 100 <= prod.len(),
+                "zoom {zoom} : {wrong}/{} pixels du rendu par défaut ≠ GMP pur",
+                prod.len()
+            );
+        }
+    }
+
+    /// VERROU (2026-11-06) : Mandelbrot à graine NON NULLE (z₀ = seed ≠ 0,
+    /// atteignable par des métadonnées PNG / TOML éditées). Sa référence part
+    /// de `Z[0] = seed`, alors que les boucles Mandelbrot rebasent comme si
+    /// `Z[0] = 0` — la même classe que le défaut Julia. Le sélecteur ne doit
+    /// donc JAMAIS router ce cas en perturbation : même forcée, la vue est
+    /// rendue par un chemin exact et égale le GMP pur.
+    #[test]
+    fn seeded_mandelbrot_is_never_rendered_by_perturbation() {
+        use crate::render::escape_time::render_escape_time;
+        let seed = Complex64::new(0.21, -0.13);
+        let mut base = crate::fractal::default_params_for_type(FractalType::Mandelbrot, 48, 48);
+        base.seed = seed;
+        base.iteration_max = 600;
+        // Descente ×6 sur la cellule de bord la plus « lente » (f64 standard).
+        let (mut cx, mut cy, mut span) = (base.center_x, base.center_y, base.span_x);
+        for _ in 0..7 {
+            let mut p = base.clone();
+            p.engine.algorithm_mode = AlgorithmMode::StandardF64;
+            (p.center_x, p.center_y, p.span_x, p.span_y) = (cx, cy, span, span);
+            let it = render_escape_time(&p).iterations;
+            let (mut best, mut at) = (0u32, (24usize, 24usize));
+            for j in 1..47usize {
+                for i in 1..47usize {
+                    let v = it[j * 48 + i];
+                    let mixed = [it[j * 48 + i - 1], it[j * 48 + i + 1], it[(j - 1) * 48 + i], it[(j + 1) * 48 + i]]
+                        .iter()
+                        .any(|&n| n >= p.iteration_max);
+                    if v < p.iteration_max && mixed && v > best {
+                        best = v;
+                        at = (i, j);
+                    }
+                }
+            }
+            cx += span * ((at.0 as f64 + 0.5) / 48.0 - 0.5);
+            cy += span * ((at.1 as f64 + 0.5) / 48.0 - 0.5);
+            span /= 6.0;
+        }
+        let mut view = base.clone();
+        (view.center_x, view.center_y, view.span_x, view.span_y) = (cx, cy, span, span);
+        let mut forced = view.clone();
+        forced.engine.algorithm_mode = AlgorithmMode::Perturbation;
+        assert_ne!(
+            crate::fractal::wisdom::select_algorithm(&forced, crate::fractal::wisdom::Device::Cpu),
+            crate::fractal::wisdom::Algorithm::Perturbation,
+            "Mandelbrot à graine non nulle routé en perturbation"
+        );
+        // Là où la perturbation aurait pris le relais du f64 (~1e13 → 1e16,
+        // avant le seuil GMP ordinaire), la graine non nulle va au GMP par
+        // pixel — pas au f64 standard, mantisse épuisée.
+        let mut deep = view.clone();
+        (deep.span_x, deep.span_y) = (4e-14, 4e-14);
+        for mode in [AlgorithmMode::Auto, AlgorithmMode::Perturbation] {
+            deep.engine.algorithm_mode = mode;
+            assert_eq!(
+                crate::fractal::wisdom::select_algorithm(&deep, crate::fractal::wisdom::Device::Cpu),
+                crate::fractal::wisdom::Algorithm::ReferenceGmp,
+                "graine non nulle à 1e14, mode {mode:?}"
+            );
+        }
+        let prod = render_escape_time(&forced).iterations;
+        let mut gmp = view.clone();
+        gmp.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
+        gmp.engine.use_gmp = true;
+        let truth = render_escape_time(&gmp).iterations;
+        let structured = truth.iter().collect::<std::collections::BTreeSet<_>>().len();
+        assert!(structured > 15, "scène sans structure ({structured} comptes)");
+        let wrong = prod.iter().zip(&truth).filter(|(a, b)| a != b).count();
+        assert!(wrong * 50 <= prod.len(), "{wrong}/{} pixels ≠ GMP pur", prod.len());
+    }
+
     #[test]
     fn perturbation_matches_f64_burning_ship() {
         let mut params = base_params(FractalType::BurningShip);
@@ -2609,6 +2837,13 @@ mod tests {
             let (iters, _, _) =
                 render_perturbation_cancellable_with_reuse(&p, &cancel, None).expect("rendu");
             assert_eq!(iters[17 * 256 + 117], 1598, "dd_tier={dd_tier}");
+            // Même pixel par le chemin de l'hôte GPU (f64 → dd → qd → GMP).
+            if !dd_tier {
+                let cache = super::orbit::compute_reference_orbit_cached(&p, None, None, None, false).expect("orbite");
+                let out = super::recompute_pixels_cpu(&p, &cache, &[17 * 256 + 117]);
+                assert_eq!(out.len(), 1);
+                assert_eq!(out[0].1, 1598, "recompute_pixels_cpu");
+            }
         }
     }
 

@@ -739,7 +739,14 @@ fn iterate_pixel_unified_single_phase(
                 c.set_ref_index(m_wrapped);
             } else if ref_orbit.atom_truncated {
                 let z_m_end = ref_orbit.z_ref_f64[c.m_usize().min(ref_len - 1)];
-                delta = z_m_end + delta;
+                delta = if options.is_julia {
+                    // Julia : la référence part de `Z[0] = centre` (≠ 0),
+                    // cf. `DirectKernel::REF_ORIGIN_NONZERO` (ordre des
+                    // opérations compris).
+                    (z_m_end - ref_orbit.z_ref_f64[0]) + delta
+                } else {
+                    z_m_end + delta
+                };
                 c.rebase();
                 rebase_count += 1;
             } else {
@@ -749,9 +756,15 @@ fn iterate_pixel_unified_single_phase(
         } else {
             let z_m_new = ref_orbit.z_ref_f64[c.m_usize()];
             let z_curr = z_m_new + delta;
-            let z_curr_norm_sqr = z_curr.norm_sqr();
             let delta_norm_sqr = delta.norm_sqr();
-            if z_curr_norm_sqr < delta_norm_sqr {
+            if options.is_julia {
+                let rel = (z_m_new - ref_orbit.z_ref_f64[0]) + delta;
+                if rel.norm_sqr() < delta_norm_sqr {
+                    delta = rel;
+                    c.rebase();
+                    rebase_count += 1;
+                }
+            } else if z_curr.norm_sqr() < delta_norm_sqr {
                 delta = z_curr;
                 c.rebase();
                 rebase_count += 1;
@@ -952,6 +965,23 @@ pub fn iterate_pixel_unified_mandelbrot(
 /// linéaire)` — le second n'est lu que par le traqueur de fiabilité
 /// (Mandelbrot) ; les autres noyaux rendent zéro et tournent sans traqueur.
 trait DirectKernel: Copy {
+    /// Référence qui ne part PAS de 0 (Julia : `Z[0] = centre de la vue`).
+    /// Un rebase vers `m = 0` doit alors exprimer l'état relativement à
+    /// `Z[0]` : critère `|z − Z[0]| < |δ|`, `δ := z − Z[0]`.
+    ///
+    /// ⚠️ `z − Z[0]` se calcule `(Z[m] − Z[0]) + δ`, JAMAIS `(Z[m] + δ) − Z[0]` :
+    /// en zoom profond δ est sous l'ulp de Z[m], la somme l'absorbe, et dès
+    /// que l'orbite de référence repasse EXACTEMENT par `Z[0]` (centre sur un
+    /// point périodique de l'ensemble de Julia — la cible même d'un zoom
+    /// auto-similaire) la différence vaut 0 < |δ| : le pixel rebasait sur
+    /// δ = 0 et devenait la référence. Mesuré le 2026-11-06 sur le point fixe
+    /// répulsif de c = 0,36228 − 0,0777i : 100 % de pixels faux vs GMP pur de
+    /// 1e15 à 1e30 (verrou `julia_view_centred_on_a_fixed_point_matches_gmp`).
+    /// Dans le bon ordre la soustraction est exacte quand Z[m] ≈ Z[0]
+    /// (Sterbenz) et δ garde toute sa précision. Avec `Z[0] = 0`
+    /// (Mandelbrot, Burning Ship, Tricorn) la constante vaut `false` et les
+    /// boucles restent inchangées au bit près.
+    const REF_ORIGIN_NONZERO: bool = false;
     fn step(&self, z_m: Complex64, delta: Complex64, dc: Complex64) -> (Complex64, Complex64);
 }
 
@@ -966,6 +996,26 @@ impl DirectKernel for MandelbrotKernel {
         let two_zm = z_m * 2.0;
         let two_zm_delta = two_zm * delta;
         (two_zm_delta + delta * delta + dc, two_zm_delta)
+    }
+}
+
+/// Julia : même pas que Mandelbrot (`dc = 0` fourni par l'appelant), mais la
+/// référence part du centre de la vue (`Z[0] ≠ 0`) — cf.
+/// [`DirectKernel::REF_ORIGIN_NONZERO`].
+///
+/// ⚠️ Avant 2026-11-06 le fast-path Julia prenait `MandelbrotKernel` et
+/// rebasait `δ := z` comme si `Z[0] = 0` : tout pixel qui rebasait repartait
+/// de `Z[0] + z` — 99 % de pixels faux vs GMP pur sur un centre Julia ≠ 0
+/// (le preset `julia-siegel-disk` est centré en 0, où le défaut ne se voit
+/// pas). Verrou `julia_rebase_is_relative_to_reference_origin`.
+#[derive(Clone, Copy)]
+struct JuliaKernel;
+
+impl DirectKernel for JuliaKernel {
+    const REF_ORIGIN_NONZERO: bool = true;
+    #[inline(always)]
+    fn step(&self, z_m: Complex64, delta: Complex64, dc: Complex64) -> (Complex64, Complex64) {
+        MandelbrotKernel.step(z_m, delta, dc)
     }
 }
 
@@ -987,7 +1037,8 @@ impl DirectKernel for BurningShipKernel {
     fn step(&self, z_m: Complex64, delta: Complex64, dc: Complex64) -> (Complex64, Complex64) {
         let d = Complex64::new(diffabs(z_m.re, delta.re), diffabs(z_m.im, delta.im));
         let z = Complex64::new(z_m.re.abs(), z_m.im.abs());
-        (sqr_delta(z, d) + dc, Complex64::new(0.0, 0.0))
+        let (sq, linear) = sqr_delta(z, d);
+        (sq + dc, linear)
     }
 }
 
@@ -1000,15 +1051,18 @@ impl DirectKernel for TricornKernel {
     fn step(&self, z_m: Complex64, delta: Complex64, dc: Complex64) -> (Complex64, Complex64) {
         let d = Complex64::new(delta.re, -delta.im);
         let z = Complex64::new(z_m.re, -z_m.im);
-        (sqr_delta(z, d) + dc, Complex64::new(0.0, 0.0))
+        let (sq, linear) = sqr_delta(z, d);
+        (sq + dc, linear)
     }
 }
 
-/// `Op::Sqr` côté δ : `2·Z·δ + δ²` (mêmes opérandes que `DeltaState`).
+/// `Op::Sqr` côté δ : `2·Z·δ + δ²` (mêmes opérandes que `DeltaState`), et
+/// le terme linéaire `2·Z·δ` (lu par le traqueur de fiabilité seulement).
 #[inline(always)]
-fn sqr_delta(z: Complex64, delta: Complex64) -> Complex64 {
+fn sqr_delta(z: Complex64, delta: Complex64) -> (Complex64, Complex64) {
     let two_z = z * 2.0;
-    two_z * delta + delta * delta
+    let linear = two_z * delta;
+    (linear + delta * delta, linear)
 }
 
 /// Boucle rapide avec un noyau donné, sans traqueur.
@@ -1099,7 +1153,7 @@ pub fn iterate_pixel_unified_julia(
         cursor: 0,
     };
     iterate_pixel_unified_mandelbrot_impl(
-        MandelbrotKernel,
+        JuliaKernel,
         ref_orbit,
         &mut src,
         ref_len,
@@ -1112,6 +1166,75 @@ pub fn iterate_pixel_unified_julia(
         max_bla_steps,
         &mut NoObserve,
     )
+}
+
+/// Variante **suivie** des boucles rapides Julia / Burning Ship / Tricorn
+/// (détecteur de fiabilité G9.6, cf. [`super::reliability`]) : MÊME boucle,
+/// monomorphisée avec un [`ShadowTracker`] au lieu de `NoObserve` (résultat
+/// bit-identique, verrou `tracked_family_loops_are_bit_identical`), plus le
+/// traqueur final. La borne du pas direct `E·(2|z|+E) + γ·local` vaut telle
+/// quelle : Julia est z²+c ; le pliage |·| de Burning Ship est 1-lipschitzien
+/// composante par composante et la conjugaison de Tricorn est une isométrie,
+/// donc `|F(z+e) − F(z)| ≤ |e|·(2|z| + |e|)` dans les trois cas. Saut BLA non
+/// conforme : `σ₁(A)·E + troncature l·ε` (hook `bla` inchangé).
+///
+/// `None` si la phase n'a pas de noyau (l'appelant garde la boucle non
+/// suivie). Julia : `is_julia`, phase [Sqr, Add], `dc` ignoré (0).
+#[allow(clippy::too_many_arguments)]
+pub fn iterate_pixel_unified_family_tracked(
+    ref_orbit: &ReferenceOrbit,
+    bla: &BlaTableUnified,
+    phase: &Phase,
+    is_julia: bool,
+    dc: Complex64,
+    delta_initial: Complex64,
+    limits: PixelLoopLimits,
+    bla_epsilon: f64,
+) -> Option<(UnifiedPixelResult, ShadowTracker)> {
+    use super::Op::{AbsX, AbsY, Add, NegY, Sqr};
+    #[inline(always)]
+    fn run<K: DirectKernel>(
+        kernel: K,
+        ref_orbit: &ReferenceOrbit,
+        bla: &BlaTableUnified,
+        dc: Complex64,
+        delta_initial: Complex64,
+        limits: PixelLoopLimits,
+        bla_epsilon: f64,
+    ) -> (UnifiedPixelResult, ShadowTracker) {
+        let ref_len = ref_orbit.z_ref_f64.len();
+        let mut src = SliceSource {
+            z: &ref_orbit.z_ref_f64,
+            cursor: 0,
+        };
+        let mut tracker = ShadowTracker::new(dc, bla_epsilon);
+        let res = iterate_pixel_unified_mandelbrot_impl(
+            kernel,
+            ref_orbit,
+            &mut src,
+            ref_len,
+            bla,
+            dc,
+            delta_initial,
+            limits.iteration_max,
+            limits.bailout,
+            limits.max_perturb_iterations,
+            limits.max_bla_steps,
+            &mut tracker,
+        );
+        (res, tracker)
+    }
+    let zero = Complex64::new(0.0, 0.0);
+    Some(match (phase.ops.as_slice(), is_julia) {
+        ([Sqr, Add], true) => run(JuliaKernel, ref_orbit, bla, zero, delta_initial, limits, bla_epsilon),
+        ([AbsX, AbsY, Sqr, Add], false) => {
+            run(BurningShipKernel, ref_orbit, bla, dc, delta_initial, limits, bla_epsilon)
+        }
+        ([NegY, Sqr, Add], false) => {
+            run(TricornKernel, ref_orbit, bla, dc, delta_initial, limits, bla_epsilon)
+        }
+        _ => return None,
+    })
 }
 
 /// Copie locale d'un observateur, réécrite dans `out` au drop (couvre les
@@ -1267,6 +1390,8 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source, O: StepObserver, K: Di
     // cf. docs/imagina-algorithms-analysis.md). Invariant : en tête de boucle,
     // `z_m == Z[m]` et `m ≤ ref_len-1`.
     let mut z_m = src.reset();
+    // `Z[0]` (0 sauf Julia) : origine des rebases, cf. `REF_ORIGIN_NONZERO`.
+    let ref_origin = z_m;
     let mut z_abs = z_m + delta;
     let mut z_abs_norm_sqr = z_abs.norm_sqr();
     let mut delta_norm_sqr = delta.norm_sqr();
@@ -1403,8 +1528,14 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source, O: StepObserver, K: Di
                 z_m = src.wrap(c.m());
             } else if ref_orbit.atom_truncated {
                 // `z_after` == Z[min(m, ref_len-1)] == Z[end] ici (m ≥ ref_len-1).
-                delta = z_after + delta;
-                obs.rebase(z_after, delta);
+                if K::REF_ORIGIN_NONZERO {
+                    delta = (z_after - ref_origin) + delta;
+                    obs.rebase(z_after, z_after + delta);
+                    obs.rebase(ref_origin, delta);
+                } else {
+                    delta = z_after + delta;
+                    obs.rebase(z_after, delta);
+                }
                 c.rebase();
                 rebase_count += 1;
                 z_m = src.reset();
@@ -1423,7 +1554,28 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source, O: StepObserver, K: Di
             let z_curr = z_after + delta;
             let z_curr_norm_sqr = z_curr.norm_sqr();
             delta_norm_sqr = delta.norm_sqr();
-            if z_curr_norm_sqr < delta_norm_sqr {
+            if K::REF_ORIGIN_NONZERO {
+                // Julia : rebase vers `Z[0] ≠ 0` (cf. `REF_ORIGIN_NONZERO`).
+                // `(Z[m] − Z[0]) + δ`, pas `(Z[m] + δ) − Z[0]`.
+                let rel = (z_after - ref_origin) + delta;
+                let rel_norm_sqr = rel.norm_sqr();
+                if rel_norm_sqr < delta_norm_sqr {
+                    delta = rel;
+                    obs.rebase(z_after, z_curr);
+                    // Arrondi de la soustraction de `Z[0]`.
+                    obs.rebase(ref_origin, rel);
+                    c.rebase();
+                    rebase_count += 1;
+                    z_m = src.reset();
+                    z_abs = z_m + delta;
+                    z_abs_norm_sqr = z_abs.norm_sqr();
+                    delta_norm_sqr = rel_norm_sqr;
+                } else {
+                    z_m = z_after;
+                    z_abs = z_curr;
+                    z_abs_norm_sqr = z_curr_norm_sqr;
+                }
+            } else if z_curr_norm_sqr < delta_norm_sqr {
                 delta = z_curr;
                 obs.rebase(z_after, z_curr);
                 c.rebase();
@@ -2771,6 +2923,203 @@ mod tests {
         // Anti-vacuité : au moins une vue structurée, et la BLA exercée.
         assert!(max_distinct > 8, "aucune vue structurée ({max_distinct} comptes distincts)");
         assert!(total_jumps > 0, "aucun saut BLA exercé");
+    }
+
+    /// **Détecteur de fiabilité Julia / Burning Ship / Tricorn : la boucle
+    /// suivie est la MÊME boucle** (monomorphisée avec un `ShadowTracker`) —
+    /// itérations, z final, rebases et sauts BLA bit-identiques à la boucle de
+    /// production non suivie, sur des vues structurées, deux tables BLA
+    /// (ε = 6e-8 : sauts exercés ; 2⁻⁵³ : production). Le traqueur doit rester
+    /// sobre à ces zooms faibles (< 5 % de pixels emballés).
+    #[test]
+    fn tracked_family_loops_are_bit_identical() {
+        use crate::fractal::perturbation::{effective_pixel_size, orbit::compute_reference_orbit};
+        let (width, height) = (40u32, 40u32);
+        let seed = Complex64::new(-0.8, 0.156);
+        let fixed =
+            (Complex64::new(1.0, 0.0) + (Complex64::new(1.0, 0.0) - seed * 4.0).sqrt()) * 0.5;
+        let views = [
+            (FractalType::BurningShip, Complex64::new(-1.7492060, -0.0286762), 1e3f64, 2000u32),
+            (FractalType::BurningShip, Complex64::new(-0.5, 0.05), 1e3, 2000),
+            (FractalType::Tricorn, Complex64::new(-0.7, 0.15), 1e3, 1500),
+            (FractalType::Tricorn, Complex64::new(-0.1, -0.7), 1e3, 1500),
+            (FractalType::Julia, fixed, 1e6, 800),
+            (FractalType::Julia, Complex64::new(0.0, 0.0), 1e10, 3000),
+        ];
+        let (mut total, mut flagged, mut jumps, mut views_run) = (0u32, 0u32, 0u64, 0u32);
+        for (ty, center, zoom, iter_max) in views {
+            let is_julia = ty == FractalType::Julia;
+            let mut params = default_params_for_type(ty, width, height);
+            params.center_x = center.re;
+            params.center_y = center.im;
+            params.seed = if is_julia { seed } else { Complex64::new(0.0, 0.0) };
+            let span = 4.0 / zoom;
+            params.span_x = span;
+            params.span_y = span;
+            params.iteration_max = iter_max;
+            params.bailout = 25.0;
+            params.engine.algorithm_mode = AlgorithmMode::Perturbation;
+            let Some((orbit, _, _)) = compute_reference_orbit(&params, None, true) else {
+                continue;
+            };
+            if orbit.z_ref_f64.len() < 16 {
+                continue;
+            }
+            views_run += 1;
+            let formula = compile_formula(ty, 2.0).unwrap();
+            let c_norm = effective_pixel_size(&params)
+                * ((width as f64).powi(2) + (height as f64).powi(2)).sqrt();
+            let limits = PixelLoopLimits {
+                iteration_max: iter_max,
+                bailout: 25.0,
+                max_perturb_iterations: iter_max,
+                max_bla_steps: iter_max,
+            };
+            for eps in [6e-8f64, 1.0 / (1u64 << 53) as f64] {
+                let tables = build_bla_table_for_formula(&formula, &orbit.z_ref_f64, c_norm, eps)
+                    .expect("table BLA");
+                let bla = &tables[0];
+                for j in 0..height {
+                    for i in 0..width {
+                        let off = Complex64::new(
+                            ((i as f64 + 0.5) / width as f64 - 0.5) * span,
+                            ((j as f64 + 0.5) / height as f64 - 0.5) * span,
+                        );
+                        let zero = Complex64::new(0.0, 0.0);
+                        let (dc, d0) = if is_julia { (zero, off) } else { (off, zero) };
+                        let plain = if is_julia {
+                            iterate_pixel_unified_julia(&orbit, bla, d0, limits)
+                        } else {
+                            iterate_pixel_unified_static_kernel(
+                                &orbit,
+                                bla,
+                                &formula.phases[0],
+                                dc,
+                                d0,
+                                limits,
+                            )
+                            .expect("noyau statique")
+                        };
+                        let (tracked, tracker) = iterate_pixel_unified_family_tracked(
+                            &orbit,
+                            bla,
+                            &formula.phases[0],
+                            is_julia,
+                            dc,
+                            d0,
+                            limits,
+                            eps,
+                        )
+                        .expect("noyau suivi");
+                        assert!(
+                            plain.iteration == tracked.iteration
+                                && bits_eq(plain.z_final, tracked.z_final)
+                                && plain.rebase_count == tracked.rebase_count
+                                && plain.bla_steps == tracked.bla_steps
+                                && plain.ref_exhausted == tracked.ref_exhausted,
+                            "{ty:?} zoom {zoom:e} ε {eps:e} pixel ({i},{j}) : suivi ≠ non suivi"
+                        );
+                        if eps < 1e-10 {
+                            total += 1;
+                            flagged += (!(tracker.error_bound() < 1e30)) as u32;
+                        }
+                        jumps += plain.bla_steps as u64;
+                    }
+                }
+            }
+        }
+        assert!(views_run >= 4, "vues exercées : {views_run}");
+        assert!(jumps > 0, "aucun saut BLA exercé");
+        assert!(flagged * 20 < total, "traqueur trop bavard : {flagged}/{total}");
+    }
+
+    /// **Julia : le rebase est relatif à `Z[0]`, pas à 0.** La référence Julia
+    /// part du centre de la vue ; rebaser `δ := z` (convention Mandelbrot,
+    /// `Z[0] = 0`) faisait repartir le pixel de `Z[0] + z`. Mesuré avant le
+    /// correctif (2026-11-06, `fractall-quality compare` 64², centre de bord
+    /// ≠ 0) : 92 à 99 % de pixels ≠ GMP pur de 1e4 à 1e13. Juge : itération
+    /// f64 DIRECTE à zoom 1e5 (bien conditionnée à ce zoom, comptes ≤ 800),
+    /// fast-path ET boucle générique, avec rebases exercés.
+    #[test]
+    fn julia_rebase_is_relative_to_reference_origin() {
+        use crate::fractal::perturbation::{effective_pixel_size, orbit::compute_reference_orbit};
+        let (width, height, iter_max) = (48u32, 48u32, 800u32);
+        let seed = Complex64::new(-0.8, 0.156);
+        let center =
+            (Complex64::new(1.0, 0.0) + (Complex64::new(1.0, 0.0) - seed * 4.0).sqrt()) * 0.5;
+        let zoom = 1e5f64;
+        let mut params = default_params_for_type(FractalType::Julia, width, height);
+        params.center_x = center.re;
+        params.center_y = center.im;
+        params.seed = seed;
+        let span = 4.0 / zoom;
+        params.span_x = span;
+        params.span_y = span;
+        params.iteration_max = iter_max;
+        params.bailout = 25.0;
+        params.engine.algorithm_mode = AlgorithmMode::Perturbation;
+        let (orbit, _, _) = compute_reference_orbit(&params, None, true).expect("orbite Julia");
+        assert!(orbit.z_ref_f64[0].norm() > 0.5, "la référence doit partir d'un Z[0] ≠ 0");
+        let formula = compile_formula(FractalType::Julia, 2.0).unwrap();
+        let c_norm = effective_pixel_size(&params)
+            * ((width as f64).powi(2) + (height as f64).powi(2)).sqrt();
+        let tables = build_bla_table_for_formula(&formula, &orbit.z_ref_f64, c_norm, 1.0 / (1u64 << 53) as f64)
+            .expect("table BLA Julia");
+        let limits = PixelLoopLimits {
+            iteration_max: iter_max,
+            bailout: 25.0,
+            max_perturb_iterations: iter_max,
+            max_bla_steps: iter_max,
+        };
+        let (mut wrong_fast, mut wrong_generic, mut rebases) = (0u32, 0u32, 0u64);
+        let (mut wrong_exp, mut exp_rebases) = (0u32, 0u64);
+        for j in 0..height {
+            for i in 0..width {
+                let d0 = Complex64::new(
+                    ((i as f64 + 0.5) / width as f64 - 0.5) * span,
+                    ((j as f64 + 0.5) / height as f64 - 0.5) * span,
+                );
+                let mut z = center + d0;
+                let mut n = 0u32;
+                while n < iter_max && z.norm_sqr() < 625.0 {
+                    z = z * z + seed;
+                    n += 1;
+                }
+                let fast = iterate_pixel_unified_julia(&orbit, &tables[0], d0, limits);
+                let generic = iterate_pixel_unified_single_phase(
+                    &orbit,
+                    &tables[0],
+                    &formula.phases[0],
+                    seed,
+                    Complex64::new(0.0, 0.0),
+                    d0,
+                    limits,
+                    UnifiedOptions { is_julia: true, enable_distance: true, ..Default::default() },
+                );
+                // Tier exp (boucle HP ComplexExp, sans BLA) : même correctif.
+                let exp = crate::fractal::bytecode::pixel_loop_exp::iterate_pixel_unified_exp(
+                    &orbit,
+                    &tables[0],
+                    None,
+                    &formula,
+                    seed,
+                    crate::fractal::perturbation::types::ComplexExp::zero(),
+                    crate::fractal::perturbation::types::ComplexExp::from_complex64(d0),
+                    limits,
+                );
+                wrong_fast += (fast.iteration != n) as u32;
+                wrong_generic += (generic.iteration != n) as u32;
+                wrong_exp += (exp.iteration != n) as u32;
+                rebases += fast.rebase_count as u64;
+                exp_rebases += exp.rebase_count as u64;
+            }
+        }
+        assert!(rebases > 0 && exp_rebases > 0, "aucun rebase exercé");
+        let total = width * height;
+        assert!(wrong_exp * 100 <= total, "tier exp : {wrong_exp}/{total} pixels ≠ f64 direct");
+        // Résidu toléré : plancher f64 du juge direct sur les pixels chaotiques.
+        assert!(wrong_fast * 100 <= total, "fast-path : {wrong_fast}/{total} pixels ≠ f64 direct");
+        assert!(wrong_generic * 100 <= total, "générique : {wrong_generic}/{total} pixels ≠ f64 direct");
     }
 
     /// Verrou anti-régression du guard BLA over-skip (Julia siegel disk).

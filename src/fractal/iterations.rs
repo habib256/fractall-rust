@@ -1,6 +1,6 @@
 use num_complex::Complex64;
 
-use crate::fractal::bytecode::{formula_for_params, iterate_bytecode_f64, Formula};
+use crate::fractal::bytecode::{formula_for_params, Formula};
 use crate::fractal::{FractalParams, FractalResult, FractalType};
 use crate::fractal::orbit_traps::OrbitData;
 
@@ -179,7 +179,13 @@ fn iterate_via_bytecode(
         };
     }
 
-    let r = iterate_bytecode_f64(formula, z0, c, params.iteration_max, params.bailout);
+    let r = crate::fractal::bytecode::interp::iterate_bytecode_f64_cut(
+        formula,
+        z0,
+        c,
+        params.iteration_max,
+        params.bailout,
+    );
     FractalResult {
         iteration: r.iteration,
         z: r.z,
@@ -408,10 +414,12 @@ fn julia_sin(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     // JuliaSin_Iteration: z_{n+1} = c * sin(z_n), z_0 = pixel, c = seed
     let mut z = z_pixel;
     let mut i = 0u32;
+    let mut cyc = super::cycle::CycleCut::<2>::new();
     let bailout_sqr = p.bailout * p.bailout;
     while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
         z = p.seed * z.sin();
         i += 1;
+        cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
     }
     FractalResult { iteration: i, z, orbit: None, distance: None }
 }
@@ -421,10 +429,12 @@ fn mandelbrot_sin(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     // MandelbrotSin_Iteration: z_{n+1} = c * sin(z_n), z_0 = seed, c = pixel (contrepartie de Julia Sin)
     let mut z = p.seed;
     let mut i = 0u32;
+    let mut cyc = super::cycle::CycleCut::<2>::new();
     let bailout_sqr = p.bailout * p.bailout;
     while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
         z = z_pixel * z.sin();
         i += 1;
+        cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
     }
     FractalResult { iteration: i, z, orbit: None, distance: None }
 }
@@ -434,6 +444,7 @@ fn newton(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     // Newton_Iteration
     let mut z = z_pixel;
     let mut i = 0u32;
+    let mut cyc = super::cycle::CycleCut::<2>::new();
     let bailout_sqr = p.bailout * p.bailout;
     // Degree polynomial (pris sur la partie réelle du seed)
     let degree = p.seed.re.round() as i32;
@@ -449,6 +460,7 @@ fn newton(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
             if denominator.norm_sqr() < 1e-24 { break; }
             z = z - numerator / denominator;
             i += 1;
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         }
     } else if degree == 3 {
         // Fast-path: z^3 - 1, derivative = 3*z^2
@@ -460,6 +472,7 @@ fn newton(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
             if denominator.norm_sqr() < 1e-24 { break; }
             z = z - numerator / denominator;
             i += 1;
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         }
     } else {
         // General path with powc
@@ -473,6 +486,7 @@ fn newton(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
             if denominator.norm_sqr() < 1e-24 { break; }
             z = z - numerator / denominator;
             i += 1;
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         }
     }
     FractalResult { iteration: i, z, orbit: None, distance: None }
@@ -484,6 +498,7 @@ fn phoenix(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let mut z = z_pixel;
     let mut y = Complex64::new(0.0, 0.0);
     let mut i = 0u32;
+    let mut cyc = super::cycle::CycleCut::<4>::new();
     let p1 = 0.56667;
     let p2 = -0.5;
     let bailout_sqr = p.bailout * p.bailout;
@@ -496,6 +511,7 @@ fn phoenix(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         y = z;
         z = z_temp;
         i += 1;
+        cyc.observe(&mut i, p.iteration_max, [z.re, z.im, y.re, y.im]);
     }
 
     FractalResult { iteration: i, z, orbit: None, distance: None }
@@ -506,6 +522,7 @@ fn barnsley_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     // Barnsleyj1_Iteration
     let mut z = z_pixel;
     let mut i = 0u32;
+    let mut cyc = super::cycle::CycleCut::<2>::new();
     let bailout_sqr = p.bailout * p.bailout;
 
     while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
@@ -516,6 +533,7 @@ fn barnsley_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
             z = (z + Complex64::new(1.0, 0.0)) * p.seed;
         }
         i += 1;
+        cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
     }
 
     FractalResult { iteration: i, z, orbit: None, distance: None }
@@ -527,6 +545,7 @@ fn barnsley_mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let mut z = z_pixel;
     let c = z_pixel;
     let mut i = 0u32;
+    let mut cyc = super::cycle::CycleCut::<2>::new();
     let bailout_sqr = p.bailout * p.bailout;
 
     while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
@@ -537,6 +556,7 @@ fn barnsley_mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
             z = (z + Complex64::new(1.0, 0.0)) * c;
         }
         i += 1;
+        cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
     }
 
     FractalResult { iteration: i, z, orbit: None, distance: None }
@@ -547,6 +567,7 @@ fn magnet_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     // Magnet1j_Iteration: z_{n+1} = ((z_n² + c - 1) / (2*z_n + c - 2))²
     let mut z = z_pixel;
     let mut i = 0u32;
+    let mut cyc = super::cycle::CycleCut::<2>::new();
     let bailout_sqr = p.bailout * p.bailout;
 
     while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
@@ -561,6 +582,7 @@ fn magnet_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         let ratio = n / q;
         z = ratio * ratio;
         i += 1;
+        cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
     }
 
     FractalResult { iteration: i, z, orbit: None, distance: None }
@@ -572,6 +594,7 @@ fn magnet_mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let c = z_pixel;
     let mut z = Complex64::new(0.0, 0.0);
     let mut i = 0u32;
+    let mut cyc = super::cycle::CycleCut::<2>::new();
     let bailout_sqr = p.bailout * p.bailout;
 
     while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
@@ -586,6 +609,7 @@ fn magnet_mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         let ratio = n / q;
         z = ratio * ratio;
         i += 1;
+        cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
     }
 
     FractalResult { iteration: i, z, orbit: None, distance: None }
@@ -672,6 +696,7 @@ fn mandelbulb(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     // Mandelbulb_Iteration (2D, puissance 8)
     let mut z = p.seed;
     let mut i = 0u32;
+    let mut cyc = super::cycle::CycleCut::<2>::new();
     let bailout_sqr = p.bailout * p.bailout;
 
     while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
@@ -681,6 +706,7 @@ fn mandelbulb(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         z_temp = z_temp * z_temp;    // z^8
         z = z_temp + z_pixel;
         i += 1;
+        cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
     }
 
     FractalResult { iteration: i, z, orbit: None, distance: None }
@@ -735,6 +761,7 @@ fn alpha_mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     // AlphaMandelbrot_Iteration
     let mut z = p.seed;
     let mut i = 0u32;
+    let mut cyc = super::cycle::CycleCut::<2>::new();
     let bailout_sqr = p.bailout * p.bailout;
 
     while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
@@ -743,6 +770,7 @@ fn alpha_mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         let m_sq = m * m;
         z = z_sq + m_sq + z_pixel;
         i += 1;
+        cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
     }
 
     FractalResult { iteration: i, z, orbit: None, distance: None }
@@ -753,6 +781,7 @@ fn pickover_stalks(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     // PickoverStalks_Iteration (trap based)
     let mut z = p.seed;
     let mut i = 0u32;
+    let mut cyc = super::cycle::CycleCut::<2>::new();
     let mut trap_min = 1e10f64;
     let trap_divisor = 0.03f64;
     let bailout_sqr = p.bailout * p.bailout;
@@ -769,6 +798,7 @@ fn pickover_stalks(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         }
 
         i += 1;
+        cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
     }
 
     let mut iter_value: u32;
@@ -844,6 +874,7 @@ fn multibrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     // Multibrot_Iteration (puissance configurable, défaut 2.5)
     let mut z = p.seed;
     let mut i = 0u32;
+    let mut cyc = super::cycle::CycleCut::<2>::new();
     let d = p.formula.multibrot_power;
     let bailout_sqr = p.bailout * p.bailout;
 
@@ -856,16 +887,19 @@ fn multibrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         2 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
             z = z * z + z_pixel;
             i += 1;
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         },
         3 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
             let z_sq = z * z;
             z = z_sq * z + z_pixel;
             i += 1;
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         },
         4 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
             let z2 = z * z;
             z = z2 * z2 + z_pixel;
             i += 1;
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         },
         n if is_integer && n > 4 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
             // Chain multiply for larger integer powers
@@ -876,12 +910,14 @@ fn multibrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
             if !z_pow.re.is_finite() || !z_pow.im.is_finite() { break; }
             z = z_pow + z_pixel;
             i += 1;
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         },
         _ => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
             let z_pow = z.powf(d);
             if !z_pow.re.is_finite() || !z_pow.im.is_finite() { break; }
             z = z_pow + z_pixel;
             i += 1;
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         },
     }
 
@@ -958,6 +994,7 @@ fn buffalo_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
 fn multibrot_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let mut z = z_pixel;
     let mut i = 0u32;
+    let mut cyc = super::cycle::CycleCut::<2>::new();
     let d = p.formula.multibrot_power;
     let bailout_sqr = p.bailout * p.bailout;
 
@@ -970,16 +1007,19 @@ fn multibrot_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         2 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
             z = z * z + p.seed;
             i += 1;
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         },
         3 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
             let z_sq = z * z;
             z = z_sq * z + p.seed;
             i += 1;
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         },
         4 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
             let z2 = z * z;
             z = z2 * z2 + p.seed;
             i += 1;
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         },
         n if is_integer && n > 4 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
             let mut z_pow = z;
@@ -989,12 +1029,14 @@ fn multibrot_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
             if !z_pow.re.is_finite() || !z_pow.im.is_finite() { break; }
             z = z_pow + p.seed;
             i += 1;
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         },
         _ => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
             let z_pow = z.powf(d);
             if !z_pow.re.is_finite() || !z_pow.im.is_finite() { break; }
             z = z_pow + p.seed;
             i += 1;
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         },
     }
 
@@ -1022,6 +1064,7 @@ fn perpendicular_burning_ship_julia(p: &FractalParams, z_pixel: Complex64) -> Fr
 fn alpha_mandelbrot_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let mut z = z_pixel;
     let mut i = 0u32;
+    let mut cyc = super::cycle::CycleCut::<2>::new();
     let bailout_sqr = p.bailout * p.bailout;
     while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
         let z_sq = z * z;
@@ -1029,6 +1072,122 @@ fn alpha_mandelbrot_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResul
         let m_sq = m * m;
         z = z_sq + m_sq + p.seed;
         i += 1;
+        cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
     }
     FractalResult { iteration: i, z, orbit: None, distance: None }
+}
+
+#[cfg(test)]
+mod cycle_cut_tests {
+    use super::*;
+    use crate::fractal::cycle::FORCE_OFF;
+    use crate::fractal::definitions::default_params_for_type;
+
+    fn with_cut<T>(cut: bool, f: impl FnOnce() -> T) -> T {
+        FORCE_OFF.with(|c| c.set(!cut));
+        let r = f();
+        FORCE_OFF.with(|c| c.set(false));
+        r
+    }
+
+    /// Grille de points couvrant la vue par défaut du type.
+    fn grid(p: &FractalParams, nx: usize, ny: usize) -> Vec<Complex64> {
+        let mut pts = Vec::with_capacity(nx * ny);
+        for j in 0..ny {
+            for i in 0..nx {
+                pts.push(Complex64::new(
+                    p.center_x + p.span_x * ((i as f64 + 0.5) / nx as f64 - 0.5),
+                    p.center_y + p.span_y * ((j as f64 + 0.5) / ny as f64 - 0.5),
+                ));
+            }
+        }
+        pts
+    }
+
+    /// Verrou : pour chaque boucle scalaire équipée du raccourci des cycles
+    /// exacts, le résultat (compte d'itérations ET z final, au bit près) est
+    /// celui de l'itération complète, sur toute la vue par défaut et pour des
+    /// plafonds tombant à des positions variées du cycle.
+    #[test]
+    fn cycle_cut_preserves_every_scalar_loop_bit_for_bit() {
+        let mut cases: Vec<(String, FractalParams)> = [
+            FractalType::JuliaSin,
+            FractalType::MandelbrotSin,
+            FractalType::Newton,
+            FractalType::Phoenix,
+            FractalType::BarnsleyJulia,
+            FractalType::BarnsleyMandelbrot,
+            FractalType::MagnetJulia,
+            FractalType::MagnetMandelbrot,
+            FractalType::Mandelbulb,
+            FractalType::AlphaMandelbrot,
+            FractalType::PickoverStalks,
+            FractalType::Multibrot,
+            FractalType::MultibrotJulia,
+            FractalType::AlphaMandelbrotJulia,
+        ]
+        .into_iter()
+        .map(|ty| (format!("{ty:?}"), default_params_for_type(ty, 64, 48)))
+        .collect();
+        // Newton degrés 2 et 5 (branches dédiées), Multibrot entiers par les
+        // boucles historiques (`--no-bytecode`).
+        for degree in [2.0, 5.0] {
+            let mut p = default_params_for_type(FractalType::Newton, 64, 48);
+            p.seed.re = degree;
+            cases.push((format!("Newton degré {degree}"), p));
+        }
+        for power in [2.0, 3.0, 4.0, 6.0] {
+            for ty in [FractalType::Multibrot, FractalType::MultibrotJulia] {
+                let mut p = default_params_for_type(ty, 64, 48);
+                p.formula.multibrot_power = power;
+                p.engine.use_bytecode_engine = false;
+                cases.push((format!("{ty:?}^{power} historique"), p));
+            }
+        }
+        // Path scalaire bytecode : hybrides multi-phase (2 et 3 phases) et
+        // opcodes à rotation — comparés aussi à l'interpréteur de référence.
+        for phases in [
+            vec![FractalType::Mandelbrot, FractalType::BurningShip],
+            vec![FractalType::Mandelbrot, FractalType::Mandelbrot, FractalType::Celtic],
+            vec![FractalType::Tricorn, FractalType::Mandelbrot],
+        ] {
+            let mut p = default_params_for_type(FractalType::Mandelbrot, 64, 48);
+            p.formula.hybrid_phases = Some(phases.clone());
+            cases.push((format!("hybride {phases:?}"), p));
+        }
+        let mut shortened = 0usize;
+        for (label, base) in &cases {
+            let pts = grid(base, 24, 18);
+            for max in [1u32, 8, 9, 100, 1000, 3001] {
+                let mut p = base.clone();
+                p.iteration_max = max;
+                for &z in &pts {
+                    let a = with_cut(true, || iterate_point(&p, z));
+                    let b = with_cut(false, || iterate_point(&p, z));
+                    assert!(
+                        a.iteration == b.iteration
+                            && a.z.re.to_bits() == b.z.re.to_bits()
+                            && a.z.im.to_bits() == b.z.im.to_bits(),
+                        "{label} {z:?} max={max} : raccourci ({}, {:?}) ≠ complet ({}, {:?})",
+                        a.iteration,
+                        a.z,
+                        b.iteration,
+                        b.z
+                    );
+                }
+            }
+            // Le raccourci raccourcit : au moins un saut sur la grille dès
+            // qu'elle contient des points qui n'en sortent pas.
+            let mut p = base.clone();
+            p.iteration_max = 20_000;
+            let before = crate::fractal::cycle::CUTS.with(|c| c.get());
+            for &z in &pts {
+                with_cut(true, || iterate_point(&p, z));
+            }
+            if crate::fractal::cycle::CUTS.with(|c| c.get()) > before {
+                shortened += 1;
+            }
+        }
+        assert!(shortened >= 12, "raccourci inopérant : {shortened} cas raccourcis sur {}", cases.len());
+    }
 }

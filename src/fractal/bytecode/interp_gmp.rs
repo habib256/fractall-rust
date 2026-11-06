@@ -19,6 +19,8 @@ pub struct GmpInterpState {
     im_scratch: Float,
     /// Scratch complexe pour `Sqr` (z = z * z).
     cplx_scratch: Complex,
+    /// Tampons à précision double du carré en place (`gmp::sqr_in_place`).
+    sq: (Float, Float),
 }
 
 impl GmpInterpState {
@@ -30,6 +32,7 @@ impl GmpInterpState {
             re_scratch: Float::with_val(prec, 0),
             im_scratch: Float::with_val(prec, 0),
             cplx_scratch: Complex::with_val(prec, (0, 0)),
+            sq: (Float::new(prec.saturating_mul(2).max(2)), Float::new(prec.saturating_mul(2).max(2))),
         }
     }
 
@@ -46,7 +49,22 @@ impl GmpInterpState {
                     // de `z *= z` (mpc_mul, ~3 mults) → ~33 % de mults en moins sur
                     // la mult, dominante de l'orbite deep-zoom (F3 utilise `sqr`).
                     // Correctement arrondi = même valeur que z·z → bit-identique.
-                    self.z.square_mut();
+                    //
+                    // `mpc_sqr` alloue ses temporaires à CHAQUE appel (60 % du
+                    // temps d'une boucle GMP au profil) : carré en place sur
+                    // tampons réutilisés, arrondi exactement comme lui
+                    // (`gmp::sqr_in_place`, verrou
+                    // `in_place_square_matches_mpc_sqr`). Valeurs non finies
+                    // (sémantique C99 des infinis) : `mpc_sqr`.
+                    let (pr, pi) = self.z.prec();
+                    if self.z.real().is_finite() && self.z.imag().is_finite() {
+                        if self.sq.0.prec() < pr.max(pi).saturating_mul(2) {
+                            self.sq = crate::fractal::gmp::sqr_scratch(&self.z);
+                        }
+                        crate::fractal::gmp::sqr_in_place(&mut self.z, &mut self.sq);
+                    } else {
+                        self.z.square_mut();
+                    }
                 }
                 Op::Mul => {
                     self.z *= &self.stored;

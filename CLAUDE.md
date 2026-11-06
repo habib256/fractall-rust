@@ -22,7 +22,7 @@ Prérequis natifs : GMP / MPFR / MPC (pour `rug`).
 
 ## Tests
 
-- **Unit tests** : `cargo test --release --lib` (~400 tests). ⚠️ Cible **lib**
+- **Unit tests** : `cargo test --release --lib` (~530 tests). ⚠️ Cible **lib**
   (`src/lib.rs`) : les binaires ne sont que des enveloppes, les tests des
   modules ne tournent plus en triple sous `--bin`.
   Couvre `perturbation/{bla,delta,series,nonconformal,distance,interior,
@@ -30,7 +30,7 @@ Prérequis natifs : GMP / MPFR / MPC (pour `rug`).
   `wisdom` (select_algorithm/device, plan), et tout le `bytecode/` (`compile`
   + `compile_hybrid_formula`, `interp{,_gmp}`, `bla_dual`, `delta_form`,
   `pixel_loop{,_exp}`).
-- **Golden image tests** (`tests/golden_images.rs`) : 24 cas pixel-exact
+- **Golden image tests** (`tests/golden_images.rs`) : 29 cas pixel-exact
   (goldens forcent `--no-gpu` pour déterminisme cross-machine) — paths f64
   standard, perturbation, deep zoom GMP, types non-bytecode, zooms
   intermédiaires (1e10/1e15/1e20, path perturbation par défaut), atom-domain,
@@ -145,6 +145,7 @@ src/
 │   ├── types.rs         # FractalType, FractalParams, AlgorithmMode, …
 │   ├── definitions.rs   # constantes par type + LyapunovPreset
 │   ├── iterations.rs    # escape-time f64 + dispatch bytecode unifié
+│   ├── cycle.rs         # raccourci des cycles EXACTS (points intérieurs, boucles scalaires)
 │   ├── jitter.rs        # AA : radical_inverse + triangle + burtle_hash décorr. par pixel (port F3)
 │   ├── xaos.rs          # G10.4 réutilisation pixels inter-frame (XaoS)
 │   ├── gmp.rs           # précision arbitraire (rug / mpc)
@@ -167,11 +168,16 @@ src/
 │   │   ├── pixel_loop_exp.rs # idem ComplexExp (tier exp, boucle FloatExp de référence)
 │   │   ├── pixel_loop_scaled.rs # tier exp en « double mis à l'échelle » (défaut)
 │   │   ├── pixel_loop_dd.rs # tier double-double ~106b (float128-like), opt-in
+│   │   ├── pixel_loop_qd.rs # tier quad-double ~212b : pixels au-delà du dd, avant le GMP
 │   │   └── bla_dd.rs       # table BLA à coefficients dd (skip sans perte 106b)
 │   └── perturbation/    # Path GMP + ponts vers bytecode
 │       ├── mod.rs          # render_perturbation_cancellable_with_reuse
 │       ├── types.rs        # ComplexExp, FloatExp (mantisse + exposant)
 │       ├── orbit.rs        # ReferenceOrbit{,Cache}, HybridBlaReferences
+│       ├── orbit_par.rs    # itération GMP de l'orbite sur deux cœurs (bit-identique)
+│       ├── qd.rs           # arithmétique quad-double (QD « sloppy », ~210 b mesurés)
+│       ├── orbit_qd.rs     # orbite qd rejouée depuis les points de contrôle GMP
+│       ├── correct_qd.rs   # étage qd de l'escalade (dc en GMP exact, plafond)
 │       ├── nucleus.rs      # Atom-domain period + Newton (port F3)
 │       ├── bla.rs          # BlaTable conformal (path GMP deep zoom)
 │       ├── nonconformal.rs # BLA matriciel (path GMP)
@@ -497,6 +503,31 @@ Si `params.use_bytecode_engine` ET `compile_formula(type, power)` réussit :
   la recompilait deux fois par pixel). `FRACTALL_STD_BATCH=0` = scalaire.
   ⚠️ Toute nouvelle sémantique d'opcode doit être portée dans les DEUX
   interpréteurs (le verrou compare les deux sur toutes les familles).
+  **Points intérieurs : raccourci des cycles EXACTS** (2026-11-06) — un
+  point qui ne s'évade pas coûtait `iteration_max` passes. Une orbite
+  attirée par un cycle devient exactement périodique en flottant : dès que
+  l'état `(z, registre)` d'une voie reprend BIT POUR BIT un point de contrôle
+  (Brent, test tous les 16 passes hors du corps chaud), la voie saute un
+  nombre entier de cycles et finit normalement les passes restantes — même
+  compte et même z final, par construction (verrou
+  `cycle_shortcut_matches_full_iteration_bit_for_bit`). Vue Mandelbrot par
+  défaut 1440p : phase pixels 0,140 → 0,058 s ; à 20 000 itérations ×11, à
+  200 000 ×78 ; 0 % d'instructions en plus sur une vue sans intérieur.
+  Même mécanisme pour les boucles scalaires des types sans bytecode
+  (`fractal/cycle.rs::CycleCut` : Newton, Magnet, Multibrot non entier,
+  Mandelbulb, Sin, Phoenix, Barnsley, Alpha, Pickover — Magnet Julia 720p
+  6,15 → 0,06 s) et pour le path scalaire bytecode des hybrides
+  (`interp::iterate_bytecode_f64_cut`, état relevé en début de cycle de
+  phases ; [M,BS] 720p 0,64 → 0,10 s). `iterate_bytecode_f64` reste
+  l'interpréteur de RÉFÉRENCE sans raccourci, contre lequel les verrous
+  comparent. ⚠️ Ce n'est PAS un test de convergence : aucune tolérance
+  (une quasi-période n'est pas un cycle). Conditions pour équiper une
+  boucle : l'état comparé contient TOUT ce que lit le pas suivant (Phoenix :
+  z ET y) et la boucle ne cumule rien qui dépende du nombre de passages (un
+  min/max d'orbite est permis, une somme non — d'où l'absence de raccourci
+  sur les canaux distance / pièges d'orbite). `FRACTALL_STD_CYCLE=0`.
+  Sans objet en perturbation : les pixels intérieurs y sont déjà sautés par
+  la BLA (dragon : 2,5 M itérations × 16 k pixels en 0,02 s).
 - **CPU perturbation** : `perturbation/delta.rs::try_bytecode_unified_path`
   → `bytecode/pixel_loop.rs` (f64), ou au tier exp (pixel < 1e-280)
   `pixel_loop_scaled.rs` — δ = d·2^e en f64, pas FloatExp exact en repli,
@@ -718,7 +749,16 @@ toujours moins cher en dessous). Tier **exp** : traqueur
 `ShadowTrackerExp` **actif par défaut** depuis 2026-11-06
 (`FRACTALL_RELIABILITY_EXP=0` le coupe) — à 256² sans lui e401 6, olbaid2 48,
 e1298 18 pixels faux, 0 avec ; porté dans la boucle scaled
-(`direct_scaled` / `bla_scaled`, même borne au bit près). (Les erreurs exp
+(`direct_scaled` / `bla_scaled`, même borne au bit près). ⚠️ La boucle
+scaled est bornée par le DÉBIT d'instructions (IPC ~7, ~250 instr./tour),
+pas par la latence : chaque instruction du traqueur se paie. Son coût
+(+42 % → +24 % d'instructions, 2026-11-06) était le chemin général du pas
+direct (3-4 puissances de 2 et les gardes à chaque pas), PAS la racine (la
+retirer : 0 %) ni σ₁ : puissances de 2 en cache par (cadre de δ, cadre de la
+borne) — la borne vit le plus souvent AU-DESSUS du cadre de δ —, |d|² du
+tour réutilisé, σ₁(A) précalculé par nœud (`BlaMultiStepExp::sigma_m/
+sigma_e`). Verrou `light_tracker_matches_reference_bit_for_bit` (ancien
+traqueur conservé verbatim dans `pixel_loop_scaled_track_ref.rs`). (Les erreurs exp
 d'entrée — ε BLA 2⁻²⁴ → 2⁻⁵³, span f64 **sous-normal** 1e308-1e324,
 `effective_spans_fexp` exige `is_normal` — avaient été corrigées avant.)
 ⚠️ **Trois règles payées par des pixels faux (2026-11-06)**, valables pour
@@ -746,9 +786,28 @@ nombre de pixels dd non fiables ≤ max(16, 0,1 % × pixels)
 (`gmp_escalation_allowed`, `FRACTALL_RELIABILITY_GMP_MAX_FRACTION`, ≥ 1 =
 illimité) ; au-delà, valeur dd de meilleur effort + avertissement stderr
 inconditionnel — lethal_weapon (1,6 M itérations, 17 % de pixels au-delà du
-dd) prendrait des heures sinon. ⚠️ Même sous le plafond le GMP par pixel est
-cher (e227 : ~3 s de thread par pixel) : un tier quad-double est le vrai
-remède (TODO G14.1 h). **Entrée dans le tier dd = `wisdom::
+dd) prendrait des heures sinon. **Tier quad-double (~212 b) entre le dd et
+le GMP** (2026-11-06, `pixel_loop_qd.rs` + `perturbation/{qd,orbit_qd,
+correct_qd}.rs`) : chaîne complète **f64 signalé → dd tracé → dd sans BLA →
+qd → GMP sous plafond**. Boucle en pas directs sans BLA, orbite qd rejouée
+EN PARALLÈLE depuis les points de contrôle GMP de la capture paresseuse, dc
+construit en GMP exact (K, jitter AA et `centre_vue − cref` compris), son
+propre plafond tout ou rien (`FRACTALL_QD_MAX_FRACTION`, défaut 1 % des
+pixels, plancher 16), domaine |dc| ≥ 2⁻⁸⁴⁰ (au-delà : GMP). Itérations
+identiques au GMP pur sur e227 (7/7), golden_spider (16/16), rug,
+seahorse 1e6 ; e227 256² −25 % de cycles, golden_spider −20 %.
+`FRACTALL_QD=0`. ⚠️ **Piège payé par des pixels faux** : le traqueur qd doit
+compter l'arrondi de la RÉFÉRENCE (`2^-(prec−2)·|Z[m+1]|` par pas) — le
+pixel hérite de l'arrondi de la pseudo-orbite ; sans ce terme, sur
+lethal_weapon (orbite 290 b), 376 pixels étaient déclarés fiables dont 245
+faux vs GMP 580 b (avec : 91 fiables, 91 justes). ⚠️ À la précision de
+formule le GMP pur donne des ITÉRATIONS justes mais un z final non convergé
+sur les pixels au-delà du dd (golden_spider : 605 b ≠ 1210 b == 2420 b) :
+ne jamais juger ces pixels sur `zs`. ⚠️ Ne PAS ajouter au traqueur qd un
+plancher « arrondi de la conversion en qd » : la référence arrondie
+Ẑ = Z + ρ n'injecte que le terme croisé `2·δ·ρ` (∝ δ, déjà couvert par
+γ·|2Z|·|δ|) — c'est pourquoi une référence f64 suffit en perturbation f64 ;
+essayé, la borne de tous les pixels qd justes s'emballait. **Entrée dans le tier dd = `wisdom::
 dd_tier_applicable`** (Mandelbrot ET non hybride/opcodes) partout —
 `--dd-tier` sur `--opcodes` rendait un z²+c nu.
 ⚠️ `z_ref_lo` est à l'échelle de la MANTISSE de `z_ref` (ComplexExp), pas du
@@ -759,7 +818,43 @@ derrière `&mut` il coûtait ×3), total 0,72 → 1,10 s. Mesuré vs GMP :
 seahorse WARN max_diff 437 → PASS ; e30 5/5, e50 17/18 pixels faux
 détectés, 0 faux positif sur e13/e17/e18/e100. Suivis : fast-path f64
 Mandelbrot, Harmonic LA, tier exp Mandelbrot (boucle scaled), tier dd.
-**Sans suivi** : hybrides, Julia, Burning Ship / Tricorn, DE.
+**Julia : suivie par défaut** (fast-path f64, 2026-11-06 — 0,7 % de pixels
+faux non signalés sans elle, jusqu'à 812 itérations d'écart) ; pas de tier
+dd pour cette famille : pixels signalés recalculés en GMP pur
+(`iterate_point_mpc`) sous le plafond 0,1 % OU un budget de 5 % des
+itérations de la frame (`FAMILY_GMP_ITER_BUDGET`), valeur f64 + avertissement
+au-delà. Burning Ship / Tricorn : opt-in `FRACTALL_RELIABILITY_FAMILY=all`
+(107 scènes sondées, aucun pixel faux adjudicable). **Sans suivi** :
+hybrides, DE, Julia au tier exp.
+⚠️ **Le path f64 STANDARD n'a aucun suivi** et il est faux sur les bords
+chaotiques à fort nombre d'itérations, bien avant d'être à court de mantisse
+(seahorse, 5000 itérations, vs GMP pur : 0,5 % de pixels faux à 1e4, 4,2 % à
+1e8, 7,9 % à 1e10, écarts médians de 20 itérations ; la perturbation forcée
+en a 0 à 2). Le mode Auto y reste jusqu'à ~1e12 : chantier ouvert, cf.
+TODO « État actuel ». Ne jamais prendre le rendu Auto peu profond pour juge.
+⚠️ **Ne pas chercher à resserrer le terme `l·ε` du saut BLA f64** : à
+ε = 2⁻⁵³ la troncature réelle est négligeable (borne du second ordre
+implémentée et testée : la substituer revient à retirer le terme) et c'est
+CE terme qui attrape les pixels faux — sans lui e227 1 → 390 faux non
+signalés. Il sert de proxy de la masse d'erreur des `l` pas sautés. Environ
+un pixel signalé sur deux est réellement faux ; le levier coût est le prix
+de la correction, pas le détecteur (`scripts/reliability_confusion.py`).
+⚠️ **Référence dont `Z[0] ≠ 0` (Julia : elle part du centre de la vue) :
+le rebase est RELATIF à `Z[0]`** — critère `|z − Z[0]| < |δ|`,
+`δ := z − Z[0]`, sur TOUS les chemins (fast-path, générique, HP exp, GMP,
+kernels GPU f32 et f64). Deux défauts fermés le 2026-11-06 : (1) rebaser
+comme si `Z[0] = 0` rendait 92-99 % de pixels faux sur toute vue Julia non
+centrée en 0 (le preset `julia-siegel-disk`, centré en 0, ne pouvait pas le
+voir) ; (2) `z − Z[0]` doit être formé `(Z[m] − Z[0]) + δ`, JAMAIS
+`(Z[m] + δ) − Z[0]` : δ y est absorbé, et sur un centre PÉRIODIQUE (cible
+d'un zoom auto-similaire) le pixel rebasait sur δ = 0 — 100 % de pixels
+faux. Verrous `julia_rebase_is_relative_to_reference_origin`,
+`julia_view_centred_on_a_fixed_point_matches_gmp`, preset `julia-edge-e20`.
+Même classe : une famille Mandelbrot-like à **graine non nulle** (z₀ = seed,
+métadonnées éditées) a aussi `Z[0] ≠ 0` — `wisdom::select_algorithm` ne la
+route JAMAIS en perturbation (19 % de pixels faux mesurés ; verrou
+`seeded_mandelbrot_is_never_rendered_by_perturbation`). L'axe fuzz du
+harness sonde désormais Julia HORS CENTRE (`fuzz_scenes.generate_julia`).
 ⚠️ **Aucune lecture d'environnement hors `OnceLock` dans les fichiers du
 chemin par pixel** (verrou de source
 `hot_path_sources_only_read_env_through_once_lock`) : `std::env::var` par
@@ -799,13 +894,19 @@ Tous lus UNE fois (`OnceLock`). Défaut = comportement de production.
 | Variable | Effet |
 |---|---|
 | `FRACTALL_STD_BATCH=0` | path f64 standard : interpréteur scalaire au lieu du noyau par lots |
+| `FRACTALL_STD_CYCLE=0` | path f64 standard (lots ET boucles scalaires) : pas de raccourci des cycles exacts — chaque point intérieur itère jusqu'au plafond |
+| `FRACTALL_ORBIT_PAR=0` | orbite de référence : itération GMP sur un seul cœur |
+| `FRACTALL_ORBIT_PAR_MIN_BITS=n` | précision à partir de laquelle l'orbite utilise le fil assistant (défaut 2048) |
 | `FRACTALL_EXP_SCALED=0` | tier exp : boucle FloatExp au lieu du « double mis à l'échelle » |
 | `FRACTALL_EXP_SCALED_STATS=1` | ventilation des tours de la boucle scaled (rapide / lent / causes de repli) |
-| `FRACTALL_JULIA_FAST=0` | Julia en perturbation : pas générique au lieu du fast-path inline |
+| `FRACTALL_JULIA_FAST=0` | Julia en perturbation : pas générique au lieu du fast-path inline (⚠️ sans effet tant que le suivi de fiabilité Julia est actif : couper aussi `FRACTALL_RELIABILITY_FAMILY=0`) |
 | `FRACTALL_PHASE_FAST=0` | Burning Ship / Tricorn : boucle générique au lieu des noyaux statiques |
 | `FRACTALL_RELIABILITY=off\|observe\|escalate` | détecteur de fiabilité (défaut `escalate`) |
 | `FRACTALL_RELIABILITY_EXP=0` | coupe le traqueur du tier exp |
 | `FRACTALL_RELIABILITY_DD=0` | coupe le traqueur du tier dd (⚠️ rend l'ε 2⁻⁸⁰ de la BLA dd non gardé) |
+| `FRACTALL_RELIABILITY_FAMILY=0\|all` | suivi de fiabilité hors Mandelbrot : défaut Julia seule ; `all` ajoute Burning Ship et Tricorn ; `0` coupe |
+| `FRACTALL_QD=0` | pas de tier quad-double : les pixels au-delà du dd vont droit au GMP |
+| `FRACTALL_QD_MAX_FRACTION=f` | plafond du tier qd (défaut 0,01 ; plancher 16 pixels ; ≥ 1 = illimité) |
 | `FRACTALL_DD_RETRY_NOBLA=0` | pas de second essai dd sans BLA avant le GMP |
 | `FRACTALL_RELIABILITY_GMP_MAX_FRACTION=f` | plafond de l'escalade dd → GMP (défaut 0,001 ; ≥ 1 = illimité) |
 | `FRACTALL_DD_PROBE=1` | sonde dd avant l'escalade frame (opt-in) : scène dont la majorité des pixels non fiables échappe aussi au dd ⇒ f64 gardé avec avertissement, frame dd non rendue |
@@ -827,6 +928,19 @@ utilisateur `precision_bits` sert de plancher. ⚠️ La formule F3 NUE laisse
 evolution_trees — mesuré contre une orbite à précision ×4, juge convergé
 ×2 == ×4) ; +64 b les ramène à la vérité au pixel près.
 
+**Boucles GMP PURES par pixel** (`gmp.rs::iterate_point_mpc` — juge de
+`fractall-quality`, correction par pixel, repli GMP plein cadre) : sans
+allocation ni norme pleine précision par itération depuis le 2026-11-06
+(`mpc_below_bailout` : norme f64 d'abord ; `sqr_in_place` : carré arrondi
+EXACTEMENT comme `mpc_sqr`, par deux carrés exacts à précision double et une
+seule soustraction arrondie). ×1,8 à ×2,3, `.fmap` identiques. Ces boucles
+ont aussi le raccourci des cycles exacts (`MpcCycle` : ×7 sur une vue à
+intérieur à 20 000 itérations, 256 b). ⚠️ MPC alloue
+ses temporaires à chaque appel (60 % du temps dans `malloc` au profil) : dans
+une boucle GMP chaude, passer par MPFR sur tampons réutilisés — mais ne
+JAMAIS former `fl(x²) − fl(y²)` (double arrondi) si l'on veut les bits de
+`mpc_sqr`.
+
 **Itération GMP de l'orbite** (`orbit.rs::fast_sqr_scratch`, Mandelbrot
 mono-phase) : `re' = (re+im)(re−im) + cr`, `im' = 2·re·im + ci` en 2
 multiplications MPFR à tampons réutilisés, au lieu de `mpc_sqr` (arrondi
@@ -835,6 +949,29 @@ pseudo-orbites de même précision, aucune n'est « plus vraie » (écarts au ju
 ×4 équivalents) ; 31/38 cas du corpus pixel-identiques, 25 goldens
 inchangés. Dragon : orbite −35 %, total −12 %. `FRACTALL_ORBIT_FAST_SQR=0`
 revient à `mpc_sqr` (A/B).
+
+**Orbite sur DEUX cœurs** (`perturbation/orbit_par.rs`, 2026-11-06) :
+l'orbite de référence est le seul travail strictement séquentiel du rendu et
+c'est ELLE qui fait le temps des zooms très profonds (corpus à 64² :
+triangle 14 s sur 17, wfs_extended 16 s sur 19). Les deux multiplications du
+pas sont indépendantes : `im' = 2·re·im + ci` part sur un fil assistant
+(attente active, `Float` transférés par une case — aucun `unsafe`) pendant
+que le fil appelant calcule `(re+im)(re−im)`. Mêmes opérations MPFR ⇒ orbite
+**identique au bit près** (verrou `par_sqr_matches_serial_step_bit_for_bit`).
+Garde-fous : reprise de la tâche si l'assistant ne l'a pas prise ; fenêtre
+série à doublement exponentiel, assistant endormi, quand la machine est
+saturée ; seuil de précision (sous ~2000 bits la synchronisation coûte plus
+que la multiplication épargnée). ⚠️ `rayon::join` ne convient PAS ici
+(mesuré ×0,14-0,67) : une itération dure ~1 µs, un réveil de fil 10-50 µs.
+⚠️ **Une tâche se RÉCLAME par `compare_exchange`** (`POSTED → TAKEN` côté
+assistant, `POSTED → IDLE` pour la reprise) et seul le gagnant vide la
+case : la première version agissait sur un état LU plus tôt et pouvait
+laisser l'appelant attendre `DONE` pour toujours (blocage trouvé à la
+relecture le jour même, verrou
+`claimed_handoff_survives_preemption_at_every_step`). Mesuré au calme :
+×1,1 à 2 800 bits, ×1,4 à 5 000, ×1,8-1,9 au-delà de 10 000 (e8000 total
+1,28 → 0,69 s) ; neutre au seuil.
+Banc : `cargo run --release --example bench_orbit_join -- <bits> <iters>`.
 
 **Cache de table BLA** (`delta.rs`, `GLOBAL_BLA` + thread-local) : clé =
 identité de l'orbite (**adresse + longueur + empreinte de contenu**, cf.
@@ -1053,6 +1190,8 @@ fractall-cli --type N --output FILE [OPTIONS]
                           #   GPU seulement plage deep both-perturbation)
   --enable-distance-estimation / --enable-interior-detection
   --multibrot-power F / --lyapunov-preset NAME
+  --julia-re F / --julia-im F   # graine c des types Julia (ex. --julia-re=-0.8
+                          #   --julia-im=0.156) ; ignorée ailleurs
   --toml FILE             # charge real/imag/zoom/iterations/rotate/phases/
                           # opcodes + blocs [[formula]] F3 natifs
                           # format léger rust-fractal-core
@@ -1288,9 +1427,11 @@ d'échappement, temps pert vs GMP.
 reste rapporté dans `report.md`. Override : `--pass-max-iter-diff`,
 `--fail-p99-iter-diff`, `--warn-divergence-ratio`.
 
-**14 presets** (`src/quality/presets.rs`) : Mandelbrot (seahorse 1e8,
+**17 presets** (`src/quality/presets.rs`) : Mandelbrot (seahorse 1e8,
 activation 1e13, GMP perturbation 1e17, Misiurewicz 1e12, minibrot 1e18,
-spirales profondes e30/e50/e100), Julia (seed -0.8+0.156i à 1e10), Burning
+spirales profondes e30/e50/e100), Julia (seed -0.8+0.156i à 1e10, et
+`julia-edge-e20` : bord HORS CENTRE à 1e20, sentinelle du rebase relatif à
+`Z[0]` et du traqueur Julia), Burning
 Ship antenna 1e9 (non-conformal BLA), Tricorn spiral 1e8, et frontières
 lisses hors axes de pliage Celtic/Buffalo/PerpBS 1e9 (G3 2026-07-13 — les
 frontières hirsutes de ces familles sont à sensibilité de précision extrême,

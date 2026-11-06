@@ -179,7 +179,14 @@ fn iterate_pixel_unified_exp_single_phase(
     if phase_is_mandelbrot(phase) {
         // Path atom-tronqué (`FRACTALL_ATOM_PERIOD`) : variant HP ComplexExp
         // ref + BLA FloatExp (réf f64/BLA f64 zéroent les grazes ~1e-8000).
-        if atom_hp_enabled() {
+        // … et TOUTE référence dont `Z[0] ≠ 0` (Julia), même sous
+        // `FRACTALL_ATOM_PERIOD=0` : seule la boucle HP rebase relativement à
+        // `Z[0]` (cf. pixel_loop.rs `DirectKernel::REF_ORIGIN_NONZERO`).
+        let origin_nonzero = ref_orbit
+            .z_ref
+            .first()
+            .is_some_and(|z| z.re.mantissa != 0.0 || z.im.mantissa != 0.0);
+        if atom_hp_enabled() || origin_nonzero {
             return iterate_pixel_unified_exp_mandelbrot_hp(
                 ref_orbit,
                 bla_exp,
@@ -567,6 +574,13 @@ fn iterate_pixel_unified_exp_mandelbrot_hp_impl<O: StepObserverExp>(
     let mut bla_steps = 0u32;
     let mut iters_ptb = 0u32;
     const REDUCE_INTERVAL: u32 = 250;
+    // Origine de la référence : 0 sauf Julia (`Z[0]` = centre de la vue).
+    let origin = ref_orbit.z_ref[0];
+    let origin_nonzero = origin.re.mantissa != 0.0 || origin.im.mantissa != 0.0;
+    let neg_origin = ComplexExp {
+        re: FloatExp::zero() - origin.re,
+        im: FloatExp::zero() - origin.im,
+    };
 
     // Structure de boucle F3 (`hybrid.cc:287-345`) : le **rebase** (`|Z+δ|²<|δ|²`
     // OU bout de référence) est testé au DÉBUT de chaque itération, AVANT le
@@ -590,8 +604,21 @@ fn iterate_pixel_unified_exp_mandelbrot_hp_impl<O: StepObserverExp>(
         // `z_abs = Z[m]+δ` du bailout EST `z_curr` (mêmes opérandes, même
         // opération ⇒ mêmes bits) et la norme de δ du lookup BLA est
         // `delta_norm` — deux normes FloatExp et un add complexe épargnés.
+        // Julia : `z − Z[0]` formé comme `(Z[m] − Z[0]) + δ`, JAMAIS
+        // `(Z[m] + δ) − Z[0]` (δ y est absorbé par Z[m] : cf. pixel_loop.rs
+        // `DirectKernel::REF_ORIGIN_NONZERO`).
+        let rel_origin = if origin_nonzero {
+            z_m0.add(neg_origin).add(delta)
+        } else {
+            z_curr
+        };
         let (rebase_mid, z_curr_norm, delta_norm) = if end_of_ref {
             (false, FloatExp::zero(), FloatExp::zero())
+        } else if origin_nonzero {
+            // Julia : rebase relatif à `Z[0] ≠ 0` ; jamais pris si Z[0] = 0.
+            let zc = z_curr.norm_sqr_fexp();
+            let dn = delta.norm_sqr_fexp();
+            (rel_origin.norm_sqr_fexp() < dn, zc, dn)
         } else {
             let zc = z_curr.norm_sqr_fexp();
             let dn = delta.norm_sqr_fexp();
@@ -603,13 +630,13 @@ fn iterate_pixel_unified_exp_mandelbrot_hp_impl<O: StepObserverExp>(
                 c.set_ref_index(m_wrapped);
             } else {
                 obs.rebase(z_m0, z_curr);
-                delta = z_curr;
+                delta = rel_origin;
                 c.rebase();
                 rebase_count += 1;
             }
         } else if rebase_mid {
             obs.rebase(z_m0, z_curr);
-            delta = z_curr;
+            delta = rel_origin;
             c.rebase();
             rebase_count += 1;
         }

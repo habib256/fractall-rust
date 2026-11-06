@@ -166,6 +166,19 @@ def axis_fuzz(probes: int, seed: int, width: int = 96, height: int = 96,
         print(f"  génération de {probes} scènes fuzz (seed {seed})…", flush=True)
         scenes = fuzz_scenes.generate(seed, probes)
         cache.write_text(json.dumps(scenes, indent=1))
+    # Sondes Julia (plan de z, centre ≠ 0 par construction) : suite DISTINCTE,
+    # ajoutée après les six familles — la classe « rebase comme si Z[0] = 0 »
+    # (92-99 % de pixels faux, fermée le 2026-11-06) n'était vue par aucune
+    # sonde. Une pour trois sondes, au moins une.
+    n_julia = max(1, probes // 3)
+    jcache = outdir / f"scenes-julia-{seed}-{n_julia}.json"
+    if jcache.exists():
+        scenes = scenes + json.loads(jcache.read_text())
+    else:
+        print(f"  génération de {n_julia} scène(s) fuzz Julia (seed {seed})…", flush=True)
+        jscenes = fuzz_scenes.generate_julia(seed, n_julia)
+        jcache.write_text(json.dumps(jscenes, indent=1))
+        scenes = scenes + jscenes
     cases: dict[str, dict] = {}
     for s in scenes:
         name = s["name"]
@@ -178,7 +191,9 @@ def axis_fuzz(probes: int, seed: int, width: int = 96, height: int = 96,
              f"--center-y-hp={s['center_y']}",
              "--zoom", s["zoom"], "--iterations", str(s["iterations"]),
              "--width", str(width), "--height", str(height),
-             "--name", name, "--output-dir", str(outdir)],
+             "--name", name, "--output-dir", str(outdir)]
+            + ([f"--julia-re={s['julia_re']}", f"--julia-im={s['julia_im']}"]
+               if "julia_re" in s else []),
             cwd=REPO, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             preexec_fn=_rlimit_preexec(mem_limit_mb))
         journal_end(jrec, _classify_rc(proc.returncode))

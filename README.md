@@ -207,6 +207,8 @@ Advanced features
 
 Type-specific
     --multibrot-power <F>     Power for Multibrot [default: 2.5]
+    --julia-re <F>            Julia seed, real part of c (Julia-type fractals only)
+    --julia-im <F>            Julia seed, imaginary part of c
     --lyapunov-preset <NAME>  standard | zircon-city | jellyfish |
                               asymmetric | spaceship | heavy-blocks
 

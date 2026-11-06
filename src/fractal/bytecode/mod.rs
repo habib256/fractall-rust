@@ -23,6 +23,7 @@ pub mod interp_batch;
 pub mod interp_gmp;
 pub mod pixel_loop;
 pub mod pixel_loop_dd;
+pub mod pixel_loop_qd;
 pub mod pixel_loop_exp;
 pub mod pixel_loop_gmp;
 pub mod pixel_loop_scaled;
