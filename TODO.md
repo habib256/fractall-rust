@@ -37,10 +37,15 @@ quality **17/17**, truth 14/14, precision 12/12, goldens verts ; bench
    (G14.13 c) et boucle f64 à 2 voies (G14.2 : −7 % sur e50, sous la porte).
 7. **La relecture a trouvé un blocage** dans le protocole de l'orbite sur
    deux cœurs (écrit le matin même) — corrigé avant toute fusion vers `main`.
+8. **Boucles GMP pures ×1,8 à ×2,3** (G14.20), bit-identiques : le juge de
+   la QA, la correction par pixel et le repli GMP plein cadre en profitent.
+Score standard (`…T051051Z-b3ed210.json`, 25 cas 4,66 s) : quality 16 PASS +
+1 WARN connu, fuzz 6/6, precision 26/26, truth 27/27, goldens verts (30 cas,
+dont 5 nouveaux). Score quick final (`…T053707Z-b5cdf1a.json`) : 0 gap.
 
 **Prochains chantiers** : (a) Tricorn / Burning Ship profonds rendus en GMP
-plein cadre quand la référence s'échappe (12-30 s à 96²) — pas de rebase de
-fin de référence pour ces familles ; (b) la correction dd elle-même (e227 :
+plein cadre quand la référence s'échappe (G14.21 — une piste essayée et
+écartée) ; (b) la correction dd elle-même (e227 :
 4323 pixels signalés, dont la moitié de faux positifs irréductibles — le
 prix est celui du dd, G14.13 c) ; (c) multiplication GMP découpée sur trois
 cœurs au-delà de 15 000 bits (G14.3) ; (d) Newton degré ≥ 4 par `powc`
@@ -3781,7 +3786,9 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   vraiment faux / faux non flaggés) : e50 256² 455 / 174 / 5 ; golden_spider
   256² 3169 / 1725 / 9 ; e227 256² 4323 / 1973 / 1 ; rug 256² 990 / 485 / 4 ;
   dragon 128² 115 / 51 / 3 — environ un flaggé sur deux est réellement faux.
-  Outil : `scripts/reliability_confusion.py`. **Résidus** : les faux non
+  Outil : `scripts/reliability_confusion.py` ; le patch expérimental complet
+  (~700 lignes, variantes sous `FRACTALL_TRK_EXP`) est gardé hors dépôt dans
+  `bench/g14.13-tracker-proto/`. **Résidus** : les faux non
   flaggés ont des bornes finies (1,7 à 2,8e18) — ils s'évadent avant
   l'emballement. Seuil `FRACTALL_RELIABILITY_RUNAWAY` 1e30 → 1e8 : faux non
   flaggés 23 → 12 sur 13 cas pour +11 % de flaggés (NON adopté : compromis à
@@ -3951,6 +3958,40 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   sites du raccourci des cycles exacts et la densité, la bit-identité de
   l'orbite sur deux cœurs, l'arithmétique qd et la construction du dc, la
   correction GMP des familles, le traqueur exp allégé.
+- [x] **G14.20 — Boucles GMP pures : ni allocation ni norme pleine précision
+  par itération (2026-11-06 matin)** — profil échantillonné d'un rendu GMP
+  pur : ~60 % du temps dans `malloc`/`free` (deux clones + `mpc_mul`, qui
+  alloue ses temporaires, pour z² ; deux clones + deux multiplications pour
+  le seul test d'évasion). (1) `mpc_below_bailout` : norme estimée en f64,
+  comparaison GMP exacte seulement à moins de 1 % du rayon ou hors plage f64
+  (26 boucles) ; (2) `sqr_in_place` : carré complexe arrondi exactement
+  comme `mpc_sqr` — `im = 2xy` arrondi une fois, `re = x² − y²` par deux
+  carrés EXACTS à précision double puis UNE soustraction arrondie — sur
+  tampons réutilisés (Mandelbrot, Julia, Tricorn, Burning Ship). Ces boucles
+  sont le JUGE de `fractall-quality`, la correction par pixel (pixels
+  au-delà du qd, pixels Julia signalés) et le repli GMP plein cadre.
+  Mesuré 96², min de 3, `.fmap` identiques (itérations ET z) : seahorse 1e8
+  0,67 → 0,37 s, Mandelbrot défaut 0,16 → 0,07 s, Julia 1e20 0,36 → 0,19 s,
+  Tricorn 1e16 1,35 → 0,73 s ; juge du preset `julia-edge-e20` 10,5 → 5,7 s.
+  Verrous `in_place_square_matches_mpc_sqr` (3200 valeurs, 8 précisions,
+  annulations, zéros signés, contre `mpc_sqr` ET `mpc_mul`),
+  `in_place_mpc_loops_match_original_loops_bit_for_bit`,
+  `two_stage_bailout_test_decides_like_the_exact_norm`. *Reste* : les 22
+  autres boucles `_mpc` gardent leurs clones (seul leur test d'évasion est
+  allégé).
+- [ ] **G14.21 — Tricorn / Burning Ship profonds en GMP plein cadre** —
+  constat de la sonde G14.18 : dès que la référence s'échappe avant le
+  plafond, > 30 % des pixels sont « référence épuisée » et la frame entière
+  repart en GMP pur (Tricorn 1e16, 64², 3000 itérations : 1,17 s en
+  production ≈ 1,2 s de GMP pur ; ×1,85 depuis G14.20). *Essayé le
+  2026-11-06, sans effet, reverté* : étendre à ces familles la troncature
+  atom-domain générique mat2 des hybrides — elle ne se déclenche pas sur ces
+  scènes de bord (la référence s'échappe avant que le critère ne tienne).
+  Le vrai sujet est le rebase de FIN de référence échappée en f64 : les
+  boucles le refusent (« uniformise tous les pixels post-escape », e113)
+  parce que `Z[end] + δ` y perd ~17 bits ; la boucle exp le fait. À étudier :
+  rebase de fin quand `|δ| ≳ |Z[end]|` seulement, ou référence choisie hors
+  du centre (pixel le plus lent d'une sonde grossière).
 - [x] **G14.8 — Re-baseline (2026-11-06, Apple M4)** : score standard
   archivé (25 cas, 4,76 s cumulés) et baseline quick re-figée sur l'état
   final (`harness/baselines/apple-m4-10t.json`). La machine i7 + F3 reste à

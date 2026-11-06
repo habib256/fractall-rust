@@ -30,7 +30,7 @@ Prérequis natifs : GMP / MPFR / MPC (pour `rug`).
   `wisdom` (select_algorithm/device, plan), et tout le `bytecode/` (`compile`
   + `compile_hybrid_formula`, `interp{,_gmp}`, `bla_dual`, `delta_form`,
   `pixel_loop{,_exp}`).
-- **Golden image tests** (`tests/golden_images.rs`) : 24 cas pixel-exact
+- **Golden image tests** (`tests/golden_images.rs`) : 30 cas pixel-exact
   (goldens forcent `--no-gpu` pour déterminisme cross-machine) — paths f64
   standard, perturbation, deep zoom GMP, types non-bytecode, zooms
   intermédiaires (1e10/1e15/1e20, path perturbation par défaut), atom-domain,
@@ -916,6 +916,17 @@ utilisateur `precision_bits` sert de plancher. ⚠️ La formule F3 NUE laisse
 2-4 % de pixels FAUX sur des scènes du corpus (golden_spider, e227,
 evolution_trees — mesuré contre une orbite à précision ×4, juge convergé
 ×2 == ×4) ; +64 b les ramène à la vérité au pixel près.
+
+**Boucles GMP PURES par pixel** (`gmp.rs::iterate_point_mpc` — juge de
+`fractall-quality`, correction par pixel, repli GMP plein cadre) : sans
+allocation ni norme pleine précision par itération depuis le 2026-11-06
+(`mpc_below_bailout` : norme f64 d'abord ; `sqr_in_place` : carré arrondi
+EXACTEMENT comme `mpc_sqr`, par deux carrés exacts à précision double et une
+seule soustraction arrondie). ×1,8 à ×2,3, `.fmap` identiques. ⚠️ MPC alloue
+ses temporaires à chaque appel (60 % du temps dans `malloc` au profil) : dans
+une boucle GMP chaude, passer par MPFR sur tampons réutilisés — mais ne
+JAMAIS former `fl(x²) − fl(y²)` (double arrondi) si l'on veut les bits de
+`mpc_sqr`.
 
 **Itération GMP de l'orbite** (`orbit.rs::fast_sqr_scratch`, Mandelbrot
 mono-phase) : `re' = (re+im)(re−im) + cr`, `im' = 2·re·im + ci` en 2
