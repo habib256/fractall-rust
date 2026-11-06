@@ -122,6 +122,12 @@ part de la frame signalée) : seahorse 1e4 176 / 185 (95 %), 0,7 % ;
 seahorse 1e7 440 / 444 (99 %), 2,1 % ; éléphants 1e10 573 / 611 (94 %),
 2,1 %. Le coût d'une correction par pixel serait donc de l'ordre de 1 à 2 %
 de la frame recalculée, 15 % dans le pire cas mesuré.
+Avec en plus le test de détermination à l'évasion (`E ≥ ||z| − R|`, celui
+du tier exp — variante `trk_m.py`) : seahorse 1e4 **185 / 185** pour 1,3 %
+signalés, éléphants 1e10 **609 / 611** pour 4,3 %. « Emballée OU marge
+d'évasion » attrape donc ~100 % des pixels faux pour le double de pixels
+signalés ; un critère relatif (`E ≥ 1e-6·|z|`) signale 20 à 100 % de la
+frame, inutilisable.
 
 **Prochains chantiers** : (a) Tricorn / Burning Ship profonds rendus en GMP
 plein cadre quand la référence s'échappe (G14.21 — une piste essayée et
