@@ -39,9 +39,16 @@ quality **17/17**, truth 14/14, precision 12/12, goldens verts ; bench
    deux cœurs (écrit le matin même) — corrigé avant toute fusion vers `main`.
 8. **Boucles GMP pures ×1,8 à ×2,3** (G14.20), bit-identiques : le juge de
    la QA, la correction par pixel et le repli GMP plein cadre en profitent.
-Score standard (`…T051051Z-b3ed210.json`, 25 cas 4,66 s) : quality 16 PASS +
-1 WARN connu, fuzz 6/6, precision 26/26, truth 27/27, goldens verts (29 cas,
-dont 4 nouveaux). Score quick final (`…T053707Z-b5cdf1a.json`) : 0 gap.
+9. **Seconde relecture, sondes Julia dans l'axe fuzz, option CLI de graine
+   Julia, garde de graine non nulle** (G14.18 point 5, G14.19).
+**État final (HEAD de la branche)** — score standard
+(`harness/history/20261106T061402Z-f7db05f.json`, 25 cas, 4,59 s cumulés) :
+quality 16 PASS + 1 WARN connu (seahorse-valley 256², 1 pixel), **fuzz 8/8**
+(dont 2 sondes Julia), precision 26/26, truth 27/27, goldens verts (29 cas,
+dont 4 nouveaux) ; le score standard dure 8 min au lieu de 18 depuis que le
+juge GMP est allégé. Score quick à 3 runs (`…T061144Z-e3ff8be.json`) : 0 gap,
+géomoyenne 0,957× la baseline de la nuit ; **baseline Apple M4 re-figée** sur
+cet état. 522 tests unitaires.
 
 **Prochains chantiers** : (a) Tricorn / Burning Ship profonds rendus en GMP
 plein cadre quand la référence s'échappe (G14.21 — une piste essayée et
