@@ -128,6 +128,35 @@ signalés, éléphants 1e10 **609 / 611** pour 4,3 %. « Emballée OU marge
 d'évasion » attrape donc ~100 % des pixels faux pour le double de pixels
 signalés ; un critère relatif (`E ≥ 1e-6·|z|`) signale 20 à 100 % de la
 frame, inutilisable.
+**Notes de conception** (étude d'agent en lecture seule, coûts ESTIMÉS non
+mesurés) :
+- *Récurrence* par passe, avec n = |z|² AVANT le pas et γ = 4u :
+  `E' = E·(2√n + E) + γ·(n + |c|₁)`, E₀ = u·|z₀|₁ en Julia. La racine est
+  nécessaire (un majorant L1 se compose en √2 par pas) ; le |z|² de fin de
+  passe existe déjà, il suffit de le garder d'une passe à l'autre.
+- *Branchement* : dans la boucle de fin de passe d'`interp_batch.rs`, pas
+  dans `Op::Sqr` ; le traqueur ne fait que lire l'état → sorties
+  bit-identiques ; test d'emballement à la SORTIE de la voie seulement
+  (aucune branche dans le corps chaud) ; `const TRACK: bool` ou ZST à la
+  `StepObserver` pour un coût nul quand il est coupé.
+- *Familles* : abs / neg / conj sont 1-lipschitziens → la forme vaut telle
+  quelle pour Burning Ship, Tricorn, Celtic, Buffalo, PerpBS ; `Mul`
+  (Multibrot entier) et `Rot` demandent une mise à jour par opcode.
+- *Raccourci des cycles exacts* : sauter k cycles sans toucher E
+  sous-estime la borne → porter le produit Π(2√n + E) depuis le point de
+  contrôle et, à la détection, prendre le point fixe de la récurrence affine
+  si ce produit < 1, signaler sinon.
+- *Correction* : `perturbation::recompute_pixels_cpu` est réutilisable pour
+  Mandelbrot / Julia (orbite de référence d'une vue peu profonde ≈ 1 ms)
+  SOUS gardes — il n'applique ni K ni transformation de plan, et finit au
+  GMP sans plafond ; vérifier que le mapping pixel du path standard a la
+  même convention +0,5. Autres familles : GMP pur par pixel sous plafond.
+- *Coût estimé* : +40 à +70 % sur la phase pixels (la boucle par lots est
+  bornée par le débit), ×1,8 à ×2,3 au total avec la correction, contre ×4
+  à ×6 pour un re-routage en bloc ; seuil frame entière à 50 % de signalés.
+- *Vérification* : un mode de `fractall-quality` qui juge la sortie de
+  PRODUCTION du path standard ; les cas f64 standard dans l'axe truth ;
+  verrous « tout pixel ≠ GMP est signalé » et « TRACK coupé == aujourd'hui ».
 
 **Prochains chantiers** : (a) Tricorn / Burning Ship profonds rendus en GMP
 plein cadre quand la référence s'échappe (G14.21 — une piste essayée et
