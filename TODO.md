@@ -81,6 +81,16 @@ Auto vers la perturbation dès que la vue est en bord et le plafond élevé
 pixel ; (3) d'abord un axe : faire juger par `truth` les cas du path
 standard contre la perturbation forcée, pour mesurer l'étendue (vues par
 défaut, plafonds usuels de 2500 itérations) avant de choisir.
+Étendue mesurée dans la foulée (256×160, % de pixels Auto ≠ GMP pur /
+pixels ≠ en perturbation forcée, aux zooms 1e4 · 1e7 · 1e10) :
+| lieu | 1000 it. | 2500 it. (défaut) |
+|---|---|---|
+| seahorse | 0,44 % / 0 · 0,12 % / 0 · 0,00 % / 0 | 0,45 % / 0 · 1,08 % / 1 · **7,76 % / 2** |
+| vallée des éléphants | 0,03 % / 1 · 0,11 % / 0 · 0,22 % / 0 | 0,34 % / 3 · 0,28 % / 0 · 1,49 % / 0 |
+| minibrot de l'axe réel | 0,00 · 0,00 · 0,03 % | 0,00 · 0,00 · 0,05 % |
+Le défaut croît avec le plafond d'itérations et la profondeur, et dépend
+fortement du lieu (spirales ≫ minibrot) : au plafond par défaut il atteint
+déjà plusieurs pour cent à 1e10.
 
 **Prochains chantiers** : (a) Tricorn / Burning Ship profonds rendus en GMP
 plein cadre quand la référence s'échappe (G14.21 — une piste essayée et
