@@ -65,6 +65,8 @@ pub struct ScaledTracker {
     /// renormalisations de δ (≥ 64 binades) : recalculé hors du chemin chaud.
     fe: i32,
     fdcf: f64,
+    /// `p2(fe)`.
+    fse: f64,
 }
 
 impl ScaledTracker {
@@ -79,6 +81,7 @@ impl ScaledTracker {
             exact: false,
             fe: FE_NONE,
             fdcf: 0.0,
+            fse: 0.0,
         };
         t.reload();
         t
@@ -207,19 +210,20 @@ impl ScaledObs for ScaledTracker {
 
     /// Pas direct : `z = Z + δ`, `local = (|2Zδ|₁ + |δ|² + |dc|₁)·γ` (cadre 2^e).
     #[inline(always)]
-    fn direct_scaled(&mut self, z: Complex64, d: Complex64, e: i32, tzd: Complex64) -> bool {
+    fn direct_scaled(&mut self, z: Complex64, d: Complex64, nd2: f64, e: i32, tzd: Complex64) -> bool {
         if e == self.fe && e == self.ee {
             // Chemin chaud : borne déjà dans le cadre de δ (ee == e). Mêmes
             // opérations au bit près que le chemin général ci-dessous :
-            // `p2(ee) = p2(e)`, `combine` sans alignement (e == ee) et
-            // `lf·p2(0) = lf` exact ; em = 0 ⇒ `0·w + lf = lf` (w fini : |z| <
-            // ER sous la garde de bailout du tour rapide).
-            let se = p2(e);
+            // `p2(ee) = p2(e)` (= `fse`, mis en cache avec `fe`), `combine`
+            // sans alignement (e == ee) et `lf·p2(0) = lf` exact ; em = 0 ⇒
+            // `0·w + lf = lf` (w fini : |z| < ER sous la garde de bailout du
+            // tour rapide) ; `nd2` = d.re²+d.im², déjà calculé par le tour.
+            let se = self.fse;
             let (zr, zi) = (z.re + d.re * se, z.im + d.im * se);
             let z_abs = (zr * zr + zi * zi).sqrt();
             let w = z_abs * 2.0 + self.em * se;
             let l1 = tzd.re.abs() + tzd.im.abs();
-            let nd = (d.re * d.re + d.im * d.im) * se;
+            let nd = nd2 * se;
             let lf = (l1 + nd + self.fdcf) * EXP_TRACK_GAMMA;
             self.em = self.em * w + lf;
             self.renorm_tail();
@@ -241,6 +245,7 @@ impl ScaledObs for ScaledTracker {
         if !self.exact {
             self.fe = e;
             self.fdcf = dcf;
+            self.fse = se;
         }
         true
     }

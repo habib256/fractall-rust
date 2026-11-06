@@ -335,7 +335,7 @@ pub trait ScaledObs: StepObserverExp {
     const TRACKS: bool;
     /// Hook `direct` en f64 dans le cadre 2^e ; `false` ⇒ hook ComplexExp.
     #[inline(always)]
-    fn direct_scaled(&mut self, _z: Complex64, _d: Complex64, _e: i32, _tzd: Complex64) -> bool {
+    fn direct_scaled(&mut self, _z: Complex64, _d: Complex64, _nd: f64, _e: i32, _tzd: Complex64) -> bool {
         false
     }
     /// Hook `bla` en f64 (cadre 2^ep) ; `sigma` = σ₁(A) précalculé du nœud
@@ -360,7 +360,7 @@ impl ScaledObs for NoObserve {
 impl ScaledObs for ShadowTrackerExp {
     const TRACKS: bool = true;
     #[inline(always)]
-    fn direct_scaled(&mut self, z: Complex64, d: Complex64, e: i32, tzd: Complex64) -> bool {
+    fn direct_scaled(&mut self, z: Complex64, d: Complex64, _nd: f64, e: i32, tzd: Complex64) -> bool {
         ShadowTrackerExp::direct_scaled(self, z, d, e, tzd)
     }
     #[inline(always)]
@@ -793,7 +793,7 @@ fn fast_iter<O: ScaledObs>(
         if let Some((zr, zn)) = pending_rebase {
             obs.rebase(zr, zn);
         }
-        if !obs.direct_scaled(z, s.d, s.e, Complex64::new(tzd_re, tzd_im)) {
+        if !obs.direct_scaled(z, s.d, nd, s.e, Complex64::new(tzd_re, tzd_im)) {
             let delta_old = s.to_cexp();
             let two_z_delta = ComplexExp {
                 re: FloatExp::new(tzd_re, s.e),

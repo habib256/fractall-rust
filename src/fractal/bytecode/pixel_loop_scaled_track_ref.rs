@@ -158,7 +158,7 @@ impl StepObserverExp for RefTracker {
 impl ScaledObs for RefTracker {
     const TRACKS: bool = true;
 
-    fn direct_scaled(&mut self, z: Complex64, d: Complex64, e: i32, tzd: Complex64) -> bool {
+    fn direct_scaled(&mut self, z: Complex64, d: Complex64, _nd: f64, e: i32, tzd: Complex64) -> bool {
         if self.exact || e > 100 || (self.dcm != 0.0 && self.dce - e > 900) {
             return false;
         }
