@@ -3456,8 +3456,8 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   (×0,58-0,64 = plus lent : état des voies sur la pile, traqueur avec une
   racine par voie). *Reste* : un entrelacement écrit à la main (SoA, traqueur
   inliné dans `reliability.rs`, site d'appel par lot dans
-  `perturbation/mod.rs`) — prototype et tests de bit-identité conservés par
-  l'agent dans `bench/g14.2-proto/` de son worktree. *Constat inexpliqué* :
+  `perturbation/mod.rs`) — prototype et tests de bit-identité conservés
+  hors dépôt dans `bench/g14.2-proto/` (gitignoré, Mac M4). *Constat inexpliqué* :
   un pas direct coûte 3,9 ns avec la vraie table et 6,5-12 ns avec une table
   vide. **Livré côté exp** (même agent, bit-identique, 24 scènes) : boucle HP
   atom-tronquée — normes réutilisées, δ² sauté quand l'addition l'absorbe,
