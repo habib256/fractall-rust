@@ -10,12 +10,13 @@ import re
 import signal
 import statistics
 import subprocess
+import sys
 import time
 
 from .config import (
     BENCH, CLI, CRASH_JOURNAL, F3_DEGENERATE, HARD_CRASH_OUTCOMES,
     HARNESS_DIR, INFLIGHT, QUARANTINE, REPO, RESOLVED, SLOW_SAFE, TOML_DIR,
-    _now_iso, git_sha,
+    _now_iso, git_sha, mem_total_mb,
 )
 
 try:
@@ -38,17 +39,22 @@ def default_mem_limit_mb() -> int:
             return int(env)
         except ValueError:
             pass
-    try:
-        for line in Path("/proc/meminfo").read_text().splitlines():
-            if line.startswith("MemTotal:"):
-                return int(int(line.split()[1]) / 1024 * 0.85)
-    except Exception:
-        pass
-    return 0
+    if not mem_cap_supported():
+        return 0
+    total = mem_total_mb()
+    return int(total * 0.85) if total else 0
+
+
+def mem_cap_supported() -> bool:
+    """RLIMIT_AS n'est applicable que sous Linux : macOS REFUSE le setrlimit
+    (exception dans `preexec_fn` → tout sous-process échouerait au lancement).
+    Sans cap, le garde-fou crash repose sur le breadcrumb + la quarantaine."""
+    return resource is not None and sys.platform.startswith("linux")
+
 
 def _rlimit_preexec(mem_mb: int):
     """preexec_fn posant RLIMIT_AS sur l'enfant (None si cap off/non-POSIX)."""
-    if not mem_mb or resource is None:
+    if not mem_mb or not mem_cap_supported():
         return None
     limit = mem_mb * 1024 * 1024
 

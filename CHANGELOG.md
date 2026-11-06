@@ -8,7 +8,81 @@ regroupement par type (Ajouté / Corrigé / Performance / Modifié), et sections
 jalon (`Gx`) pour l'historique. Ce fichier est un résumé actionnable — le détail
 technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
 
-## [Unreleased] — harnais d'optimisation
+## [Unreleased] — nuit d'optimisation et de correction (2026-11-06, Apple M4)
+
+Mesures : Apple M4 10 threads, A/B entrelacés, images comparées à l'octet ou
+aux itérations brutes. Détail et chiffres par item : `TODO.md` G14.
+
+### Corrigé (justesse des images)
+- **Détecteur de fiabilité** — la troncature d'un saut BLA de `l` pas vaut
+  l·ε (elle était comptée ε, sous-estimée ~40×) : le rendu par défaut avait
+  des pixels faux non signalés (e227 384 à 256², golden_spider 169, dragon
+  36 à 128², 12 cas du tier exp). Borne exp emballée qui retombait à
+  « fiable » par débordement d'exposant ; test de détermination à l'évasion.
+  Traqueur du tier exp actif par défaut.
+- **Tier dd gardé** — le double-double n'est pas la vérité (seahorse 1e6 :
+  un pixel à 1838 itérations pour 1598 en GMP convergé) : traqueur au niveau
+  dd, second essai sans BLA, puis GMP par pixel sous un plafond déterministe
+  (0,1 % des pixels, sinon avertissement explicite). Au tier exp, borne à
+  exposant étendu (`reliability_dd_exp.rs`) : le traqueur f64 y restait à 0.
+- **Harmonic LA** — rayon de validité 2⁻²⁴ → 2⁻⁵³ et traqueur de fiabilité
+  (leaded_glass 227 pixels faux → 0 ; golden
+  `mandelbrot_glitch_test_2_harmonic` régénéré deux fois : 11 pixels ≠ GMP
+  pur → 1 → 0).
+- **`--dd-tier` sur une formule hybride ou à opcodes** rendait un Mandelbrot
+  nu (93 % de pixels faux) : prédicat unique `dd_tier_applicable`.
+- **Correction dd sur orbite réutilisée** (GUI, zoom avant ancré) : le
+  décalage centre − référence manquait — tous les pixels corrigés étaient
+  recalculés au mauvais point (39 sur 39 sur la scène du verrou).
+- **Cache de table BLA** : clé par contenu d'orbite + rayon de vue +
+  formule hybride.
+- **GPU f32** : sous-dépassement de |δ|² au-delà de ~1e19 ;
+  `spectral_norm` qui débordait pour |A| > 1e154.
+- Diagnostics : zoom affiché au-delà de 1e308.
+
+### Performance
+- **Path f64 standard par lots** (`bytecode/interp_batch.rs`, 8 voies
+  entrelacées, bit-identique) : ×4,5 à ×7 sur la phase pixel — toute la
+  navigation sous ~1e13 (Mandelbrot 1440p 0,31 → 0,057 s).
+- **Tier exp (> 1e280)** : parse GMP du span sorti de la boucle pixel, boucle
+  HP allégée, puis boucle « double mis à l'échelle »
+  (`bytecode/pixel_loop_scaled.rs`, traqueur compris) — e401 256² 0,46 →
+  0,08 s, e1000 0,40 → 0,05 s, images identiques à l'octet sur les 37 cas du
+  tier exp du corpus.
+- **Coût fixe par pixel de la perturbation** : plus d'`Arc` cloné, de
+  `Formula` compilée ni de variable d'environnement lue par pixel.
+- **Julia ×1,9, Burning Ship ×1,4, Tricorn ×1,7** en perturbation (noyaux de
+  pas monomorphisés dans la boucle rapide, bit-identiques).
+- **Correction dd** : chemin rapide double-double (×2-5), tables inutiles
+  supprimées, capture paresseuse de la partie basse — pic RSS dragon 1 063 →
+  329 Mo.
+- **GPU Metal** : sonde BLA ascendante (kernel ×4) ; Auto route le GPU dans
+  la plage perturbation f32 après `--wisdom-bench` (4-13× sur les scènes
+  faciles).
+- Coût assumé des correctifs de justesse sur les scènes f64 dont des pixels
+  dépassent la précision du double-double : e227 256² 1,0 → 3,5 s (7 pixels
+  au GMP pur), golden_spider 0,36 → 1,0 s (16 pixels). e50 et dragon restent
+  à leur temps du début de nuit (0,61 et 1,3 s) avec moins de pixels faux.
+- ⚠️ **Coût NON résolu sur les scènes au-delà du double-double** (balayage
+  du corpus entier) : super_dense 48² 3,0 → 132 s et timeout 600 s à 256²,
+  pour une image qui reste fausse (signalée) ; lethal_weapon 395 s à 256²
+  (39,7 → 23,9 s à 48² sur la nuit). `FRACTALL_RELIABILITY=off` rend le
+  comportement rapide d'avant. Remède en opt-in : `FRACTALL_DD_PROBE=1`
+  (sonde dd de ≤ 256 pixels avant l'escalade frame — super_dense 48²
+  132 → 10,4 s, lethal_weapon inchangé au pixel près) ; cf. `TODO.md`
+  G14.1 (k) pour ce qu'il reste à calibrer avant de l'activer par défaut.
+
+### Ajouté
+- **Harness : axe `truth`** — rendu de production contre le tier dd sur les
+  cas du corpus (le juge qui a trouvé les défauts ci-dessus).
+- **Harness : `hotspots`** — profil échantillonné d'un cas avec un binaire
+  symbolisé ; phase `bla`, `ns/iter·thread`, lancement à blanc des binaires.
+- `fractall-quality gpu-bench` ; clés wisdom `gpu_perturb_f32` /
+  `cpu_perturb_f64_mid`.
+- Harness utilisable sous macOS (nom de machine, RAM, F3 non lançable
+  détecté) ; baseline de l'Apple M4.
+
+## [Unreleased, précédent] — harnais d'optimisation
 
 ### Ajouté
 - **Harness : axe `profile`** (où va le temps) — chaque cas du tier est rendu

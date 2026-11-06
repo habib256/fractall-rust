@@ -19,12 +19,15 @@ pub mod compile;
 pub mod delta_form;
 pub mod harmonic_mla;
 pub mod interp;
+pub mod interp_batch;
 pub mod interp_gmp;
 pub mod pixel_loop;
 pub mod pixel_loop_dd;
 pub mod pixel_loop_exp;
 pub mod pixel_loop_gmp;
+pub mod pixel_loop_scaled;
 pub mod reliability;
+pub mod reliability_dd_exp;
 
 #[cfg(test)]
 mod tests;

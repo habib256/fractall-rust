@@ -117,6 +117,19 @@ fn norm_sqr(a: vec2<f32>) -> f32 {
     return a.x * a.x + a.y * a.y;
 }
 
+// Module des PETITES quantités (δ, dc, termes BLA). En f32, |v|² sous-
+// déborde dès |v| < ~1e-19 (≈1e-22 avec sous-normaux, que Metal vide à 0) :
+// au-delà du zoom ~1e19 `length(δ)` et `norm_sqr(δ)` valaient 0 — traqueur
+// aveugle (termes locaux nuls), tests de validité BLA `0 >= 0` (BLA rejetée
+// à tort) et test de rebase `0 < 0` (rebase manqué). Mise à l'échelle par
+// 2⁵⁶ (exacte, puissance de 2) : couvre |v| ∈ [~1e-36, ~4e21] sans sous-
+// ni dépassement, bit-identique à `length` dans la plage normale.
+const SMALL_SCALE: f32 = 72057594037927936.0;      // 2^56
+const SMALL_INV: f32 = 1.3877787807814457e-17;      // 2^-56
+fn cabs_small(a: vec2<f32>) -> f32 {
+    return length(a * SMALL_SCALE) * SMALL_INV;
+}
+
 fn zref_at(m: u32) -> vec2<f32> {
     // ⚠️ clamp CLAUDE.md : après un pas, m peut valoir ref_len.
     return z_ref[min(m, params.ref_len - 1u)];
@@ -164,13 +177,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (is_julia) {
         delta = dc;
     }
-    let dc_abs = length(dc);
+    let dc_abs = cabs_small(dc);
     var n: u32 = 0u;
     var m: u32 = 0u;
     let bailout_sqr = params.bailout * params.bailout;
     let use_bla = params.bla_levels > 0u;
     let use_series = params.series_order >= 2u;
-    let series_threshold_sqr = params.series_threshold * params.series_threshold;
 
     while (n < params.iter_max) {
         let z_m = zref_at(m);
@@ -180,10 +192,30 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             return;
         }
 
+        // |δ_old| (robuste au sous-dépassement) : validité BLA, série,
+        // traqueur du pas direct.
+        let delta_abs = cabs_small(delta);
         var stepped = false;
         if (use_bla) {
-            let delta_norm_sqr = norm_sqr(delta);
-            var level: i32 = i32(params.bla_levels);
+            // Sonde ASCENDANTE du plus haut niveau valide. Le rayon de validité
+            // est non croissant avec le niveau à m fixé (fusion F3 `bla.h:37` :
+            // R = min(R_x, …)) et les longueurs de niveau décroissent : si un
+            // niveau échoue, tous les niveaux supérieurs échouent. La descente
+            // ci-dessous part donc de `top` au lieu du sommet de la table —
+            // même saut choisi au bit près, mais un pas direct (cas dominant
+            // hors des zones lisses) ne lit plus qu'UN nœud au lieu de
+            // `bla_levels` (jusqu'à 17 lectures mémoire par itération).
+            var top: i32 = -1;
+            for (var probe: u32 = 0u; probe < params.bla_levels; probe = probe + 1u) {
+                if (m >= bla_meta.level_lengths[probe]) {
+                    break;
+                }
+                if (delta_abs >= bla_nodes[bla_meta.level_offsets[probe] + m].validity) {
+                    break;
+                }
+                top = i32(probe);
+            }
+            var level: i32 = top + 1;
             loop {
                 level = level - 1;
                 if (level < 0) {
@@ -194,7 +226,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     continue;
                 }
                 let node = bla_nodes[bla_meta.level_offsets[lvl] + m];
-                if (delta_norm_sqr >= node.validity * node.validity) {
+                if (delta_abs >= node.validity) {
                     continue;
                 }
                 let skip = 1u << lvl;
@@ -213,7 +245,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 }
                 var cand = a_delta + b_dc;
                 var c_term = vec2<f32>();
-                if (use_series && delta_norm_sqr < series_threshold_sqr) {
+                if (use_series && delta_abs < params.series_threshold) {
                     c_term = cmul(node.c, cmul(delta, delta));
                     cand = cand + c_term;
                 }
@@ -224,11 +256,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 // Traqueur, saut BLA : jacobien A + 2Cδ conforme → σ₁ = |·| ;
                 // troncature ε par saut + arrondi local.
                 var jac = node.a;
-                if (use_series && delta_norm_sqr < series_threshold_sqr) {
+                if (use_series && delta_abs < params.series_threshold) {
                     jac = jac + 2.0 * cmul(node.c, delta);
                 }
                 err = length(jac) * err
-                    + (params.bla_epsilon + GAMMA) * (length(a_delta) + length(b_dc) + length(c_term));
+                    + (params.bla_epsilon + GAMMA) * (cabs_small(a_delta) + cabs_small(b_dc) + cabs_small(c_term));
                 delta = cand;
                 n = new_n;
                 m = new_m;
@@ -245,7 +277,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // E' = E·(2|z| + E) + γ·(|2Z + δ|·|δ| + |dc|).
         let two_z_delta = 2.0 * z_m + delta;
         let z_norm = length(z_abs);
-        err = err * (2.0 * z_norm + err) + GAMMA * (length(two_z_delta) * length(delta) + dc_abs);
+        err = err * (2.0 * z_norm + err) + GAMMA * (length(two_z_delta) * delta_abs + dc_abs);
         var next = cmul(two_z_delta, delta);
         if (!is_julia) {
             next = next + dc;
@@ -267,7 +299,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             } else if (params.atom_truncated != 0u) {
                 let z_end = zref_at(m);
                 delta = z_end + delta;
-                err = err + U * (length(z_end) + length(delta));
+                err = err + U * (cabs_small(z_end) + cabs_small(delta));
                 m = 0u;
             } else {
                 write_pixel(idx, n, zref_at(m) + delta, 1u);
@@ -276,9 +308,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         } else {
             let z_ref_m = zref_at(m);
             let z_curr = z_ref_m + delta;
-            if (norm_sqr(z_curr) < norm_sqr(delta)) {
+            if (cabs_small(z_curr) < cabs_small(delta)) {
                 delta = z_curr;
-                err = err + U * (length(z_ref_m) + length(z_curr));
+                err = err + U * (cabs_small(z_ref_m) + cabs_small(z_curr));
                 m = 0u;
             }
         }

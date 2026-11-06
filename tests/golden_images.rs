@@ -216,6 +216,13 @@ const CASES: &[Case] = &[
     // ET de l'évaluateur LA. Adjugé vs GMP pur (96², 2026-07-15) : harmonic
     // WARN max_diff=11 div_ratio=0.00033 vs BLA max_diff=38 div_ratio=0.00043
     // — le path routé est PLUS PROCHE de la vérité que BLA sur ce cas.
+    // RÉGÉNÉRÉ 2026-11-06 : rayon de validité LA 2⁻²⁴ → 2⁻⁵³ (les sauts
+    // harmonic sur-permissifs laissaient des pixels faux indétectables).
+    // Adjugé vs GMP pur sur la frame entière (160×100) : ancien golden 11
+    // pixels ≠ GMP, nouveau 1 (7664 pour 7662) ; dd == GMP sur les 16000.
+    // RÉGÉNÉRÉ une seconde fois le même jour : traqueur de fiabilité sur le
+    // chemin harmonic (le pixel restant est flaggé puis corrigé en dd) →
+    // (141,12) 7664 → 7662 ; la frame entière == GMP pur (0 pixel ≠).
     // Régression du routage (cas plus routé → pixels BLA) = cette golden casse.
     Case {
         name: "mandelbrot_glitch_test_2_harmonic",

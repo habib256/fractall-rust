@@ -765,7 +765,7 @@ fn gradient_interpolate(g: Gradient, mut t: f64) -> (u8, u8, u8) {
         let b = w[1];
         if t >= a.position as f64 - eps && t < b.position as f64 + eps {
             let denom = (b.position - a.position) as f64;
-            let factor = if denom.abs() < std::f64::EPSILON {
+            let factor = if denom.abs() < f64::EPSILON {
                 0.0
             } else {
                 (t - a.position as f64) / denom
@@ -831,7 +831,7 @@ fn gradient_interpolate_hsb(g: Gradient, mut t: f64) -> (u8, u8, u8) {
         let b = w[1];
         if t >= a.position as f64 - eps && t < b.position as f64 + eps {
             let denom = (b.position - a.position) as f64;
-            let factor = if denom.abs() < std::f64::EPSILON {
+            let factor = if denom.abs() < f64::EPSILON {
                 0.0
             } else {
                 (t - a.position as f64) / denom
@@ -896,7 +896,7 @@ fn gradient_interpolate_lch(g: Gradient, mut t: f64) -> (u8, u8, u8) {
         let b = w[1];
         if t >= a.position as f64 - eps && t < b.position as f64 + eps {
             let denom = (b.position - a.position) as f64;
-            let factor = if denom.abs() < std::f64::EPSILON {
+            let factor = if denom.abs() < f64::EPSILON {
                 0.0
             } else {
                 (t - a.position as f64) / denom

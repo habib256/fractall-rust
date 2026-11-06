@@ -1,5 +1,6 @@
 use num_complex::Complex64;
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::fractal::bytecode::bla_dual::BlaTableUnified;
@@ -61,17 +62,34 @@ pub(crate) fn atom_hp_enabled() -> bool {
 //     autres attendent puis clonent l'`Arc` (un seul build, une seule table).
 //   - `BLA_UNIFIED_CACHE` (thread-local) : cache l'`Arc` pour que l'accès
 //     par-pixel reste lock-free (pas de lock global dans la hot-loop).
-// Clé d'invalidation : identité de l'orbite (ptr `z_ref_f64` + len) + type /
-// power / seuil BLA / tier dd.
+// Clé d'invalidation : identité de l'orbite (cf. `OrbitIdentity` : ptr + len +
+// EMPREINTE de contenu) + type / power / seuil BLA / tier dd + rayon `c_norm`.
+//
+// Le thread-local tient un `Rc` (poignée locale) autour de l'`Arc` partagé :
+// le clone par pixel est un incrément NON atomique dans la mémoire du thread.
+// Cloner l'`Arc` lui-même à chaque pixel faisait rebondir la ligne de cache du
+// compteur entre tous les workers (visible au profil sur les vues peu chères).
+type BlaEntryHandle = Rc<Arc<BlaUnifiedCacheEntry>>;
+
 thread_local! {
-    static BLA_UNIFIED_CACHE: RefCell<Option<Arc<BlaUnifiedCacheEntry>>> = const { RefCell::new(None) };
+    static BLA_UNIFIED_CACHE: RefCell<Option<BlaEntryHandle>> = const { RefCell::new(None) };
 }
 
 static GLOBAL_BLA: Mutex<Option<Arc<BlaUnifiedCacheEntry>>> = Mutex::new(None);
 
 struct BlaUnifiedCacheEntry {
-    orbit_ptr: usize,
-    orbit_len: usize,
+    orbit: OrbitIdentity,
+    /// Rayon de validité (max |δc| de la vue) avec lequel les tables ont été
+    /// bâties. Dans la clé : une orbite RÉUTILISÉE pour une vue plus large
+    /// (zoom arrière, redimensionnement) garderait sinon des rayons de merge
+    /// calculés pour un |δc| plus petit — sur-permissifs, donc over-skip.
+    c_norm: f64,
+    /// Empreinte de la formule hybride / à opcodes (0 = formule simple). Dans
+    /// la clé : `[M,M]` et `[M]` ont la MÊME orbite primaire, donc la même
+    /// identité d'orbite — sans cette empreinte un Mandelbrot nu pouvait
+    /// recevoir l'entrée (et la formule à deux phases) du rendu hybride
+    /// précédent.
+    formula_key: u64,
     fractal_type: FractalType,
     multibrot_power: f64,
     bla_threshold: f64,
@@ -96,15 +114,44 @@ struct BlaUnifiedCacheEntry {
 }
 
 impl BlaUnifiedCacheEntry {
-    /// Vrai si l'entrée correspond au render courant (même orbite + params BLA).
-    fn matches(&self, orbit_ptr: usize, orbit_len: usize, params: &FractalParams) -> bool {
-        self.orbit_ptr == orbit_ptr
-            && self.orbit_len == orbit_len
+    /// Vrai si l'entrée correspond au render courant (même orbite, même rayon
+    /// de vue, mêmes params BLA).
+    fn matches(&self, orbit: &OrbitIdentity, c_norm: f64, params: &FractalParams) -> bool {
+        self.orbit == *orbit
+            && self.c_norm.to_bits() == c_norm.to_bits()
+            && self.formula_key == hybrid_formula_key(params)
             && self.fractal_type == params.fractal_type
             && (self.multibrot_power - params.formula.multibrot_power).abs() <= 1e-12
             && (self.bla_threshold - params.perturbation.bla_threshold).abs() <= 1e-20
             && self.use_dd_tier == params.engine.use_dd_tier
     }
+}
+
+/// Empreinte de la formule hybride/opcodes des paramètres ; 0 pour une
+/// formule simple (deux tests d'`Option`, rien d'autre sur le chemin par
+/// pixel). FNV-1a sur le texte des opcodes ou la suite des types de phase.
+fn hybrid_formula_key(params: &FractalParams) -> u64 {
+    if !params.is_hybrid_formula() {
+        return 0;
+    }
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for &b in bytes {
+            h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    if let Some(text) = params.formula.hybrid_opcodes.as_deref() {
+        eat(b"opcodes:");
+        eat(text.as_bytes());
+    }
+    if let Some(phases) = params.formula.hybrid_phases.as_deref() {
+        eat(b"phases:");
+        for ty in phases {
+            eat(format!("{ty:?},").as_bytes());
+        }
+    }
+    eat(&params.formula.multibrot_power.to_bits().to_le_bytes());
+    h | 1
 }
 
 /// Rayon de validité BLA = max |δc| sur l'image (F3 `engine.cc:282` :
@@ -115,8 +162,17 @@ impl BlaUnifiedCacheEntry {
 /// hybride, jalon 5f), la grille de δc est étirée d'un facteur σ₁ ≥ 1 — sans
 /// lui, max |δc| est sous-estimé → rayons de merge sur-permissifs → over-skip
 /// BLA. σ₁ = 1 (rotation pure / pas de transform) → no-op bit-identique.
-fn bla_c_norm(params: &FractalParams) -> f64 {
-    let pixel_spacing = crate::fractal::perturbation::effective_pixel_size(params);
+pub(crate) fn bla_c_norm(params: &FractalParams) -> f64 {
+    bla_c_norm_for(
+        params,
+        crate::fractal::perturbation::effective_pixel_size(params),
+    )
+}
+
+/// [`bla_c_norm`] quand l'appelant tient déjà `effective_pixel_size(params)`
+/// (chemin par pixel : une seule évaluation au lieu de deux).
+#[inline]
+fn bla_c_norm_for(params: &FractalParams, pixel_spacing: f64) -> f64 {
     let diag_px = ((params.width as f64).powi(2) + (params.height as f64).powi(2)).sqrt();
     pixel_spacing * diag_px * params.transform_sigma1()
 }
@@ -128,8 +184,7 @@ fn build_bla_entry(
     params: &FractalParams,
     ref_orbit: &ReferenceOrbit,
     c_norm: f64,
-    orbit_ptr: usize,
-    orbit_len: usize,
+    orbit: OrbitIdentity,
     formula: &Formula,
 ) -> Option<Arc<BlaUnifiedCacheEntry>> {
     // Epsilon de validité BLA = précision machine du **type de coefficient**.
@@ -197,10 +252,10 @@ fn build_bla_entry(
     // peu profonds (seahorse/misiurewicz/minibrot) inchangés (leurs δ
     // relatifs restent au-dessus des rayons, avant comme après).
     let dd_table = if params.engine.use_dd_tier
-        && matches!(params.fractal_type, FractalType::Mandelbrot)
+        && crate::fractal::wisdom::dd_tier_applicable(params)
         && ref_orbit.has_dd()
     {
-        const DD_BLA_EPSILON: f64 = 8.271_806_125_530_277e-25; // 2^-80
+        use crate::fractal::bytecode::bla_dd::DD_BLA_EPSILON;
         Some(
             crate::fractal::bytecode::bla_dd::BlaTableDd::build_mandelbrot(
                 &ref_orbit.z_ref_dd,
@@ -314,8 +369,9 @@ fn build_bla_entry(
         None
     };
     Some(Arc::new(BlaUnifiedCacheEntry {
-        orbit_ptr,
-        orbit_len,
+        orbit,
+        c_norm,
+        formula_key: hybrid_formula_key(params),
         fractal_type: params.fractal_type,
         multibrot_power: params.formula.multibrot_power,
         bla_threshold: params.perturbation.bla_threshold,
@@ -341,41 +397,94 @@ fn build_bla_entry(
 /// (cf. `mod.rs::strip_orbit_arrays_for_compress` : prewarm AVANT le strip,
 /// lookups par-pixel APRÈS ; le buffer waypoints ne bouge pas tant que le
 /// `ReferenceOrbit` n'est pas cloné, garanti par le strip via `Arc::try_unwrap`).
-fn orbit_identity(ref_orbit: &ReferenceOrbit) -> (usize, usize) {
-    match ref_orbit.compressed_f64.as_ref() {
+fn orbit_identity(ref_orbit: &ReferenceOrbit) -> OrbitIdentity {
+    let (ptr, len) = match ref_orbit.compressed_f64.as_ref() {
         Some(c) if !c.waypoints.is_empty() => (c.waypoints.as_ptr() as usize, c.len as usize),
         _ => (
             ref_orbit.z_ref_f64.as_ptr() as usize,
             ref_orbit.z_ref_f64.len(),
         ),
+    };
+    // Empreinte de CONTENU, O(1) : l'adresse seule ne suffit pas — une orbite
+    // libérée puis une autre de même longueur réallouée au même endroit
+    // (rendus successifs sans cache : suite QA, keyframes vidéo au même
+    // centre, GUI après un changement de type) donnerait la table BLA de
+    // l'ANCIENNE orbite. Le centre + trois valeurs de l'orbite (début, milieu,
+    // fin : deux orbites distinctes divergent en fin de course) lèvent
+    // l'ambiguïté sans relire le tableau.
+    let z = &ref_orbit.z_ref_f64;
+    let mut fingerprint = ref_orbit.cref.re.to_bits().rotate_left(7)
+        ^ ref_orbit.cref.im.to_bits().rotate_left(29)
+        ^ ref_orbit.phase_offset as u64;
+    if !z.is_empty() {
+        for (k, idx) in [z.len() / 3, z.len() / 2, z.len() - 1].into_iter().enumerate() {
+            let v = z[idx];
+            fingerprint = fingerprint.rotate_left(13)
+                ^ v.re.to_bits().wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                ^ v.im.to_bits().rotate_left(17 + k as u32);
+        }
+    }
+    OrbitIdentity {
+        ptr,
+        len,
+        fingerprint,
     }
 }
 
+/// Identité d'une orbite pour la clé du cache BLA (cf. [`orbit_identity`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OrbitIdentity {
+    ptr: usize,
+    len: usize,
+    fingerprint: u64,
+}
+
+/// Chemin rapide par pixel : l'entrée du thread si elle correspond au render.
+#[inline]
+fn cached_bla_entry(
+    orbit: &OrbitIdentity,
+    c_norm: f64,
+    params: &FractalParams,
+) -> Option<BlaEntryHandle> {
+    BLA_UNIFIED_CACHE.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .filter(|e| e.matches(orbit, c_norm, params))
+            .cloned()
+    })
+}
+
+/// `formula` : `None` = la compiler ici, SEULEMENT si le thread-local manque
+/// (une fois par worker et par render) — le chemin par pixel n'alloue plus de
+/// `Formula` pour la jeter.
 fn get_or_build_bla_entry(
     params: &FractalParams,
     ref_orbit: &ReferenceOrbit,
     c_norm: f64,
-    formula: &Formula,
-) -> Option<Arc<BlaUnifiedCacheEntry>> {
-    let (orbit_ptr, orbit_len) = orbit_identity(ref_orbit);
+    formula: Option<&Formula>,
+) -> Option<BlaEntryHandle> {
+    let orbit = orbit_identity(ref_orbit);
 
     // 1. Chemin rapide thread-local.
-    if let Some(arc) = BLA_UNIFIED_CACHE.with(|cell| {
-        cell.borrow()
-            .as_ref()
-            .filter(|e| e.matches(orbit_ptr, orbit_len, params))
-            .cloned()
-    }) {
-        return Some(arc);
+    if let Some(handle) = cached_bla_entry(&orbit, c_norm, params) {
+        return Some(handle);
     }
 
     // 2. Cache global sous lock : le premier arrivé construit, les suivants
     //    clonent. Le lock reste tenu pendant le build → un seul build.
     let mut guard = GLOBAL_BLA.lock().unwrap_or_else(|p| p.into_inner());
     let arc = match guard.as_ref() {
-        Some(e) if e.matches(orbit_ptr, orbit_len, params) => e.clone(),
+        Some(e) if e.matches(&orbit, c_norm, params) => e.clone(),
         _ => {
-            let built = build_bla_entry(params, ref_orbit, c_norm, orbit_ptr, orbit_len, formula)?;
+            let compiled;
+            let formula = match formula {
+                Some(f) => f,
+                None => {
+                    compiled = crate::fractal::bytecode::formula_for_params(params)?;
+                    &compiled
+                }
+            };
+            let built = build_bla_entry(params, ref_orbit, c_norm, orbit, formula)?;
             *guard = Some(built.clone());
             built
         }
@@ -383,8 +492,9 @@ fn get_or_build_bla_entry(
     drop(guard);
 
     // 3. Peupler le thread-local pour les prochains pixels de ce worker.
-    BLA_UNIFIED_CACHE.with(|cell| *cell.borrow_mut() = Some(arc.clone()));
-    Some(arc)
+    let handle: BlaEntryHandle = Rc::new(arc);
+    BLA_UNIFIED_CACHE.with(|cell| *cell.borrow_mut() = Some(handle.clone()));
+    Some(handle)
 }
 
 /// Pré-construit (et met en cache global) la table BLA du render AVANT la boucle
@@ -417,7 +527,7 @@ pub fn prewarm_bla_entry(params: &FractalParams, ref_orbit: &ReferenceOrbit) {
     }
     // c_norm identique à `try_bytecode_unified_path` (rayon de validité BLA).
     let c_norm = bla_c_norm(params);
-    let _ = get_or_build_bla_entry(params, ref_orbit, c_norm, &formula);
+    let _ = get_or_build_bla_entry(params, ref_orbit, c_norm, Some(&formula));
 }
 
 /// Tente le path bytecode unifié si toutes les conditions sont remplies.
@@ -547,19 +657,37 @@ pub(crate) fn harmonic_entry_active(params: &FractalParams, orbit: &ReferenceOrb
     {
         return false;
     }
-    let (orbit_ptr, orbit_len) = orbit_identity(orbit);
+    let identity = orbit_identity(orbit);
+    let c_norm = bla_c_norm(params);
     GLOBAL_BLA
         .lock()
         .ok()
         .and_then(|g| {
             g.as_ref()
-                .filter(|e| e.matches(orbit_ptr, orbit_len, params))
+                .filter(|e| e.matches(&identity, c_norm, params))
                 .map(|e| e.harmonic.is_some())
         })
         .unwrap_or(false)
 }
 
 /// Epsilon de la table BLA FloatExp du tier exp (cf. son build) — 2⁻⁵³.
+/// Critère de DÉTERMINATION de l'évasion (complète l'emballement) : le compte
+/// d'itération n'est fixé par l'arithmétique que si `|z_final|` reste du MÊME
+/// côté du rayon d'évasion à la borne `E` près. Une borne qui n'a pas eu le
+/// temps de s'emballer (le pixel s'évade dès que E ~ |z|) passait sinon pour
+/// fiable : mesuré tier exp (wfs_mb 96², 2 pixels faux à borne 1..1e30).
+/// Renvoie `+∞` (non fiable) si `E ≥ ||z_final| − R|`, la borne sinon.
+#[inline]
+pub(crate) fn escape_undetermined(bound: f32, z_final: Complex64, bailout: f64) -> f32 {
+    let e = bound as f64;
+    let margin = (z_final.norm() - bailout).abs();
+    if e.is_finite() && e >= margin {
+        f32::INFINITY
+    } else {
+        bound
+    }
+}
+
 pub(crate) const EXP_BLA_EPSILON: f64 = 1.0 / (1u64 << 53) as f64;
 
 /// Epsilon de la table BLA f64 (miroir de `F64_BLA_EPSILON` du build) : erreur
@@ -575,14 +703,12 @@ fn try_bytecode_unified_path(
 ) -> Option<DeltaResult> {
     // Le path bytecode supporte désormais distance/interior/orbit_traps
     // en perturbation via ddelta tracking (cf. UnifiedOptions).
-    let formula = crate::fractal::bytecode::formula_for_params(params)?;
     // G4 jalon 3 : hybrides multi-phase en perturbation. La boucle multi-phase
     // (`iterate_pixel_unified_multi_phase`) est f64 pas-directs SANS BLA + rebase
     // → couvre le range f64 (pixel ≥ ~1e-13, zoom ≲ 1e13). En deep exp/dd
     // (pixel < 1e-13) elle sous-déborde → non supporté ici (fallback
     // StandardF64/GMP par le caller). Routage : gate dd/exp sur single-phase,
     // route le f64-branch multi-phase vers `iterate_pixel_unified_full`.
-    let multi_phase = formula.phases.len() > 1;
     // Dispatch selon pixel_size (cf. l'explication AUTORITATIVE au-dessus de
     // `PIXEL_SIZE_EXP_THRESHOLD`, delta.rs:89) :
     // - pixel_size >= 1e-13 : path f64 (Complex64, rapide ~6 ns/iter).
@@ -607,9 +733,20 @@ fn try_bytecode_unified_path(
     // (cf. `get_or_build_bla_entry`). Rayon de validité : cf. `bla_c_norm`
     // (max |δc| sur l'image × σ₁(K), et NON `|cref|`).
     let c_ref = ref_orbit.cref;
-    let c_norm = bla_c_norm(params);
+    let c_norm = bla_c_norm_for(params, pixel_size);
 
-    let entry = get_or_build_bla_entry(params, ref_orbit, c_norm, &formula)?;
+    // Formule : pour un type simple elle est une fonction PURE de (type,
+    // puissance), tous deux dans la clé de l'entrée → celle de l'entrée est la
+    // bonne et rien n'est compilé par pixel. Un hybride (phases/opcodes, hors
+    // clé) garde sa compilation fraîche, comme avant.
+    let hybrid_formula = if params.is_hybrid_formula() {
+        Some(crate::fractal::bytecode::formula_for_params(params)?)
+    } else {
+        None
+    };
+    let entry = get_or_build_bla_entry(params, ref_orbit, c_norm, hybrid_formula.as_ref())?;
+    let formula: &Formula = hybrid_formula.as_ref().unwrap_or(&entry.formula);
+    let multi_phase = formula.phases.len() > 1;
     let bla = &entry.tables[0];
 
     // Pour Julia : delta_init = pixel - cref (caller fournit delta0
@@ -638,14 +775,18 @@ fn try_bytecode_unified_path(
                 .copied()
                 .unwrap_or_else(|| ComplexDDExp::from_complex_exp(*dc));
             let delta0_dd = ComplexDDExp::from_complex_exp(*delta0);
-            let res_dd =
-                crate::fractal::bytecode::pixel_loop_dd::iterate_pixel_unified_ddexp_mandelbrot(
+            // Détecteur de fiabilité au niveau dd : borne emballée ⇒ le pixel
+            // repart en GMP par pixel (post de `render_perturbation_with_cache`).
+            let (res_dd, bound_dd) =
+                crate::fractal::bytecode::pixel_loop_dd::iterate_pixel_unified_ddexp_mandelbrot_tracked(
                     ref_orbit,
                     entry.dd_table.as_ref(),
                     dc_dd,
                     delta0_dd,
                     crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
+                    crate::fractal::bytecode::reliability::reliability_tracks_dd(),
                 );
+            error_bound = bound_dd;
             return Some(crate::fractal::bytecode::pixel_loop::UnifiedPixelResult {
                 iteration: res_dd.iteration,
                 z_final: res_dd.z_final,
@@ -689,16 +830,29 @@ fn try_bytecode_unified_path(
                     crate::fractal::bytecode::Op::Add
                 )
             {
-                let (res_exp, tracker) =
+                let limits = crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params);
+                // Boucle scaled tracée (défaut) : même résultat ET même borne.
+                let (res_exp, tracker) = if crate::fractal::bytecode::pixel_loop_scaled::scaled_enabled() {
+                    crate::fractal::bytecode::pixel_loop_scaled::iterate_pixel_scaled_exp_mandelbrot_tracked(
+                        ref_orbit,
+                        bla_exp,
+                        dc_for_add_exp,
+                        *delta0,
+                        limits,
+                        EXP_BLA_EPSILON,
+                    )
+                } else {
                     crate::fractal::bytecode::pixel_loop_exp::iterate_pixel_unified_exp_mandelbrot_hp_tracked(
                         ref_orbit,
                         bla_exp,
                         dc_for_add_exp,
                         *delta0,
-                        crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
+                        limits,
                         EXP_BLA_EPSILON,
-                    );
-                error_bound = tracker.error_bound();
+                    )
+                };
+                error_bound =
+                    escape_undetermined(tracker.error_bound(), res_exp.z_final, params.bailout);
                 return Some(crate::fractal::bytecode::pixel_loop::UnifiedPixelResult {
                     iteration: res_exp.iteration,
                     z_final: res_exp.z_final,
@@ -710,16 +864,33 @@ fn try_bytecode_unified_path(
                     ref_exhausted: res_exp.ref_exhausted,
                 });
             }
-            let res_exp = iterate_pixel_unified_exp(
-                ref_orbit,
-                bla,
-                bla_exp,
-                &entry.formula,
-                c_for_add,
-                dc_for_add_exp,
-                *delta0,
-                crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
-            );
+            // Même path HP Mandelbrot, δ en double mis à l'échelle
+            // (`pixel_loop_scaled`, résultat identique à l'octet sur le corpus ;
+            // défaut, `FRACTALL_EXP_SCALED=0` = boucle FloatExp).
+            let scaled = crate::fractal::bytecode::pixel_loop_scaled::scaled_enabled()
+                && !is_julia
+                && atom_hp_enabled()
+                && crate::fractal::bytecode::pixel_loop_scaled::is_plain_mandelbrot(&entry.formula);
+            let res_exp = if scaled {
+                crate::fractal::bytecode::pixel_loop_scaled::iterate_pixel_scaled_exp_mandelbrot(
+                    ref_orbit,
+                    bla_exp,
+                    dc_for_add_exp,
+                    *delta0,
+                    crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
+                )
+            } else {
+                iterate_pixel_unified_exp(
+                    ref_orbit,
+                    bla,
+                    bla_exp,
+                    &entry.formula,
+                    c_for_add,
+                    dc_for_add_exp,
+                    *delta0,
+                    crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
+                )
+            };
             // Conversion vers UnifiedPixelResult (même shape, juste typage).
             return Some(crate::fractal::bytecode::pixel_loop::UnifiedPixelResult {
                 iteration: res_exp.iteration,
@@ -761,7 +932,7 @@ fn try_bytecode_unified_path(
                     crate::fractal::bytecode::pixel_loop_exp::iterate_pixel_unified_exp_multi_phase(
                         ref_orbit,
                         &entry.tables,
-                        &formula,
+                        formula,
                         c_ref,
                         *dc,
                         *delta0,
@@ -784,7 +955,7 @@ fn try_bytecode_unified_path(
             let res = crate::fractal::bytecode::pixel_loop::iterate_pixel_unified_multi_phase(
                 ref_orbit,
                 &entry.tables,
-                &formula,
+                formula,
                 c_ref,
                 dc_approx,
                 delta_init,
@@ -826,6 +997,22 @@ fn try_bytecode_unified_path(
                 && !params.channels.enable_interior_detection
             {
                 debug_assert!(delta_init.norm_sqr() == 0.0, "Mandelbrot ⇒ delta0 = 0");
+                // Détecteur de fiabilité (G9.6) : même boucle monomorphisée
+                // avec traqueur ; un pixel à borne emballée rejoint
+                // l'escalade dd comme ceux du fast-path BLA.
+                if crate::fractal::bytecode::reliability::reliability_mode().tracks() {
+                    let (res, tracker) =
+                        crate::fractal::bytecode::harmonic_mla::iterate_pixel_harmonic_mla_tracked(
+                            ref_orbit,
+                            harmonic,
+                            dc_approx,
+                            params.iteration_max,
+                            params.bailout,
+                            params.perturbation.max_perturb_iterations,
+                        );
+                    error_bound = tracker.error_bound();
+                    return Some(res);
+                }
                 return Some(
                     crate::fractal::bytecode::harmonic_mla::iterate_pixel_harmonic_mla(
                         ref_orbit,
@@ -880,7 +1067,11 @@ fn try_bytecode_unified_path(
                     crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
                     F64_BLA_EPSILON_PIXEL,
                 );
-            error_bound = tracker.error_bound();
+            error_bound = if f64_escape_margin_enabled() {
+                escape_undetermined(tracker.error_bound(), res.z_final, params.bailout)
+            } else {
+                tracker.error_bound()
+            };
             return Some(res);
         }
 
@@ -941,6 +1132,17 @@ fn try_bytecode_unified_path(
         phase_changed: false,
         smooth_iteration,
     })
+}
+
+/// Opt-in `FRACTALL_F64_MARGIN` (test de détermination à l'évasion au tier
+/// f64), lu UNE fois. ⚠️ Ce site est sur le chemin par pixel : lue à chaque
+/// pixel, la variable d'environnement coûtait ~250 ns/pixel (verrou global de
+/// l'environnement, contention entre workers) — test5 256² : phase pixels
+/// 1 ms → 17 ms, flake 5 → 28 ms.
+#[inline]
+fn f64_escape_margin_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("FRACTALL_F64_MARGIN").is_some())
 }
 
 fn rebase_stride() -> u32 {
@@ -2861,6 +3063,21 @@ mod tests {
     use crate::fractal::definitions::default_params_for_type;
     use crate::fractal::{FractalParams, FractalType};
 
+    /// Une borne qui chevauche le rayon d'évasion rend le compte INDÉTERMINÉ,
+    /// même loin de l'emballement (wfs_mb exp : 2 pixels faux à borne finie).
+    #[test]
+    fn escape_undetermined_when_bound_straddles_bailout() {
+        let r = 25.0;
+        // évadé de justesse : |z| = 26, borne 2 ⇒ indéterminé
+        assert!(escape_undetermined(2.0, Complex64::new(26.0, 0.0), r).is_infinite());
+        // évadé franchement : borne 0,5 < 1 ⇒ conservée
+        assert_eq!(escape_undetermined(0.5, Complex64::new(26.0, 0.0), r), 0.5);
+        // non évadé mais tout près : |z| = 24,8, borne 0,5 ⇒ indéterminé
+        assert!(escape_undetermined(0.5, Complex64::new(24.8, 0.0), r).is_infinite());
+        // borne déjà infinie : inchangée
+        assert!(escape_undetermined(f32::INFINITY, Complex64::new(100.0, 0.0), r).is_infinite());
+    }
+
     #[test]
     fn diffabs_stable_computation() {
         // When c >= 0 and c + d >= 0: result = d
@@ -2943,10 +3160,66 @@ mod tests {
         let pixel_size = crate::fractal::perturbation::effective_pixel_size(params);
         let diag_px = ((params.width as f64).powi(2) + (params.height as f64).powi(2)).sqrt();
         let c_norm = pixel_size * diag_px;
-        let ptr = cache.orbit.z_ref_f64.as_ptr() as usize;
-        let len = cache.orbit.z_ref_f64.len();
         // Appel DIRECT (pas via le cache global) → pas d'interférence entre tests.
-        build_bla_entry(params, &cache.orbit, c_norm, ptr, len, &formula).expect("entrée BLA")
+        build_bla_entry(
+            params,
+            &cache.orbit,
+            c_norm,
+            super::orbit_identity(&cache.orbit),
+            &formula,
+        )
+        .expect("entrée BLA")
+    }
+
+    /// Verrou de la clé du cache BLA : l'ADRESSE de l'orbite ne suffit pas.
+    /// (1) Même adresse, même longueur, contenu différent — une orbite libérée
+    /// puis une autre réallouée au même endroit — ne doit PAS retrouver la
+    /// table de l'ancienne. (2) Même orbite, vue plus large (`c_norm` plus
+    /// grand) : les rayons de merge bâtis pour l'ancien |δc| seraient
+    /// sur-permissifs → l'entrée ne correspond plus.
+    #[test]
+    fn bla_cache_key_follows_orbit_content_and_view_radius() {
+        let mut params = default_params_for_type(FractalType::Mandelbrot, 64, 64);
+        params.center_x = -0.75;
+        params.center_y = 0.1;
+        params.span_x = 1e-6;
+        params.span_y = 1e-6;
+        params.iteration_max = 400;
+        params.engine.algorithm_mode = crate::fractal::AlgorithmMode::Perturbation;
+        let mut cache = crate::fractal::perturbation::orbit::compute_reference_orbit_cached(
+            &params, None, None, None, false,
+        )
+        .expect("orbite référence");
+        let formula = crate::fractal::bytecode::formula_for_params(&params).expect("formule");
+        let c_norm = super::bla_c_norm(&params);
+        let id = super::orbit_identity(&cache.orbit);
+        let entry =
+            build_bla_entry(&params, &cache.orbit, c_norm, id, &formula).expect("entrée BLA");
+        assert!(entry.matches(&id, c_norm, &params));
+
+        // (2) vue élargie sur la même orbite.
+        assert!(!entry.matches(&id, c_norm * 1.05, &params));
+
+        // (3) même orbite primaire, formule hybride : `[M,M]` ne doit pas
+        // retrouver l'entrée de `[M]` (ni l'inverse).
+        let mut hybrid = params.clone();
+        hybrid.formula.hybrid_phases =
+            Some(vec![FractalType::Mandelbrot, FractalType::Mandelbrot]);
+        assert!(!entry.matches(&id, c_norm, &hybrid));
+        let mut opcodes = params.clone();
+        opcodes.formula.hybrid_opcodes = Some("sqr rot{30} add".to_owned());
+        assert!(!entry.matches(&id, c_norm, &opcodes));
+        assert_ne!(super::hybrid_formula_key(&hybrid), super::hybrid_formula_key(&opcodes));
+        assert_eq!(super::hybrid_formula_key(&params), 0);
+
+        // (1) même tampon (ptr + len inchangés), dernière valeur modifiée.
+        let orbit = std::sync::Arc::get_mut(&mut cache).expect("cache non partagé");
+        let last = orbit.orbit.z_ref_f64.len() - 1;
+        orbit.orbit.z_ref_f64[last].re += 1e-9;
+        let id_aba = super::orbit_identity(&orbit.orbit);
+        assert_eq!((id.ptr, id.len), (id_aba.ptr, id_aba.len), "même tampon");
+        assert_ne!(id, id_aba, "l'empreinte de contenu doit distinguer");
+        assert!(!entry.matches(&id_aba, c_norm, &params));
     }
 
     #[test]

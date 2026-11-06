@@ -53,11 +53,22 @@ use std::sync::OnceLock;
 use num_complex::Complex64;
 
 use super::pixel_loop::UnifiedPixelResult;
+use super::reliability::{NoObserve, ShadowTracker, StepObserver};
 use crate::fractal::perturbation::compress::chebyshev_norm;
 use crate::fractal::perturbation::orbit::ReferenceOrbit;
 
-/// `LAStep::ValidRadiusScale` (HarmonicMLA.h:17) : marge de validité 2⁻²⁴.
-const VALID_RADIUS_SCALE: f64 = 1.0 / 16_777_216.0; // 2^-24, exact
+/// `LAStep::ValidRadiusScale` : marge de validité **2⁻⁵³** (u f64), PAS les
+/// 2⁻²⁴ d'Imagina (HarmonicMLA.h:17).
+///
+/// ⚠️ ÉCART VOLONTAIRE vs Imagina, payé par une mesure : à 2⁻²⁴ le terme
+/// abandonné par chaque pas linéarisé vaut jusqu'à 2⁻²⁴ du terme gardé — 2²⁹
+/// fois l'arrondi f64 — et ce chemin n'a PAS de traqueur de fiabilité (aucune
+/// escalade possible). Jugé contre le tier dd (lui-même == GMP pur, vérifié
+/// pixel par pixel sur leaded_glass), le routage harmonic AUTO rendait des
+/// pixels faux à 256² : leaded_glass 227, all_seeing_eye 56, glitch_test_2 33,
+/// peanuts 13 — 0 / 0 / 1 / 0 à 2⁻⁵³ (le chemin BLA, lui, en a 0). Même
+/// classe que l'ε BLA du tier exp (2⁻²⁴ → 2⁻⁵³, `EXP_BLA_EPSILON`).
+const VALID_RADIUS_SCALE: f64 = 1.0 / 9_007_199_254_740_992.0; // 2^-53, exact
 
 /// `PeriodDetectionThreshold` (HarmonicMLA.h:83) : période détectée quand le
 /// min courant de cheb|Z| chute sous `prevMin · 2⁻⁴`. (Variante MLA.)
@@ -662,6 +673,113 @@ pub fn iterate_pixel_harmonic_mla(
     bailout: f64,
     max_perturb_iterations: u32,
 ) -> UnifiedPixelResult {
+    iterate_pixel_harmonic_mla_impl(
+        ref_orbit,
+        table,
+        dc,
+        iteration_max,
+        bailout,
+        max_perturb_iterations,
+        &mut NoObserve,
+    )
+}
+
+/// Variante avec **détecteur de fiabilité** (G9.6) : MÊME boucle
+/// monomorphisée avec un [`ShadowTracker`] (résultat bit-identique), plus la
+/// borne d'erreur finale (test d'emballement → escalade dd, comme le
+/// fast-path BLA). Modèle : premier pas quadratique exact d'un segment = pas
+/// direct ; partie linéarisée = saut de `length` pas à troncature
+/// `length·ε` (ε = rayon de validité LA, [`VALID_RADIUS_SCALE`]) ; rebases
+/// d'étage et de queue = rebase.
+///
+/// ⚠️ Sans lui, le chemin harmonic était le seul chemin f64 Mandelbrot sans
+/// garde-fou : forcé sur les scènes où le f64 ne suffit pas, il rendait des
+/// pixels faux SANS les signaler (golden_spider 1689 px, rug 412, e50 179 à
+/// 256² vs tier dd).
+pub fn iterate_pixel_harmonic_mla_tracked(
+    ref_orbit: &ReferenceOrbit,
+    table: &HarmonicMlaTable,
+    dc: Complex64,
+    iteration_max: u32,
+    bailout: f64,
+    max_perturb_iterations: u32,
+) -> (UnifiedPixelResult, ShadowTracker) {
+    let mut tracker = ShadowTracker::new(dc, VALID_RADIUS_SCALE);
+    let res = iterate_pixel_harmonic_mla_impl(
+        ref_orbit,
+        table,
+        dc,
+        iteration_max,
+        bailout,
+        max_perturb_iterations,
+        &mut tracker,
+    );
+    (res, tracker)
+}
+
+/// Hooks du traqueur sur la boucle harmonic : pas direct et rebase = ceux du
+/// [`StepObserver`] f64 ; saut LA conforme via `la_jump` (|A| par `hypot`,
+/// cf. [`ShadowTracker::la_jump`]). [`NoObserve`] = hooks vides (boucle de
+/// production inchangée).
+trait HarmonicObserver: Copy {
+    fn direct(&mut self, z_norm_sqr: f64, two_zm_delta: Complex64, delta_norm_sqr: f64);
+    fn la_jump(&mut self, a: Complex64, a_delta: Complex64, b_dc: Complex64, l: u32);
+    fn rebase(&mut self, z_ref: Complex64, z_new: Complex64);
+}
+
+impl HarmonicObserver for NoObserve {
+    #[inline(always)]
+    fn direct(&mut self, _: f64, _: Complex64, _: f64) {}
+    #[inline(always)]
+    fn la_jump(&mut self, _: Complex64, _: Complex64, _: Complex64, _: u32) {}
+    #[inline(always)]
+    fn rebase(&mut self, _: Complex64, _: Complex64) {}
+}
+
+impl HarmonicObserver for ShadowTracker {
+    #[inline(always)]
+    fn direct(&mut self, z_norm_sqr: f64, two_zm_delta: Complex64, delta_norm_sqr: f64) {
+        StepObserver::direct(self, z_norm_sqr, two_zm_delta, delta_norm_sqr);
+    }
+    #[inline(always)]
+    fn la_jump(&mut self, a: Complex64, a_delta: Complex64, b_dc: Complex64, l: u32) {
+        ShadowTracker::la_jump(self, a.re.hypot(a.im), a_delta, b_dc, l);
+    }
+    #[inline(always)]
+    fn rebase(&mut self, z_ref: Complex64, z_new: Complex64) {
+        StepObserver::rebase(self, z_ref, z_new);
+    }
+}
+
+/// Copie locale de l'observateur, réécrite au drop (gardée en registre ;
+/// derrière `&mut` le traqueur coûtait ×3 sur le fast-path).
+struct ObsGuard<'a, O: HarmonicObserver> {
+    local: O,
+    out: &'a mut O,
+}
+
+impl<O: HarmonicObserver> Drop for ObsGuard<'_, O> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        *self.out = self.local;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn iterate_pixel_harmonic_mla_impl<O: HarmonicObserver>(
+    ref_orbit: &ReferenceOrbit,
+    table: &HarmonicMlaTable,
+    dc: Complex64,
+    iteration_max: u32,
+    bailout: f64,
+    max_perturb_iterations: u32,
+    obs_out: &mut O,
+) -> UnifiedPixelResult {
+    let mut obs_guard = ObsGuard {
+        local: *obs_out,
+        out: obs_out,
+    };
+    let obs = &mut obs_guard.local;
     let bailout_sqr = bailout * bailout;
     let reference = &ref_orbit.z_ref_f64;
     let ref_len = reference.len();
@@ -751,6 +869,11 @@ pub fn iterate_pixel_harmonic_mla(
                     break;
                 }
 
+                // Traqueur : premier pas quadratique exact (pas direct depuis
+                // z = Z+δ) puis partie linéarisée (saut de `length` pas).
+                obs.direct(z.norm_sqr(), 2.0 * step.z * dz, dz.norm_sqr());
+                obs.la_jump(step.a, new_dz * step.a, dc * step.b, step.length);
+                let z_land_ref = table.steps[j + 1].z;
                 dz = cand_dz;
                 i += step.length;
                 j += 1;
@@ -760,6 +883,7 @@ pub fn iterate_pixel_harmonic_mla(
                 // Rebase d'étage (mirror) : fin d'étage OU |z| < |δ|
                 // (chebyshev).
                 if j == end || chebyshev_norm(z) < chebyshev_norm(dz) {
+                    obs.rebase(z_land_ref, z);
                     j = begin;
                     dz = z;
                     rebase_count += 1;
@@ -821,6 +945,7 @@ pub fn iterate_pixel_harmonic_mla(
 
             // Pas direct : δ' = δ·(Z[m]+z) + dc (forme factorisée Imagina de
             // 2·Z·δ + δ² + dc, avec z = Z[m]+δ).
+            obs.direct(z_abs.norm_sqr(), 2.0 * z_m * dz, dz.norm_sqr());
             dz = dz * (z_m + z_abs) + dc;
             i += 1;
             m += 1;
@@ -848,6 +973,7 @@ pub fn iterate_pixel_harmonic_mla(
                 if ref_orbit.atom_truncated {
                     // Rebase-at-end F3 (`hybrid.cc:301`) : δ := Z[end]+δ,
                     // m := 0 — puis ré-ascension (écart #4) si armée.
+                    obs.rebase(z_after, z_after + dz);
                     dz = z_after + dz;
                     rebase_count += 1;
                     if reascend {
@@ -872,6 +998,7 @@ pub fn iterate_pixel_harmonic_mla(
                 if z_curr_norm_sqr < dz.norm_sqr() {
                     // Rebase F3 strict : |Z+δ|² < |δ|² → δ := Z+δ, m := 0 —
                     // puis ré-ascension (écart #4) si armée.
+                    obs.rebase(z_after, z_curr);
                     dz = z_curr;
                     rebase_count += 1;
                     if reascend {
@@ -1177,5 +1304,99 @@ mod tests {
             mismatches <= 1,
             "≥ 99 % attendu : {mismatches}/{total} divergents (max diff {max_diff})"
         );
+    }
+
+    /// VERROU du rayon de validité 2⁻⁵³ : vue glitch_test_2 (1.5e115, 160×100,
+    /// période atom ~35 → routée harmonic par défaut). À 2⁻²⁴ (Imagina) ces
+    /// pixels sortaient faux (7688 / 7743 / 7632 / 8074) ; les valeurs
+    /// attendues sont la VÉRITÉ (GMP pur par pixel pour (37,13) et (16,57),
+    /// tier dd — lui-même == GMP — pour les autres), égales au chemin BLA.
+    #[test]
+    fn lla_valid_radius_matches_gmp_truth_glitch_test_2() {
+        use rug::Float;
+        let toml = std::fs::read_to_string("toml/glitch_test_2.toml").expect("toml");
+        let field = |k: &str| -> String {
+            let line = toml
+                .lines()
+                .find(|l| l.trim_start().starts_with(k))
+                .expect("champ toml");
+            line.split('=').nth(1).unwrap().trim().trim_matches('"').to_string()
+        };
+        let (width, height) = (160u32, 100u32);
+        let iter_max: u32 = field("iterations").parse().unwrap();
+        let zoom = Float::with_val(1024, Float::parse(field("zoom")).unwrap());
+        let span_x = Float::with_val(1024, 4.0) / &zoom;
+        let span_y = Float::with_val(1024, &span_x * height) / width;
+
+        let mut params = default_params_for_type(FractalType::Mandelbrot, width, height);
+        params.center_x_hp = Some(field("real"));
+        params.center_y_hp = Some(field("imag"));
+        params.center_x = params.center_x_hp.as_ref().unwrap().parse().unwrap();
+        params.center_y = params.center_y_hp.as_ref().unwrap().parse().unwrap();
+        params.span_x_hp = Some(span_x.to_string_radix(10, None));
+        params.span_y_hp = Some(span_y.to_string_radix(10, None));
+        params.span_x = span_x.to_f64();
+        params.span_y = span_y.to_f64();
+        params.iteration_max = iter_max;
+        params.engine.algorithm_mode = AlgorithmMode::Perturbation;
+        params.engine.precision_bits = 512;
+        let (orbit, _, _) =
+            compute_reference_orbit(&params, None, false).expect("compute_reference_orbit");
+        let table = build_harmonic_lla_table(&orbit.z_ref_f64).expect("table Harmonic LLA");
+
+        // (i, j, vérité)
+        let cases = [(37u32, 13u32, 7673u32), (16, 57, 7784), (42, 1, 7631), (44, 67, 8083)];
+        let mut wrong = Vec::new();
+        for &(i, j, truth) in &cases {
+            let dc = Complex64::new(
+                params.span_x * ((i as f64 + 0.5) / width as f64 - 0.5),
+                params.span_y * ((j as f64 + 0.5) / height as f64 - 0.5),
+            );
+            let r = iterate_pixel_harmonic_mla(&orbit, &table, dc, iter_max, 25.0, 0);
+            if r.iteration != truth {
+                wrong.push((i, j, r.iteration, truth));
+            }
+        }
+        assert!(wrong.is_empty(), "pixels harmonic faux (i, j, rendu, vérité) : {wrong:?}");
+    }
+
+    /// VERROU du détecteur de fiabilité harmonic : la variante tracée est
+    /// BIT-IDENTIQUE à la boucle de production (observateur nul), et le
+    /// traqueur produit une borne finie non nulle (il est bien branché).
+    #[test]
+    fn tracked_harmonic_is_bit_identical_and_bounded() {
+        let width = 160u32;
+        let height = 100u32;
+        let iter_max = 1500u32;
+        let span_x = 4.0 / 1e6;
+        let span_y = span_x * height as f64 / width as f64;
+        let mut params = default_params_for_type(FractalType::Mandelbrot, width, height);
+        params.center_x = -1.7693831791955;
+        params.center_y = 0.004236847918736;
+        params.span_x = span_x;
+        params.span_y = span_y;
+        params.iteration_max = iter_max;
+        params.engine.algorithm_mode = AlgorithmMode::Perturbation;
+        let (orbit, _, _) =
+            compute_reference_orbit(&params, None, true).expect("compute_reference_orbit");
+        let table = build_harmonic_lla_table(&orbit.z_ref_f64).expect("table Harmonic LLA");
+        let mut tracked_any = false;
+        for k in 0..400u32 {
+            let fx = (k % 20) as f64 / 19.0 - 0.5;
+            let fy = (k / 20) as f64 / 19.0 - 0.5;
+            let dc = Complex64::new(fx * span_x, fy * span_y);
+            let plain = iterate_pixel_harmonic_mla(&orbit, &table, dc, iter_max, 25.0, 0);
+            let (tracked, tr) =
+                iterate_pixel_harmonic_mla_tracked(&orbit, &table, dc, iter_max, 25.0, 0);
+            assert_eq!(plain.iteration, tracked.iteration, "k={k}");
+            assert_eq!(plain.z_final.re.to_bits(), tracked.z_final.re.to_bits(), "k={k}");
+            assert_eq!(plain.z_final.im.to_bits(), tracked.z_final.im.to_bits(), "k={k}");
+            assert_eq!(plain.rebase_count, tracked.rebase_count);
+            assert_eq!(plain.bla_steps, tracked.bla_steps);
+            if tr.err > 0.0 && tr.err.is_finite() {
+                tracked_any = true;
+            }
+        }
+        assert!(tracked_any, "traqueur jamais alimenté");
     }
 }

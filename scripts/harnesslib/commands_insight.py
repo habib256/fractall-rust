@@ -12,10 +12,13 @@ from pathlib import Path
 
 from .config import (
     CLI, CRASH_JOURNAL, HISTORY_DIR, INFLIGHT, QUALITY, REPO,
-    baseline_path_for, find_f3, git_dirty, git_sha, load_baseline, machine_info,
+    baseline_path_for, f3_unlaunchable, find_f3, git_dirty, git_sha, load_baseline, machine_info,
+    mem_total_mb,
 )
 from .gaps import _same_machine
-from .guard import default_mem_limit_mb, load_quarantine, load_slow_safe
+from .guard import (
+    default_mem_limit_mb, load_quarantine, load_slow_safe, mem_cap_supported,
+)
 from .scorecard import _fmt, load_history, trend_table
 
 OK, WARN, FAIL, INFO = "✅", "⚠️ ", "❌", "·"
@@ -38,13 +41,8 @@ def _wisdom_file() -> Path | None:
 
 
 def _mem_total_gb() -> float | None:
-    try:
-        for line in Path("/proc/meminfo").read_text().splitlines():
-            if line.startswith("MemTotal:"):
-                return round(int(line.split()[1]) / 1024 / 1024, 1)
-    except Exception:
-        return None
-    return None
+    mb = mem_total_mb()
+    return round(mb / 1024, 1) if mb else None
 
 
 def doctor_report() -> dict:
@@ -54,7 +52,9 @@ def doctor_report() -> dict:
     mi = machine_info()
     checks.append((INFO, "machine", f"{mi['cpu']} · {mi['nproc']} threads · "
                    f"{_mem_total_gb() or '?'} GB RAM · {mi['os']} · cap mémoire "
-                   f"défaut {default_mem_limit_mb()} MB"))
+                   + (f"défaut {default_mem_limit_mb()} MB"
+                      if mem_cap_supported()
+                      else "non applicable (RLIMIT_AS Linux seulement)")))
     checks.append((INFO, "git", f"{git_sha()}" + (" (dirty)" if git_dirty() else "")))
     py_ok = sys.version_info >= (3, 11)
     checks.append((OK if py_ok else WARN, "python",
@@ -66,9 +66,17 @@ def doctor_report() -> dict:
                        str(path.relative_to(REPO)) if path.exists()
                        else "non bâti — `cargo build --release` (score le fait sauf --no-rebuild)"))
     f3 = find_f3()
+    broken = None if f3 else f3_unlaunchable()
+    if broken:
+        f3_detail = (f"{broken[0].name} présent mais NON lançable — "
+                     f"{len(broken[1])} dylib(s) absente(s) (ex. "
+                     f"{Path(broken[1][0]).name}) → axes speed(ratio)/parity "
+                     "éteints ; `brew install openexr imath` ou rebâtir F3")
+    else:
+        f3_detail = ("absent → axes speed(ratio)/parity éteints ; "
+                     "build : bash scripts/build_f3_linux.sh (ou F3_BIN=…)")
     checks.append((OK if f3 else WARN, "Fraktaler-3",
-                   str(f3) if f3 else "absent → axes speed(ratio)/parity éteints ; "
-                   "build : bash scripts/build_f3_linux.sh (ou F3_BIN=…)"))
+                   str(f3) if f3 else f3_detail))
     deps = {m: _importable(m) for m in ("numpy", "OpenEXR", "PIL")}
     missing = [m for m, ok in deps.items() if not ok]
     checks.append((OK if not missing else WARN, "deps Python EXR (parité)",
@@ -127,7 +135,12 @@ def doctor_report() -> dict:
     }
     rec = ["python3 scripts/harness.py score --tier quick"]
     if not f3:
-        rec.append("bash scripts/build_f3_linux.sh      # rallume speed-ratio + parity")
+        rec.append(("brew install openexr imath       # dylibs du F3 macOS versionné"
+                    if broken else
+                    "cd fraktaler-3-3.1 && make SYSTEM=macos-batch"
+                    if sys.platform == "darwin" else
+                    "bash scripts/build_f3_linux.sh")
+                   + "      # rallume speed-ratio + parity")
     if missing:
         rec.append("pip3 install numpy OpenEXR Pillow   # parité + adjudicate")
     if not base or not _same_machine({"meta": {"machine": mi}}, base):

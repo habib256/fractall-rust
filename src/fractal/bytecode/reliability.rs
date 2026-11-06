@@ -61,9 +61,9 @@ pub trait StepObserver: Copy {
     #[inline(always)]
     fn direct(&mut self, _z_norm_sqr: f64, _two_zm_delta: Complex64, _delta_norm_sqr: f64) {}
 
-    /// Saut BLA accepté : `delta_new = A·δ_old + B·dc`.
+    /// Saut BLA accepté de `l` itérations : `delta_new = A·δ_old + B·dc`.
     #[inline(always)]
-    fn bla(&mut self, _a: &Mat2, _b: &Mat2, _a_delta: Complex64, _b_dc: Complex64) {}
+    fn bla(&mut self, _a: &Mat2, _b: &Mat2, _a_delta: Complex64, _b_dc: Complex64, _l: u32) {}
 
     /// Rebase `δ ← Z + δ` : `z_ref` = la valeur f64 de la référence absorbée,
     /// `z_new` = nouvel état (== nouveau δ).
@@ -121,15 +121,33 @@ fn l1(z: Complex64) -> f64 {
 /// Cas CONFORME (Mandelbrot : `A` représente un complexe `a`, m00 = m11 et
 /// m01 = −m10) : `σ₁ = |a|`, une seule racine au lieu de deux — le hook BLA
 /// est sur le chemin chaud des scènes à longs sauts (e50).
+///
+/// ⚠️ Débordement : un long saut a `|A| = ∏|2Z|` qui dépasse 1e154 dès les
+/// zooms ~1e150 ; `m00² + m10²` valait alors +∞ et la borne avec — le pixel
+/// était flaggé quelle que soit son erreur réelle (faux positif payé d'une
+/// correction dd). Le carré n'est pris que s'il reste fini ; sinon `hypot`
+/// (conforme) ou une mise à l'échelle par le plus grand coefficient.
 #[inline]
 fn spectral_norm(m: &Mat2) -> f64 {
     if m.m00 == m.m11 && m.m01 == -m.m10 {
-        return (m.m00 * m.m00 + m.m10 * m.m10).sqrt();
+        let s = m.m00 * m.m00 + m.m10 * m.m10;
+        // Chemin chaud : une racine. `hypot` seulement hors plage (carré
+        // infini, ou sous-normal → précision perdue).
+        return if s.is_finite() && s >= f64::MIN_POSITIVE {
+            s.sqrt()
+        } else {
+            m.m00.hypot(m.m10)
+        };
     }
-    let f2 = m.m00 * m.m00 + m.m01 * m.m01 + m.m10 * m.m10 + m.m11 * m.m11;
-    let det = m.m00 * m.m11 - m.m01 * m.m10;
+    let scale = m.m00.abs().max(m.m01.abs()).max(m.m10.abs()).max(m.m11.abs());
+    if !(scale > 0.0) || !scale.is_finite() {
+        return scale;
+    }
+    let (a, b, c, d) = (m.m00 / scale, m.m01 / scale, m.m10 / scale, m.m11 / scale);
+    let f2 = a * a + b * b + c * c + d * d;
+    let det = a * d - b * c;
     let disc = (f2 * f2 - 4.0 * det * det).max(0.0);
-    ((f2 + disc.sqrt()) * 0.5).sqrt()
+    scale * ((f2 + disc.sqrt()) * 0.5).sqrt()
 }
 
 impl StepObserver for ShadowTracker {
@@ -146,15 +164,30 @@ impl StepObserver for ShadowTracker {
     }
 
     #[inline(always)]
-    fn bla(&mut self, a: &Mat2, b: &Mat2, a_delta: Complex64, b_dc: Complex64) {
+    fn bla(&mut self, a: &Mat2, b: &Mat2, a_delta: Complex64, b_dc: Complex64, l: u32) {
         let _ = b;
-        let local = (self.bla_epsilon + GAMMA) * (l1(a_delta) + l1(b_dc));
+        // Troncature cumulée des `l` pas fusionnés (≈ l·ε), cf. le traqueur exp.
+        let local = (self.bla_epsilon * l as f64 + GAMMA) * (l1(a_delta) + l1(b_dc));
         self.err = spectral_norm(a) * self.err + local;
     }
 
     #[inline(always)]
     fn rebase(&mut self, z_ref: Complex64, z_new: Complex64) {
         self.err += U * (l1(z_ref) + l1(z_new));
+    }
+}
+
+impl ShadowTracker {
+    /// Saut LA CONFORME de `l` pas (chemin Harmonic LA : `A` complexe) :
+    /// même modèle que le hook `bla` (troncature `l·ε`), mais `σ₁(A) = |A|`
+    /// est passé par l'appelant, calculé SANS carré (`hypot`). Les segments
+    /// harmonic sont longs : à zoom > 1e150 `|A|` dépasse 1e154 et
+    /// `spectral_norm` (m00² + m10²) déborde à +∞ — mesuré mitosis 1e270 :
+    /// 100 % des pixels flaggés (borne infinie) au lieu de 0.
+    #[inline(always)]
+    pub fn la_jump(&mut self, a_abs: f64, a_delta: Complex64, b_dc: Complex64, l: u32) {
+        let local = (self.bla_epsilon * l as f64 + GAMMA) * (l1(a_delta) + l1(b_dc));
+        self.err = a_abs * self.err + local;
     }
 }
 
@@ -175,10 +208,19 @@ pub trait StepObserverExp: Copy {
     /// Pas direct : `z` = `Z[m] + δ_old`, `two_z_delta` = `2·Z[m]·δ_old`.
     #[inline(always)]
     fn direct(&mut self, _z: ComplexExp, _two_z_delta: ComplexExp, _delta_old: ComplexExp) {}
-    /// Saut BLA accepté `δ' = A·δ + B·dc` (matrices et opérandes bruts : la
-    /// boucle de production ne calcule rien de plus pour l'observateur nul).
+    /// Saut BLA accepté `δ' = A·δ + B·dc` de `l` itérations (matrices et
+    /// opérandes bruts : la boucle de production ne calcule rien de plus pour
+    /// l'observateur nul).
     #[inline(always)]
-    fn bla(&mut self, _a: &Mat2Exp, _b: &Mat2Exp, _delta_old: ComplexExp, _dc: ComplexExp) {}
+    fn bla(
+        &mut self,
+        _a: &Mat2Exp,
+        _b: &Mat2Exp,
+        _delta_old: ComplexExp,
+        _dc: ComplexExp,
+        _l: u32,
+    ) {
+    }
     /// Rebase `δ ← Z + δ`.
     #[inline(always)]
     fn rebase(&mut self, _z_ref: ComplexExp, _z_new: ComplexExp) {}
@@ -220,16 +262,42 @@ impl ShadowTrackerExp {
     }
 }
 
+/// Plafond de l'exposant (base 2) de la borne exp : bien au-delà de
+/// l'emballement (1e30 ≈ 2¹⁰⁰), bien en deçà du débordement `i32`.
+///
+/// ⚠️ Sans ce plafond la borne emballée REVENAIT à « fiable » : dans le
+/// régime emballé le terme `E²` double l'exposant de `E` à chaque pas
+/// (`FloatExp::sqr` = `exponent * 2`) ; ~22 pas après 1e196 l'exposant `i32`
+/// déborde, s'enroule (arithmétique enveloppante en release) et la borne
+/// retombe à ~1e-14. Mesuré olbaid2 96² : 7/9 pixels faux (jusqu'à 531
+/// itérations d'écart vs GMP) avaient une borne emballée puis effondrée.
+const EXP_ERR_CAP: i32 = 1 << 16;
+
+impl ShadowTrackerExp {
+    /// Borne emballée = COLLANTE : plafonnée à 2^EXP_ERR_CAP, elle reste
+    /// au-dessus de tout seuil d'emballement jusqu'à la fin du pixel.
+    #[inline(always)]
+    fn saturate(&mut self) {
+        if self.err.exponent > EXP_ERR_CAP {
+            self.err = FloatExp {
+                mantissa: 0.5,
+                exponent: EXP_ERR_CAP,
+            };
+        }
+    }
+}
+
 impl StepObserverExp for ShadowTrackerExp {
     #[inline(always)]
     fn direct(&mut self, z: ComplexExp, two_z_delta: ComplexExp, delta_old: ComplexExp) {
         let z_abs = z.norm_sqr_fexp().sqrt();
         let local = (l1_exp(two_z_delta) + delta_old.norm_sqr_fexp() + self.dc_l1) * GAMMA;
         self.err = self.err * (z_abs * 2.0 + self.err) + local;
+        self.saturate();
     }
 
     #[inline(always)]
-    fn bla(&mut self, a: &Mat2Exp, b: &Mat2Exp, d: ComplexExp, dc: ComplexExp) {
+    fn bla(&mut self, a: &Mat2Exp, b: &Mat2Exp, d: ComplexExp, dc: ComplexExp, l: u32) {
         let a_delta = ComplexExp {
             re: a.m00 * d.re + a.m01 * d.im,
             im: a.m10 * d.re + a.m11 * d.im,
@@ -245,8 +313,17 @@ impl StepObserverExp for ShadowTrackerExp {
         } else {
             (a.m00.sqr() + a.m01.sqr() + a.m10.sqr() + a.m11.sqr()).sqrt()
         };
-        let local = (l1_exp(a_delta) + l1_exp(b_dc)) * (self.bla_epsilon + GAMMA);
+        // Troncature : CHACUN des `l` pas fusionnés abandonne un terme δ² ≤ ε
+        // fois son terme linéaire (rayon de validité F3), transporté jusqu'au
+        // bout du saut par les pas suivants ⇒ ≈ l·ε relatif à l'arrivée, pas
+        // ε. Avec `ε` seul la borne SOUS-estimait l'erreur réelle d'un
+        // facteur ~40 sur les orbites à longs sauts (olbaid2 (12,25), tracé
+        // contre GMP pur) : elle ne s'emballait jamais avant l'évasion et les
+        // pixels faux passaient pour fiables.
+        let trunc = self.bla_epsilon * l as f64 + GAMMA;
+        let local = (l1_exp(a_delta) + l1_exp(b_dc)) * trunc;
         self.err = sigma * self.err + local;
+        self.saturate();
     }
 
     #[inline(always)]
@@ -254,6 +331,413 @@ impl StepObserverExp for ShadowTrackerExp {
         self.err = self.err + (l1_exp(z_ref) + l1_exp(z_new)) * U;
     }
 }
+
+// ─── Tier dd (~106 b) ───────────────────────────────────────────────────────
+//
+// Même récurrence et même critère (emballement) que [`ShadowTracker`], à
+// l'unité d'arrondi double-double. La borne elle-même est calculée en f64 à
+// partir des parties hautes (une magnitude n'a pas besoin de 106 bits) : la
+// boucle dd fournit des normes/modules f64. Prouvé nécessaire : seahorse 1e6,
+// pixel (117,17) — le dd rendait 1838 itérations, GMP convergé 1598, sans
+// rien signaler (sensibilité au-delà de 106 bits).
+//
+// Domaine : les entrées de ce traqueur sont des f64. Sous ~1e-308 elles
+// valent 0 — au tier exp (pixel < 1e-280) δ, dc et les Z de frôlement
+// atom-domain (~1e-1200) sous-débordent, tous les termes ajoutent 0 et la
+// borne resterait nulle (AVEUGLE, constaté jusqu'au 2026-11-06). Depuis
+// G14.1 (i), un pixel dont |dc| < 2⁻⁹⁰⁰ (garde d'entrée du chemin rapide dd)
+// est suivi par `reliability_dd_exp::ShadowTrackerDdExp` — même récurrence,
+// mêmes constantes, borne et magnitudes en `FloatExp` — dans la boucle
+// `DoubleDoubleExp`. Ce type-ci ne sert plus qu'au-dessus de 2⁻⁹⁰⁰, où il
+// est bit-identique à ce qu'il était.
+// Limite résiduelle : les coefficients BLA dd (`Mat2Dd`, sans exposant) sont
+// lus en f64 par les deux traqueurs (σ₁ conforme), comme par la boucle dd
+// elle-même — un coefficient hors plage f64 casserait la boucle avant la
+// borne. Le seuil d'emballement reste absolu (1e30, espace z).
+
+/// Unité d'arrondi du double-double (≈ 2⁻¹⁰⁴, quelques ulp de marge sur 2⁻¹⁰⁶).
+pub const U_DD: f64 = 4.930_380_657_631_324e-32; // 2^-104
+/// Constante d'arrondi locale d'un pas complexe dd.
+pub const GAMMA_DD: f64 = 4.0 * U_DD;
+
+/// Traqueur de fiabilité du tier dd : borne d'erreur absolue `E` sur `z`
+/// (f64), unité `U_DD`, ε BLA de la table dd (`DD_BLA_EPSILON`).
+#[derive(Clone, Copy, Debug)]
+pub struct ShadowTrackerDd {
+    pub err: f64,
+    dc_abs: f64,
+    bla_epsilon: f64,
+    /// Seuil d'emballement (borne collante au-delà).
+    cap: f64,
+}
+
+impl ShadowTrackerDd {
+    pub fn new(dc_abs: f64, bla_epsilon: f64) -> Self {
+        Self {
+            err: 0.0,
+            dc_abs,
+            bla_epsilon,
+            cap: reliability_runaway(),
+        }
+    }
+
+    /// Pas direct : `z_abs` = |Z[m] + δ_old|, `two_z_delta_l1` ≥ |2·Z·δ_old|,
+    /// `delta_norm_sqr` = |δ_old|². Mêmes termes que [`ShadowTracker`].
+    #[inline(always)]
+    pub fn direct(&mut self, z_abs: f64, two_z_delta_l1: f64, delta_norm_sqr: f64) {
+        let local = GAMMA_DD * (two_z_delta_l1 + delta_norm_sqr + self.dc_abs);
+        self.err = self.err * (2.0 * z_abs + self.err) + local;
+        self.stick();
+    }
+
+    /// Saut BLA de `l` pas : `sigma_a` = σ₁(A), `a_delta_l1` ≥ |A·δ|,
+    /// `b_dc_l1` ≥ |B·dc|. Troncature cumulée `l·ε` (cf. [`ShadowTrackerExp`]).
+    #[inline(always)]
+    pub fn bla(&mut self, sigma_a: f64, a_delta_l1: f64, b_dc_l1: f64, l: u32) {
+        let local = (self.bla_epsilon * l as f64 + GAMMA_DD) * (a_delta_l1 + b_dc_l1);
+        self.err = sigma_a * self.err + local;
+        self.stick();
+    }
+
+    /// Borne emballée COLLANTE : au-delà du seuil d'emballement elle passe à
+    /// `+∞` et y reste (un saut BLA à σ₁ < 1 ne peut plus la faire
+    /// redescendre sous le seuil ; `∞·0` donne NaN, lui aussi « emballé »).
+    #[inline(always)]
+    fn stick(&mut self) {
+        if !(self.err < self.cap) {
+            self.err = f64::INFINITY;
+        }
+    }
+
+    /// Rebase `δ ← Z + δ` (arrondi dd de la référence devenu absolu).
+    #[inline(always)]
+    pub fn rebase(&mut self, z_ref_l1: f64, z_new_l1: f64) {
+        self.err += U_DD * (z_ref_l1 + z_new_l1);
+        self.stick();
+    }
+
+    /// Emballée (≥ seuil ou NaN) ?
+    #[inline(always)]
+    pub fn runaway(&self, threshold: f64) -> bool {
+        !(self.err < threshold)
+    }
+
+    /// Borne finale saturée en f32 (`+∞` si NaN), même canal que le f64.
+    pub fn error_bound(&self) -> f32 {
+        if self.err.is_nan() {
+            f32::INFINITY
+        } else {
+            self.err as f32
+        }
+    }
+}
+
+/// Suivi du tier **dd** : ACTIF par défaut dès que le détecteur l'est ;
+/// `FRACTALL_RELIABILITY_DD=0` le coupe (A/B).
+pub fn reliability_tracks_dd() -> bool {
+    reliability_tracks_dd_inner()
+}
+
+/// Fraction par défaut du plafond de l'escalade dd → GMP (cf.
+/// [`gmp_escalation_allowed`]) : **0,1 %** des pixels de la frame.
+///
+/// Calibration (2026-11-06, Apple M4) : les scènes dont quelques pixels
+/// dépassent la précision dd en ont 0,008 à 0,015 % (e227 5 px et
+/// golden_spider 10 px à 256²) — dix fois sous le plafond, donc corrigées à
+/// toute résolution. Le coût n'est pas négligeable pour autant : un pixel GMP
+/// de e227 (~1 M itérations) prend ~3 s de thread, soit 1,8 → 4,8 s de wall
+/// à 256² pour 5 pixels. À 1 % le pire cas autorisé était déraisonnable
+/// (~100 min en 1080p sur une scène de ce coût) ; à 0,1 % il reste borné à
+/// ~10 min, et lethal_weapon (17 % de pixels au-delà du dd) reste plafonné
+/// avec son avertissement.
+pub const DEFAULT_GMP_MAX_FRACTION: f64 = 0.001;
+/// Plancher absolu du plafond : une poignée de pixels part toujours au GMP.
+pub const GMP_MIN_PIXELS: usize = 16;
+
+/// Plafond de l'escalade dd → GMP en FRACTION de pixels de la frame
+/// (`FRACTALL_RELIABILITY_GMP_MAX_FRACTION`, ≥ 1 = illimité). Jamais en
+/// temps : un budget temps rendrait la sortie dépendante de la machine.
+pub fn reliability_gmp_max_fraction() -> f64 {
+    use std::sync::OnceLock;
+    static F: OnceLock<f64> = OnceLock::new();
+    *F.get_or_init(|| {
+        std::env::var("FRACTALL_RELIABILITY_GMP_MAX_FRACTION")
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|f| f.is_finite() && *f >= 0.0)
+            .unwrap_or(DEFAULT_GMP_MAX_FRACTION)
+    })
+}
+
+/// Sonde dd AVANT l'escalade frame (TODO G14.1 k) — **OPT-IN**
+/// `FRACTALL_DD_PROBE=1`. Motif : sur une scène au-delà du double-double
+/// (super_dense : 90 % de pixels f64 non fiables, dont 70 % échappent aussi
+/// au dd), la frame dd coûte ×40 le rendu f64 pour une image qui reste
+/// fausse. La sonde rend en dd suivi un petit échantillon des pixels non
+/// fiables et, si la majorité échappe au dd, garde le f64 avec un
+/// avertissement. Opt-in tant que le seuil n'est calibré que sur deux scènes
+/// (super_dense 70 %, lethal_weapon 30 %) : les bornes dd ont des faux
+/// positifs, une scène à 60 % de pixels « au-delà du dd » peut être juste en
+/// dd.
+pub fn dd_probe_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        matches!(
+            std::env::var("FRACTALL_DD_PROBE")
+                .ok()
+                .map(|v| v.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("1") | Some("on") | Some("true")
+        )
+    })
+}
+
+/// Taille maximale de l'échantillon de la sonde dd (fixe : le coût de la
+/// sonde ne croît pas avec la résolution).
+pub const DD_PROBE_MAX_SAMPLES: usize = 256;
+/// En dessous, l'échantillon ne permet aucun verdict (pas de sonde).
+pub const DD_PROBE_MIN_SAMPLES: usize = 16;
+
+/// Échantillon DÉTERMINISTE de la sonde : indices triés (l'ordre d'arrivée
+/// dépend des threads) puis régulièrement espacés, au plus
+/// [`DD_PROBE_MAX_SAMPLES`].
+pub fn dd_probe_sample(unreliable: &[usize]) -> Vec<usize> {
+    let mut sorted = unreliable.to_vec();
+    sorted.sort_unstable();
+    let step = sorted.len().div_ceil(DD_PROBE_MAX_SAMPLES).max(1);
+    sorted.into_iter().step_by(step).collect()
+}
+
+/// Verdict de la sonde : la frame dd ne sauverait pas l'image ssi la
+/// majorité STRICTE de l'échantillon échappe aussi au dd (second essai sans
+/// BLA compris).
+pub fn dd_probe_hopeless(beyond_dd: usize, sampled: usize) -> bool {
+    sampled >= DD_PROBE_MIN_SAMPLES && 2 * beyond_dd > sampled
+}
+
+/// Décision TOUT OU RIEN de l'escalade dd → GMP : `n_unreliable` pixels dont
+/// la borne dd s'emballe partent au GMP ssi `n ≤ max(16, ⌊f·N⌋)` (ou
+/// `f ≥ 1`). Au-delà, aucun n'y part (l'image ne dépend d'aucun ordre de
+/// traitement) : ils gardent leur valeur dd de meilleur effort.
+/// Motif : le GMP par pixel coûte ~1 µs/itération — lethal_weapon (1,6 M
+/// itérations) 48² : 406 px (17,6 %) = 73 s, des heures en 1080p.
+pub fn gmp_escalation_allowed(n_unreliable: usize, frame_pixels: usize, max_fraction: f64) -> bool {
+    if max_fraction >= 1.0 {
+        return true;
+    }
+    let cap = ((max_fraction * frame_pixels as f64).floor() as usize).max(GMP_MIN_PIXELS);
+    n_unreliable <= cap
+}
+
+fn reliability_tracks_dd_inner() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        reliability_mode().tracks()
+            && !matches!(
+                std::env::var("FRACTALL_RELIABILITY_DD").ok().as_deref().map(str::trim),
+                Some("0") | Some("off") | Some("false")
+            )
+    })
+}
+
+impl ShadowTrackerExp {
+    /// Hook `direct` pour la boucle scaled-double (`pixel_loop_scaled`, δ =
+    /// d·2^e, `2·Z·δ = tzd·2^e`, `Z[m]` = `z_ref` f64) : MÊMES opérations, même
+    /// ordre, que [`StepObserverExp::direct`], mais en f64 dans le cadre 2^e —
+    /// donc la MÊME borne au bit près tant que chaque addition a un partenaire
+    /// ≥ 2⁻⁹⁶⁰ (un opérande sous-débordé, < 2⁻¹⁰²², est alors abandonné à
+    /// l'identique par FloatExp et par l'arrondi f64) et qu'aucun produit
+    /// significatif ne sous-déborde. Gardes non tenues ⇒ `false`, rien n'est
+    /// modifié : le caller appelle le hook ComplexExp.
+    #[inline(always)]
+    pub fn direct_scaled(
+        &mut self,
+        z_ref: Complex64,
+        d: Complex64,
+        e: i32,
+        tzd: Complex64,
+    ) -> bool {
+        #[inline(always)]
+        fn p2(k: i32) -> f64 {
+            if k < -1022 {
+                0.0
+            } else if k > 1023 {
+                f64::INFINITY
+            } else {
+                f64::from_bits(((k + 1023) as u64) << 52)
+            }
+        }
+        const T2: f64 = f64::from_bits(((-960 + 1023) as u64) << 52);
+        const ZBIG: f64 = f64::from_bits(((-700 + 1023) as u64) << 52);
+        const MINN: f64 = f64::from_bits(((-1000 + 1023) as u64) << 52);
+        #[inline(always)]
+        fn big(a: f64, b: f64) -> bool {
+            a.abs() >= T2 || b.abs() >= T2
+        }
+        let (em, ee) = (self.err.mantissa, self.err.exponent);
+        let (cm, ce) = (self.dc_l1.mantissa, self.dc_l1.exponent);
+        if e > 100 || (em != 0.0 && (ee > 900 || ee - e > 900)) || (cm != 0.0 && ce - e > 900) {
+            return false;
+        }
+        // z = Z + δ (FloatExp, absolu). Pour e < −900, |δ| < 2⁻⁸³⁶ est
+        // abandonné devant des composantes de Z ≥ 2⁻⁷⁰⁰.
+        let (zr, zi, ok_z) = if e >= -900 {
+            let se = p2(e);
+            let (dr, di) = (d.re * se, d.im * se);
+            (
+                z_ref.re + dr,
+                z_ref.im + di,
+                big(z_ref.re, dr) & big(z_ref.im, di),
+            )
+        } else {
+            let ok = (z_ref.re.abs() >= ZBIG) & (z_ref.im.abs() >= ZBIG);
+            (z_ref.re, z_ref.im, ok)
+        };
+        let (zr2, zi2) = (zr * zr, zi * zi);
+        let z_abs = (zr2 + zi2).sqrt();
+        // local = (|2Zδ|₁ + |δ|² + |dc|₁)·γ, dans le cadre 2^e.
+        let l1 = tzd.re.abs() + tzd.im.abs();
+        let nd = (d.re * d.re + d.im * d.im) * p2(e);
+        let dcf = if cm == 0.0 { 0.0 } else { cm * p2(ce - e) };
+        let s1 = l1 + nd;
+        let s2 = s1 + dcf;
+        let local = s2 * GAMMA;
+        // E' = E·(2|z| + E) + local (E absolu dans le facteur, cadre 2^e sinon).
+        let err_abs = if em == 0.0 { 0.0 } else { em * p2(ee) };
+        let w = z_abs * 2.0 + err_abs;
+        let err_f = if em == 0.0 { 0.0 } else { em * p2(ee - e) };
+        let prod = err_f * w;
+        let r = prod + local;
+        let ok = ok_z
+            & big(zr2, zi2)
+            & big(l1, nd)
+            & big(s1, dcf)
+            & big(z_abs, err_abs)
+            & (big(prod, local) || (em == 0.0 && local.abs() >= MINN));
+        if !ok {
+            return false;
+        }
+        self.err = FloatExp::new(r, e);
+        self.saturate();
+        true
+    }
+
+    /// Hook `bla` pour la boucle scaled-double : `ad` = A·δ (sommes `t1+t2`,
+    /// `v1+v2` du saut, exactes sous ses gardes) et `bt` = les quatre termes
+    /// `b00·dc.re, b01·dc.im, b10·dc.re, b11·dc.im`, tous dans le cadre 2^ep.
+    /// Mêmes opérations que [`StepObserverExp::bla`] ⇒ même borne au bit près
+    /// sous gardes ; sinon `false`, rien n'est modifié.
+    #[inline(always)]
+    pub fn bla_scaled(
+        &mut self,
+        a: &Mat2Exp,
+        ad: Complex64,
+        bt: [f64; 4],
+        ep: i32,
+        l: u32,
+    ) -> bool {
+        #[inline(always)]
+        fn p2(k: i32) -> f64 {
+            if k < -1022 {
+                0.0
+            } else if k > 1023 {
+                f64::INFINITY
+            } else {
+                f64::from_bits(((k + 1023) as u64) << 52)
+            }
+        }
+        const T2: f64 = f64::from_bits(((-960 + 1023) as u64) << 52);
+        const MINN: f64 = f64::from_bits(((-1000 + 1023) as u64) << 52);
+        const SUB: f64 = f64::MIN_POSITIVE;
+        #[inline(always)]
+        fn big(a: f64, b: f64) -> bool {
+            a.abs() >= T2 || b.abs() >= T2
+        }
+        #[inline(always)]
+        fn ex(x: FloatExp) -> i32 {
+            if x.mantissa == 0.0 {
+                -(1 << 28)
+            } else {
+                x.exponent
+            }
+        }
+        // σ₁(A) dans le cadre 2^es (es = plus grand exposant des coefficients
+        // sommés) : la plus grande composante y vaut ≥ ½, son carré ≥ ¼ ; les
+        // termes sous-débordés (< 2⁻¹⁰²²) sont abandonnés à l'identique.
+        let conformal = a.m00 == a.m11 && a.m01 == FloatExp::zero() - a.m10;
+        let es = if conformal {
+            ex(a.m00).max(ex(a.m10))
+        } else {
+            ex(a.m00).max(ex(a.m01)).max(ex(a.m10)).max(ex(a.m11))
+        };
+        if es < -(1 << 27) {
+            return false;
+        }
+        let f = |x: FloatExp| x.mantissa * p2(ex(x) - es);
+        let n = if conformal {
+            let (x0, x1) = (f(a.m00), f(a.m10));
+            x0 * x0 + x1 * x1
+        } else {
+            let (x0, x1, x2, x3) = (f(a.m00), f(a.m01), f(a.m10), f(a.m11));
+            x0 * x0 + x1 * x1 + x2 * x2 + x3 * x3
+        };
+        let sf = n.sqrt();
+        // local = (|Aδ|₁ + |B·dc|₁)·(l·ε + γ), cadre 2^ep.
+        let l1a = ad.re.abs() + ad.im.abs();
+        let (b_re, b_im) = (bt[0] + bt[1], bt[2] + bt[3]);
+        let l1b = b_re.abs() + b_im.abs();
+        let exact_b = big(bt[0], bt[1]) & big(bt[2], bt[3]) & big(l1a, l1b);
+        let negligible_b = (bt[0].abs() < SUB)
+            & (bt[1].abs() < SUB)
+            & (bt[2].abs() < SUB)
+            & (bt[3].abs() < SUB)
+            & (l1a >= T2);
+        let s = l1a + l1b;
+        let trunc = self.bla_epsilon * l as f64 + GAMMA;
+        let local = s * trunc;
+        // E' = σ·E + local.
+        let (em, ee) = (self.err.mantissa, self.err.exponent);
+        if em != 0.0 && ee + es - ep > 900 {
+            return false;
+        }
+        let prod = if em == 0.0 {
+            0.0
+        } else {
+            sf * (em * p2(ee + es - ep))
+        };
+        let r = prod + local;
+        let ok =
+            (exact_b | negligible_b) & (big(prod, local) || (em == 0.0 && local.abs() >= MINN));
+        if !ok {
+            return false;
+        }
+        self.err = FloatExp::new(r, ep);
+        self.saturate();
+        true
+    }
+
+    /// `|dc|₁` (borne locale constante du pixel) — traqueur « léger » de la
+    /// boucle scaled (`pixel_loop_scaled_track`).
+    pub fn dc_l1(&self) -> FloatExp {
+        self.dc_l1
+    }
+
+    /// ε de troncature BLA par pas fusionné.
+    pub fn bla_epsilon(&self) -> f64 {
+        self.bla_epsilon
+    }
+
+    /// Pose la borne (normalisée) puis applique le plafond collant.
+    pub fn set_err(&mut self, mantissa: f64, exponent: i32) {
+        self.err = FloatExp::new(mantissa, exponent);
+        self.saturate();
+    }
+}
+
+/// γ (arrondi local) du traqueur exp, exposé à la boucle scaled.
+pub const EXP_TRACK_GAMMA: f64 = GAMMA;
 
 /// Mode du détecteur, lu une fois depuis `FRACTALL_RELIABILITY` :
 /// - `off` / `0` : détecteur inactif (boucle de production intacte) ;
@@ -277,20 +761,29 @@ impl ReliabilityMode {
     }
 }
 
-/// Suivi du tier **exp** (> 1e280) — OPT-IN `FRACTALL_RELIABILITY_EXP=1`.
-/// Mesuré 2026-11-05 (corpus profond 96-128²) : +25-45 % de temps pixel
-/// (`ShadowTrackerExp` en FloatExp) pour 0-2 pixels détectés par cas ; les
-/// résidus exp restants (3-9 px vs dd) ont une borne qui ne s'emballe pas.
-/// Les vraies sources d'erreur du tier exp étaient ailleurs (span f64
-/// sous-normal, ε BLA 2⁻²⁴) et sont corrigées à la racine.
+/// Suivi du tier **exp** (> 1e280) — ACTIF PAR DÉFAUT depuis 2026-11-06
+/// (`FRACTALL_RELIABILITY_EXP=0|off|false` le coupe ; `FRACTALL_RELIABILITY=off`
+/// coupe tous les tiers).
+///
+/// Historique : opt-in le 2026-11-05 car « +25-45 % pour 0-2 pixels
+/// détectés, les résidus (3-9 px vs dd) ont une borne qui ne s'emballe pas ».
+/// Ces résidus venaient de TROIS défauts du traqueur : débordement d'exposant
+/// qui blanchissait la borne emballée, troncature BLA comptée ε au lieu de
+/// l·ε, et pas de test de détermination à l'évasion (`escape_undetermined`).
+/// Corrigés : 31 cas profonds 96² pixel-exacts vs dd (12 avaient 1-9 pixels
+/// faux) ; à 256², sans traqueur e401 6, olbaid2 48, e1298 18 pixels faux →
+/// 0 avec, pour +24-28 % de temps (e1000 inchangé).
 pub fn reliability_tracks_exp() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| {
         reliability_mode().tracks()
-            && matches!(
-                std::env::var("FRACTALL_RELIABILITY_EXP").ok().as_deref(),
-                Some("1") | Some("on") | Some("true")
+            && !matches!(
+                std::env::var("FRACTALL_RELIABILITY_EXP")
+                    .ok()
+                    .map(|v| v.trim().to_ascii_lowercase())
+                    .as_deref(),
+                Some("0") | Some("off") | Some("false")
             )
     })
 }
@@ -349,6 +842,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn spectral_norm_survives_huge_and_tiny_coefficients() {
+        // Conforme, |a| = 5e200 : le carré déborde, la norme non.
+        let m = Mat2 {
+            m00: 3e200,
+            m01: -4e200,
+            m10: 4e200,
+            m11: 3e200,
+        };
+        let n = spectral_norm(&m);
+        assert!(n.is_finite() && (n / 5e200 - 1.0).abs() < 1e-12, "σ₁ = {n:e}");
+        // Conforme minuscule : pas d'annulation par sous-dépassement.
+        let t = Mat2 {
+            m00: 3e-200,
+            m01: -4e-200,
+            m10: 4e-200,
+            m11: 3e-200,
+        };
+        let n = spectral_norm(&t);
+        assert!((n / 5e-200 - 1.0).abs() < 1e-12, "σ₁ = {n:e}");
+        // Non conforme diagonal énorme : σ₁ = plus grand coefficient.
+        let d = Mat2 {
+            m00: 2e200,
+            m01: 0.0,
+            m10: 0.0,
+            m11: 1e190,
+        };
+        let n = spectral_norm(&d);
+        assert!((n / 2e200 - 1.0).abs() < 1e-12, "σ₁ = {n:e}");
+        // Valeurs ordinaires inchangées au bit près (chemin chaud).
+        let o = Mat2 {
+            m00: 3.0,
+            m01: -4.0,
+            m10: 4.0,
+            m11: 3.0,
+        };
+        assert_eq!(spectral_norm(&o).to_bits(), 5.0f64.to_bits());
+    }
+
+    #[test]
     fn spectral_norm_of_conformal_matrix_is_modulus() {
         // a = 3 + 4i comme mat2 conforme : σ₁ = |a| = 5 (Frobenius = 5√2).
         let m = Mat2 {
@@ -369,6 +901,52 @@ mod tests {
             m11: -7.0,
         };
         assert!((spectral_norm(&m) - 7.0).abs() < 1e-12);
+    }
+
+    /// Verrou du plafond de l'escalade dd → GMP : plafond en fraction,
+    /// plancher 16, illimité à f ≥ 1, décision binaire sur le TOTAL.
+    /// Sonde dd (G14.1 k) : échantillon indépendant de l'ordre d'arrivée
+    /// des indices (qui dépend des threads), borné, et verdict à la majorité
+    /// stricte — calé sur super_dense (70 % au-delà du dd → sans espoir) et
+    /// lethal_weapon (30 % → la frame dd vaut son prix).
+    #[test]
+    fn dd_probe_sample_is_deterministic_and_bounded() {
+        let ordered: Vec<usize> = (0..10_000).map(|i| i * 3).collect();
+        let mut shuffled = ordered.clone();
+        shuffled.reverse();
+        shuffled.swap(17, 4242);
+        let a = dd_probe_sample(&ordered);
+        assert_eq!(a, dd_probe_sample(&shuffled));
+        assert!(a.len() <= DD_PROBE_MAX_SAMPLES && a.len() >= DD_PROBE_MAX_SAMPLES / 2);
+        // Réparti sur tout l'intervalle, pas un préfixe.
+        assert_eq!(a[0], 0);
+        assert!(*a.last().unwrap() > 29_000);
+        // Petit ensemble : tout est sondé.
+        assert_eq!(dd_probe_sample(&[5, 1, 3]), vec![1, 3, 5]);
+        assert!(dd_probe_sample(&[]).is_empty());
+
+        assert!(dd_probe_hopeless(180, 256)); // super_dense ~70 %
+        assert!(!dd_probe_hopeless(77, 256)); // lethal_weapon ~30 %
+        assert!(!dd_probe_hopeless(128, 256)); // moitié exacte : pas de majorité
+        assert!(dd_probe_hopeless(129, 256));
+        assert!(!dd_probe_hopeless(15, 15)); // échantillon trop petit : pas de verdict
+    }
+
+    #[test]
+    fn gmp_escalation_cap_decision() {
+        // 256² à 1 % : plafond 655.
+        assert!(gmp_escalation_allowed(655, 65536, 0.01));
+        assert!(!gmp_escalation_allowed(656, 65536, 0.01));
+        // Petite frame : le plancher 16 domine (48² à 1 % = 23 ; 16² → 2).
+        assert!(gmp_escalation_allowed(16, 256, 0.01));
+        assert!(!gmp_escalation_allowed(17, 256, 0.01));
+        assert!(gmp_escalation_allowed(23, 2304, 0.01));
+        assert!(!gmp_escalation_allowed(406, 2304, 0.01));
+        // f ≥ 1 : illimité ; f = 0 : seul le plancher.
+        assert!(gmp_escalation_allowed(1_000_000, 10, 1.0));
+        assert!(gmp_escalation_allowed(16, 1 << 20, 0.0));
+        assert!(!gmp_escalation_allowed(17, 1 << 20, 0.0));
+        assert!(gmp_escalation_allowed(0, 0, 0.01));
     }
 
     #[test]
@@ -407,6 +985,74 @@ mod tests {
             t.direct(z.norm_sqr(), Complex64::new(0.0, 0.0), z.norm_sqr());
             z = z * z + c;
         }
+        assert!(t.error_bound() as f64 >= DEFAULT_RUNAWAY);
+    }
+
+    /// Tier f64 : même règle l·ε que le tier exp. Sans elle, à 256² le
+    /// rendu de production avait des pixels faux NON flaggés vs GMP pur
+    /// (e227 384, golden_spider 169, rug 86, e50 10).
+    #[test]
+    fn f64_bla_truncation_scales_with_jump_length() {
+        let eps = U;
+        let id = Mat2 {
+            m00: 1.0,
+            m01: 0.0,
+            m10: 0.0,
+            m11: 1.0,
+        };
+        let one = Complex64::new(1.0, 0.0);
+        let zero = Complex64::new(0.0, 0.0);
+        let mut t = ShadowTracker::new(zero, eps);
+        t.bla(&id, &id, one, zero, 1024);
+        assert!(t.err >= 1024.0 * eps, "borne {:e} < l·ε", t.err);
+        let mut t1 = ShadowTracker::new(zero, eps);
+        t1.bla(&id, &id, one, zero, 1);
+        assert!(t1.err < 8.0 * eps);
+    }
+
+    /// Tier exp : un saut BLA de `l` itérations cumule la troncature de ses
+    /// `l` pas (≈ l·ε relatif), pas d'un seul. Avec ε seul, la borne sous-
+    /// estimait l'erreur réelle ~40× (olbaid2 (12,25) tracé vs GMP pur).
+    #[test]
+    fn exp_bla_truncation_scales_with_jump_length() {
+        let eps = 1.0 / (1u64 << 53) as f64;
+        let one = ComplexExp::from_complex64(Complex64::new(1.0, 0.0));
+        let zero = ComplexExp::zero();
+        let a = Mat2Exp::identity();
+        let mut t = ShadowTrackerExp::new(zero, eps);
+        t.bla(&a, &a, one, zero, 1024);
+        let e = t.err.to_f64();
+        assert!(e >= 1024.0 * eps, "borne {e:e} < l·ε = {:e}", 1024.0 * eps);
+        let mut t1 = ShadowTrackerExp::new(zero, eps);
+        t1.bla(&a, &a, one, zero, 1);
+        assert!(t1.err.to_f64() < 8.0 * eps);
+    }
+
+    /// Tier exp : une borne emballée doit RESTER emballée. Le régime `E²`
+    /// double l'exposant FloatExp à chaque pas ; sans plafond, l'exposant
+    /// `i32` déborde après ~30 pas, s'enroule, et la borne retombe sous le
+    /// seuil — le pixel faux était alors déclaré fiable (olbaid2 : 7/9 pixels
+    /// faux ainsi blanchis).
+    #[test]
+    fn exp_bound_stays_runaway_through_exponent_overflow() {
+        let dc = ComplexExp::from_complex64(Complex64::new(1e-300, 0.0));
+        let mut t = ShadowTrackerExp::new(dc, 0.0);
+        t.err = FloatExp::from_f64(2.0);
+        let z = ComplexExp::from_complex64(Complex64::new(0.5, 0.0));
+        let zero = ComplexExp::zero();
+        for step in 0..200 {
+            t.direct(z, zero, zero);
+            assert!(
+                t.error_bound() as f64 >= DEFAULT_RUNAWAY || step < 8,
+                "pas {step} : borne retombée à {:e} (exposant {})",
+                t.error_bound(),
+                t.err.exponent
+            );
+        }
+        // Les autres hooks ne la font pas retomber non plus.
+        let a = Mat2Exp::identity();
+        t.bla(&a, &a, zero, zero, 1);
+        t.rebase(z, z);
         assert!(t.error_bound() as f64 >= DEFAULT_RUNAWAY);
     }
 }

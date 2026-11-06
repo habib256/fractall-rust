@@ -423,6 +423,10 @@ pub fn build_bla_table_for_formula(
 /// hauts (≥ 8-step) gardent le gain de perf.
 pub const BLA_SKIP_LEVELS: usize = 3;
 
+/// `m & ALIGN_MASK != 0` ⇔ `trailing_zeros(m) < BLA_SKIP_LEVELS` (pour
+/// `m ≠ 0`) : aucun niveau ≥ `BLA_SKIP_LEVELS` n'est aligné sur `m`.
+pub(crate) const ALIGN_MASK: usize = (1 << BLA_SKIP_LEVELS) - 1;
+
 #[derive(Clone, Debug)]
 pub struct BlaTableUnified {
     pub levels: Vec<Vec<BlaMultiStep>>,
@@ -588,6 +592,15 @@ impl BlaTableUnified {
         // démarrer au plus haut niveau aligné évite de parcourir les niveaux hauts
         // jamais alignés à chaque itération (réduit les accès à la table BLA, qui
         // est le coût dominant — memory-bound, cf. G2).
+        //
+        // Rejet rapide (G14.2) : `m ≠ 0` non multiple de 2^BLA_SKIP_LEVELS ⇒
+        // `trailing_zeros(m) < BLA_SKIP_LEVELS` ⇒ aucun niveau consultable —
+        // même `None` que la descente ci-dessous, en 2 instructions au lieu
+        // de ~10 (7 tours de boucle pixel sur 8 passent ici). `m == 0` a ses
+        // bits bas nuls et prend le chemin complet, comme avant.
+        if m & ALIGN_MASK != 0 {
+            return None;
+        }
         let nlevels = self.levels.len();
         if nlevels <= BLA_SKIP_LEVELS {
             return None;
@@ -636,6 +649,10 @@ impl BlaTableUnified {
         // donc `m == (m>>L)<<L`). Démarrer au plus haut niveau aligné évite de
         // parcourir les ~log2(ref_len) niveaux hauts jamais alignés à chaque
         // itération — gain hot-loop deep zoom (cf. G2 : lookup co-dominant).
+        // Rejet rapide des index non alignés : cf. `lookup`.
+        if m & ALIGN_MASK != 0 {
+            return None;
+        }
         let nlevels = self.levels.len();
         if nlevels <= BLA_SKIP_LEVELS {
             return None;

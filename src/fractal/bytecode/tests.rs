@@ -188,3 +188,51 @@ fn multibrot_non_integer_returns_none() {
     assert!(compile_formula(FractalType::Multibrot, 2.5).is_none());
     assert!(compile_formula(FractalType::Multibrot, 3.7).is_none());
 }
+
+
+/// Verrou de SOURCE : dans les fichiers du chemin par pixel, toute lecture de
+/// variable d'environnement doit être mémorisée (`OnceLock::get_or_init`).
+/// `std::env::var` prend le verrou global de l'environnement et alloue : lu à
+/// chaque pixel il coûte ~250 ns ET sérialise les workers. Deux fois payé le
+/// 2026-11-06 — la seconde par un correctif écrit la même nuit
+/// (`FRACTALL_F64_MARGIN` dans `try_bytecode_unified_path` : test5 256², phase
+/// pixels 1 ms → 17 ms).
+#[test]
+fn hot_path_sources_only_read_env_through_once_lock() {
+    let sources: [(&str, &str); 15] = [
+        ("perturbation/delta.rs", include_str!("../perturbation/delta.rs")),
+        ("perturbation/precision.rs", include_str!("../perturbation/precision.rs")),
+        ("iterations.rs", include_str!("../iterations.rs")),
+        ("bytecode/pixel_loop.rs", include_str!("pixel_loop.rs")),
+        ("bytecode/pixel_loop_exp.rs", include_str!("pixel_loop_exp.rs")),
+        ("bytecode/pixel_loop_scaled.rs", include_str!("pixel_loop_scaled.rs")),
+        ("bytecode/pixel_loop_dd.rs", include_str!("pixel_loop_dd.rs")),
+        ("bytecode/harmonic_mla.rs", include_str!("harmonic_mla.rs")),
+        ("bytecode/reliability.rs", include_str!("reliability.rs")),
+        ("bytecode/interp.rs", include_str!("interp.rs")),
+        ("bytecode/interp_batch.rs", include_str!("interp_batch.rs")),
+        ("bytecode/delta_form.rs", include_str!("delta_form.rs")),
+        ("bytecode/bla_dual.rs", include_str!("bla_dual.rs")),
+        ("bytecode/bla_dual_exp.rs", include_str!("bla_dual_exp.rs")),
+        ("bytecode/bla_dd.rs", include_str!("bla_dd.rs")),
+    ];
+    let mut offenders = Vec::new();
+    for (name, text) in sources {
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") || !code.contains("std::env::var") {
+                continue;
+            }
+            let from = i.saturating_sub(8);
+            if !lines[from..=i].iter().any(|l| l.contains("get_or_init")) {
+                offenders.push(format!("{name}:{} : {}", i + 1, code));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "lecture d'environnement hors OnceLock dans un fichier du chemin par pixel :\n{}",
+        offenders.join("\n")
+    );
+}

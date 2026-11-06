@@ -108,7 +108,20 @@ re-litiger un cas tranché.
   sur un cas court = démarrage/colorisation. Suivre un cas dans le temps :
   `harness.py trend --case <stem>`. Méfiance thermique sur les A/B
   back-to-back ; un delta < `spread` (colonne bruit) n'est pas un résultat.
-- Correction : comparer au ground truth GMP (`fractall-quality compare`),
+- **Avant d'optimiser une boucle, vérifier que la boucle EST le coût** :
+  `harness.py hotspots --case <stem> --size 1024` (profil échantillonné,
+  binaire symbolisé). Le profil par phase ne voit pas ce qui se passe DANS
+  « pixels » : le 2026-11-06, quatre coûts fixes par pixel s'y cachaient
+  (parse GMP, clone d'`Arc`, formule recompilée, variable d'environnement) —
+  jusqu'à 85 % du temps, et trois fois plus de gain que les réécritures de
+  boucle. De l'allocateur, du GMP, `memcmp` ou un verrou dans une phase
+  pixel = à sortir de la boucle, pas à accélérer.
+- Correction : l'axe `truth` du score compare le rendu PAR DÉFAUT au tier dd
+  sur les cas du corpus (seul axe à juger la sortie de production là où elle
+  sert ; un FAIL s'adjuge contre le GMP pur sur quelques pixels —
+  `--algorithm gmp --output-map`, lecteur `.fmap` de
+  `scripts/harnesslib/axes_precision.py`). Le dd n'est pas la vérité absolue.
+  Comparer au ground truth GMP (`fractall-quality compare`),
   PAS seulement à F3 ; vérifier l'hypothèse F3-dégénéré (timing < 0.1 s +
   uniformité) avant d'accuser fractall.
 - Consulter la référence : `fraktaler-3-3.1/fraktaler-3-analysis.md` puis le
@@ -129,7 +142,7 @@ re-litiger un cas tranché.
 ## Étape 5 — Vérifier (obligatoire, dans cet ordre)
 
 ```bash
-cargo test --release --lib                        # ~460 unit (cible lib, PAS --bin)
+cargo test --release --lib                        # ~490 unit (cible lib, PAS --bin)
 cargo test --release --test golden_images
 cargo test --release --test deep_navigation       # si types spéciaux / dispatcher touchés
 cargo run --release --bin fractall-quality -- suite
@@ -152,6 +165,17 @@ python3 scripts/harness.py score --tier quick
   visuelle** de chaque PNG + justification dans le commit.
 - Fix de correction → **poser un verrou** : nouveau golden
   (`tests/golden_images.rs`) ou preset quality (`src/quality/presets.rs`).
+- Optimisation « bit-identique » → le PROUVER : PNG comparés à l'octet (ou
+  itérations brutes des `.fmap`) sur les cas touchés, plus un test unitaire
+  qui compare la nouvelle boucle à l'ancienne sur une grille (modèles :
+  `batch_matches_scalar_interpreter_bit_for_bit`,
+  `julia_fast_path_matches_generic_loop`). Garder l'ancienne boucle derrière
+  une variable d'environnement lue par `OnceLock` — JAMAIS de
+  `std::env::var` sur le chemin par pixel (verrou de source
+  `hot_path_sources_only_read_env_through_once_lock`).
+- Machine partagée ou chargée → A/B ENTRELACÉ, ≥ 5 runs, comparer les
+  minimums. Sous macOS, lancer le harness avec un Python ≥ 3.11
+  (`bench/venv/bin/python`).
 
 ## Étape 6 — Committer et archiver
 

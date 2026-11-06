@@ -18,7 +18,10 @@ from harnesslib import guard  # noqa: E402
 from harnesslib import gaps as gaps_mod  # noqa: E402
 from harnesslib import axes_perf  # noqa: E402
 from harnesslib import config  # noqa: E402
+from harnesslib import cli as harnesslib_cli  # noqa: E402
 from harnesslib import axes_precision  # noqa: E402
+from harnesslib import hotspots  # noqa: E402
+from harnesslib import axes_ddtruth  # noqa: E402
 
 
 def _use_tmp(tmp: Path):
@@ -106,6 +109,8 @@ def run():
     run_self_speed_gates()
     run_baseline_resolution()
     run_precision_axis()
+    run_hotspots_parsing()
+    run_truth_axis()
 
     print("\nTOUS LES TESTS PASSENT ✅")
 
@@ -187,6 +192,28 @@ def run_profile_parsing():
     _check(pr2["dd_escalation"] and pr2["path"] == "bytecode_dd"
            and abs(pr2["pixels_s"] - 1.6) < 1e-9,
            "profile : escalade dd → phases sommées, path final")
+    # G14.4a : `bla=` chronométré à part (binaires récents) — phase propre,
+    # retirée du résidu ; les sorties antérieures (sans `bla=`) restent lues.
+    with_bla = SAMPLE_CLI_OUTPUT.replace("orbit=0.120s pixels=",
+                                         "orbit=0.120s bla=0.030s pixels=")
+    prb = axes_perf.parse_profile_output(with_bla)
+    _check(prb["bla_s"] == 0.03 and prb["orbit_s"] == 0.12 and prb["pixels_s"] == 0.8,
+           "profile : phase `bla=` lue")
+    bdb = axes_perf.phase_breakdown(prb, wall_s=1.20)
+    _check(abs(bdb["secs"]["other"] - 0.19) < 1e-9
+           and abs(sum(bdb["secs"].values()) - 1.20) < 1e-9,
+           "profile : `bla` sort du résidu, phases sommées = wall")
+    _check(pr["bla_s"] is None and bd["secs"]["bla"] == 0.0,
+           "profile : sortie sans `bla=` → phase bla nulle (rétro-compatible)")
+    # ns/iter précis + normalisé par thread (le moteur imprime à 0,1 ns près)
+    pn = dict(prb)
+    axes_perf.precise_ns_per_iter(pn, 256 * 256, 4)
+    _check(abs(pn["ns_per_iter"] - 0.8e9 / (12345 * 65536)) < 1e-4
+           and abs(pn["ns_per_iter_thread"] - 4 * 0.8e9 / (12345 * 65536)) < 4e-4
+           and pn["threads"] == 4,
+           "profile : ns/iter recalculé et normalisé par thread")
+    _check(axes_perf.effective_threads({"RAYON_NUM_THREADS": "3"}) == 3,
+           "profile : threads effectifs = RAYON_NUM_THREADS")
     # path f64 standard (pas de [PERTURB PERF]) : tout le rendu = pixels
     std = "Génération terminée en 0.30s (rendu: 0.20s, sauvegarde: 0.05s)\n"
     bd3 = axes_perf.phase_breakdown(axes_perf.parse_profile_output(std), 0.30)
@@ -215,12 +242,23 @@ def run_self_speed_gates():
     i7 = ("i7", 16)
     base = _card(*i7, {"e50": {"fractall_s": 1.0}, "test5": {"fractall_s": 0.010},
                        "dragon": {"fractall_s": 2.0, "fractall_s_spread": 0.30}},
-                 profile={"e50": {"status": "ok", "ns_per_iter": 2.0, "path": "bytecode_f64"}},
+                 profile={"e50": {"status": "ok", "ns_per_iter": 2.0, "path": "bytecode_f64",
+                                  "ns_per_iter_thread": 32.0, "secs": {"pixels": 0.8}},
+                          "test5": {"status": "ok", "ns_per_iter": 20.0, "path": "bytecode_f64",
+                                    "ns_per_iter_thread": 320.0, "secs": {"pixels": 0.005}},
+                          "e113": {"status": "ok", "ns_per_iter": 0.3, "path": "bytecode_f64"}},
                  bench={"cpu_perturb_f64": {"iters_per_sec": 1e9}})
     card = _card(*i7, {"e50": {"fractall_s": 1.30},        # +30 % → gap
                        "test5": {"fractall_s": 0.014},     # +40 % mais < 50 ms → bruit
                        "dragon": {"fractall_s": 2.5, "fractall_s_spread": 0.30}},  # +25 % < bruit 30 %
-                 profile={"e50": {"status": "ok", "ns_per_iter": 2.6, "path": "bytecode_f64"}},
+                 profile={"e50": {"status": "ok", "ns_per_iter": 2.6, "path": "bytecode_f64",
+                                  "ns_per_iter_thread": 41.6, "secs": {"pixels": 1.04}},
+                          # ×2 mais phase pixel de 10 ms → bruit de chrono
+                          "test5": {"status": "ok", "ns_per_iter": 40.0, "path": "bytecode_f64",
+                                    "ns_per_iter_thread": 640.0, "secs": {"pixels": 0.010}},
+                          # baseline lue à 0,1 ns près (ancien schéma) → non comparable
+                          "e113": {"status": "ok", "ns_per_iter": 0.378, "path": "bytecode_f64",
+                                   "ns_per_iter_thread": 6.0, "secs": {"pixels": 0.4}}},
                  bench={"cpu_perturb_f64": {"iters_per_sec": 7e8}})
     ss = gaps_mod.self_speed_ratio(card, base)
     _check(ss["n"] == 3 and ss["ratios"]["e50"] == 1.3, "self-speed : ratios par cas")
@@ -234,6 +272,10 @@ def run_self_speed_gates():
     _check(("speed", "<self-geomean>", "self_geomean") in names,
            "self-speed : geomean > 1.10 → gap agrégé")
     _check(("profile", "e50", "ns_per_iter") in names, "profile : ns/iter +30 % → gap")
+    _check(("profile", "test5", "ns_per_iter") not in names,
+           "profile : phase pixel sous le plancher 50 ms → pas de gap")
+    _check(("profile", "e113", "ns_per_iter") not in names,
+           "profile : baseline à ns/iter arrondi (ancien schéma) → pas de gap")
     _check(("bench", "cpu_perturb_f64", "iters_per_sec") in names,
            "bench : débit −30 % → gap")
     # cross-machine : rien de tout ça
@@ -313,6 +355,81 @@ def run_precision_axis():
     _check(len(gp) == 1 and gp[0]["case"] == "golden_spider"
            and gp[0]["severity"] == 1,
            "FAIL précision → gap correction (sévérité 1), PASS → aucun gap")
+
+
+SAMPLE_REPORT = """\
+Call graph:
+    2984 Thread_1   DispatchQueue_1: com.apple.main-thread  (serial)
+      2984 start  (in dyld) + 6992  [0x198e3eb50]
+
+Total number in stack (recursive counted multiple, when >=5):
+
+Sort by top of stack, same collapsed (when >= 5):
+        _RNvNtNtNtCs2eIBBeHrl05_12fractall_cli7fractal8bytecode14pixel_loop_exp38iterate_pixel_unified_exp_single_phase  (in fractall-cli)        3020
+        __psynch_cvwait  (in libsystem_kernel.dylib)        2989
+        _RNvNtNtCsbT3fELgpM5P_3rug5float3big5parse  (in fractall-cli)        2239
+        __gmpn_submul_1  (in fractall-cli)        1657
+        ???  (in fractall-cli)  load address 0x102094000 + 0x3597c4  [0x1023ed7c4]        209
+        swtch_pri  (in libsystem_kernel.dylib)        100
+
+Binary Images:
+       0x100960000 -        0x100da88af +fractall-cli (0) <0614B602> /Users/x/fractall-cli
+"""
+
+
+def run_hotspots_parsing():
+    """Verrou de `harness.py hotspots` : lecture d'un rapport `sample` réel
+    (format macOS), démanglage Rust v0, exclusion de l'attente des workers."""
+    print("\n== hotspots ==")
+    rows = hotspots.parse_sample_top(SAMPLE_REPORT)
+    _check(len(rows) == 6, "hotspots : 6 sommets de pile lus")
+    _check(rows[0][0] == "fractal::bytecode::pixel_loop_exp::"
+           "iterate_pixel_unified_exp_single_phase" and rows[0][2] == 3020,
+           "hotspots : symbole Rust v0 démanglé en chemin de module")
+    _check(rows[2][0] == "rug::float::big::parse",
+           "hotspots : symbole d'une autre crate démanglé")
+    _check(rows[4][0].startswith("???") and rows[4][2] == 209,
+           "hotspots : adresse non symbolisée conservée avec son compte")
+    summ = hotspots.summarize(rows)
+    _check(summ["idle"] == 2989 + 100 and summ["busy"] == 3020 + 2239 + 1657 + 209,
+           "hotspots : attente des workers exclue du temps occupé")
+    top = summ["rows"][0]
+    _check(top[1] == 3020 and abs(top[2] - 100.0 * 3020 / 7125) < 1e-9,
+           "hotspots : part calculée sur le temps occupé")
+    _check(hotspots.demangle("__gmpn_submul_1") == "__gmpn_submul_1",
+           "hotspots : symbole C rendu tel quel")
+
+def run_truth_axis():
+    """Verrou de l'axe truth : décompte des pixels ≠ juge dd, verdicts, et gap
+    de correction (sévérité 1) sur un FAIL."""
+    print("\n== axe truth ==")
+    _check(axes_ddtruth.count_diff([1, 2, 3, 4], [1, 2, 9, 4]) == 1,
+           "truth : pixels différents comptés")
+    _check(axes_ddtruth.count_diff([1, 2, 3], [1, 2]) == 1,
+           "truth : longueurs différentes comptées")
+    card = {"meta": {"machine": {"cpu": "x", "nproc": 1}}, "truth": {"status": "ok", "cases": {
+        "e227": {"status": "ok", "verdict": "FAIL", "diff_px": 384, "frac": 0.0059,
+                 "path": "bytecode_f64"},
+        "e50": {"status": "ok", "verdict": "PASS", "diff_px": 1, "frac": 0.0001,
+                "path": "bytecode_f64"},
+        "rug": {"status": "ok", "verdict": "WARN", "diff_px": 20, "frac": 0.002,
+                "path": "bytecode_f64"},
+        "spiral": {"status": "n/a", "path": "std_f64"}}}}
+    g = {(x["axis"], x["case"]): x["severity"] for x in gaps_mod.compute_gaps(card, None)}
+    _check(g.get(("truth", "e227")) == 1, "truth : FAIL → gap correction (sévérité 1)")
+    _check(g.get(("truth", "rug")) == 4, "truth : WARN → gap qualité (sévérité 4)")
+    _check(("truth", "e50") not in g and ("truth", "spiral") not in g,
+           "truth : PASS et n/a → aucun gap")
+    _check("truth" in harnesslib_cli.ALL_AXES.split(","), "truth : axe déclaré")
+    two = ("[FRACTALL] type=Mandelbrot path=bytecode_f64 prec=256b x\n"
+           "[FRACTALL] type=Mandelbrot path=bytecode_dd prec=256b x\n")
+    _check(axes_ddtruth.last_path(two) == "bytecode_dd",
+           "truth : path du DERNIER [FRACTALL] (escalade dd = deux lignes)")
+    _check(axes_ddtruth.is_dd_path("bytecode_dd")
+           and not axes_ddtruth.is_dd_path("bytecode_f64")
+           and not axes_ddtruth.is_dd_path("bytecode_f64_harmonic_lla")
+           and not axes_ddtruth.is_dd_path(None),
+           "truth : un juge qui n'a pas rendu en dd n'est pas un juge (n/a)")
 
 
 if __name__ == "__main__":

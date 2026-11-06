@@ -13,7 +13,7 @@
 //! N'est atteignable que quand `FRACTALL_ATOM_PERIOD=1` (construction gated dans
 //! `delta.rs`). Ne touche pas le path f64 par défaut.
 
-use super::bla_dual::BLA_SKIP_LEVELS;
+use super::bla_dual::{ALIGN_MASK, BLA_SKIP_LEVELS};
 use super::{Op, Phase};
 use crate::fractal::perturbation::types::{ComplexExp, FloatExp};
 
@@ -446,6 +446,10 @@ impl BlaTableUnifiedExp {
     /// `delta_norm_sqr < r2`. Mirror de `BlaTableUnified::lookup_fexp`, `r2` déjà
     /// en FloatExp.
     pub fn lookup_fexp(&self, m: usize, delta_norm_sqr_fexp: FloatExp) -> Option<&BlaMultiStepExp> {
+        // Rejet rapide des index non alignés (cf. `BlaTableUnified::lookup`).
+        if m & ALIGN_MASK != 0 {
+            return None;
+        }
         let nlevels = self.levels.len();
         if nlevels <= BLA_SKIP_LEVELS {
             return None;

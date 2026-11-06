@@ -107,13 +107,34 @@ numpy). Les paths sans orbite GMP (`std_f64`) sont `n/a`. Verdicts : PASS
 corrigé les PASS (0-1 px). Juge convergé : ×2 == ×4 au pixel près.
 - Gap : FAIL = sévérité 1 (correction) ; WARN = 4.
 
+### 4 ter. Vérité — production vs tier dd (`truth`, 2026-11-06)
+**Le juge qui manquait** : aucun autre axe ne compare la sortie PAR DÉFAUT à
+la vérité sur les cas `toml/` (quality juge 16 presets, precision juge
+l'orbite, fuzz des scènes shallow). Par cas (tier + 5 **sentinelles** e227 /
+golden_spider / rug / olbaid2 / leaded_glass) : rendu de production →
+`.fmap`, rendu juge `--dd-tier` (frame double-double, gardée par son traqueur
++ repli GMP par pixel, plafond de budget levé), comparaison des itérations
+brutes. Mêmes seuils que precision (PASS ≤ 0,05 %, FAIL ≥ 0,5 %), même taille
+(96² quick, 128² sinon). Paths `std_*` = `n/a`.
+- Puissance vérifiée : le binaire d'AVANT les correctifs du 2026-11-06
+  (troncature BLA comptée ε au lieu de l·ε, rayon harmonic 2⁻²⁴) donne e227
+  **FAIL** (67 px, 0,73 % à 96²) et golden_spider / rug / olbaid2 /
+  leaded_glass **WARN** (9-29 px) ; le binaire corrigé PASS les 14 cas
+  (résidus : e113 1, e227 3, rug 4 px).
+- Le dd n'est pas la vérité absolue (plancher à ~1,6 M itérations, cf.
+  lethal_weapon) : un FAIL s'adjuge contre le GMP pur sur quelques pixels.
+- Gap : FAIL = sévérité 1 (correction) ; WARN = 4.
+
 ### 5. Profil — où va le temps (`profile`, 2026-11)
 Rend chaque cas du tier **une fois** en capturant les diagnostics du moteur
 (`[FRACTALL] path=… ns/iter=…`, `[PERTURB PERF] orbit= pixels= post=`,
 `[WISDOM] tier= variants=`, `[DD-ESCALATION]`, `[RELIABILITY] flagged=`) et la
 ligne CLI « Génération terminée en Xs (rendu: Ys, sauvegarde: Zs) ». Par cas :
-**path exécuté**, ventilation du wall-clock en `orbit / pixels / post / save /
-other` (part %), phase dominante, ns/iter effectif (skips BLA inclus), % de
+**path exécuté**, ventilation du wall-clock en `orbit / bla / pixels / post /
+save / other` (part % ; `bla` = build de la table, chronométré à part depuis
+2026-11-06), phase dominante, ns/iter effectif (skips BLA inclus) recalculé
+par le harness et **normalisé par thread** (`ns/iter·thread`, la forme
+comparable d'une machine à l'autre), % de
 pixels flaggés par le détecteur de fiabilité, escalade dd. Agrégats :
 répartition cumulée + comptage des phases dominantes.
 - C'est l'étape « **confirmer le path exécuté avant d'optimiser** » (leçon G2)
@@ -130,6 +151,30 @@ répartition cumulée + comptage des phases dominantes.
 - Les paths f64 standard et GMP par-pixel émettent aussi la ligne
   `[FRACTALL] path=std_f64|std_gmp` : tout cas du corpus a un path nommé.
 - Logs bruts : `bench/harness/profile/<cas>.log`.
+
+### 5 bis. Profil échantillonné — quelles fonctions (`hotspots`, 2026-11-06)
+Le profil par phase dit où va le temps ENTRE les phases ; il ne voit rien de
+ce qui se passe DANS une phase. `harness.py hotspots --case <stem>` rend le
+cas avec un **binaire symbolisé** (bâti à part dans `bench/prof-target` : même
+optimisation, non strippé — la release ne montre que des adresses),
+échantillonne les piles (`sample` sous macOS, `perf` sous Linux) et classe les
+fonctions par temps au sommet de pile, attente des workers exclue.
+- **Quand** : dès qu'une phase domine sans raison évidente, et avant toute
+  optimisation d'une boucle — c'est la question « la boucle est-elle vraiment
+  le coût ? ». Trois réponses « non » le 2026-11-06 : tier exp → 70 % dans un
+  parse GMP par pixel (`rug::float::big::parse` au milieu de la phase
+  « pixels ») ; vues peu chères → clone d'`Arc` par pixel ; path f64 standard →
+  formule recompilée par pixel. Aucun n'était visible au profil par phase.
+- **Lire** : une fonction du moteur à > 90 % = la boucle est bien le coût
+  (levier algorithmique) ; de l'allocateur (`malloc`/`free`), du GMP, des
+  verrous (`__psynch_mutexwait`) ou `memcmp` dans une phase pixel = coût fixe
+  par pixel à sortir de la boucle.
+- `--size` doit faire durer le rendu quelques secondes (`sample` met ~1 s à
+  s'attacher ; l'outil prévient sous 200 échantillons) ; `--delay` saute
+  l'orbite. Sorties : `bench/harness/hotspots/<cas>.md` + rapport brut.
+- Le chemin Linux (`perf record` + `perf report`) n'a pas été exercé sur la
+  machine où l'outil a été écrit (macOS) : le premier usage sous Linux est à
+  vérifier.
 
 ### 6. Bench — débits par technique (`bench`, 2026-11)
 `fractall-cli --wisdom-bench` lancé **isolé** (`FRACTALL_WISDOM_FILE` dans
@@ -178,9 +223,11 @@ sur les cas profonds. Adjugés au 2026-07-14 : test5 (`both_match_gmp`), rug
 ```bash
 python3 scripts/harness.py doctor            # prérequis, axes mesurables ICI, baseline
 python3 scripts/harness.py score [--tier quick|standard|full] \
-        [--axes speed,parity,quality,fuzz,precision,goldens,profile,bench] [--cases a,b]
+        [--axes speed,parity,quality,fuzz,precision,truth,goldens,profile,bench] [--cases a,b]
 python3 scripts/harness.py ab --cases e50 --env FRACTALL_RELIABILITY=off,escalate --runs 3
                                              # A/B isolé (méthode G14) : médiane, bruit, phases, sortie ≡
+python3 scripts/harness.py hotspots --case e1000 --size 1200
+                                             # profil échantillonné : quelles FONCTIONS (binaire symbolisé)
 python3 scripts/harness.py render [history]  # re-génère SCORECARD.md sans re-mesurer
 python3 scripts/harness.py trend [--case e50] [--bench] [--all-machines]
 python3 scripts/harness.py baseline          # fige le dernier score comme référence
@@ -353,6 +400,13 @@ correction ⇒ ajouter un golden ou un preset quality qui fige le cas
    toucher la baseline de la machine de dev).
 5. Si F3 est voulu : `bash scripts/build_f3_linux.sh` puis
    `pip3 install numpy OpenEXR Pillow`, re-`doctor`.
+6. **macOS** : le Python système (3.9) n'a pas `tomllib` → lancer le harness
+   avec un Python ≥ 3.11 (ex. venv `bench/venv` : `python3.14 -m venv
+   bench/venv && bench/venv/bin/pip install numpy OpenEXR Pillow`). Le cap
+   mémoire (RLIMIT_AS) n'existe pas sous macOS : le garde-fou crash repose
+   sur le breadcrumb + la quarantaine. Le binaire `fraktaler-3.macos`
+   versionné dépend des dylibs Homebrew d'OpenEXR/Imath : `doctor` signale
+   s'il n'est pas lançable.
 
 ## Où regarder (rappels)
 

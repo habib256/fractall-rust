@@ -18,6 +18,31 @@ use crate::fractal::bytecode::bla_dual::BLA_SKIP_LEVELS;
 use crate::fractal::perturbation::dd::{ComplexDDExp, DoubleDouble};
 use crate::fractal::perturbation::types::FloatExp;
 
+/// Epsilon de validité de la table BLA dd = **2⁻⁸⁰**, GARDÉ par le traqueur
+/// de fiabilité du tier dd. Partagé par le tier dd plein cadre et la
+/// correction dd des pixels non fiables (G9.6).
+///
+/// Histoire en trois temps (2026-11-06), à ne pas refaire :
+/// 1. 2⁻⁸⁰ SANS garde-fou laissait des pixels dd faux : l'hypothèse « erreur
+///    par saut ~ε quelle que soit sa longueur » est fausse, un saut de l pas
+///    en abandonne ≈ l·ε (lethal_weapon 96² vs GMP convergé : 59/78 justes).
+/// 2. Passé à 2⁻¹⁰⁶ : justesse du dd sans BLA (70/78)… et son coût — à cet ε
+///    la table ne saute presque plus rien (+24 à +35 % sur les scènes qui
+///    escaladent : e50 0,61 → 0,75 s, dragon 1,25 → 1,46 s à 256²).
+/// 3. Le tier dd a reçu son propre traqueur (`ShadowTrackerDd`, troncature
+///    l·ε) avec second essai SANS BLA puis GMP. Un saut dont la troncature
+///    compte fait s'emballer la borne, et le pixel est refait exactement : ε
+///    peut donc redevenir 2⁻⁸⁰. Vérifié : cartes d'itérations IDENTIQUES à
+///    celles de 2⁻¹⁰⁶ sur e50, dragon, e227, golden_spider, rug, magic à
+///    256², et mêmes écarts au juge dd (pixel pour pixel en nombre) sur 75
+///    cas du corpus à 96².
+/// ⚠️ Cet ε n'est sûr QUE sous le traqueur dd (`FRACTALL_RELIABILITY=off` ou
+/// `FRACTALL_RELIABILITY_DD=0` le retire : on retrouve alors l'état 1). Le
+/// traqueur lit cette constante pour son terme l·ε : ne pas les désaccorder.
+/// Contrepartie mesurée : quelques pixels de plus s'emballent et partent au
+/// GMP (e227 5 → 7, golden_spider 10 → 16 à 256²).
+pub const DD_BLA_EPSILON: f64 = 8.271_806_125_530_277e-25; // 2^-80
+
 /// Matrice 2×2 à coefficients `DoubleDouble` (~106 b). Range f64 (pas
 /// d'exposant séparé) : suffit car les `A` réellement CONSULTÉS restent bornés
 /// (`|A| ≲ 1/|δ|`), les merges hauts qui débordent saturent à ±inf → `r²=0` →
@@ -149,32 +174,77 @@ pub struct BlaTableDd {
 impl BlaTableDd {
     /// Construit la table pour une orbite référence dd Mandelbrot. `c_norm` =
     /// rayon image en espace-c (`max |δc|`) ; `epsilon` = facteur de précision.
+    ///
+    /// Les niveaux `< BLA_SKIP_LEVELS` (jamais consultés) ne sont PAS
+    /// matérialisés : chaque nœud du premier niveau gardé est composé
+    /// directement depuis ses `2^BLA_SKIP_LEVELS` pas unitaires, dans le MÊME
+    /// ordre d'appariement que la pyramide complète (`node`), donc
+    /// bit-identique à l'ancienne construction (verrou
+    /// `direct_build_matches_full_pyramid`). Matérialiser le niveau 0 coûtait
+    /// 144 o/iter (+ ½ + ¼) de pic mémoire : dragon (2 M iters) ≈ 500 Mo pour
+    /// une table utilisée par 80 pixels. Construction parallèle (nœuds
+    /// indépendants, ordre de collecte déterministe).
     pub fn build_mandelbrot(z_ref_dd: &[ComplexDDExp], c_norm: f64, epsilon: f64) -> Self {
+        use rayon::prelude::*;
         let m = z_ref_dd.len().saturating_sub(1);
         if m == 0 {
             return Self { levels: Vec::new() };
         }
-        let level0: Vec<BlaStepDd> = (0..m)
-            .map(|i| BlaStepDd::single_mandelbrot(z_ref_dd[i], epsilon))
+        // Longueurs de la pyramide complète : len_{k+1} = ceil(len_k / 2),
+        // jusqu'à 1 (même nombre de niveaux qu'avant).
+        let mut lens = vec![m];
+        while *lens.last().unwrap() > 1 {
+            lens.push(lens.last().unwrap().div_ceil(2));
+        }
+        let nlevels = lens.len();
+        let mut levels: Vec<Vec<BlaStepDd>> = vec![Vec::new(); BLA_SKIP_LEVELS.min(nlevels)];
+        if nlevels <= BLA_SKIP_LEVELS {
+            return Self { levels };
+        }
+        // Nœud (k, j) de la pyramide complète, calculé depuis les pas unitaires :
+        // merge des deux fils s'ils existent, sinon report du fils gauche
+        // (élément impair en fin de niveau) — exactement la règle de la boucle
+        // historique.
+        fn node(
+            z: &[ComplexDDExp],
+            lens: &[usize],
+            k: usize,
+            j: usize,
+            c_norm: f64,
+            epsilon: f64,
+        ) -> BlaStepDd {
+            if k == 0 {
+                return BlaStepDd::single_mandelbrot(z[j], epsilon);
+            }
+            let left = node(z, lens, k - 1, 2 * j, c_norm, epsilon);
+            if 2 * j + 1 < lens[k - 1] {
+                let right = node(z, lens, k - 1, 2 * j + 1, c_norm, epsilon);
+                BlaStepDd::merge(left, right, c_norm)
+            } else {
+                left
+            }
+        }
+        let first: Vec<BlaStepDd> = (0..lens[BLA_SKIP_LEVELS])
+            .into_par_iter()
+            .with_min_len(1024)
+            .map(|j| node(z_ref_dd, &lens, BLA_SKIP_LEVELS, j, c_norm, epsilon))
             .collect();
-        let mut levels = vec![level0];
+        levels.push(first);
         while levels.last().unwrap().len() > 1 {
             let prev = levels.last().unwrap();
-            let mut next: Vec<BlaStepDd> = Vec::with_capacity(prev.len().div_ceil(2));
-            let mut i = 0;
-            while i + 1 < prev.len() {
-                next.push(BlaStepDd::merge(prev[i], prev[i + 1], c_norm));
-                i += 2;
-            }
-            if i < prev.len() {
-                next.push(prev[i]);
-            }
+            let n = prev.len();
+            let next: Vec<BlaStepDd> = (0..n.div_ceil(2))
+                .into_par_iter()
+                .with_min_len(1024)
+                .map(|j| {
+                    if 2 * j + 1 < n {
+                        BlaStepDd::merge(prev[2 * j], prev[2 * j + 1], c_norm)
+                    } else {
+                        prev[2 * j]
+                    }
+                })
+                .collect();
             levels.push(next);
-        }
-        // Vider les niveaux < BLA_SKIP_LEVELS (jamais consultés — cf. bla_dual).
-        for l in 0..BLA_SKIP_LEVELS.min(levels.len()) {
-            levels[l] = Vec::new();
-            levels[l].shrink_to_fit();
         }
         Self { levels }
     }
@@ -216,6 +286,23 @@ mod tests {
     use super::*;
     use crate::fractal::perturbation::dd::DoubleDoubleExp;
     use num_complex::Complex64;
+
+    /// VERROU d'accord entre la table et le traqueur : l'ε de la BLA dd vaut
+    /// 2⁻⁸⁰ et le traqueur dd est actif par défaut — l'un sans l'autre rend
+    /// des pixels faux (cf. la doc de `DD_BLA_EPSILON`). Qui change l'ε doit
+    /// re-vérifier la justesse (axe `truth` du harness) ; qui coupe le
+    /// traqueur par défaut doit repasser l'ε à 2⁻¹⁰⁶.
+    #[test]
+    fn dd_bla_epsilon_is_paired_with_the_dd_tracker() {
+        assert_eq!(DD_BLA_EPSILON, 2f64.powi(-80));
+        // Le traqueur compte bien la troncature l·ε avec CET ε : un saut de
+        // 2²⁰ pas depuis une borne nulle laisse au moins l·ε·|Aδ|.
+        use crate::fractal::bytecode::reliability::ShadowTrackerDd;
+        let l = 1u32 << 20;
+        let mut tracker = ShadowTrackerDd::new(0.0, DD_BLA_EPSILON);
+        tracker.bla(1.0, 1.0, 0.0, l);
+        assert!(tracker.err >= DD_BLA_EPSILON * l as f64, "borne {:e}", tracker.err);
+    }
 
     fn cdd(re: f64, im: f64) -> ComplexDDExp {
         ComplexDDExp {
@@ -266,6 +353,77 @@ mod tests {
         assert!((md.a.m01.to_f64() - mf.a.m01).abs() < 1e-12);
         assert!((md.b.m00.to_f64() - mf.b.m00).abs() < 1e-12);
         assert!((md.r2 - mf.r2).abs() < 1e-12 * mf.r2.max(1.0));
+    }
+
+    /// Construction historique (pyramide complète matérialisée puis niveaux
+    /// bas vidés) — référence du verrou ci-dessous.
+    fn build_full_pyramid(z_ref_dd: &[ComplexDDExp], c_norm: f64, epsilon: f64) -> BlaTableDd {
+        let m = z_ref_dd.len().saturating_sub(1);
+        if m == 0 {
+            return BlaTableDd { levels: Vec::new() };
+        }
+        let level0: Vec<BlaStepDd> = (0..m)
+            .map(|i| BlaStepDd::single_mandelbrot(z_ref_dd[i], epsilon))
+            .collect();
+        let mut levels = vec![level0];
+        while levels.last().unwrap().len() > 1 {
+            let prev = levels.last().unwrap();
+            let mut next: Vec<BlaStepDd> = Vec::with_capacity(prev.len().div_ceil(2));
+            let mut i = 0;
+            while i + 1 < prev.len() {
+                next.push(BlaStepDd::merge(prev[i], prev[i + 1], c_norm));
+                i += 2;
+            }
+            if i < prev.len() {
+                next.push(prev[i]);
+            }
+            levels.push(next);
+        }
+        for l in 0..BLA_SKIP_LEVELS.min(levels.len()) {
+            levels[l] = Vec::new();
+        }
+        BlaTableDd { levels }
+    }
+
+    fn step_bits(s: &BlaStepDd) -> Vec<u64> {
+        let mut v = vec![s.r2.to_bits(), s.l as u64];
+        for m in [s.a, s.b] {
+            for d in [m.m00, m.m01, m.m10, m.m11] {
+                v.push(d.hi.to_bits());
+                v.push(d.lo.to_bits());
+            }
+        }
+        v
+    }
+
+    /// Verrou : la construction directe (sans niveaux bas matérialisés,
+    /// parallèle) est BIT-IDENTIQUE à la pyramide complète, y compris aux
+    /// longueurs impaires (report de l'élément de fin à chaque niveau) et aux
+    /// orbites trop courtes pour un niveau consulté.
+    #[test]
+    fn direct_build_matches_full_pyramid() {
+        let c = Complex64::new(-0.743_643_887_037_158, 0.131_825_904_205_33);
+        let mut z = Complex64::new(0.0, 0.0);
+        let mut orbit = vec![cdd(0.0, 0.0)];
+        for _ in 0..5000 {
+            z = z * z + c;
+            if z.norm_sqr() > 4.0 {
+                z = Complex64::new(z.re * 0.1, z.im * 0.1);
+            }
+            orbit.push(cdd(z.re, z.im));
+        }
+        for len in [1usize, 2, 3, 5, 8, 9, 10, 17, 33, 1000, 1023, 1024, 1025, 4097, 5001] {
+            let o = &orbit[..len];
+            let a = BlaTableDd::build_mandelbrot(o, 1e-12, 8.271_806_125_530_277e-25);
+            let b = build_full_pyramid(o, 1e-12, 8.271_806_125_530_277e-25);
+            assert_eq!(a.levels.len(), b.levels.len(), "len={len}");
+            for (la, lb) in a.levels.iter().zip(&b.levels) {
+                assert_eq!(la.len(), lb.len(), "len={len}");
+                for (sa, sb) in la.iter().zip(lb) {
+                    assert_eq!(step_bits(sa), step_bits(sb), "len={len}");
+                }
+            }
+        }
     }
 
     /// Table sur une orbite Mandelbrot : structure niveaux + lookup cohérent.

@@ -95,6 +95,69 @@ impl DeltaState {
         self.step_with_julia(phase, c_ref, dc, !dc_contributes)
     }
 
+    /// Pas SANS suivi de dérivée : mêmes mises à jour de `z_ref` et `delta`
+    /// que [`Self::step_with_julia`] (mêmes opérations, même ordre →
+    /// bit-identique), `ddelta` laissé intact. Pour la boucle pixel quand ni
+    /// distance ni détection d'intérieur ne sont demandées : `step` calculait
+    /// alors la dérivée pour la jeter, plus trois normes par pas pour deviner
+    /// la convention Julia qui ne sert qu'à elle.
+    #[inline]
+    pub fn step_delta_only(&mut self, phase: &Phase, c_ref: Complex64, dc: Complex64) {
+        for op in &phase.ops {
+            match op {
+                Op::Sqr => {
+                    let two_z = self.z_ref * 2.0;
+                    let new_delta = two_z * self.delta + self.delta * self.delta;
+                    let new_z = self.z_ref * self.z_ref;
+                    self.delta = new_delta;
+                    self.z_ref = new_z;
+                }
+                Op::Mul => {
+                    let new_delta = self.stored_z * self.delta
+                        + self.z_ref * self.stored_delta
+                        + self.delta * self.stored_delta;
+                    let new_z = self.z_ref * self.stored_z;
+                    self.delta = new_delta;
+                    self.z_ref = new_z;
+                }
+                Op::Store => {
+                    self.stored_z = self.z_ref;
+                    self.stored_delta = self.delta;
+                }
+                Op::AbsX => {
+                    let new_delta_re = diffabs(self.z_ref.re, self.delta.re);
+                    self.delta = Complex64::new(new_delta_re, self.delta.im);
+                    self.z_ref = Complex64::new(self.z_ref.re.abs(), self.z_ref.im);
+                }
+                Op::AbsY => {
+                    let new_delta_im = diffabs(self.z_ref.im, self.delta.im);
+                    self.delta = Complex64::new(self.delta.re, new_delta_im);
+                    self.z_ref = Complex64::new(self.z_ref.re, self.z_ref.im.abs());
+                }
+                Op::NegX => {
+                    self.delta = Complex64::new(-self.delta.re, self.delta.im);
+                    self.z_ref = Complex64::new(-self.z_ref.re, self.z_ref.im);
+                }
+                Op::NegY => {
+                    self.delta = Complex64::new(self.delta.re, -self.delta.im);
+                    self.z_ref = Complex64::new(self.z_ref.re, -self.z_ref.im);
+                }
+                Op::Add => {
+                    self.delta += dc;
+                    self.z_ref += c_ref;
+                }
+                Op::Rot {
+                    cos_theta,
+                    sin_theta,
+                } => {
+                    let r = Complex64::new(*cos_theta, *sin_theta);
+                    self.z_ref = self.z_ref * r;
+                    self.delta = self.delta * r;
+                }
+            }
+        }
+    }
+
     /// Variante avec is_julia explicite pour le tracking ddelta. Utilisée
     /// quand distance/interior tracking est activé.
     pub fn step_with_julia(
@@ -591,6 +654,57 @@ mod tests {
             Complex64::new(0.001, 0.001),
             1e-12,
         );
+    }
+
+    /// Verrou : `step_delta_only` produit EXACTEMENT les `z_ref` et `delta`
+    /// de `step` (la dérivée en moins), sur toutes les familles compilables,
+    /// plusieurs pas d'affilée, des deux côtés de chaque pli `abs`.
+    #[test]
+    fn step_delta_only_is_bit_identical_to_step() {
+        use crate::fractal::bytecode::parse_opcodes_formula;
+        let mut formulas = vec![
+            compile_formula(FractalType::Mandelbrot, 2.0).unwrap(),
+            compile_formula(FractalType::BurningShip, 2.0).unwrap(),
+            compile_formula(FractalType::Tricorn, 2.0).unwrap(),
+            compile_formula(FractalType::Celtic, 2.0).unwrap(),
+            compile_formula(FractalType::Buffalo, 2.0).unwrap(),
+            compile_formula(FractalType::PerpendicularBurningShip, 2.0).unwrap(),
+            compile_formula(FractalType::Multibrot, 3.0).unwrap(),
+            compile_formula(FractalType::Multibrot, 5.0).unwrap(),
+        ];
+        formulas.push(parse_opcodes_formula("negx sqr rot{30} absy negy add").unwrap());
+        let starts = [
+            (Complex64::new(0.7, 0.4), Complex64::new(1e-3, 2e-3)),
+            (Complex64::new(-0.7, -0.4), Complex64::new(-1e-9, 3e-9)),
+            (Complex64::new(1e-12, -2e-12), Complex64::new(5e-12, 7e-12)),
+            (Complex64::new(-0.3, 0.0), Complex64::new(0.0, 0.0)),
+        ];
+        let c_ref = Complex64::new(-0.3, 0.11);
+        for formula in &formulas {
+            let phase = &formula.phases[0];
+            for dc in [Complex64::new(1e-3, -1e-3), Complex64::new(0.0, 0.0)] {
+                for &(z0, d0) in &starts {
+                    let mut full = DeltaState::new(z0, d0);
+                    let mut lean = DeltaState::new(z0, d0);
+                    for k in 0..6 {
+                        full.step(phase, c_ref, dc);
+                        lean.step_delta_only(phase, c_ref, dc);
+                        let same = |a: Complex64, b: Complex64| {
+                            a.re.to_bits() == b.re.to_bits() && a.im.to_bits() == b.im.to_bits()
+                        };
+                        assert!(
+                            same(full.delta, lean.delta) && same(full.z_ref, lean.z_ref),
+                            "{phase:?} z0={z0:?} d0={d0:?} dc={dc:?} pas {k} : \
+                             step ({:?}, {:?}) ≠ step_delta_only ({:?}, {:?})",
+                            full.z_ref,
+                            full.delta,
+                            lean.z_ref,
+                            lean.delta
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

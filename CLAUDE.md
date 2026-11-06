@@ -92,7 +92,9 @@ Axes **contre Fraktaler-3** (exigent F3 + numpy/OpenEXR) : **vitesse-ratio**
 EXR N0/NF). Axes **intrinsèques** (tournent partout, dont CI/conteneur) :
 **vitesse auto-relative** (temps fractall par cas vs baseline même machine),
 **qualité** (`fractall-quality` vs ground truth GMP + goldens), **fuzz**
-(sondes pert-vs-GMP), **precision** (juge orbite à précision ×4 — seul axe
+(sondes pert-vs-GMP), **truth** (rendu de PRODUCTION vs tier dd sur les cas
+du corpus — le seul axe qui juge la sortie par défaut là où elle est
+réellement utilisée ; a manqué jusqu'au 2026-11-06), **precision** (juge orbite à précision ×4 — seul axe
 qui voit une précision d'orbite insuffisante : le juge GMP de quality partage
 la formule du moteur), **profil** (où va le temps : path exécuté + ventilation
 orbite/pixels/post/sauvegarde + ns/iter + % fiabilité), **bench** (iters/s par
@@ -104,6 +106,7 @@ python3 scripts/harness.py score --tier quick    # cycle interne (~10 cas, 256²
 python3 scripts/harness.py score --tier standard # 3 runs médiane, avant commit perf
 python3 scripts/harness.py trend --case e50      # évolution d'un cas (temps, ns/iter, path)
 python3 scripts/harness.py ab --cases e50 --env FRACTALL_RELIABILITY=off,escalate  # A/B isolé (G14)
+python3 scripts/harness.py hotspots --case e1000 --size 1200  # profil ÉCHANTILLONNÉ : quelles fonctions (binaire symbolisé)
 python3 scripts/harness.py baseline              # fige la référence de CETTE machine (harness/baselines/)
 python3 scripts/test_harness_guard.py            # verrous du harness (CI)
 ```
@@ -155,12 +158,14 @@ src/
 │   ├── bytecode/        # Moteur unifié Fraktaler-3 (P3.1, défaut)
 │   │   ├── mod.rs          # Op, Phase, Formula
 │   │   ├── compile.rs      # compile_formula + compile_hybrid_formula + formula_for_params (G4)
-│   │   ├── interp.rs       # iterate_bytecode_f64
+│   │   ├── interp.rs       # iterate_bytecode_f64 (scalaire, référence)
+│   │   ├── interp_batch.rs # idem PAR LOTS, 8 voies entrelacées (path std, défaut)
 │   │   ├── interp_gmp.rs   # interpréteur GMP pour orbite référence
 │   │   ├── delta_form.rs   # DeltaState f64 + DeltaStateExp ComplexExp
 │   │   ├── bla_dual.rs     # BLA mat2 unifié via dual-numbers
 │   │   ├── pixel_loop.rs   # BLA + delta-form + rebasing F3 (f64)
-│   │   ├── pixel_loop_exp.rs # idem ComplexExp (deep zoom > 1e13)
+│   │   ├── pixel_loop_exp.rs # idem ComplexExp (tier exp, boucle FloatExp de référence)
+│   │   ├── pixel_loop_scaled.rs # tier exp en « double mis à l'échelle » (défaut)
 │   │   ├── pixel_loop_dd.rs # tier double-double ~106b (float128-like), opt-in
 │   │   └── bla_dd.rs       # table BLA à coefficients dd (skip sans perte 106b)
 │   └── perturbation/    # Path GMP + ponts vers bytecode
@@ -478,11 +483,30 @@ Modes forcés : StandardF64 | Perturbation | ReferenceGmp
 
 Si `params.use_bytecode_engine` ET `compile_formula(type, power)` réussit :
 
-- **CPU f64 standard** : `iterations.rs::iterate_via_bytecode`. Supporte
-  distance estimation, interior detection, orbit traps via tracking de `dz`.
+- **CPU f64 standard** : par défaut **par lots** —
+  `bytecode/interp_batch.rs::iterate_bytecode_f64_batch` (2026-11-06) : les
+  points à calculer d'une TUILE avancent à 8 en lockstep (chaque opcode
+  appliqué à toutes les voies, voie rechargée dès qu'elle sort). Chaque voie
+  fait la suite d'opérations exacte du scalaire → **bit-identique** (verrou
+  `batch_matches_scalar_interpreter_bit_for_bit`), ×4,5 à ×7 sur la phase
+  pixel (la boucle scalaire était bornée par la LATENCE de la chaîne z→z²+c,
+  pas par le débit). Conditions : formule mono-phase, sans canal annexe.
+  Sinon scalaire `iterations.rs::iterate_via_bytecode` (hybrides ; distance,
+  intérieur, orbit traps via suivi de `dz`), formule compilée UNE fois par
+  rendu (`standard_formula` + `iterate_point_with_formula` — `iterate_point`
+  la recompilait deux fois par pixel). `FRACTALL_STD_BATCH=0` = scalaire.
+  ⚠️ Toute nouvelle sémantique d'opcode doit être portée dans les DEUX
+  interpréteurs (le verrou compare les deux sur toutes les familles).
 - **CPU perturbation** : `perturbation/delta.rs::try_bytecode_unified_path`
-  → `bytecode/pixel_loop.rs` (f64) ou `pixel_loop_exp.rs` (ComplexExp,
-  deep zoom > 1e13). **Rebasing F3 strict** (`|Z[m] + δ|² < |δ|²` **OU bout de
+  → `bytecode/pixel_loop.rs` (f64), ou au tier exp (pixel < 1e-280)
+  `pixel_loop_scaled.rs` — δ = d·2^e en f64, pas FloatExp exact en repli,
+  PNG identiques à `pixel_loop_exp.rs` sur les 37 cas exp du corpus, ×2-7 ;
+  `FRACTALL_EXP_SCALED=0` = boucle FloatExp. La boucle rapide f64 prend son
+  pas direct d'un noyau monomorphisé (`DirectKernel`) : Mandelbrot (tracé),
+  Julia, Burning Ship, Tricorn — bit-identiques à la boucle générique, qui
+  ne sert plus qu'aux canaux annexes et aux autres phases. ⚠️ Un noyau
+  statique gagne ×1,4-1,9 ; la même boucle avec le pas bytecode non
+  spécialisé ne gagne RIEN (mesuré) : le coût est le dispatch d'opcode. **Rebasing F3 strict** (`|Z[m] + δ|² < |δ|²` **OU bout de
   référence**) remplace la glitch detection Pauldelbrot legacy. Le **rebase-at-end**
   (F3 `hybrid.cc:301` : `z := Z+δ, m := 0` quand la réf est épuisée) garde les
   centres escape-time profonds sur le path perturbation au lieu de tomber en GMP
@@ -677,8 +701,8 @@ Le fast-path f64 Mandelbrot rendait des comptes FAUX sans rien signaler
 **Traqueur de borne d'erreur** injecté par monomorphisation (`StepObserver` ;
 production = `NoObserve` ZST, verrou bit-identique
 `tracked_mandelbrot_loop_is_bit_identical_and_quiet`) : borne absolue `E` sur
-z propagée (pas direct `E·(2|z|+E)+γ·local`, saut BLA `σ₁(A)·E+(ε+γ)·…`,
-rebase `+u·(|Z|+|z|)`) ; pixel non fiable si la borne **s'EMBALLE**
+z propagée (pas direct `E·(2|z|+E)+γ·local`, saut BLA de `l` pas
+`σ₁(A)·E+(l·ε+γ)·…`, rebase `+u·(|Z|+|z|)`) ; pixel non fiable si la borne **s'EMBALLE**
 (`error_bound ≥ 1e30` ou NaN, `DeltaResult::error_bound`).
 ⚠️ Calibration (étude vs GMP, `quality::reliability_study`) : TOUS les pixels
 faux ont une borne emballée ; un seuil z-space MODÉRÉ flagge 1-8 % (rejeté) ;
@@ -691,17 +715,107 @@ pixels flaggés recalculés au **tier dd** sur ces seuls pixels
 `z_ref_lo` capturée avec l'orbite primaire — jamais re-calculée ; repli
 GMP), frame entière dd au-delà de 50 % seulement (le pixel par pixel est
 toujours moins cher en dessous). Tier **exp** : traqueur
-`ShadowTrackerExp` opt-in `FRACTALL_RELIABILITY_EXP=1` (+25-45 % pour 0-2 px ;
-les vraies erreurs exp étaient l'ε BLA 2⁻²⁴ → 2⁻⁵³ et le span f64
-**sous-normal** 1e308-1e324 — `effective_spans_fexp` exige `is_normal`).
+`ShadowTrackerExp` **actif par défaut** depuis 2026-11-06
+(`FRACTALL_RELIABILITY_EXP=0` le coupe) — à 256² sans lui e401 6, olbaid2 48,
+e1298 18 pixels faux, 0 avec ; porté dans la boucle scaled
+(`direct_scaled` / `bla_scaled`, même borne au bit près). (Les erreurs exp
+d'entrée — ε BLA 2⁻²⁴ → 2⁻⁵³, span f64 **sous-normal** 1e308-1e324,
+`effective_spans_fexp` exige `is_normal` — avaient été corrigées avant.)
+⚠️ **Trois règles payées par des pixels faux (2026-11-06)**, valables pour
+tout traqueur : (1) la troncature d'un saut BLA de `l` pas vaut **l·ε**, pas
+ε (chaque pas fusionné abandonne jusqu'à ε : avec ε seul la borne
+sous-estimait l'erreur réelle ~40× — e227 384 pixels faux non flaggés à
+256², golden_spider 169, dragon 36 à 128²) ; (2) une borne emballée doit
+être **collante** (au tier exp l'exposant i32 débordait et la borne
+retombait à « fiable ») ; (3) un pixel qui s'évade quand `E ≥ ||z|−R|`
+n'est pas déterminé (`escape_undetermined`, actif en exp, opt-in f64
+`FRACTALL_F64_MARGIN=1`).
+**Tier dd : même garde-fou un niveau au-dessus** (`ShadowTrackerDd`, unité
+2⁻¹⁰⁴) — le dd n'est PAS la vérité : seahorse 1e6, pixel (117,17), GMP
+convergé 1598, dd 1838. Pixel dd dont la borne s'emballe → second essai
+SANS BLA (borne réduite à l'arrondi dd ; évite d'envoyer au GMP des pixels
+que le dd rend juste) → GMP par pixel. Vaut en correction, en frame dd
+(`--dd-tier`, `[DD-ESCALATION]`) et pour les pixels flaggés du kernel GPU
+f32. `FRACTALL_RELIABILITY_DD=0`. ε de la BLA dd = **2⁻⁸⁰, APPARIÉ au
+traqueur dd** : nu, il laissait des pixels dd faux (troncature l·ε) ; à
+2⁻¹⁰⁶ la table ne saute plus rien (+24-35 %) ; sous le traqueur un saut
+dont la troncature compte emballe la borne et le pixel est refait sans BLA
+— mêmes itérations que 2⁻¹⁰⁶ sur 75 cas du corpus. Ne jamais changer l'un
+sans l'autre. **Plafond de l'escalade GMP** : tout ou rien, ssi le
+nombre de pixels dd non fiables ≤ max(16, 0,1 % × pixels)
+(`gmp_escalation_allowed`, `FRACTALL_RELIABILITY_GMP_MAX_FRACTION`, ≥ 1 =
+illimité) ; au-delà, valeur dd de meilleur effort + avertissement stderr
+inconditionnel — lethal_weapon (1,6 M itérations, 17 % de pixels au-delà du
+dd) prendrait des heures sinon. ⚠️ Même sous le plafond le GMP par pixel est
+cher (e227 : ~3 s de thread par pixel) : un tier quad-double est le vrai
+remède (TODO G14.1 h). **Entrée dans le tier dd = `wisdom::
+dd_tier_applicable`** (Mandelbrot ET non hybride/opcodes) partout —
+`--dd-tier` sur `--opcodes` rendait un z²+c nu.
 ⚠️ `z_ref_lo` est à l'échelle de la MANTISSE de `z_ref` (ComplexExp), pas du
 f64 : |Z| ~ 1e-1200 près de la période atom-domain. Correction dd : K (rotation)
 appliquée au dc dd. Coût
 (seahorse 1e8 512²) : boucle 2,0 → 2,5 ns/iter (traqueur gardé en LOCAL —
 derrière `&mut` il coûtait ×3), total 0,72 → 1,10 s. Mesuré vs GMP :
 seahorse WARN max_diff 437 → PASS ; e30 5/5, e50 17/18 pixels faux
-détectés, 0 faux positif sur e13/e17/e18/e100. Hors fast-path (exp,
-hybrides, harmonic, Julia, DE) : pas de suivi.
+détectés, 0 faux positif sur e13/e17/e18/e100. Suivis : fast-path f64
+Mandelbrot, Harmonic LA, tier exp Mandelbrot (boucle scaled), tier dd.
+**Sans suivi** : hybrides, Julia, Burning Ship / Tricorn, DE.
+⚠️ **Aucune lecture d'environnement hors `OnceLock` dans les fichiers du
+chemin par pixel** (verrou de source
+`hot_path_sources_only_read_env_through_once_lock`) : `std::env::var` par
+pixel = ~250 ns + verrou global — réintroduit puis retiré la même nuit.
+⚠️ **Tout chemin qui recalcule un pixel doit ajouter `centre_vue − cref`
+au dc** (`resolved_sampling.ref_offset`, non nul quand l'orbite du cache est
+réutilisée hors centre — `can_subset_reuse`, GUI seulement) : le plein cadre
+et la correction GMP le faisaient, `correct_pixels_dd` non (39 pixels
+corrigés sur 39 faux, verrou
+`panned_view_with_reused_orbit_matches_fresh_render`). Les rendus sans cache
+d'orbite (CLI, quality, harness) ne peuvent PAS voir cette classe de défaut.
+Au tier exp (|dc| < 2⁻⁹⁰⁰, garde d'entrée du chemin rapide dd) le traqueur dd
+est `reliability_dd_exp::ShadowTrackerDdExp` (borne et magnitudes en
+`FloatExp`) : le traqueur f64 y sous-débordait et restait à 0.
+⚠️ **Scène au-delà du dd = frame dd payée pour rien** (super_dense : 3 s →
+132 s à 48² pour une image aussi fausse, avec avertissement) — TODO
+G14.1 (k). Remède en OPT-IN : `FRACTALL_DD_PROBE=1` (sonde de ≤ 256 pixels
+avant l'escalade frame ; majorité au-delà du dd ⇒ f64 gardé + avertissement ;
+super_dense 132 → 10,4 s, lethal_weapon inchangé au pixel près).
+⚠️ Le juge de ces
+défauts n'était AUCUN axe de routine : c'est le rendu de production comparé
+au tier dd (lui-même vérifié contre GMP) sur le corpus `toml/` qui les a
+trouvés — quality juge 16 presets, precision juge l'orbite.
+
+**Correction dd (2026-11-06)** : boucle dd en double-double « nu » mis à
+l'échelle 2^s (`pixel_loop_dd.rs`, bit-identique à la boucle
+`DoubleDoubleExp`, ×2-5 ; `FRACTALL_DD_FAST=0`) ; la correction ne bâtit que
+la table BLA dd, niveaux ≥ `BLA_SKIP_LEVELS` (pic RSS dragon 1 063 → 329
+Mo) ; partie basse capturée PARESSEUSEMENT (un Z GMP toutes les 1024
+itérations dans `high_precision_data`, relecture parallèle seulement si un
+pixel est flaggé ; `FRACTALL_LAZY_LO=0`).
+
+### Interrupteurs d'environnement (A/B et diagnostic)
+
+Tous lus UNE fois (`OnceLock`). Défaut = comportement de production.
+
+| Variable | Effet |
+|---|---|
+| `FRACTALL_STD_BATCH=0` | path f64 standard : interpréteur scalaire au lieu du noyau par lots |
+| `FRACTALL_EXP_SCALED=0` | tier exp : boucle FloatExp au lieu du « double mis à l'échelle » |
+| `FRACTALL_EXP_SCALED_STATS=1` | ventilation des tours de la boucle scaled (rapide / lent / causes de repli) |
+| `FRACTALL_JULIA_FAST=0` | Julia en perturbation : pas générique au lieu du fast-path inline |
+| `FRACTALL_PHASE_FAST=0` | Burning Ship / Tricorn : boucle générique au lieu des noyaux statiques |
+| `FRACTALL_RELIABILITY=off\|observe\|escalate` | détecteur de fiabilité (défaut `escalate`) |
+| `FRACTALL_RELIABILITY_EXP=0` | coupe le traqueur du tier exp |
+| `FRACTALL_RELIABILITY_DD=0` | coupe le traqueur du tier dd (⚠️ rend l'ε 2⁻⁸⁰ de la BLA dd non gardé) |
+| `FRACTALL_DD_RETRY_NOBLA=0` | pas de second essai dd sans BLA avant le GMP |
+| `FRACTALL_RELIABILITY_GMP_MAX_FRACTION=f` | plafond de l'escalade dd → GMP (défaut 0,001 ; ≥ 1 = illimité) |
+| `FRACTALL_DD_PROBE=1` | sonde dd avant l'escalade frame (opt-in) : scène dont la majorité des pixels non fiables échappe aussi au dd ⇒ f64 gardé avec avertissement, frame dd non rendue |
+| `FRACTALL_F64_MARGIN=1` | test de détermination à l'évasion au tier f64 (opt-in, +75-195 %) |
+| `FRACTALL_DD_ESCAPE_REL=0.1` | tier dd : pixel non fiable si sa borne ≥ 0,1·\|z\| à l'évasion (opt-in — corrige le dernier pixel faux de seahorse-valley 256², coûte ×2 sur e227 pour 0 pixel changé) |
+| `FRACTALL_DD_FAST=0` | boucle `DoubleDoubleExp` au lieu du chemin rapide dd |
+| `FRACTALL_LAZY_LO=0` | capture eager de la partie basse de l'orbite |
+| `FRACTALL_HARMONIC_LA=auto\|1\|0` | routage Harmonic LA |
+| `FRACTALL_GPU_PERTURB_F32=1`, `FRACTALL_GPU_F32_RAW=1`, `FRACTALL_GPU_F32_FALLBACK_RATIO` | kernel GPU f32 : forçage, sortie brute sans correction, seuil de repli |
+| `FRACTALL_PERTURB_STATS=1`, `FRACTALL_WISDOM=1` | lignes `[PERTURB PERF]` / `[RELIABILITY*]` / `[FRACTALL]`, `[WISDOM]` |
 
 ### Précision GMP perturbation
 
@@ -722,7 +836,24 @@ pseudo-orbites de même précision, aucune n'est « plus vraie » (écarts au ju
 inchangés. Dragon : orbite −35 %, total −12 %. `FRACTALL_ORBIT_FAST_SQR=0`
 revient à `mpc_sqr` (A/B).
 
-**Cache** (`ReferenceOrbitCache`) : orbite + BLA réutilisées si même
+**Cache de table BLA** (`delta.rs`, `GLOBAL_BLA` + thread-local) : clé =
+identité de l'orbite (**adresse + longueur + empreinte de contenu**, cf.
+`OrbitIdentity`) + `c_norm` + empreinte de la formule hybride/opcodes
+(`[M,M]` et `[M]` ont la même orbite primaire) + type/puissance/seuil/tier dd. ⚠️ Ni l'adresse
+seule (une orbite libérée puis une autre réallouée au même endroit
+retrouverait la table de l'ancienne) ni l'oubli de `c_norm` (orbite
+réutilisée pour une vue plus large → rayons de merge sur-permissifs) ne sont
+acceptables : verrou `bla_cache_key_follows_orbit_content_and_view_radius`.
+Le chemin par pixel ne clone PAS l'`Arc` de l'entrée (poignée `Rc` par
+thread) et ne compile pas de `Formula` : sur les vues peu chères c'était
+jusqu'à 85 % du temps pixel. Règle générale tirée de cette nuit : **rien de
+ce qui est constant sur le rendu ne doit être recalculé dans
+`try_bytecode_unified_path`** — `effective_pixel_size` y relisait les spans
+HP en GMP à chaque pixel au-delà de 1e308 (mémo depuis, verrou
+`hp_pixel_size_memo_follows_its_key`) ; l'outil pour le voir est
+`harness.py hotspots`.
+
+**Cache d'orbite** (`ReferenceOrbitCache`) : orbite + BLA réutilisées si même
 centre / type / précision. ⚠️ **Régime atom-domain** (`is_valid_for` +
 `can_subset_reuse` → `atom_regime_scale_mismatch`) : la troncature atom-domain
 de la référence dépend de l'ÉCHELLE de vue (`atom_radius_sqr = span_vue²`), donc
@@ -953,10 +1084,22 @@ fractall-cli --type N --output FILE [OPTIONS]
   Pixels `flags=2` (non fiables) recalculés sur le CPU
   (`perturbation::recompute_pixels_cpu`, mêmes plafonds que le plein cadre —
   sans `with_uncapped_perturb_limits` ils sortaient à 1024) ; frame entière
-  CPU au-delà de 25 %. lavapipe vs GMP : **PASS** max_diff 1 à 1e4/3e5/1e6/
+  CPU au-delà d'un seuil qui dépend du chemin CPU concurrent (0,45 s'il
+  ferait de la perturbation, 0,25 s'il ferait du std f64). **Mesuré sur
+  Metal (Apple M4, 2026-11-06)** : PASS vs GMP de 1e4 à 1e20 ; 4-13× le CPU
+  sur les scènes à < 1 % de pixels renvoyés (e13, e17, minibrot e18),
+  1,3-2,3× sur les spirales à 27-42 % ; perd sous 1e12 (CPU en std) ; le
+  coût est dominé par la correction CPU, pas par le kernel. Sonde BLA
+  ASCENDANTE dans le kernel (le rayon ne croît pas avec le niveau ; ×4 sur
+  le temps kernel, sorties identiques au bit — non portée dans
+  `perturbation.wgsl` f64, non testable sur Metal). `cabs_small` : modules
+  mis à l'échelle 2⁵⁶ (|δ|² sous-débordait en f32 au-delà de ~1e19). Routage
+  Auto : clés wisdom `gpu_perturb_f32` vs `cpu_perturb_f64_mid` (MÊME vue des
+  deux côtés), donc seulement après `fractall-cli --wisdom-bench` sur la
+  machine. Outil : `fractall-quality gpu-bench`. lavapipe vs GMP : **PASS** max_diff 1 à 1e4/3e5/1e6/
   e13 (kernel f64 : WARN max_diff 442 à 1e6), mais 11-16 % de pixels
   renvoyés au CPU sur le bord chaotique seahorse (0,2 % à e13 ; 1e8 → CPU
-  entier). Perf réelle sur Metal NON mesurée.
+  entier).
 
 **Rotation/transform** : seul le path bytecode applique K sur GPU. Les autres
 paths GPU (perturbation, shaders f32 dédiés) retombent sur le CPU quand
