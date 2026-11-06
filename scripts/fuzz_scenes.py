@@ -61,29 +61,47 @@ def escape(name, cx, cy, itmax):
     return i
 
 
-def stability(name, cx, cy, span, itmax):
+def escape_julia(zx, zy, seed, itmax):
+    """Julia z² + c : le PIXEL est z₀, la graine `seed` est c."""
+    x, y = zx, zy
+    cx, cy = seed
+    i = 0
+    while i < itmax and x * x + y * y < BAILOUT_SQR:
+        x, y = x * x - y * y + cx, 2 * x * y + cy
+        i += 1
+    return i
+
+
+def stability(name, cx, cy, span, itmax, esc=None):
     """Fraction d'un 5×5 échantillonné sur la VUE (±span/2) où l'échappement est
     invariant à un bump additif 2⁻⁴⁶·max(|c|, span) — proxy de conditionnement
     de la ground truth. Bump ADDITIF (pas relatif) : un point exactement sur un
     axe (cy=0, antennes) doit être perturbé aussi."""
+    if esc is None:
+        esc = lambda px, py: escape(name, px, py, itmax)
     ok = 0
     for j in range(5):
         for i in range(5):
             px = cx + (i / 4.0 - 0.5) * span
             py = cy + (j / 4.0 - 0.5) * span
             bump = 2.0 ** -46 * max(abs(px), abs(py), span)
-            if escape(name, px, py, itmax) == escape(name, px + bump, py + bump, itmax):
+            if esc(px, py) == esc(px + bump, py + bump):
                 ok += 1
     return ok / 25.0
 
 
-def hunt(rng, name, fold_filter, target_span, itmax, grid=25):
-    """Descente de zoom depuis la vue pleine ; renvoie (cx, cy) ou None."""
-    cx, cy, span = -0.5, 0.0, 4.0
+def hunt(rng, name, fold_filter, target_span, itmax, grid=25, esc=None,
+         start=(-0.5, 0.0, 4.0)):
+    """Descente de zoom depuis la vue pleine ; renvoie (cx, cy) ou None.
+    `esc(px, py)` : compte d'échappement du point (défaut : famille `name`,
+    plan des paramètres) ; `start` : vue de départ (cx, cy, span)."""
+    if esc is None:
+        esc = lambda px, py: escape(name, px, py, itmax)
+    cx, cy, span = start
     min_ax = 0.1 if fold_filter else 0.0
     while span > target_span:
-        iters = [[escape(name, cx + (i / (grid - 1) - 0.5) * span,
-                         cy + (j / (grid - 1) - 0.5) * span, itmax)
+        iters = [[esc(cx + (i / (grid - 1) - 0.5) * span,
+                      cy + (j / (grid - 1) - 0.5) * span)
                   for i in range(grid)] for j in range(grid)]
         cands = []
         for j in range(1, grid - 1):
@@ -107,14 +125,14 @@ def hunt(rng, name, fold_filter, target_span, itmax, grid=25):
         rng.shuffle(top)
         best = None
         for var, px, py in top[:5]:
-            if stability(name, px, py, span / 8.0, itmax) >= 1.0:
+            if stability(name, px, py, span / 8.0, itmax, esc) >= 1.0:
                 best = (px, py)
                 break
         if best is None:
             return None
         cx, cy = best
         span /= 8.0
-    return (cx, cy) if stability(name, cx, cy, target_span, itmax) >= 1.0 else None
+    return (cx, cy) if stability(name, cx, cy, target_span, itmax, esc) >= 1.0 else None
 
 
 def generate(seed: int, n: int) -> list[dict]:
@@ -148,12 +166,66 @@ def generate(seed: int, n: int) -> list[dict]:
     return scenes
 
 
+# Graines Julia des sondes. La descente suit le bord entre points qui
+# s'échappent et points prisonniers : il faut un ensemble de Julia REMPLI
+# (graine dans M) — lapin de Douady, basilique, bord du cardioïde, bulbe.
+JULIA_SEEDS = [
+    (-0.12, 0.74),
+    (-1.0, 0.0),
+    (-0.5, 0.5),
+    (-0.4, 0.6),
+    (0.0, 0.64),
+    (-0.75, 0.05),
+]
+
+
+def generate_julia(seed: int, n: int) -> list[dict]:
+    """n scènes Julia (type 4) déterministes, dans le plan de z : la descente
+    part de la vue pleine et suit le BORD de l'ensemble, donc le centre de la
+    scène n'est (presque) jamais 0.
+
+    Pourquoi cette famille est à part : la référence de perturbation d'une vue
+    Julia part du centre de la vue (Z[0] ≠ 0), et jusqu'au 2026-11-06 toutes
+    les boucles rebasaient comme si Z[0] = 0 — 92 à 99 % de pixels faux sur
+    toute vue non centrée en 0, invisibles parce que le seul preset Julia
+    était centré en 0. Suite distincte de `generate` : les scènes des six
+    familles Mandelbrot-like d'une seed donnée ne changent pas."""
+    scenes = []
+    attempt = 0
+    while len(scenes) < n and attempt < n * 12:
+        rng = random.Random(f"julia:{seed}:{attempt}")
+        jseed = JULIA_SEEDS[attempt % len(JULIA_SEEDS)]
+        attempt += 1
+        zoom = 10.0 ** rng.uniform(5.0, 11.0)
+        itmax = 2048
+        esc = lambda px, py, js=jseed: escape_julia(px, py, js, itmax)
+        pt = hunt(rng, "julia", False, 4.0 / zoom, itmax, esc=esc,
+                  start=(0.0, 0.0, 4.0))
+        if pt is None:
+            continue
+        cx, cy = pt
+        scenes.append({
+            "name": f"fuzz-{seed}-j{len(scenes)}-julia",
+            "type_id": 4,
+            "type": "julia",
+            "center_x": repr(cx),
+            "center_y": repr(cy),
+            "zoom": f"{zoom:.6e}",
+            "iterations": itmax,
+            "julia_re": repr(jseed[0]),
+            "julia_im": repr(jseed[1]),
+        })
+    return scenes
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--n", type=int, default=3)
+    ap.add_argument("--julia", type=int, default=0,
+                    help="nombre de scènes Julia à ajouter (suite distincte)")
     args = ap.parse_args()
-    for s in generate(args.seed, args.n):
+    for s in generate(args.seed, args.n) + generate_julia(args.seed, args.julia):
         print(json.dumps(s))
 
 

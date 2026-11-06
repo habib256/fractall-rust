@@ -84,12 +84,22 @@ non-régression absolue.
 N sondes **aléatoires déterministes** pert-vs-GMP (96², même juge que quality).
 Les scènes (`scripts/fuzz_scenes.py`) sont des points frontière **stables**
 (échappement invariant à un bump 2⁻⁴⁶ de c — ground truth bien conditionnée,
-les frontières hirsutes sont filtrées) tirés sur 6 familles, zoom 1e5-1e11.
+les frontières hirsutes sont filtrées) tirés sur 6 familles Mandelbrot-like
+(+ Julia, cf. ci-dessous), zoom 1e5-1e11.
 Vise les classes de divergence que les presets figés ratent (la classe
 e13/dd-sensibilité avait été trouvée PAR ACCIDENT). Quick=3, standard=6,
 full=8 sondes. La **seed est committée** (`FUZZ_SEED_DEFAULT`, affichée dans
 le scorecard) → chaque score rejoue les mêmes scènes ; la faire **tourner au
 rebaseline** (`--fuzz-seed`) pour élargir la couverture au fil du temps.
+- **Sondes Julia** (2026-11-06, `fuzz_scenes.generate_julia`) : une pour trois
+  sondes (au moins une), suite DISTINCTE ajoutée après les six familles — les
+  scènes existantes d'une seed ne changent pas. La descente se fait dans le
+  plan de z le long du bord d'un ensemble de Julia rempli (lapin, basilique,
+  bord du cardioïde…), donc **le centre de la scène n'est jamais 0** : c'est
+  ce qui manquait pour voir que la référence Julia part du centre de la vue
+  (`Z[0] ≠ 0`) et que les boucles rebasaient comme si `Z[0] = 0`. Puissance
+  vérifiée : 5 sondes sur 6 en FAIL (79-93 % de pixels faux) sur le binaire
+  d'avant le correctif, 6 sur 6 en PASS (max_diff 0) après.
 - Gap : FAIL fuzz = sévérité 1 (correction) ; WARN = 4 ; ERROR (rendu KO) = 2.
 
 ### 4 bis. Précision d'orbite — juge ×4 (`precision`, G14.3 2026-11-05)
