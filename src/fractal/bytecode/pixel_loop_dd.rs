@@ -139,7 +139,7 @@ fn dd_escape_rel() -> f64 {
 /// l'arbitrage bon marché (TODO G14.1 h). Seuils plus bas : 1e-2 → 41 px sur
 /// e227, 1e-3 → au-delà du plafond, 1e-6 → dragon paie 5 s pour un pixel.
 #[inline]
-fn dd_escape_bound(bound: f32, z_final: Complex64) -> f32 {
+pub(crate) fn dd_escape_bound(bound: f32, z_final: Complex64) -> f32 {
     let e = bound as f64;
     if e.is_finite() && e >= dd_escape_rel() * z_final.norm().max(1.0) {
         f32::INFINITY

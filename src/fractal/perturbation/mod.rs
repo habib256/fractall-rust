@@ -113,6 +113,10 @@ pub mod bla;
 pub mod compress;
 pub mod counter;
 pub mod dd;
+pub mod qd;
+pub mod orbit_qd;
+mod correct_qd;
+use correct_qd::qd_stage;
 
 /// Rapport du détecteur de fiabilité (G9.6) : ligne `[RELIABILITY]` (quand
 /// le suivi est actif et que les stats perturbation — `FRACTALL_PERTURB_STATS`,
@@ -427,6 +431,24 @@ pub fn recompute_pixels_cpu(
                 }
             }
             escalate = still;
+            // Tier qd entre le dd et le GMP (G14.1 h), même plafond que le
+            // plein cadre.
+            use crate::fractal::bytecode::pixel_loop_qd as q;
+            if !escalate.is_empty()
+                && q::qd_enabled()
+                && q::qd_escalation_allowed(escalate.len(), width * params.height.max(1) as usize, q::qd_max_fraction())
+            {
+                if let Some(fixed) = correct_qd::correct_pixels_qd(params, cache, &cancel, &escalate) {
+                    escalate.clear();
+                    for (idx, it, z, ok) in fixed {
+                        if ok {
+                            out.push((idx, it, z));
+                        } else {
+                            escalate.push(idx);
+                        }
+                    }
+                }
+            }
         }
     }
     if !escalate.is_empty() {
@@ -1513,6 +1535,12 @@ pub fn render_perturbation_with_cache(
         // complexes par itération ET exige l'orbite GMP DENSE, à reconstruire
         // (dragon : +4,3 s et +700 Mo pour un seul pixel).
         let mut pure_first: Vec<usize> = Vec::new();
+        // Tier qd (~212 b, G14.1 h) AVANT le GMP : sous son propre plafond
+        // déterministe ; ce qu'il rend fiable est réglé, le reste (borne qd
+        // emballée, hors domaine) suit la politique GMP ci-dessous.
+        if !dd_unreliable.is_empty() {
+            dd_unreliable = qd_stage(params, &cache, cancel.as_ref(), dd_unreliable, width * height, &mut iterations, &mut zs)?;
+        }
         if !dd_unreliable.is_empty() {
             use crate::fractal::bytecode::reliability as rel;
             let frame_pixels = width * height;
@@ -2610,6 +2638,13 @@ mod tests {
             let (iters, _, _) =
                 render_perturbation_cancellable_with_reuse(&p, &cancel, None).expect("rendu");
             assert_eq!(iters[17 * 256 + 117], 1598, "dd_tier={dd_tier}");
+            // Même pixel par le chemin de l'hôte GPU (f64 → dd → qd → GMP).
+            if !dd_tier {
+                let cache = super::orbit::compute_reference_orbit_cached(&p, None, None, None, false).expect("orbite");
+                let out = super::recompute_pixels_cpu(&p, &cache, &[17 * 256 + 117]);
+                assert_eq!(out.len(), 1);
+                assert_eq!(out[0].1, 1598, "recompute_pixels_cpu");
+            }
         }
     }
 
