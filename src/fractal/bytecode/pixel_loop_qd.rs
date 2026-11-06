@@ -88,8 +88,8 @@ pub fn qd_scale_for(dc_log2: i64) -> Option<i32> {
 /// Traqueur de fiabilité qd, dans le cadre ×2^s : `e` = borne ABSOLUE sur z
 /// multipliée par 2^s. Même récurrence que `ShadowTrackerDd` (pas direct
 /// `E' = E·(2|z| + E) + γ·(|2Zδ| + |δ|² + |dc|)`, rebase `+u·(|Z| + |z|)`),
-/// plus l'arrondi de la RÉFÉRENCE quand son orbite GMP est moins précise que
-/// le qd (`u_ref·|Z[m+1]|` par pas : le pixel hérite de l'arrondi de la
+/// plus l'arrondi de la RÉFÉRENCE, toujours compté
+/// (`u_ref·|Z[m+1]|` par pas : le pixel hérite de l'arrondi de la
 /// référence à chaque itération).
 #[derive(Clone, Copy, Debug)]
 struct TrackerQd {
@@ -179,15 +179,17 @@ pub fn iterate_pixel_qd_mandelbrot(
     // Bande où la norme f64 ne tranche pas l'évasion : test qd exact.
     let (lo_b, hi_b) = (bailout_sqr * (1.0 - 1e-12), bailout_sqr * (1.0 + 1e-12));
     let runaway = crate::fractal::bytecode::reliability::reliability_runaway();
-    // Arrondi de la RÉFÉRENCE (pseudo-orbite GMP à `ref_prec` bits) : compté
-    // seulement si elle est moins précise que le qd. Au-delà, il est COMMUN
-    // au qd et au GMP par pixel de repli (même précision de formule) : le
-    // compter enverrait au GMP des pixels qu'il ne rendrait pas mieux.
-    // Mesuré (golden_spider 256², 16 px) : compté, la borne vaut 0,1 à 7e7
-    // à l'évasion — le z final n'est déterminé NI par le qd NI par le GMP à
-    // 605 b (GMP 1210 b == 2420 b ≠ les deux, écart relatif ~1e-3), alors que
-    // les ITÉRATIONS sont identiques aux trois précisions.
-    let u_ref = if ref_prec >= 212 { 0.0 } else { 2f64.powi(-(ref_prec as i32 - 2)) };
+    // Arrondi de la RÉFÉRENCE (pseudo-orbite GMP à `ref_prec` bits) : TOUJOURS
+    // compté (`u_ref·|Z[m+1]|` par pas, le pixel hérite de l'arrondi de la
+    // référence à chaque itération). Payé par des pixels faux : lethal_weapon
+    // 48² (orbite 290 b), 418 pixels au-delà du dd — SANS ce terme le qd en
+    // déclarait 376 fiables dont 245 faux contre un GMP à 580 b ; AVEC, il en
+    // garde 91, tous == GMP 580 b (et == GMP 290 b). Sur golden_spider 256²
+    // (orbite 607 b) la borne vaut alors 0,1 à 7e7 à l'évasion : le z final
+    // n'y est déterminé ni par le qd ni par le GMP 605 b (GMP 1210 == 2420 b
+    // ≠ les deux, ~1e-3 relatif) alors que les ITÉRATIONS sont identiques aux
+    // trois précisions ; aucune borne n'y atteint l'emballement.
+    let u_ref = 2f64.powi(-(ref_prec.min(1000) as i32 - 2));
     let mut tr = track.then(|| TrackerQd {
         e: 0.0,
         inv_scale: inv,
