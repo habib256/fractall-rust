@@ -128,6 +128,11 @@ signalés, éléphants 1e10 **609 / 611** pour 4,3 %. « Emballée OU marge
 d'évasion » attrape donc ~100 % des pixels faux pour le double de pixels
 signalés ; un critère relatif (`E ≥ 1e-6·|z|`) signale 20 à 100 % de la
 frame, inutilisable.
+Vue par défaut à **20 000 itérations** (un quart des pixels à l'intérieur,
+tous itérés jusqu'au plafond par le prototype) : toujours 10 pixels
+signalés sur 40 960, 8 / 8 faux attrapés — la borne reste bornée sur les
+orbites attirées par un cycle, quel que soit le plafond.
+
 **Notes de conception** (étude d'agent en lecture seule, coûts ESTIMÉS non
 mesurés) :
 - *Récurrence* par passe, avec n = |z|² AVANT le pas et γ = 4u :
