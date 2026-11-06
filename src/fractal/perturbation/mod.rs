@@ -114,6 +114,11 @@ pub mod compress;
 pub mod counter;
 pub mod dd;
 
+/// Budget de la correction GMP pure des familles sans tier dd (Julia,
+/// Burning Ship, Tricorn) : Σ itérations des pixels non fiables (pondérée par
+/// la précision) ≤ cette fraction des itérations de la frame.
+const FAMILY_GMP_ITER_BUDGET: f64 = 0.05;
+
 /// Rapport du détecteur de fiabilité (G9.6) : ligne `[RELIABILITY]` (quand
 /// le suivi est actif et que les stats perturbation — `FRACTALL_PERTURB_STATS`,
 /// actives par défaut — ou `FRACTALL_RELIABILITY_LOG` le demandent) et dump
@@ -1448,6 +1453,8 @@ pub fn render_perturbation_with_cache(
         // Pixels au-delà de la précision du tier dd (borne dd emballée) :
         // GMP par pixel SOUS PLAFOND seulement (cf. plus bas).
         let mut dd_unreliable: Vec<usize> = Vec::new();
+        // Pixels envoyés DROIT au GMP pur (`iterate_point_mpc`), cf. plus bas.
+        let mut pure_first: Vec<usize> = Vec::new();
         // Frame dd : les pixels non fiables sont ceux du traqueur DD.
         let frame_dd = bytecode_path
             && params.engine.use_dd_tier
@@ -1467,7 +1474,59 @@ pub fn render_perturbation_with_cache(
                 && !params.engine.find_nucleus
                 && crate::fractal::wisdom::dd_tier_applicable(params)
                 && cache.hybrid_refs.is_none();
-            let fixed = if dd_ok {
+            // Julia / Burning Ship / Tricorn (pas de tier dd) : les pixels
+            // non fiables vont DROIT au GMP pur (`iterate_point_mpc`, le
+            // juge de `fractall-quality`), sous le même plafond que
+            // l'escalade dd → GMP ; au-delà, valeur f64 gardée + avertissement.
+            // (La perturbation GMP par pixel n'est pas une correction sûre ici :
+            // elle rebasait Julia relativement à 0 et ne connaît que le critère
+            // de glitch Pauldelbrot.)
+            let family_pure = !dd_ok
+                && !params.is_hybrid_formula()
+                && matches!(
+                    params.fractal_type,
+                    crate::fractal::FractalType::Julia
+                        | crate::fractal::FractalType::BurningShip
+                        | crate::fractal::FractalType::Tricorn
+                );
+            if family_pure {
+                use crate::fractal::bytecode::reliability as rel;
+                // Plafond : celui de l'escalade dd → GMP (0,1 % des pixels),
+                // OU un budget en ITÉRATIONS — le GMP est ici le PREMIER
+                // recours (pas de dd), et ces pixels coûtent leur compte f64 :
+                // Σ itérations des pixels non fiables, pondérée par la
+                // précision (coût GMP/itération ∝ bits au-delà de 256), ≤ 5 %
+                // des itérations de la frame. Mesuré Julia 96² 1e13 : 1,8 %
+                // de pixels flaggés, 2,3 % des itérations, correction 0,03 s
+                // pour une phase pixels de 0,03 s — tous les pixels faux
+                // (73) corrigés. Déterministe (aucune mesure de temps).
+                let prec_weight =
+                    (compute_perturbation_precision_bits(params) as f64 / 256.0).max(1.0);
+                let flagged_iters: f64 = unreliable_indices
+                    .iter()
+                    .map(|&idx| iterations[idx] as f64)
+                    .sum::<f64>()
+                    * prec_weight;
+                let frame_iters: f64 = iterations.iter().map(|&n| n as f64).sum();
+                if rel::gmp_escalation_allowed(
+                    unreliable_indices.len(),
+                    width * height,
+                    rel::reliability_gmp_max_fraction(),
+                ) || flagged_iters <= FAMILY_GMP_ITER_BUDGET * frame_iters
+                {
+                    pure_first.extend_from_slice(&unreliable_indices);
+                } else {
+                    eprintln!(
+                        "[RELIABILITY] {} pixels ({:.2} %) non fiables laissés à leur valeur f64 (type {:?}, pas de tier dd) — recalcul GMP estimé hors budget ; FRACTALL_RELIABILITY_GMP_MAX_FRACTION=1 pour tout corriger",
+                        unreliable_indices.len(),
+                        100.0 * unreliable_ratio,
+                        params.fractal_type
+                    );
+                }
+            }
+            let fixed = if family_pure {
+                Some(Vec::new())
+            } else if dd_ok {
                 correct_pixels_dd(
                     params,
                     &cache,
@@ -1510,8 +1569,8 @@ pub fn render_perturbation_with_cache(
         // à l'itération GMP pure (`iterate_point_mpc`, un carré par
         // itération), pas à la perturbation GMP — celle-ci coûte deux produits
         // complexes par itération ET exige l'orbite GMP DENSE, à reconstruire
-        // (dragon : +4,3 s et +700 Mo pour un seul pixel).
-        let mut pure_first: Vec<usize> = Vec::new();
+        // (dragon : +4,3 s et +700 Mo pour un seul pixel). (Déclaré plus
+        // haut : les familles sans tier dd y versent leurs pixels non fiables.)
         if !dd_unreliable.is_empty() {
             use crate::fractal::bytecode::reliability as rel;
             let frame_pixels = width * height;

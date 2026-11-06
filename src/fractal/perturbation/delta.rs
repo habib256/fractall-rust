@@ -1075,6 +1075,40 @@ fn try_bytecode_unified_path(
             return Some(res);
         }
 
+        // ── Même détecteur pour Julia / Burning Ship / Tricorn (2026-11-06) ──
+        // Boucles rapides à noyau statique, monomorphisées avec le traqueur
+        // (résultat bit-identique à la boucle non suivie). Les pixels flaggés
+        // sont recalculés en GMP pur par l'appelant (pas de tier dd pour ces
+        // familles). `FRACTALL_RELIABILITY_FAMILY=0` coupe ce suivi.
+        if reliability.tracks()
+            && family_tracking_enabled()
+            && !params.channels.enable_orbit_traps
+            && !params.channels.enable_distance_estimation
+            && !params.channels.enable_interior_detection
+            && !params.is_hybrid_formula()
+            && entry.formula.phases.len() == 1
+        {
+            if let Some((res, tracker)) =
+                crate::fractal::bytecode::pixel_loop::iterate_pixel_unified_family_tracked(
+                    ref_orbit,
+                    bla,
+                    &entry.formula.phases[0],
+                    is_julia,
+                    dc_for_add,
+                    delta_init,
+                    crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(params),
+                    F64_BLA_EPSILON_PIXEL,
+                )
+            {
+                error_bound = if f64_escape_margin_enabled() {
+                    escape_undetermined(tracker.error_bound(), res.z_final, params.bailout)
+                } else {
+                    tracker.error_bound()
+                };
+                return Some(res);
+            }
+        }
+
         let options = crate::fractal::bytecode::pixel_loop::UnifiedOptions {
             orbit_trap: if params.channels.enable_orbit_traps {
                 Some(params.channels.orbit_trap_type)
@@ -1140,6 +1174,13 @@ fn try_bytecode_unified_path(
 /// l'environnement, contention entre workers) — test5 256² : phase pixels
 /// 1 ms → 17 ms, flake 5 → 28 ms.
 #[inline]
+/// Suivi de fiabilité des familles Julia / Burning Ship / Tricorn (défaut
+/// actif ; `FRACTALL_RELIABILITY_FAMILY=0` le coupe — A/B).
+pub(crate) fn family_tracking_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("FRACTALL_RELIABILITY_FAMILY").as_deref() != Ok("0"))
+}
+
 fn f64_escape_margin_enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("FRACTALL_F64_MARGIN").is_some())
