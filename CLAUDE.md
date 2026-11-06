@@ -888,7 +888,7 @@ Tous lus UNE fois (`OnceLock`). Défaut = comportement de production.
 | `FRACTALL_ORBIT_PAR_MIN_BITS=n` | précision à partir de laquelle l'orbite utilise le fil assistant (défaut 2048) |
 | `FRACTALL_EXP_SCALED=0` | tier exp : boucle FloatExp au lieu du « double mis à l'échelle » |
 | `FRACTALL_EXP_SCALED_STATS=1` | ventilation des tours de la boucle scaled (rapide / lent / causes de repli) |
-| `FRACTALL_JULIA_FAST=0` | Julia en perturbation : pas générique au lieu du fast-path inline |
+| `FRACTALL_JULIA_FAST=0` | Julia en perturbation : pas générique au lieu du fast-path inline (⚠️ sans effet tant que le suivi de fiabilité Julia est actif : couper aussi `FRACTALL_RELIABILITY_FAMILY=0`) |
 | `FRACTALL_PHASE_FAST=0` | Burning Ship / Tricorn : boucle générique au lieu des noyaux statiques |
 | `FRACTALL_RELIABILITY=off\|observe\|escalate` | détecteur de fiabilité (défaut `escalate`) |
 | `FRACTALL_RELIABILITY_EXP=0` | coupe le traqueur du tier exp |

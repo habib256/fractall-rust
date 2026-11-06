@@ -325,6 +325,54 @@ const CASES: &[Case] = &[
         ],
         envs: NO_ENV,
     },
+    // ── 2026-11-06 : verrous PNG des correctifs et raccourcis du matin ──
+    // Julia en perturbation HORS CENTRE : la référence part du centre de la
+    // vue (Z[0] ≠ 0) et le rebase est relatif à Z[0]. Ces deux vues sont
+    // centrées sur les deux points fixes répulsifs de la graine par défaut
+    // (points périodiques : l'orbite de référence repasse exactement par
+    // Z[0] à chaque pas). Avant correction : 92-99 % de pixels faux (rebase
+    // comme si Z[0] = 0), puis 100 % (δ absorbé dans (Z[m]+δ)−Z[0]).
+    // Vérifiées == GMP pur (`fractall-quality compare`, max_diff 0).
+    Case {
+        name: "julia_fixed_point_1e20",
+        args: &[
+            "--type", "4",
+            "--center-x-hp=0.38985610044883755171257630877868839385202331242396118850684663074760495785995127",
+            "--center-y-hp=-0.35272039721050518557877671863632904493924129254397061795699969009747042512071816",
+            "--zoom", "1e20",
+            "--width", "160", "--height", "100", "--iterations", "3000",
+        ],
+        envs: NO_ENV,
+    },
+    Case {
+        name: "julia_fixed_point_b_1e15",
+        args: &[
+            "--type", "4",
+            "--center-x-hp=0.61014389955116244828742369122131160614797668757603881149315336925239504214004873",
+            "--center-y-hp=0.35272039721050518557877671863632904493924129254397061795699969009747042512071816",
+            "--zoom", "1e15",
+            "--width", "160", "--height", "100", "--iterations", "3000",
+        ],
+        envs: NO_ENV,
+    },
+    // Raccourci des cycles exacts (points intérieurs) : mêmes pixels qu'en
+    // itérant jusqu'au plafond — noyau par lots, boucle scalaire Magnet,
+    // abandon des orbites périodiques du Nebulabrot.
+    Case {
+        name: "mandelbrot_interior_20000",
+        args: &["--type", "3", "--width", "160", "--height", "100", "--iterations", "20000"],
+        envs: NO_ENV,
+    },
+    Case {
+        name: "magnet_mandelbrot_default",
+        args: &["--type", "12", "--width", "160", "--height", "100", "--iterations", "2500"],
+        envs: NO_ENV,
+    },
+    Case {
+        name: "nebulabrot_small",
+        args: &["--type", "24", "--width", "160", "--height", "100"],
+        envs: NO_ENV,
+    },
     Case {
         name: "mandelbrot_interior_ref_640",
         args: &[
