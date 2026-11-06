@@ -1,9 +1,9 @@
 {
   "schema": 2,
   "meta": {
-    "date_utc": "2026-11-05T19:28:27+00:00",
-    "stamp": "20261105T192827Z",
-    "git_sha": "98dc47a",
+    "date_utc": "2026-11-06T01:01:26+00:00",
+    "stamp": "20261106T010126Z",
+    "git_sha": "4bfbdba",
     "git_dirty": true,
     "machine": {
       "cpu": "Apple M4",
@@ -17,6 +17,7 @@
       "quality",
       "fuzz",
       "precision",
+      "truth",
       "goldens",
       "profile",
       "bench"
@@ -25,110 +26,110 @@
     "height": 256,
     "quality_width": 96,
     "quality_height": 96,
-    "runs": 1,
-    "f3_bin": "/Users/mercure/src/fractall-rust/fraktaler-3-3.1/fraktaler-3.macos",
+    "runs": 3,
+    "f3_bin": null,
     "mem_limit_mb": 0,
     "quarantined": [],
     "slow_safe": [
       "e52465"
     ],
     "fuzz_seed": 20260714,
-    "baseline_file": "harness/baseline.json"
+    "baseline_file": "harness/baselines/apple-m4-10t.json"
   },
   "speed": {
-    "fractall_total_s": 3.0602,
+    "fractall_total_s": 2.2797,
     "n_measured": 10,
-    "status": "ok",
+    "status": "f3_unavailable",
     "cases": {
       "test5": {
-        "fractall_s": 0.0177,
+        "fractall_s": 0.0118,
         "f3_s": null,
         "ratio": null,
-        "status": "f3_aborted",
+        "status": "f3_unavailable",
         "f3_exr_ok": false,
-        "fractall_s_min": 0.0177,
-        "fractall_s_spread": null
+        "fractall_s_min": 0.0112,
+        "fractall_s_spread": 0.1312
       },
       "spiral": {
-        "fractall_s": 0.0248,
+        "fractall_s": 0.012,
         "f3_s": null,
         "ratio": null,
-        "status": "f3_aborted",
+        "status": "f3_unavailable",
         "f3_exr_ok": false,
-        "fractall_s_min": 0.0248,
-        "fractall_s_spread": null
+        "fractall_s_min": 0.0111,
+        "fractall_s_spread": 0.078
       },
       "flake": {
-        "fractall_s": 0.0232,
+        "fractall_s": 0.0495,
         "f3_s": null,
         "ratio": null,
-        "status": "f3_aborted",
+        "status": "f3_unavailable",
         "f3_exr_ok": false,
-        "fractall_s_min": 0.0232,
-        "fractall_s_spread": null
+        "fractall_s_min": 0.0452,
+        "fractall_s_spread": 0.0928
       },
       "glitch_test_2": {
-        "fractall_s": 0.0259,
+        "fractall_s": 0.0443,
         "f3_s": null,
         "ratio": null,
-        "status": "f3_aborted",
+        "status": "f3_unavailable",
         "f3_exr_ok": false,
-        "fractall_s_min": 0.0259,
-        "fractall_s_spread": null
+        "fractall_s_min": 0.0254,
+        "fractall_s_spread": 0.5025
       },
       "e50": {
-        "fractall_s": 0.6729,
+        "fractall_s": 0.6085,
         "f3_s": null,
         "ratio": null,
-        "status": "f3_aborted",
+        "status": "f3_unavailable",
         "f3_exr_ok": false,
-        "fractall_s_min": 0.6729,
-        "fractall_s_spread": null
+        "fractall_s_min": 0.6031,
+        "fractall_s_spread": 0.0846
       },
       "e113": {
-        "fractall_s": 0.0845,
+        "fractall_s": 0.0884,
         "f3_s": null,
         "ratio": null,
-        "status": "f3_aborted",
+        "status": "f3_unavailable",
         "f3_exr_ok": false,
-        "fractall_s_min": 0.0845,
-        "fractall_s_spread": null
+        "fractall_s_min": 0.0883,
+        "fractall_s_spread": 0.0066
       },
       "e401": {
-        "fractall_s": 0.4598,
+        "fractall_s": 0.0863,
         "f3_s": null,
         "ratio": null,
-        "status": "f3_aborted",
+        "status": "f3_unavailable",
         "f3_exr_ok": false,
-        "fractall_s_min": 0.4598,
-        "fractall_s_spread": null
+        "fractall_s_min": 0.0814,
+        "fractall_s_spread": 0.1411
       },
       "e1000": {
-        "fractall_s": 0.395,
+        "fractall_s": 0.0488,
         "f3_s": null,
         "ratio": null,
-        "status": "f3_aborted",
+        "status": "f3_unavailable",
         "f3_exr_ok": false,
-        "fractall_s_min": 0.395,
-        "fractall_s_spread": null
+        "fractall_s_min": 0.0487,
+        "fractall_s_spread": 0.0136
       },
       "floral_fantasy": {
-        "fractall_s": 0.0243,
+        "fractall_s": 0.0252,
         "f3_s": null,
         "ratio": null,
-        "status": "f3_aborted",
+        "status": "f3_unavailable",
         "f3_exr_ok": false,
-        "fractall_s_min": 0.0243,
-        "fractall_s_spread": null
+        "fractall_s_min": 0.0245,
+        "fractall_s_spread": 0.0306
       },
       "dragon": {
-        "fractall_s": 1.3321,
+        "fractall_s": 1.3049,
         "f3_s": null,
         "ratio": null,
-        "status": "f3_aborted",
+        "status": "f3_unavailable",
         "f3_exr_ok": false,
-        "fractall_s_min": 1.3321,
-        "fractall_s_spread": null
+        "fractall_s_min": 1.2846,
+        "fractall_s_spread": 0.0272
       }
     },
     "geomean_ratio": null,
@@ -141,103 +142,11 @@
     "n_compared": 0
   },
   "parity": {
-    "status": "f3_no_exr",
-    "iterations_cap": null,
-    "cases": {
-      "dragon": {
-        "status": "f3_fail",
-        "rel_dsi_pct": null,
-        "mean_abs_dsi": null,
-        "inside_mismatch": null,
-        "f3_degenerate": false,
-        "f3_secs_num": null,
-        "fr_secs_num": null
-      },
-      "e1000": {
-        "status": "f3_fail",
-        "rel_dsi_pct": null,
-        "mean_abs_dsi": null,
-        "inside_mismatch": null,
-        "f3_degenerate": false,
-        "f3_secs_num": null,
-        "fr_secs_num": null
-      },
-      "e113": {
-        "status": "f3_fail",
-        "rel_dsi_pct": null,
-        "mean_abs_dsi": null,
-        "inside_mismatch": null,
-        "f3_degenerate": false,
-        "f3_secs_num": null,
-        "fr_secs_num": null
-      },
-      "e401": {
-        "status": "f3_fail",
-        "rel_dsi_pct": null,
-        "mean_abs_dsi": null,
-        "inside_mismatch": null,
-        "f3_degenerate": false,
-        "f3_secs_num": null,
-        "fr_secs_num": null
-      },
-      "e50": {
-        "status": "f3_fail",
-        "rel_dsi_pct": null,
-        "mean_abs_dsi": null,
-        "inside_mismatch": null,
-        "f3_degenerate": false,
-        "f3_secs_num": null,
-        "fr_secs_num": null
-      },
-      "flake": {
-        "status": "f3_fail",
-        "rel_dsi_pct": null,
-        "mean_abs_dsi": null,
-        "inside_mismatch": null,
-        "f3_degenerate": false,
-        "f3_secs_num": null,
-        "fr_secs_num": null
-      },
-      "floral_fantasy": {
-        "status": "f3_fail",
-        "rel_dsi_pct": null,
-        "mean_abs_dsi": null,
-        "inside_mismatch": null,
-        "f3_degenerate": false,
-        "f3_secs_num": null,
-        "fr_secs_num": null
-      },
-      "glitch_test_2": {
-        "status": "f3_fail",
-        "rel_dsi_pct": null,
-        "mean_abs_dsi": null,
-        "inside_mismatch": null,
-        "f3_degenerate": false,
-        "f3_secs_num": null,
-        "fr_secs_num": null
-      },
-      "spiral": {
-        "status": "f3_fail",
-        "rel_dsi_pct": null,
-        "mean_abs_dsi": null,
-        "inside_mismatch": null,
-        "f3_degenerate": false,
-        "f3_secs_num": null,
-        "fr_secs_num": null
-      },
-      "test5": {
-        "status": "f3_fail",
-        "rel_dsi_pct": null,
-        "mean_abs_dsi": null,
-        "inside_mismatch": null,
-        "f3_degenerate": false,
-        "f3_secs_num": null,
-        "fr_secs_num": null
-      }
-    },
+    "status": "f3_unavailable",
+    "cases": {},
     "n_ok": 0,
     "n_pixel_equiv": 0,
-    "n_fail": 10,
+    "n_fail": 0,
     "n_timeout": 0,
     "n_f3_degenerate": 0
   },
@@ -255,8 +164,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 239.901667,
-        "time_gmp_ms": 647.573083
+        "time_pert_ms": 81.978917,
+        "time_gmp_ms": 664.709083
       },
       {
         "name": "mandelbrot-e13",
@@ -264,8 +173,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 8.962667,
-        "time_gmp_ms": 184.27591600000002
+        "time_pert_ms": 6.922791999999999,
+        "time_gmp_ms": 185.505583
       },
       {
         "name": "mandelbrot-e17",
@@ -273,8 +182,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 4.496791,
-        "time_gmp_ms": 226.89479200000002
+        "time_pert_ms": 4.6895,
+        "time_gmp_ms": 225.938458
       },
       {
         "name": "misiurewicz-m32",
@@ -282,8 +191,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 3.2694170000000002,
-        "time_gmp_ms": 188.987417
+        "time_pert_ms": 3.3218330000000003,
+        "time_gmp_ms": 196.781167
       },
       {
         "name": "julia-siegel-disk",
@@ -291,8 +200,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 3.9609170000000002,
-        "time_gmp_ms": 114.640833
+        "time_pert_ms": 1.931875,
+        "time_gmp_ms": 112.431208
       },
       {
         "name": "burning-ship-antenna",
@@ -300,8 +209,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 2.396542,
-        "time_gmp_ms": 13.843209
+        "time_pert_ms": 0.8203750000000001,
+        "time_gmp_ms": 14.02125
       },
       {
         "name": "tricorn-spiral",
@@ -309,8 +218,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 2.3804999999999996,
-        "time_gmp_ms": 5.373125
+        "time_pert_ms": 0.581459,
+        "time_gmp_ms": 5.133459
       },
       {
         "name": "celtic-fold-edge",
@@ -318,8 +227,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 21.942458000000002,
-        "time_gmp_ms": 1867.565333
+        "time_pert_ms": 4.096041,
+        "time_gmp_ms": 1887.3991669999998
       },
       {
         "name": "buffalo-fold-edge",
@@ -327,8 +236,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 23.541084,
-        "time_gmp_ms": 1950.6118749999998
+        "time_pert_ms": 4.55825,
+        "time_gmp_ms": 1977.7749999999999
       },
       {
         "name": "perpbs-escape-band",
@@ -336,8 +245,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 17.671167,
-        "time_gmp_ms": 1426.5613329999999
+        "time_pert_ms": 3.293916,
+        "time_gmp_ms": 1404.296875
       },
       {
         "name": "mandelbrot-e18-minibrot",
@@ -345,8 +254,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 5.591459,
-        "time_gmp_ms": 192.502958
+        "time_pert_ms": 5.812458,
+        "time_gmp_ms": 194.014208
       },
       {
         "name": "mandelbrot-e30",
@@ -354,8 +263,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 3084.1106250000003,
-        "time_gmp_ms": 10937.362542
+        "time_pert_ms": 1241.844542,
+        "time_gmp_ms": 11021.941042
       },
       {
         "name": "mandelbrot-e50",
@@ -363,8 +272,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 4653.631417,
-        "time_gmp_ms": 90257.96674999999
+        "time_pert_ms": 1941.3778750000001,
+        "time_gmp_ms": 88451.554875
       },
       {
         "name": "mandelbrot-e100",
@@ -372,8 +281,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 300.144292,
-        "time_gmp_ms": 10244.96675
+        "time_pert_ms": 126.963083,
+        "time_gmp_ms": 10140.369791
       },
       {
         "name": "single-ref-glitch-interior",
@@ -381,8 +290,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 22.421167,
-        "time_gmp_ms": 879.9516659999999
+        "time_pert_ms": 23.207625,
+        "time_gmp_ms": 882.8917080000001
       },
       {
         "name": "mandelbrot-interior-ref",
@@ -390,8 +299,8 @@
         "max_iter_diff": null,
         "p99_iter_diff": null,
         "divergence_ratio": 0.0,
-        "time_pert_ms": 279.568708,
-        "time_gmp_ms": 831.079667
+        "time_pert_ms": 280.731958,
+        "time_gmp_ms": 856.594834
       }
     ]
   },
@@ -529,8 +438,8 @@
         "status": "ok",
         "prec": 605,
         "judge_prec": 2420,
-        "diff_px": 0,
-        "frac": 0.0,
+        "diff_px": 1,
+        "frac": 0.000109,
         "verdict": "PASS",
         "sentinel": true
       },
@@ -538,8 +447,8 @@
         "status": "ok",
         "prec": 857,
         "judge_prec": 3428,
-        "diff_px": 1,
-        "frac": 0.000109,
+        "diff_px": 0,
+        "frac": 0.0,
         "verdict": "PASS",
         "sentinel": true
       },
@@ -547,6 +456,132 @@
         "status": "ok",
         "prec": 858,
         "judge_prec": 3432,
+        "diff_px": 1,
+        "frac": 0.000109,
+        "verdict": "PASS",
+        "sentinel": true
+      }
+    }
+  },
+  "truth": {
+    "status": "ok",
+    "size": 96,
+    "n_cases": 14,
+    "n_pass": 14,
+    "n_warn": 0,
+    "n_fail": 0,
+    "cases": {
+      "test5": {
+        "status": "ok",
+        "path": "bytecode_f64",
+        "diff_px": 0,
+        "frac": 0.0,
+        "verdict": "PASS",
+        "sentinel": false
+      },
+      "spiral": {
+        "status": "n/a",
+        "path": "std_f64"
+      },
+      "flake": {
+        "status": "ok",
+        "path": "bytecode_f64_harmonic_lla",
+        "diff_px": 0,
+        "frac": 0.0,
+        "verdict": "PASS",
+        "sentinel": false
+      },
+      "glitch_test_2": {
+        "status": "ok",
+        "path": "bytecode_f64_harmonic_lla",
+        "diff_px": 0,
+        "frac": 0.0,
+        "verdict": "PASS",
+        "sentinel": false
+      },
+      "e50": {
+        "status": "ok",
+        "path": "bytecode_f64",
+        "diff_px": 0,
+        "frac": 0.0,
+        "verdict": "PASS",
+        "sentinel": false
+      },
+      "e113": {
+        "status": "ok",
+        "path": "bytecode_f64",
+        "diff_px": 1,
+        "frac": 0.000109,
+        "verdict": "PASS",
+        "sentinel": false
+      },
+      "e401": {
+        "status": "ok",
+        "path": "bytecode_exp",
+        "diff_px": 0,
+        "frac": 0.0,
+        "verdict": "PASS",
+        "sentinel": false
+      },
+      "e1000": {
+        "status": "ok",
+        "path": "bytecode_exp",
+        "diff_px": 0,
+        "frac": 0.0,
+        "verdict": "PASS",
+        "sentinel": false
+      },
+      "floral_fantasy": {
+        "status": "ok",
+        "path": "bytecode_f64_harmonic_lla",
+        "diff_px": 0,
+        "frac": 0.0,
+        "verdict": "PASS",
+        "sentinel": false
+      },
+      "dragon": {
+        "status": "ok",
+        "path": "bytecode_f64",
+        "diff_px": 0,
+        "frac": 0.0,
+        "verdict": "PASS",
+        "sentinel": false
+      },
+      "e227": {
+        "status": "ok",
+        "path": "bytecode_f64",
+        "diff_px": 3,
+        "frac": 0.000326,
+        "verdict": "PASS",
+        "sentinel": true
+      },
+      "golden_spider": {
+        "status": "ok",
+        "path": "bytecode_f64",
+        "diff_px": 0,
+        "frac": 0.0,
+        "verdict": "PASS",
+        "sentinel": true
+      },
+      "rug": {
+        "status": "ok",
+        "path": "bytecode_f64",
+        "diff_px": 4,
+        "frac": 0.000434,
+        "verdict": "PASS",
+        "sentinel": true
+      },
+      "olbaid2": {
+        "status": "ok",
+        "path": "bytecode_exp",
+        "diff_px": 0,
+        "frac": 0.0,
+        "verdict": "PASS",
+        "sentinel": true
+      },
+      "leaded_glass": {
+        "status": "ok",
+        "path": "bytecode_f64_harmonic_lla",
         "diff_px": 0,
         "frac": 0.0,
         "verdict": "PASS",
@@ -566,37 +601,42 @@
         "algo": "Perturbation",
         "tier": "bytecode_f64",
         "device": "Cpu",
-        "ns_per_iter": 22.3,
+        "ns_per_iter": 2.5431,
         "avg_iter_px": 6.0,
         "max_iter_px": 6,
         "orbit_s": 0.0,
-        "pixels_s": 0.009,
+        "bla_s": 0.0,
+        "pixels_s": 0.001,
         "post_s": 0.0,
         "variants": "harmonic_lla",
-        "render_s": 0.01,
+        "render_s": 0.0,
         "save_s": 0.0,
-        "gen_total_s": 0.01,
+        "gen_total_s": 0.0,
         "dd_escalation": false,
         "reliability_flagged_pct": 0.0,
         "nucleus_period": null,
         "perturb_fallback_ratio": 0.0,
         "n_perf_lines": 1,
         "status": "ok",
-        "wall_s": 0.033,
-        "peak_rss_mb": 11.9,
+        "wall_s": 0.0258,
+        "peak_rss_mb": 11.6,
+        "threads": 10,
+        "ns_per_iter_thread": 25.4313,
         "secs": {
           "orbit": 0.0,
-          "pixels": 0.009,
+          "bla": 0.0,
+          "pixels": 0.001,
           "post": 0.0,
           "save": 0.0,
-          "other": 0.024
+          "other": 0.0248
         },
         "share_pct": {
           "orbit": 0.0,
-          "pixels": 27.3,
+          "bla": 0.0,
+          "pixels": 3.9,
           "post": 0.0,
           "save": 0.0,
-          "other": 72.7
+          "other": 96.1
         },
         "dominant": "other"
       },
@@ -605,37 +645,42 @@
         "algo": null,
         "tier": null,
         "device": null,
-        "ns_per_iter": 0.6,
+        "ns_per_iter": 0.1,
         "avg_iter_px": 251.0,
         "max_iter_px": 1000,
         "orbit_s": null,
+        "bla_s": null,
         "pixels_s": null,
         "post_s": null,
         "variants": null,
-        "render_s": 0.01,
+        "render_s": 0.0,
         "save_s": 0.0,
-        "gen_total_s": 0.01,
+        "gen_total_s": 0.0,
         "dd_escalation": false,
         "reliability_flagged_pct": null,
         "nucleus_period": null,
         "perturb_fallback_ratio": null,
         "n_perf_lines": 0,
         "status": "ok",
-        "wall_s": 0.0345,
-        "peak_rss_mb": 15.8,
+        "wall_s": 0.0258,
+        "peak_rss_mb": 15.5,
+        "threads": 10,
+        "ns_per_iter_thread": null,
         "secs": {
           "orbit": 0.0,
-          "pixels": 0.01,
+          "bla": 0.0,
+          "pixels": 0.0,
           "post": 0.0,
           "save": 0.0,
-          "other": 0.0245
+          "other": 0.0258
         },
         "share_pct": {
           "orbit": 0.0,
-          "pixels": 29.0,
+          "bla": 0.0,
+          "pixels": 0.0,
           "post": 0.0,
           "save": 0.0,
-          "other": 71.0
+          "other": 100.0
         },
         "dominant": "other"
       },
@@ -644,76 +689,86 @@
         "algo": "Perturbation",
         "tier": "bytecode_f64",
         "device": "Cpu",
-        "ns_per_iter": 0.0,
+        "ns_per_iter": 0.0133,
         "avg_iter_px": 30921.0,
-        "max_iter_px": 33662,
+        "max_iter_px": 33663,
         "orbit_s": 0.002,
-        "pixels_s": 0.009,
+        "bla_s": 0.0,
+        "pixels_s": 0.027,
         "post_s": 0.0,
         "variants": "harmonic_lla",
-        "render_s": 0.01,
+        "render_s": 0.03,
         "save_s": 0.0,
-        "gen_total_s": 0.01,
+        "gen_total_s": 0.03,
         "dd_escalation": false,
         "reliability_flagged_pct": 0.0,
         "nucleus_period": null,
         "perturb_fallback_ratio": 0.0,
         "n_perf_lines": 1,
         "status": "ok",
-        "wall_s": 0.0355,
-        "peak_rss_mb": 12.9,
+        "wall_s": 0.0539,
+        "peak_rss_mb": 12.7,
+        "threads": 10,
+        "ns_per_iter_thread": 0.1332,
         "secs": {
           "orbit": 0.002,
-          "pixels": 0.009,
+          "bla": 0.0,
+          "pixels": 0.027,
           "post": 0.0,
           "save": 0.0,
-          "other": 0.0245
+          "other": 0.0249
         },
         "share_pct": {
-          "orbit": 5.6,
-          "pixels": 25.4,
+          "orbit": 3.7,
+          "bla": 0.0,
+          "pixels": 50.1,
           "post": 0.0,
           "save": 0.0,
-          "other": 69.0
+          "other": 46.2
         },
-        "dominant": "other"
+        "dominant": "pixels"
       },
       "glitch_test_2": {
         "path": "bytecode_f64_harmonic_lla",
         "algo": "Perturbation",
         "tier": "bytecode_f64",
         "device": "Cpu",
-        "ns_per_iter": 0.0,
+        "ns_per_iter": 0.0392,
         "avg_iter_px": 7779.0,
         "max_iter_px": 250000,
         "orbit_s": 0.0,
-        "pixels_s": 0.011,
-        "post_s": 0.0,
+        "bla_s": 0.0,
+        "pixels_s": 0.02,
+        "post_s": 0.001,
         "variants": "harmonic_lla",
-        "render_s": 0.01,
+        "render_s": 0.02,
         "save_s": 0.0,
-        "gen_total_s": 0.01,
+        "gen_total_s": 0.02,
         "dd_escalation": false,
-        "reliability_flagged_pct": 0.0,
+        "reliability_flagged_pct": 0.0031,
         "nucleus_period": null,
         "perturb_fallback_ratio": 0.0,
         "n_perf_lines": 1,
         "status": "ok",
-        "wall_s": 0.0354,
+        "wall_s": 0.0444,
         "peak_rss_mb": 12.1,
+        "threads": 10,
+        "ns_per_iter_thread": 0.3923,
         "secs": {
           "orbit": 0.0,
-          "pixels": 0.011,
-          "post": 0.0,
+          "bla": 0.0,
+          "pixels": 0.02,
+          "post": 0.001,
           "save": 0.0,
-          "other": 0.0244
+          "other": 0.0234
         },
         "share_pct": {
           "orbit": 0.0,
-          "pixels": 31.1,
-          "post": 0.0,
+          "bla": 0.0,
+          "pixels": 45.0,
+          "post": 2.3,
           "save": 0.0,
-          "other": 68.9
+          "other": 52.7
         },
         "dominant": "other"
       },
@@ -722,37 +777,42 @@
         "algo": "Perturbation",
         "tier": "bytecode_f64",
         "device": "Cpu",
-        "ns_per_iter": 0.0,
+        "ns_per_iter": 0.042,
         "avg_iter_px": 172455.0,
         "max_iter_px": 187251,
-        "orbit_s": 0.022,
-        "pixels_s": 0.474,
-        "post_s": 0.127,
+        "orbit_s": 0.014,
+        "bla_s": 0.001,
+        "pixels_s": 0.475,
+        "post_s": 0.101,
         "variants": "harmonic_lla",
-        "render_s": 0.62,
+        "render_s": 0.59,
         "save_s": 0.0,
-        "gen_total_s": 0.63,
+        "gen_total_s": 0.59,
         "dd_escalation": false,
-        "reliability_flagged_pct": 0.3799,
+        "reliability_flagged_pct": 0.6943,
         "nucleus_period": null,
         "perturb_fallback_ratio": 0.0,
         "n_perf_lines": 1,
         "status": "ok",
-        "wall_s": 0.6491,
-        "peak_rss_mb": 58.3,
+        "wall_s": 0.6149,
+        "peak_rss_mb": 29.5,
+        "threads": 10,
+        "ns_per_iter_thread": 0.4203,
         "secs": {
-          "orbit": 0.022,
-          "pixels": 0.474,
-          "post": 0.127,
+          "orbit": 0.014,
+          "bla": 0.001,
+          "pixels": 0.475,
+          "post": 0.101,
           "save": 0.0,
-          "other": 0.0261
+          "other": 0.0239
         },
         "share_pct": {
-          "orbit": 3.4,
-          "pixels": 73.0,
-          "post": 19.6,
+          "orbit": 2.3,
+          "bla": 0.2,
+          "pixels": 77.3,
+          "post": 16.4,
           "save": 0.0,
-          "other": 4.0
+          "other": 3.9
         },
         "dominant": "pixels"
       },
@@ -761,37 +821,42 @@
         "algo": "Perturbation",
         "tier": "bytecode_f64",
         "device": "Cpu",
-        "ns_per_iter": 0.0,
+        "ns_per_iter": 0.0383,
         "avg_iter_px": 22729.0,
         "max_iter_px": 23962,
-        "orbit_s": 0.003,
-        "pixels_s": 0.069,
-        "post_s": 0.0,
+        "orbit_s": 0.002,
+        "bla_s": 0.0,
+        "pixels_s": 0.057,
+        "post_s": 0.002,
         "variants": "harmonic_lla",
-        "render_s": 0.07,
+        "render_s": 0.06,
         "save_s": 0.0,
-        "gen_total_s": 0.07,
+        "gen_total_s": 0.06,
         "dd_escalation": false,
-        "reliability_flagged_pct": 0.0,
+        "reliability_flagged_pct": 0.0107,
         "nucleus_period": null,
         "perturb_fallback_ratio": 0.0,
         "n_perf_lines": 1,
         "status": "ok",
-        "wall_s": 0.0981,
-        "peak_rss_mb": 13.0,
+        "wall_s": 0.085,
+        "peak_rss_mb": 13.8,
+        "threads": 10,
+        "ns_per_iter_thread": 0.3827,
         "secs": {
-          "orbit": 0.003,
-          "pixels": 0.069,
-          "post": 0.0,
+          "orbit": 0.002,
+          "bla": 0.0,
+          "pixels": 0.057,
+          "post": 0.002,
           "save": 0.0,
-          "other": 0.0261
+          "other": 0.024
         },
         "share_pct": {
-          "orbit": 3.1,
-          "pixels": 70.3,
-          "post": 0.0,
+          "orbit": 2.4,
+          "bla": 0.0,
+          "pixels": 67.1,
+          "post": 2.4,
           "save": 0.0,
-          "other": 26.6
+          "other": 28.2
         },
         "dominant": "pixels"
       },
@@ -800,37 +865,42 @@
         "algo": "Perturbation",
         "tier": "bytecode_exp",
         "device": "Cpu",
-        "ns_per_iter": 0.2,
+        "ns_per_iter": 0.0304,
         "avg_iter_px": 27584.0,
         "max_iter_px": 28021,
         "orbit_s": 0.009,
-        "pixels_s": 0.378,
-        "post_s": 0.0,
+        "bla_s": 0.002,
+        "pixels_s": 0.055,
+        "post_s": 0.003,
         "variants": "bla",
-        "render_s": 0.39,
+        "render_s": 0.07,
         "save_s": 0.0,
-        "gen_total_s": 0.39,
+        "gen_total_s": 0.07,
         "dd_escalation": false,
-        "reliability_flagged_pct": 0.0,
+        "reliability_flagged_pct": 0.0397,
         "nucleus_period": null,
         "perturb_fallback_ratio": 0.0,
         "n_perf_lines": 1,
         "status": "ok",
-        "wall_s": 0.414,
-        "peak_rss_mb": 48.8,
+        "wall_s": 0.0928,
+        "peak_rss_mb": 48.7,
+        "threads": 10,
+        "ns_per_iter_thread": 0.3042,
         "secs": {
           "orbit": 0.009,
-          "pixels": 0.378,
-          "post": 0.0,
+          "bla": 0.002,
+          "pixels": 0.055,
+          "post": 0.003,
           "save": 0.0,
-          "other": 0.027
+          "other": 0.0238
         },
         "share_pct": {
-          "orbit": 2.2,
-          "pixels": 91.3,
-          "post": 0.0,
+          "orbit": 9.7,
+          "bla": 2.2,
+          "pixels": 59.3,
+          "post": 3.2,
           "save": 0.0,
-          "other": 6.5
+          "other": 25.7
         },
         "dominant": "pixels"
       },
@@ -839,37 +909,42 @@
         "algo": "Perturbation",
         "tier": "bytecode_exp",
         "device": "Cpu",
-        "ns_per_iter": 0.3,
+        "ns_per_iter": 0.0275,
         "avg_iter_px": 16634.0,
         "max_iter_px": 16799,
         "orbit_s": 0.007,
-        "pixels_s": 0.335,
+        "bla_s": 0.001,
+        "pixels_s": 0.03,
         "post_s": 0.0,
         "variants": "bla",
-        "render_s": 0.34,
+        "render_s": 0.04,
         "save_s": 0.0,
-        "gen_total_s": 0.34,
+        "gen_total_s": 0.04,
         "dd_escalation": false,
         "reliability_flagged_pct": 0.0,
         "nucleus_period": null,
         "perturb_fallback_ratio": 0.0,
         "n_perf_lines": 1,
         "status": "ok",
-        "wall_s": 0.368,
-        "peak_rss_mb": 24.1,
+        "wall_s": 0.0638,
+        "peak_rss_mb": 23.8,
+        "threads": 10,
+        "ns_per_iter_thread": 0.2752,
         "secs": {
           "orbit": 0.007,
-          "pixels": 0.335,
+          "bla": 0.001,
+          "pixels": 0.03,
           "post": 0.0,
           "save": 0.0,
-          "other": 0.026
+          "other": 0.0258
         },
         "share_pct": {
-          "orbit": 1.9,
-          "pixels": 91.0,
+          "orbit": 11.0,
+          "bla": 1.6,
+          "pixels": 47.1,
           "post": 0.0,
           "save": 0.0,
-          "other": 7.1
+          "other": 40.4
         },
         "dominant": "pixels"
       },
@@ -878,10 +953,11 @@
         "algo": "Perturbation",
         "tier": "bytecode_f64",
         "device": "Cpu",
-        "ns_per_iter": 0.1,
+        "ns_per_iter": 0.0637,
         "avg_iter_px": 2156.0,
         "max_iter_px": 2247,
-        "orbit_s": 0.001,
+        "orbit_s": 0.0,
+        "bla_s": 0.0,
         "pixels_s": 0.009,
         "post_s": 0.0,
         "variants": "harmonic_lla",
@@ -894,21 +970,25 @@
         "perturb_fallback_ratio": 0.0,
         "n_perf_lines": 1,
         "status": "ok",
-        "wall_s": 0.0348,
-        "peak_rss_mb": 12.2,
+        "wall_s": 0.0357,
+        "peak_rss_mb": 12.0,
+        "threads": 10,
+        "ns_per_iter_thread": 0.637,
         "secs": {
-          "orbit": 0.001,
+          "orbit": 0.0,
+          "bla": 0.0,
           "pixels": 0.009,
           "post": 0.0,
           "save": 0.0,
-          "other": 0.0248
+          "other": 0.0267
         },
         "share_pct": {
-          "orbit": 2.9,
-          "pixels": 25.9,
+          "orbit": 0.0,
+          "bla": 0.0,
+          "pixels": 25.2,
           "post": 0.0,
           "save": 0.0,
-          "other": 71.2
+          "other": 74.8
         },
         "dominant": "other"
       },
@@ -917,60 +997,68 @@
         "algo": "Perturbation",
         "tier": "bytecode_f64",
         "device": "Cpu",
-        "ns_per_iter": 0.0,
-        "avg_iter_px": 3921441.0,
+        "ns_per_iter": 0.0016,
+        "avg_iter_px": 3921444.0,
         "max_iter_px": 5000000,
-        "orbit_s": 0.635,
-        "pixels_s": 0.419,
-        "post_s": 0.231,
+        "orbit_s": 0.454,
+        "bla_s": 0.013,
+        "pixels_s": 0.422,
+        "post_s": 0.378,
         "variants": "harmonic_lla",
-        "render_s": 1.3,
+        "render_s": 1.27,
         "save_s": 0.0,
-        "gen_total_s": 1.3,
+        "gen_total_s": 1.27,
         "dd_escalation": false,
-        "reliability_flagged_pct": 0.1221,
+        "reliability_flagged_pct": 0.7202,
         "nucleus_period": null,
         "perturb_fallback_ratio": 0.0,
         "n_perf_lines": 1,
         "status": "ok",
-        "wall_s": 1.3291,
-        "peak_rss_mb": 1062.8,
+        "wall_s": 1.2942,
+        "peak_rss_mb": 329.2,
+        "threads": 10,
+        "ns_per_iter_thread": 0.0164,
         "secs": {
-          "orbit": 0.635,
-          "pixels": 0.419,
-          "post": 0.231,
+          "orbit": 0.454,
+          "bla": 0.013,
+          "pixels": 0.422,
+          "post": 0.378,
           "save": 0.0,
-          "other": 0.0441
+          "other": 0.0272
         },
         "share_pct": {
-          "orbit": 47.8,
-          "pixels": 31.5,
-          "post": 17.4,
+          "orbit": 35.1,
+          "bla": 1.0,
+          "pixels": 32.6,
+          "post": 29.2,
           "save": 0.0,
-          "other": 3.3
+          "other": 2.1
         },
         "dominant": "orbit"
       }
     },
     "n_ok": 10,
-    "peak_rss_mb_max": 1062.8,
+    "threads": 10,
+    "peak_rss_mb_max": 329.2,
     "cumulative_secs": {
-      "orbit": 0.679,
-      "pixels": 1.723,
-      "post": 0.358,
+      "orbit": 0.488,
+      "bla": 0.017,
+      "pixels": 1.096,
+      "post": 0.485,
       "save": 0.0,
-      "other": 0.2715
+      "other": 0.2503
     },
     "cumulative_share_pct": {
-      "orbit": 22.4,
-      "pixels": 56.8,
-      "post": 11.8,
+      "orbit": 20.9,
+      "bla": 0.7,
+      "pixels": 46.9,
+      "post": 20.8,
       "save": 0.0,
-      "other": 9.0
+      "other": 10.7
     },
     "dominant_counts": {
-      "other": 5,
-      "pixels": 4,
+      "other": 4,
+      "pixels": 5,
       "orbit": 1
     },
     "dd_escalations": [],
@@ -985,47 +1073,81 @@
     "status": "ok",
     "entries": {
       "cpu_std_f64": {
-        "iters_per_sec": 1916865726.1708095,
+        "iters_per_sec": 8624704883.227175,
         "width": 1024,
         "height": 1024,
-        "seconds": 0.140927291,
-        "ns_per_iter": 0.522
+        "seconds": 0.0313215,
+        "ns_per_iter": 0.116
       },
       "cpu_perturb_f64": {
-        "iters_per_sec": 18967617146.188736,
+        "iters_per_sec": 19721201058.237946,
         "width": 512,
         "height": 512,
-        "seconds": 2.383432833,
-        "ns_per_iter": 0.053
+        "seconds": 2.292357417,
+        "ns_per_iter": 0.051
       },
       "cpu_perturb_exp": {
-        "iters_per_sec": 14726369403.98218,
-        "width": 512,
-        "height": 512,
-        "seconds": 1.913294166,
-        "ns_per_iter": 0.068
+        "iters_per_sec": 48824862379.05017,
+        "width": 1024,
+        "height": 1024,
+        "seconds": 2.308322791,
+        "ns_per_iter": 0.02
       },
       "cpu_perturb_dd": {
-        "iters_per_sec": 348988021.50699127,
+        "iters_per_sec": 849562575.9219558,
         "width": 128,
         "height": 128,
-        "seconds": 8.096344,
-        "ns_per_iter": 2.865
+        "seconds": 3.325861042,
+        "ns_per_iter": 1.177
+      },
+      "cpu_perturb_f64_mid": {
+        "iters_per_sec": 1994854859.2906215,
+        "width": 1024,
+        "height": 1024,
+        "seconds": 4.44448875,
+        "ns_per_iter": 0.501
       },
       "gpu_std_f32": {
-        "iters_per_sec": 11483671214.168331,
+        "iters_per_sec": 10573149097.451874,
         "width": 2048,
         "height": 2048,
-        "seconds": 0.094090125,
-        "ns_per_iter": 0.087
+        "seconds": 0.102192833,
+        "ns_per_iter": 0.095
+      },
+      "gpu_perturb_f32": {
+        "iters_per_sec": 5107839748.597018,
+        "width": 1024,
+        "height": 1024,
+        "seconds": 1.735784666,
+        "ns_per_iter": 0.196
       }
     },
-    "wall_s": 14.359
+    "wall_s": 17.968
   },
   "beyond_f3": {
     "speed_wins": [],
     "correctness_wins": []
   },
-  "speed_self": {},
+  "speed_self": {
+    "geomean": 0.6948,
+    "n": 10,
+    "worst": {
+      "case": "flake",
+      "ratio": 2.1336
+    },
+    "ratios": {
+      "test5": 0.6667,
+      "spiral": 0.4839,
+      "flake": 2.1336,
+      "glitch_test_2": 1.7104,
+      "e50": 0.9043,
+      "e113": 1.0462,
+      "e401": 0.1877,
+      "e1000": 0.1235,
+      "floral_fantasy": 1.037,
+      "dragon": 0.9796
+    },
+    "baseline_sha": "98dc47a"
+  },
   "gaps": []
 }

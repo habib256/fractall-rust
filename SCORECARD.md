@@ -2,15 +2,16 @@
 
 # SCORECARD — fractall vs Fraktaler-3
 
-- **Date** : 2026-11-05T19:28:27+00:00
-- **Commit** : `98dc47a`  ⚠️ arbre modifié (dirty)
+- **Date** : 2026-11-06T01:01:26+00:00
+- **Commit** : `4bfbdba`  ⚠️ arbre modifié (dirty)
 - **Machine** : Apple M4 · 10 threads · Darwin 27.2.0
-- **Tier** : quick · 256×256 · quality 96×96 · runs=1 · axes=speed,parity,quality,fuzz,precision,goldens,profile,bench
-- **F3** : /Users/mercure/src/fractall-rust/fraktaler-3-3.1/fraktaler-3.macos
-- **Baseline** : `harness/baseline.json` (cd05f6a · tier standard · 2026-07-12) · **autre machine**
-- _baseline présente mais tier différent (standard) — pas de delta._
+- **Tier** : quick · 256×256 · quality 96×96 · runs=3 · axes=speed,parity,quality,fuzz,precision,truth,goldens,profile,bench
+- **F3** : — (indisponible)
+- **Baseline** : `harness/baselines/apple-m4-10t.json` (98dc47a · tier quick · 2026-11-05)
 
 ## Vitesse (ratio fractall/F3, <1 = fractall gagne)
+
+_F3 indisponible — timings fractall seuls (voir history JSON)._
 
 | Métrique | Valeur | vs baseline |
 |---|---:|---|
@@ -22,37 +23,37 @@
 
 ### Temps fractall par cas (vitesse intrinsèque)
 
-- _pas d'auto-ratio : baseline d'une autre machine._
-- temps cumulé : **3.060 s** sur 10 cas mesurés
+- **auto-ratio vs baseline `98dc47a`** (même machine, geomean cur/base sur 10 cas, <1 = plus rapide) : **0.695** · pire 2.134 (flake)
+- temps cumulé : **2.280 s** sur 10 cas mesurés
 
 | Cas | fractall (s) | min (s) | bruit | vs baseline | ratio F3 |
 |---|---:|---:|---:|---:|---:|
-| `test5` | 0.018 | 0.018 | — | — | — |
-| `spiral` | 0.025 | 0.025 | — | — | — |
-| `flake` | 0.023 | 0.023 | — | — | — |
-| `glitch_test_2` | 0.026 | 0.026 | — | — | — |
-| `e50` | 0.673 | 0.673 | — | — | — |
-| `e113` | 0.085 | 0.085 | — | — | — |
-| `e401` | 0.460 | 0.460 | — | — | — |
-| `e1000` | 0.395 | 0.395 | — | — | — |
-| `floral_fantasy` | 0.024 | 0.024 | — | — | — |
-| `dragon` | 1.332 | 1.332 | — | — | — |
+| `test5` | 0.012 | 0.011 | 13 % | 0.67× | — |
+| `spiral` | 0.012 | 0.011 | 8 % | 0.48× | — |
+| `flake` | 0.050 | 0.045 | 9 % | 2.13× | — |
+| `glitch_test_2` | 0.044 | 0.025 | 50 % | 1.71× | — |
+| `e50` | 0.609 | 0.603 | 8 % | 0.90× | — |
+| `e113` | 0.088 | 0.088 | 1 % | 1.05× | — |
+| `e401` | 0.086 | 0.081 | 14 % | 0.19× | — |
+| `e1000` | 0.049 | 0.049 | 1 % | 0.12× | — |
+| `floral_fantasy` | 0.025 | 0.025 | 3 % | 1.04× | — |
+| `dragon` | 1.305 | 1.285 | 3 % | 0.98× | — |
 
 ## Parité (compare_f3 — Δsmooth-iter vs F3)
 
-_F3 build Linux sans support EXR (HAVE_EXR=0) — parité impossible tant que F3 n'est pas rebuilé avec OpenEXR._
+_F3 indisponible — axe non exécuté._
 
 ## Qualité (fractall-quality suite — perturbation vs GMP)
 
 | Verdict | Nombre | vs baseline |
 |---|---:|---|
-| PASS | 16 |  |
-| WARN | 0 |  |
-| FAIL | 0 |  |
+| PASS | 16 |  (=) |
+| WARN | 0 |  (=) |
+| FAIL | 0 |  (=) |
 
 ## Fuzz (sondes aléatoires pert vs GMP)
 
-- seed `20260714` · 3 sondes → **3 PASS · 0 WARN · 0 FAIL**
+- seed `20260714` · 3 sondes → **3 PASS · 0 WARN · 0 FAIL** (baseline : 3P/0W/0F)
 
 ## Précision d'orbite (juge ×4)
 
@@ -69,11 +70,34 @@ _F3 build Linux sans support EXR (HAVE_EXR=0) — parité impossible tant que F3
 | `e1000` | 3423 | 13692 | 0 | 0.000 | PASS |
 | `floral_fantasy` | 384 | 1536 | 0 | 0.000 | PASS |
 | `dragon` | 737 | 2948 | 0 | 0.000 | PASS |
-| `golden_spider` ⚑ | 605 | 2420 | 0 | 0.000 | PASS |
-| `e227` ⚑ | 857 | 3428 | 1 | 0.011 | PASS |
-| `evolution_trees` ⚑ | 858 | 3432 | 0 | 0.000 | PASS |
+| `golden_spider` ⚑ | 605 | 2420 | 1 | 0.011 | PASS |
+| `e227` ⚑ | 857 | 3428 | 0 | 0.000 | PASS |
+| `evolution_trees` ⚑ | 858 | 3432 | 1 | 0.011 | PASS |
 
 _⚑ = sentinelle (précision F3 nue : 2-4 % faux avant la marge +64 b)._
+
+## Vérité (rendu de production vs tier dd)
+
+- 14 cas à 96² → **14 PASS · 0 WARN · 0 FAIL** (itérations brutes du rendu par défaut vs frame `--dd-tier`)
+
+| Cas | path | pixels ≠ | % | verdict |
+|---|---|---:|---:|---|
+| `test5` | bytecode_f64 | 0 | 0.000 | PASS |
+| `flake` | bytecode_f64_harmonic_lla | 0 | 0.000 | PASS |
+| `glitch_test_2` | bytecode_f64_harmonic_lla | 0 | 0.000 | PASS |
+| `e50` | bytecode_f64 | 0 | 0.000 | PASS |
+| `e113` | bytecode_f64 | 1 | 0.011 | PASS |
+| `e401` | bytecode_exp | 0 | 0.000 | PASS |
+| `e1000` | bytecode_exp | 0 | 0.000 | PASS |
+| `floral_fantasy` | bytecode_f64_harmonic_lla | 0 | 0.000 | PASS |
+| `dragon` | bytecode_f64 | 0 | 0.000 | PASS |
+| `e227` ⚑ | bytecode_f64 | 3 | 0.033 | PASS |
+| `golden_spider` ⚑ | bytecode_f64 | 0 | 0.000 | PASS |
+| `rug` ⚑ | bytecode_f64 | 4 | 0.043 | PASS |
+| `olbaid2` ⚑ | bytecode_exp | 0 | 0.000 | PASS |
+| `leaded_glass` ⚑ | bytecode_f64_harmonic_lla | 0 | 0.000 | PASS |
+
+_⚑ = sentinelle (rendu par défaut faux avant les correctifs du 2026-11-06). Un FAIL se juge contre le GMP pur : le dd a son propre plancher._
 
 ## Goldens (pixel-exact)
 
@@ -81,32 +105,44 @@ _⚑ = sentinelle (précision F3 nue : 2-4 % faux avant la marge +64 b)._
 
 ## Profil — où va le temps (sans F3, 1 run par cas)
 
-- **répartition cumulée** : orbit 22.4 % · pixels 56.8 % · post 11.8 % · save 0.0 % · other 9.0 % (sur 10 cas)
-- **phase dominante** : other ×5, pixels ×4, orbit ×1
-- paths : bytecode_exp, bytecode_f64, bytecode_f64_harmonic_lla, std_f64 · pic RSS max 1063 MB
+- **répartition cumulée** : orbit 20.9 % · bla 0.7 % · pixels 46.9 % · post 20.8 % · save 0.0 % · other 10.7 % (sur 10 cas, 10 threads)
+- **phase dominante** : pixels ×5, other ×4, orbit ×1
+- paths : bytecode_exp, bytecode_f64, bytecode_f64_harmonic_lla, std_f64 · pic RSS max 329 MB
 
-| Cas | path | variantes | wall (s) | orbite % | pixels % | post % | save % | autre % | ns/iter | iter/px | esc.dd | fiab. % | RSS (MB) |
-|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|
-| `test5` | bytecode_f64 | harmonic_lla | 0.033 | 0.0 | 27.3 | 0.0 | 0.0 | 72.7 | 22.300 | 6 |  | 0.00 | 12 |
-| `spiral` | std_f64 | — | 0.035 | 0.0 | 29.0 | 0.0 | 0.0 | 71.0 | 0.600 | 251 |  | — | 16 |
-| `flake` | bytecode_f64_harmonic_lla | harmonic_lla | 0.035 | 5.6 | 25.4 | 0.0 | 0.0 | 69.0 | 0.000 | 30921 |  | 0.00 | 13 |
-| `glitch_test_2` | bytecode_f64_harmonic_lla | harmonic_lla | 0.035 | 0.0 | 31.1 | 0.0 | 0.0 | 68.9 | 0.000 | 7779 |  | 0.00 | 12 |
-| `e50` | bytecode_f64 | harmonic_lla | 0.649 | 3.4 | 73.0 | 19.6 | 0.0 | 4.0 | 0.000 | 172455 |  | 0.38 | 58 |
-| `e113` | bytecode_f64 | harmonic_lla | 0.098 | 3.1 | 70.3 | 0.0 | 0.0 | 26.6 | 0.000 | 22729 |  | 0.00 | 13 |
-| `e401` | bytecode_exp | bla | 0.414 | 2.2 | 91.3 | 0.0 | 0.0 | 6.5 | 0.200 | 27584 |  | 0.00 | 49 |
-| `e1000` | bytecode_exp | bla | 0.368 | 1.9 | 91.0 | 0.0 | 0.0 | 7.1 | 0.300 | 16634 |  | 0.00 | 24 |
-| `floral_fantasy` | bytecode_f64_harmonic_lla | harmonic_lla | 0.035 | 2.9 | 25.9 | 0.0 | 0.0 | 71.2 | 0.100 | 2156 |  | 0.00 | 12 |
-| `dragon` | bytecode_f64 | harmonic_lla | 1.329 | 47.8 | 31.5 | 17.4 | 0.0 | 3.3 | 0.000 | 3921441 |  | 0.12 | 1063 |
+| Cas | path | variantes | wall (s) | orbite % | BLA % | pixels % | post % | save % | autre % | ns/iter | ns/iter·thread | iter/px | esc.dd | fiab. % | RSS (MB) |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|
+| `test5` | bytecode_f64 | harmonic_lla | 0.026 | 0.0 | 0.0 | 3.9 | 0.0 | 0.0 | 96.1 | 2.543 | 25.431 | 6 |  | 0.00 | 12 |
+| `spiral` | std_f64 | — | 0.026 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 100.0 | 0.100 | — | 251 |  | — | 16 |
+| `flake` | bytecode_f64_harmonic_lla | harmonic_lla | 0.054 | 3.7 | 0.0 | 50.1 | 0.0 | 0.0 | 46.2 | 0.013 | 0.133 | 30921 |  | 0.00 | 13 |
+| `glitch_test_2` | bytecode_f64_harmonic_lla | harmonic_lla | 0.044 | 0.0 | 0.0 | 45.0 | 2.3 | 0.0 | 52.7 | 0.039 | 0.392 | 7779 |  | 0.00 | 12 |
+| `e50` | bytecode_f64 | harmonic_lla | 0.615 | 2.3 | 0.2 | 77.3 | 16.4 | 0.0 | 3.9 | 0.042 | 0.420 | 172455 |  | 0.69 | 30 |
+| `e113` | bytecode_f64 | harmonic_lla | 0.085 | 2.4 | 0.0 | 67.1 | 2.4 | 0.0 | 28.2 | 0.038 | 0.383 | 22729 |  | 0.01 | 14 |
+| `e401` | bytecode_exp | bla | 0.093 | 9.7 | 2.2 | 59.3 | 3.2 | 0.0 | 25.7 | 0.030 | 0.304 | 27584 |  | 0.04 | 49 |
+| `e1000` | bytecode_exp | bla | 0.064 | 11.0 | 1.6 | 47.1 | 0.0 | 0.0 | 40.4 | 0.028 | 0.275 | 16634 |  | 0.00 | 24 |
+| `floral_fantasy` | bytecode_f64_harmonic_lla | harmonic_lla | 0.036 | 0.0 | 0.0 | 25.2 | 0.0 | 0.0 | 74.8 | 0.064 | 0.637 | 2156 |  | 0.00 | 12 |
+| `dragon` | bytecode_f64 | harmonic_lla | 1.294 | 35.1 | 1.0 | 32.6 | 29.2 | 0.0 | 2.1 | 0.002 | 0.016 | 3921444 |  | 0.72 | 329 |
 
 ## Bench — débit par technique (`--wisdom-bench` isolé)
 
 | Technique | iters/s | ns/iter | taille | vs baseline |
 |---|---:|---:|---:|---:|
-| cpu_std_f64 | 1.917e+09 | 0.522 | 1024² | — |
-| cpu_perturb_f64 | 1.897e+10 | 0.053 | 512² | — |
-| cpu_perturb_exp | 1.473e+10 | 0.068 | 512² | — |
-| cpu_perturb_dd | 3.490e+08 | 2.865 | 128² | — |
-| gpu_std_f32 | 1.148e+10 | 0.087 | 2048² | — |
+| cpu_std_f64 | 8.625e+09 | 0.116 | 1024² | 4.50× |
+| cpu_perturb_f64 | 1.972e+10 | 0.051 | 512² | 1.04× |
+| cpu_perturb_exp | 4.882e+10 | 0.020 | 1024² | 3.32× |
+| cpu_perturb_dd | 8.496e+08 | 1.177 | 128² | 2.43× |
+| cpu_perturb_f64_mid | 1.995e+09 | 0.501 | 1024² | — |
+| gpu_std_f32 | 1.057e+10 | 0.095 | 2048² | 0.92× |
+| gpu_perturb_f32 | 5.108e+09 | 0.196 | 1024² | — |
+
+## Tendance (même machine, 6 derniers scores)
+
+| Date (UTC) | Commit | Tier | geomean/F3 | wins | fractall Σs | auto-ratio | parité ok/équiv | Q P/W/F | fuzz P/W/F | goldens | px % | gaps |
+|---|---|---|---:|---:|---:|---:|---|---|---|---|---:|---:|
+| 2026-11-05 19:28 | `98dc47a` | quick | — | 0 | 3.060 | — | 0/0 | 16/0/0 | 3/0/0 | 🟢 | 56.8 | 0 |
+| 2026-11-06 00:45 | `61df5f3` | standard | — | 0 | 4.761 | — | —/— | 15/1/0 | 6/0/0 | 🟢 | 49.8 | 1 |
+| 2026-11-06 01:01 | `4bfbdba` | quick | — | 0 | 2.280 | 0.695 | —/— | 16/0/0 | 3/0/0 | 🟢 | 46.9 | 0 |
+
+_`python3 scripts/harness.py trend` pour l'historique complet (`--case <stem>` pour un cas)._
 
 ## Gaps (top 10 — sévérité asc, magnitude desc)
 

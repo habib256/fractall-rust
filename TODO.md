@@ -12,29 +12,54 @@
 
 ## 🧭 État actuel (2026-11-06) — lire ceci en premier
 
-**2026-11-06 — nuit d'optimisation sur l'Apple M4 (branche `nuit-20261105`).**
-Première session sur cette machine : baseline quick figée
-(`harness/baselines/apple-m4-10t.json`), harness corrigé pour macOS (nom de
-machine, RAM, F3 non lançable détecté). Méthode : **profil échantillonné avec
-un binaire symbolisé** (`sample`, cf. HARNESS.md §Profil échantillonné) — il a
-trouvé en une heure trois coûts que le profil par phase ne pouvait pas voir,
-parce qu'ils étaient DANS la phase « pixels » :
-1. **Tier exp (> 1e308) : parse GMP à chaque pixel** — `effective_pixel_size`
-   relisait les chaînes HP (parse décimal + ln 1024 b) deux fois par pixel :
-   45 % (e401) à 70 % (e1000) de la boucle pixel. Mémo → **e401 ×3,0, e1000
-   ×6,1**, PNG identiques.
-2. **Cache de table BLA** : `Arc` cloné et `Formula` compilée par pixel (ligne
-   de cache du compteur rebondissant entre workers) → **test5 ×7**, flake /
-   floral −27 %. Au passage deux trous de CORRECTION fermés : clé d'orbite par
-   adresse seule (table périmée possible après réallocation) et `c_norm`
-   absent de la clé (rayons sur-permissifs sur vue élargie à orbite
-   réutilisée).
-3. **Path f64 standard** (toute navigation < 1e13) : formule recompilée deux
-   fois par pixel + interpréteur point par point → **noyau par lots à 8 voies
-   entrelacées, bit-identique, ×4,5 à ×7** (Mandelbrot 1440p 0,31 → 0,057 s).
-Détail et mesures : G14.9-G14.11 ci-dessous. Résultats des agents (boucle
-perturbation, correction dd, GPU Metal, chasse aux erreurs, scaled double) :
-G14.1/2/5 et G14.12.
+**2026-11-06 — nuit d'optimisation ET de correction sur l'Apple M4 (branche
+`nuit-20261105`, ~75 commits au-dessus de `main`, non fusionnée).** Score
+final (`harness/history/20261106T010126Z-4bfbdba.json`, quick, 3 runs,
+machine calme) : **0 gap** ; temps cumulé des 10 cas 3,06 → 2,28 s,
+géomoyenne **0,695×** la baseline du début de nuit ; quality 16/16, fuzz 3/3,
+precision 12/12, **truth 14/14** (axe nouveau), goldens verts. Standard
+(`…T004516Z-61df5f3.json`, 25 cas) : fuzz 6/6, precision 26/26, truth 27/27,
+quality 15 PASS + 1 WARN connu (seahorse-valley à 256², 1 pixel). Bench :
+`cpu_std_f64` ×4,5, `cpu_perturb_exp` ×3,3, `cpu_perturb_dd` ×2,4,
+`cpu_perturb_f64` ×1,04. Baseline de la machine re-figée sur cet état.
+
+Ce que la nuit a établi, dans l'ordre d'importance :
+1. **Le rendu par défaut avait des pixels faux non signalés** — trouvés en
+   comparant la production au tier dd sur le corpus (aucun axe ne le
+   faisait) : traqueur de fiabilité sous-estimant la troncature BLA (l·ε),
+   borne exp qui retombait, harmonic LA sans garde-fou, dd lui-même pas
+   toujours juste, correction dd décalée sur orbite réutilisée (GUI),
+   `--dd-tier` faux sur les hybrides. Tout est corrigé et verrouillé
+   (G14.13, G14.1 f-h, G14.15, G14.16) ; l'axe `truth` du harness rejoue
+   cette comparaison à chaque score.
+2. **Trois coûts fixes cachés DANS la phase pixels**, invisibles au profil
+   par phase, trouvés au profil échantillonné (`harness.py hotspots`) :
+   parse GMP par pixel au tier exp, `Arc` cloné + formule compilée par pixel,
+   formule recompilée par pixel sur le path standard (G14.10) — et une
+   quatrième fois la même nuit (variable d'environnement lue par pixel).
+3. **Deux boucles réécrites, bit-identiques** : path f64 standard par lots
+   (×4,5-7, G14.9) et tier exp en double mis à l'échelle (×2-7, G14.12) ;
+   Julia / Burning Ship / Tricorn par noyaux de pas (G14.14) ; correction dd
+   rapide (G14.1 e). e401 256² : 0,46 → 0,09 s ; e1000 0,40 → 0,05 s.
+4. **GPU Metal mesuré pour la première fois** (G14.5) : poursuivre dans la
+   plage perturbation f32 (4-13× sur les scènes faciles), geler ailleurs.
+
+**Ce qui coûte plus cher qu'avant, et pourquoi** : les scènes f64 dont des
+pixels dépassent la précision du double-double — e227 256² 1,0 → 3,5 s,
+golden_spider 0,36 → 0,77 s, flake / glitch_test_2 ×1,7-2,1 (sur ~25 ms).
+C'est le prix de pixels justes (e227 avait 384 pixels faux).
+
+**Prochains chantiers, par levier** : (a) tier quad-double pour remplacer le
+GMP par pixel des pixels au-delà du dd (G14.1 h) ; (b) traqueur dd en
+`FloatExp` pour le tier exp (G14.1 i, limite ouverte) ; (c) traqueur moins
+pessimiste que l·ε (faux positifs = corrections inutiles) ; (d) boucle
+perturbation f64 — l'entrelacement naïf est réfuté (G14.2), il faut du SoA
+écrit à la main avec le traqueur inliné ; (e) σ₁(A) précalculé par nœud BLA
+exp (traqueur scaled encore à +43 %) ; (f) colorisation (70-85 % du temps
+d'un rendu f64 standard désormais ; change des bits → décision utilisateur) ;
+(g) sonde BLA ascendante dans le kernel GPU f64 (à mesurer sur la GeForce).
+**À faire à la main sur ce Mac** : `fractall-cli --wisdom-bench` pour que
+l'Auto route le GPU ; `brew install openexr imath` pour rallumer les axes F3.
 
 **2026-11-03 (état précédent).**
 
@@ -3611,7 +3636,11 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   pixels flaggés et PNG identiques sur 17 cas. Il coûte encore ~+43 % dans
   cette boucle (une racine par pas direct ; σ₁(A) recalculé à chaque saut
   alors qu'il ne dépend que du nœud → à précalculer dans `bla_dual_exp.rs`).
-- [ ] **G14.8 — Re-baseline standard au schéma 2** sur la machine de
+- [x] **G14.8 — Re-baseline (2026-11-06, Apple M4)** : score standard
+  archivé (25 cas, 4,76 s cumulés) et baseline quick re-figée sur l'état
+  final (`harness/baselines/apple-m4-10t.json`). La machine i7 + F3 reste à
+  re-baseliner quand elle servira. Texte d'origine : **Re-baseline standard
+  au schéma 2** sur la machine de
   développement (i7, F3 dispo) : `score --tier standard` (profil + bench
   inclus) puis `baseline` — sans quoi `speed_self`, `ns/iter` et `bench` n'ont
   pas de référence là où le travail se fait.
