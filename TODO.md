@@ -57,6 +57,31 @@ opus : 2 800 à 26 700 bits) — 0 pixel d'écart. Axe fuzz rejoué avec une
 seed neuve (`20261106`) : 8 sondes dont 2 Julia hors centre, 8 PASS.
 Pipeline vidéo rejoué de bout en bout (54 keyframes vers 1e16, 1621 frames).
 
+**⚠️ Chantier de correction n° 1, mesuré à 10 h 45 le 2026-11-06 et NON
+traité : le path f64 standard sur un bord chaotique, sous le seuil de
+perturbation.** Seahorse valley (centre du preset), 5000 itérations, 256×160,
+contre le GMP pur :
+| zoom | Auto (f64 standard) | perturbation forcée (traqueur + dd) |
+|---|---|---|
+| 1e4 | 185 px ≠ (0,5 %), \|Δ\| médian 24, max 561 — 0,00 s | 0 px — 0,01 s |
+| 1e6 | 518 px (1,3 %), médian 24, max 666 — 0,02 s | 2 px (\|Δ\| 1) — 0,07 s |
+| 1e8 | 1717 px (4,2 %), médian 19, max 1003 — 0,01 s | 1 px — 0,03 s |
+| 1e10 | 3222 px (7,9 %), médian 20, max 1586 — 0,01 s | 2 px — 0,03 s |
+| 1e12 | 5 px (Auto y est déjà en perturbation) | 5 px |
+Ce n'est pas la résolution du pixel (à 1e10 le pas vaut 1,6e-12, loin de
+l'ulp) : c'est l'amplification chaotique de l'arrondi f64 sur des orbites de
+milliers d'itérations — la classe que le traqueur a fermée en perturbation,
+intacte sur le path standard, qui n'a AUCUN suivi. Aucun axe ne la voit :
+`truth` marque le path standard « n/a », `quality` et `fuzz` forcent la
+perturbation. Pistes, à calibrer (c'est un changement de routage, donc de
+temps de rendu — ×2 à ×4 sur ces vues, toujours < 0,1 s) : (1) router
+Auto vers la perturbation dès que la vue est en bord et le plafond élevé
+(seuil en zoom ET en itérations, à mesurer sur le corpus peu profond) ;
+(2) un traqueur de borne d'erreur dans le noyau par lots, avec escalade par
+pixel ; (3) d'abord un axe : faire juger par `truth` les cas du path
+standard contre la perturbation forcée, pour mesurer l'étendue (vues par
+défaut, plafonds usuels de 2500 itérations) avant de choisir.
+
 **Prochains chantiers** : (a) Tricorn / Burning Ship profonds rendus en GMP
 plein cadre quand la référence s'échappe (G14.21 — une piste essayée et
 écartée) ; (b) la correction dd elle-même (e227 :

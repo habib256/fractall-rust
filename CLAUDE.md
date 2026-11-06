@@ -826,6 +826,12 @@ itérations de la frame (`FAMILY_GMP_ITER_BUDGET`), valeur f64 + avertissement
 au-delà. Burning Ship / Tricorn : opt-in `FRACTALL_RELIABILITY_FAMILY=all`
 (107 scènes sondées, aucun pixel faux adjudicable). **Sans suivi** :
 hybrides, DE, Julia au tier exp.
+⚠️ **Le path f64 STANDARD n'a aucun suivi** et il est faux sur les bords
+chaotiques à fort nombre d'itérations, bien avant d'être à court de mantisse
+(seahorse, 5000 itérations, vs GMP pur : 0,5 % de pixels faux à 1e4, 4,2 % à
+1e8, 7,9 % à 1e10, écarts médians de 20 itérations ; la perturbation forcée
+en a 0 à 2). Le mode Auto y reste jusqu'à ~1e12 : chantier ouvert, cf.
+TODO « État actuel ». Ne jamais prendre le rendu Auto peu profond pour juge.
 ⚠️ **Ne pas chercher à resserrer le terme `l·ε` du saut BLA f64** : à
 ε = 2⁻⁵³ la troncature réelle est négligeable (borne du second ordre
 implémentée et testée : la substituer revient à retirer le terme) et c'est
