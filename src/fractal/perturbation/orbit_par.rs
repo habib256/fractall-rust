@@ -23,6 +23,17 @@
 //! `Float` changent de propriétaire par une case (`Mutex<Option<…>>`, jamais
 //! disputée — les accès alternent).
 //!
+//! ⚠️ **Une tâche se RÉCLAME par un échange atomique** (`POSTED → TAKEN` pour
+//! l'assistant, `POSTED → IDLE` pour la reprise par l'appelant) : celui qui
+//! gagne l'échange, et lui seul, vide la case. La première version laissait
+//! l'assistant vider la case sur la foi d'un `POSTED` LU plus tôt : retardé
+//! entre la lecture et la case, il pouvait prendre la tâche SUIVANTE avant
+//! que l'appelant n'ait écrit son `POSTED`, la finir, écrire `DONE` — que le
+//! `POSTED` tardif écrasait : appelant en attente de `DONE` pour toujours,
+//! deux cœurs à 100 %, rendu bloqué (trouvé à la relecture, 2026-11-06,
+//! reproduit sur modèle avec deux retards injectés ; protocole exercé sous
+//! préemption par `claimed_handoff_survives_preemption_at_every_step`).
+//!
 //! Garde-fous :
 //! - **reprise** : si l'assistant n'a pas encore pris la tâche quand le fil
 //!   appelant a fini sa multiplication, celui-ci la reprend et la fait
@@ -59,6 +70,8 @@ const IDLE: u32 = 0;
 const POSTED: u32 = 1;
 const DONE: u32 = 2;
 const QUIT: u32 = 3;
+/// Tâche réclamée par l'assistant, calcul en cours.
+const TAKEN: u32 = 5;
 /// Assistant endormi pendant une fenêtre série.
 const PARKED: u32 = 4;
 
@@ -113,9 +126,21 @@ fn helper_loop(sh: &Shared) {
                 continue;
             }
             POSTED => {
-                let job = sh.job.lock().unwrap().take();
-                // `None` : le fil appelant a repris la tâche.
-                if let Some((mut im, re)) = job {
+                // Réclamation atomique : la lecture ci-dessus peut être
+                // périmée (tâche reprise entre-temps, tâche suivante en cours
+                // de dépôt). Seul le gagnant de l'échange touche la case.
+                if sh
+                    .state
+                    .compare_exchange(POSTED, TAKEN, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    test_delay(DelayPoint::HelperClaimed);
+                    let (mut im, re) = sh
+                        .job
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .expect("tâche réclamée mais case vide");
                     imag_half(&mut im, &re, &sh.ci);
                     *sh.result.lock().unwrap() = Some((im, re));
                     sh.state.store(DONE, Ordering::Release);
@@ -125,6 +150,7 @@ fn helper_loop(sh: &Shared) {
             }
             _ => {}
         }
+        test_delay(DelayPoint::HelperIdle);
         spins = spins.saturating_add(1);
         if spins < 50_000 {
             std::hint::spin_loop();
@@ -134,6 +160,37 @@ fn helper_loop(sh: &Shared) {
         }
     }
 }
+
+/// Points où les tests injectent un retard (simulation d'une préemption).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[allow(dead_code)]
+enum DelayPoint {
+    HelperIdle,
+    HelperClaimed,
+    CallerBetweenJobAndPost,
+    CallerAfterPost,
+    CallerBeforeReclaim,
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn test_delay(_point: DelayPoint) {}
+
+#[cfg(test)]
+fn test_delay(point: DelayPoint) {
+    let (target, every, micros) = *TEST_DELAY.lock().unwrap();
+    if target == Some(point) {
+        let n = TEST_DELAY_COUNT.fetch_add(1, Ordering::Relaxed);
+        if n % every == 0 {
+            std::thread::sleep(std::time::Duration::from_micros(micros));
+        }
+    }
+}
+
+#[cfg(test)]
+static TEST_DELAY: Mutex<(Option<DelayPoint>, u32, u64)> = Mutex::new((None, 1, 0));
+#[cfg(test)]
+static TEST_DELAY_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// Pas d'orbite `z ← z² + c` sur deux cœurs, bit-identique à
 /// `orbit::fast_sqr_step`.
@@ -244,15 +301,31 @@ impl ParSqr {
         let mut job_im = self.spare_im.take().expect("substitut im");
         std::mem::swap(re, &mut job_re);
         std::mem::swap(im, &mut job_im);
+        // État IDLE ici (seul l'appelant l'écrit, et il vient de le faire) :
+        // l'assistant ne peut rien réclamer avant le `POSTED` ci-dessous, et
+        // la case est pleine quand il le voit.
         *sh.job.lock().unwrap() = Some((job_im, job_re));
+        test_delay(DelayPoint::CallerBetweenJobAndPost);
         sh.state.store(POSTED, Ordering::Release);
+        test_delay(DelayPoint::CallerAfterPost);
 
         self.p.assign(&*t1 * &*t2);
 
-        // Reprise si l'assistant n'a pas commencé ; sinon attente active.
-        let back = sh.job.lock().unwrap().take();
+        // Reprise si l'assistant n'a pas RÉCLAMÉ la tâche (échange atomique :
+        // un seul des deux fils vide la case) ; sinon attente active.
+        test_delay(DelayPoint::CallerBeforeReclaim);
         let mut incident = false;
-        let (mut new_im, mut old_re) = if let Some((mut i2, r2)) = back {
+        let reclaimed = sh
+            .state
+            .compare_exchange(POSTED, IDLE, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok();
+        let (mut new_im, mut old_re) = if reclaimed {
+            let (mut i2, r2) = sh
+                .job
+                .lock()
+                .unwrap()
+                .take()
+                .expect("tâche reprise mais case vide");
             imag_half(&mut i2, &r2, &sh.ci);
             self.steals_in_a_row += 1;
             incident = self.steals_in_a_row >= STARVED_STEALS;
@@ -269,15 +342,21 @@ impl ParSqr {
                     let t0 = *since.get_or_insert_with(std::time::Instant::now);
                     if t0.elapsed() > self.slow_wait {
                         incident = true;
+                        // Assistant mort (panique) : mieux vaut une erreur
+                        // franche qu'une attente sans fin.
+                        if self.handle.as_ref().is_some_and(|h| h.is_finished()) {
+                            panic!("orbite sur deux cœurs : le fil assistant s'est arrêté en pleine tâche");
+                        }
                         std::thread::yield_now();
                     }
                 } else {
                     std::hint::spin_loop();
                 }
             }
-            sh.result.lock().unwrap().take().expect("résultat de l'assistant")
+            let r = sh.result.lock().unwrap().take().expect("résultat de l'assistant");
+            sh.state.store(IDLE, Ordering::Release);
+            r
         };
-        sh.state.store(IDLE, Ordering::Release);
         if incident {
             self.back_off();
         }
@@ -341,6 +420,56 @@ mod tests {
                     same(zs.real(), zp.real()) && same(zs.imag(), zp.imag()),
                     "orbite ≠ à l'itération {i} (prec {prec})"
                 );
+            }
+        }
+    }
+
+    /// Le passage de tâche tient quand l'un ou l'autre fil est retardé à
+    /// N'IMPORTE quel point du protocole (préemption simulée) : pas de
+    /// blocage, orbite toujours identique au bit près. (Le blocage de la
+    /// première version demandait DEUX retards conjoints ; il est exclu ici
+    /// par construction — la case n'est vidée que par le gagnant d'un échange
+    /// atomique — et ce test exerce le protocole sous préemption, point par
+    /// point, y compris la reprise de tâche et l'attente de l'assistant.)
+    #[test]
+    fn claimed_handoff_survives_preemption_at_every_step() {
+        // Un seul test à la fois règle les retards (état global de test).
+        static SERIAL: Mutex<()> = Mutex::new(());
+        let _guard = SERIAL.lock().unwrap();
+        let prec = 256u32;
+        let c = Complex::with_val(prec, (-0.1234567891234, 0.6543219876543));
+        let points = [
+            DelayPoint::HelperIdle,
+            DelayPoint::HelperClaimed,
+            DelayPoint::CallerBetweenJobAndPost,
+            DelayPoint::CallerAfterPost,
+            DelayPoint::CallerBeforeReclaim,
+        ];
+        for &point in &points {
+            for &(every, micros) in &[(1u32, 30u64), (3, 200), (7, 5)] {
+                *TEST_DELAY.lock().unwrap() = (Some(point), every, micros);
+                let (done_tx, done_rx) = std::sync::mpsc::channel();
+                let c2 = c.clone();
+                let worker = std::thread::spawn(move || {
+                    let mut zs = Complex::with_val(prec, (0.0, 0.0));
+                    let mut zp = Complex::with_val(prec, (0.0, 0.0));
+                    let (mut s1, mut s2) = (Float::new(prec), Float::new(prec));
+                    let (mut p1, mut p2) = (Float::new(prec), Float::new(prec));
+                    let mut par = ParSqr::spawn(&c2, prec).expect("assistant");
+                    let mut ok = true;
+                    for _ in 0..400 {
+                        crate::fractal::perturbation::orbit::fast_sqr_step(&mut zs, &c2, &mut s1, &mut s2);
+                        par.step(&mut zp, &c2, &mut p1, &mut p2);
+                        ok &= zs == zp;
+                    }
+                    let _ = done_tx.send(ok);
+                });
+                let ok = done_rx
+                    .recv_timeout(std::time::Duration::from_secs(20))
+                    .unwrap_or_else(|_| panic!("BLOCAGE avec retard à {point:?} (1/{every}, {micros} µs)"));
+                *TEST_DELAY.lock().unwrap() = (None, 1, 0);
+                worker.join().unwrap();
+                assert!(ok, "orbite ≠ avec retard à {point:?}");
             }
         }
     }
