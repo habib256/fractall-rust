@@ -3056,6 +3056,7 @@ mod tests {
             max_bla_steps: iter_max,
         };
         let (mut wrong_fast, mut wrong_generic, mut rebases) = (0u32, 0u32, 0u64);
+        let (mut wrong_exp, mut exp_rebases) = (0u32, 0u64);
         for j in 0..height {
             for i in 0..width {
                 let d0 = Complex64::new(
@@ -3079,13 +3080,27 @@ mod tests {
                     limits,
                     UnifiedOptions { is_julia: true, enable_distance: true, ..Default::default() },
                 );
+                // Tier exp (boucle HP ComplexExp, sans BLA) : même correctif.
+                let exp = crate::fractal::bytecode::pixel_loop_exp::iterate_pixel_unified_exp(
+                    &orbit,
+                    &tables[0],
+                    None,
+                    &formula,
+                    seed,
+                    crate::fractal::perturbation::types::ComplexExp::zero(),
+                    crate::fractal::perturbation::types::ComplexExp::from_complex64(d0),
+                    limits,
+                );
                 wrong_fast += (fast.iteration != n) as u32;
                 wrong_generic += (generic.iteration != n) as u32;
+                wrong_exp += (exp.iteration != n) as u32;
                 rebases += fast.rebase_count as u64;
+                exp_rebases += exp.rebase_count as u64;
             }
         }
-        assert!(rebases > 0, "aucun rebase exercé");
+        assert!(rebases > 0 && exp_rebases > 0, "aucun rebase exercé");
         let total = width * height;
+        assert!(wrong_exp * 100 <= total, "tier exp : {wrong_exp}/{total} pixels ≠ f64 direct");
         // Résidu toléré : plancher f64 du juge direct sur les pixels chaotiques.
         assert!(wrong_fast * 100 <= total, "fast-path : {wrong_fast}/{total} pixels ≠ f64 direct");
         assert!(wrong_generic * 100 <= total, "générique : {wrong_generic}/{total} pixels ≠ f64 direct");
