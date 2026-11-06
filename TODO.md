@@ -3360,6 +3360,19 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
     d'avant la nuit pour ce tier. Mesuré : 0 pixel faux vs juge sur 31 cas exp
     à 96², donc pas de défaut observé, mais pas de garantie. Remède : borne en
     `FloatExp` dans la boucle `DoubleDoubleExp` (modèle `ShadowTrackerExp`).
+  - [ ] **(j) Dernier pixel faux connu de la suite quality : seahorse-valley
+    1e8 à 256², pixel (160,70)** — GMP 2084 itérations (256 b == 1024 b), dd
+    1947 ; le traqueur f64 le flagge, le dd le « corrige » mal, et la borne
+    dd vaut 70 pour |z| = 309 à l'évasion : ni emballée (≥ 1e30), ni sous le
+    test absolu `E ≥ ||z|−R|`. La borne est juste à un ordre de grandeur
+    près, pas un majorant strict (le pixel s'évade au moment où elle
+    décolle). Critère relatif `E ≥ 0,1·|z|` implémenté en OPT-IN
+    (`FRACTALL_DD_ESCAPE_REL=0.1`) : il rend la frame == GMP pur, mais à
+    256² il envoie au GMP e227 7 → 30 px (3,2 → 6,8 s), golden_spider 16 →
+    31, rug 2 → 6 pour **0 valeur changée** sur ces 42 pixels — un pixel
+    utile sur 43. À activer quand le tier quad-double (h) rendra l'arbitrage
+    bon marché ; ou resserrer les constantes de la borne dd (γ = 4u est
+    peut-être sous-estimé pour un produit complexe dd).
   *Métriques* : profil `post %` + `fiab. %` (e50, e113, dragon, spiral),
   `trend --case e50`, bench `cpu_perturb_dd`. *Done* : post < 10 % du wall
   sur e50 sans perdre un pixel vs GMP (quality 16/16, e50 PASS).

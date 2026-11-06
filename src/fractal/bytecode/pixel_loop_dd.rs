@@ -81,7 +81,15 @@ pub fn iterate_pixel_unified_ddexp_mandelbrot_tracked(
     limits: crate::fractal::bytecode::pixel_loop::PixelLoopLimits,
     track: bool,
 ) -> (UnifiedPixelResultExp, f32) {
-    let first = tracked_once(ref_orbit, bla, dc, delta_initial, limits, track);
+    let judge = |r: (UnifiedPixelResultExp, f32)| {
+        if track && r.0.iteration < limits.iteration_max {
+            let bound = dd_escape_bound(r.1, r.0.z_final);
+            (r.0, bound)
+        } else {
+            r
+        }
+    };
+    let first = judge(tracked_once(ref_orbit, bla, dc, delta_initial, limits, track));
     let runaway = crate::fractal::bytecode::reliability::reliability_runaway() as f32;
     // Le second essai CORRIGE (il change la valeur rendue) : réservé au mode
     // `escalate`. En `observe` (« détecte, ne corrige rien ») le pixel garde
@@ -89,9 +97,55 @@ pub fn iterate_pixel_unified_ddexp_mandelbrot_tracked(
     let escalating = crate::fractal::bytecode::reliability::reliability_mode()
         == crate::fractal::bytecode::reliability::ReliabilityMode::Escalate;
     if track && escalating && bla.is_some() && !(first.1 < runaway) && dd_retry_without_bla() {
-        return tracked_once(ref_orbit, None, dc, delta_initial, limits, track);
+        return judge(tracked_once(ref_orbit, None, dc, delta_initial, limits, track));
     }
     first
+}
+
+/// Seuil RELATIF de la borne dd à l'évasion (`FRACTALL_DD_ESCAPE_REL`).
+/// **Désactivé par défaut** (`+∞`) — cf. [`dd_escape_bound`].
+pub const DD_ESCAPE_REL_DEFAULT: f64 = f64::INFINITY;
+
+fn dd_escape_rel() -> f64 {
+    static V: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("FRACTALL_DD_ESCAPE_REL")
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|v| !v.is_nan() && *v >= 0.0)
+            .unwrap_or(DD_ESCAPE_REL_DEFAULT)
+    })
+}
+
+/// Détermination RELATIVE de l'évasion au tier dd — **opt-in**
+/// (`FRACTALL_DD_ESCAPE_REL=0.1`).
+///
+/// Pourquoi elle existe : l'emballement (`E ≥ 1e30`) ne voit pas un pixel qui
+/// s'évade AU MOMENT où sa borne décolle. Mesuré — seahorse-valley 1e8 256²,
+/// pixel (160,70) : GMP 2084 itérations (256 b == 1024 b), dd **1947**, borne
+/// dd à l'évasion **70 pour |z| = 309**. Ni emballée ni négligeable (une
+/// borne dd saine vaut ~1e-20), et le test absolu `E ≥ ||z| − R|` (70 < 284)
+/// le dirait déterminé : la borne est un modèle au premier ordre, juste à un
+/// ordre de grandeur près, pas un majorant strict. C'est le seul pixel faux
+/// connu de la suite quality à 256² (WARN seahorse-valley).
+///
+/// Pourquoi elle n'est PAS active par défaut : avec `E ≥ 0,1·|z|` ce pixel
+/// est corrigé (frame == GMP pur, vérifié), mais sur les scènes sensibles le
+/// critère envoie au GMP des pixels que le dd rendait JUSTES — mesuré à 256² :
+/// e227 7 → 30 pixels au GMP (3,2 → 6,8 s), golden_spider 16 → 31, rug 2 → 6,
+/// et **0 valeur changée** sur ces 42 pixels supplémentaires. Une précision
+/// d'un pixel utile sur 43 ne justifie pas le GMP par pixel (~3 s de thread
+/// l'unité sur e227) ; elle le justifiera quand un tier quad-double rendra
+/// l'arbitrage bon marché (TODO G14.1 h). Seuils plus bas : 1e-2 → 41 px sur
+/// e227, 1e-3 → au-delà du plafond, 1e-6 → dragon paie 5 s pour un pixel.
+#[inline]
+fn dd_escape_bound(bound: f32, z_final: Complex64) -> f32 {
+    let e = bound as f64;
+    if e.is_finite() && e >= dd_escape_rel() * z_final.norm().max(1.0) {
+        f32::INFINITY
+    } else {
+        bound
+    }
 }
 
 /// `FRACTALL_DD_RETRY_NOBLA=0` coupe le second essai sans BLA (A/B).
