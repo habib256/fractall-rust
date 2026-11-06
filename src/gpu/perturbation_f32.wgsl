@@ -177,6 +177,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (is_julia) {
         delta = dc;
     }
+    // Origine des rebases : `Z[0]` vaut 0 sauf en Julia, où la référence part
+    // du centre de la vue. Un rebase y est RELATIF à `Z[0]` (critère
+    // `|z − Z[0]| < |δ|`, `δ := z − Z[0]`), formé comme `(Z[m] − Z[0]) + δ`
+    // pour que δ ne soit pas absorbé (mirror CPU `pixel_loop.rs`
+    // `DirectKernel::REF_ORIGIN_NONZERO`). Sans cela une vue Julia non centrée
+    // en 0 était fausse sur 86 % des pixels (mesuré vs GMP, 2026-11-06). Avec
+    // `Z[0] = 0` les expressions rendent les mêmes bits qu'avant.
+    var z0 = vec2<f32>();
+    if (is_julia) {
+        z0 = zref_at(0u);
+    }
     let dc_abs = cabs_small(dc);
     var n: u32 = 0u;
     var m: u32 = 0u;
@@ -298,7 +309,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 m = params.cycle_start + (m - params.cycle_start) % params.cycle_period;
             } else if (params.atom_truncated != 0u) {
                 let z_end = zref_at(m);
-                delta = z_end + delta;
+                delta = (z_end - z0) + delta;
                 err = err + U * (cabs_small(z_end) + cabs_small(delta));
                 m = 0u;
             } else {
@@ -307,10 +318,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
         } else {
             let z_ref_m = zref_at(m);
-            let z_curr = z_ref_m + delta;
-            if (cabs_small(z_curr) < cabs_small(delta)) {
-                delta = z_curr;
-                err = err + U * (cabs_small(z_ref_m) + cabs_small(z_curr));
+            let z_rel = (z_ref_m - z0) + delta;
+            if (cabs_small(z_rel) < cabs_small(delta)) {
+                delta = z_rel;
+                err = err + U * (cabs_small(z_ref_m) + cabs_small(z_rel));
                 m = 0u;
             }
         }
