@@ -508,12 +508,13 @@ pub fn iterate_pixel_scaled_exp_mandelbrot_tracked(
 ) -> (UnifiedPixelResultExp, ShadowTrackerExp) {
     // Traqueur léger (borne em·2^ee, cf. `pixel_loop_scaled_track`) : mêmes
     // décisions, pas la même borne au bit.
-    let mut tracker = ShadowTrackerExp::new(dc, bla_epsilon);
+    let mut tracker = ScaledTracker::new(ShadowTrackerExp::new(dc, bla_epsilon));
     let (res, st) = scaled_impl(ref_orbit, bla_exp, dc, delta_initial, limits, &mut tracker);
     if stats_enabled() {
         flush_stats(&st);
     }
-    (res, tracker)
+    tracker.sync();
+    (res, tracker.trk)
 }
 
 /// Corps de la boucle, avec la ventilation des tours (rapide/lent).
