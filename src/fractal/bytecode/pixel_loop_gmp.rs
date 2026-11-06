@@ -388,8 +388,11 @@ pub fn iterate_pixel_gmp(request: GmpPixelRequest<'_>) -> DeltaResult {
         };
     }
 
+    // Itération ABSOLUE `n`, pas l'index de référence `m` : ils ne coïncident
+    // que sans rebase. Rendre `m` faisait passer un pixel qui a rebasé puis
+    // atteint le plafond pour un pixel ÉVADÉ à l'itération `m`.
     DeltaResult {
-        iteration: final_index,
+        iteration: c.n(),
         z_final: crate::fractal::gmp::complex_to_complex64(&z_curr),
         glitched: is_glitched,
         suspect: false,

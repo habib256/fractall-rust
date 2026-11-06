@@ -112,7 +112,11 @@ pub(super) fn qd_stage(
     zs: &mut [Complex64],
 ) -> Option<Vec<usize>> {
     use crate::fractal::bytecode::pixel_loop_qd as q;
+    // Graine Mandelbrot non nulle (z₀ ≠ 0, métadonnées éditées à la main) :
+    // l'orbite qd de repli et le rebase de la boucle supposent Z[0] = 0.
     if unreliable.is_empty()
+        || params.seed.re != 0.0
+        || params.seed.im != 0.0
         || !q::qd_enabled()
         || !q::qd_escalation_allowed(unreliable.len(), frame_pixels, q::qd_max_fraction())
     {

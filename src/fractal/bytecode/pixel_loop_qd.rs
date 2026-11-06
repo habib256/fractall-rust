@@ -189,6 +189,20 @@ pub fn iterate_pixel_qd_mandelbrot(
     // n'y est déterminé ni par le qd ni par le GMP 605 b (GMP 1210 == 2420 b
     // ≠ les deux, ~1e-3 relatif) alors que les ITÉRATIONS sont identiques aux
     // trois précisions ; aucune borne n'y atteint l'emballement.
+    //
+    // ⚠️ Ne PAS y ajouter un plancher « arrondi de la conversion en qd »
+    // (~2⁻²¹⁰·|Z| absolu par pas), bien que l'orbite lue soit `round_qd(Z)` :
+    // ce n'est pas un résidu absolu. Avec Ẑ = Z + ρ la référence arrondie et
+    // ẑ = Ẑ + δ le pixel calculé, l'erreur vs l'orbite vraie du pixel s'écrit
+    // e = ρ + ε où ε' = 2zε + 2·δ·ρ + … : ρ lui-même n'est PAS amplifié (il
+    // est porté par la référence), et sa seule source d'erreur est le terme
+    // croisé `2·δ·ρ` — proportionnel à δ, donc déjà couvert par
+    // `GAMMA_QD·|2Z|·|δ|`. (C'est la raison pour laquelle une référence f64
+    // suffit à la perturbation f64.) Seul l'arrondi de l'orbite GMP
+    // elle-même, qui en fait une PSEUDO-orbite, s'injecte en absolu : c'est
+    // `u_ref`. Essayé le 2026-11-06 : avec un plancher de 2⁻²⁰⁶ (ou 2⁻²⁸⁸,
+    // 2⁻⁴⁰⁰) la borne de TOUS les pixels qd d'e227 et de golden_spider
+    // s'emballe, alors que leurs 23 valeurs sont celles du GMP pur.
     let u_ref = 2f64.powi(-(ref_prec.min(1000) as i32 - 2));
     let mut tr = track.then(|| TrackerQd {
         e: 0.0,
