@@ -927,7 +927,9 @@ evolution_trees — mesuré contre une orbite à précision ×4, juge convergé
 allocation ni norme pleine précision par itération depuis le 2026-11-06
 (`mpc_below_bailout` : norme f64 d'abord ; `sqr_in_place` : carré arrondi
 EXACTEMENT comme `mpc_sqr`, par deux carrés exacts à précision double et une
-seule soustraction arrondie). ×1,8 à ×2,3, `.fmap` identiques. ⚠️ MPC alloue
+seule soustraction arrondie). ×1,8 à ×2,3, `.fmap` identiques. Ces boucles
+ont aussi le raccourci des cycles exacts (`MpcCycle` : ×7 sur une vue à
+intérieur à 20 000 itérations, 256 b). ⚠️ MPC alloue
 ses temporaires à chaque appel (60 % du temps dans `malloc` au profil) : dans
 une boucle GMP chaude, passer par MPFR sur tampons réutilisés — mais ne
 JAMAIS former `fl(x²) − fl(y²)` (double arrondi) si l'on veut les bits de

@@ -4019,6 +4019,12 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   `two_stage_bailout_test_decides_like_the_exact_norm`. *Reste* : les 22
   autres boucles `_mpc` gardent leurs clones (seul leur test d'évasion est
   allégé).
+  **+ raccourci des cycles exacts dans ces quatre boucles GMP** (`MpcCycle`,
+  même principe que G14.17, égalité de valeur MPFR + signe des zéros) :
+  rendu GMP pur de la vue Mandelbrot par défaut, 96×72, `.fmap` identiques —
+  20 000 it. à 256 b 0,59 → 0,08 s (×7), à 128 b ×11, Tricorn ×6, 2500 it.
+  ×1,8 ; rien sur une vue sans intérieur ; ≤ 1,5 % de surcoût sur les juges
+  profonds (un minibrot profond ne converge pas à 256 bits avant le plafond).
 - [ ] **G14.21 — Tricorn / Burning Ship profonds en GMP plein cadre** —
   constat de la sonde G14.18 : dès que la référence s'échappe avant le
   plafond, > 30 % des pixels sont « référence épuisée » et la frame entière

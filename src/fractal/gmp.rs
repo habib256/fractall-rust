@@ -927,6 +927,57 @@ fn sqr_scratch(z: &Complex) -> (Float, Float) {
     (Float::new(p), Float::new(p))
 }
 
+/// Raccourci des cycles EXACTS pour les boucles GMP (même principe que
+/// `fractal/cycle.rs`, cf. sa doc) : dès que `z` reprend, à sa précision, la
+/// valeur exacte d'un point de contrôle (Brent, test tous les 8 pas), l'orbite
+/// est périodique pour toujours — le compteur saute un nombre entier de
+/// cycles et la boucle finit les itérations restantes. Même compte et même z
+/// final que l'itération complète. Égalité de VALEUR MPFR plus signe des
+/// zéros (seule liberté de représentation à précision égale) ; `NaN` ne
+/// s'égale jamais. Sert aux rendus GMP qui montrent l'intérieur d'un ensemble
+/// (juge de la QA, replis GMP plein cadre) ; la convergence à p bits demande
+/// ~p/53 fois plus d'itérations qu'en f64.
+struct MpcCycle {
+    ck: Complex,
+    armed: bool,
+    ck_iter: u32,
+    ck_next: u32,
+}
+
+impl MpcCycle {
+    fn new(z: &Complex) -> Self {
+        Self {
+            ck: Complex::new(z.prec()),
+            armed: false,
+            ck_iter: 0,
+            ck_next: if crate::fractal::cycle::shortcut_enabled() { 8 } else { u32::MAX },
+        }
+    }
+
+    /// À appeler juste après l'incrément de `i`, avec l'état que lira le pas
+    /// suivant. Peut avancer `i` (jamais au-delà de `iteration_max - 1`).
+    #[inline]
+    fn observe(&mut self, i: &mut u32, iteration_max: u32, z: &Complex) {
+        if *i % 8 != 0 || self.ck_next == u32::MAX {
+            return;
+        }
+        let same = |a: &Float, b: &Float| a == b && a.is_sign_negative() == b.is_sign_negative();
+        if self.armed && same(z.real(), self.ck.real()) && same(z.imag(), self.ck.imag()) {
+            if *i < iteration_max {
+                let len = *i - self.ck_iter;
+                *i += (iteration_max - 1 - *i) / len * len;
+            }
+            self.ck_next = u32::MAX;
+        } else if *i >= self.ck_next {
+            use rug::Assign;
+            self.ck.assign(z);
+            self.armed = true;
+            self.ck_iter = *i;
+            self.ck_next = i.saturating_mul(2);
+        }
+    }
+}
+
 // `z ← z² + c` EN PLACE, sans allocation par itération (cf. `sqr_in_place`) :
 // même valeur au bit près que `clone` + `mpc_mul`. Ces boucles servent de JUGE
 // (`fractall-quality`), de correction par pixel (pixels au-delà du qd, pixels
@@ -934,11 +985,13 @@ fn sqr_scratch(z: &Complex) -> (Float, Float) {
 fn mandelbrot_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     let mut z = g.seed.clone();
     let mut sq = sqr_scratch(&z);
+    let mut cyc = MpcCycle::new(&z);
     let mut i = 0u32;
     while i < g.iteration_max && mpc_below_bailout(&z, g) {
         sqr_in_place(&mut z, &mut sq);
         z += z_pixel;
         i += 1;
+        cyc.observe(&mut i, g.iteration_max, &z);
     }
     (i, z)
 }
@@ -946,11 +999,13 @@ fn mandelbrot_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
 fn julia_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     let mut z = z_pixel.clone();
     let mut sq = sqr_scratch(&z);
+    let mut cyc = MpcCycle::new(&z);
     let mut i = 0u32;
     while i < g.iteration_max && mpc_below_bailout(&z, g) {
         sqr_in_place(&mut z, &mut sq);
         z += &g.seed;
         i += 1;
+        cyc.observe(&mut i, g.iteration_max, &z);
     }
     (i, z)
 }
@@ -1143,12 +1198,14 @@ fn burning_ship_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     // — sinon la boucle d'origine, qui ré-arrondit à `g.prec` à chaque tour.
     if z.prec() == (g.prec, g.prec) {
         let mut sq = sqr_scratch(&z);
+        let mut cyc = MpcCycle::new(&z);
         while i < g.iteration_max && mpc_below_bailout(&z, g) {
             z.mut_real().abs_mut();
             z.mut_imag().abs_mut();
             sqr_in_place(&mut z, &mut sq);
             z += z_pixel;
             i += 1;
+            cyc.observe(&mut i, g.iteration_max, &z);
         }
         return (i, z);
     }
@@ -1185,6 +1242,7 @@ fn buffalo_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
 fn tricorn_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     let mut z = g.seed.clone();
     let mut sq = sqr_scratch(&z);
+    let mut cyc = MpcCycle::new(&z);
     let mut i = 0u32;
     while i < g.iteration_max && mpc_below_bailout(&z, g) {
         // En place (cf. `mandelbrot_mpc`) : conj exact puis carré.
@@ -1192,6 +1250,7 @@ fn tricorn_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
         sqr_in_place(&mut z, &mut sq);
         z += z_pixel;
         i += 1;
+        cyc.observe(&mut i, g.iteration_max, &z);
     }
     (i, z)
 }
@@ -1576,7 +1635,10 @@ mod mpc_loop_tests {
     fn in_place_mpc_loops_match_original_loops_bit_for_bit() {
         for ty in [FractalType::Mandelbrot, FractalType::Julia, FractalType::Tricorn, FractalType::BurningShip] {
             for prec in [64u32, 128, 300, 1024] {
-                for max in [0u32, 1, 2, 50, 400] {
+                // Plafonds élevés à basse précision : des points intérieurs y
+                // atteignent un cycle exact, le raccourci saute.
+                let maxes: &[u32] = if prec <= 128 { &[0, 1, 2, 50, 400, 3001, 20_000] } else { &[0, 1, 2, 50, 400] };
+                for &max in maxes {
                     let mut params = default_params_for_type(ty, 16, 12);
                     params.iteration_max = max;
                     params.engine.precision_bits = prec;

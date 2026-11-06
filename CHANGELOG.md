@@ -44,7 +44,9 @@ G14.21.
   256² 3,5 → 2,35 s, golden_spider 1,0 → 0,62 s.
 - **Boucles GMP pures** sans allocation ni norme pleine précision par
   itération : ×1,8 à ×2,3 (juge de la QA, corrections par pixel, rendus
-  GMP) ; le score standard du harness passe de 18 à 8 minutes.
+  GMP) ; le score standard du harness passe de 18 à 8 minutes. Raccourci
+  des cycles exacts aussi en GMP pur (vue à intérieur, 20 000 itérations,
+  256 bits : ×7).
 - **Traqueur de fiabilité du tier exp** : +42 % → +24 % d'instructions.
 
 ### Ajouté
