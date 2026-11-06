@@ -771,8 +771,13 @@ et la correction GMP le faisaient, `correct_pixels_dd` non (39 pixels
 corrigés sur 39 faux, verrou
 `panned_view_with_reused_orbit_matches_fresh_render`). Les rendus sans cache
 d'orbite (CLI, quality, harness) ne peuvent PAS voir cette classe de défaut.
-⚠️ Le traqueur dd est aveugle au tier exp (entrées f64 sous-débordées) :
-limite ouverte, TODO G14.1 (i). ⚠️ Le juge de ces
+Au tier exp (|dc| < 2⁻⁹⁰⁰, garde d'entrée du chemin rapide dd) le traqueur dd
+est `reliability_dd_exp::ShadowTrackerDdExp` (borne et magnitudes en
+`FloatExp`) : le traqueur f64 y sous-débordait et restait à 0.
+⚠️ **Scène au-delà du dd = frame dd payée pour rien** (super_dense : 3 s →
+132 s à 48² pour une image aussi fausse, avec avertissement) — TODO
+G14.1 (k), sonde dd proposée ; `FRACTALL_RELIABILITY=off` en attendant.
+⚠️ Le juge de ces
 défauts n'était AUCUN axe de routine : c'est le rendu de production comparé
 au tier dd (lui-même vérifié contre GMP) sur le corpus `toml/` qui les a
 trouvés — quality juge 16 presets, precision juge l'orbite.

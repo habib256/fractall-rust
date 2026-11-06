@@ -50,8 +50,9 @@ golden_spider 0,36 → 0,77 s, flake / glitch_test_2 ×1,7-2,1 (sur ~25 ms).
 C'est le prix de pixels justes (e227 avait 384 pixels faux).
 
 **Prochains chantiers, par levier** : (a) tier quad-double pour remplacer le
-GMP par pixel des pixels au-delà du dd (G14.1 h) ; (b) traqueur dd en
-`FloatExp` pour le tier exp (G14.1 i, limite ouverte) ; (c) traqueur moins
+GMP par pixel des pixels au-delà du dd (G14.1 h) ; (b) sonde dd AVANT
+l'escalade frame, pour ne pas payer une frame dd qui ne sauvera rien
+(G14.1 k — super_dense ×44 plus lent pour une image aussi fausse) ; (c) traqueur moins
 pessimiste que l·ε (faux positifs = corrections inutiles) ; (d) boucle
 perturbation f64 — l'entrelacement naïf est réfuté (G14.2), il faut du SoA
 écrit à la main avec le traqueur inliné ; (e) σ₁(A) précalculé par nœud BLA
@@ -3352,14 +3353,60 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
     golden_spider ~1,0 s (0,36 s, 169 faux). Un tier quad-double (~212 b,
     ~10× le dd contre ~60× pour le GMP) fermerait ces cas proprement —
     prochain chantier de correction.
-  - [ ] **(i) Traqueur dd AVEUGLE au tier exp** (trouvé à la relecture,
-    2026-11-06) : ses entrées sont des f64 ; sous ~1e-308 (δ, dc, Z de
-    frôlement atom-domain) tout terme vaut 0 et la borne reste nulle. Or la
-    correction dd est appelée au tier exp (le traqueur exp, actif par défaut,
-    y envoie ses pixels flaggés) : le dd y rend `Ok` sans garde-fou — état
-    d'avant la nuit pour ce tier. Mesuré : 0 pixel faux vs juge sur 31 cas exp
-    à 96², donc pas de défaut observé, mais pas de garantie. Remède : borne en
-    `FloatExp` dans la boucle `DoubleDoubleExp` (modèle `ShadowTrackerExp`).
+    **Coût mesuré de lethal_weapon (balayage `--tier full`, 2026-11-06,
+    Apple M4, 48², machine chargée)** : binaire du début de nuit 39,7 s
+    (frame dd, 0 pixel dd signalé) ; binaire final 23,9 s dont ~11 s de
+    frame dd (`FRACTALL_RELIABILITY_DD=0` : 11,0 s), ~9 s de second essai
+    sans BLA (724 pixels dd non fiables → 306 rattrapés, 418 = 18 % laissés
+    au meilleur effort) et ~1,8 s de recalcul sans traqueur de ces 418.
+    Donc PAS une régression de la nuit, mais **395 s à 256²** (binaire
+    final, machine chargée ; sous le budget de 600 s du tier `full`, donc
+    pas de `slow-safe`) : 91 % des pixels à `iteration_max`, 1,46 M
+    itérations dd par pixel en moyenne. Leviers : détection d'intérieur au
+    tier dd (les pixels à `iteration_max` font tout le coût), puis le
+    quad-double.
+  - [x] **(i) Traqueur dd AVEUGLE au tier exp** (trouvé à la relecture,
+    2026-11-06, fermé le même jour) : ses entrées étaient des f64 ; sous
+    ~1e-308 (δ, dc, Z de frôlement atom-domain) tout terme valait 0 et la
+    borne restait nulle, alors que la correction dd est appelée au tier exp.
+    **Livré** (`bytecode/reliability_dd_exp.rs`) : `ShadowTrackerDdExp`,
+    même récurrence et mêmes constantes que `ShadowTrackerDd`, borne et
+    magnitudes en `FloatExp` ; trait `DdTrack` qui rend `ddexp_loop`
+    générique. Sélection par pixel : |dc| < 2⁻⁹⁰⁰ — EXACTEMENT la garde
+    d'entrée du chemin rapide dd, donc ces pixels passaient déjà par
+    `ddexp_loop` et rien ne change au-dessus (bit-identique, itérations et
+    bornes). Verrous : à l'échelle 2⁻³⁰⁰⁰ la borne f64 vaut exactement 0 et
+    la nouvelle vaut la borne à l'échelle 1 × 2⁻³⁰⁰⁰ ; accord < 1e-12
+    relatif là où f64 ne sous-déborde pas ; emballement collant. Mesuré :
+    13 cas exp (e401, e1000, e1298, olbaid2 à 256² ; 9 autres à 128²) PNG
+    identiques en défaut et en `--dd-tier`, aucune borne emballée ; frame
+    `--dd-tier` au tier exp +14 à +29 %. ⚠️ Aucune scène du corpus ne fait
+    s'emballer ce traqueur : il est prouvé par ses tests unitaires, pas par
+    un pixel réel rattrapé. Limite résiduelle : coefficients BLA dd lus en
+    f64 (comme la boucle dd elle-même).
+  - [ ] **(k) Scènes AU-DELÀ du dd : l'escalade coûte une frame dd pour
+    rien** (trouvé par le balayage `--tier full`, 2026-11-06). super_dense
+    (1,5e16, 10 M itérations, Harmonic LA) à 48² : début de nuit 3,0 s
+    (aucun signalement, le chemin harmonic n'avait pas de traqueur) ;
+    binaire final 132 s — le traqueur harmonic signale 90 % des pixels →
+    frame dd (pas de Harmonic LA en dd) → 63 % des pixels encore au-delà du
+    dd, laissés au meilleur effort avec avertissement ; timeout 600 s à
+    256². Les signalements sont FONDÉS : contre le GMP pur (256 b, 531 s à
+    48²) le f64 du début de nuit est faux sur 2204/2304 pixels, le f64
+    final sur 1938, la frame dd sur 1755 — et deux rendus f64 diffèrent
+    entre eux sur 2206 pixels. La scène dépasse tous les tiers (le juge
+    GMP à 256 b n'est pas prouvé convergé non plus). Le second essai sans
+    BLA n'y rattrape AUCUN pixel (1453 avec ou sans). Même classe que
+    lethal_weapon (h), en pire. **Remède proposé, non livré (décision de
+    politique)** : sonde dd avant l'escalade frame — rendre en dd suivi un
+    échantillon fixe (≤ 256 pixels non fiables, triés puis régulièrement
+    espacés : déterministe) ; si la majorité échappe aussi au dd, garder le
+    f64 avec avertissement au lieu de payer la frame dd. Repères pour le
+    seuil : fraction (pixels au-delà du dd) / (pixels signalés par le f64)
+    = 70 % sur super_dense, 30 % sur lethal_weapon (52 % avant le second
+    essai sans BLA — la sonde doit donc inclure ce second essai). Désactivée
+    si `FRACTALL_RELIABILITY_GMP_MAX_FRACTION` ≥ 1. En attendant,
+    `FRACTALL_RELIABILITY=off` rend le comportement rapide d'avant.
   - [ ] **(j) Dernier pixel faux connu de la suite quality : seahorse-valley
     1e8 à 256², pixel (160,70)** — GMP 2084 itérations (256 b == 1024 b), dd
     1947 ; le traqueur f64 le flagge, le dd le « corrige » mal, et la borne
@@ -3635,7 +3682,7 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   flaggés au point cref + grille ; mesuré sur le verrou : 39 pixels faux sur
   39 corrigés (seahorse 1e8, zoom ×2 ancré 10 px hors centre), 1 après
   (`panned_view_with_reused_orbit_matches_fresh_render`) ; (2) traqueur dd
-  aveugle au tier exp → G14.1 (i), ouvert ; (3) l'axe `truth` comptait PASS
+  aveugle au tier exp → G14.1 (i), fermé depuis ; (3) l'axe `truth` comptait PASS
   les types que le dd ne sait pas rendre (le juge refaisait le rendu de
   production) → `n/a` ; (4) clé du cache BLA sans la formule hybride ([M,M]
   et [M] ont la même orbite primaire) ; (5) le mode `observe` corrigeait

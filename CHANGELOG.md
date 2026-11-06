@@ -23,7 +23,8 @@ aux itérations brutes. Détail et chiffres par item : `TODO.md` G14.
 - **Tier dd gardé** — le double-double n'est pas la vérité (seahorse 1e6 :
   un pixel à 1838 itérations pour 1598 en GMP convergé) : traqueur au niveau
   dd, second essai sans BLA, puis GMP par pixel sous un plafond déterministe
-  (0,1 % des pixels, sinon avertissement explicite).
+  (0,1 % des pixels, sinon avertissement explicite). Au tier exp, borne à
+  exposant étendu (`reliability_dd_exp.rs`) : le traqueur f64 y restait à 0.
 - **Harmonic LA** — rayon de validité 2⁻²⁴ → 2⁻⁵³ et traqueur de fiabilité
   (leaded_glass 227 pixels faux → 0 ; golden
   `mandelbrot_glitch_test_2_harmonic` régénéré deux fois : 11 pixels ≠ GMP
@@ -62,6 +63,11 @@ aux itérations brutes. Détail et chiffres par item : `TODO.md` G14.
   dépassent la précision du double-double : e227 256² 1,0 → 3,5 s (7 pixels
   au GMP pur), golden_spider 0,36 → 1,0 s (16 pixels). e50 et dragon restent
   à leur temps du début de nuit (0,61 et 1,3 s) avec moins de pixels faux.
+- ⚠️ **Coût NON résolu sur les scènes au-delà du double-double** (balayage
+  du corpus entier) : super_dense 48² 3,0 → 132 s et timeout 600 s à 256²,
+  pour une image qui reste fausse (signalée) ; lethal_weapon 395 s à 256²
+  (39,7 → 23,9 s à 48² sur la nuit). `FRACTALL_RELIABILITY=off` rend le
+  comportement rapide d'avant ; remède proposé dans `TODO.md` G14.1 (k).
 
 ### Ajouté
 - **Harness : axe `truth`** — rendu de production contre le tier dd sur les
