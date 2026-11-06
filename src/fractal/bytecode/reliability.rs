@@ -341,9 +341,16 @@ impl StepObserverExp for ShadowTrackerExp {
 // pixel (117,17) — le dd rendait 1838 itérations, GMP convergé 1598, sans
 // rien signaler (sensibilité au-delà de 106 bits).
 //
-// Limite connue : f64 sous-déborde sous ~1e-308 ; au-delà de ~1e290 de zoom
-// (tier dd demandé en exp) la borne peut s'annuler et le traqueur devenir
-// aveugle — le tier f64 (seul consommateur de l'escalade) s'arrête à 1e280.
+// ⚠️ LIMITE CONNUE, OUVERTE : les entrées du traqueur sont des f64. Sous
+// ~1e-308 elles valent 0 — au tier exp (pixel < 1e-280) δ, dc et les Z de
+// frôlement atom-domain (~1e-1200) sous-débordent, tous les termes ajoutent
+// exactement 0 et la borne reste nulle : le traqueur dd y est AVEUGLE. Or la
+// correction dd y est bien appelée (le traqueur exp est actif par défaut et
+// envoie ses pixels flaggés en dd) : au tier exp le dd rend donc `Ok` sans
+// garde-fou, comme avant le 2026-11-06. Mesuré à ce jour : 0 pixel faux vs
+// juge sur 31 cas exp à 96² — mais ce n'est pas une garantie. Remède : borne
+// en `FloatExp` (comme `ShadowTrackerExp`) dans la boucle `DoubleDoubleExp`.
+// Cf. TODO G14.1 (i).
 
 /// Unité d'arrondi du double-double (≈ 2⁻¹⁰⁴, quelques ulp de marge sur 2⁻¹⁰⁶).
 pub const U_DD: f64 = 4.930_380_657_631_324e-32; // 2^-104

@@ -83,7 +83,12 @@ pub fn iterate_pixel_unified_ddexp_mandelbrot_tracked(
 ) -> (UnifiedPixelResultExp, f32) {
     let first = tracked_once(ref_orbit, bla, dc, delta_initial, limits, track);
     let runaway = crate::fractal::bytecode::reliability::reliability_runaway() as f32;
-    if track && bla.is_some() && !(first.1 < runaway) && dd_retry_without_bla() {
+    // Le second essai CORRIGE (il change la valeur rendue) : réservé au mode
+    // `escalate`. En `observe` (« détecte, ne corrige rien ») le pixel garde
+    // la valeur de la boucle avec BLA, comme en `off`.
+    let escalating = crate::fractal::bytecode::reliability::reliability_mode()
+        == crate::fractal::bytecode::reliability::ReliabilityMode::Escalate;
+    if track && escalating && bla.is_some() && !(first.1 < runaway) && dd_retry_without_bla() {
         return tracked_once(ref_orbit, None, dc, delta_initial, limits, track);
     }
     first

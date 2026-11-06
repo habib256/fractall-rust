@@ -36,6 +36,18 @@ from .guard import _classify_rc, journal_begin, journal_end
 SENTINEL_CASES = ["e227", "golden_spider", "rug", "olbaid2", "leaded_glass"]
 
 
+def last_path(text: str) -> str | None:
+    """`path=` du DERNIER `[FRACTALL]` (une escalade dd en imprime deux)."""
+    m = None
+    for m in _PATH_RE.finditer(text):
+        pass
+    return m.group(1) if m else None
+
+
+def is_dd_path(path: str | None) -> bool:
+    return bool(path) and "dd" in path.split("_")
+
+
 def count_diff(a: list[int], b: list[int]) -> int:
     return sum(1 for x, y in zip(a, b) if x != y) + abs(len(a) - len(b))
 
@@ -79,8 +91,7 @@ def axis_ddtruth(cases: list[str], size: int = 96, timeout: float = 300.0,
             print("⏱ timeout")
             continue
         out = proc.stdout or ""
-        path_m = _PATH_RE.search(out)
-        path = path_m.group(1) if path_m else None
+        path = last_path(out)
         if _classify_rc(proc.returncode) != "ok":
             journal_end(jrec, _classify_rc(proc.returncode))
             results[name] = {"status": "error"}
@@ -105,6 +116,16 @@ def axis_ddtruth(cases: list[str], size: int = 96, timeout: float = 300.0,
         if status != "ok":
             results[name] = {"status": status, "path": path}
             print(f"✗ juge {status}")
+            continue
+        # Le juge n'en est un que s'il a RÉELLEMENT rendu au tier dd. Pour un
+        # type que le dd ne sait pas rendre (Julia, Burning Ship, hybrides,
+        # opcodes — `wisdom::dd_tier_applicable`), `--dd-tier` refait le rendu
+        # de production : 0 pixel d'écart, et un PASS qui ne juge rien.
+        judge_path = last_path(jproc.stdout or "")
+        if not is_dd_path(judge_path):
+            results[name] = {"status": "n/a", "path": path,
+                             "judge_path": judge_path}
+            print(f"— pas de juge dd pour ce type ({path} ; juge {judge_path})")
             continue
         a = read_fmap_iterations(prod_map)
         b = read_fmap_iterations(judge_map)

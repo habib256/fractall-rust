@@ -84,6 +84,12 @@ struct BlaUnifiedCacheEntry {
     /// (zoom arrière, redimensionnement) garderait sinon des rayons de merge
     /// calculés pour un |δc| plus petit — sur-permissifs, donc over-skip.
     c_norm: f64,
+    /// Empreinte de la formule hybride / à opcodes (0 = formule simple). Dans
+    /// la clé : `[M,M]` et `[M]` ont la MÊME orbite primaire, donc la même
+    /// identité d'orbite — sans cette empreinte un Mandelbrot nu pouvait
+    /// recevoir l'entrée (et la formule à deux phases) du rendu hybride
+    /// précédent.
+    formula_key: u64,
     fractal_type: FractalType,
     multibrot_power: f64,
     bla_threshold: f64,
@@ -113,11 +119,39 @@ impl BlaUnifiedCacheEntry {
     fn matches(&self, orbit: &OrbitIdentity, c_norm: f64, params: &FractalParams) -> bool {
         self.orbit == *orbit
             && self.c_norm.to_bits() == c_norm.to_bits()
+            && self.formula_key == hybrid_formula_key(params)
             && self.fractal_type == params.fractal_type
             && (self.multibrot_power - params.formula.multibrot_power).abs() <= 1e-12
             && (self.bla_threshold - params.perturbation.bla_threshold).abs() <= 1e-20
             && self.use_dd_tier == params.engine.use_dd_tier
     }
+}
+
+/// Empreinte de la formule hybride/opcodes des paramètres ; 0 pour une
+/// formule simple (deux tests d'`Option`, rien d'autre sur le chemin par
+/// pixel). FNV-1a sur le texte des opcodes ou la suite des types de phase.
+fn hybrid_formula_key(params: &FractalParams) -> u64 {
+    if !params.is_hybrid_formula() {
+        return 0;
+    }
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for &b in bytes {
+            h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    if let Some(text) = params.formula.hybrid_opcodes.as_deref() {
+        eat(b"opcodes:");
+        eat(text.as_bytes());
+    }
+    if let Some(phases) = params.formula.hybrid_phases.as_deref() {
+        eat(b"phases:");
+        for ty in phases {
+            eat(format!("{ty:?},").as_bytes());
+        }
+    }
+    eat(&params.formula.multibrot_power.to_bits().to_le_bytes());
+    h | 1
 }
 
 /// Rayon de validité BLA = max |δc| sur l'image (F3 `engine.cc:282` :
@@ -337,6 +371,7 @@ fn build_bla_entry(
     Some(Arc::new(BlaUnifiedCacheEntry {
         orbit,
         c_norm,
+        formula_key: hybrid_formula_key(params),
         fractal_type: params.fractal_type,
         multibrot_power: params.formula.multibrot_power,
         bla_threshold: params.perturbation.bla_threshold,
@@ -3164,6 +3199,18 @@ mod tests {
 
         // (2) vue élargie sur la même orbite.
         assert!(!entry.matches(&id, c_norm * 1.05, &params));
+
+        // (3) même orbite primaire, formule hybride : `[M,M]` ne doit pas
+        // retrouver l'entrée de `[M]` (ni l'inverse).
+        let mut hybrid = params.clone();
+        hybrid.formula.hybrid_phases =
+            Some(vec![FractalType::Mandelbrot, FractalType::Mandelbrot]);
+        assert!(!entry.matches(&id, c_norm, &hybrid));
+        let mut opcodes = params.clone();
+        opcodes.formula.hybrid_opcodes = Some("sqr rot{30} add".to_owned());
+        assert!(!entry.matches(&id, c_norm, &opcodes));
+        assert_ne!(super::hybrid_formula_key(&hybrid), super::hybrid_formula_key(&opcodes));
+        assert_eq!(super::hybrid_formula_key(&params), 0);
 
         // (1) même tampon (ptr + len inchangés), dernière valeur modifiée.
         let orbit = std::sync::Arc::get_mut(&mut cache).expect("cache non partagé");

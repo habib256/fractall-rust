@@ -421,6 +421,15 @@ def run_truth_axis():
     _check(("truth", "e50") not in g and ("truth", "spiral") not in g,
            "truth : PASS et n/a → aucun gap")
     _check("truth" in harnesslib_cli.ALL_AXES.split(","), "truth : axe déclaré")
+    two = ("[FRACTALL] type=Mandelbrot path=bytecode_f64 prec=256b x\n"
+           "[FRACTALL] type=Mandelbrot path=bytecode_dd prec=256b x\n")
+    _check(axes_ddtruth.last_path(two) == "bytecode_dd",
+           "truth : path du DERNIER [FRACTALL] (escalade dd = deux lignes)")
+    _check(axes_ddtruth.is_dd_path("bytecode_dd")
+           and not axes_ddtruth.is_dd_path("bytecode_f64")
+           and not axes_ddtruth.is_dd_path("bytecode_f64_harmonic_lla")
+           and not axes_ddtruth.is_dd_path(None),
+           "truth : un juge qui n'a pas rendu en dd n'est pas un juge (n/a)")
 
 
 if __name__ == "__main__":

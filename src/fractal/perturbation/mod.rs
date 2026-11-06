@@ -185,6 +185,7 @@ fn correct_pixels_dd(
     aa_jitter: Option<(u64, f64)>,
     rot: Option<(f64, f64, f64, f64)>,
     track: bool,
+    ref_offset: Option<&(Float, Float)>,
 ) -> Option<Vec<(usize, u32, Complex64, DdFix)>> {
     use crate::fractal::perturbation::dd::{ComplexDDExp, DoubleDoubleExp as DdE};
     let mut dd_params = params.clone();
@@ -233,6 +234,12 @@ fn correct_pixels_dd(
     let height_dd = DdE::from_f64(params.height.max(1) as f64);
     let half = DdE::from_f64(0.5);
     let (jit_re, jit_im) = (x_range.div(width_dd), y_range.div(height_dd));
+    // G10.2 : `dc = grille + (centre_vue − cref)`. Non nul quand l'orbite du
+    // cache est RÉUTILISÉE hors centre (pan GUI à profondeur fixe) — sans lui
+    // le pixel « corrigé » était recalculé au point `cref + grille`, décalé de
+    // toute la distance du pan (sel-et-poivre silencieux parmi les pixels
+    // corrigés ; invisible en CLI/QA, qui n'ont pas de cache d'orbite).
+    let offset_dd = ref_offset.map(|(re, im)| (DdE::from_gmp(re), DdE::from_gmp(im)));
     Some(
         indices
             .par_iter()
@@ -252,6 +259,13 @@ fn correct_pixels_dd(
                     let (jx, jy) = crate::fractal::jitter::pixel_offset(width, i, j, k, scale);
                     re = re.add(jit_re.mul(DdE::from_f64(jx)));
                     im = im.add(jit_im.mul(DdE::from_f64(jy)));
+                }
+                // Décalage vers la référence AVANT la rotation, comme le
+                // plein cadre (la réutilisation hors centre est gatée sans
+                // rotation : l'ordre est sans effet, on garde le même).
+                if let Some((off_re, off_im)) = offset_dd {
+                    re = re.add(off_re);
+                    im = im.add(off_im);
                 }
                 // Rotation/transform K (coefficients f64, comme le plein
                 // cadre) appliquée au dc dd : sans elle, une scène tournée
@@ -402,7 +416,7 @@ pub fn recompute_pixels_cpu(
     {
         let cancel = AtomicBool::new(false);
         if let Some(fixed) =
-            correct_pixels_dd(params, cache, &cancel, &escalate, [0.0, 0.0], aa_jit, None, true)
+            correct_pixels_dd(params, cache, &cancel, &escalate, [0.0, 0.0], aa_jit, None, true, None)
         {
             let mut still = Vec::new();
             for (idx, it, z, status) in fixed {
@@ -1423,6 +1437,7 @@ pub fn render_perturbation_with_cache(
                     aa_jit,
                     rot,
                     true,
+                    resolved_sampling.ref_offset.as_ref(),
                 )
             } else {
                 None
@@ -1476,6 +1491,7 @@ pub fn render_perturbation_with_cache(
                     aa_jit,
                     rot,
                     false,
+                    resolved_sampling.ref_offset.as_ref(),
                 );
                 match best {
                     Some(best) => {
@@ -2250,6 +2266,71 @@ mod tests {
             0,
             "zoom continu (cache réutilisé) diverge du rendu frais : {ndiff}/{} px",
             it_reuse.len()
+        );
+    }
+
+    /// Verrou du décalage centre − référence dans la CORRECTION dd (G10.2 ×
+    /// G9.6) : sur un zoom avant ANCRÉ hors centre dont la nouvelle vue tient
+    /// dans l'empreinte de la précédente (`can_subset_reuse`), la GUI réutilise
+    /// l'orbite de la vue précédente (référence hors centre). Le plein cadre et la correction
+    /// GMP ajoutaient `centre_vue − cref` au dc ; `correct_pixels_dd` non — un
+    /// pixel flaggé était « corrigé » au point `cref + grille`, décalé de
+    /// toute la distance du pan. Invisible en CLI / QA (pas de cache d'orbite).
+    /// Scène : seahorse 1e8, qui flagge des pixels (escalade dd par défaut).
+    #[test]
+    fn panned_view_with_reused_orbit_matches_fresh_render() {
+        use super::{render_perturbation_with_cache, ReferenceOrbitCache};
+        use rug::Float;
+        let (w, h) = (128u32, 96u32);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let span0 = 4.0e-8_f64;
+        let cx0 = Float::with_val(256, Float::parse("-0.743643887037158704752191506114774").unwrap());
+        let cy0 = Float::with_val(256, Float::parse("0.131825904205311970493132056385139").unwrap());
+        // `shift_px` en pixels de la vue INITIALE ; `zoom` divise le span.
+        let make = |shift_px: i32, zoom: f64| -> FractalParams {
+            let mut p = default_params_for_type(FractalType::Mandelbrot, w, h);
+            p.engine.algorithm_mode = AlgorithmMode::Perturbation;
+            p.iteration_max = 4096;
+            let span_x = span0 / zoom;
+            let span_y = span_x * h as f64 / w as f64;
+            let dx = Float::with_val(256, span0 / w as f64 * shift_px as f64);
+            let cx = Float::with_val(256, &cx0 + &dx);
+            p.center_x = cx.to_f64();
+            p.center_y = cy0.to_f64();
+            p.center_x_hp = Some(cx.to_string_radix(10, Some(60)));
+            p.center_y_hp = Some(cy0.to_string_radix(10, Some(60)));
+            p.span_x = span_x;
+            p.span_y = span_y;
+            p.span_x_hp = Some(format!("{span_x:.17e}"));
+            p.span_y_hp = Some(format!("{span_y:.17e}"));
+            p
+        };
+        let (_first, cache): (_, Arc<ReferenceOrbitCache>) =
+            render_perturbation_with_cache(&make(0, 1.0), &cancel, None, None, None, None)
+                .expect("vue initiale");
+        // Zoom ×2 ancré 10 px à côté du centre : contenu dans l'empreinte.
+        let panned = make(10, 2.0);
+        let (reused, cache_after) =
+            render_perturbation_with_cache(&panned, &cancel, None, Some(&cache), None, None)
+                .expect("vue décalée, orbite réutilisée");
+        // Anti-vacuité : l'orbite de la première vue a bien été réutilisée
+        // (référence hors centre), sinon le test ne dit rien.
+        assert_eq!(
+            cache_after.orbit.z_ref_f64.as_ptr(),
+            cache.orbit.z_ref_f64.as_ptr(),
+            "l'orbite n'a pas été réutilisée : le pan ne teste plus la référence hors centre"
+        );
+        let (fresh, _) = render_perturbation_with_cache(&panned, &cancel, None, None, None, None)
+            .expect("vue décalée, rendu frais");
+        let ndiff = reused.0.iter().zip(&fresh.0).filter(|(a, b)| a != b).count();
+        // Mesuré : 39 pixels (tous les pixels corrigés) sans le décalage, 1
+        // avec. Ce pixel restant est la dépendance normale à la référence au
+        // plancher f64 (les deux rendus n'ont pas la même orbite, 38 vs 39
+        // pixels flaggés) — d'où une tolérance de 2, très loin des 39.
+        assert!(
+            ndiff <= 2,
+            "vue zoomée à orbite réutilisée ≠ rendu frais : {ndiff}/{} pixels",
+            fresh.0.len()
         );
     }
 
