@@ -40,8 +40,8 @@ quality **17/17**, truth 14/14, precision 12/12, goldens verts ; bench
 8. **Boucles GMP pures ×1,8 à ×2,3** (G14.20), bit-identiques : le juge de
    la QA, la correction par pixel et le repli GMP plein cadre en profitent.
 Score standard (`…T051051Z-b3ed210.json`, 25 cas 4,66 s) : quality 16 PASS +
-1 WARN connu, fuzz 6/6, precision 26/26, truth 27/27, goldens verts (30 cas,
-dont 5 nouveaux). Score quick final (`…T053707Z-b5cdf1a.json`) : 0 gap.
+1 WARN connu, fuzz 6/6, precision 26/26, truth 27/27, goldens verts (29 cas,
+dont 4 nouveaux). Score quick final (`…T053707Z-b5cdf1a.json`) : 0 gap.
 
 **Prochains chantiers** : (a) Tricorn / Burning Ship profonds rendus en GMP
 plein cadre quand la référence s'échappe (G14.21 — une piste essayée et

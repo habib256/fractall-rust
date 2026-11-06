@@ -356,8 +356,11 @@ const CASES: &[Case] = &[
         envs: NO_ENV,
     },
     // Raccourci des cycles exacts (points intérieurs) : mêmes pixels qu'en
-    // itérant jusqu'au plafond — noyau par lots, boucle scalaire Magnet,
-    // abandon des orbites périodiques du Nebulabrot.
+    // itérant jusqu'au plafond — noyau par lots et boucle scalaire Magnet.
+    // (Pas de golden Nebulabrot : sa compression logarithmique passe par la
+    // libm, dont le dernier bit diffère entre plateformes ; l'abandon des
+    // orbites périodiques est verrouillé au niveau des tirages par
+    // `abandoning_periodic_orbits_changes_no_outcome`.)
     Case {
         name: "mandelbrot_interior_20000",
         args: &["--type", "3", "--width", "160", "--height", "100", "--iterations", "20000"],
@@ -366,11 +369,6 @@ const CASES: &[Case] = &[
     Case {
         name: "magnet_mandelbrot_default",
         args: &["--type", "12", "--width", "160", "--height", "100", "--iterations", "2500"],
-        envs: NO_ENV,
-    },
-    Case {
-        name: "nebulabrot_small",
-        args: &["--type", "24", "--width", "160", "--height", "100"],
         envs: NO_ENV,
     },
     Case {

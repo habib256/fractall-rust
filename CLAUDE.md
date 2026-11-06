@@ -30,7 +30,7 @@ Prérequis natifs : GMP / MPFR / MPC (pour `rug`).
   `wisdom` (select_algorithm/device, plan), et tout le `bytecode/` (`compile`
   + `compile_hybrid_formula`, `interp{,_gmp}`, `bla_dual`, `delta_form`,
   `pixel_loop{,_exp}`).
-- **Golden image tests** (`tests/golden_images.rs`) : 30 cas pixel-exact
+- **Golden image tests** (`tests/golden_images.rs`) : 29 cas pixel-exact
   (goldens forcent `--no-gpu` pour déterminisme cross-machine) — paths f64
   standard, perturbation, deep zoom GMP, types non-bytecode, zooms
   intermédiaires (1e10/1e15/1e20, path perturbation par défaut), atom-domain,
