@@ -419,7 +419,7 @@ fn julia_sin(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
         z = p.seed * z.sin();
         i += 1;
-        cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
+        cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
     }
     FractalResult { iteration: i, z, orbit: None, distance: None }
 }
@@ -434,7 +434,7 @@ fn mandelbrot_sin(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
         z = z_pixel * z.sin();
         i += 1;
-        cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
+        cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
     }
     FractalResult { iteration: i, z, orbit: None, distance: None }
 }
@@ -460,7 +460,7 @@ fn newton(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
             if denominator.norm_sqr() < 1e-24 { break; }
             z = z - numerator / denominator;
             i += 1;
-            cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         }
     } else if degree == 3 {
         // Fast-path: z^3 - 1, derivative = 3*z^2
@@ -472,7 +472,7 @@ fn newton(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
             if denominator.norm_sqr() < 1e-24 { break; }
             z = z - numerator / denominator;
             i += 1;
-            cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         }
     } else {
         // General path with powc
@@ -486,7 +486,7 @@ fn newton(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
             if denominator.norm_sqr() < 1e-24 { break; }
             z = z - numerator / denominator;
             i += 1;
-            cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         }
     }
     FractalResult { iteration: i, z, orbit: None, distance: None }
@@ -582,7 +582,7 @@ fn magnet_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         let ratio = n / q;
         z = ratio * ratio;
         i += 1;
-        cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
+        cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
     }
 
     FractalResult { iteration: i, z, orbit: None, distance: None }
@@ -609,7 +609,7 @@ fn magnet_mandelbrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         let ratio = n / q;
         z = ratio * ratio;
         i += 1;
-        cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
+        cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
     }
 
     FractalResult { iteration: i, z, orbit: None, distance: None }
@@ -887,19 +887,19 @@ fn multibrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         2 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
             z = z * z + z_pixel;
             i += 1;
-            cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         },
         3 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
             let z_sq = z * z;
             z = z_sq * z + z_pixel;
             i += 1;
-            cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         },
         4 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
             let z2 = z * z;
             z = z2 * z2 + z_pixel;
             i += 1;
-            cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         },
         n if is_integer && n > 4 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
             // Chain multiply for larger integer powers
@@ -910,14 +910,14 @@ fn multibrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
             if !z_pow.re.is_finite() || !z_pow.im.is_finite() { break; }
             z = z_pow + z_pixel;
             i += 1;
-            cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         },
         _ => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
             let z_pow = z.powf(d);
             if !z_pow.re.is_finite() || !z_pow.im.is_finite() { break; }
             z = z_pow + z_pixel;
             i += 1;
-            cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         },
     }
 
@@ -1007,19 +1007,19 @@ fn multibrot_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         2 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
             z = z * z + p.seed;
             i += 1;
-            cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         },
         3 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
             let z_sq = z * z;
             z = z_sq * z + p.seed;
             i += 1;
-            cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         },
         4 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
             let z2 = z * z;
             z = z2 * z2 + p.seed;
             i += 1;
-            cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         },
         n if is_integer && n > 4 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
             let mut z_pow = z;
@@ -1029,14 +1029,14 @@ fn multibrot_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
             if !z_pow.re.is_finite() || !z_pow.im.is_finite() { break; }
             z = z_pow + p.seed;
             i += 1;
-            cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         },
         _ => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
             let z_pow = z.powf(d);
             if !z_pow.re.is_finite() || !z_pow.im.is_finite() { break; }
             z = z_pow + p.seed;
             i += 1;
-            cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         },
     }
 

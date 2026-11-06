@@ -85,6 +85,15 @@ impl<const N: usize> CycleCut<N> {
         }
     }
 
+    /// Comme [`Self::observe`], mais teste à CHAQUE itération : pour les
+    /// boucles dont un pas coûte cher (puissance complexe, division, sinus)
+    /// et dont les cycles ne sont pas de longueur 1 — un test tous les 8 pas
+    /// ne voit un cycle de longueur `L` qu'au bout de `ppcm(L, 8)` pas.
+    #[inline(always)]
+    pub fn observe_each(&mut self, i: &mut u32, iteration_max: u32, state: [f64; N]) {
+        self.check(i, iteration_max, state);
+    }
+
     #[inline]
     fn check(&mut self, i: &mut u32, iteration_max: u32, state: [f64; N]) {
         let bits = state.map(f64::to_bits);
