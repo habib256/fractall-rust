@@ -469,6 +469,53 @@ pub fn reliability_gmp_max_fraction() -> f64 {
     })
 }
 
+/// Sonde dd AVANT l'escalade frame (TODO G14.1 k) — **OPT-IN**
+/// `FRACTALL_DD_PROBE=1`. Motif : sur une scène au-delà du double-double
+/// (super_dense : 90 % de pixels f64 non fiables, dont 70 % échappent aussi
+/// au dd), la frame dd coûte ×40 le rendu f64 pour une image qui reste
+/// fausse. La sonde rend en dd suivi un petit échantillon des pixels non
+/// fiables et, si la majorité échappe au dd, garde le f64 avec un
+/// avertissement. Opt-in tant que le seuil n'est calibré que sur deux scènes
+/// (super_dense 70 %, lethal_weapon 30 %) : les bornes dd ont des faux
+/// positifs, une scène à 60 % de pixels « au-delà du dd » peut être juste en
+/// dd.
+pub fn dd_probe_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        matches!(
+            std::env::var("FRACTALL_DD_PROBE")
+                .ok()
+                .map(|v| v.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("1") | Some("on") | Some("true")
+        )
+    })
+}
+
+/// Taille maximale de l'échantillon de la sonde dd (fixe : le coût de la
+/// sonde ne croît pas avec la résolution).
+pub const DD_PROBE_MAX_SAMPLES: usize = 256;
+/// En dessous, l'échantillon ne permet aucun verdict (pas de sonde).
+pub const DD_PROBE_MIN_SAMPLES: usize = 16;
+
+/// Échantillon DÉTERMINISTE de la sonde : indices triés (l'ordre d'arrivée
+/// dépend des threads) puis régulièrement espacés, au plus
+/// [`DD_PROBE_MAX_SAMPLES`].
+pub fn dd_probe_sample(unreliable: &[usize]) -> Vec<usize> {
+    let mut sorted = unreliable.to_vec();
+    sorted.sort_unstable();
+    let step = sorted.len().div_ceil(DD_PROBE_MAX_SAMPLES).max(1);
+    sorted.into_iter().step_by(step).collect()
+}
+
+/// Verdict de la sonde : la frame dd ne sauverait pas l'image ssi la
+/// majorité STRICTE de l'échantillon échappe aussi au dd (second essai sans
+/// BLA compris).
+pub fn dd_probe_hopeless(beyond_dd: usize, sampled: usize) -> bool {
+    sampled >= DD_PROBE_MIN_SAMPLES && 2 * beyond_dd > sampled
+}
+
 /// Décision TOUT OU RIEN de l'escalade dd → GMP : `n_unreliable` pixels dont
 /// la borne dd s'emballe partent au GMP ssi `n ≤ max(16, ⌊f·N⌋)` (ou
 /// `f ≥ 1`). Au-delà, aucun n'y part (l'image ne dépend d'aucun ordre de
@@ -858,6 +905,33 @@ mod tests {
 
     /// Verrou du plafond de l'escalade dd → GMP : plafond en fraction,
     /// plancher 16, illimité à f ≥ 1, décision binaire sur le TOTAL.
+    /// Sonde dd (G14.1 k) : échantillon indépendant de l'ordre d'arrivée
+    /// des indices (qui dépend des threads), borné, et verdict à la majorité
+    /// stricte — calé sur super_dense (70 % au-delà du dd → sans espoir) et
+    /// lethal_weapon (30 % → la frame dd vaut son prix).
+    #[test]
+    fn dd_probe_sample_is_deterministic_and_bounded() {
+        let ordered: Vec<usize> = (0..10_000).map(|i| i * 3).collect();
+        let mut shuffled = ordered.clone();
+        shuffled.reverse();
+        shuffled.swap(17, 4242);
+        let a = dd_probe_sample(&ordered);
+        assert_eq!(a, dd_probe_sample(&shuffled));
+        assert!(a.len() <= DD_PROBE_MAX_SAMPLES && a.len() >= DD_PROBE_MAX_SAMPLES / 2);
+        // Réparti sur tout l'intervalle, pas un préfixe.
+        assert_eq!(a[0], 0);
+        assert!(*a.last().unwrap() > 29_000);
+        // Petit ensemble : tout est sondé.
+        assert_eq!(dd_probe_sample(&[5, 1, 3]), vec![1, 3, 5]);
+        assert!(dd_probe_sample(&[]).is_empty());
+
+        assert!(dd_probe_hopeless(180, 256)); // super_dense ~70 %
+        assert!(!dd_probe_hopeless(77, 256)); // lethal_weapon ~30 %
+        assert!(!dd_probe_hopeless(128, 256)); // moitié exacte : pas de majorité
+        assert!(dd_probe_hopeless(129, 256));
+        assert!(!dd_probe_hopeless(15, 15)); // échantillon trop petit : pas de verdict
+    }
+
     #[test]
     fn gmp_escalation_cap_decision() {
         // 256² à 1 % : plafond 655.

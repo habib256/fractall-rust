@@ -67,7 +67,10 @@ aux itérations brutes. Détail et chiffres par item : `TODO.md` G14.
   du corpus entier) : super_dense 48² 3,0 → 132 s et timeout 600 s à 256²,
   pour une image qui reste fausse (signalée) ; lethal_weapon 395 s à 256²
   (39,7 → 23,9 s à 48² sur la nuit). `FRACTALL_RELIABILITY=off` rend le
-  comportement rapide d'avant ; remède proposé dans `TODO.md` G14.1 (k).
+  comportement rapide d'avant. Remède en opt-in : `FRACTALL_DD_PROBE=1`
+  (sonde dd de ≤ 256 pixels avant l'escalade frame — super_dense 48²
+  132 → 10,4 s, lethal_weapon inchangé au pixel près) ; cf. `TODO.md`
+  G14.1 (k) pour ce qu'il reste à calibrer avant de l'activer par défaut.
 
 ### Ajouté
 - **Harness : axe `truth`** — rendu de production contre le tier dd sur les

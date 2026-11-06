@@ -1294,12 +1294,52 @@ pub fn render_perturbation_with_cache(
         let escalate_unreliable = crate::fractal::bytecode::reliability::reliability_mode()
             == crate::fractal::bytecode::reliability::ReliabilityMode::Escalate;
         let unreliable_ratio = unreliable_indices.len() as f64 / computed_pixels as f64;
-        if escalate_unreliable
+        let wants_dd_frame = escalate_unreliable
             && unreliable_ratio > crate::fractal::bytecode::reliability::UNRELIABLE_FRAME_THRESHOLD
             && bytecode_path
             && !params.engine.use_dd_tier
-            && crate::fractal::wisdom::dd_tier_applicable(params)
+            && crate::fractal::wisdom::dd_tier_applicable(params);
+        // Sonde dd (opt-in `FRACTALL_DD_PROBE=1`, TODO G14.1 k) : avant de
+        // payer une frame dd, un échantillon fixe des pixels non fiables est
+        // rendu en dd suivi. Si la majorité échappe AUSSI au dd, la frame dd
+        // ne donnerait pas une image juste : les pixels gardent leur valeur
+        // f64, avec un avertissement, et ni la frame dd ni la correction
+        // pixel par pixel ne tournent. Sans objet si l'utilisateur a levé le
+        // plafond GMP (il veut tout corriger, quel qu'en soit le prix).
+        let mut keep_f64_unreliable = false;
+        if wants_dd_frame
+            && crate::fractal::bytecode::reliability::dd_probe_enabled()
+            && crate::fractal::bytecode::reliability::reliability_gmp_max_fraction() < 1.0
+            && !params.engine.find_nucleus
+            && cache.hybrid_refs.is_none()
         {
+            use crate::fractal::bytecode::reliability as rel;
+            let sample = rel::dd_probe_sample(&unreliable_indices);
+            if let Some(probed) = correct_pixels_dd(
+                params,
+                &cache,
+                cancel.as_ref(),
+                &sample,
+                [aa_dx, aa_dy],
+                aa_jit,
+                rot,
+                true,
+                resolved_sampling.ref_offset.as_ref(),
+            ) {
+                let beyond = probed.iter().filter(|r| r.3 == DdFix::Unreliable).count();
+                if rel::dd_probe_hopeless(beyond, sample.len()) {
+                    keep_f64_unreliable = true;
+                    eprintln!(
+                        "[RELIABILITY-DD] sonde : {}/{} pixels non fiables échappent aussi au tier dd — {} pixels ({:.2} %) laissés à leur valeur f64 (non fiables), frame dd non rendue ; FRACTALL_RELIABILITY_GMP_MAX_FRACTION=1 pour tout corriger",
+                        beyond,
+                        sample.len(),
+                        unreliable_indices.len(),
+                        100.0 * unreliable_ratio
+                    );
+                }
+            }
+        }
+        if wants_dd_frame && !keep_f64_unreliable {
             let mut dd_params = params.clone();
             dd_params.engine.use_dd_tier = true;
             if let Some(dd_result) =
@@ -1417,7 +1457,7 @@ pub fn render_perturbation_with_cache(
             && cache.orbit.has_dd();
         if escalate_unreliable && !unreliable_indices.is_empty() && frame_dd {
             dd_unreliable.extend_from_slice(&unreliable_indices);
-        } else if escalate_unreliable && !unreliable_indices.is_empty() {
+        } else if escalate_unreliable && !unreliable_indices.is_empty() && !keep_f64_unreliable {
             // Correction préférée : tier dd sur les seuls pixels non fiables
             // (même arithmétique que l'escalade frame, ~25× moins chère que
             // le GMP par pixel sur les orbites longues). Ce qui reste glitché

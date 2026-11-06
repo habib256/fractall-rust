@@ -50,9 +50,10 @@ golden_spider 0,36 → 0,77 s, flake / glitch_test_2 ×1,7-2,1 (sur ~25 ms).
 C'est le prix de pixels justes (e227 avait 384 pixels faux).
 
 **Prochains chantiers, par levier** : (a) tier quad-double pour remplacer le
-GMP par pixel des pixels au-delà du dd (G14.1 h) ; (b) sonde dd AVANT
-l'escalade frame, pour ne pas payer une frame dd qui ne sauvera rien
-(G14.1 k — super_dense ×44 plus lent pour une image aussi fausse) ; (c) traqueur moins
+GMP par pixel des pixels au-delà du dd (G14.1 h) ; (b) calibrer puis activer
+par défaut la sonde dd d'avant l'escalade frame (G14.1 k, livrée en opt-in
+`FRACTALL_DD_PROBE=1` — sans elle super_dense est ×44 plus lent pour une
+image aussi fausse) ; (c) traqueur moins
 pessimiste que l·ε (faux positifs = corrections inutiles) ; (d) boucle
 perturbation f64 — l'entrelacement naïf est réfuté (G14.2), il faut du SoA
 écrit à la main avec le traqueur inliné ; (e) σ₁(A) précalculé par nœud BLA
@@ -3397,16 +3398,27 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
     entre eux sur 2206 pixels. La scène dépasse tous les tiers (le juge
     GMP à 256 b n'est pas prouvé convergé non plus). Le second essai sans
     BLA n'y rattrape AUCUN pixel (1453 avec ou sans). Même classe que
-    lethal_weapon (h), en pire. **Remède proposé, non livré (décision de
-    politique)** : sonde dd avant l'escalade frame — rendre en dd suivi un
-    échantillon fixe (≤ 256 pixels non fiables, triés puis régulièrement
-    espacés : déterministe) ; si la majorité échappe aussi au dd, garder le
-    f64 avec avertissement au lieu de payer la frame dd. Repères pour le
-    seuil : fraction (pixels au-delà du dd) / (pixels signalés par le f64)
-    = 70 % sur super_dense, 30 % sur lethal_weapon (52 % avant le second
-    essai sans BLA — la sonde doit donc inclure ce second essai). Désactivée
-    si `FRACTALL_RELIABILITY_GMP_MAX_FRACTION` ≥ 1. En attendant,
-    `FRACTALL_RELIABILITY=off` rend le comportement rapide d'avant.
+    lethal_weapon (h), en pire. **Remède livré EN OPT-IN
+    (`FRACTALL_DD_PROBE=1`, défaut inchangé)** : sonde dd avant l'escalade
+    frame — un échantillon fixe (≤ 256 pixels non fiables, triés puis
+    régulièrement espacés : déterministe, coût indépendant de la résolution)
+    est rendu en dd suivi, second essai sans BLA compris ; si la majorité
+    stricte échappe aussi au dd, les pixels gardent leur valeur f64 avec un
+    avertissement stderr, et ni la frame dd ni la correction pixel par pixel
+    ne tournent. Sans objet si `FRACTALL_RELIABILITY_GMP_MAX_FRACTION` ≥ 1.
+    Mesuré à 48² : super_dense 132 → **10,4 s** (sonde 166/230 = 72 %, 4,7 s ;
+    image = le f64, deux rendus identiques à l'octet) ; lethal_weapon sonde
+    76/233 = 33 % → frame dd maintenue, PNG identique au défaut, +1,4 s sur
+    ~12,5 s. À 256² : super_dense **126 s** (sonde 170/256 = 66 %, 4,8 s ;
+    le reste est la passe f64 harmonic suivie) contre un timeout > 600 s
+    par défaut. Verrou `dd_probe_sample_is_deterministic_and_bounded`.
+    **Reste à décider (politique, d'où l'opt-in)** : le seuil n'est calé que
+    sur ces deux scènes, et les bornes dd ont des faux positifs (lethal :
+    « dd sans BLA 70/78 justes » parmi les pixels signalés) — une scène à
+    60 % de pixels « au-delà du dd » peut être majoritairement juste en dd,
+    et la sonde la laisserait au f64. Pour l'activer par défaut : balayer le
+    corpus en `--tier full` avec `harness.py ab --env FRACTALL_DD_PROBE=0,1`
+    et juger au GMP les scènes où la sonde tranche « sans espoir ».
   - [ ] **(j) Dernier pixel faux connu de la suite quality : seahorse-valley
     1e8 à 256², pixel (160,70)** — GMP 2084 itérations (256 b == 1024 b), dd
     1947 ; le traqueur f64 le flagge, le dd le « corrige » mal, et la borne

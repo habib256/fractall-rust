@@ -776,7 +776,9 @@ est `reliability_dd_exp::ShadowTrackerDdExp` (borne et magnitudes en
 `FloatExp`) : le traqueur f64 y sous-débordait et restait à 0.
 ⚠️ **Scène au-delà du dd = frame dd payée pour rien** (super_dense : 3 s →
 132 s à 48² pour une image aussi fausse, avec avertissement) — TODO
-G14.1 (k), sonde dd proposée ; `FRACTALL_RELIABILITY=off` en attendant.
+G14.1 (k). Remède en OPT-IN : `FRACTALL_DD_PROBE=1` (sonde de ≤ 256 pixels
+avant l'escalade frame ; majorité au-delà du dd ⇒ f64 gardé + avertissement ;
+super_dense 132 → 10,4 s, lethal_weapon inchangé au pixel près).
 ⚠️ Le juge de ces
 défauts n'était AUCUN axe de routine : c'est le rendu de production comparé
 au tier dd (lui-même vérifié contre GMP) sur le corpus `toml/` qui les a
@@ -806,6 +808,7 @@ Tous lus UNE fois (`OnceLock`). Défaut = comportement de production.
 | `FRACTALL_RELIABILITY_DD=0` | coupe le traqueur du tier dd (⚠️ rend l'ε 2⁻⁸⁰ de la BLA dd non gardé) |
 | `FRACTALL_DD_RETRY_NOBLA=0` | pas de second essai dd sans BLA avant le GMP |
 | `FRACTALL_RELIABILITY_GMP_MAX_FRACTION=f` | plafond de l'escalade dd → GMP (défaut 0,001 ; ≥ 1 = illimité) |
+| `FRACTALL_DD_PROBE=1` | sonde dd avant l'escalade frame (opt-in) : scène dont la majorité des pixels non fiables échappe aussi au dd ⇒ f64 gardé avec avertissement, frame dd non rendue |
 | `FRACTALL_F64_MARGIN=1` | test de détermination à l'évasion au tier f64 (opt-in, +75-195 %) |
 | `FRACTALL_DD_ESCAPE_REL=0.1` | tier dd : pixel non fiable si sa borne ≥ 0,1·\|z\| à l'évasion (opt-in — corrige le dernier pixel faux de seahorse-valley 256², coûte ×2 sur e227 pour 0 pixel changé) |
 | `FRACTALL_DD_FAST=0` | boucle `DoubleDoubleExp` au lieu du chemin rapide dd |
