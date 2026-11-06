@@ -739,12 +739,14 @@ fn iterate_pixel_unified_single_phase(
                 c.set_ref_index(m_wrapped);
             } else if ref_orbit.atom_truncated {
                 let z_m_end = ref_orbit.z_ref_f64[c.m_usize().min(ref_len - 1)];
-                delta = z_m_end + delta;
-                if options.is_julia {
+                delta = if options.is_julia {
                     // Julia : la référence part de `Z[0] = centre` (≠ 0),
-                    // cf. `DirectKernel::REF_ORIGIN_NONZERO`.
-                    delta -= ref_orbit.z_ref_f64[0];
-                }
+                    // cf. `DirectKernel::REF_ORIGIN_NONZERO` (ordre des
+                    // opérations compris).
+                    (z_m_end - ref_orbit.z_ref_f64[0]) + delta
+                } else {
+                    z_m_end + delta
+                };
                 c.rebase();
                 rebase_count += 1;
             } else {
@@ -756,7 +758,7 @@ fn iterate_pixel_unified_single_phase(
             let z_curr = z_m_new + delta;
             let delta_norm_sqr = delta.norm_sqr();
             if options.is_julia {
-                let rel = z_curr - ref_orbit.z_ref_f64[0];
+                let rel = (z_m_new - ref_orbit.z_ref_f64[0]) + delta;
                 if rel.norm_sqr() < delta_norm_sqr {
                     delta = rel;
                     c.rebase();
@@ -965,7 +967,18 @@ pub fn iterate_pixel_unified_mandelbrot(
 trait DirectKernel: Copy {
     /// Référence qui ne part PAS de 0 (Julia : `Z[0] = centre de la vue`).
     /// Un rebase vers `m = 0` doit alors exprimer l'état relativement à
-    /// `Z[0]` : critère `|z − Z[0]| < |δ|`, `δ := z − Z[0]`. Avec `Z[0] = 0`
+    /// `Z[0]` : critère `|z − Z[0]| < |δ|`, `δ := z − Z[0]`.
+    ///
+    /// ⚠️ `z − Z[0]` se calcule `(Z[m] − Z[0]) + δ`, JAMAIS `(Z[m] + δ) − Z[0]` :
+    /// en zoom profond δ est sous l'ulp de Z[m], la somme l'absorbe, et dès
+    /// que l'orbite de référence repasse EXACTEMENT par `Z[0]` (centre sur un
+    /// point périodique de l'ensemble de Julia — la cible même d'un zoom
+    /// auto-similaire) la différence vaut 0 < |δ| : le pixel rebasait sur
+    /// δ = 0 et devenait la référence. Mesuré le 2026-11-06 sur le point fixe
+    /// répulsif de c = 0,36228 − 0,0777i : 100 % de pixels faux vs GMP pur de
+    /// 1e15 à 1e30 (verrou `julia_view_centred_on_a_fixed_point_matches_gmp`).
+    /// Dans le bon ordre la soustraction est exacte quand Z[m] ≈ Z[0]
+    /// (Sterbenz) et δ garde toute sa précision. Avec `Z[0] = 0`
     /// (Mandelbrot, Burning Ship, Tricorn) la constante vaut `false` et les
     /// boucles restent inchangées au bit près.
     const REF_ORIGIN_NONZERO: bool = false;
@@ -1515,15 +1528,17 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source, O: StepObserver, K: Di
                 z_m = src.wrap(c.m());
             } else if ref_orbit.atom_truncated {
                 // `z_after` == Z[min(m, ref_len-1)] == Z[end] ici (m ≥ ref_len-1).
-                delta = z_after + delta;
-                obs.rebase(z_after, delta);
+                if K::REF_ORIGIN_NONZERO {
+                    delta = (z_after - ref_origin) + delta;
+                    obs.rebase(z_after, z_after + delta);
+                    obs.rebase(ref_origin, delta);
+                } else {
+                    delta = z_after + delta;
+                    obs.rebase(z_after, delta);
+                }
                 c.rebase();
                 rebase_count += 1;
                 z_m = src.reset();
-                if K::REF_ORIGIN_NONZERO {
-                    delta -= z_m;
-                    obs.rebase(z_m, delta);
-                }
             } else {
                 ref_exhausted_flag = true;
                 // Pour le z_final du bas : Z[min(m, ref_len-1)] = Z[end].
@@ -1541,7 +1556,8 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source, O: StepObserver, K: Di
             delta_norm_sqr = delta.norm_sqr();
             if K::REF_ORIGIN_NONZERO {
                 // Julia : rebase vers `Z[0] ≠ 0` (cf. `REF_ORIGIN_NONZERO`).
-                let rel = z_curr - ref_origin;
+                // `(Z[m] − Z[0]) + δ`, pas `(Z[m] + δ) − Z[0]`.
+                let rel = (z_after - ref_origin) + delta;
                 let rel_norm_sqr = rel.norm_sqr();
                 if rel_norm_sqr < delta_norm_sqr {
                     delta = rel;

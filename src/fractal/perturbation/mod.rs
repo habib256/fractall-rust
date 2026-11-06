@@ -2609,6 +2609,45 @@ mod tests {
         assert_eq!(wrong, 0, "{wrong} pixels du rendu par défaut ≠ GMP pur");
     }
 
+    /// VERROU (2026-11-06) : vue Julia centrée sur un point PÉRIODIQUE de
+    /// l'ensemble (ici le point fixe répulsif de c = 0,36228 − 0,0777i, la
+    /// cible d'un zoom auto-similaire). L'orbite de référence repasse alors
+    /// exactement par `Z[0]` à chaque pas ; le rebase relatif à `Z[0]` formé
+    /// comme `(Z[m] + δ) − Z[0]` y absorbait δ et rebasait le pixel sur δ = 0 :
+    /// 100 % de pixels faux vs GMP pur, de 1e15 à 1e30. Formé comme
+    /// `(Z[m] − Z[0]) + δ`, le rendu par défaut égale le GMP pur.
+    #[test]
+    fn julia_view_centred_on_a_fixed_point_matches_gmp() {
+        use crate::render::escape_time::render_escape_time;
+        let (cx, cy) = (
+            "0.38985610044883755171257630877868839385202331242396118850684663074760495785995127",
+            "-0.35272039721050518557877671863632904493924129254397061795699969009747042512071816",
+        );
+        for zoom in ["1e15", "1e20", "1e30"] {
+            let mut params = crate::fractal::default_params_for_type(FractalType::Julia, 48, 48);
+            params.seed = Complex64::new(0.36228, -0.0777);
+            params.iteration_max = 3000;
+            params.center_x_hp = Some(cx.to_string());
+            params.center_y_hp = Some(cy.to_string());
+            crate::fractal::ViewHp::from_center_and_zoom(cx, cy, zoom, 48, 48, 1024)
+                .expect("vue")
+                .write_to_params(&mut params);
+            let prod = render_escape_time(&params).iterations;
+            let mut gmp = params.clone();
+            gmp.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
+            gmp.engine.use_gmp = true;
+            let truth = render_escape_time(&gmp).iterations;
+            let wrong = prod.iter().zip(&truth).filter(|(a, b)| a != b).count();
+            let structured = truth.iter().collect::<std::collections::BTreeSet<_>>().len();
+            assert!(structured > 20, "zoom {zoom} : scène sans structure ({structured} comptes)");
+            assert!(
+                wrong * 100 <= prod.len(),
+                "zoom {zoom} : {wrong}/{} pixels du rendu par défaut ≠ GMP pur",
+                prod.len()
+            );
+        }
+    }
+
     #[test]
     fn perturbation_matches_f64_burning_ship() {
         let mut params = base_params(FractalType::BurningShip);

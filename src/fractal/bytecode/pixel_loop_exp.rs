@@ -597,14 +597,21 @@ fn iterate_pixel_unified_exp_mandelbrot_hp_impl<O: StepObserverExp>(
         // `z_abs = Z[m]+δ` du bailout EST `z_curr` (mêmes opérandes, même
         // opération ⇒ mêmes bits) et la norme de δ du lookup BLA est
         // `delta_norm` — deux normes FloatExp et un add complexe épargnés.
+        // Julia : `z − Z[0]` formé comme `(Z[m] − Z[0]) + δ`, JAMAIS
+        // `(Z[m] + δ) − Z[0]` (δ y est absorbé par Z[m] : cf. pixel_loop.rs
+        // `DirectKernel::REF_ORIGIN_NONZERO`).
+        let rel_origin = if origin_nonzero {
+            z_m0.add(neg_origin).add(delta)
+        } else {
+            z_curr
+        };
         let (rebase_mid, z_curr_norm, delta_norm) = if end_of_ref {
             (false, FloatExp::zero(), FloatExp::zero())
         } else if origin_nonzero {
-            // Julia : rebase relatif à `Z[0] ≠ 0` (cf. pixel_loop.rs
-            // `DirectKernel::REF_ORIGIN_NONZERO`) ; jamais pris si Z[0] = 0.
+            // Julia : rebase relatif à `Z[0] ≠ 0` ; jamais pris si Z[0] = 0.
             let zc = z_curr.norm_sqr_fexp();
             let dn = delta.norm_sqr_fexp();
-            (z_curr.add(neg_origin).norm_sqr_fexp() < dn, zc, dn)
+            (rel_origin.norm_sqr_fexp() < dn, zc, dn)
         } else {
             let zc = z_curr.norm_sqr_fexp();
             let dn = delta.norm_sqr_fexp();
@@ -616,13 +623,13 @@ fn iterate_pixel_unified_exp_mandelbrot_hp_impl<O: StepObserverExp>(
                 c.set_ref_index(m_wrapped);
             } else {
                 obs.rebase(z_m0, z_curr);
-                delta = if origin_nonzero { z_curr.add(neg_origin) } else { z_curr };
+                delta = rel_origin;
                 c.rebase();
                 rebase_count += 1;
             }
         } else if rebase_mid {
             obs.rebase(z_m0, z_curr);
-            delta = if origin_nonzero { z_curr.add(neg_origin) } else { z_curr };
+            delta = rel_origin;
             c.rebase();
             rebase_count += 1;
         }
