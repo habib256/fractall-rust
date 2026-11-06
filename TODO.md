@@ -3872,22 +3872,27 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   Trois sites : noyau par lots (`interp_batch.rs`, test tous les 16 passes),
   boucles scalaires des types sans bytecode (`fractal/cycle.rs::CycleCut`,
   14 familles), interpréteur scalaire des hybrides
-  (`interp::iterate_bytecode_f64_cut`). Mesuré (Apple M4 chargé, A/B
-  entrelacé, **PNG identiques à l'octet sur les 33 vues comparées**) :
-  | Vue | avant | après |
-  |---|---:|---:|
-  | Mandelbrot défaut 1440p, 2500 it. (phase pixels) | 0,140 s | 0,058 s |
-  | idem 20 000 it. | 1,55 s | 0,085 s |
-  | idem 200 000 it. (720p) | 3,93 s | 0,042 s |
-  | minibrot ×50, 50 000 it. | 1,27 s | 0,058 s |
-  | Multibrot³ / Tricorn / Celtic / Burning Ship, 20 000 it. | — | ×19 / ×7 / ×3 / ×2,2 |
-  | Magnet Julia défaut 720p (rendu) | 6,15 s | 0,06 s |
-  | Magnet Mandelbrot | 7,15 s | 0,26 s |
-  | Mandelbulb | 1,72 s | 0,06 s |
-  | Multibrot Julia 2,5 | 9,24 s | 0,66 s |
-  | Multibrot 2,5 | 7,17 s | 1,19 s |
-  | Newton (degré 8) | 19,5 s | 4,1 s |
-  | hybride [M,BS] 720p, 2500 / 20 000 it. | 0,64 / 6,8 s | 0,10 / 0,9 s |
+  (`interp::iterate_bytecode_f64_cut`) ; plus l'abandon des orbites
+  périodiques des tirages Buddhabrot / Nebulabrot (`density.rs`). **PNG
+  identiques à l'octet sur toutes les vues comparées** (33 sous charge, puis
+  re-mesure AU CALME ci-dessous : rendu complet, min de 3,
+  `FRACTALL_STD_CYCLE=0` → défaut) :
+  | Vue | sans | avec | |
+  |---|---:|---:|---:|
+  | Mandelbrot défaut 1440p (2500 it.) | 0,12 s | 0,06 s | ×2,0 |
+  | Mandelbrot 1440p, 20 000 it. | 0,78 s | 0,08 s | ×9,8 |
+  | Newton 720p (degré 8) | 5,60 s | 1,07 s | ×5,2 |
+  | Magnet Julia 720p | 1,54 s | 0,03 s | ×51 |
+  | Magnet Mandelbrot 720p | 1,90 s | 0,13 s | ×14,6 |
+  | Mandelbulb 720p | 0,46 s | 0,04 s | ×11,5 |
+  | Multibrot 2,5 720p | 1,73 s | 0,34 s | ×5,1 |
+  | Multibrot Julia 720p | 2,26 s | 0,25 s | ×9,0 |
+  | Mandelbrot Sin 720p | 1,08 s | 0,50 s | ×2,2 |
+  | Nebulabrot 720p | 1,15 s | 0,23 s | ×5,0 |
+  | hybride [M,BS] 720p | 0,15 s | 0,05 s | ×3,0 |
+  (Phase pixels seule, sous charge : 200 000 it. 720p ×78 ; minibrot ×50 à
+  50 000 it. ×13 ; Multibrot³ ×19, Tricorn ×7.) Buddhabrot inchangé (son
+  abandon anticipé historique faisait déjà l'essentiel).
   Vue sans intérieur (seahorse 1e6) : instructions inchangées (34,97 →
   34,87 G). `FRACTALL_STD_CYCLE=0`. Verrous :
   `cycle_shortcut_matches_full_iteration_bit_for_bit`,
