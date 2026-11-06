@@ -13,7 +13,7 @@
 ## 🧭 État actuel (2026-11-06) — lire ceci en premier
 
 **2026-11-06 — nuit d'optimisation ET de correction sur l'Apple M4 (branche
-`nuit-20261105`, ~75 commits au-dessus de `main`, non fusionnée).** Score
+`nuit-20261105`, ~65 commits au-dessus de `main`, non fusionnée).** Score
 final (`harness/history/20261106T010126Z-4bfbdba.json`, quick, 3 runs,
 machine calme) : **0 gap** ; temps cumulé des 10 cas 3,06 → 2,28 s,
 géomoyenne **0,695×** la baseline du début de nuit ; quality 16/16, fuzz 3/3,
