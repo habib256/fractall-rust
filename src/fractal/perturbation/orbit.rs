@@ -94,7 +94,7 @@ fn gmp_low_part(z: &Complex, zc: ComplexExp, scratch: &mut [Float; 2]) -> Comple
 /// `z`. Partagé par la boucle d'orbite et sa relecture `lazy_low_parts` :
 /// une seule définition garantit des valeurs bit-identiques.
 #[inline]
-fn fast_sqr_step(z: &mut Complex, cref: &Complex, t1: &mut Float, t2: &mut Float) {
+pub(super) fn fast_sqr_step(z: &mut Complex, cref: &Complex, t1: &mut Float, t2: &mut Float) {
     use rug::Assign;
     let (re, im) = z.as_mut_real_imag();
     t1.assign(&*re + &*im);
@@ -2209,6 +2209,11 @@ fn compute_reference_orbit_phase(
     let mut fast_sqr_scratch: Option<(Float, Float)> =
         (matches!(ftype, FractalType::Mandelbrot) && !is_hybrid && fast_orbit_sqr_enabled())
             .then(|| (Float::new(prec), Float::new(prec)));
+    // Les deux multiplications du pas sur deux cœurs quand la précision le
+    // justifie (cf. `orbit_par`) — orbite identique au bit près.
+    let mut par_sqr = fast_sqr_scratch
+        .as_ref()
+        .and_then(|_| super::orbit_par::ParSqr::new(&cref, prec));
 
     for i in 0..params.iteration_max {
         if let Some(cancel) = cancel {
@@ -2279,7 +2284,10 @@ fn compute_reference_orbit_phase(
         }
 
         if let Some((t1, t2)) = fast_sqr_scratch.as_mut() {
-            fast_sqr_step(&mut z, &cref, t1, t2);
+            match par_sqr.as_mut() {
+                Some(par) => par.step(&mut z, &cref, t1, t2),
+                None => fast_sqr_step(&mut z, &cref, t1, t2),
+            }
         } else if let (Some(state), Some(formula), Some(c_phase)) = (
             bytecode_state.as_mut(),
             bytecode_formula.as_ref(),

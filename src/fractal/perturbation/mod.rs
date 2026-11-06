@@ -462,6 +462,7 @@ pub mod delta;
 pub mod nonconformal;
 pub mod nucleus;
 pub mod orbit;
+mod orbit_par;
 pub mod pixel_math;
 mod precision;
 mod progress;
