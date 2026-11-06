@@ -803,7 +803,11 @@ lethal_weapon (orbite 290 b), 376 pixels étaient déclarés fiables dont 245
 faux vs GMP 580 b (avec : 91 fiables, 91 justes). ⚠️ À la précision de
 formule le GMP pur donne des ITÉRATIONS justes mais un z final non convergé
 sur les pixels au-delà du dd (golden_spider : 605 b ≠ 1210 b == 2420 b) :
-ne jamais juger ces pixels sur `zs`. **Entrée dans le tier dd = `wisdom::
+ne jamais juger ces pixels sur `zs`. ⚠️ Ne PAS ajouter au traqueur qd un
+plancher « arrondi de la conversion en qd » : la référence arrondie
+Ẑ = Z + ρ n'injecte que le terme croisé `2·δ·ρ` (∝ δ, déjà couvert par
+γ·|2Z|·|δ|) — c'est pourquoi une référence f64 suffit en perturbation f64 ;
+essayé, la borne de tous les pixels qd justes s'emballait. **Entrée dans le tier dd = `wisdom::
 dd_tier_applicable`** (Mandelbrot ET non hybride/opcodes) partout —
 `--dd-tier` sur `--opcodes` rendait un z²+c nu.
 ⚠️ `z_ref_lo` est à l'échelle de la MANTISSE de `z_ref` (ComplexExp), pas du
@@ -935,6 +939,14 @@ série à doublement exponentiel, assistant endormi, quand la machine est
 saturée ; seuil de précision (sous ~2000 bits la synchronisation coûte plus
 que la multiplication épargnée). ⚠️ `rayon::join` ne convient PAS ici
 (mesuré ×0,14-0,67) : une itération dure ~1 µs, un réveil de fil 10-50 µs.
+⚠️ **Une tâche se RÉCLAME par `compare_exchange`** (`POSTED → TAKEN` côté
+assistant, `POSTED → IDLE` pour la reprise) et seul le gagnant vide la
+case : la première version agissait sur un état LU plus tôt et pouvait
+laisser l'appelant attendre `DONE` pour toujours (blocage trouvé à la
+relecture le jour même, verrou
+`claimed_handoff_survives_preemption_at_every_step`). Mesuré au calme :
+×1,1 à 2 800 bits, ×1,4 à 5 000, ×1,8-1,9 au-delà de 10 000 (e8000 total
+1,28 → 0,69 s) ; neutre au seuil.
 Banc : `cargo run --release --example bench_orbit_join -- <bits> <iters>`.
 
 **Cache de table BLA** (`delta.rs`, `GLOBAL_BLA` + thread-local) : clé =
