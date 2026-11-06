@@ -107,6 +107,113 @@ fn scaled_tracker_cost_diagnostic() {
     check_grid(&stem, 256, 4);
 }
 
+/// Chronométrage SEUL (sans vérification) de la boucle scaled nue vs tracée,
+/// mono-thread, min de 7 : `FRACTALL_SCALED_CASES=e318,safari` (défaut e318).
+#[test]
+#[ignore]
+fn scaled_tracker_timing_only() {
+    let cases = std::env::var("FRACTALL_SCALED_CASES").unwrap_or_else(|_| "e318".into());
+    // `FRACTALL_SCALED_MODE=plain|tracked|none` : une seule variante (compteurs
+    // de cycles/instructions du processus entier via `/usr/bin/time -l`).
+    let mode = std::env::var("FRACTALL_SCALED_MODE").unwrap_or_default();
+    let reps: usize = std::env::var("FRACTALL_SCALED_REPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(7);
+    let (run_p, run_t) = match mode.as_str() {
+        "plain" => (true, false),
+        "tracked" => (false, true),
+        "none" => (false, false),
+        _ => (true, true),
+    };
+    for stem in cases.split(',') {
+        let g = grid_setup(stem, 256, 4);
+        let z0 = ComplexExp::zero();
+        let eps_f64 = 1.0 / (1u64 << 53) as f64;
+        let (mut best_p, mut best_t) = (f64::MAX, f64::MAX);
+        let mut acc = 0u64;
+        for _ in 0..reps {
+            let t = std::time::Instant::now();
+            for &dc in g.dcs.iter().filter(|_| run_p) {
+                acc += iterate_pixel_scaled_exp_mandelbrot(&g.orbit, Some(&g.bla), dc, z0, g.limits)
+                    .iteration as u64;
+            }
+            best_p = best_p.min(t.elapsed().as_secs_f64());
+            let t = std::time::Instant::now();
+            for &dc in g.dcs.iter().filter(|_| run_t) {
+                let (r, tr) = iterate_pixel_scaled_exp_mandelbrot_tracked(
+                    &g.orbit,
+                    Some(&g.bla),
+                    dc,
+                    z0,
+                    g.limits,
+                    eps_f64,
+                );
+                acc += r.iteration as u64 + tr.err.exponent as u64;
+            }
+            best_t = best_t.min(t.elapsed().as_secs_f64());
+        }
+        eprintln!(
+            "timing-only {stem}: plain {:.2} ms tracked {:.2} ms overhead {:+.1}% ({acc})",
+            best_p * 1e3,
+            best_t * 1e3,
+            100.0 * (best_t / best_p - 1.0)
+        );
+    }
+}
+
+struct GridSetup {
+    orbit: crate::fractal::perturbation::orbit::ReferenceOrbit,
+    bla: BlaTableUnifiedExp,
+    limits: PixelLoopLimits,
+    dcs: Vec<ComplexExp>,
+}
+
+fn grid_setup(stem: &str, w: u32, step: usize) -> GridSetup {
+    let path = format!("{}/toml/{stem}.toml", env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(&path).expect("toml");
+    let (re, im, zoom) = (
+        toml_field(&text, "real"),
+        toml_field(&text, "imag"),
+        toml_field(&text, "zoom"),
+    );
+    let iters: u32 = toml_field(&text, "iterations").parse().unwrap();
+    let h = w;
+    let mut params = default_params_for_type(FractalType::Mandelbrot, w, h);
+    let view = ViewHp::from_center_and_zoom(&re, &im, &zoom, w, h, 1024).expect("vue");
+    view.write_to_params(&mut params);
+    params.center_x_hp = Some(re);
+    params.center_y_hp = Some(im);
+    params.iteration_max = iters;
+    params.perturbation.max_perturb_iterations = iters;
+    params.perturbation.max_bla_steps = iters;
+    let (orbit, _, _) = compute_reference_orbit(&params, None, false).expect("orbite");
+    let formula = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
+    let (sx, sy) = crate::fractal::perturbation::effective_spans_fexp(&params);
+    let px = sx
+        .abs()
+        .div(FloatExp::from_f64(w as f64))
+        .max(sy.abs().div(FloatExp::from_f64(h as f64)));
+    let diag = ((w * w + h * h) as f64).sqrt();
+    let eps = FloatExp::from_f64(1.0 / (1u64 << 53) as f64);
+    let bla = BlaTableUnifiedExp::build(&orbit.z_ref, &formula.phases[0], px * diag, eps);
+    let limits = PixelLoopLimits::from(&params);
+    let dcs = (0..h)
+        .step_by(step)
+        .flat_map(|j| (0..w).step_by(step).map(move |i| (i, j)))
+        .map(|(i, j)| ComplexExp {
+            re: sx * ((i as f64 + 0.5) / w as f64 - 0.5),
+            im: sy * ((j as f64 + 0.5) / h as f64 - 0.5),
+        })
+        .collect();
+    GridSetup {
+        orbit,
+        bla,
+        limits,
+        dcs,
+    }
+}
+
 /// Grille (pas `step`) d'une vue `w`×`w` du cas `stem` : boucle scaled vs
 /// FloatExp, non tracée ET tracée. Renvoie (n, évadés, flaggés, stats).
 fn check_grid(stem: &str, w: u32, step: usize) -> (u32, u32, u32, ScaledStats) {
