@@ -3494,6 +3494,22 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   glitch_test_2 atom/harmonic (1 px) régénérés : nouveaux == juge ×4,
   anciens faux. Reste (texte d'origine ci-dessous) : cache inter-runs / vidéo,
   compression streaming.
+  **Orbite sur DEUX cœurs (2026-11-06, matin)** — constat du balayage du
+  corpus à 64² : sur les zooms très profonds l'orbite EST le temps de rendu
+  (triangle 14,0 s sur 17,1 ; wfs_extended 16,3 sur 19,4 ; orion 6,5 sur
+  10,2 ; wfs4 6,3 sur 6,7 ; e8000 2,6 sur 2,7), un seul cœur au travail.
+  `perturbation/orbit_par.rs` : les deux multiplications du pas sont
+  indépendantes, `im' = 2·re·im + ci` part sur un fil assistant (attente
+  active, `Float` transférés par une case, aucun `unsafe`). Orbite
+  identique au bit près (verrou + PNG identiques sur 15 cas profonds,
+  goldens verts). Garde-fous : reprise de tâche, fenêtre série à doublement
+  exponentiel avec assistant endormi, seuil `FRACTALL_ORBIT_PAR_MIN_BITS`.
+  *Réfuté* : `rayon::join` (×0,14-0,67 — le réveil d'un fil coûte 10-50 µs
+  pour une tâche de 1 µs). *Piste suivante pour ≥ 15 000 bits* (e8000,
+  e22522, e52465 : 660 s d'orbite) : chaque multiplication découpée en trois
+  demi-produits de Karatsuba sur trois cœurs — l'arrondi correct de MPFR ne
+  dépend pas de la méthode, donc bit-identique ; gain attendu ×2 de plus sur
+  une machine à cœurs homogènes, moins sur un M4 (4 cœurs P).
 - **G14.3 (texte d'origine)**. Part `orbit %`
   faible sur le quick (≤ 2 % à e50, 1-5 % attendu e1000) mais **dominante en
   ultra-deep** (e52465 : 660 s, slow-safe). F3 fait pareil (MPFR séquentiel) ;
@@ -3665,6 +3681,29 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   verrou global : test5 256² phase pixels 1 → 17 ms). Trouvé par bissection
   quand le score a montré test5 hors baseline ; verrou de source
   `hot_path_sources_only_read_env_through_once_lock`.
+  **(c) « Traqueur moins pessimiste » : RÉFUTÉ par la mesure (agent,
+  2026-11-06 matin, moteur inchangé).** Le ε de la table f64 vaut 2⁻⁵³ :
+  `l·ε` est de l'ordre de `l·u` (l'arrondi), pas une troncature grossière.
+  Une borne du second ordre (p, q, s) composée par nœud — rigoureuse,
+  testée — ne vaut presque rien, et la substituer à `l·ε` revient à retirer
+  le terme : faux NON flaggés e227 256² 1 → 390, golden_spider 9 → 170,
+  dragon 3 → 36. L'erreur réelle des coefficients (vs produit dd des Z
+  vrais) croît en √l et ne rattrape pas non plus les pixels perdus : le
+  terme `l·u` sert de PROXY de la masse d'erreur des `l` pas directs sautés.
+  Les pixels faux sont des écarts de ±1-2 itérations, les mêmes avec et sans
+  BLA, instables à 50-63 % sous une perturbation de dc de 2-8 u : chaos à
+  l'échelle de l'ulp, en continuum avec les faux positifs. Aucune variante
+  (quadrature, séparation dc / arrondi, marge d'évasion, seuil relatif, κ)
+  ne domine l'état actuel à faux négatifs égaux. État mesuré (flaggés /
+  vraiment faux / faux non flaggés) : e50 256² 455 / 174 / 5 ; golden_spider
+  256² 3169 / 1725 / 9 ; e227 256² 4323 / 1973 / 1 ; rug 256² 990 / 485 / 4 ;
+  dragon 128² 115 / 51 / 3 — environ un flaggé sur deux est réellement faux.
+  Outil : `scripts/reliability_confusion.py`. **Résidus** : les faux non
+  flaggés ont des bornes finies (1,7 à 2,8e18) — ils s'évadent avant
+  l'emballement. Seuil `FRACTALL_RELIABILITY_RUNAWAY` 1e30 → 1e8 : faux non
+  flaggés 23 → 12 sur 13 cas pour +11 % de flaggés (NON adopté : compromis à
+  décider). ⇒ le levier coût n'est pas le détecteur mais le prix de la
+  correction.
   *Reste* : le modèle l·ε est un majorant grossier (faux positifs = coût) ;
   résidus f64 de quelques pixels (e227 3, rug 4, e113 1 à 96² vs dd) ;
   fuzz PerpBS 4 WARN (pixels mal conditionnés en c, classe G3) ; Julia,
@@ -3715,6 +3754,51 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
   pixels flaggés et PNG identiques sur 17 cas. Il coûte encore ~+43 % dans
   cette boucle (une racine par pas direct ; σ₁(A) recalculé à chaque saut
   alors qu'il ne dépend que du nœud → à précalculer dans `bla_dual_exp.rs`).
+- [x] **G14.17 — Raccourci des cycles EXACTS : les points intérieurs du path
+  f64 standard (2026-11-06, matin)** — un point qui ne s'évade pas coûtait
+  `iteration_max` passes, et c'est lui qui faisait le temps de toute vue
+  montrant l'intérieur de l'ensemble (dont la vue par défaut de
+  l'application). Une orbite attirée par un cycle devient EXACTEMENT
+  périodique en flottant (mesuré : médiane 250 à 1000 itérations dans le
+  cardioïde, un bulbe, un minibrot) : dès que l'état reprend bit pour bit un
+  point de contrôle (Brent), le compteur saute un nombre entier de cycles et
+  la boucle finit normalement les passes restantes — mêmes itérations et
+  même z final que l'itération complète, par construction ; aucune tolérance.
+  Trois sites : noyau par lots (`interp_batch.rs`, test tous les 16 passes),
+  boucles scalaires des types sans bytecode (`fractal/cycle.rs::CycleCut`,
+  14 familles), interpréteur scalaire des hybrides
+  (`interp::iterate_bytecode_f64_cut`). Mesuré (Apple M4 chargé, A/B
+  entrelacé, **PNG identiques à l'octet sur les 33 vues comparées**) :
+  | Vue | avant | après |
+  |---|---:|---:|
+  | Mandelbrot défaut 1440p, 2500 it. (phase pixels) | 0,140 s | 0,058 s |
+  | idem 20 000 it. | 1,55 s | 0,085 s |
+  | idem 200 000 it. (720p) | 3,93 s | 0,042 s |
+  | minibrot ×50, 50 000 it. | 1,27 s | 0,058 s |
+  | Multibrot³ / Tricorn / Celtic / Burning Ship, 20 000 it. | — | ×19 / ×7 / ×3 / ×2,2 |
+  | Magnet Julia défaut 720p (rendu) | 6,15 s | 0,06 s |
+  | Magnet Mandelbrot | 7,15 s | 0,26 s |
+  | Mandelbulb | 1,72 s | 0,06 s |
+  | Multibrot Julia 2,5 | 9,24 s | 0,66 s |
+  | Multibrot 2,5 | 7,17 s | 1,19 s |
+  | Newton (degré 8) | 19,5 s | 4,1 s |
+  | hybride [M,BS] 720p, 2500 / 20 000 it. | 0,64 / 6,8 s | 0,10 / 0,9 s |
+  Vue sans intérieur (seahorse 1e6) : instructions inchangées (34,97 →
+  34,87 G). `FRACTALL_STD_CYCLE=0`. Verrous :
+  `cycle_shortcut_matches_full_iteration_bit_for_bit`,
+  `cycle_cut_preserves_every_scalar_loop_bit_for_bit`,
+  `cut_loop_matches_full_loop_bit_for_bit`.
+  *Écarté par la mesure* : le même raccourci en perturbation — les pixels
+  intérieurs y sont déjà sautés par la BLA (dragon plafonné à 2,5 M
+  itérations : 16 k pixels tous au plafond en 0,02 s ; le temps pixel est
+  dans la dernière ligne droite des pixels qui s'évadent). *Non équipés* :
+  les boucles à cumul (canaux distance / pièges d'orbite), le GMP par pixel
+  (la convergence à 256 b dépasse en général le plafond en zoom profond).
+  *Pistes voisines, NON bit-identiques donc à décider* : Newton degré ≥ 4
+  passe par deux `powc` par itération (~700 instructions) — des puissances
+  entières par multiplications le rendraient ~×10 plus rapide mais changent
+  les derniers bits (golden `newton_default`) ; Lyapunov (2,8 s à 720p) : un
+  `ln` par itération.
 - [x] **G14.8 — Re-baseline (2026-11-06, Apple M4)** : score standard
   archivé (25 cas, 4,76 s cumulés) et baseline quick re-figée sur l'état
   final (`harness/baselines/apple-m4-10t.json`). La machine i7 + F3 reste à
