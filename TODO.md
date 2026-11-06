@@ -50,8 +50,12 @@ juge GMP est allégé. Score quick à 3 runs (`…T061144Z-e3ff8be.json`) : 0 ga
 géomoyenne 0,957× la baseline de la nuit ; **baseline Apple M4 re-figée** sur
 cet état. 522 tests unitaires. Axe vérité étendu hors tier (production vs
 frame dd, 96²) : **51 cas du corpus, 51 PASS** (résidus connus de 2 à
-4 pixels sur dragon_detail, verstoppertje, e227, rug). Pipeline vidéo
-rejoué de bout en bout (54 keyframes vers 1e16, 1621 frames).
+4 pixels sur dragon_detail, verstoppertje, e227, rug) ; puis, au tout
+dernier commit, 10 cas à très haute précision où l'orbite sur deux cœurs
+est active (wfs, wfs2, olbaid2/4/5, infinity, glitch_test_7, e8000, e1086,
+opus : 2 800 à 26 700 bits) — 0 pixel d'écart. Axe fuzz rejoué avec une
+seed neuve (`20261106`) : 8 sondes dont 2 Julia hors centre, 8 PASS.
+Pipeline vidéo rejoué de bout en bout (54 keyframes vers 1e16, 1621 frames).
 
 **Prochains chantiers** : (a) Tricorn / Burning Ship profonds rendus en GMP
 plein cadre quand la référence s'échappe (G14.21 — une piste essayée et
