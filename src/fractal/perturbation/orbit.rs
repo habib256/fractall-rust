@@ -50,7 +50,7 @@ fn gmp_float_to_ddexp(value: &Float) -> super::dd::DoubleDoubleExp {
 
 /// Fast-path d'itération GMP de l'orbite (2 mults au lieu de `mpc_sqr`).
 /// `FRACTALL_ORBIT_FAST_SQR=0` revient à `mpc_sqr` (A/B, diagnostic).
-fn fast_orbit_sqr_enabled() -> bool {
+pub(super) fn fast_orbit_sqr_enabled() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| {
@@ -94,7 +94,7 @@ fn gmp_low_part(z: &Complex, zc: ComplexExp, scratch: &mut [Float; 2]) -> Comple
 /// `z`. Partagé par la boucle d'orbite et sa relecture `lazy_low_parts` :
 /// une seule définition garantit des valeurs bit-identiques.
 #[inline]
-fn fast_sqr_step(z: &mut Complex, cref: &Complex, t1: &mut Float, t2: &mut Float) {
+pub(crate) fn fast_sqr_step(z: &mut Complex, cref: &Complex, t1: &mut Float, t2: &mut Float) {
     use rug::Assign;
     let (re, im) = z.as_mut_real_imag();
     t1.assign(&*re + &*im);
@@ -113,7 +113,7 @@ fn fast_sqr_step(z: &mut Complex, cref: &Complex, t1: &mut Float, t2: &mut Float
 /// pixel à corriger. On ne garde qu'un `Z` GMP toutes les 1024 itérations
 /// (dragon, 2 M iters : 2 k points, < 1 Mo) ; la correction rejoue l'orbite
 /// en parallèle depuis ces points (`lazy_low_parts`).
-const LO_CHECKPOINT_INTERVAL: usize = 1024;
+pub(super) const LO_CHECKPOINT_INTERVAL: usize = 1024;
 
 /// `FRACTALL_LAZY_LO=0` revient à la capture eager (A/B).
 fn lazy_lo_enabled() -> bool {
