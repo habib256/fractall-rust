@@ -54,8 +54,10 @@ aux itérations brutes. Détail et chiffres par item : `TODO.md` G14.
 - **GPU Metal** : sonde BLA ascendante (kernel ×4) ; Auto route le GPU dans
   la plage perturbation f32 après `--wisdom-bench` (4-13× sur les scènes
   faciles).
-- Coût assumé des correctifs de justesse sur les scènes f64 qui escaladent :
-  e227 256² 1,0 → 5,3 s (7 pixels au GMP), golden_spider 0,36 → 1,0 s.
+- Coût assumé des correctifs de justesse sur les scènes f64 dont des pixels
+  dépassent la précision du double-double : e227 256² 1,0 → 3,5 s (7 pixels
+  au GMP pur), golden_spider 0,36 → 1,0 s (16 pixels). e50 et dragon restent
+  à leur temps du début de nuit (0,61 et 1,3 s) avec moins de pixels faux.
 
 ### Ajouté
 - **Harness : axe `truth`** — rendu de production contre le tier dd sur les

@@ -3318,9 +3318,15 @@ Bench (ns/iter effectif par technique, 4 threads) : `cpu_std_f64` 0.973 · `cpu_
     de pixels au-delà du dd (5 et 10 px à 256²) → corrigés à toute
     résolution, mais ce n'est pas gratuit : **un pixel GMP de e227 coûte
     ~3 s de thread, 256² passe de 1,8 à 4,8 s pour 5 pixels**. Sonde
-    d'annulation ajoutée dans l'escalade GMP (GUI). Un tier quad-double
-    fermerait ces cas proprement et à moindre coût — prochain chantier de
-    correction.
+    d'annulation ajoutée dans l'escalade GMP (GUI). Ces pixels vont DROIT à
+    l'itération GMP pure (`iterate_point_mpc`), plus à la perturbation GMP
+    (deux produits complexes par itération + orbite GMP dense à
+    reconstruire) : escalade e227 7 px 6,1 → 2,2 s, golden_spider 16 px
+    0,95 → 0,42 s, itérations identiques entre les deux chemins GMP. État
+    final 256² : e227 3,5 s (1,0 s avant la nuit, avec 384 pixels faux),
+    golden_spider ~1,0 s (0,36 s, 169 faux). Un tier quad-double (~212 b,
+    ~10× le dd contre ~60× pour le GMP) fermerait ces cas proprement —
+    prochain chantier de correction.
   *Métriques* : profil `post %` + `fiab. %` (e50, e113, dragon, spiral),
   `trend --case e50`, bench `cpu_perturb_dd`. *Done* : post < 10 % du wall
   sur e50 sans perdre un pixel vs GMP (quality 16/16, e50 PASS).
