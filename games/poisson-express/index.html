@@ -1,0 +1,612 @@
+<title>Poisson Express</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lilita+One&family=Nunito:wght@600;800&display=swap">
+<style>
+/* Plein écran 3D, HUD en bandeau haut, contrôles tactiles en bas. Look unique (ciel cartoon). */
+:root {
+  --sky: #9fdcff;
+  --ink: #1d1b33;
+  --cream: #fff6e3;
+  --sun: #ffc93c;
+  --coral: #ff6b5b;
+  --leaf: #4fbf6a;
+  --font-display: "Lilita One", "Arial Rounded MT Bold", "Trebuchet MS", sans-serif;
+  --font-body: "Nunito", "Segoe UI", system-ui, sans-serif;
+  color-scheme: light;
+}
+html, body { height: 100%; margin: 0; overflow: hidden; background: var(--sky); color: var(--ink); font-family: var(--font-body); }
+body { touch-action: none; user-select: none; -webkit-user-select: none; }
+#scene { position: fixed; inset: 0; display: block; width: 100%; height: 100%; }
+
+.hud {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 5;
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
+  padding-top: calc(12px + env(safe-area-inset-top, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  pointer-events: none;
+}
+.chip {
+  background: var(--cream); border: 3px solid var(--ink); border-radius: 14px;
+  box-shadow: 0 4px 0 var(--ink); padding: 6px 14px;
+  font-family: var(--font-display); font-size: clamp(18px, 4.5vw, 26px); letter-spacing: .02em;
+  font-variant-numeric: tabular-nums; line-height: 1.1;
+}
+.chip small { display: block; font-family: var(--font-body); font-weight: 800; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; opacity: .7; }
+.hearts { display: flex; gap: 4px; font-size: clamp(20px, 5vw, 28px); }
+.hearts span { color: var(--coral); text-shadow: 0 2px 0 var(--ink); transition: transform .2s, opacity .2s; }
+.hearts span.lost { opacity: .25; transform: scale(.75); filter: grayscale(1); }
+.combo { color: var(--coral); }
+
+.pop {
+  position: fixed; z-index: 6; pointer-events: none; transform: translate(-50%, -50%);
+  font-family: var(--font-display); font-size: 28px; color: var(--sun);
+  -webkit-text-stroke: 2px var(--ink); paint-order: stroke fill;
+  animation: rise .9s ease-out forwards;
+}
+.pop.bad { color: var(--coral); }
+@keyframes rise { from { opacity: 1; margin-top: 0; } to { opacity: 0; margin-top: -70px; } }
+
+.pad {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;
+  display: flex; justify-content: space-between;
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  pointer-events: none;
+}
+.pad button {
+  pointer-events: auto; width: 76px; height: 76px; border-radius: 50%;
+  background: var(--cream); border: 3px solid var(--ink); box-shadow: 0 5px 0 var(--ink);
+  font-size: 30px; color: var(--ink); cursor: pointer;
+}
+.pad button:active { transform: translateY(4px); box-shadow: 0 1px 0 var(--ink); }
+@media (hover: hover) and (pointer: fine) { .pad { display: none; } }
+
+.overlay {
+  position: fixed; inset: 0; z-index: 10; display: grid; place-items: center;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background: rgba(29, 27, 51, .35);
+}
+.card {
+  width: min(440px, 100%); box-sizing: border-box; background: var(--cream);
+  border: 4px solid var(--ink); border-radius: 24px; box-shadow: 0 8px 0 var(--ink);
+  padding: 24px 22px; text-align: center; display: grid; gap: 14px;
+}
+.card h1 {
+  margin: 0; font-family: var(--font-display); font-weight: 400; font-size: clamp(38px, 10vw, 54px);
+  line-height: .95; color: var(--sun); -webkit-text-stroke: 3px var(--ink); paint-order: stroke fill;
+  text-wrap: balance; transform: rotate(-3deg);
+}
+.card p { margin: 0; font-size: 16px; line-height: 1.45; font-weight: 600; }
+.keys { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; text-align: left; font-size: 15px; }
+.keys b { font-family: var(--font-display); font-weight: 400; background: #fff; border: 2px solid var(--ink); border-radius: 8px; padding: 1px 8px; justify-self: start; }
+.legend { display: flex; justify-content: center; gap: 14px; flex-wrap: wrap; font-weight: 800; font-size: 14px; }
+.go {
+  font-family: var(--font-display); font-size: 26px; letter-spacing: .03em;
+  background: var(--leaf); color: #fff; -webkit-text-stroke: 1.5px var(--ink); paint-order: stroke fill;
+  border: 4px solid var(--ink); border-radius: 16px; box-shadow: 0 6px 0 var(--ink);
+  padding: 10px 18px; cursor: pointer;
+}
+.go:active { transform: translateY(4px); box-shadow: 0 2px 0 var(--ink); }
+.go:focus-visible, .pad button:focus-visible { outline: 4px solid var(--coral); outline-offset: 3px; }
+.big { font-family: var(--font-display); font-size: 44px; line-height: 1; }
+</style>
+
+<canvas id="scene" aria-label="Jeu 3D : un chien court derrière un camion et attrape des poissons"></canvas>
+
+<div class="hud">
+  <div class="chip" id="scoreChip"><small>Poissons</small><span id="score">0</span></div>
+  <div class="chip"><div class="hearts" id="hearts" aria-label="Vies"><span>♥</span><span>♥</span><span>♥</span></div></div>
+  <div class="chip" style="text-align:right"><small>Combo</small><span id="combo" class="combo">×1</span></div>
+</div>
+
+<div class="pad">
+  <button id="btnL" aria-label="Aller à gauche">◀</button>
+  <button id="btnR" aria-label="Aller à droite">▶</button>
+</div>
+
+<div class="overlay" id="menu">
+  <div class="card">
+    <h1>Poisson Express</h1>
+    <p>Le camion du poissonnier perd sa cargaison ! Rex court derrière et doit attraper les poissons au vol sur les <b>4 voies</b>.</p>
+    <div class="keys">
+      <b>← →</b><span>ou <b>Q</b> / <b>D</b> : changer de voie</span>
+      <b>1 2 3 4</b><span>sauter directement sur une voie</span>
+      <b>Tactile</b><span>boutons ◀ ▶ ou toucher une moitié d'écran</span>
+    </div>
+    <div class="legend"><span>🐟 +10</span><span>⭐ poisson doré +50</span><span>👢 botte : à éviter</span></div>
+    <p style="font-size:14px">Un poisson raté coûte un cœur. Le cercle au sol montre où il va tomber.</p>
+    <button class="go" id="startBtn">C'est parti !</button>
+  </div>
+</div>
+
+<div class="overlay" id="over" hidden>
+  <div class="card">
+    <h1>Rex est épuisé</h1>
+    <div><div class="big" id="finalScore">0</div><p>points</p></div>
+    <p id="bestLine">Record : 0</p>
+    <button class="go" id="againBtn">Rejouer</button>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(() => {
+  // ---------- Rendu ----------
+  const canvas = document.getElementById('scene');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.outputEncoding = THREE.sRGBEncoding;
+
+  const SKY = 0x9fdcff;
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(SKY);
+  scene.fog = new THREE.Fog(SKY, 30, 75);
+
+  const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 200);
+  const camTarget = new THREE.Vector3(0, 1.2, -7);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x88aa66, 0.55));
+  const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+  sun.position.set(-6, 12, 6);
+  scene.add(sun);
+
+  // Rampe de toon à 3 paliers : c'est elle qui donne l'aplat cartoon.
+  const gradCanvas = document.createElement('canvas');
+  gradCanvas.width = 4; gradCanvas.height = 1;
+  const gctx = gradCanvas.getContext('2d');
+  ['#6a6a6a', '#b4b4b4', '#ffffff', '#ffffff'].forEach((c, i) => { gctx.fillStyle = c; gctx.fillRect(i, 0, 1, 1); });
+  const gradientMap = new THREE.CanvasTexture(gradCanvas);
+  gradientMap.minFilter = gradientMap.magFilter = THREE.NearestFilter;
+  gradientMap.generateMipmaps = false;
+
+  const matCache = {};
+  const toon = (color) => matCache[color] || (matCache[color] = new THREE.MeshToonMaterial({ color, gradientMap }));
+  const outlineMat = new THREE.MeshBasicMaterial({ color: 0x1d1b33, side: THREE.BackSide });
+
+  // Contour « coque inversée » : copie agrandie, faces arrière en encre.
+  function mesh(geo, color, outline = 0.06) {
+    const m = new THREE.Mesh(geo, toon(color));
+    if (outline > 0) {
+      const o = new THREE.Mesh(geo, outlineMat);
+      o.scale.setScalar(1 + outline);
+      m.add(o);
+    }
+    return m;
+  }
+  const sphere = (r, seg = 18) => new THREE.SphereGeometry(r, seg, Math.round(seg * 0.75));
+
+  // ---------- Décor ----------
+  const LANES = [-3.3, -1.1, 1.1, 3.3];
+  const ROAD_W = 9;
+  const LOOP = 90;          // longueur de recyclage du décor
+  const Z_FAR = -75;
+
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), toon(0x7ccf6b));
+  ground.rotation.x = -Math.PI / 2;
+  scene.add(ground);
+
+  const road = new THREE.Mesh(new THREE.PlaneGeometry(ROAD_W, 200), toon(0x5b5f73));
+  road.rotation.x = -Math.PI / 2; road.position.y = 0.01;
+  scene.add(road);
+  [-1, 1].forEach(s => {
+    const curb = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.18, 200), toon(0xfff6e3));
+    curb.position.set(s * (ROAD_W / 2 + 0.17), 0.09, 0);
+    scene.add(curb);
+  });
+
+  const scrollers = []; // objets qui défilent vers la caméra
+  const dashGeo = new THREE.BoxGeometry(0.16, 0.03, 1.8);
+  [-2.2, 0, 2.2].forEach(x => {
+    for (let z = 10; z > 10 - LOOP; z -= 4.5) {
+      const d = new THREE.Mesh(dashGeo, toon(0xfff6e3));
+      d.position.set(x, 0.02, z);
+      scene.add(d); scrollers.push(d);
+    }
+  });
+
+  function makeTree() {
+    const g = new THREE.Group();
+    const trunk = mesh(new THREE.CylinderGeometry(0.22, 0.3, 1.4, 8), 0x8a5a3b, 0.08);
+    trunk.position.y = 0.7; g.add(trunk);
+    const greens = [0x3fae5a, 0x4fbf6a, 0x5fd27a];
+    for (let i = 0; i < 3; i++) {
+      const c = mesh(new THREE.ConeGeometry(1.3 - i * 0.3, 1.5, 9), greens[i], 0.05);
+      c.position.y = 1.8 + i * 0.8; g.add(c);
+    }
+    return g;
+  }
+  function makeBush() {
+    const g = new THREE.Group();
+    [[0, 0.45, 0, 0.6], [0.55, 0.35, 0.1, 0.45], [-0.5, 0.35, -0.1, 0.42]].forEach(([x, y, z, r]) => {
+      const b = mesh(sphere(r, 12), 0x48b562, 0.07); b.position.set(x, y, z); g.add(b);
+    });
+    return g;
+  }
+  function makeHouse() {
+    const g = new THREE.Group();
+    const cols = [0xffd166, 0xff8fab, 0x9bf6ff, 0xcdb4db];
+    const walls = mesh(new THREE.BoxGeometry(3, 2.4, 3), cols[Math.floor(Math.random() * cols.length)], 0.04);
+    walls.position.y = 1.2; g.add(walls);
+    const roof = mesh(new THREE.ConeGeometry(2.6, 1.6, 4), 0xe5584a, 0.04);
+    roof.position.y = 3.2; roof.rotation.y = Math.PI / 4; g.add(roof);
+    const door = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.2, 0.05), toon(0x6b4226));
+    door.position.set(0, 0.6, 1.52); g.add(door);
+    return g;
+  }
+  for (let z = 10; z > 10 - LOOP; z -= 6) {
+    [-1, 1].forEach(side => {
+      const r = Math.random();
+      const obj = r < 0.15 ? makeHouse() : r < 0.65 ? makeTree() : makeBush();
+      obj.position.set(side * (ROAD_W / 2 + 2.2 + Math.random() * 7), 0, z + Math.random() * 3);
+      obj.rotation.y = Math.random() * Math.PI;
+      const s = 0.8 + Math.random() * 0.5; obj.scale.setScalar(s);
+      scene.add(obj); scrollers.push(obj);
+    });
+  }
+
+  const clouds = [];
+  for (let i = 0; i < 9; i++) {
+    const c = new THREE.Group();
+    for (let k = 0; k < 4; k++) {
+      const p = new THREE.Mesh(sphere(1 + Math.random() * 0.8, 12), toon(0xffffff));
+      p.position.set(k * 1.4 - 2, Math.random() * 0.6, Math.random() * 0.8);
+      c.add(p);
+    }
+    c.position.set((Math.random() - 0.5) * 70, 12 + Math.random() * 8, -20 - Math.random() * 50);
+    scene.add(c); clouds.push(c);
+  }
+
+  // ---------- Camion ----------
+  const truck = new THREE.Group();
+  const cargo = mesh(new THREE.BoxGeometry(3.4, 2.7, 4.6), 0xf1f5ff, 0.03);
+  cargo.position.set(0, 2.05, 0); truck.add(cargo);
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(3.45, 0.45, 4.62), toon(0x3a86ff));
+  stripe.position.set(0, 1.5, 0); truck.add(stripe);
+  const hole = new THREE.Mesh(new THREE.PlaneGeometry(2.9, 2.2), new THREE.MeshBasicMaterial({ color: 0x2a2d45 }));
+  hole.position.set(0, 2.05, 2.31); truck.add(hole);
+  // Caisses de poissons visibles par la porte ouverte
+  for (let i = 0; i < 3; i++) {
+    const crate = mesh(new THREE.BoxGeometry(0.85, 0.6, 0.8), 0xc98b4f, 0.05);
+    crate.position.set(-0.95 + i * 0.95, 1.25, 1.7); truck.add(crate);
+  }
+  const cab = mesh(new THREE.BoxGeometry(3.2, 2.1, 1.9), 0xff6b5b, 0.03);
+  cab.position.set(0, 1.65, -3.3); truck.add(cab);
+  const glass = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.8, 0.05), toon(0xbfeaff));
+  glass.position.set(0, 2.25, -4.27); truck.add(glass);
+  const bumper = mesh(new THREE.BoxGeometry(3.5, 0.3, 0.3), 0x8d8fa3, 0.05);
+  bumper.position.set(0, 0.55, 2.4); truck.add(bumper);
+  const wheels = [];
+  [[-1.6, -3.2], [1.6, -3.2], [-1.6, 1.3], [1.6, 1.3]].forEach(([x, z]) => {
+    const w = mesh(new THREE.CylinderGeometry(0.6, 0.6, 0.45, 16), 0x2b2b3a, 0.05);
+    w.rotation.z = Math.PI / 2; w.position.set(x, 0.6, z);
+    const hub = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.47, 0.12), toon(0xd9dbe8));
+    w.add(hub);
+    truck.add(w); wheels.push(w);
+  });
+  truck.position.set(0, 0, -17);
+  scene.add(truck);
+
+  const puffs = [];
+  function puff() {
+    const p = new THREE.Mesh(sphere(0.25, 8), toon(0xd8d8e4));
+    p.position.set(truck.position.x + 1.3, 0.6, truck.position.z + 2.4);
+    p.userData = { life: 0 };
+    scene.add(p); puffs.push(p);
+  }
+
+  // ---------- Chien ----------
+  const dog = new THREE.Group();
+  const FUR = 0xe8a35c, DARK = 0x8a4f2a, WHITE = 0xfff6e3;
+  const body = mesh(sphere(0.6), FUR); body.scale.set(0.82, 0.72, 1.2); body.position.y = 0.95; dog.add(body);
+  const belly = mesh(sphere(0.45), WHITE, 0.03); belly.scale.set(0.8, 0.6, 1.1); belly.position.set(0, 0.8, 0.05); dog.add(belly);
+  const headPivot = new THREE.Group(); headPivot.position.set(0, 1.45, -0.62); dog.add(headPivot);
+  const head = mesh(sphere(0.46), FUR); headPivot.add(head);
+  const snout = mesh(sphere(0.25), WHITE, 0.06); snout.scale.set(1, 0.8, 1.2); snout.position.set(0, -0.1, -0.42); headPivot.add(snout);
+  const nose = mesh(sphere(0.09, 10), 0x1d1b33, 0); nose.position.set(0, -0.02, -0.7); headPivot.add(nose);
+  const ears = [];
+  [-1, 1].forEach(s => {
+    const piv = new THREE.Group(); piv.position.set(s * 0.32, 0.25, 0.02);
+    const ear = mesh(sphere(0.2, 12), DARK, 0.07); ear.scale.set(0.45, 1.3, 0.8); ear.position.set(s * 0.06, -0.22, 0);
+    piv.add(ear); headPivot.add(piv); ears.push(piv);
+  });
+  const collar = mesh(new THREE.TorusGeometry(0.36, 0.08, 8, 20), 0xff3d5a, 0.05);
+  collar.position.set(0, 1.25, -0.5); collar.rotation.x = Math.PI / 2.6; dog.add(collar);
+  const tag = mesh(sphere(0.08, 8), 0xffc93c, 0.1); tag.position.set(0, 1.0, -0.72); dog.add(tag);
+  const tailPivot = new THREE.Group(); tailPivot.position.set(0, 1.15, 0.7); dog.add(tailPivot);
+  const tail = mesh(new THREE.ConeGeometry(0.1, 0.65, 8), FUR, 0.1); tail.position.y = 0.3; tailPivot.add(tail);
+  tailPivot.rotation.x = 0.6;
+  const legs = [];
+  [[-0.3, -0.42], [0.3, -0.42], [-0.3, 0.45], [0.3, 0.45]].forEach(([x, z], i) => {
+    const piv = new THREE.Group(); piv.position.set(x, 0.78, z);
+    const leg = mesh(new THREE.CylinderGeometry(0.12, 0.1, 0.55, 8), FUR, 0.08); leg.position.y = -0.27; piv.add(leg);
+    const paw = mesh(sphere(0.14, 10), WHITE, 0.08); paw.scale.set(1, 0.7, 1.2); paw.position.set(0, -0.58, -0.04); piv.add(paw);
+    dog.add(piv); legs.push({ piv, phase: i === 0 || i === 3 ? 0 : Math.PI });
+  });
+  const shadowMat = new THREE.MeshBasicMaterial({ color: 0x1d1b33, transparent: true, opacity: 0.22 });
+  const dogShadow = new THREE.Mesh(new THREE.CircleGeometry(0.75, 20), shadowMat);
+  dogShadow.rotation.x = -Math.PI / 2; dogShadow.position.y = 0.03; dogShadow.scale.set(1, 1.4, 1);
+  scene.add(dogShadow);
+  scene.add(dog);
+
+  // ---------- Objets lancés ----------
+  function makeFish(kind) {
+    const g = new THREE.Group();
+    if (kind === 'boot') {
+      const leg = mesh(new THREE.BoxGeometry(0.4, 0.6, 0.4), 0x6b4a2e, 0.08); leg.position.y = 0.15; g.add(leg);
+      const foot = mesh(new THREE.BoxGeometry(0.42, 0.25, 0.75), 0x5a3d25, 0.08); foot.position.set(0, -0.15, -0.18); g.add(foot);
+      const sole = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.07, 0.78), toon(0x2b2b3a)); sole.position.set(0, -0.3, -0.18); g.add(sole);
+      return g;
+    }
+    const col = kind === 'gold' ? 0xffc93c : [0xff8c42, 0x4cc9f0, 0xf15bb5][Math.floor(Math.random() * 3)];
+    const b = mesh(sphere(0.3, 14), col, 0.08); b.scale.set(0.55, 0.85, 1.5); g.add(b);
+    const t = mesh(new THREE.ConeGeometry(0.25, 0.35, 4), col, 0.1);
+    t.rotation.x = -Math.PI / 2; t.position.z = 0.55; t.scale.set(0.3, 1, 1); g.add(t);
+    const fin = mesh(new THREE.ConeGeometry(0.12, 0.25, 4), col, 0.1); fin.position.set(0, 0.3, 0); fin.scale.set(0.3, 1, 1); g.add(fin);
+    [-1, 1].forEach(s => {
+      const eye = mesh(sphere(0.07, 8), 0xffffff, 0.15); eye.position.set(s * 0.15, 0.08, -0.25); g.add(eye);
+    });
+    if (kind === 'gold') g.scale.setScalar(1.25);
+    return g;
+  }
+
+  const items = [];
+  const markerGeo = new THREE.RingGeometry(0.55, 0.78, 28);
+  function spawn() {
+    const r = Math.random();
+    const kind = score >= 60 && r < 0.16 ? 'boot' : r > 0.93 ? 'gold' : 'fish';
+    // Éviter qu'un poisson tombe juste avant un autre loin de là : voie aléatoire, sinon proche de la précédente quand c'est rapide.
+    let lane = Math.floor(Math.random() * 4);
+    const m = makeFish(kind);
+    const start = new THREE.Vector3(truck.position.x + (Math.random() - 0.5) * 2, 2.4, truck.position.z + 2.4);
+    const end = new THREE.Vector3(LANES[lane], 1.35, -0.8);
+    m.position.copy(start);
+    scene.add(m);
+    const marker = new THREE.Mesh(markerGeo, new THREE.MeshBasicMaterial({ color: kind === 'boot' ? 0xff3d5a : kind === 'gold' ? 0xffc93c : 0xffffff, transparent: true, opacity: 0 }));
+    marker.rotation.x = -Math.PI / 2; marker.position.set(end.x, 0.04, end.z);
+    scene.add(marker);
+    items.push({ m, marker, kind, lane, start, end, t: 0, dur: flightTime(), h: 3.2 + Math.random() * 1.2, state: 'fly', vy: 0, spin: (Math.random() - 0.5) * 12 });
+  }
+
+  // ---------- Particules et textes ----------
+  const sparks = [];
+  const sparkGeo = new THREE.IcosahedronGeometry(0.1, 0);
+  function burst(pos, colors, n = 14) {
+    for (let i = 0; i < n; i++) {
+      const s = new THREE.Mesh(sparkGeo, toon(colors[i % colors.length]));
+      s.position.copy(pos);
+      s.userData = { v: new THREE.Vector3((Math.random() - 0.5) * 6, Math.random() * 5 + 2, (Math.random() - 0.5) * 6), life: 0.7 };
+      scene.add(s); sparks.push(s);
+    }
+  }
+  const tmpV = new THREE.Vector3();
+  function popText(text, pos, bad) {
+    tmpV.copy(pos).project(camera);
+    const el = document.createElement('div');
+    el.className = 'pop' + (bad ? ' bad' : '');
+    el.textContent = text;
+    el.style.left = ((tmpV.x + 1) / 2 * innerWidth) + 'px';
+    el.style.top = ((1 - tmpV.y) / 2 * innerHeight) + 'px';
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 900);
+  }
+
+  // ---------- Son ----------
+  let actx = null;
+  function beep(freq, to, dur, type = 'square', vol = 0.08) {
+    if (!actx) return;
+    const t = actx.currentTime;
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t); o.frequency.exponentialRampToValueAtTime(to, t + dur);
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(actx.destination); o.start(t); o.stop(t + dur);
+  }
+  const sfx = {
+    catch: () => { beep(520, 1040, 0.12); setTimeout(() => beep(780, 1560, 0.1), 60); },
+    gold: () => [0, 70, 140, 210].forEach((d, i) => setTimeout(() => beep(600 + i * 200, 900 + i * 300, 0.1, 'triangle', 0.1), d)),
+    miss: () => beep(300, 90, 0.35, 'sawtooth', 0.06),
+    boot: () => beep(140, 50, 0.3, 'square', 0.12),
+    woof: () => { beep(380, 180, 0.09, 'sawtooth', 0.08); setTimeout(() => beep(360, 160, 0.12, 'sawtooth', 0.08), 130); },
+  };
+
+  // ---------- État du jeu ----------
+  const $ = id => document.getElementById(id);
+  let state = 'menu', score = 0, lives = 3, combo = 0, best = 0;
+  let laneTarget = 1, dogX = LANES[1], hop = 0, spawnTimer = 1.2, time = 0, catchAnim = 0, hurt = 0;
+  try { best = parseInt(localStorage.getItem('poisson-express-best') || '0', 10) || 0; } catch (e) {}
+
+  const speedMul = () => Math.min(2.3, 1 + score / 350);
+  const flightTime = () => Math.max(0.95, 1.75 / speedMul());
+  const spawnGap = () => Math.max(0.55, 1.35 - score * 0.0025);
+
+  function updateHud() {
+    $('score').textContent = score;
+    $('combo').textContent = '×' + (1 + Math.floor(combo / 5));
+    [...$('hearts').children].forEach((h, i) => h.classList.toggle('lost', i >= lives));
+  }
+
+  function moveLane(d) {
+    if (state !== 'play') return;
+    const n = Math.max(0, Math.min(3, laneTarget + d));
+    if (n !== laneTarget) { laneTarget = n; hop = 1; }
+  }
+  function setLane(n) { if (state === 'play' && n !== laneTarget) { laneTarget = n; hop = 1; } }
+
+  function reset() {
+    items.forEach(it => { scene.remove(it.m); scene.remove(it.marker); });
+    items.length = 0;
+    score = 0; lives = 3; combo = 0; laneTarget = 1; dogX = LANES[1]; spawnTimer = 1.0; hurt = 0;
+    updateHud();
+  }
+  function start() {
+    if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+    if (actx && actx.state === 'suspended') actx.resume();
+    reset();
+    $('menu').hidden = true; $('over').hidden = true;
+    state = 'play';
+    sfx.woof();
+  }
+  function gameOver() {
+    state = 'over';
+    if (score > best) { best = score; try { localStorage.setItem('poisson-express-best', String(best)); } catch (e) {} }
+    $('finalScore').textContent = score;
+    $('bestLine').textContent = score >= best && score > 0 ? 'Nouveau record !' : 'Record : ' + best;
+    setTimeout(() => { $('over').hidden = false; $('againBtn').focus(); }, 600);
+  }
+
+  // ---------- Entrées ----------
+  addEventListener('keydown', e => {
+    const k = e.key.toLowerCase();
+    if (k === 'arrowleft' || k === 'q' || k === 'a') { moveLane(-1); e.preventDefault(); }
+    else if (k === 'arrowright' || k === 'd') { moveLane(1); e.preventDefault(); }
+    else if (k >= '1' && k <= '4') setLane(+k - 1);
+    else if ((k === ' ' || k === 'enter') && state !== 'play') { start(); e.preventDefault(); }
+  });
+  canvas.addEventListener('pointerdown', e => { moveLane(e.clientX < innerWidth / 2 ? -1 : 1); });
+  $('btnL').addEventListener('pointerdown', e => { e.preventDefault(); moveLane(-1); });
+  $('btnR').addEventListener('pointerdown', e => { e.preventDefault(); moveLane(1); });
+  $('startBtn').addEventListener('click', start);
+  $('againBtn').addEventListener('click', start);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) clock.getDelta(); });
+
+  function resize() {
+    const w = innerWidth, h = innerHeight, a = w / h;
+    renderer.setSize(w, h, false);
+    camera.aspect = a;
+    // En portrait, on recule et on monte la caméra pour garder les 4 voies à l'écran.
+    const back = a < 1 ? (1 - a) * 9 : 0;
+    camera.position.set(0, 4.6 + back * 0.45, 7.2 + back);
+    camera.fov = a < 1 ? 62 : 55;
+    camera.updateProjectionMatrix();
+    camera.lookAt(camTarget);
+  }
+  addEventListener('resize', resize);
+  resize();
+
+  // ---------- Boucle ----------
+  const clock = new THREE.Clock();
+  const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function tick() {
+    requestAnimationFrame(tick);
+    const dt = Math.min(clock.getDelta(), 0.05);
+    time += dt;
+    const playing = state === 'play';
+    const speed = 14 * (playing ? speedMul() : 0.8);
+
+    // Défilement du décor
+    for (const o of scrollers) {
+      o.position.z += speed * dt;
+      if (o.position.z > 12) o.position.z -= LOOP;
+    }
+    for (const c of clouds) { c.position.x += dt * 0.6; if (c.position.x > 40) c.position.x = -40; }
+
+    // Camion
+    truck.position.x = Math.sin(time * 0.7) * 1.1;
+    truck.position.y = Math.abs(Math.sin(time * 9)) * 0.06;
+    truck.rotation.z = Math.sin(time * 0.7 + 1) * 0.02;
+    wheels.forEach(w => w.rotation.x -= speed * dt / 0.6);
+    if (Math.random() < dt * 6) puff();
+    for (let i = puffs.length - 1; i >= 0; i--) {
+      const p = puffs[i]; p.userData.life += dt;
+      p.position.z += (speed * 0.25) * dt; p.position.y += dt * 0.8;
+      p.scale.setScalar(1 + p.userData.life * 2.5);
+      if (p.userData.life > 1) { scene.remove(p); puffs.splice(i, 1); }
+    }
+
+    // Chien
+    dogX += (LANES[laneTarget] - dogX) * Math.min(1, dt * 16);
+    const lean = (LANES[laneTarget] - dogX) * -0.12;
+    hop = Math.max(0, hop - dt * 4);
+    const runF = 10 + speed * 0.5;
+    const bob = Math.abs(Math.sin(time * runF * 0.5)) * 0.12;
+    dog.position.set(dogX, bob + Math.sin(hop * Math.PI) * 0.5, 0);
+    dog.rotation.z = lean;
+    dog.rotation.y = (LANES[laneTarget] - dogX) * -0.15;
+    legs.forEach(l => l.piv.rotation.x = Math.sin(time * runF + l.phase) * 0.9);
+    ears.forEach((e, i) => e.rotation.x = Math.sin(time * runF + i) * 0.4 - 0.2);
+    tailPivot.rotation.z = Math.sin(time * 18) * 0.6;
+    catchAnim = Math.max(0, catchAnim - dt * 3);
+    headPivot.rotation.x = catchAnim * 0.6;
+    hurt = Math.max(0, hurt - dt * 2);
+    body.material = hurt > 0 && Math.floor(hurt * 12) % 2 ? toon(0xff6b5b) : toon(FUR);
+    dogShadow.position.x = dogX;
+    const sc = 1 - dog.position.y * 0.4; dogShadow.scale.set(sc, sc * 1.4, 1);
+
+    // Lancers
+    if (playing) {
+      spawnTimer -= dt;
+      if (spawnTimer <= 0) { spawn(); spawnTimer = spawnGap() * (0.8 + Math.random() * 0.5); }
+    }
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.state === 'fly') {
+        it.t += dt / it.dur;
+        const t = Math.min(it.t, 1);
+        it.m.position.lerpVectors(it.start, it.end, t);
+        it.m.position.y += Math.sin(Math.PI * t) * it.h;
+        it.m.rotation.x += it.spin * dt;
+        it.m.rotation.z += it.spin * 0.5 * dt;
+        it.marker.material.opacity = Math.min(0.9, t * 1.4);
+        it.marker.scale.setScalar(1.4 - t * 0.5);
+        const inLane = Math.abs(dogX - it.end.x) < 0.9;
+        if (it.kind !== 'boot') it.marker.material.color.setHex(inLane ? 0x5bff8a : it.kind === 'gold' ? 0xffc93c : 0xffffff);
+        if (it.t >= 1) {
+          scene.remove(it.marker);
+          if (inLane && playing) {
+            scene.remove(it.m); items.splice(i, 1);
+            const p = it.m.position.clone();
+            if (it.kind === 'boot') {
+              lives--; combo = 0; hurt = 1; sfx.boot();
+              popText('Beurk !', p, true); burst(p, [0x6b4a2e, 0x8d8fa3]);
+            } else {
+              combo++;
+              const pts = it.kind === 'gold' ? 50 : 10 * (1 + Math.floor(combo / 5));
+              score += pts; catchAnim = 1;
+              it.kind === 'gold' ? sfx.gold() : sfx.catch();
+              popText('+' + pts, p, false);
+              burst(p, it.kind === 'gold' ? [0xffc93c, 0xffffff, 0xff8c42] : [0x4cc9f0, 0xffffff, 0xffc93c]);
+            }
+            updateHud();
+            if (lives <= 0) gameOver();
+            continue;
+          }
+          it.state = 'fall'; it.vy = -3;
+          if (it.kind !== 'boot' && playing) {
+            lives--; combo = 0; sfx.miss();
+            popText('Raté !', it.m.position, true);
+            updateHud();
+            if (lives <= 0) gameOver();
+          }
+        }
+      } else {
+        // Le poisson raté tombe, frétille et part en arrière avec la route
+        if (it.m.position.y > 0.25) { it.vy -= 25 * dt; it.m.position.y = Math.max(0.25, it.m.position.y + it.vy * dt); }
+        else { it.m.rotation.set(0, 0, Math.PI / 2 + Math.sin(time * 25) * 0.4); it.m.position.y = 0.25 + Math.abs(Math.sin(time * 12)) * 0.15; }
+        it.m.position.z += speed * dt;
+        if (it.m.position.z > 12) { scene.remove(it.m); items.splice(i, 1); }
+      }
+    }
+
+    for (let i = sparks.length - 1; i >= 0; i--) {
+      const s = sparks[i], u = s.userData;
+      u.life -= dt; u.v.y -= 14 * dt;
+      s.position.addScaledVector(u.v, dt);
+      s.scale.setScalar(Math.max(0.01, u.life / 0.7));
+      if (u.life <= 0) { scene.remove(s); sparks.splice(i, 1); }
+    }
+
+    // Légère secousse caméra quand Rex se fait mal
+    camera.position.x = !reduceMotion && hurt > 0 ? Math.sin(time * 60) * hurt * 0.15 : dogX * 0.15;
+    camera.lookAt(camTarget.x + dogX * 0.2, camTarget.y, camTarget.z);
+
+    renderer.render(scene, camera);
+  }
+  updateHud();
+  tick();
+  $('startBtn').focus();
+})();
+</script>
