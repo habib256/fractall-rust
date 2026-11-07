@@ -66,10 +66,15 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   font-size: 30px; color: var(--ink); cursor: pointer;
 }
 .pad button:active { transform: translateY(4px); box-shadow: 0 1px 0 var(--ink); }
+.pad { align-items: flex-end; }
+.padcol { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.pad button.jump { background: var(--sun); }
 @media (hover: hover) and (pointer: fine) { .pad { display: none; } }
 
 .overlay {
-  position: fixed; inset: 0; z-index: 10; display: grid; place-items: center;
+  position: fixed; inset: 0; z-index: 10; display: flex; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y;
+  padding-block: calc(12px + env(safe-area-inset-top, 0px)) calc(12px + env(safe-area-inset-bottom, 0px));
+  box-sizing: border-box;
   padding-left: max(16px, env(safe-area-inset-left, 0px));
   padding-right: max(16px, env(safe-area-inset-right, 0px));
   background: rgba(29, 27, 51, .35);
@@ -77,7 +82,13 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
 .card {
   width: min(440px, 100%); box-sizing: border-box; background: var(--cream);
   border: 4px solid var(--ink); border-radius: 24px; box-shadow: 0 8px 0 var(--ink);
-  padding: 24px 22px; text-align: center; display: grid; gap: 14px;
+  padding: 24px 22px; text-align: center; display: grid; gap: 14px; margin: auto;
+}
+@media (max-height: 560px) {
+  .card { padding: 14px 18px; gap: 8px; }
+  .card h1 { font-size: 34px; }
+  .card p, .keys { font-size: 13px; }
+  .legend { font-size: 12px; gap: 8px; }
 }
 .card h1 {
   margin: 0; font-family: var(--font-display); font-weight: 400; font-size: clamp(38px, 10vw, 54px);
@@ -112,7 +123,10 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
 
 <div class="pad">
   <button id="btnL" aria-label="Aller à gauche">◀</button>
-  <button id="btnR" aria-label="Aller à droite">▶</button>
+  <div class="padcol">
+    <button id="btnJ" class="jump" aria-label="Sauter">▲</button>
+    <button id="btnR" aria-label="Aller à droite">▶</button>
+  </div>
 </div>
 
 <div class="overlay" id="menu">
@@ -121,12 +135,13 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     <p>Le camion du poissonnier perd sa cargaison ! Rex court derrière et doit attraper les poissons au vol sur les <b>4 voies</b>.</p>
     <div class="keys">
       <b>← →</b><span>ou <b>Q</b> / <b>D</b> : changer de voie</span>
-      <b>1 2 3 4</b><span>sauter directement sur une voie</span>
-      <b>Tactile</b><span>boutons ◀ ▶ ou toucher une moitié d'écran</span>
+      <b>↑</b><span>ou <b>Z</b> / <b>Espace</b> : sauter</span>
+      <b>1 2 3 4</b><span>aller directement sur une voie</span>
+      <b>Tactile</b><span>◀ ▶ pour changer de voie, ▲ pour sauter</span>
       <b>M</b><span>couper / remettre la musique</span>
     </div>
-    <div class="legend"><span>🐟 +10</span><span>⭐ poisson doré +50</span><span>👢 botte : à éviter</span></div>
-    <p style="font-size:14px">Un poisson raté coûte un cœur. Le cercle au sol montre où il va tomber.</p>
+    <div class="legend"><span>🐟 +10</span><span>⭐ doré +50</span><span>⭕ cerceau : sauter</span><span>👢 botte : éviter</span><span>📦 caisse, pneu, flaque : esquiver ou sauter</span></div>
+    <p style="font-size:14px">Les poissons tombent en rythme avec la musique. Un poisson raté coûte un cœur, un combo de 25 en rend un.</p>
     <button class="go" id="startBtn">C'est parti !</button>
   </div>
 </div>
@@ -510,22 +525,108 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     return g;
   }
 
-  const items = [];
+  const items = [];   // en vol, au sol, obstacles
+  const plan = [];    // événements programmés, triés par heure de lancement
   const markerGeo = new THREE.RingGeometry(0.55, 0.78, 28);
-  function spawn() {
-    const r = Math.random();
-    const kind = score >= 60 && r < 0.16 ? 'boot' : r > 0.93 ? 'gold' : 'fish';
-    // Éviter qu'un poisson tombe juste avant un autre loin de là : voie aléatoire, sinon proche de la précédente quand c'est rapide.
-    let lane = Math.floor(Math.random() * 4);
-    const m = makeFish(kind);
+  const hoopGeo = new THREE.TorusGeometry(0.55, 0.07, 8, 28);
+  const LAND_Z = 6, OB_FLIGHT = 0.75;   // les obstacles lancés atterrissent 6 m devant Rex
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a, b, u) => a + (b - a) * u;
+
+  // Vagues : [décalage en croches, voie 0-3, type]. f poisson, g doré, b botte, H poisson en hauteur (sauter
+  // dans le cerceau), c caisse, t pneu, p flaque. Suffixe « ! » : bonus, le rater ne coûte rien.
+  const WAVES = [
+    { min: 0,   n: [[0, 1, 'f'], [4, 2, 'f']] },
+    { min: 0,   n: [[0, 0, 'f'], [2, 0, 'f'], [4, 0, 'f']] },
+    { min: 0,   n: [[0, 0, 'f'], [4, 1, 'f'], [8, 2, 'f'], [12, 3, 'f']] },
+    { min: 0,   n: [[0, 1, 'f'], [4, 2, 'f'], [8, 1, 'f'], [12, 2, 'f']] },
+    { min: 20,  n: [[0, 1, 'p'], [0, 2, 'f']] },
+    { min: 30,  n: [[0, 2, 'H']] },
+    { min: 40,  n: [[0, 1, 'c'], [0, 1, 'f']] },
+    { min: 60,  n: [[0, 0, 'f!'], [0, 3, 'g!']] },
+    { min: 90,  n: [[0, 0, 'f'], [2, 1, 'f'], [4, 2, 'f'], [6, 3, 'f']] },
+    { min: 90,  n: [[0, 1, 'f'], [1, 1, 'f'], [2, 1, 'f'], [3, 1, 'f']] },
+    { min: 110, n: [[0, 0, 'b'], [0, 1, 'g'], [0, 2, 'b']] },
+    { min: 130, n: [[0, 0, 'c'], [0, 1, 'c'], [0, 2, 'c'], [0, 3, 'f']] },
+    { min: 150, n: [[0, 0, 't'], [2, 1, 't'], [4, 2, 'f'], [6, 2, 'f']] },
+    { min: 170, n: [[0, 1, 'c'], [0, 1, 'H'], [4, 2, 'f']] },
+    { min: 200, n: [[0, 0, 'f'], [4, 3, 'f'], [8, 0, 'f'], [12, 3, 'f']] },
+    { min: 260, n: [[0, 0, 'c'], [0, 1, 'c'], [0, 2, 'c'], [0, 3, 'c'], [0, 2, 'H']] },
+    { min: 300, n: [[0, 0, 'b'], [0, 1, 'b'], [0, 2, 'f'], [4, 1, 'b'], [4, 2, 'b'], [4, 3, 'f']] },
+    { min: 340, n: [[0, 1, 'f'], [1, 1, 'f'], [2, 1, 'c'], [2, 1, 'f'], [3, 1, 'f']] },
+    { min: 380, n: [[0, 0, 'H'], [4, 3, 'H']] },
+  ];
+  let lastWave = -1, planEnd = null;
+
+  function planWave() {
+    const sd = conductor.stepDur(), nowS = conductor.stepNow(), speed = worldSpeed();
+    const pool = WAVES.map((w, i) => i).filter(i => WAVES[i].min <= score && i !== lastWave);
+    // Plus le score monte, plus on pioche dans les vagues récentes (les plus dures)
+    const k = Math.min(pool.length - 1, Math.floor(Math.pow(Math.random(), score > 150 ? 0.6 : 1) * pool.length));
+    const wi = pool[k]; lastWave = wi;
+    const w = WAVES[wi], mirror = Math.random() < 0.5;
+    const lanes = w.n.map(n => mirror ? 3 - n[1] : n[1]);
+    const lo = Math.min(...lanes), hi = Math.max(...lanes);
+    const shift = -lo + Math.floor(Math.random() * (3 - hi + lo + 1));
+    const gap = score < 90 ? 6 : score < 260 ? 4 : 3;            // repos entre deux vagues, en croches
+    const base = Math.ceil(Math.max(planEnd + gap * 2, nowS + 3.0 / sd) / 4) * 4;   // départ sur un temps
+    let maxOff = 0;
+    w.n.forEach((n, j) => {
+      let code = n[2];
+      const bonus = code.endsWith('!'); code = code.replace('!', '');
+      if (code === 'f' && Math.random() < 0.06) code = 'g';
+      const S = base + n[0] * 2, lane = lanes[j] + shift;
+      maxOff = Math.max(maxOff, n[0]);
+      const ev = { S, lane, bonus };
+      if ('ctp'.includes(code)) {
+        ev.type = 'obstacle'; ev.kind = { c: 'crate', t: 'tire', p: 'puddle' }[code];
+        ev.lead = code === 'p' ? 40 / speed : LAND_Z / speed + OB_FLIGHT;
+      } else {
+        ev.type = 'throw'; ev.kind = code === 'g' ? 'gold' : code === 'b' ? 'boot' : 'fish';
+        ev.high = code === 'H'; ev.dur = flightTime(); ev.lead = ev.dur;
+      }
+      plan.push(ev);
+    });
+    planEnd = base + maxOff * 2;
+  }
+
+  function launchThrow(ev) {
+    const m = makeFish(ev.kind);
     const start = new THREE.Vector3(truck.position.x + (Math.random() - 0.5) * 2, 2.3, truck.position.z + 2.5);
-    const end = new THREE.Vector3(LANES[lane], 1.35, -0.8);
+    const end = new THREE.Vector3(LANES[ev.lane], ev.high ? 2.8 : 1.35, -0.8);
+    m.position.copy(start); scene.add(m);
+    const col = ev.kind === 'boot' ? 0xff3d5a : ev.kind === 'gold' ? 0xffc93c : ev.high ? 0x4cc9f0 : ev.bonus ? 0xcdb4db : 0xffffff;
+    const marker = new THREE.Mesh(markerGeo, new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0 }));
+    marker.rotation.x = -Math.PI / 2; marker.position.set(end.x, 0.045, end.z); scene.add(marker);
+    let hoop = null;
+    if (ev.high) { hoop = mesh(hoopGeo, 0x4cc9f0, 0.15); hoop.position.copy(end); hoop.scale.setScalar(0.01); scene.add(hoop); }
+    items.push({ m, marker, hoop, col, kind: ev.kind, high: ev.high, bonus: ev.bonus, lane: ev.lane, start, end,
+      S: ev.S, dur: ev.dur, h: ev.high ? 1.8 : 3.2 + Math.random() * 1.2, state: 'fly', vy: 0, spin: (Math.random() - 0.5) * 12 });
+  }
+
+  function makeObstacle(kind) {
+    const g = new THREE.Group();
+    if (kind === 'crate') {
+      const b = mesh(new THREE.BoxGeometry(0.95, 0.7, 0.85), 0xc98b4f, 0.05); b.position.y = 0.35; g.add(b);
+      [0.16, 0.54].forEach(y => { const sl = new THREE.Mesh(new THREE.BoxGeometry(0.97, 0.06, 0.87), toon(0x8a5a3b)); sl.position.y = y; g.add(sl); });
+      [0.8, -0.8].forEach(r => { const x = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.8, 0.02), toon(0x8a5a3b)); x.position.set(0, 0.35, 0.43); x.rotation.z = r; g.add(x); });
+    } else if (kind === 'tire') {
+      const roll = new THREE.Group(); roll.position.y = 0.5; g.add(roll); g.userData.roll = roll;
+      const t = mesh(new THREE.TorusGeometry(0.33, 0.17, 10, 20), 0x2b2b3a, 0.06); t.rotation.y = Math.PI / 2; roll.add(t);
+      const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.12, 12), toon(0xd9dbe8)); rim.rotation.z = Math.PI / 2; roll.add(rim);
+    } else {
+      const pd = new THREE.Mesh(new THREE.CircleGeometry(0.85, 24), new THREE.MeshBasicMaterial({ color: 0x3a86ff, transparent: true, opacity: 0.85 }));
+      pd.rotation.x = -Math.PI / 2; pd.scale.set(1.15, 1.6, 1); pd.position.y = 0.045; g.add(pd);
+      const hl = new THREE.Mesh(new THREE.CircleGeometry(0.25, 16), new THREE.MeshBasicMaterial({ color: 0xbfeaff }));
+      hl.rotation.x = -Math.PI / 2; hl.position.set(-0.3, 0.05, -0.4); hl.scale.set(1.4, 0.6, 1); g.add(hl);
+    }
+    return g;
+  }
+  function launchObstacle(ev) {
+    const m = makeObstacle(ev.kind); scene.add(m);
+    const start = new THREE.Vector3(truck.position.x + (Math.random() - 0.5) * 1.5, 1.8, truck.position.z + 2.6);
     m.position.copy(start);
-    scene.add(m);
-    const marker = new THREE.Mesh(markerGeo, new THREE.MeshBasicMaterial({ color: kind === 'boot' ? 0xff3d5a : kind === 'gold' ? 0xffc93c : 0xffffff, transparent: true, opacity: 0 }));
-    marker.rotation.x = -Math.PI / 2; marker.position.set(end.x, 0.04, end.z);
-    scene.add(marker);
-    items.push({ m, marker, kind, lane, start, end, t: 0, dur: flightTime(), h: 3.2 + Math.random() * 1.2, state: 'fly', vy: 0, spin: (Math.random() - 0.5) * 12 });
+    items.push({ m, kind: ev.kind, lane: ev.lane, state: 'obstacle', S: ev.S, start, checked: false, dir: Math.random() < 0.5 ? -1 : 1 });
   }
 
   // ---------- Particules et textes ----------
@@ -566,6 +667,10 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     gold: () => [0, 70, 140, 210].forEach((d, i) => setTimeout(() => beep(600 + i * 200, 900 + i * 300, 0.1, 'triangle', 0.1), d)),
     miss: () => beep(300, 90, 0.35, 'sawtooth', 0.06),
     boot: () => beep(140, 50, 0.3, 'square', 0.12),
+    jump: () => beep(260, 620, 0.14, 'triangle', 0.1),
+    hop: () => { beep(700, 1100, 0.07, 'triangle', 0.08); setTimeout(() => beep(900, 1400, 0.07, 'triangle', 0.08), 50); },
+    bump: () => { beep(160, 45, 0.25, 'square', 0.12); beep(90, 40, 0.3, 'sawtooth', 0.08); },
+    heart: () => [0, 90, 180].forEach((d, i) => setTimeout(() => beep(523 * Math.pow(1.26, i), 523 * Math.pow(1.26, i) * 1.01, 0.12, 'triangle', 0.1), d)),
     woof: () => { beep(380, 180, 0.09, 'sawtooth', 0.08); setTimeout(() => beep(360, 160, 0.12, 'sawtooth', 0.08), 130); },
   };
 
@@ -573,7 +678,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   // Programmation « lookahead » : un minuteur de 25 ms planifie les notes 120 ms
   // à l'avance sur l'horloge audio, qui seule est précise.
   const music = (() => {
-    let out = null, echo = null, noise = null, timer = null, step = 0, next = 0, muted = false;
+    let out = null, echo = null, noise = null, timer = null, step = 0, abs = 0, next = 0, muted = false, sp = 0.11;
     try { muted = localStorage.getItem('poisson-express-mute') === '1'; } catch (e) {}
     const VOL = 0.45;
     const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
@@ -639,12 +744,18 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
       if (i % 2 === 0) { const m = MEL[bar][i / 2]; if (m) tone('square', mtof(m), t, sp * 1.7, 0.065, 3400, true); }
     }
     function pump() {
-      const bpm = Math.min(168, 136 + (speedMul() - 1) * 26);   // accélère avec le jeu
-      const sp = 60 / bpm / 4;
-      while (next < actx.currentTime + 0.12) { schedule(step, next, sp); next += sp; step = (step + 1) % 128; }
+      while (next < actx.currentTime + 0.12) {
+        if (step % 16 === 0) sp = 60 / bpmNow() / 4;   // le tempo ne change qu'en début de mesure : les temps futurs restent prévisibles
+        schedule(step, next, sp); next += sp; step = (step + 1) % 128; abs++;
+      }
     }
     return {
-      start() { init(); if (!out) return; this.stop(); step = 0; next = actx.currentTime + 0.08; timer = setInterval(pump, 25); },
+      start() { init(); if (!out) return; this.stop(); step = 0; abs = 0; sp = 60 / bpmNow() / 4; next = actx.currentTime + 0.08; timer = setInterval(pump, 25); },
+      get running() { return timer !== null; },
+      // Pas absolus (doubles croches depuis le départ) <-> secondes, au tempo courant
+      stepDur() { return sp; },
+      stepAt(t) { return abs + (t - next) / sp; },
+      timeOfStep(S) { return next + (S - abs) * sp; },
       stop() { if (timer) { clearInterval(timer); timer = null; } },
       resync() { if (timer && actx) next = Math.max(next, actx.currentTime + 0.05); },
       toggle() {
@@ -667,12 +778,35 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   // ---------- État du jeu ----------
   const $ = id => document.getElementById(id);
   let state = 'menu', score = 0, lives = 3, combo = 0, best = 0;
-  let laneTarget = 1, dogX = LANES[1], hop = 0, spawnTimer = 1.2, time = 0, catchAnim = 0, hurt = 0;
+  let laneTarget = 1, dogX = LANES[1], hop = 0, time = 0, catchAnim = 0, hurt = 0;
+  let invuln = 0;   // après un cœur perdu, 1,2 s sans nouvelle perte (Rex clignote)
+  let dogY = 0, dogVY = 0, jumpBuf = 0, squash = 0, gameClock = 0, mouthFish = null, mouthT = 0;
   try { best = parseInt(localStorage.getItem('poisson-express-best') || '0', 10) || 0; } catch (e) {}
 
   const speedMul = () => Math.min(2.3, 1 + score / 350);
   const flightTime = () => Math.max(0.95, 1.75 / speedMul());
-  const spawnGap = () => Math.max(0.55, 1.35 - score * 0.0025);
+  const worldSpeed = () => 14 * speedMul();
+  function bpmNow() { return Math.min(168, 136 + (speedMul() - 1) * 26); }   // la musique accélère avec le jeu
+
+  // Chef d'orchestre : l'horloge audio est le maître (les poissons tombent sur les temps qu'on entend).
+  // Sans audio, une horloge de jeu au même tempo prend le relais.
+  // Tout est daté en PAS musicaux (doubles croches absolues) et converti en secondes à chaque image :
+  // quand le tempo accélère, l'arrivée d'un poisson glisse avec la musique et reste sur le temps.
+  let fbStep = 0;
+  const conductor = {
+    now() { return music.running ? actx.currentTime - (actx.outputLatency || 0) - (actx.baseLatency || 0) : gameClock; },
+    stepDur() { return music.running ? music.stepDur() : 15 / bpmNow(); },
+    stepNow() { return music.running ? music.stepAt(this.now()) : fbStep; },
+    timeOf(S) { return music.running ? music.timeOfStep(S) : gameClock + (S - fbStep) * this.stepDur(); },
+    phase() { const f = this.stepNow(); return (((f % 4) + 4) % 4) / 4; },
+  };
+
+  function holdFish(kind) {
+    if (mouthFish) headPivot.remove(mouthFish);
+    mouthFish = makeFish(kind); mouthFish.scale.multiplyScalar(0.7);
+    mouthFish.rotation.y = Math.PI / 2; mouthFish.position.set(0, -0.18, -0.68);
+    headPivot.add(mouthFish); mouthT = 0.5;
+  }
 
   function updateHud() {
     $('score').textContent = score;
@@ -686,11 +820,13 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     if (n !== laneTarget) { laneTarget = n; hop = 1; }
   }
   function setLane(n) { if (state === 'play' && n !== laneTarget) { laneTarget = n; hop = 1; } }
+  function jump() { if (state === 'play') jumpBuf = 0.15; }   // petite mémoire : un appui juste avant l'atterrissage compte
 
   function reset() {
-    items.forEach(it => { scene.remove(it.m); scene.remove(it.marker); });
-    items.length = 0;
-    score = 0; lives = 3; combo = 0; laneTarget = 1; dogX = LANES[1]; spawnTimer = 1.0; hurt = 0;
+    items.forEach(it => { scene.remove(it.m); if (it.marker) scene.remove(it.marker); if (it.hoop) scene.remove(it.hoop); });
+    items.length = 0; plan.length = 0; planEnd = null; lastWave = -1;
+    score = 0; lives = 3; combo = 0; laneTarget = 1; dogX = LANES[1]; hurt = 0;
+    dogY = 0; dogVY = 0; jumpBuf = 0; gameClock = 0; fbStep = 0; invuln = 0;
     updateHud();
   }
   function start() {
@@ -704,6 +840,11 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   }
   function gameOver() {
     state = 'over';
+    plan.length = 0;
+    items.forEach(it => {
+      if (it.state === 'fly') { it.state = 'fall'; it.vy = 0; if (it.marker) scene.remove(it.marker); if (it.hoop) scene.remove(it.hoop); }
+      else if (it.state === 'obstacle') it.state = 'free';
+    });
     music.stop(); music.gameOverJingle();
     if (score > best) { best = score; try { localStorage.setItem('poisson-express-best', String(best)); } catch (e) {} }
     $('finalScore').textContent = score;
@@ -716,6 +857,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     const k = e.key.toLowerCase();
     if (k === 'arrowleft' || k === 'q' || k === 'a') { moveLane(-1); e.preventDefault(); }
     else if (k === 'arrowright' || k === 'd') { moveLane(1); e.preventDefault(); }
+    else if (k === 'arrowup' || k === 'z' || k === 'w' || (k === ' ' && state === 'play')) { jump(); e.preventDefault(); }
     else if (k >= '1' && k <= '4') setLane(+k - 1);
     else if (k === 'm') toggleMusic();
     else if ((k === ' ' || k === 'enter') && state !== 'play') { start(); e.preventDefault(); }
@@ -723,6 +865,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   canvas.addEventListener('pointerdown', e => { moveLane(e.clientX < innerWidth / 2 ? -1 : 1); });
   $('btnL').addEventListener('pointerdown', e => { e.preventDefault(); moveLane(-1); });
   $('btnR').addEventListener('pointerdown', e => { e.preventDefault(); moveLane(1); });
+  $('btnJ').addEventListener('pointerdown', e => { e.preventDefault(); jump(); });
   $('startBtn').addEventListener('click', start);
   $('againBtn').addEventListener('click', start);
   function toggleMusic() {
@@ -749,6 +892,16 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   }
   addEventListener('resize', resize);
   resize();
+
+  // Lignes de vitesse : visibles quand le jeu s'emballe
+  const streakMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 });
+  const streaks = [];
+  function resetStreak(st, anywhere) {
+    const side = Math.random() < 0.5 ? -1 : 1;
+    st.position.set(side * (3.8 + Math.random() * 5), 0.6 + Math.random() * 4, anywhere ? -40 + Math.random() * 48 : -40 - Math.random() * 10);
+  }
+  for (let i = 0; i < 26; i++) { const st = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 2.6), streakMat); resetStreak(st, true); scene.add(st); streaks.push(st); }
+  const comboChip = $('combo').parentElement;
 
   // ---------- Boucle ----------
   const clock = new THREE.Clock();
@@ -791,67 +944,123 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     dogX += (LANES[laneTarget] - dogX) * Math.min(1, dt * 16);
     const lean = (LANES[laneTarget] - dogX) * -0.12;
     hop = Math.max(0, hop - dt * 4);
+    // Saut : vitesse initiale 7,6 m/s, g = 22 m/s² → 0,69 s en l'air, 1,3 m de hauteur
+    jumpBuf -= dt;
+    if (jumpBuf > 0 && dogY <= 0 && playing) { dogVY = 7.6; jumpBuf = 0; hop = 0; sfx.jump(); }
+    if (dogY > 0 || dogVY > 0) {
+      dogVY -= 22 * dt; dogY += dogVY * dt;
+      if (dogY <= 0) { dogY = 0; dogVY = 0; squash = 1; }
+    }
+    squash = Math.max(0, squash - dt * 5);
+    const air = dogY > 0;
     const runF = 10 + speed * 0.5;
-    const bob = Math.abs(Math.sin(time * runF * 0.5)) * 0.12;
-    dog.position.set(dogX, bob + Math.sin(hop * Math.PI) * 0.5, 0);
+    const bob = air ? 0 : Math.abs(Math.sin(time * runF * 0.5)) * 0.12 + Math.sin(hop * Math.PI) * 0.5;
+    dog.position.set(dogX, dogY + bob, 0);
     dog.rotation.z = lean;
     dog.rotation.y = (LANES[laneTarget] - dogX) * -0.15;
-    legs.forEach(l => l.piv.rotation.x = Math.sin(time * runF + l.phase) * 0.9);
+    dog.rotation.x = air ? clamp(-dogVY * 0.035, -0.3, 0.3) : 0;
+    body.scale.set(0.82 * (1 + 0.15 * squash), 0.72 * (1 - 0.22 * squash), 1.2);
+    legs.forEach((l, i) => l.piv.rotation.x = air ? (i < 2 ? -0.9 : 0.9) : Math.sin(time * runF + l.phase) * 0.9);
+    if (mouthFish) {
+      mouthT -= dt; mouthFish.rotation.z = Math.sin(time * 30) * 0.35;
+      if (mouthT <= 0) { headPivot.remove(mouthFish); mouthFish = null; }
+    }
     ears.forEach((e, i) => e.rotation.x = Math.sin(time * runF + i) * 0.4 - 0.2);
     tailPivot.rotation.z = Math.sin(time * 18) * 0.6;
     catchAnim = Math.max(0, catchAnim - dt * 3);
     headPivot.rotation.x = catchAnim * 0.6;
-    hurt = Math.max(0, hurt - dt * 2);
+    hurt = Math.max(0, hurt - dt);
     body.material = hurt > 0 && Math.floor(hurt * 12) % 2 ? toon(0xff6b5b) : toon(FUR);
     dogShadow.position.x = dogX;
     const sc = 1 - dog.position.y * 0.4; dogShadow.scale.set(sc, sc * 1.4, 1);
 
-    // Lancers
+    // Programme : vagues planifiées sur la grille musicale, lancées à l'heure exacte
+    if (playing) { gameClock += dt; if (!music.running) fbStep += dt / conductor.stepDur(); }
+    const now = conductor.now();
     if (playing) {
-      spawnTimer -= dt;
-      if (spawnTimer <= 0) { spawn(); spawnTimer = spawnGap() * (0.8 + Math.random() * 0.5); }
+      const nowS = conductor.stepNow();
+      if (planEnd === null) planEnd = nowS - 4;
+      while (planEnd < nowS + 4.2 / conductor.stepDur()) planWave();
+      for (let j = plan.length - 1; j >= 0; j--) {
+        const ev = plan[j];
+        if (conductor.timeOf(ev.S) - ev.lead <= now) { plan.splice(j, 1); ev.type === 'throw' ? launchThrow(ev) : launchObstacle(ev); }
+      }
     }
+    const pulse = Math.pow(1 - conductor.phase(), 3);   // 1 sur le temps, décroît jusqu'au suivant
+    comboChip.style.transform = combo >= 5 ? `scale(${1 + 0.07 * pulse})` : '';
+
+    invuln = Math.max(0, invuln - dt);
+    const loseLife = () => { combo = 0; if (invuln > 0) return; lives--; invuln = 1.2; hurt = 1.2; updateHud(); if (lives <= 0) gameOver(); };
+    const hit = (msg, p, colors) => { sfx.bump(); popText(msg, p, true); burst(p, colors); loseLife(); updateHud(); };
+
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
       if (it.state === 'fly') {
-        it.t += dt / it.dur;
-        const t = Math.min(it.t, 1);
+        const tt = (now - conductor.timeOf(it.S)) / it.dur + 1, t = clamp(tt, 0, 1);
         it.m.position.lerpVectors(it.start, it.end, t);
         it.m.position.y += Math.sin(Math.PI * t) * it.h;
         it.m.rotation.x += it.spin * dt;
         it.m.rotation.z += it.spin * 0.5 * dt;
         it.marker.material.opacity = Math.min(0.9, t * 1.4);
-        it.marker.scale.setScalar(1.4 - t * 0.5);
+        it.marker.scale.setScalar((1.4 - t * 0.5) * (1 + 0.15 * pulse));
+        if (it.hoop) { it.hoop.scale.setScalar(Math.min(1, t * 2) * (1 + 0.1 * pulse)); }
         const inLane = Math.abs(dogX - it.end.x) < 0.9;
-        if (it.kind !== 'boot') it.marker.material.color.setHex(inLane ? 0x5bff8a : it.kind === 'gold' ? 0xffc93c : 0xffffff);
-        if (it.t >= 1) {
-          scene.remove(it.marker);
-          if (inLane && playing) {
+        if (it.kind !== 'boot') it.marker.material.color.setHex(inLane ? 0x5bff8a : it.col);
+        if (tt >= 1) {
+          scene.remove(it.marker); if (it.hoop) scene.remove(it.hoop);
+          const reached = inLane && (!it.high || dogY > 0.55);
+          if (reached && playing) {
             scene.remove(it.m); items.splice(i, 1);
             const p = it.m.position.clone();
             if (it.kind === 'boot') {
-              lives--; combo = 0; hurt = 1; sfx.boot();
-              popText('Beurk !', p, true); burst(p, [0x6b4a2e, 0x8d8fa3]);
+              hit('Beurk !', p, [0x6b4a2e, 0x8d8fa3]);
             } else {
               combo++;
-              const pts = it.kind === 'gold' ? 50 : 10 * (1 + Math.floor(combo / 5));
-              score += pts; catchAnim = 1;
+              const pts = it.kind === 'gold' ? 50 : (it.high ? 20 : 10) * (1 + Math.floor(combo / 5));
+              score += pts; catchAnim = 1; holdFish(it.kind);
               it.kind === 'gold' ? sfx.gold() : sfx.catch();
               popText('+' + pts, p, false);
               burst(p, it.kind === 'gold' ? [0xffc93c, 0xffffff, 0xff8c42] : [0x4cc9f0, 0xffffff, 0xffc93c]);
+              if (combo % 25 === 0 && lives < 3) { lives++; sfx.heart(); setTimeout(() => popText('+♥', dog.position.clone().setY(2.6), false), 250); }
+              updateHud();
             }
-            updateHud();
-            if (lives <= 0) gameOver();
             continue;
           }
           it.state = 'fall'; it.vy = -3;
-          if (it.kind !== 'boot' && playing) {
-            lives--; combo = 0; sfx.miss();
-            popText('Raté !', it.m.position, true);
-            updateHud();
-            if (lives <= 0) gameOver();
+          if (it.kind !== 'boot' && !it.bonus && playing) {
+            sfx.miss();
+            popText(it.high && inLane ? 'Saute !' : 'Raté !', it.m.position, true);
+            loseLife(); updateHud();
           }
         }
+      } else if (it.state === 'obstacle') {
+        const x = LANES[it.lane], arrive = conductor.timeOf(it.S), tLand = arrive - LAND_Z / speed;
+        if (it.kind !== 'puddle' && now < tLand) {
+          const u = clamp((now - (tLand - OB_FLIGHT)) / OB_FLIGHT, 0, 1);
+          it.m.position.set(lerp(it.start.x, x, u), lerp(it.start.y, 0, u) + Math.sin(Math.PI * u) * 2.2, lerp(it.start.z, -LAND_Z, u));
+          it.m.rotation.x = u * Math.PI * 2 * it.dir;   // un tour complet : retombe à plat
+        } else {
+          it.m.position.set(x, 0, -(arrive - now) * speed);
+          it.m.rotation.x = 0;
+          if (!it.landed && it.kind !== 'puddle') { it.landed = true; burst(it.m.position.clone().setY(0.2), [0xd8d8e4, 0xc98b4f], 6); }
+          if (it.kind === 'tire') { it.m.userData.roll.rotation.x -= speed * dt / 0.5; it.m.position.y = Math.abs(Math.sin(now * 9)) * 0.08; }
+        }
+        if (!it.checked && now >= arrive) {
+          it.checked = true;
+          const inLane = Math.abs(dogX - x) < 0.85, clear = { crate: 0.55, tire: 0.5, puddle: 0.12 }[it.kind];
+          const p = new THREE.Vector3(x, 0.6, 0);
+          if (inLane && playing && dogY < clear) {
+            if (it.kind === 'puddle') hit('Splash !', p, [0x3a86ff, 0xbfeaff, 0x4cc9f0]);
+            else { scene.remove(it.m); items.splice(i, 1); hit('Aïe !', p, it.kind === 'crate' ? [0xc98b4f, 0x8a5a3b] : [0x2b2b3a, 0xd9dbe8]); continue; }
+          } else if (inLane && playing) {
+            score += 5; sfx.hop(); popText('Hop ! +5', p.setY(1.8), false); updateHud();
+          }
+        }
+        if (it.m.position.z > 12) { scene.remove(it.m); items.splice(i, 1); }
+      } else if (it.state === 'free') {
+        it.m.position.z += speed * dt;
+        if (it.m.position.y > 0) it.m.position.y = Math.max(0, it.m.position.y - 6 * dt);
+        if (it.m.position.z > 12) { scene.remove(it.m); items.splice(i, 1); }
       } else {
         // Le poisson raté tombe, frétille et part en arrière avec la route
         if (it.m.position.y > 0.25) { it.vy -= 25 * dt; it.m.position.y = Math.max(0.25, it.m.position.y + it.vy * dt); }
@@ -860,6 +1069,9 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
         if (it.m.position.z > 12) { scene.remove(it.m); items.splice(i, 1); }
       }
     }
+
+    streakMat.opacity = playing ? clamp((speedMul() - 1.12) * 1.4, 0, 0.55) : 0;
+    if (streakMat.opacity > 0) streaks.forEach(st => { st.position.z += speed * 1.6 * dt; if (st.position.z > 8) resetStreak(st, false); });
 
     for (let i = sparks.length - 1; i >= 0; i--) {
       const s = sparks[i], u = s.userData;
