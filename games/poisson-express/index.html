@@ -183,7 +183,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
       <b>Tactile</b><span>◀ ▶ pour changer de voie, JUMP pour sauter</span>
       <b>M</b><span>couper / remettre la musique</span>
     </div>
-    <div class="legend"><span>🐟 +10</span><span>⭐ doré +50</span><span>⭕ cerceau : sauter</span><span>👢 botte : éviter</span><span>📦 caisse, pneu, flaque : esquiver ou sauter</span><span>🟣 bonus : 🧲 aimant, 🦴 ralenti, 🛡️ bouclier</span><span>🕊️ mouette : sois sur la voie avant elle</span></div>
+    <div class="legend"><span>🧱 briques du livreur : change de voie</span><span>🐟 +10</span><span>⭐ doré +50</span><span>⭕ cerceau : sauter</span><span>👢 botte : éviter</span><span>📦 caisse, pneu, flaque : esquiver ou sauter</span><span>🟣 bonus : 🧲 aimant, 🦴 ralenti, 🛡️ bouclier</span><span>🕊️ mouette : sois sur la voie avant elle</span></div>
     <p style="font-size:14px">5 niveaux, un par paysage. Attrape le nombre de poissons demandé pour passer au suivant. Les cœurs reviennent à chaque niveau.</p>
     <h2 class="board-title">Choisis ton niveau</h2>
     <div class="levels" id="levels"></div>
@@ -670,7 +670,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   add(new THREE.Mesh(new THREE.BoxGeometry(2.7, 0.85, 0.05), toon(0xbfeaff)), 0, 2.95, -4.09);
   [-1, 1].forEach(s => {
     add(new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.72, 1.15), toon(0xbfeaff)), s * 1.51, 3.0, -3.3);
-    add(new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.08, 0.35), toon(0xfff6e3)), s * 1.62, 1.75, -3.6);   // poignée
+    if (s < 0) add(new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.08, 0.35), toon(0xfff6e3)), s * 1.62, 1.75, -3.6);   // poignée (côté passager : sur la portière mobile)
     add(mesh(new THREE.BoxGeometry(0.55, 0.06, 0.06), 0x2b2b3a, 0.1), s * 1.78, 2.75, -3.95);            // bras de rétro
     add(mesh(new THREE.BoxGeometry(0.12, 0.5, 0.32), 0x2b2b3a, 0.06), s * 2.06, 2.75, -3.95);            // rétroviseur
     add(new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.4, 0.24), toon(0xbfeaff)), s * 2.06, 2.75, -3.78);
@@ -712,6 +712,60 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   const truckShadow = new THREE.Mesh(new THREE.PlaneGeometry(3.8, 8.6), shadowMatTruck());
   truckShadow.rotation.x = -Math.PI / 2; truckShadow.position.set(0, 0.025, -1.4); truck.add(truckShadow);
   function shadowMatTruck() { return new THREE.MeshBasicMaterial({ color: 0x1d1b33, transparent: true, opacity: 0.2 }); }
+
+  // ---------- L'acolyte du livreur : portière passager, marchepied, échelle ----------
+  const doorPivot = new THREE.Group(); doorPivot.position.set(1.62, 1.6, -3.98); tbody.add(doorPivot);
+  const doorPanel = mesh(new THREE.BoxGeometry(0.07, 1.25, 1.0), CAB, 0.03); doorPanel.position.set(0.035, 0, 0.5); doorPivot.add(doorPanel);
+  const doorHandle = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.08, 0.35), toon(0xfff6e3)); doorHandle.position.set(0.06, 0.15, 0.62); doorPivot.add(doorHandle);
+  add(mesh(new THREE.BoxGeometry(0.34, 0.07, 2.8), 0x8d8fa3, 0.05), 1.86, 0.8, -3.0);                    // marchepied
+  [-2.28, -1.72].forEach(z => add(mesh(new THREE.CylinderGeometry(0.045, 0.045, 2.9, 6), 0xd9dbe8, 0.12), W / 2 + 0.12, Y0 + H / 2 + 0.15, z));
+  for (let y = Y0 + 0.25; y < Y0 + H + 0.3; y += 0.36) add(new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.56), toon(0xd9dbe8)), W / 2 + 0.12, y, -2.0);
+
+  const SKIN = 0xffcfa0;
+  const guy = new THREE.Group();   // pieds à l'origine, regarde vers +z (la caméra)
+  const guyLegs = [-1, 1].map(sd => {
+    const piv = new THREE.Group(); piv.position.set(sd * 0.11, 0.48, 0);
+    const lg = mesh(new THREE.CylinderGeometry(0.09, 0.08, 0.44, 8), 0x2a4d8f, 0.1); lg.position.y = -0.22; piv.add(lg);
+    const boot = mesh(new THREE.BoxGeometry(0.16, 0.1, 0.24), 0x2b2b3a, 0.1); boot.position.set(0, -0.45, 0.04); piv.add(boot);
+    guy.add(piv); return piv;
+  });
+  const torso = mesh(new THREE.CylinderGeometry(0.2, 0.24, 0.58, 10), 0x3a86ff, 0.07); torso.position.y = 0.76; guy.add(torso);
+  const bib = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.2, 0.04), toon(0x2a6ad8)); bib.position.set(0, 0.86, 0.21); guy.add(bib);
+  const guyHead = mesh(sphere(0.2, 12), SKIN, 0.08); guyHead.position.y = 1.24; guy.add(guyHead);
+  const cap = mesh(new THREE.SphereGeometry(0.21, 12, 6, 0, Math.PI * 2, 0, Math.PI / 2), 0xff6b5b, 0.08); cap.position.y = 1.29; guy.add(cap);
+  const brim = mesh(new THREE.BoxGeometry(0.3, 0.04, 0.2), 0xff6b5b, 0.1); brim.position.set(0, 1.3, 0.2); guy.add(brim);
+  const stache = mesh(new THREE.BoxGeometry(0.2, 0.06, 0.05), 0x4a2a1a, 0.1); stache.position.set(0, 1.18, 0.19); guy.add(stache);
+  const gnose = mesh(sphere(0.06, 8), 0xf2a37a, 0.1); gnose.position.set(0, 1.23, 0.21); guy.add(gnose);
+  [-1, 1].forEach(sd => { const e = new THREE.Mesh(sphere(0.03, 6), toon(0x1d1b33)); e.position.set(sd * 0.07, 1.3, 0.18); guy.add(e); });
+  const guyArms = [-1, 1].map(sd => {
+    const piv = new THREE.Group(); piv.position.set(sd * 0.27, 0.98, 0);
+    const arm = mesh(new THREE.CylinderGeometry(0.06, 0.055, 0.42, 8), 0xfff6e3, 0.1); arm.position.y = -0.21; piv.add(arm);
+    const hand = mesh(sphere(0.07, 8), SKIN, 0.1); hand.position.y = -0.45; piv.add(hand);
+    guy.add(piv); return piv;
+  });
+  const heldBrick = mesh(new THREE.BoxGeometry(0.3, 0.14, 0.14), 0xc0392b, 0.08); heldBrick.position.set(0, -0.52, 0.05); guyArms[1].add(heldBrick);
+  guy.scale.setScalar(1.25); guy.visible = false; tbody.add(guy);
+  const brickPile = new THREE.Group();
+  [[0, 0.07, 0], [0.32, 0.07, 0], [0.16, 0.21, 0], [0.05, 0.07, 0.17]].forEach(([x, y, z]) => { const b = mesh(new THREE.BoxGeometry(0.3, 0.14, 0.14), 0xc0392b, 0.08); b.position.set(x, y, z); brickPile.add(b); });
+  brickPile.position.set(-0.6, Y0 + H, 1.4); brickPile.visible = false; tbody.add(brickPile);
+
+  // Trajet : sortie par la portière → marchepied → échelle → toit, à l'arrière
+  const CREW_PATH = [
+    { st: 'door',  dur: 0.5 },
+    { st: 'out',   dur: 0.5, from: [1.95, 0.85, -3.45], to: [1.95, 0.85, -3.45] },
+    { st: 'side',  dur: 0.8, from: [1.95, 0.85, -3.45], to: [2.08, 0.85, -2.0], face: Math.PI / 2 },
+    { st: 'climb', dur: 1.3, from: [2.08, 0.85, -2.0],  to: [2.08, Y0 + H, -2.0], face: -Math.PI / 2 },
+    { st: 'roof',  dur: 1.1, from: [1.3, Y0 + H, -2.0],  to: [0.35, Y0 + H, 1.55], face: 0 },
+  ];
+  const crew = { phase: -1, t: 0, nextThrow: 0, windup: -1, target: null };
+  const bricks = [];
+  function crewReset() {
+    crew.phase = -1; crew.t = 0; crew.windup = -1; crew.target = null;
+    guy.visible = false; brickPile.visible = false; heldBrick.visible = true; doorPivot.rotation.y = 0;
+    bricks.forEach(b => { scene.remove(b.m); if (b.marker) scene.remove(b.marker); }); bricks.length = 0;
+  }
+  const v3 = (a) => new THREE.Vector3(a[0], a[1], a[2]);
+  const handPos = new THREE.Vector3();
 
   truck.position.set(0, 0, -15);
   scene.add(truck);
@@ -1024,6 +1078,9 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     hop: () => { beep(700, 1100, 0.07, 'triangle', 0.08); setTimeout(() => beep(900, 1400, 0.07, 'triangle', 0.08), 50); },
     bump: () => { beep(160, 45, 0.25, 'square', 0.12); beep(90, 40, 0.3, 'sawtooth', 0.08); },
     heart: () => [0, 90, 180].forEach((d, i) => setTimeout(() => beep(523 * Math.pow(1.26, i), 523 * Math.pow(1.26, i) * 1.01, 0.12, 'triangle', 0.1), d)),
+    whoosh: () => beep(900, 250, 0.25, 'triangle', 0.05),
+    bonk: () => { beep(240, 90, 0.2, 'square', 0.13); setTimeout(() => beep(1200, 1180, 0.15, 'triangle', 0.06), 40); },
+    crack: () => beep(500, 120, 0.12, 'sawtooth', 0.06),
     woof: () => { beep(380, 180, 0.09, 'sawtooth', 0.08); setTimeout(() => beep(360, 160, 0.12, 'sawtooth', 0.08), 130); },
   };
 
@@ -1238,7 +1295,115 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   function setLane(n) { if (state === 'play' && n !== laneTarget) { laneTarget = n; hop = 1; } }
   function jump() { if (state === 'play') jumpBuf = 0.15; }   // petite mémoire : un appui juste avant l'atterrissage compte
 
+  function hurtRex(msg, p, colors) {
+    sfx.bump(); popText(msg, p, true); burst(p, colors);
+    combo = 0;
+    if (invuln > 0) { updateHud(); return; }
+    if (powers.shield) { powers.shield = false; invuln = 1.2; sfx.power(); popText('Bouclier !', dog.position.clone().setY(2.6), false); return; }
+    lives--; livesLost++; invuln = 1.2; hurt = 1.2; updateHud();
+    if (lives <= 0) gameOver();
+  }
+
+  // ---------- L'acolyte : apparition en milieu de niveau, puis lancers de briques ----------
+  const CREW_INTERVAL = () => [0, 3.4, 2.8, 2.3, 1.9][Math.min(level, 5) - 1] || 1.8;
+  function laneBusy(lane, tLand) {
+    // jamais une brique sur une voie où tombe un poisson à ce moment : le joueur aurait un choix impossible
+    for (const it of items) if (it.state === 'fly' && it.kind !== 'boot' && it.lane === lane && Math.abs(conductor.timeOf(it.S) - tLand) < 0.35) return true;
+    for (const ev of plan) if (ev.type === 'throw' && ev.kind !== 'boot' && ev.lane === lane && Math.abs(conductor.timeOf(ev.S) - tLand) < 0.35) return true;
+    return false;
+  }
+  function updateCrew(dt, now) {
+    const playing = state === 'play';
+    if (crew.phase === -1) {
+      if (playing && level >= 2 && caught >= Math.ceil(LEVEL_GOAL(level) * 0.4)) {
+        crew.phase = 0; crew.t = 0;
+        showBanner({ name: 'Le livreur s’en mêle !', sub: 'Esquive ses briques : change de voie' });
+      }
+    } else if (crew.phase < CREW_PATH.length) {
+      const step = CREW_PATH[crew.phase];
+      crew.t += dt;
+      const u = clamp(crew.t / step.dur, 0, 1);
+      if (step.st === 'door') doorPivot.rotation.y = u * 1.25;
+      else {
+        guy.visible = true;
+        guy.position.lerpVectors(v3(step.from), v3(step.to), u);
+        if (step.st === 'out') guy.position.x = lerp(1.7, 1.95, u);
+        if (step.face !== undefined) guy.rotation.y = step.face;
+        const moving = step.st !== 'out';
+        guyLegs.forEach((l, k) => l.rotation.x = moving ? Math.sin(time * 14 + k * Math.PI) * 0.6 : 0);
+        guyArms.forEach((a, k) => a.rotation.x = step.st === 'climb' ? -2.6 + Math.sin(time * 10 + k * Math.PI) * 0.4 : Math.sin(time * 14 + k * Math.PI) * -0.5);
+        if (step.st === 'roof') doorPivot.rotation.y = (1 - u) * 1.25;
+      }
+      if (u >= 1) {
+        crew.phase++; crew.t = 0;
+        if (crew.phase === CREW_PATH.length) { brickPile.visible = true; guy.rotation.y = 0; crew.nextThrow = now + 1.2; sfx.gull(); }
+      }
+    } else {
+      // Sur le toit : il vise la voie de Rex et lance sur un temps
+      guyLegs.forEach(l => l.rotation.x = 0);
+      guyArms[0].rotation.x = Math.sin(time * 3) * 0.15 - 0.2;
+      if (crew.windup < 0) {
+        guyArms[1].rotation.x = -0.3 + Math.sin(time * 3) * 0.1;
+        guy.rotation.y = Math.atan2(dogX - (truck.position.x + guy.position.x), 15) * 0.8;
+        if (playing && now >= crew.nextThrow) {
+          // premier créneau libre (sur une croche, 1 à 2,4 s devant) pour la voie où se trouve Rex
+          const sd = conductor.stepDur(), S0 = Math.ceil((conductor.stepNow() + 1.0 / sd) / 2) * 2, lane = laneTarget;
+          let S = null;
+          for (let j = 0; j < 12 && S === null; j++) { const c = S0 + 2 * j; if (conductor.timeOf(c) - now > 2.4) break; if (!laneBusy(lane, conductor.timeOf(c))) S = c; }
+          if (S === null) crew.nextThrow = now + 0.4;
+          else { crew.windup = 0; crew.target = { lane, S }; heldBrick.visible = true; }
+        }
+      } else {
+        crew.windup += dt;
+        guyArms[1].rotation.x = crew.windup < 0.3 ? lerp(-0.3, -2.8, crew.windup / 0.3) : lerp(-2.8, 0.6, Math.min(1, (crew.windup - 0.3) / 0.12));
+        if (crew.windup >= 0.36) {
+          heldBrick.getWorldPosition(handPos);
+          launchBrick(handPos, crew.target, now);
+          heldBrick.visible = false; crew.windup = -1;
+          crew.nextThrow = now + CREW_INTERVAL() * (0.85 + Math.random() * 0.3);
+          setTimeout(() => { heldBrick.visible = true; }, 500);
+        }
+      }
+    }
+    for (let i = bricks.length - 1; i >= 0; i--) {
+      const b = bricks[i];
+      if (b.state === 'fly') {
+        const land = conductor.timeOf(b.S), t = clamp((now - b.t0) / Math.max(0.05, land - b.t0), 0, 1);
+        b.m.position.lerpVectors(b.start, b.end, t);
+        b.m.position.y += Math.sin(Math.PI * t) * 2.6;
+        b.m.rotation.x += dt * 9; b.m.rotation.z += dt * 5;
+        b.marker.material.opacity = 0.35 + 0.55 * Math.abs(Math.sin(time * 14));
+        b.marker.scale.setScalar(1.25 - t * 0.35);
+        if (t >= 1 || !playing) {
+          scene.remove(b.marker);
+          if (playing && Math.abs(dogX - b.end.x) < 0.9) {
+            scene.remove(b.m); bricks.splice(i, 1);
+            sfx.bonk(); hurtRex('Bonk !', b.end.clone(), [0xc0392b, 0xe5584a, 0xffc93c]);
+            continue;
+          }
+          b.state = 'fall'; b.vy = -4;
+        }
+      } else {
+        b.vy -= 25 * dt; b.m.position.y += b.vy * dt; b.m.position.z += 14 * speedMul() * dt;
+        if (b.m.position.y <= 0.1) {
+          sfx.crack(); burst(b.m.position.clone().setY(0.2), [0xc0392b, 0xe5584a, 0x8a5a3b], 10);
+          scene.remove(b.m); bricks.splice(i, 1);
+        }
+      }
+    }
+  }
+  function launchBrick(from, target, now) {
+    const m = mesh(new THREE.BoxGeometry(0.45, 0.2, 0.22), 0xc0392b, 0.08);
+    m.position.copy(from); scene.add(m);
+    const end = new THREE.Vector3(LANES[target.lane], 1.5, -0.6);
+    const marker = new THREE.Mesh(markerGeo, new THREE.MeshBasicMaterial({ color: 0xff2d4b, transparent: true, opacity: 0.8 }));
+    marker.rotation.x = -Math.PI / 2; marker.position.set(end.x, 0.05, end.z); scene.add(marker);
+    bricks.push({ m, marker, start: from.clone(), end, S: target.S, t0: now, state: 'fly', vy: 0 });
+    sfx.whoosh();
+  }
+
   function clearField() {
+    crewReset();
     items.forEach(it => { scene.remove(it.m); if (it.marker) scene.remove(it.marker); if (it.hoop) scene.remove(it.hoop); });
     items.length = 0; plan.length = 0; planEnd = null; lastWave = -1;
     combo = 0; laneTarget = 1; dogX = LANES[1]; hurt = 0;
@@ -1584,6 +1749,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     if (streakMat.opacity > 0) streaks.forEach(st => { st.position.z += speed * 1.6 * dt; if (st.position.z > 8) resetStreak(st, false); });
 
     updateGulls(dt, now);
+    updateCrew(dt, now);
 
     for (let i = sparks.length - 1; i >= 0; i--) {
       const s = sparks[i], u = s.userData;
