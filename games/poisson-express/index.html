@@ -18,6 +18,15 @@
 html, body { height: 100%; margin: 0; overflow: hidden; background: var(--sky); color: var(--ink); font-family: var(--font-body); }
 body { touch-action: none; user-select: none; -webkit-user-select: none; }
 [hidden] { display: none !important; }
+#splat { position: fixed; inset: 0; z-index: 4; pointer-events: none; opacity: 0;
+  background:
+    radial-gradient(circle at 28% 34%, rgba(246,252,236,.97) 0 9%, rgba(225,240,205,.9) 12%, transparent 13%),
+    radial-gradient(circle at 36% 44%, rgba(246,252,236,.95) 0 5%, transparent 6%),
+    radial-gradient(ellipse 9% 15% at 66% 30%, rgba(246,252,236,.96) 0 70%, transparent 72%),
+    radial-gradient(circle at 60% 62%, rgba(240,250,226,.9) 0 7%, transparent 8%),
+    radial-gradient(circle at 22% 66%, rgba(240,250,226,.85) 0 4%, transparent 5%); }
+#splat.on { opacity: 1; }
+#splat.fade { transition: opacity 1.4s ease-in; }
 #scene { position: fixed; inset: 0; display: block; width: 100%; height: 100%; }
 
 .hud {
@@ -152,6 +161,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
 .board-title { margin: 0; font-family: var(--font-display); font-weight: 400; font-size: 20px; letter-spacing: .03em; }
 </style>
 
+<div id="splat" aria-hidden="true"></div>
 <canvas id="scene" aria-label="Jeu 3D : un chien court derrière un camion et attrape des poissons"></canvas>
 
 <div class="hud">
@@ -183,7 +193,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
       <b>Tactile</b><span>◀ ▶ pour changer de voie, JUMP pour sauter</span>
       <b>M</b><span>couper / remettre la musique</span>
     </div>
-    <div class="legend"><span>🧱 briques du livreur : change de voie</span><span>🐟 +10</span><span>⭐ doré +50</span><span>⭕ cerceau : sauter</span><span>👢 botte : éviter</span><span>📦 caisse, pneu, flaque : esquiver ou sauter</span><span>🟣 bonus : 🧲 aimant, 🦴 ralenti, 🛡️ bouclier</span><span>🕊️ mouette : sois sur la voie avant elle</span></div>
+    <div class="legend"><span>🧱 briques du livreur : change de voie</span><span>🐟 +10</span><span>⭐ doré +50</span><span>⭕ cerceau : sauter</span><span>👢 botte : éviter</span><span>📦 caisse, pneu, flaque : esquiver ou sauter</span><span>🟣 bonus : 🧲 aimant, 🦴 ralenti, 🛡️ bouclier</span><span>🕊️ mouette : sois sur la voie avant elle… et gare à ses fientes</span></div>
     <p style="font-size:14px">5 niveaux, un par paysage. Attrape le nombre de poissons demandé pour passer au suivant. Les cœurs reviennent à chaque niveau.</p>
     <h2 class="board-title">Choisis ton niveau</h2>
     <div class="levels" id="levels"></div>
@@ -232,6 +242,23 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.outputEncoding = THREE.sRGBEncoding;
 
+  // Monde courbé (technique des « runners ») : chaque sommet est décalé latéralement et verticalement selon le
+  // CARRÉ de sa distance devant Rex. La logique de jeu reste en ligne droite (collisions, calage musical) ;
+  // seul l'affichage tourne et ondule. Patch global : tous les matériaux en héritent.
+  const bendU = { value: new THREE.Vector2(0, 0) };
+  THREE.Material.prototype.onBeforeCompile = function (shader) {
+    shader.uniforms.uBend = bendU;
+    shader.vertexShader = 'uniform vec2 uBend;\n' + shader.vertexShader.replace('#include <project_vertex>', [
+      'vec4 mvPosition = modelMatrix * vec4( transformed, 1.0 );',
+      'float bendD = max( 0.0, -mvPosition.z - 2.0 );',
+      'mvPosition.xy += uBend * bendD * bendD;',
+      'mvPosition = viewMatrix * mvPosition;',
+      'gl_Position = projectionMatrix * mvPosition;'].join('\n'));
+  };
+  // Le ciel lointain (Piton, soleil, étoiles) ne se courbe pas : à 150 m le décalage serait énorme
+  const noBend = m => { m.onBeforeCompile = function () { /* ciel */ }; return m; };
+  let roadDist = 0;
+
   const SKY = 0x9fdcff;
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(SKY);
@@ -277,15 +304,15 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   const LOOP = 90;          // longueur de recyclage du décor
   const Z_FAR = -75;
 
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshToonMaterial({ color: 0x7ccf6b, gradientMap }));
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200, 1, 100), new THREE.MeshToonMaterial({ color: 0x7ccf6b, gradientMap }));   // subdivisé : le monde se courbe par sommet
   ground.rotation.x = -Math.PI / 2;
   scene.add(ground);
 
-  const road = new THREE.Mesh(new THREE.PlaneGeometry(ROAD_W, 200), toon(0x5b5f73));
+  const road = new THREE.Mesh(new THREE.PlaneGeometry(ROAD_W, 200, 1, 100), toon(0x5b5f73));
   road.rotation.x = -Math.PI / 2; road.position.y = 0.01;
   scene.add(road);
   [-1, 1].forEach(s => {
-    const curb = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.18, 200), toon(0xfff6e3));
+    const curb = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.18, 200, 1, 1, 100), toon(0xfff6e3));
     curb.position.set(s * (ROAD_W / 2 + 0.17), 0.09, 0);
     scene.add(curb);
   });
@@ -427,8 +454,8 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   // Mer + plage/quai à gauche : la côte « arrive » de l'horizon et repart de la même façon
   const seaMat = new THREE.MeshToonMaterial({ color: 0x3a86ff, gradientMap });
   const sandMat = new THREE.MeshToonMaterial({ color: 0xf3d9a4, gradientMap });
-  const sea = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), seaMat); sea.rotation.x = -Math.PI / 2; sea.position.set(-38.6, 0.025, 0); sea.scale.x = 60;
-  const sand = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), sandMat); sand.rotation.x = -Math.PI / 2; sand.position.set(-6.68, 0.02, 0); sand.scale.x = 3.66;
+  const sea = new THREE.Mesh(new THREE.PlaneGeometry(1, 1, 1, 96), seaMat); sea.rotation.x = -Math.PI / 2; sea.position.set(-38.6, 0.025, 0); sea.scale.x = 60;
+  const sand = new THREE.Mesh(new THREE.PlaneGeometry(1, 1, 1, 96), sandMat); sand.rotation.x = -Math.PI / 2; sand.position.set(-6.68, 0.02, 0); sand.scale.x = 3.66;
   scene.add(sea, sand);
   let seaActive = false, seaNear = 40, seaFar = 40;
   const inSea = z => z < seaNear && z > seaFar;
@@ -441,16 +468,16 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
 
   // Le Piton au loin (Littoral), soleil couchant, étoiles
   const mountain = new THREE.Group();
-  const mtMat = new THREE.MeshToonMaterial({ color: 0x5d8f6a, gradientMap, fog: false });
+  const mtMat = noBend(new THREE.MeshToonMaterial({ color: 0x5d8f6a, gradientMap, fog: false }));
   const mt = new THREE.Mesh(new THREE.ConeGeometry(48, 34, 8), mtMat); mt.position.y = 17; mountain.add(mt);
-  const mtTop = new THREE.Mesh(new THREE.ConeGeometry(14, 9, 8), new THREE.MeshToonMaterial({ color: 0x6b4a3a, gradientMap, fog: false })); mtTop.position.y = 30; mountain.add(mtTop);
+  const mtTop = new THREE.Mesh(new THREE.ConeGeometry(14, 9, 8), noBend(new THREE.MeshToonMaterial({ color: 0x6b4a3a, gradientMap, fog: false }))); mtTop.position.y = 30; mountain.add(mtTop);
   mountain.position.set(40, -2, -150); mountain.scale.y = 0.001; scene.add(mountain);
-  const sunDisc = new THREE.Mesh(sphere(8, 20), new THREE.MeshBasicMaterial({ color: 0xffd36b, fog: false, transparent: true, opacity: 0 }));
+  const sunDisc = new THREE.Mesh(sphere(8, 20), noBend(new THREE.MeshBasicMaterial({ color: 0xffd36b, fog: false, transparent: true, opacity: 0 })));
   sunDisc.position.set(-35, 9, -160); scene.add(sunDisc);
   const starGeo = new THREE.BufferGeometry(); const starPos = [];
   for (let i = 0; i < 260; i++) { const a = Math.random() * Math.PI - Math.PI, el = 0.12 + Math.random() * 1.2; starPos.push(Math.cos(a) * Math.cos(el) * 150, Math.sin(el) * 150, Math.sin(a) * Math.cos(el) * 150 - 20); }
   starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPos, 3));
-  const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 1.4, fog: false, transparent: true, opacity: 0 }));
+  const stars = new THREE.Points(starGeo, noBend(new THREE.PointsMaterial({ color: 0xffffff, size: 1.4, fog: false, transparent: true, opacity: 0 })));
   scene.add(stars);
 
   // Objet de décor selon la zone et le côté (à gauche : quai/plage quand la côte est là)
@@ -501,7 +528,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   function setZone(z, banner = true) {
     zoneIdx = z;
     const Z = ZONES[z];
-    if (Z.coast && !seaActive) { seaActive = true; seaNear = -85; seaFar = -3000; }
+    if (Z.coast && !seaActive) { seaActive = true; seaNear = -85; seaFar = -160; }   // -160 : au-delà du brouillard, subdivision fine
     if (!Z.coast && seaActive) { seaActive = false; seaFar = -85; }
     if (banner) showBanner(Z);
   }
@@ -888,32 +915,46 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   function planWave() {
     const sd = conductor.stepDur(), nowS = conductor.stepNow(), speed = worldSpeed();
     const pool = WAVES.map((w, i) => i).filter(i => waveLevel(WAVES[i].min) <= Math.min(level, 5) && i !== lastWave);
-    // Plus le score monte, plus on pioche dans les vagues récentes (les plus dures)
-    const k = Math.min(pool.length - 1, Math.floor(Math.pow(Math.random(), level >= 3 ? 0.6 : 1) * pool.length));
+    // Vague dont la difficulté vise ~80 % de réussite pour CE joueur, modulée par le cycle tension/détente
+    const phase = TENSION[tensionIdx++ % TENSION.length], release = phase < 0;
+    const target = theta - 1.386 + phase, e = sd * 2;
+    const weights = pool.map(i => Math.exp(-Math.pow(waveD(WAVES[i], e) - target, 2) / 0.35) + 0.02);
+    let r = Math.random() * weights.reduce((a, b) => a + b, 0), k = 0;
+    while (k < pool.length - 1 && (r -= weights[k]) > 0) k++;
     const wi = pool[k]; lastWave = wi;
+    let goldDone = !release;
     const w = WAVES[wi], mirror = Math.random() < 0.5;
     const lanes = w.n.map(n => mirror ? 3 - n[1] : n[1]);
     const lo = Math.min(...lanes), hi = Math.max(...lanes);
     const shift = -lo + Math.floor(Math.random() * (3 - hi + lo + 1));
-    const gap = [10, 7, 5, 4, 3][Math.min(level, 5) - 1];       // repos entre deux vagues, en croches
+    const gap = Math.max(2, [10, 7, 5, 4, 3][Math.min(level, 5) - 1] + Math.round(2 * assist) + (release ? 2 : 0));   // repos, en croches
     const base = Math.ceil(Math.max(planEnd + gap * 2, nowS + 3.0 / sd) / 4) * 4;   // départ sur un temps
     let maxOff = 0;
     w.n.forEach((n, j) => {
       let code = n[2];
       const bonus = code.endsWith('!'); code = code.replace('!', '');
-      if (code === 'f' && Math.random() < 0.06) code = 'g';
+      if (code === 'f' && (Math.random() < 0.06 || (!goldDone && !bonus))) { code = 'g'; goldDone = true; }   // la détente offre un doré
       let power = null;
-      if (code === 'f' && !bonus && level >= 2 && S_OK_POWER(base) && Math.random() < 0.07) { power = ['magnet', 'bone', 'shield'][Math.floor(Math.random() * 3)]; lastPowerS = base; }
+      if (code === 'f' && !bonus && level >= 2 && S_OK_POWER(base) && Math.random() < 0.07 * (1 + 2 * helpA())) {
+        const kinds = assist > 0.4 ? ['magnet', 'shield'] : ['magnet', 'bone', 'shield'];   // secours discret quand ça décroche
+        power = kinds[Math.floor(Math.random() * kinds.length)]; lastPowerS = base;
+      }
       const S = base + n[0] * 2, lane = lanes[j] + shift;
       maxOff = Math.max(maxOff, n[0]);
       const ev = { S, lane, bonus };
       if ('ctp'.includes(code)) {
-        ev.type = 'obstacle'; ev.kind = { c: 'crate', t: 'tire', p: 'puddle' }[code];
+        ev.type = 'obstacle'; ev.kind = { c: 'crate', t: 'tire', p: 'puddle' }[code]; ev.d = code === 'p' ? 0.4 : 1.0;
         ev.lead = code === 'p' ? 40 / speed : LAND_Z / speed + OB_FLIGHT;
       } else {
         ev.type = 'throw'; ev.kind = power || (code === 'g' ? 'gold' : code === 'b' ? 'boot' : 'fish');
         if (power) ev.bonus = true;
         ev.high = code === 'H'; ev.dur = flightTime(); ev.lead = ev.dur;
+        if (ev.kind === 'boot') ev.d = 0.3;
+        else if (!ev.bonus) {
+          const dtS = lastPlanS === null ? 2 : (S - lastPlanS) * sd;
+          ev.d = noteD(Math.abs(lane - lastPlanLane), dtS) + (ev.high ? 0.6 : 0);
+          lastPlanLane = lane; lastPlanS = S;
+        }
       }
       plan.push(ev);
     });
@@ -930,11 +971,11 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     marker.rotation.x = -Math.PI / 2; marker.position.set(end.x, 0.045, end.z); scene.add(marker);
     let hoop = null;
     if (ev.high) { hoop = mesh(hoopGeo, 0x4cc9f0, 0.15); hoop.position.copy(end); hoop.scale.setScalar(0.01); scene.add(hoop); }
-    const it = { m, marker, hoop, col, kind: ev.kind, high: ev.high, bonus: ev.bonus, lane: ev.lane, start, end,
+    const it = { d: ev.d || 0, m, marker, hoop, col, kind: ev.kind, high: ev.high, bonus: ev.bonus, lane: ev.lane, start, end,
       S: ev.S, dur: ev.dur, h: ev.high ? 1.8 : 3.2 + Math.random() * 1.2, state: 'fly', vy: 0, spin: (Math.random() - 0.5) * 12 };
     items.push(it);
     // Mouette : vise un poisson ordinaire, au port, sur le littoral et au coucher du soleil
-    if (state === 'play' && ZONES[zoneIdx].gulls && !gulls.some(gl => gl.state === 'dive') && (ev.kind === 'fish' || ev.kind === 'gold') && !ev.high && !ev.bonus && Math.random() < 0.22) sendGull(it);
+    if (state === 'play' && ZONES[zoneIdx].gulls && !gulls.some(gl => gl.state === 'dive') && (ev.kind === 'fish' || ev.kind === 'gold') && !ev.high && !ev.bonus && Math.random() < 0.22 * hazardMul()) sendGull(it);
   }
 
   function makeObstacle(kind) {
@@ -959,7 +1000,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     const m = makeObstacle(ev.kind); scene.add(m);
     const start = new THREE.Vector3(truck.position.x + (Math.random() - 0.5) * 1.5, 1.8, truck.position.z + 2.6);
     m.position.copy(start);
-    items.push({ m, kind: ev.kind, lane: ev.lane, state: 'obstacle', S: ev.S, start, checked: false, dir: Math.random() < 0.5 ? -1 : 1 });
+    items.push({ d: ev.d || 1, m, kind: ev.kind, lane: ev.lane, state: 'obstacle', S: ev.S, start, checked: false, dir: Math.random() < 0.5 ? -1 : 1 });
   }
 
   // ---------- Particules et textes ----------
@@ -1010,7 +1051,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     const start = new THREE.Vector3(side * 16, 8, -9);
     g.position.copy(start); scene.add(g);
     const gl = { g, it, side, start, state: 'dive', vel: new THREE.Vector3(), last: start.clone() };
-    it.gull = gl; gulls.push(gl);
+    it.gull = gl; gulls.push(gl); it.d += 0.5;
     sfx.gull();
   }
   const bez = (a, b, c, u, out) => out.set(
@@ -1043,7 +1084,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
             scene.remove(it.m); g.add(it.m); it.m.position.set(0, -0.3, -0.1); it.m.rotation.set(0, Math.PI / 2, 0); it.m.scale.multiplyScalar(0.75);
             const idx = items.indexOf(it); if (idx >= 0) items.splice(idx, 1);
             sfx.gull(); sfx.miss(); popText('Volé !', p, true);
-            if (state === 'play') { gullStole(); }
+            if (state === 'play') { skill(it.d, 0); gullStole(); }
           }
         }
       } else {
@@ -1081,6 +1122,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     whoosh: () => beep(900, 250, 0.25, 'triangle', 0.05),
     bonk: () => { beep(240, 90, 0.2, 'square', 0.13); setTimeout(() => beep(1200, 1180, 0.15, 'triangle', 0.06), 40); },
     crack: () => beep(500, 120, 0.12, 'sawtooth', 0.06),
+    splat: () => { beep(180, 60, 0.18, 'sawtooth', 0.1); setTimeout(() => beep(120, 50, 0.2, 'square', 0.06), 60); },
     woof: () => { beep(380, 180, 0.09, 'sawtooth', 0.08); setTimeout(() => beep(360, 160, 0.12, 'sawtooth', 0.08), 130); },
   };
 
@@ -1201,6 +1243,42 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   const LEVEL_SPEED = n => n <= 5 ? [0.85, 1.0, 1.15, 1.3, 1.5][n - 1] : Math.min(2.1, 1.5 + 0.1 * (n - 5));
   const LEVEL_GOAL = n => n <= 5 ? [10, 14, 18, 22, 25][n - 1] : 25;
   const speedMul = () => LEVEL_SPEED(level) * (powers.slow > 0 ? 0.65 : 1);
+
+  // ---------- Flow : difficulté adaptative invisible ----------
+  // θ = compétence estimée (Elo / Rasch) : P(réussite) = σ(θ − d), d = difficulté de l'événement.
+  // assist ∈ [−1, 1] : > 0 le jeu aide, < 0 il durcit. Cible ≈ 80 % de réussite. Le tempo et la vitesse
+  // (ce que le joueur perçoit) restent fixes par niveau ; seuls des leviers invisibles bougent.
+  let theta = 2.0, assist = 0, rate = 0.8, nEv = 0, laneChangedAt = -1e9, tensionIdx = 0, lastPlanLane = 1, lastPlanS = null, lastCheer = -9;
+  const sig = x => 1 / (1 + Math.exp(-x));
+  const noteD = (dl, dt) => Math.log(1 + dl / Math.max(0.2, dt)) * 1.4 - 0.3;   // vitesse latérale exigée, en voies/s
+  function skill(d, sc) {
+    const pr = sig(theta - d);
+    const K = (nEv < 12 ? 0.3 : 0.14) * (sc < pr ? 1.5 : 1);
+    theta = Math.max(-1, Math.min(6, theta + K * (sc - pr))); nEv++;
+    rate += (Math.min(1, sc) - rate) * 0.15;
+    // aide vite quand ça décroche, durcit lentement ; bande morte 70–90 %
+    if (rate < 0.7) assist = Math.min(1, assist + 0.22);
+    else if (rate > 0.9 && sc >= 0.95) assist = Math.max(-1, assist - 0.05);
+    else if (assist > 0) assist = Math.max(0, assist - 0.03);
+    else if (assist < 0 && rate < 0.85) assist = Math.min(0, assist + 0.03);
+    return pr;
+  }
+  const helpA = () => Math.max(0, assist), hardA = () => Math.max(0, -assist);
+  const catchTol = () => 0.9 + 0.35 * helpA() - 0.1 * hardA();          // largeur de la zone de prise
+  const hazardMul = () => (1 - 0.6 * helpA()) * (1 + 0.4 * hardA());     // fréquence mouettes, briques, fientes
+  const TENSION = [0, 0.35, 0.8, -0.9];                                   // montée, montée, pic, détente
+  function waveD(w, e) {
+    let d = 0, extra = 0, prev = null;
+    for (const n of w.n) {
+      const c = n[2].replace('!', '');
+      if ('ctp'.includes(c)) { extra = Math.max(extra, c === 'p' ? 0.2 : 0.5); continue; }
+      if (c === 'b') { extra = Math.max(extra, 0.3); continue; }
+      if (c === 'H') extra = Math.max(extra, 0.6);
+      if (prev && n[0] > prev[0]) d = Math.max(d, noteD(Math.abs(n[1] - prev[1]), (n[0] - prev[0]) * e));
+      prev = n;
+    }
+    return d + extra + (w.n.length > 3 ? 0.2 : 0);
+  }
   let levelStars = [];
   try { levelStars = JSON.parse(localStorage.getItem('poisson-express-stars') || '[]').map(n => +n || 0).slice(0, 5); } catch (e) { levelStars = []; }
   const unlocked = () => Math.min(5, levelStars.filter(n => n > 0).length + 1);
@@ -1256,7 +1334,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
       li.append(n, sc); ol.appendChild(li);
     });
   }
-  const flightTime = () => Math.max(0.95, 1.75 / speedMul());
+  const flightTime = () => Math.max(0.95, 1.75 / speedMul()) * (1 + 0.15 * assist);
   const worldSpeed = () => 14 * speedMul();
   function bpmNow() { return Math.min(168, 136 + (speedMul() - 1) * 26); }   // la musique accélère avec le jeu
 
@@ -1290,9 +1368,9 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   function moveLane(d) {
     if (state !== 'play') return;
     const n = Math.max(0, Math.min(3, laneTarget + d));
-    if (n !== laneTarget) { laneTarget = n; hop = 1; }
+    if (n !== laneTarget) { laneTarget = n; hop = 1; laneChangedAt = conductor.now(); }
   }
-  function setLane(n) { if (state === 'play' && n !== laneTarget) { laneTarget = n; hop = 1; } }
+  function setLane(n) { if (state === 'play' && n !== laneTarget) { laneTarget = n; hop = 1; laneChangedAt = conductor.now(); } }
   function jump() { if (state === 'play') jumpBuf = 0.15; }   // petite mémoire : un appui juste avant l'atterrissage compte
 
   function hurtRex(msg, p, colors) {
@@ -1360,7 +1438,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
           heldBrick.getWorldPosition(handPos);
           launchBrick(handPos, crew.target, now);
           heldBrick.visible = false; crew.windup = -1;
-          crew.nextThrow = now + CREW_INTERVAL() * (0.85 + Math.random() * 0.3);
+          crew.nextThrow = now + CREW_INTERVAL() * (0.85 + Math.random() * 0.3) / hazardMul();
           setTimeout(() => { heldBrick.visible = true; }, 500);
         }
       }
@@ -1376,7 +1454,9 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
         b.marker.scale.setScalar(1.25 - t * 0.35);
         if (t >= 1 || !playing) {
           scene.remove(b.marker);
-          if (playing && Math.abs(dogX - b.end.x) < 0.9) {
+          const bHit = playing && Math.abs(dogX - b.end.x) < 0.9 - 0.15 * helpA();
+          if (playing) skill(1.0, bHit ? 0 : 1);
+          if (bHit) {
             scene.remove(b.m); bricks.splice(i, 1);
             sfx.bonk(); hurtRex('Bonk !', b.end.clone(), [0xc0392b, 0xe5584a, 0xffc93c]);
             continue;
@@ -1392,6 +1472,68 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
       }
     }
   }
+  // ---------- La mouette qui fiente : elle survole la route et vise Rex (pas de cœur perdu, mais la vue est salie) ----------
+  const poops = [], splats = [];
+  let poopTimer = 9;
+  const blobGeo = new THREE.SphereGeometry(0.17, 10, 8), splatGeo = new THREE.CircleGeometry(0.45, 14);
+  function spawnPoop(now) {
+    const sd = conductor.stepDur(), S0 = Math.ceil((conductor.stepNow() + 1.9 / sd) / 2) * 2, lane = laneTarget;
+    let S = null;
+    for (let j = 0; j < 8 && S === null; j++) { const c = S0 + 2 * j; if (conductor.timeOf(c) - now > 2.9) break; if (!laneBusy(lane, conductor.timeOf(c))) S = c; }
+    if (S === null) return false;
+    const side = Math.random() < 0.5 ? -1 : 1, g = makeGull(); g.scale.setScalar(1.1); scene.add(g);
+    g.rotation.y = side * Math.PI / 2;
+    const marker = new THREE.Mesh(markerGeo, new THREE.MeshBasicMaterial({ color: 0xeaffd6, transparent: true, opacity: 0.8 }));
+    marker.rotation.x = -Math.PI / 2; marker.position.set(LANES[lane], 0.05, -0.6); scene.add(marker);
+    poops.push({ g, side, lane, S, marker, blob: null, done: false });
+    sfx.gull();
+    return true;
+  }
+  function splatScreen() {
+    const el = $('splat');
+    el.classList.remove('fade'); el.classList.add('on');
+    clearTimeout(splatScreen.t); splatScreen.t = setTimeout(() => { el.classList.add('fade'); el.classList.remove('on'); }, 1300);
+  }
+  function updatePoops(dt, now, speed) {
+    const playing = state === 'play';
+    if (playing && ZONES[zoneIdx].gulls && level >= 2) {
+      poopTimer -= dt;
+      if (poopTimer <= 0) poopTimer = spawnPoop(now) ? (9 + Math.random() * 6) / hazardMul() : 1;
+    }
+    for (let i = poops.length - 1; i >= 0; i--) {
+      const pp = poops[i], x = LANES[pp.lane], tL = conductor.timeOf(pp.S), tDrop = tL - 0.7;
+      pp.g.position.set(x - pp.side * (now - tDrop) * 13, 5.2, -0.6);
+      pp.g.userData.wings.forEach((w, k) => w.rotation.z = Math.sin(time * 12) * 0.6 * (k ? -1 : 1));
+      if (!pp.done) {
+        pp.marker.material.opacity = 0.35 + 0.5 * Math.abs(Math.sin(time * 12));
+        if (!pp.blob && now >= tDrop) {
+          pp.blob = new THREE.Mesh(blobGeo, toon(0xf4fbe8)); pp.blob.scale.set(1, 1.3, 1); scene.add(pp.blob); sfx.whoosh();
+        }
+        if (pp.blob) pp.blob.position.set(x, lerp(5.0, 1.6, Math.pow(clamp((now - tDrop) / 0.7, 0, 1), 2)), -0.6);
+        if (now >= tL || !playing) {
+          pp.done = true; scene.remove(pp.marker);
+          if (pp.blob) scene.remove(pp.blob);
+          if (playing && Math.abs(dogX - x) < 0.9 - 0.15 * helpA()) {
+            skill(0.9, 0); combo = 0; updateHud();
+            sfx.splat(); popText('Beurk !', new THREE.Vector3(x, 2.4, 0), true); splatScreen();
+            burst(new THREE.Vector3(x, 1.8, -0.4), [0xf4fbe8, 0xd9f0c0, 0xffffff], 10);
+          } else {
+            if (playing) skill(0.9, 1);
+            const sp = new THREE.Mesh(splatGeo, new THREE.MeshBasicMaterial({ color: 0xf4fbe8 }));
+            sp.rotation.x = -Math.PI / 2; sp.scale.set(1, 1.3, 1); sp.position.set(x + (Math.random() - 0.5) * 0.4, 0.05, -0.6);
+            scene.add(sp); splats.push(sp); sfx.crack();
+          }
+        }
+      }
+      if (Math.abs(pp.g.position.x) > 30) { scene.remove(pp.g); if (!pp.done) scene.remove(pp.marker); poops.splice(i, 1); }
+    }
+    for (let i = splats.length - 1; i >= 0; i--) { splats[i].position.z += speed * dt; if (splats[i].position.z > 12) { scene.remove(splats[i]); splats.splice(i, 1); } }
+  }
+  function clearPoops() {
+    poops.forEach(pp => { scene.remove(pp.g); scene.remove(pp.marker); if (pp.blob) scene.remove(pp.blob); }); poops.length = 0;
+    splats.forEach(sp => scene.remove(sp)); splats.length = 0; poopTimer = 9;
+  }
+
   function launchBrick(from, target, now) {
     const m = mesh(new THREE.BoxGeometry(0.45, 0.2, 0.22), 0xc0392b, 0.08);
     m.position.copy(from); scene.add(m);
@@ -1403,7 +1545,8 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   }
 
   function clearField() {
-    crewReset();
+    crewReset(); clearPoops();
+    lastPlanLane = 1; lastPlanS = null; tensionIdx = 0;
     items.forEach(it => { scene.remove(it.m); if (it.marker) scene.remove(it.marker); if (it.hoop) scene.remove(it.hoop); });
     items.length = 0; plan.length = 0; planEnd = null; lastWave = -1;
     combo = 0; laneTarget = 1; dogX = LANES[1]; hurt = 0;
@@ -1429,7 +1572,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     const Z = ZONES[zn];
     showBanner({ name: `Niveau ${n} · ${Z.name}`, sub: `Attrape ${LEVEL_GOAL(n)} poissons${n > 5 ? ' (mode expert)' : ''}` });
   }
-  function start() { score = 0; runEntry = null; startLevel(selLevel); }
+  function start() { score = 0; runEntry = null; theta = 0.5 * theta + 1.0; assist = 0; rate = 0.8; nEv = Math.min(nEv, 6); startLevel(selLevel); }
   function retry() { score = levelStartScore; startLevel(level); }
   function toMenu() {
     ['over', 'clear'].forEach(id => $(id).hidden = true);
@@ -1574,6 +1717,11 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     updatePowers();
     bubble.visible = powers.shield; bubble.scale.setScalar(1 + Math.sin(time * 6) * 0.04);
     updateEnv(dt, speed);
+    // Virages et bosses : somme de deux sinus lents de la distance parcourue (périodes ~25 s et ~70 s)
+    roadDist += speed * dt;
+    const bx = 0.0042 * (Math.sin(roadDist * 0.016) * 0.65 + Math.sin(roadDist * 0.0061 + 1.3) * 0.45);
+    const by = 0.0022 * (Math.sin(roadDist * 0.012 + 2.1) * 0.7 + Math.sin(roadDist * 0.0045) * 0.4);
+    bendU.value.set(bx, by);
     for (let i = 0; i < scrollers.length; i++) {
       const o = scrollers[i];
       o.position.z += speed * dt;
@@ -1675,24 +1823,34 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
         it.marker.material.opacity = Math.min(0.9, t * 1.4);
         it.marker.scale.setScalar((1.4 - t * 0.5) * (1 + 0.15 * pulse));
         if (it.hoop) { it.hoop.scale.setScalar(Math.min(1, t * 2) * (1 + 0.1 * pulse)); }
-        const inLane = Math.abs(dogX - it.end.x) < 0.9;
+        const inLane = Math.abs(dogX - it.end.x) < catchTol();
         if (it.kind !== 'boot') it.marker.material.color.setHex(inLane ? 0x5bff8a : it.col);
         if (tt >= 1) {
           scene.remove(it.marker); if (it.hoop) scene.remove(it.hoop);
-          const reached = inLane && (!it.high || dogY > 0.55);
+          const reached = inLane && (!it.high || dogY > 0.55 - 0.25 * helpA());
           if (reached && playing) {
             scene.remove(it.m); items.splice(i, 1);
             const p = it.m.position.clone();
             if (it.kind === 'boot') {
+              skill(it.d, 0);
               hit('Beurk !', p, [0x6b4a2e, 0x8d8fa3]);
             } else if (POWERS[it.kind]) {
               activatePower(it.kind, p);
             } else {
               combo++;
-              const pts = it.kind === 'gold' ? 50 : (it.high ? 20 : 10) * (1 + Math.floor(combo / 5));
+              let pts = it.kind === 'gold' ? 50 : (it.high ? 20 : 10) * (1 + Math.floor(combo / 5));
+              // Marge = temps restant quand Rex est arrivé sur la voie ; une prise « juste à temps » compte moins
+              const tL = conductor.timeOf(it.S), margin = laneChangedAt < tL - it.dur ? it.dur : tL - laneChangedAt;
+              const pr = it.bonus ? 1 : skill(it.d, 0.75 + 0.25 * clamp(margin / 0.5, 0, 1));
+              // Félicitations relatives au niveau RÉEL : l'inattendu marque, l'attendu ne dit rien
+              let cheer = null;
+              if (Math.abs(dogX - it.end.x) >= 0.9) cheer = 'De justesse !';
+              else if (pr < 0.55 && time - lastCheer > 2.5) { cheer = 'Incroyable !'; pts += 20; }
+              else if (pr < 0.7 && margin < 0.3 && time - lastCheer > 4) cheer = 'Super !';
               score += pts; catchAnim = 1; holdFish(it.kind);
               it.kind === 'gold' ? sfx.gold() : sfx.catch();
               popText('+' + pts, p, false);
+              if (cheer) { lastCheer = time; setTimeout(() => popText(cheer, p.clone().setY(p.y + 1.2), false), 180); if (cheer !== 'De justesse !') sfx.hop(); }
               burst(p, it.kind === 'gold' ? [0xffc93c, 0xffffff, 0xff8c42] : [0x4cc9f0, 0xffffff, 0xffc93c]);
               if (combo % 25 === 0 && lives < 3) { lives++; sfx.heart(); setTimeout(() => popText('+♥', dog.position.clone().setY(2.6), false), 250); }
               caught++;
@@ -1702,7 +1860,9 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
             continue;
           }
           it.state = 'fall'; it.vy = -3;
+          if (it.kind === 'boot' && playing && Math.abs(dogX - it.end.x) < 1.6) skill(it.d, 1);
           if (it.kind !== 'boot' && !it.bonus && playing) {
+            skill(it.d, 0);
             sfx.miss();
             popText(it.high && inLane ? 'Saute !' : 'Raté !', it.m.position, true);
             loseLife(); updateHud();
@@ -1722,8 +1882,9 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
         }
         if (!it.checked && now >= arrive) {
           it.checked = true;
-          const inLane = Math.abs(dogX - x) < 0.85, clear = { crate: 0.55, tire: 0.5, puddle: 0.12 }[it.kind];
+          const inLane = Math.abs(dogX - x) < 0.85 - 0.15 * helpA(), clear = { crate: 0.55, tire: 0.5, puddle: 0.12 }[it.kind] - 0.15 * helpA();
           const p = new THREE.Vector3(x, 0.6, 0);
+          if (playing && Math.abs(dogX - x) < 1.6) skill(it.d, inLane && dogY < clear ? 0 : 1);
           if (inLane && playing && dogY < clear) {
             if (it.kind === 'puddle') hit('Splash !', p, [0x3a86ff, 0xbfeaff, 0x4cc9f0]);
             else { scene.remove(it.m); items.splice(i, 1); hit('Aïe !', p, it.kind === 'crate' ? [0xc98b4f, 0x8a5a3b] : [0x2b2b3a, 0xd9dbe8]); continue; }
@@ -1750,6 +1911,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
 
     updateGulls(dt, now);
     updateCrew(dt, now);
+    updatePoops(dt, now, speed);
 
     for (let i = sparks.length - 1; i >= 0; i--) {
       const s = sparks[i], u = s.userData;
@@ -1761,7 +1923,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
 
     // Légère secousse caméra quand Rex se fait mal
     camera.position.x = !reduceMotion && hurt > 0 ? Math.sin(time * 60) * hurt * 0.15 : dogX * 0.15;
-    camera.lookAt(camTarget.x + dogX * 0.2, camTarget.y, camTarget.z);
+    camera.lookAt(camTarget.x + dogX * 0.2 + bendU.value.x * 260, camTarget.y + bendU.value.y * 160, camTarget.z);   // le regard suit le virage
 
     renderer.render(scene, camera);
   }
