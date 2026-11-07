@@ -802,8 +802,9 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   scene.add(truck);
 
   const puffs = [];
+  const ringGeo = new THREE.TorusGeometry(0.2, 0.075, 6, 14);
   function puff() {
-    const p = new THREE.Mesh(sphere(0.22, 8), toon(0xe4e4ee));
+    const p = mesh(ringGeo, 0xe4e4ee, 0.14); p.rotation.z = Math.random() * Math.PI;
     p.position.set(truck.position.x + 1.42 + 0.3, tbody.position.y + 3.8, truck.position.z - 2.28);
     p.userData = { life: 0 };
     scene.add(p); puffs.push(p);
@@ -824,6 +825,9 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     const ear = mesh(sphere(0.2, 12), DARK, 0.07); ear.scale.set(0.45, 1.3, 0.8); ear.position.set(s * 0.06, -0.22, 0);
     piv.add(ear); headPivot.add(piv); ears.push(piv);
   });
+  // Langue qui pend sur le côté et flotte au vent (ressort)
+  const tonguePivot = new THREE.Group(); tonguePivot.position.set(0.17, -0.24, -0.5); tonguePivot.rotation.y = 0.5; headPivot.add(tonguePivot);
+  const tongue = mesh(new THREE.BoxGeometry(0.13, 0.035, 0.34), 0xff7aa2, 0.12); tongue.position.z = 0.17; tonguePivot.add(tongue);
   const collar = mesh(new THREE.TorusGeometry(0.36, 0.08, 8, 20), 0xff3d5a, 0.05);
   collar.position.set(0, 1.25, -0.5); collar.rotation.x = Math.PI / 2.6; dog.add(collar);
   const tag = mesh(sphere(0.08, 8), 0xffc93c, 0.1); tag.position.set(0, 1.0, -0.72); dog.add(tag);
@@ -869,7 +873,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     }
     const col = forcedColor || (kind === 'gold' ? 0xffc93c : [0xff8c42, 0x4cc9f0, 0xf15bb5][Math.floor(Math.random() * 3)]);
     const b = mesh(sphere(0.3, 14), col, 0.08); b.scale.set(0.55, 0.85, 1.5); g.add(b);
-    const t = mesh(new THREE.ConeGeometry(0.25, 0.35, 4), col, 0.1);
+    const t = mesh(new THREE.ConeGeometry(0.25, 0.35, 4), col, 0.1); g.userData.tail = t;
     t.rotation.x = -Math.PI / 2; t.position.z = 0.55; t.scale.set(0.3, 1, 1); g.add(t);
     const fin = mesh(new THREE.ConeGeometry(0.12, 0.25, 4), col, 0.1); fin.position.set(0, 0.3, 0); fin.scale.set(0.3, 1, 1); g.add(fin);
     [-1, 1].forEach(s => {
@@ -1011,14 +1015,89 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   // ---------- Particules et textes ----------
   const sparks = [];
   const sparkGeo = new THREE.IcosahedronGeometry(0.1, 0);
+  // ---------- Boîte à outils cartoon : ressorts, courbes à rebond, étoiles, nuages, onomatopées ----------
+  // Ressort amorti (Euler semi-implicite) : st = {x, v}. Sous-amorti → dépassement puis retour = mouvement « élastique »
+  function spring(st, target, k, c, dt) { st.v += (k * (target - st.x) - c * st.v) * dt; st.x += st.v * dt; return st.x; }
+  const S = (x) => ({ x, v: 0 });
+  const easeOutBack = (x) => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+  const fxParts = [];
+  const starTexCache = {};
+  function starTex(hex) {
+    if (starTexCache[hex]) return starTexCache[hex];
+    const c = document.createElement('canvas'); c.width = c.height = 64;
+    const g = c.getContext('2d');
+    g.beginPath();
+    for (let i = 0; i < 10; i++) { const r = i % 2 ? 13 : 28, a = -Math.PI / 2 + i * Math.PI / 5; g.lineTo(32 + Math.cos(a) * r, 32 + Math.sin(a) * r); }
+    g.closePath(); g.lineJoin = 'round'; g.lineWidth = 5; g.strokeStyle = '#1d1b33'; g.stroke();
+    g.fillStyle = '#' + hex.toString(16).padStart(6, '0'); g.fill();
+    const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding;
+    return (starTexCache[hex] = t);
+  }
+  const puffGeo = sphere(1, 10);
+  function cartoonPuff(pos, r, color = 0xf4f4fa, vy = 0.6) {
+    const m = mesh(puffGeo, color, 0.12); m.position.copy(pos); m.scale.setScalar(0.001); scene.add(m);
+    fxParts.push({ o: m, kind: 'puff', v: new THREE.Vector3((Math.random() - 0.5) * 0.6, vy, (Math.random() - 0.5) * 0.4), life: 0.45, max: 0.45, size: r });
+  }
   function burst(pos, colors, n = 14) {
-    for (let i = 0; i < n; i++) {
-      const s = new THREE.Mesh(sparkGeo, toon(colors[i % colors.length]));
-      s.position.copy(pos);
-      s.userData = { v: new THREE.Vector3((Math.random() - 0.5) * 6, Math.random() * 5 + 2, (Math.random() - 0.5) * 6), life: 0.7 };
-      scene.add(s); sparks.push(s);
+    const ns = Math.max(4, Math.round(n * 0.6));
+    for (let i = 0; i < ns; i++) {
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: starTex(colors[i % colors.length]), transparent: true, depthWrite: false }));
+      const sz = 0.26 + Math.random() * 0.24;
+      sp.position.copy(pos); sp.scale.set(0.001, 0.001, 1); scene.add(sp);
+      fxParts.push({ o: sp, kind: 'star', v: new THREE.Vector3((Math.random() - 0.5) * 6, Math.random() * 5 + 2.5, (Math.random() - 0.5) * 4), life: 0.75, max: 0.75, size: sz, spin: (Math.random() - 0.5) * 12 });
+    }
+    for (let i = 0; i < 3; i++) cartoonPuff(pos.clone().add(new THREE.Vector3((Math.random() - 0.5) * 0.7, (Math.random() - 0.3) * 0.4, (Math.random() - 0.5) * 0.4)), 0.22 + Math.random() * 0.15);
+  }
+  // Onomatopées de BD : éclat dentelé + lettrage, en sprite dans la scène
+  const onoTexCache = {};
+  function onoTex(text, bad) {
+    const key = text + (bad ? '!' : '');
+    if (onoTexCache[key]) return onoTexCache[key];
+    return (onoTexCache[key] = canvasTex(320, 180, (g, w, h) => {
+      g.beginPath();
+      for (let i = 0; i < 18; i++) { const r = i % 2 ? 0.74 : 1, a = (i / 18) * Math.PI * 2; g.lineTo(w / 2 + Math.cos(a) * (w / 2 - 8) * r, h / 2 + Math.sin(a) * (h / 2 - 8) * r); }
+      g.closePath(); g.lineJoin = 'round'; g.lineWidth = 8; g.strokeStyle = '#1d1b33';
+      g.fillStyle = bad ? '#ff6b5b' : '#ffc93c'; g.fill(); g.stroke();
+      inkText(g, text, w / 2, h / 2 + 4, text.length > 7 ? 48 : 60, '#fff6e3', 11);
+    }));
+  }
+  function onoma(text, pos, bad = false, size = 1) {
+    const mat = new THREE.SpriteMaterial({ map: onoTex(text, bad), transparent: true, depthTest: false, depthWrite: false });
+    mat.rotation = (Math.random() - 0.5) * 0.5;
+    const sp = new THREE.Sprite(mat); sp.renderOrder = 20;
+    sp.position.copy(pos).add(new THREE.Vector3(0, 1.0, 0.6)); sp.scale.set(0.001, 0.001, 1); scene.add(sp);
+    fxParts.push({ o: sp, kind: 'ono', v: new THREE.Vector3(0, 0.5, 0), life: 0.8, max: 0.8, size: 1.5 * size });
+  }
+  function updateFx(dt) {
+    for (let i = fxParts.length - 1; i >= 0; i--) {
+      const p = fxParts[i]; p.life -= dt;
+      const u = 1 - p.life / p.max;
+      if (p.kind === 'star') {
+        p.v.y -= 12 * dt; p.o.position.addScaledVector(p.v, dt); p.o.material.rotation += p.spin * dt;
+        const s = p.size * (u < 0.15 ? easeOutBack(u / 0.15) : 1 - Math.max(0, (u - 0.6) / 0.4));
+        p.o.scale.set(Math.max(0.001, s), Math.max(0.001, s), 1);
+      } else if (p.kind === 'puff') {
+        p.o.position.addScaledVector(p.v, dt);
+        const s = p.size * (u < 0.35 ? easeOutBack(u / 0.35) : 1 - (u - 0.35) / 0.65);
+        p.o.scale.setScalar(Math.max(0.001, s));
+      } else {
+        p.o.position.addScaledVector(p.v, dt);
+        const s = p.size * (u < 0.2 ? easeOutBack(u / 0.2) : u > 0.78 ? 1 - (u - 0.78) / 0.22 : 1 + Math.sin(u * 40) * 0.02);
+        p.o.scale.set(Math.max(0.001, s), Math.max(0.001, s * 0.5625), 1);
+      }
+      if (p.life <= 0) { scene.remove(p.o); if (p.o.isSprite) p.o.material.dispose(); fxParts.splice(i, 1); }
     }
   }
+  // Étoiles qui tournent autour de la tête de Rex après un choc
+  const dizzyStars = [0, 1, 2].map(() => { const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: starTex(0xffd23f), transparent: true, depthWrite: false })); sp.scale.set(0.32, 0.32, 1); sp.visible = false; scene.add(sp); return sp; });
+  let dizzy = 0, freeze = 0;
+  const shakeX = S(0), shakeY = S(0), fovS = S(0);
+  function impact(strength = 1, stars = true) {
+    freeze = Math.max(freeze, 0.075 * strength);                      // arrêt sur image (affichage seulement)
+    if (!reduceMotion) { const a = Math.random() * Math.PI * 2; shakeX.v += Math.cos(a) * 9 * strength; shakeY.v += Math.sin(a) * 6 * strength; }
+    if (stars) dizzy = 1.3;
+  }
+
   const tmpV = new THREE.Vector3();
   // Textes flottants : remontés d'environ 15 % de l'écran au-dessus du point 3D, empilés s'ils arrivent ensemble
   let popStack = 0, popStackT = 0;
@@ -1073,7 +1152,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     for (let i = gulls.length - 1; i >= 0; i--) {
       const gl = gulls[i], g = gl.g;
       const flap = gl.state === 'dive' ? 14 : 20;
-      g.userData.wings.forEach((w, k) => w.rotation.z = Math.sin(time * flap) * 0.7 * (k ? -1 : 1));
+      g.userData.wings.forEach((w, k) => w.rotation.z = Math.sin(poseT * flap) * 0.7 * (k ? -1 : 1));
       gl.last.copy(g.position);
       if (gl.state === 'dive') {
         const it = gl.it;
@@ -1087,7 +1166,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
           const p = it.end.clone();
           if (Math.abs(dogX - it.end.x) < 0.9) {           // Rex est déjà là : la mouette a peur
             gl.state = 'flee'; gl.vel.set(gl.side * 7, 9, 1);
-            score += 15; sfx.woof(); popText('Ouaf ! +15', p.clone().setY(2.6), false); updateHud();
+            score += 15; sfx.woof(); popText('+15', p.clone().setY(2.6), false); onoma('OUAF !', p, false, 0.8); updateHud();
           } else {                                          // elle vole le poisson
             gl.state = 'steal'; gl.vel.set(gl.side * 6, 6, -3);
             scene.remove(it.marker); if (it.hoop) scene.remove(it.hoop);
@@ -1244,6 +1323,9 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   let invuln = 0;
   const gullStole = () => { combo = 0; if (invuln > 0) return; if (powers.shield) { powers.shield = false; invuln = 1.2; popText('Bouclier !', dog.position.clone().setY(2.6), false); return; } lives--; livesLost++; invuln = 1.2; hurt = 1.2; updateHud(); if (lives <= 0) gameOver(); };   // après un cœur perdu, 1,2 s sans nouvelle perte (Rex clignote)
   let dogY = 0, dogVY = 0, jumpBuf = 0, squash = 0, gameClock = 0, mouthFish = null, mouthT = 0;
+  // Ressorts de Rex : écrasement vertical, étirement latéral, inclinaison, oreilles, queue, langue
+  const sqS = S(1), latS = S(1), leanS = S(0), earX = [S(0), S(0)], earZ = [S(0), S(0)], tailZ = S(0), tailX = S(0.6), tongX = S(0.3), tongY = S(0.5);
+  let prevDogX = LANES[1], laneKick = 0, celebrate = 0, poseT = 0;
   try { best = parseInt(localStorage.getItem('poisson-express-best') || '0', 10) || 0; } catch (e) {}
 
   const powers = { magnet: 0, slow: 0, shield: false };
@@ -1398,13 +1480,13 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   function moveLane(d) {
     if (state !== 'play') return;
     const n = Math.max(0, Math.min(3, laneTarget + d));
-    if (n !== laneTarget) { laneTarget = n; hop = 1; laneChangedAt = conductor.now(); }
+    if (n !== laneTarget) { laneTarget = n; hop = 1; laneChangedAt = conductor.now(); laneKick = d; }
   }
-  function setLane(n) { if (state === 'play' && n !== laneTarget) { laneTarget = n; hop = 1; laneChangedAt = conductor.now(); } }
+  function setLane(n) { if (state === 'play' && n !== laneTarget) { laneKick = Math.sign(n - laneTarget); laneTarget = n; hop = 1; laneChangedAt = conductor.now(); } }
   function jump() { if (state === 'play') jumpBuf = 0.15; }   // petite mémoire : un appui juste avant l'atterrissage compte
 
   function hurtRex(msg, p, colors) {
-    sfx.bump(); popText(msg, p, true); burst(p, colors);
+    sfx.bump(); onoma(msg.toUpperCase(), p, true); burst(p, colors); impact(1);
     combo = 0;
     if (invuln > 0) { updateHud(); return; }
     if (powers.shield) { powers.shield = false; invuln = 1.2; sfx.power(); popText('Bouclier !', dog.position.clone().setY(2.6), false); return; }
@@ -1438,8 +1520,8 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
         if (step.st === 'out') guy.position.x = lerp(1.7, 1.95, u);
         if (step.face !== undefined) guy.rotation.y = step.face;
         const moving = step.st !== 'out';
-        guyLegs.forEach((l, k) => l.rotation.x = moving ? Math.sin(time * 14 + k * Math.PI) * 0.6 : 0);
-        guyArms.forEach((a, k) => a.rotation.x = step.st === 'climb' ? -2.6 + Math.sin(time * 10 + k * Math.PI) * 0.4 : Math.sin(time * 14 + k * Math.PI) * -0.5);
+        guyLegs.forEach((l, k) => l.rotation.x = moving ? Math.sin(poseT * 14 + k * Math.PI) * 0.6 : 0);
+        guyArms.forEach((a, k) => a.rotation.x = step.st === 'climb' ? -2.6 + Math.sin(poseT * 10 + k * Math.PI) * 0.4 : Math.sin(poseT * 14 + k * Math.PI) * -0.5);
         if (step.st === 'roof') doorPivot.rotation.y = (1 - u) * 1.25;
       }
       if (u >= 1) {
@@ -1449,9 +1531,9 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     } else {
       // Sur le toit : il vise la voie de Rex et lance sur un temps
       guyLegs.forEach(l => l.rotation.x = 0);
-      guyArms[0].rotation.x = Math.sin(time * 3) * 0.15 - 0.2;
+      guyArms[0].rotation.x = Math.sin(poseT * 3) * 0.15 - 0.2;
       if (crew.windup < 0) {
-        guyArms[1].rotation.x = -0.3 + Math.sin(time * 3) * 0.1;
+        guyArms[1].rotation.x = -0.3 + Math.sin(poseT * 3) * 0.1;
         guy.rotation.y = Math.atan2(dogX - (truck.position.x + guy.position.x), 15) * 0.8;
         if (playing && now >= crew.nextThrow) {
           // premier créneau libre (sur une croche, 1 à 2,4 s devant) pour la voie où se trouve Rex
@@ -1533,7 +1615,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     for (let i = poops.length - 1; i >= 0; i--) {
       const pp = poops[i], x = LANES[pp.lane], tL = conductor.timeOf(pp.S), tDrop = tL - 0.7;
       pp.g.position.set(x - pp.side * (now - tDrop) * 13, 5.2, -0.6);
-      pp.g.userData.wings.forEach((w, k) => w.rotation.z = Math.sin(time * 12) * 0.6 * (k ? -1 : 1));
+      pp.g.userData.wings.forEach((w, k) => w.rotation.z = Math.sin(poseT * 12) * 0.6 * (k ? -1 : 1));
       if (!pp.done) {
         pp.marker.material.opacity = 0.35 + 0.5 * Math.abs(Math.sin(time * 12));
         if (!pp.blob && now >= tDrop) {
@@ -1545,7 +1627,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
           if (pp.blob) scene.remove(pp.blob);
           if (playing && Math.abs(dogX - x) < 0.9 - 0.15 * helpA()) {
             skill(0.9, 0); combo = 0; updateHud();
-            sfx.splat(); popText('Beurk !', new THREE.Vector3(x, 2.4, 0), true); splatScreen();
+            sfx.splat(); onoma('SPLOTCH !', new THREE.Vector3(x, 1.6, 0), true); splatScreen(); impact(0.6, false);
             burst(new THREE.Vector3(x, 1.8, -0.4), [0xf4fbe8, 0xd9f0c0, 0xffffff], 10);
           } else {
             if (playing) skill(0.9, 1);
@@ -1631,6 +1713,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   }
   function levelComplete() {
     state = 'clear';
+    celebrate = 1; dogVY = 8.2; dogY = Math.max(dogY, 0.001); sqS.x = 1.4; sqS.v = 0;
     freezeField();
     sfx.win();
     const nStars = livesLost === 0 ? 3 : livesLost <= 2 ? 2 : 1;
@@ -1704,6 +1787,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     else if (actx) actx.resume().then(() => music.resync());
   });
 
+  let camBaseY = 4.6, baseFov = 55;
   function resize() {
     const w = innerWidth, h = innerHeight, a = w / h;
     renderer.setSize(w, h, false);
@@ -1712,6 +1796,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     const back = a < 1 ? (1 - a) * 9 : 0;
     camera.position.set(0, 4.6 + back * 0.45, 7.2 + back);
     camera.fov = a < 1 ? 62 : 55;
+    camBaseY = camera.position.y; baseFov = camera.fov;
     camera.updateProjectionMatrix();
     camera.lookAt(camTarget);
   }
@@ -1735,6 +1820,10 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
   function tick() {
     requestAnimationFrame(tick);
     const dt = Math.min(clock.getDelta(), 0.05);
+    // Arrêt sur image : on garde la même image affichée ; les positions étant calculées depuis l'horloge
+    // musicale, tout repart pile au bon endroit (aucun décalage avec le rythme)
+    if (freeze > 0) { freeze -= dt; renderer.render(scene, camera); return; }
+    poseT = Math.floor((time + dt) * 12) / 12;   // poses des personnages « en deux » : 12 images/s
     time += dt;
     const playing = state === 'play';
     const speed = 14 * (playing ? speedMul() : 0.8);
@@ -1778,41 +1867,81 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     for (let i = puffs.length - 1; i >= 0; i--) {
       const p = puffs[i]; p.userData.life += dt;
       p.position.z += (speed * 0.25) * dt; p.position.y += dt * 0.8;
-      p.scale.setScalar(1 + p.userData.life * 1.2);
-      if (p.userData.life > 1) { scene.remove(p); puffs.splice(i, 1); }
+      const u = p.userData.life;   // l'anneau gonfle puis « éclate » d'un coup
+      p.scale.setScalar(u < 0.8 ? 0.5 + easeOutBack(Math.min(1, u / 0.3)) * 0.5 + u * 1.3 : (1 + 0.8 * 1.3) * (1 - (u - 0.8) / 0.2));
+      p.rotation.z += dt * 1.5;
+      if (u > 1) { scene.remove(p); puffs.splice(i, 1); }
     }
 
     // Chien
     dogX += (LANES[laneTarget] - dogX) * Math.min(1, dt * 16);
-    const lean = (LANES[laneTarget] - dogX) * -0.12;
+    const dogVelX = (dogX - prevDogX) / Math.max(dt, 1e-3); prevDogX = dogX;
     hop = Math.max(0, hop - dt * 4);
-    // Saut : vitesse initiale 7,6 m/s, g = 22 m/s² → 0,69 s en l'air, 1,3 m de hauteur
+    if (laneKick) {   // départ du « dash » : étirement latéral + nuage de poussière derrière
+      latS.x = 1.24; latS.v = 0;
+      for (let k = 0; k < 2; k++) cartoonPuff(new THREE.Vector3(dogX - laneKick * (0.45 + k * 0.25), 0.2, 0.25 + k * 0.2), 0.2, 0xf4f4fa, 0.3);
+      laneKick = 0;
+    }
+    // Saut : vitesse initiale 7,6 m/s, g = 22 m/s² → 0,69 s en l'air, 1,3 m de hauteur. Pas d'anticipation
+    // accroupie (elle retarderait la commande) : on étire au décollage, on écrase à l'atterrissage.
     jumpBuf -= dt;
-    if (jumpBuf > 0 && dogY <= 0 && playing) { dogVY = 7.6; jumpBuf = 0; hop = 0; sfx.jump(); }
+    if (jumpBuf > 0 && dogY <= 0 && playing) {
+      dogVY = 7.6; jumpBuf = 0; hop = 0; sfx.jump();
+      sqS.x = 1.38; sqS.v = 0;
+      cartoonPuff(new THREE.Vector3(dogX - 0.3, 0.15, 0.3), 0.22, 0xf4f4fa, 0.2); cartoonPuff(new THREE.Vector3(dogX + 0.3, 0.15, 0.3), 0.22, 0xf4f4fa, 0.2);
+    }
     if (dogY > 0 || dogVY > 0) {
       dogVY -= 22 * dt; dogY += dogVY * dt;
-      if (dogY <= 0) { dogY = 0; dogVY = 0; squash = 1; }
+      if (dogY <= 0) {
+        dogY = 0; dogVY = 0; squash = 1; sqS.x = 0.62; sqS.v = 0;
+        for (let k = -1; k <= 1; k += 2) cartoonPuff(new THREE.Vector3(dogX + k * 0.5, 0.15, 0.2), 0.26, 0xf4f4fa, 0.25);
+      }
     }
     squash = Math.max(0, squash - dt * 5);
     const air = dogY > 0;
     const runF = 10 + speed * 0.5;
-    const bob = air ? 0 : Math.abs(Math.sin(time * runF * 0.5)) * 0.12 + Math.sin(hop * Math.PI) * 0.5;
+    const bob = air ? 0 : Math.abs(Math.sin(poseT * runF * 0.5)) * 0.12 + Math.sin(hop * Math.PI) * 0.5;
     dog.position.set(dogX, dogY + bob, 0);
-    dog.rotation.z = lean;
+    // Écrasement / étirement à VOLUME CONSTANT : sx·sy·sz = 1
+    const sq = spring(sqS, air ? 1 + clamp(dogVY * 0.03, -0.12, 0.2) : 1, 260, 9, dt);
+    const la = spring(latS, 1, 220, 10, dt);
+    dog.scale.set(la / Math.sqrt(sq), sq / Math.sqrt(la), 1 / Math.sqrt(sq * la));
+    dog.rotation.z = spring(leanS, clamp(-dogVelX * 0.045, -0.45, 0.45), 150, 9, dt);   // inclinaison qui dépasse puis revient
     dog.rotation.y = (LANES[laneTarget] - dogX) * -0.15;
-    dog.rotation.x = air ? clamp(-dogVY * 0.035, -0.3, 0.3) : 0;
-    body.scale.set(0.82 * (1 + 0.15 * squash), 0.72 * (1 - 0.22 * squash), 1.2);
-    legs.forEach((l, i) => l.piv.rotation.x = air ? (i < 2 ? -0.9 : 0.9) : Math.sin(time * runF + l.phase) * 0.9);
+    if (celebrate > 0) {   // fin de niveau : salto arrière
+      celebrate = Math.max(0, celebrate - dt);
+      const pr = clamp((1 - celebrate) / 0.75, 0, 1);
+      dog.rotation.x = -(pr * pr * (3 - 2 * pr)) * Math.PI * 2;
+    } else dog.rotation.x = air ? clamp(-dogVY * 0.035, -0.3, 0.3) : 0;
+    legs.forEach((l, i) => l.piv.rotation.x = air ? (i < 2 ? -0.9 : 0.9) : Math.sin(poseT * runF + l.phase) * 0.9);
     if (mouthFish) {
-      mouthT -= dt; mouthFish.rotation.z = Math.sin(time * 30) * 0.35;
+      mouthT -= dt; mouthFish.rotation.z = Math.sin(poseT * 30) * 0.35;
       if (mouthT <= 0) { headPivot.remove(mouthFish); mouthFish = null; }
     }
-    ears.forEach((e, i) => e.rotation.x = Math.sin(time * runF + i) * 0.4 - 0.2);
-    tailPivot.rotation.z = Math.sin(time * 18) * 0.6;
+    // Oreilles, queue, langue : ils suivent le corps avec retard et dépassent (mouvement de suite)
+    ears.forEach((e, i) => {
+      const tx = air ? (dogVY > 0 ? 0.9 : -0.6) : Math.sin(poseT * runF + i) * 0.35 - 0.2;
+      e.rotation.x = spring(earX[i], tx, 140, 7, dt);
+      e.rotation.z = spring(earZ[i], (i ? -1 : 1) * 0.12 + clamp(dogVelX * 0.07, -0.8, 0.8), 140, 6, dt);
+    });
+    tailPivot.rotation.z = spring(tailZ, Math.sin(poseT * 18) * 0.6 - clamp(dogVelX * 0.09, -0.9, 0.9), 200, 8, dt);
+    tailPivot.rotation.x = spring(tailX, 0.6 + (air ? (dogVY > 0 ? 0.6 : -0.4) : 0), 160, 7, dt);
+    tailPivot.rotation.y = state === 'clear' ? tailPivot.rotation.y + dt * 28 : 0;   // queue en hélice à la victoire
+    tonguePivot.rotation.x = spring(tongX, 0.3 + (air ? -clamp(dogVY * 0.1, -0.7, 0.7) : Math.sin(poseT * runF) * 0.35), 120, 5, dt);
+    tonguePivot.rotation.y = spring(tongY, 0.5 + clamp(dogVelX * 0.05, -0.5, 0.5), 120, 5, dt);
     catchAnim = Math.max(0, catchAnim - dt * 3);
     headPivot.rotation.x = catchAnim * 0.6;
     hurt = Math.max(0, hurt - dt);
     body.material = hurt > 0 && Math.floor(hurt * 12) % 2 ? toon(0xff6b5b) : toon(FUR);
+    // étoiles du choc
+    dizzy = Math.max(0, dizzy - dt);
+    dizzyStars.forEach((st, k) => {
+      st.visible = dizzy > 0;
+      if (!st.visible) return;
+      const a = time * 7 + k * Math.PI * 2 / 3;
+      st.position.set(dog.position.x + Math.cos(a) * 0.5, dog.position.y * 1 + 2.15 + Math.sin(a * 2) * 0.08, -0.55 + Math.sin(a) * 0.35);
+      st.material.rotation = time * 4;
+    });
     dogShadow.position.x = dogX;
     const sc = 1 - dog.position.y * 0.4; dogShadow.scale.set(sc, sc * 1.4, 1);
 
@@ -1835,7 +1964,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     const loseLife = () => { combo = 0; if (invuln > 0) return;
       if (powers.shield) { powers.shield = false; invuln = 1.2; sfx.power(); popText('Bouclier !', dog.position.clone().setY(2.6), false); return; }
       lives--; livesLost++; invuln = 1.2; hurt = 1.2; updateHud(); if (lives <= 0) gameOver(); };
-    const hit = (msg, p, colors) => { sfx.bump(); popText(msg, p, true); burst(p, colors); loseLife(); updateHud(); };
+    const hit = (msg, p, colors) => { sfx.bump(); onoma(msg.toUpperCase(), p, true); burst(p, colors); impact(1); loseLife(); updateHud(); };
 
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
@@ -1850,6 +1979,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
         it.m.position.y += Math.sin(Math.PI * t) * it.h;
         it.m.rotation.x += it.spin * dt;
         it.m.rotation.z += it.spin * 0.5 * dt;
+        if (it.m.userData.tail) it.m.userData.tail.rotation.z = Math.sin(poseT * 22) * 0.7;
         it.marker.material.opacity = Math.min(0.9, t * 1.4);
         it.marker.scale.setScalar((1.4 - t * 0.5) * (1 + 0.15 * pulse));
         if (it.hoop) { it.hoop.scale.setScalar(Math.min(1, t * 2) * (1 + 0.1 * pulse)); }
@@ -1880,6 +2010,8 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
               score += pts; catchAnim = 1; holdFish(it.kind);
               it.kind === 'gold' ? sfx.gold() : sfx.catch();
               popText('+' + pts, p, false);
+              if (it.kind === 'gold') { onoma('MIAM !', p); freeze = Math.max(freeze, 0.045); if (!reduceMotion) fovS.x = -6; }
+              else if (it.high) onoma('CHOMP !', p, false, 0.85);
               if (cheer) { lastCheer = time; setTimeout(() => popText(cheer, p.clone().setY(p.y + 1.2), false), 180); if (cheer !== 'De justesse !') sfx.hop(); }
               burst(p, it.kind === 'gold' ? [0xffc93c, 0xffffff, 0xff8c42] : [0x4cc9f0, 0xffffff, 0xffc93c]);
               if (combo % 25 === 0 && lives < 3) { lives++; sfx.heart(); setTimeout(() => popText('+♥', dog.position.clone().setY(2.6), false), 250); }
@@ -1907,7 +2039,8 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
         } else {
           it.m.position.set(x, 0, -(arrive - now) * speed);
           it.m.rotation.x = 0;
-          if (!it.landed && it.kind !== 'puddle') { it.landed = true; burst(it.m.position.clone().setY(0.2), [0xd8d8e4, 0xc98b4f], 6); }
+          if (!it.landed && it.kind !== 'puddle') { it.landed = true; it.sq = S(0.55); for (let k = -1; k <= 1; k += 2) cartoonPuff(it.m.position.clone().add(new THREE.Vector3(k * 0.5, 0.15, 0)), 0.24); }
+          if (it.sq) { const q = spring(it.sq, 1, 240, 8, dt); it.m.scale.set(1 / Math.sqrt(q), q, 1 / Math.sqrt(q)); }
           if (it.kind === 'tire') { it.m.userData.roll.rotation.x -= speed * dt / 0.5; it.m.position.y = Math.abs(Math.sin(now * 9)) * 0.08; }
         }
         if (!it.checked && now >= arrive) {
@@ -1919,7 +2052,7 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
             if (it.kind === 'puddle') hit('Splash !', p, [0x3a86ff, 0xbfeaff, 0x4cc9f0]);
             else { scene.remove(it.m); items.splice(i, 1); hit('Aïe !', p, it.kind === 'crate' ? [0xc98b4f, 0x8a5a3b] : [0x2b2b3a, 0xd9dbe8]); continue; }
           } else if (inLane && playing) {
-            score += 5; sfx.hop(); popText('Hop ! +5', p.setY(1.8), false); updateHud();
+            score += 5; sfx.hop(); popText('+5', p.clone().setY(1.8), false); onoma('HOP !', p, false, 0.75); updateHud();
           }
         }
         if (it.m.position.z > 12) { scene.remove(it.m); items.splice(i, 1); }
@@ -1943,16 +2076,14 @@ body { touch-action: none; user-select: none; -webkit-user-select: none; }
     updateCrew(dt, now);
     updatePoops(dt, now, speed);
 
-    for (let i = sparks.length - 1; i >= 0; i--) {
-      const s = sparks[i], u = s.userData;
-      u.life -= dt; u.v.y -= 14 * dt;
-      s.position.addScaledVector(u.v, dt);
-      s.scale.setScalar(Math.max(0.01, u.life / 0.7));
-      if (u.life <= 0) { scene.remove(s); sparks.splice(i, 1); }
-    }
+    updateFx(dt);
 
-    // Légère secousse caméra quand Rex se fait mal
-    camera.position.x = !reduceMotion && hurt > 0 ? Math.sin(time * 60) * hurt * 0.15 : dogX * 0.15;
+    // Secousse amortie (ressort) et coup de zoom sur les poissons dorés
+    spring(shakeX, 0, 420, 14, dt); spring(shakeY, 0, 420, 14, dt);
+    camera.position.x = dogX * 0.15 + shakeX.x * 0.12;
+    camera.position.y = camBaseY + shakeY.x * 0.12;
+    const fv = spring(fovS, 0, 160, 10, dt);
+    if (Math.abs(fv) > 0.01 || camera.fov !== baseFov) { camera.fov = baseFov + fv; camera.updateProjectionMatrix(); }
     camera.lookAt(camTarget.x + dogX * 0.2 + bendU.value.x * 260, camTarget.y + bendU.value.y * 160, camTarget.z);   // le regard suit le virage
 
     renderer.render(scene, camera);
