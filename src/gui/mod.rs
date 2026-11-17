@@ -6,6 +6,7 @@ pub mod hq_render_state;
 pub mod nav;
 pub mod progressive;
 pub mod render_state;
+pub mod sage;
 pub mod selection;
 pub mod texture;
 pub mod xaos_state;

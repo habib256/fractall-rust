@@ -41,6 +41,10 @@ pub enum RenderMessage {
         /// programmer le raffinement idle ; false pour les copies exactes
         /// (pan entier, refine) et les passes GPU (map non consommé).
         xaos_approx: bool,
+        /// Passe FINALE du rendu : sa description pour le sage (coût de
+        /// navigation, éligibilité à l'évaluation des itérations). `None`
+        /// pour les passes intermédiaires.
+        final_pass: Option<crate::gui::sage::FinalPassInfo>,
     },
     /// G10.5 : progression intra-passe de la file de tuiles priorité-centre.
     /// `display_buffer` = passe précédente colorisée (base) recouverte des

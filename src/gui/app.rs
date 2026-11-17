@@ -15,10 +15,12 @@ use crate::fractal::{
     apply_lyapunov_preset, default_params_for_type, AlgorithmMode, FractalParams, FractalType,
     LyapunovPreset, OutColoringMode, PlaneTransform, ViewHp,
 };
+use crate::fractal::wisdom::{NavMode, NavModeDecision, NavModeState, NavPreference};
 use crate::gpu::GpuRenderer;
 use crate::gui::hq_render_state::{HqRenderEvent, HqRenderResult, HqRenderState};
 use crate::gui::nav;
 use crate::gui::progressive::{upscale_nearest, ProgressiveConfig, RenderMessage};
+use crate::gui::sage::{self, IterAction};
 use crate::gui::texture::rgb_image_to_color_image;
 use crate::render::{render_planned, render_request, PlannedRenderRequest, RenderRequest};
 
@@ -245,11 +247,33 @@ pub struct FractallApp {
     julia_preview_cancel: Arc<AtomicBool>,
     julia_preview_rendering: bool,
 
-    /// Navigation « à la XaoS » : bouton maintenu = zoom CONTINU ancré au
-    /// curseur (gauche = in, droit = out), au lieu du clic ×2 / de la
-    /// sélection rectangle. Exploite la réutilisation pixels inter-frame
-    /// (G10.4) + le warp (G10.1) pour un mouvement fluide.
-    xaos_nav_mode: bool,
+    /// Sage du mode de navigation (`wisdom_nav`) : préférence utilisateur
+    /// (Auto / Continuous / Step) + mode décidé d'après le coût mesuré des
+    /// rendus. SOURCE de vérité du mode ; `nav_applied` n'en est que la copie
+    /// appliquée à la souris, en retard seulement pendant un geste.
+    nav_mode: NavModeState,
+    /// Mode souris effectivement appliqué : continu = bouton maintenu = zoom
+    /// CONTINU ancré au curseur (gauche = in, droit = out) ; pas à pas = clic
+    /// ×2 / sélection rectangle. Rattrape `nav_mode.mode()` dès qu'aucun
+    /// geste n'est en cours (`sage::nav_switch_now`), jamais ailleurs.
+    nav_applied: NavMode,
+    /// Itérations automatiques (`wisdom_iter`, couche 1 par image) : état
+    /// GUI, jamais sérialisé (seule la valeur résolue va dans
+    /// `params.iteration_max`). Coupé dès que l'utilisateur tape un nombre.
+    iter_auto: bool,
+    /// Anti-boucle des re-rendus automatiques (croissances consécutives).
+    auto_grow_guard: crate::gui::sage::AutoGrowGuard,
+    /// Plafond abaissé par le sage, appliqué au PROCHAIN rendu (pas de
+    /// re-rendu pour ça) : tant qu'il attend, `params.iteration_max` reste
+    /// celui de l'image affichée (barre d'état et « Copy CLI » exacts).
+    pending_iter_shrink: Option<u32>,
+    /// Passe finale du rendu EN COURS (posée au PassComplete final, traitée
+    /// à AllComplete) et celle du dernier rendu terminé (réévaluation quand
+    /// l'utilisateur recoche Auto).
+    pending_final_pass: Option<(crate::gui::sage::FinalPassInfo, Arc<Vec<u32>>)>,
+    last_final_pass: Option<(crate::gui::sage::FinalPassInfo, Arc<Vec<u32>>)>,
+    /// Avis du sage affiché quelques secondes dans la barre d'état.
+    sage_notice: crate::gui::sage::SageNotice,
     /// Instant du dernier tick de zoom continu — cadence indépendante du
     /// framerate (`facteur = RATE^(dir·dt)`). `None` = bouton relâché.
     xaos_nav_last_tick: Option<Instant>,
@@ -430,8 +454,16 @@ impl FractallApp {
             julia_preview_cancel: Arc::new(AtomicBool::new(false)),
             julia_preview_rendering: false,
 
-            // Navigation XaoS (zoom continu au bouton maintenu) : off par défaut
-            xaos_nav_mode: false,
+            // Mode de navigation décidé par le sage (préférence Auto) ;
+            // itérations automatiques actives par défaut.
+            nav_mode: NavModeState::new(NavPreference::Auto),
+            nav_applied: NavMode::Continuous,
+            iter_auto: true,
+            auto_grow_guard: Default::default(),
+            pending_iter_shrink: None,
+            pending_final_pass: None,
+            last_final_pass: None,
+            sage_notice: Default::default(),
             xaos_nav_last_tick: None,
             xaos_nav_dragging: false,
             nav: nav::NavState::new(),
@@ -443,6 +475,107 @@ impl FractallApp {
             ui_frame_last: None,
             ui_frame_events: Vec::new(),
         }
+    }
+
+    /// Navigation continue (zoom au bouton maintenu) appliquée à la souris.
+    fn continuous_nav(&self) -> bool {
+        self.nav_applied == NavMode::Continuous
+    }
+
+    /// Affiche le message d'une décision du sage de navigation (la bascule
+    /// effective du mode souris passe par `sync_nav_mode`).
+    fn post_nav_decision(&mut self, decision: NavModeDecision) {
+        if let Some(message) = decision.message {
+            self.sage_notice.post(message, Instant::now());
+        }
+    }
+
+    /// Aligne le mode souris appliqué sur le mode décidé par le sage — hors
+    /// geste seulement (bouton maintenu, sélection, inertie du zoom continu) :
+    /// un changement décidé en plein geste attend le relâchement. Même remise
+    /// à zéro de l'état transitoire que l'ancienne case « XaoS ».
+    fn sync_nav_mode(&mut self, ctx: &Context) {
+        let gesture = ctx.input(|i| i.pointer.any_down())
+            || self.selection.is_active()
+            || self.nav.is_active();
+        if let Some(mode) = sage::nav_switch_now(self.nav_applied, self.nav_mode.mode(), gesture) {
+            self.nav_applied = mode;
+            self.xaos_nav_last_tick = None;
+            self.xaos_nav_dragging = false;
+            self.nav.reset();
+            self.selection.cancel();
+        }
+    }
+
+    /// Nouvelle scène (type, formule, preset, fichier déposé, reset de vue) :
+    /// le coût mesuré et l'historique des itérations automatiques ne valent
+    /// plus. Le mode de navigation courant est conservé jusqu'à la prochaine
+    /// mesure (cf. `NavModeState::reset_view`).
+    fn on_new_scene(&mut self) {
+        self.nav_mode.reset_view();
+        self.auto_grow_guard.reset();
+        self.last_final_pass = None;
+        self.pending_iter_shrink = None;
+    }
+
+    /// Itérations automatiques effectivement actives pour les params courants.
+    fn iter_auto_active(&self) -> bool {
+        self.iter_auto && crate::fractal::wisdom::auto_iterations_applicable(&self.params)
+    }
+
+    /// Clé de vue du garde-fou anti-boucle (vue HP + dims + type).
+    fn auto_iter_view_key(&self) -> String {
+        format!(
+            "{:?}|{}x{}|{:?}",
+            xaos::view_strings(&self.params),
+            self.params.width,
+            self.params.height,
+            self.params.fractal_type
+        )
+    }
+
+    /// Couche 1 du sage des itérations sur une passe finale terminée.
+    /// `Grow` : relève le plafond et re-rend (borné par `AutoGrowGuard`) ;
+    /// `Shrink` : abaisse le plafond pour le rendu SUIVANT, sans re-rendu.
+    fn assess_final_pass(&mut self, info: &sage::FinalPassInfo, iterations: &[u32]) {
+        let view_key = self.auto_iter_view_key();
+        let ctx = sage::IterContext {
+            // Champ en cours d'édition : ne pas écraser la saisie.
+            auto_on: self.iter_auto && !self.iteration_input_has_focus,
+            applicable: crate::fractal::wisdom::auto_iterations_applicable(&self.params),
+            current_cap: self.params.iteration_max,
+            gesture_active: self.nav.is_active() || self.xaos_nav_dragging,
+            view_key: &view_key,
+        };
+        match sage::decide_iterations(info, iterations, ctx, &mut self.auto_grow_guard) {
+            IterAction::Keep => {}
+            IterAction::GrowAndRender(n) => {
+                self.pending_iter_shrink = None;
+                self.params.iteration_max = n;
+                self.iteration_input = n.to_string();
+                self.orbit_cache = None;
+                self.sage_notice
+                    .post(format!("Iterations raised to {n} (auto)"), Instant::now());
+                self.start_render();
+            }
+            IterAction::ShrinkNext(n) => self.pending_iter_shrink = Some(n),
+        }
+    }
+
+    /// Fin d'un rendu (AllComplete) : nourrit le sage de navigation avec le
+    /// coût mesuré, puis le sage des itérations avec le buffer final.
+    fn sage_after_render(&mut self) {
+        let Some((info, iterations)) = self.pending_final_pass.take() else {
+            return;
+        };
+        if let Some(elapsed) = self.last_render_time {
+            if let Some(cost) = sage::frame_cost(&info, elapsed, self.aa_samples.max(1)) {
+                let decision = self.nav_mode.observe_frame(cost);
+                self.post_nav_decision(decision);
+            }
+        }
+        self.last_final_pass = Some((info, Arc::clone(&iterations)));
+        self.assess_final_pass(&info, &iterations);
     }
 
     /// Met à jour les coordonnées HP depuis les params f64.
@@ -566,6 +699,10 @@ impl FractallApp {
                 // Construire la vue canonique depuis les métadonnées chargées.
                 self.sync_params_to_hp();
                 self.iteration_input = self.params.iteration_max.to_string();
+                // Un PNG porte un nombre d'itérations DÉLIBÉRÉ : le garder,
+                // itérations automatiques coupées.
+                self.iter_auto = false;
+                self.on_new_scene();
 
                 // Invalider le cache et relancer le rendu
                 self.orbit_cache = None;
@@ -615,11 +752,11 @@ impl FractallApp {
                 return;
             }
         };
-        let iterations = table
+        let explicit_iterations = table
             .get("iterations")
             .and_then(|v| v.as_integer())
-            .map(|i| i as u32)
-            .unwrap_or(self.params.iteration_max);
+            .map(|i| i as u32);
+        let iterations = explicit_iterations.unwrap_or(self.params.iteration_max);
 
         // Parse zoom with GMP and compute span = 4/zoom
         let prec = 1024u32;
@@ -657,6 +794,12 @@ impl FractallApp {
         // Default to Mandelbrot
         self.selected_type = FractalType::Mandelbrot;
         self.params.fractal_type = FractalType::Mandelbrot;
+
+        // Valeur explicite du fichier : respectée (Auto coupé).
+        if explicit_iterations.is_some() {
+            self.iter_auto = false;
+        }
+        self.on_new_scene();
 
         // Sync and render
         self.sync_params_to_hp();
@@ -845,6 +988,22 @@ impl FractallApp {
 
         // Créer un nouveau flag d'annulation
         self.render_cancel = Arc::new(AtomicBool::new(false));
+        // La passe finale d'un rendu annulé ne doit jamais nourrir le sage.
+        self.pending_final_pass = None;
+        // Plafond abaissé par le sage : appliqué maintenant (jamais à un
+        // raffinement idle, qui doit garder l'empreinte de sa frame source).
+        if !refine {
+            let auto_active = self.iter_auto_active() && !self.iteration_input_has_focus;
+            if let Some(n) = sage::take_pending_shrink(
+                &mut self.pending_iter_shrink,
+                auto_active,
+                self.params.iteration_max,
+            ) {
+                self.params.iteration_max = n;
+                self.iteration_input = n.to_string();
+                self.orbit_cache = None;
+            }
+        }
         self.last_render_device_label = None;
         self.last_render_method_label = None;
 
@@ -1308,6 +1467,25 @@ impl FractallApp {
                             })
                         };
 
+                        // Sage : description de la passe FINALE (coût de
+                        // navigation + éligibilité au jugement des itérations).
+                        // Le map n'est consommé que sur CPU.
+                        let final_pass = is_final_pass.then(|| {
+                            let cpu_map = xaos_map.as_ref().filter(|_| !from_gpu);
+                            crate::gui::sage::FinalPassInfo {
+                                divisor: scale_divisor,
+                                from_gpu,
+                                fresh_fraction: cpu_map.map_or(1.0, |m| {
+                                    1.0 - m.reused_fraction(
+                                        pass_width as usize,
+                                        pass_height as usize,
+                                    )
+                                }),
+                                approx_copies: xaos_approx,
+                                iteration_cap: pass_params.iteration_max,
+                            }
+                        });
+
                         // Coloriser dans le thread de rendu pour éviter de bloquer l'UI
                         let colored_buffer = colorize_buffer(
                             &iterations,
@@ -1335,6 +1513,7 @@ impl FractallApp {
                             colored_buffer,
                             xaos_frame,
                             xaos_approx,
+                            final_pass,
                         });
 
                         // Délai pour laisser l'UI afficher cette passe avant de continuer
@@ -1504,7 +1683,11 @@ impl FractallApp {
                 colored_buffer: _, // ignoré : on re-colorise avec la palette actuelle (params)
                 xaos_frame,
                 xaos_approx,
+                final_pass,
             } => {
+                if let Some(info) = final_pass {
+                    self.pending_final_pass = Some((info, Arc::clone(&iterations)));
+                }
                 // G10.4 : mémoriser la frame source pour la réutilisation
                 // pixels inter-frame (Arc partagés, pas de memcpy). None =
                 // passe GPU ou écho pur → garder la source existante. Si la
@@ -1730,6 +1913,9 @@ impl FractallApp {
                 }
                 // G10.4 : point de départ du délai idle avant raffinement.
                 self.last_render_finished = Some(Instant::now());
+                // Sage : coût de navigation + itérations automatiques (peut
+                // relancer un rendu si le plafond doit grandir).
+                self.sage_after_render();
 
             }
 
@@ -2132,6 +2318,7 @@ impl FractallApp {
         apply_lyapunov_preset(&mut self.params, preset);
         // Synchroniser les coordonnées HP
         self.sync_params_to_hp();
+        self.on_new_scene();
         self.start_render();
     }
 
@@ -2189,6 +2376,7 @@ impl FractallApp {
         self.julia_preview_texture = None;
         self.julia_preview_last_seed = None;
         self.julia_preview_cancel.store(true, Ordering::Relaxed);
+        self.on_new_scene();
         self.start_render();
     }
 
@@ -2218,6 +2406,7 @@ impl FractallApp {
         self.julia_preview_last_seed = None;
         self.julia_preview_cancel.store(true, Ordering::Relaxed);
 
+        self.on_new_scene();
         self.start_render();
     }
 
@@ -2306,6 +2495,8 @@ impl eframe::App for FractallApp {
 
         // Vérifier si le rendu est terminé
         self.check_render_complete(ctx);
+        // Mode souris : appliquer la décision du sage hors geste.
+        self.sync_nav_mode(ctx);
 
         // G10.4 : raffinement idle — la dernière frame contient des pixels
         // copiés (approximés ≤ 0.5 px) ; après ~400 ms sans nouveau rendu,
@@ -2436,6 +2627,7 @@ impl eframe::App for FractallApp {
                     self.iteration_input = self.params.iteration_max.to_string();
                     self.sync_params_to_hp();
                     self.orbit_cache = None;
+                    self.on_new_scene();
                     self.start_render();
                 } else if self.selected_type.has_julia_variant() && !self.julia_preview_enabled {
                     // Pas de sélection Julia : activer le mode preview et cocher la case
@@ -2513,6 +2705,7 @@ impl eframe::App for FractallApp {
                 // Synchroniser les coordonnées HP
                 self.sync_params_to_hp();
                 self.orbit_cache = None;
+                self.on_new_scene();
                 self.start_render();
             }
         });
@@ -2723,6 +2916,7 @@ impl eframe::App for FractallApp {
                             });
                         if old_plane != self.params.plane_transform {
                             self.orbit_cache = None;
+                            self.on_new_scene();
                             if self.params.plane_transform != PlaneTransform::Mu
                                 && self.params.engine.algorithm_mode == AlgorithmMode::Perturbation
                             {
@@ -2747,20 +2941,57 @@ impl eframe::App for FractallApp {
                         }
                     }
 
-                    // Checkbox navigation XaoS : remplace le clic ×2 / la
-                    // sélection rectangle par un zoom continu au bouton maintenu.
-                    let old_xaos_nav = self.xaos_nav_mode;
-                    ui.checkbox(&mut self.xaos_nav_mode, "XaoS").on_hover_text(
-                        "XaoS-style navigation: hold the left button = continuous zoom in \
-                         anchored at the cursor, right button = zoom out. Replaces the ×2 click and \
-                         the rectangle selection.",
-                    );
-                    if old_xaos_nav != self.xaos_nav_mode {
-                        // Sortie/entrée du mode : abandonner tout état transitoire.
-                        self.xaos_nav_last_tick = None;
-                        self.xaos_nav_dragging = false;
-                        self.nav.reset();
-                        self.selection.cancel();
+                    // Mode de navigation : préférence de l'utilisateur, Auto
+                    // par défaut (le sage choisit selon le coût mesuré de la
+                    // vue). La bascule effective du mode souris se fait dans
+                    // `sync_nav_mode`, hors geste.
+                    let nav_pref = self.nav_mode.preference();
+                    let mode_name = |m: NavMode| match m {
+                        NavMode::Continuous => "continuous",
+                        NavMode::Stepped => "step",
+                    };
+                    let nav_label = match nav_pref {
+                        NavPreference::Auto => {
+                            format!("Nav: Auto ({})", mode_name(self.nav_mode.mode()))
+                        }
+                        NavPreference::Continuous => "Nav: Continuous".to_string(),
+                        NavPreference::Stepped => "Nav: Step".to_string(),
+                    };
+                    let mut new_pref = nav_pref;
+                    egui::ComboBox::from_id_salt("nav_mode")
+                        .selected_text(nav_label)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut new_pref, NavPreference::Auto, "Auto")
+                                .on_hover_text(
+                                    "fractall picks whichever navigation the current view \
+                                     can sustain: continuous while frames are fast, step \
+                                     when they get slow.",
+                                );
+                            ui.selectable_value(
+                                &mut new_pref,
+                                NavPreference::Continuous,
+                                "Continuous",
+                            )
+                            .on_hover_text(
+                                "XaoS-style: hold the left button to zoom in at the cursor, \
+                                 the right button to zoom out.",
+                            );
+                            ui.selectable_value(&mut new_pref, NavPreference::Stepped, "Step")
+                                .on_hover_text(
+                                    "Click to zoom ×2, right-click to zoom out, drag to \
+                                     select an area.",
+                                );
+                        })
+                        .response
+                        .on_hover_text(
+                            "Navigation mode.\nContinuous: hold the left button to zoom in at \
+                             the cursor, right to zoom out (XaoS-style).\nStep: click to zoom \
+                             ×2, drag to select an area.\nAuto: fractall picks whichever the \
+                             current view can sustain.",
+                        );
+                    if new_pref != nav_pref {
+                        let decision = self.nav_mode.set_preference(new_pref);
+                        self.post_nav_decision(decision);
                     }
 
                     ui.separator();
@@ -2771,11 +3002,43 @@ impl eframe::App for FractallApp {
                             .desired_width(60.0)
                     );
                     self.iteration_input_has_focus = response.has_focus();
+                    // Itérations automatiques (sage) : grisées pour les types
+                    // sans plafond « escape-time » (densité, Lyapunov, Newton…).
+                    let auto_applicable =
+                        crate::fractal::wisdom::auto_iterations_applicable(&self.params);
+                    let mut auto_shown = self.iter_auto && auto_applicable;
+                    let auto_response = ui
+                        .add_enabled(auto_applicable, egui::Checkbox::new(&mut auto_shown, "Auto"))
+                        .on_hover_text(
+                            "fractall adjusts the iteration limit to the view; type a number \
+                             to set it yourself.",
+                        )
+                        .on_disabled_hover_text(
+                            "Automatic iterations do not apply to this fractal type: \
+                             the limit is set by hand.",
+                        );
+                    if auto_response.changed() {
+                        self.iter_auto = auto_shown;
+                        self.pending_iter_shrink = None;
+                        if self.iter_auto {
+                            // Réactivation : réévaluer la dernière image terminée
+                            // (un rendu en cours sera évalué à sa fin).
+                            self.auto_grow_guard.reset();
+                            if !self.rendering {
+                                if let Some((info, iterations)) = self.last_final_pass.clone() {
+                                    self.assess_final_pass(&info, &iterations);
+                                }
+                            }
+                        }
+                    }
                     // Appliquer la valeur à la perte de focus ou sur Entrée
                     if response.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         if let Ok(val) = self.iteration_input.trim().parse::<u32>() {
                             let val = val.max(1);
                             if val != self.params.iteration_max {
+                                // Valeur choisie par l'utilisateur : respectée.
+                                self.iter_auto = false;
+                                self.pending_iter_shrink = None;
                                 self.params.iteration_max = val;
                                 self.iteration_input = val.to_string();
                                 self.orbit_cache = None;
@@ -3181,6 +3444,18 @@ impl eframe::App for FractallApp {
         // CentralPanel ne reçoit plus d'espace.
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
+                // Avis du sage (bascule de navigation, itérations relevées…) :
+                // bien visible à gauche, quelques secondes.
+                if let Some((text, left)) = self.sage_notice.visible(Instant::now()) {
+                    ui.label(
+                        egui::RichText::new(format!(" {text} "))
+                            .strong()
+                            .color(egui::Color32::BLACK)
+                            .background_color(egui::Color32::from_rgb(255, 205, 80)),
+                    );
+                    ctx.request_repaint_after(left);
+                    ui.separator();
+                }
                 // Centre (compact ; clic = copie pleine précision), itérations, zoom
                 let export_params = self.export_params();
                 let (full_x, full_y) = crate::gui::coords::center_strings(&export_params);
@@ -3237,7 +3512,11 @@ impl eframe::App for FractallApp {
                     }
                 }
                 ui.separator();
-                ui.label(format!("Iter.: {}", self.params.iteration_max));
+                if self.iter_auto_active() {
+                    ui.label(format!("Iter.: {} (auto)", self.params.iteration_max));
+                } else {
+                    ui.label(format!("Iter.: {}", self.params.iteration_max));
+                }
                 ui.separator();
                 let zoom_text = crate::gui::coords::zoom_label(&self.params);
                 ui.label(zoom_text);
@@ -3315,7 +3594,7 @@ impl eframe::App for FractallApp {
                 // clignoterait avec `self.rendering`). Le rendu de
                 // stabilisation, lui, retrouve la barre normale : c'est un
                 // calcul unique dont la progression intéresse l'utilisateur.
-                let nav_active = self.xaos_nav_mode && self.nav.is_active();
+                let nav_active = self.continuous_nav() && self.nav.is_active();
                 if nav_active {
                     ui.separator();
                     ui.label("Navigation XaoS");
@@ -3547,7 +3826,7 @@ impl eframe::App for FractallApp {
                         // warp G10.1 transporte la texture vers la vue live → mouvement
                         // continu ; la réutilisation pixels G10.4 rend chaque rendu
                         // quasi gratuit (petit incrément).
-                        if self.xaos_nav_mode && !julia_mode {
+                        if self.continuous_nav() && !julia_mode {
                             let (dir, pointer_pos) = ctx.input(|i| {
                                 let d = if i.pointer.primary_down() {
                                     1.0
@@ -3624,7 +3903,7 @@ impl eframe::App for FractallApp {
                             }
                         }
 
-                        if !julia_mode && !self.xaos_nav_mode {
+                        if !julia_mode && !self.continuous_nav() {
                             ctx.input(|i| {
                                 // Vérifier si le bouton gauche est pressé et si on est dans la zone de l'image
                                 if i.pointer.primary_down() {
@@ -3701,7 +3980,7 @@ impl eframe::App for FractallApp {
                         if response.clicked()
                             && !self.selection.is_active()
                             && !julia_mode
-                            && !self.xaos_nav_mode
+                            && !self.continuous_nav()
                         {
                             if let Some(pos) = response.interact_pointer_pos() {
                                 let local_pos = pos - image_rect.min;
@@ -3717,7 +3996,7 @@ impl eframe::App for FractallApp {
                         // Clic droit : dézoom centré sur la position de la souris
                         // (désactivé en mode Julia et en navigation XaoS — là le
                         // bouton droit maintenu fait le dézoom continu)
-                        if !julia_mode && !self.xaos_nav_mode {
+                        if !julia_mode && !self.continuous_nav() {
                             if response.secondary_clicked() {
                                 if let Some(pos) = response.interact_pointer_pos() {
                                     let local_pos = pos - image_rect.min;
