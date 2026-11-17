@@ -3621,24 +3621,7 @@ impl eframe::App for FractallApp {
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 // Centre, itérations, zoom
-                let center_text =
-                    if self.params.center_x.abs() < 1e-6 && self.params.center_y.abs() < 1e-6 {
-                        format!(
-                            "Centre: ({:.6}, {:.6})",
-                            self.params.center_x, self.params.center_y
-                        )
-                    } else if self.params.center_x.abs() > 1e3 || self.params.center_y.abs() > 1e3 {
-                        format!(
-                            "Centre: ({:.2e}, {:.2e})",
-                            self.params.center_x, self.params.center_y
-                        )
-                    } else {
-                        format!(
-                            "Centre: ({:.6}, {:.6})",
-                            self.params.center_x, self.params.center_y
-                        )
-                    };
-                ui.label(center_text);
+                ui.label(format_center_status(&self.params));
                 ui.separator();
                 ui.label(format!("Iter.: {}", self.params.iteration_max));
                 ui.separator();
@@ -3809,6 +3792,76 @@ impl eframe::App for FractallApp {
         // Demander un re-rendu seulement si un rendu est en cours
         if self.rendering || self.hq_render_state.is_running() {
             ctx.request_repaint();
+        }
+    }
+}
+
+fn format_center_status(params: &FractalParams) -> String {
+    if let (Some(x), Some(y)) = (&params.center_x_hp, &params.center_y_hp) {
+        return format!("Centre: ({}, {})", x, y);
+    }
+    if params.center_x.abs() < 1e-6 && params.center_y.abs() < 1e-6 {
+        format!("Centre: ({:.6}, {:.6})", params.center_x, params.center_y)
+    } else if params.center_x.abs() > 1e3 || params.center_y.abs() > 1e3 {
+        format!("Centre: ({:.2e}, {:.2e})", params.center_x, params.center_y)
+    } else {
+        format!("Centre: ({:.6}, {:.6})", params.center_x, params.center_y)
+    }
+}
+
+#[cfg(test)]
+mod center_status_tests {
+    use super::*;
+
+    #[test]
+    fn center_status_preserves_hp_decimal_strings() {
+        let x = "-0.743643887037151007923796441482759390000";
+        let y = "0.131825904205311970493132056385139000001";
+        let mut params = default_params_for_type(FractalType::Mandelbrot, 800, 600);
+        params.center_x = x.parse().unwrap();
+        params.center_y = y.parse().unwrap();
+        params.center_x_hp = Some(x.to_string());
+        params.center_y_hp = Some(y.to_string());
+
+        assert_eq!(format_center_status(&params), format!("Centre: ({x}, {y})"));
+    }
+
+    #[test]
+    fn center_status_preserves_tiny_hp_with_zero_f64_mirrors() {
+        let x = format!("0.{}123456789012345678900", "0".repeat(330));
+        let y = format!("-0.{}987654321098765432100", "0".repeat(330));
+        let mut params = default_params_for_type(FractalType::Mandelbrot, 800, 600);
+        params.center_x = x.parse().unwrap();
+        params.center_y = y.parse().unwrap();
+        assert_eq!(params.center_x, 0.0);
+        assert_eq!(params.center_y, 0.0);
+        params.center_x_hp = Some(x.clone());
+        params.center_y_hp = Some(y.clone());
+
+        assert_eq!(format_center_status(&params), format!("Centre: ({x}, {y})"));
+    }
+
+    #[test]
+    fn center_status_keeps_f64_format_when_hp_pair_is_incomplete() {
+        let mut params = default_params_for_type(FractalType::Mandelbrot, 800, 600);
+        for (x_hp, y_hp) in [
+            (None, None),
+            (Some("1.234567890"), None),
+            (None, Some("9.876543210")),
+        ] {
+            params.center_x_hp = x_hp.map(str::to_string);
+            params.center_y_hp = y_hp.map(str::to_string);
+            for (x, y, expected) in [
+                (-0.743643887, 0.131825904, "Centre: (-0.743644, 0.131826)"),
+                (1e-8, -2e-8, "Centre: (0.000000, -0.000000)"),
+                (1000.0, -1000.0, "Centre: (1000.000000, -1000.000000)"),
+                (12345.0, -0.125, "Centre: (1.23e4, -1.25e-1)"),
+                (0.125, -12345.0, "Centre: (1.25e-1, -1.23e4)"),
+            ] {
+                params.center_x = x;
+                params.center_y = y;
+                assert_eq!(format_center_status(&params), expected);
+            }
         }
     }
 }
