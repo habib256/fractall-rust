@@ -1,5 +1,7 @@
 pub mod app;
 pub mod async_version;
+pub mod cli_command;
+pub mod coords;
 pub mod hq_render_state;
 pub mod nav;
 pub mod progressive;

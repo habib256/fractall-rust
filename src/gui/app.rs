@@ -181,6 +181,8 @@ pub struct FractallApp {
     aa_samples: u32,
     /// Amplitude du filtre tente sous-pixel, dans l'intervalle 0..=1 pixel.
     aa_jitter_scale: f64,
+    /// Retour visuel bref après une copie presse-papiers (barre d'état).
+    clipboard_feedback: Option<(&'static str, Instant)>,
     /// Progression AA courante affichée dans le panneau (sample, total).
     /// Couleurs (palette, repeat, mode, espace) figées au lancement du rendu :
     /// les moyennes AA arrivent déjà colorisées avec elles — si l'utilisateur a
@@ -280,6 +282,8 @@ const UI_TRACE_GAP_MS: f64 = 40.0;
 /// Cadence de publication des frames partielles de navigation (~25 FPS, milieu
 /// de la fenêtre XaoS 15-35 FPS en animation, `ui_helper.cpp`).
 const NAV_STREAM_INTERVAL: Duration = Duration::from_millis(40);
+/// Durée du retour « … copied » dans la barre d'état.
+const CLIPBOARD_FEEDBACK_DURATION: Duration = Duration::from_millis(1500);
 
 /// Presets de résolution pour le rendu haute qualité.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -389,6 +393,7 @@ impl FractallApp {
             is_preview: false,
             aa_samples: 1,
             aa_jitter_scale: 1.0,
+            clipboard_feedback: None,
             render_color_key: (
                 6,
                 40,
@@ -2216,6 +2221,25 @@ impl FractallApp {
         self.start_render();
     }
 
+    /// Params de la vue telle qu'affichée, pour la copie de coordonnées et la
+    /// commande CLI : couleurs courantes de l'UI (comme la recolorisation),
+    /// chaînes HP de la vue, dimensions de la fenêtre.
+    fn export_params(&self) -> FractalParams {
+        let mut p = self.params.clone();
+        p.color.color_mode = self.palette_index;
+        p.color.color_repeat = self.color_repeat;
+        p.color.out_coloring_mode = self.out_coloring_mode;
+        let (cx, cy, sx, sy) = self.view.decimal_parts();
+        p.center_x_hp = Some(cx);
+        p.center_y_hp = Some(cy);
+        p.span_x_hp = Some(sx);
+        p.span_y_hp = Some(sy);
+        let (w, h) = self.view.dimensions();
+        p.width = w;
+        p.height = h;
+        p
+    }
+
     fn effective_algorithm_mode(&self) -> AlgorithmMode {
         match self.params.engine.algorithm_mode {
             AlgorithmMode::Auto => {
@@ -3157,8 +3181,61 @@ impl eframe::App for FractallApp {
         // CentralPanel ne reçoit plus d'espace.
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
-                // Centre, itérations, zoom
-                ui.label(format_center_status(&self.params));
+                // Centre (compact ; clic = copie pleine précision), itérations, zoom
+                let export_params = self.export_params();
+                let (full_x, full_y) = crate::gui::coords::center_strings(&export_params);
+                let center_response = ui
+                    .add(
+                        egui::Label::new(crate::gui::coords::format_center_status(
+                            &export_params,
+                        ))
+                        .sense(egui::Sense::click()),
+                    )
+                    .on_hover_text(format!(
+                        "Click to copy full-precision coordinates (as a TOML view \
+                         for fractall-cli --toml).\nre = {}\nim = {}",
+                        crate::gui::coords::exact_coordinate(&full_x),
+                        crate::gui::coords::exact_coordinate(&full_y),
+                    ));
+                if center_response.clicked() {
+                    ctx.copy_text(crate::gui::coords::full_precision_clipboard_text(
+                        &export_params,
+                    ));
+                    self.clipboard_feedback = Some(("Coordinates copied", Instant::now()));
+                }
+                let cli = crate::gui::cli_command::build_cli_command(
+                    &export_params,
+                    crate::gui::cli_command::CliExtras {
+                        aa_samples: self.aa_samples.max(1),
+                        aa_jitter_scale: crate::gui::render_state::normalized_jitter_scale(
+                            self.aa_jitter_scale,
+                        ),
+                    },
+                );
+                let mut cli_hover = String::from(
+                    "Copy a fractall-cli command that renders this view.\n\
+                     Width/height are the window size: edit --width/--height \
+                     (e.g. 3840 and 2160) for a larger render.\n\
+                     --zoom fixes the horizontal extent; another aspect ratio \
+                     shows more or less vertically.",
+                );
+                if !cli.unexpressed.is_empty() {
+                    cli_hover.push_str("\n\nNot expressible on the command line: ");
+                    cli_hover.push_str(&cli.unexpressed.join("; "));
+                }
+                if ui.small_button("📋 CLI").on_hover_text(cli_hover).clicked() {
+                    ctx.copy_text(cli.command);
+                    self.clipboard_feedback = Some(("CLI command copied", Instant::now()));
+                }
+                if let Some((message, at)) = self.clipboard_feedback {
+                    let shown_for = at.elapsed();
+                    if shown_for < CLIPBOARD_FEEDBACK_DURATION {
+                        ui.label(egui::RichText::new(format!("✔ {message}")).weak());
+                        ctx.request_repaint_after(CLIPBOARD_FEEDBACK_DURATION - shown_for);
+                    } else {
+                        self.clipboard_feedback = None;
+                    }
+                }
                 ui.separator();
                 ui.label(format!("Iter.: {}", self.params.iteration_max));
                 ui.separator();
@@ -3794,76 +3871,6 @@ impl eframe::App for FractallApp {
         // Demander un re-rendu seulement si un rendu est en cours
         if self.rendering || self.hq_render_state.is_running() {
             ctx.request_repaint();
-        }
-    }
-}
-
-fn format_center_status(params: &FractalParams) -> String {
-    if let (Some(x), Some(y)) = (&params.center_x_hp, &params.center_y_hp) {
-        return format!("Center: ({}, {})", x, y);
-    }
-    if params.center_x.abs() < 1e-6 && params.center_y.abs() < 1e-6 {
-        format!("Center: ({:.6}, {:.6})", params.center_x, params.center_y)
-    } else if params.center_x.abs() > 1e3 || params.center_y.abs() > 1e3 {
-        format!("Center: ({:.2e}, {:.2e})", params.center_x, params.center_y)
-    } else {
-        format!("Center: ({:.6}, {:.6})", params.center_x, params.center_y)
-    }
-}
-
-#[cfg(test)]
-mod center_status_tests {
-    use super::*;
-
-    #[test]
-    fn center_status_preserves_hp_decimal_strings() {
-        let x = "-0.743643887037151007923796441482759390000";
-        let y = "0.131825904205311970493132056385139000001";
-        let mut params = default_params_for_type(FractalType::Mandelbrot, 800, 600);
-        params.center_x = x.parse().unwrap();
-        params.center_y = y.parse().unwrap();
-        params.center_x_hp = Some(x.to_string());
-        params.center_y_hp = Some(y.to_string());
-
-        assert_eq!(format_center_status(&params), format!("Center: ({x}, {y})"));
-    }
-
-    #[test]
-    fn center_status_preserves_tiny_hp_with_zero_f64_mirrors() {
-        let x = format!("0.{}123456789012345678900", "0".repeat(330));
-        let y = format!("-0.{}987654321098765432100", "0".repeat(330));
-        let mut params = default_params_for_type(FractalType::Mandelbrot, 800, 600);
-        params.center_x = x.parse().unwrap();
-        params.center_y = y.parse().unwrap();
-        assert_eq!(params.center_x, 0.0);
-        assert_eq!(params.center_y, 0.0);
-        params.center_x_hp = Some(x.clone());
-        params.center_y_hp = Some(y.clone());
-
-        assert_eq!(format_center_status(&params), format!("Center: ({x}, {y})"));
-    }
-
-    #[test]
-    fn center_status_keeps_f64_format_when_hp_pair_is_incomplete() {
-        let mut params = default_params_for_type(FractalType::Mandelbrot, 800, 600);
-        for (x_hp, y_hp) in [
-            (None, None),
-            (Some("1.234567890"), None),
-            (None, Some("9.876543210")),
-        ] {
-            params.center_x_hp = x_hp.map(str::to_string);
-            params.center_y_hp = y_hp.map(str::to_string);
-            for (x, y, expected) in [
-                (-0.743643887, 0.131825904, "Center: (-0.743644, 0.131826)"),
-                (1e-8, -2e-8, "Center: (0.000000, -0.000000)"),
-                (1000.0, -1000.0, "Center: (1000.000000, -1000.000000)"),
-                (12345.0, -0.125, "Center: (1.23e4, -1.25e-1)"),
-                (0.125, -12345.0, "Center: (1.25e-1, -1.23e4)"),
-            ] {
-                params.center_x = x;
-                params.center_y = y;
-                assert_eq!(format_center_status(&params), expected);
-            }
         }
     }
 }
