@@ -66,11 +66,11 @@ struct Cli {
     center_y: Option<f64>,
 
     /// Centre X haute précision (string, pour deep zooms > 10^15)
-    #[arg(long)]
+    #[arg(long, allow_hyphen_values = true)]
     center_x_hp: Option<String>,
 
     /// Centre Y haute précision (string, pour deep zooms > 10^15)
-    #[arg(long)]
+    #[arg(long, allow_hyphen_values = true)]
     center_y_hp: Option<String>,
 
     /// Zoom (magnification, span = 4/zoom). Supporte notation scientifique (ex: 1.41e219)
