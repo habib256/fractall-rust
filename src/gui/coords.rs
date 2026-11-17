@@ -277,6 +277,27 @@ pub fn zoom_string(params: &FractalParams) -> String {
         .unwrap_or(text)
 }
 
+/// Libellé de zoom de la barre d'état, dans la MÊME convention que
+/// `--zoom` (`4 / span_x`) : la vue par défaut d'un Mandelbrot affiche donc
+/// `Zoom: 1.00`, et la valeur lue à l'écran est celle qu'on tape en ligne de
+/// commande. Lit le span HP, donc valable au-delà de 1e308.
+pub fn zoom_label(params: &FractalParams) -> String {
+    let Some(span) = span_x_float(params) else {
+        return "Zoom: 1.00".to_string();
+    };
+    let zoom = Float::with_val(span.prec(), 4) / span;
+    let (_, digits, exp) = zoom.to_sign_string_exp(10, Some(3));
+    let Some(exp) = exp else {
+        return "Zoom: 1.00".to_string();
+    };
+    if exp <= 6 {
+        format!("Zoom: {:.2}", zoom.to_f64())
+    } else {
+        // 0.dddeE → d.ddE(E-1)
+        format!("Zoom: {}.{}e{}", &digits[..1], &digits[1..], exp - 1)
+    }
+}
+
 /// Texte copié au clic sur les coordonnées : TOML léger (format
 /// rust-fractal-core, relu par `fractall-cli --toml`), centre en précision
 /// complète.
@@ -492,5 +513,17 @@ mod tests {
         p.center_y_hp = None;
         p.center_y = -0.125;
         assert_eq!(format_center_status(&p), "Center: (12345, -0.125)");
+    }
+
+    #[test]
+    fn zoom_label_uses_the_cli_zoom_convention() {
+        let mut p = crate::fractal::default_params_for_type(crate::fractal::FractalType::Mandelbrot, 800, 600);
+        p.span_x = 4.0;
+        p.span_x_hp = None;
+        assert_eq!(zoom_label(&p), "Zoom: 1.00");
+        p.span_x = 4.0 / 3.1415e64;
+        assert_eq!(zoom_label(&p), "Zoom: 3.14e64");
+        p.span_x_hp = Some("4e-400".to_string());
+        assert_eq!(zoom_label(&p), "Zoom: 1.00e400");
     }
 }

@@ -3239,23 +3239,7 @@ impl eframe::App for FractallApp {
                 ui.separator();
                 ui.label(format!("Iter.: {}", self.params.iteration_max));
                 ui.separator();
-                let base_range = 4.0;
-                let pixel_size = if self.params.width > 0 && self.params.height > 0 {
-                    self.params.span_x.abs().max(self.params.span_y.abs())
-                        / self.params.width as f64
-                } else {
-                    0.0
-                };
-                let zoom = if pixel_size > 0.0 && pixel_size.is_finite() {
-                    base_range / pixel_size
-                } else {
-                    1.0
-                };
-                let zoom_text = if zoom >= 1e6 {
-                    format!("Zoom: {:.2e}", zoom)
-                } else {
-                    format!("Zoom: {:.2}", zoom)
-                };
+                let zoom_text = crate::gui::coords::zoom_label(&self.params);
                 ui.label(zoom_text);
                 ui.separator();
 
