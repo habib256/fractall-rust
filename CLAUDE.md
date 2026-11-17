@@ -783,10 +783,17 @@ unique des choix automatiques). Aucun champ `FractalParams` : « auto » est un
   par le CLI ; `-` ailleurs) — `_RE_WISDOM` ne lit que le préfixe.
   ⚠️ Toute invocation CLI à résultat déterministe (golden, baseline, icône)
   doit porter `--iterations` ou une source qui le fournit.
-- **Câblage GUI** (`gui/app.rs`) : sélecteur « Nav: Auto/Continuous/Step » et
-  « Iter: Auto ». ⚠️ La GUI ne doit PAS lancer l'évaluation par image
-  (`assess_iterations`) sur les frames d'écho XaoS (pixels copiés : la
-  distribution ne décrit pas la vue).
+- **Câblage GUI** (`gui/app.rs`, décisions pures testées dans `gui/sage.rs`) :
+  sélecteur « Nav: Auto/Continuous/Step » (`nav_mode: NavModeState` = source
+  unique, bascule différée à la fin du geste en cours) et case « Iter: Auto »
+  (coupée par une valeur tapée, un PNG ou un TOML déposé). ⚠️ La GUI ne doit
+  PAS lancer l'évaluation par image (`assess_iterations`) sur les frames
+  d'écho XaoS (pixels copiés : la distribution ne décrit pas la vue) —
+  `sage::iterations_assessable` : passe finale CPU pleine résolution, sans
+  copie approximative, rendue à la limite courante. Garde-fous : au plus 3
+  `Grow` de suite par vue (`AutoGrowGuard`), jamais pendant un geste ; un
+  `Shrink` attend le rendu SUIVANT (`pending_iter_shrink` — l'appliquer tout
+  de suite affichait une limite que l'image à l'écran n'avait pas).
 
 ### Détecteur de fiabilité par pixel (G9.6, `bytecode/reliability.rs`)
 
