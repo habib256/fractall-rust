@@ -74,13 +74,13 @@ fn decompress(data: &[u8], expected_len: usize) -> Result<Vec<u8>, Box<dyn std::
     let dec = ZlibDecoder::new(data);
     let mut out = Vec::new();
     out.try_reserve_exact(expected_len)
-        .map_err(|e| format!("canal trop grand pour être décompressé: {e}"))?;
+        .map_err(|e| format!("channel too large to decompress: {e}"))?;
     // `take` empêche un flux zlib mensonger de faire croître le Vec au-delà
     // de la taille annoncée avant que nous puissions le refuser.
     dec.take((expected_len as u64).saturating_add(1)).read_to_end(&mut out)?;
     if out.len() != expected_len {
         return Err(format!(
-            "canal corrompu : {} octets décompressés, {} attendus",
+            "corrupted channel: {} bytes decompressed, {} expected",
             out.len(),
             expected_len
         )
@@ -145,20 +145,20 @@ fn write_channel(w: &mut impl Write, id: u8, raw: &[u8]) -> std::io::Result<()> 
 /// de faire paniquer un appelant de bibliothèque.
 pub fn save_fmap(map: &FractalMap, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if map.params.width == 0 || map.params.height == 0 {
-        return Err("fmap : dimensions nulles".into());
+        return Err("fmap: zero dimensions".into());
     }
     let n = (map.params.width as usize)
         .checked_mul(map.params.height as usize)
-        .ok_or("fmap : dimensions trop grandes")?;
+        .ok_or("fmap: dimensions too large")?;
     if map.iterations.len() != n {
-        return Err("fmap : taille iterations invalide".into());
+        return Err("fmap: invalid iterations size".into());
     }
     if map.zs.len() != n {
-        return Err("fmap : taille zs invalide".into());
+        return Err("fmap: invalid zs size".into());
     }
     if let Some(ref d) = map.distances {
         if d.len() != n {
-            return Err("fmap : taille distances invalide".into());
+            return Err("fmap: invalid distances size".into());
         }
     }
 
@@ -185,7 +185,7 @@ pub fn save_fmap(map: &FractalMap, path: &Path) -> Result<(), Box<dyn std::error
 fn read_exact_vec(r: &mut impl Read, len: usize) -> std::io::Result<Vec<u8>> {
     let mut buf = Vec::new();
     buf.try_reserve_exact(len).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::OutOfMemory, format!("allocation fmap: {e}"))
+        std::io::Error::new(std::io::ErrorKind::OutOfMemory, format!("fmap allocation: {e}"))
     })?;
     buf.resize(len, 0);
     r.read_exact(&mut buf)?;
@@ -203,14 +203,14 @@ pub fn load_fmap(path: &Path) -> Result<FractalMap, Box<dyn std::error::Error>> 
     let mut magic = [0u8; 4];
     r.read_exact(&mut magic)?;
     if &magic != MAGIC {
-        return Err(format!("{} : pas un fichier fmap (magic invalide)", path.display()).into());
+        return Err(format!("{}: not an fmap file (invalid magic)", path.display()).into());
     }
     let mut b4 = [0u8; 4];
     r.read_exact(&mut b4)?;
     let version = u32::from_le_bytes(b4);
     if version != VERSION {
         return Err(format!(
-            "{} : version fmap {} non supportée (attendu {})",
+            "{}: unsupported fmap version {} (expected {})",
             path.display(),
             version,
             VERSION
@@ -220,21 +220,21 @@ pub fn load_fmap(path: &Path) -> Result<FractalMap, Box<dyn std::error::Error>> 
     r.read_exact(&mut b4)?;
     let json_len = u32::from_le_bytes(b4) as usize;
     if json_len as u64 > file_len {
-        return Err("fmap : longueur JSON supérieure au fichier".into());
+        return Err("fmap: JSON length exceeds the file size".into());
     }
     let params_json = read_exact_vec(&mut r, json_len)?;
     let params: FractalParams = serde_json::from_slice(&params_json)?;
     if params.width == 0 || params.height == 0 {
-        return Err("fmap : dimensions nulles".into());
+        return Err("fmap: zero dimensions".into());
     }
     let n = (params.width as usize)
         .checked_mul(params.height as usize)
-        .ok_or("fmap : dimensions trop grandes")?;
+        .ok_or("fmap: dimensions too large")?;
 
     r.read_exact(&mut b4)?;
     let n_channels = u32::from_le_bytes(b4);
     if n_channels > 64 {
-        return Err(format!("fmap : trop de canaux ({n_channels})").into());
+        return Err(format!("fmap: too many channels ({n_channels})").into());
     }
 
     let mut iterations: Option<Vec<u32>> = None;
@@ -249,14 +249,14 @@ pub fn load_fmap(path: &Path) -> Result<FractalMap, Box<dyn std::error::Error>> 
         r.read_exact(&mut b8)?;
         let comp_len_u64 = u64::from_le_bytes(b8);
         if comp_len_u64 > file_len {
-            return Err("fmap : canal compressé plus grand que le fichier".into());
+            return Err("fmap: compressed channel larger than the file".into());
         }
         let comp_len = usize::try_from(comp_len_u64)
-            .map_err(|_| "fmap : canal compressé trop grand pour cette plateforme")?;
+            .map_err(|_| "fmap: compressed channel too large for this platform")?;
         let expected = match id[0] {
-            CHANNEL_ITERATIONS => Some(n.checked_mul(4).ok_or("fmap : canal iterations trop grand")?),
-            CHANNEL_ZS => Some(n.checked_mul(16).ok_or("fmap : canal zs trop grand")?),
-            CHANNEL_DISTANCES => Some(n.checked_mul(8).ok_or("fmap : canal distances trop grand")?),
+            CHANNEL_ITERATIONS => Some(n.checked_mul(4).ok_or("fmap: iterations channel too large")?),
+            CHANNEL_ZS => Some(n.checked_mul(16).ok_or("fmap: zs channel too large")?),
+            CHANNEL_DISTANCES => Some(n.checked_mul(8).ok_or("fmap: distances channel too large")?),
             _ => None,
         };
         let Some(raw_len) = expected else {
@@ -264,31 +264,31 @@ pub fn load_fmap(path: &Path) -> Result<FractalMap, Box<dyn std::error::Error>> 
             // l'allouer ni le décompresser.
             let copied = std::io::copy(&mut r.by_ref().take(comp_len_u64), &mut std::io::sink())?;
             if copied != comp_len_u64 {
-                return Err("fmap : canal inconnu tronqué".into());
+                return Err("fmap: truncated unknown channel".into());
             }
             continue;
         };
         if raw_len_u64 != raw_len as u64 {
-            return Err(format!("fmap : taille déclarée invalide pour le canal {}", id[0]).into());
+            return Err(format!("fmap: invalid declared size for channel {}", id[0]).into());
         }
         let compressed = read_exact_vec(&mut r, comp_len)?;
         let raw = decompress(&compressed, raw_len)?;
         match id[0] {
             CHANNEL_ITERATIONS => {
                 if iterations.is_some() {
-                    return Err("fmap : canal iterations dupliqué".into());
+                    return Err("fmap: duplicate iterations channel".into());
                 }
                 iterations = Some(bytes_to_u32s(&raw));
             }
             CHANNEL_ZS => {
                 if zs.is_some() {
-                    return Err("fmap : canal zs dupliqué".into());
+                    return Err("fmap: duplicate zs channel".into());
                 }
                 zs = Some(bytes_to_zs(&raw));
             }
             CHANNEL_DISTANCES => {
                 if distances.is_some() {
-                    return Err("fmap : canal distances dupliqué".into());
+                    return Err("fmap: duplicate distances channel".into());
                 }
                 distances = Some(bytes_to_f64s(&raw));
             }
@@ -296,8 +296,8 @@ pub fn load_fmap(path: &Path) -> Result<FractalMap, Box<dyn std::error::Error>> 
         }
     }
 
-    let iterations = iterations.ok_or("fmap : canal iterations manquant")?;
-    let zs = zs.ok_or("fmap : canal zs manquant")?;
+    let iterations = iterations.ok_or("fmap: missing iterations channel")?;
+    let zs = zs.ok_or("fmap: missing zs channel")?;
     Ok(FractalMap { params, iterations, zs, distances })
 }
 

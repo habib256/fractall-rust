@@ -229,10 +229,10 @@ async fn run() {
             apply_limit_buckets: false,
         })
         .await
-        .expect("pas d'adaptateur GPU");
+        .expect("no GPU adapter");
     let info = adapter.get_info();
-    println!("[probe] adaptateur : {} ({:?})", info.name, info.backend);
-    println!("[probe] SHADER_F64 : {}", adapter.features().contains(wgpu::Features::SHADER_F64));
+    println!("[probe] adapter: {} ({:?})", info.name, info.backend);
+    println!("[probe] SHADER_F64: {}", adapter.features().contains(wgpu::Features::SHADER_F64));
 
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor::default())
@@ -379,22 +379,22 @@ async fn run() {
     slice.map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
     let _ = device.poll(wgpu::PollType::wait_indefinitely());
     rx.recv().unwrap().unwrap();
-    let data = slice.get_mapped_range().expect("buffer mappé");
+    let data = slice.get_mapped_range().expect("mapped buffer");
     let vals: &[f32] = bytemuck::cast_slice(&data);
 
     let exp_tiny = (2.0f32).powi(-30);
     let exp_err = (2.0f64).powi(-40);
-    println!("two_sum(1, 2^-30)      : s={:e} err={:e} (attendu {:e}) → {}",
-        vals[0], vals[1], exp_tiny, if vals[1] == exp_tiny { "OK" } else { "CASSÉ" });
-    println!("two_prod fma (1+2^-20)²: p={:e} err={:e} (attendu {:e}) → {}",
-        vals[2], vals[3], exp_err, if (vals[3] as f64 - exp_err).abs() < exp_err * 0.01 { "OK" } else { "CASSÉ" });
-    println!("two_prod split         : p={:e} err={:e} (attendu {:e}) → {}",
-        vals[4], vals[5], exp_err, if (vals[5] as f64 - exp_err).abs() < exp_err * 0.01 { "OK" } else { "CASSÉ" });
-    println!("fma(x,x,-(x*x))        : {:e} (0.0 = fma non fusionné)", vals[6]);
-    println!("two_sum bitcast-opaque : err={:e} (attendu {:e}) → {}",
-        vals[7], exp_tiny, if vals[7] == exp_tiny { "OK" } else { "CASSÉ" });
-    println!("two_sum garde u=1.0    : err={:e} (attendu {:e}) → {}",
-        vals[12], exp_tiny, if vals[12] == exp_tiny { "OK" } else { "CASSÉ" });
+    println!("two_sum(1, 2^-30)      : s={:e} err={:e} (expected {:e}) → {}",
+        vals[0], vals[1], exp_tiny, if vals[1] == exp_tiny { "OK" } else { "BROKEN" });
+    println!("two_prod fma (1+2^-20)²: p={:e} err={:e} (expected {:e}) → {}",
+        vals[2], vals[3], exp_err, if (vals[3] as f64 - exp_err).abs() < exp_err * 0.01 { "OK" } else { "BROKEN" });
+    println!("two_prod split         : p={:e} err={:e} (expected {:e}) → {}",
+        vals[4], vals[5], exp_err, if (vals[5] as f64 - exp_err).abs() < exp_err * 0.01 { "OK" } else { "BROKEN" });
+    println!("fma(x,x,-(x*x))        : {:e} (0.0 = fma not fused)", vals[6]);
+    println!("two_sum bitcast-opaque : err={:e} (expected {:e}) → {}",
+        vals[7], exp_tiny, if vals[7] == exp_tiny { "OK" } else { "BROKEN" });
+    println!("two_sum guard u=1.0    : err={:e} (expected {:e}) → {}",
+        vals[12], exp_tiny, if vals[12] == exp_tiny { "OK" } else { "BROKEN" });
 
     // ---- Mirror CPU de la boucle df64 (mêmes primitives, f32 IEEE) ----
     let (n_cpu, d_cpu) = cpu_df64_loop(&zref_flat, [dcxh, dcxl, dcyh, dcyl], 50);
@@ -438,17 +438,17 @@ async fn run() {
     }
     let n_gpu = vals[24] as u32;
     let d_gpu = [vals[25], vals[26], vals[27], vals[28]];
-    println!("boucle df64 5000 iters : GPU n={} δ={:?}", n_gpu, d_gpu);
+    println!("df64 loop 5000 iters  : GPU n={} δ={:?}", n_gpu, d_gpu);
     println!("                         CPU n={} δ={:?} → {}", n_cpu, d_cpu,
-        if n_cpu == n_gpu && d_cpu == d_gpu { "IDENTIQUE" } else { "DIVERGE" });
+        if n_cpu == n_gpu && d_cpu == d_gpu { "IDENTICAL" } else { "DIVERGES" });
     let g_re = d_gpu[0] as f64 + d_gpu[1] as f64;
     let g_im = d_gpu[2] as f64 + d_gpu[3] as f64;
     let c_re = d_cpu[0] as f64 + d_cpu[1] as f64;
     let c_im = d_cpu[2] as f64 + d_cpu[3] as f64;
     let mag = (dre * dre + dim * dim).sqrt();
-    println!("df_add lo : {:e} (attendu ~{:e})", vals[29], (2.0f64).powi(-30) + (2.0f64).powi(-42));
-    println!("df_mul lo : {:e} (attendu ~{:e})", vals[30], (2.0f64).powi(-40) + (2.0f64).powi(-29));
-    println!("two_prod_fma aval : {:e} (0 = foldé)", vals[31]);
+    println!("df_add lo : {:e} (expected ~{:e})", vals[29], (2.0f64).powi(-30) + (2.0f64).powi(-42));
+    println!("df_mul lo : {:e} (expected ~{:e})", vals[30], (2.0f64).powi(-40) + (2.0f64).powi(-29));
+    println!("two_prod_fma downstream : {:e} (0 = folded)", vals[31]);
     {
         // Mirror CPU du pas isolé.
         let i = 3 * 4;
@@ -479,10 +479,10 @@ async fn run() {
         let tzi = df_mul_s((z3[2], z3[3]), 2.0);
         let os = cadd(cmul(cadd([tzr.0, tzr.1, tzi.0, tzi.1], dcv), dcv), dcv);
         let g = [vals[32], vals[33], vals[34], vals[35]];
-        println!("pas isolé : GPU {:?}", g);
-        println!("            CPU {:?} → {}", os, if g == os { "IDENTIQUE" } else { "DIVERGE" });
+        println!("single step: GPU {:?}", g);
+        println!("             CPU {:?} → {}", os, if g == os { "IDENTICAL" } else { "DIVERGES" });
     }
-    println!("erreur rel vs f64 après 50 iters : GPU {:.3e} | CPU-mirror {:.3e} (f32 pur serait ~1e-7)",
+    println!("rel error vs f64 after 50 iters: GPU {:.3e} | CPU-mirror {:.3e} (pure f32 would be ~1e-7)",
         (((g_re - dre).powi(2) + (g_im - dim).powi(2)).sqrt()) / mag,
         (((c_re - dre).powi(2) + (c_im - dim).powi(2)).sqrt()) / mag);
 
@@ -583,17 +583,17 @@ async fn run() {
         sl.map_async(wgpu::MapMode::Read, move |r| tx2.send(r).unwrap());
         let _ = dev64.poll(wgpu::PollType::wait_indefinitely());
         rx2.recv().unwrap().unwrap();
-        let d2 = sl.get_mapped_range().expect("buffer mappé");
+        let d2 = sl.get_mapped_range().expect("mapped buffer");
         let v2: &[f32] = bytemuck::cast_slice(&d2);
         let gr = v2[25] as f64;
         let gi = v2[26] as f64;
         println!(
-            "boucle f64 natif 50 iters : n={} δ=({:e},{:e}) rel vs f64-CPU = {:.3e} (attendu ~1e-7 : sortie castée f32)",
+            "native f64 loop 50 iters: n={} δ=({:e},{:e}) rel vs f64-CPU = {:.3e} (expected ~1e-7: output cast to f32)",
             v2[24] as u32, gr, gi,
             (((gr - dre).powi(2) + (gi - dim).powi(2)).sqrt()) / mag
         );
     } else {
-        println!("boucle f64 natif : SHADER_F64 indisponible sur cet adaptateur");
+        println!("native f64 loop: SHADER_F64 unavailable on this adapter");
     }
 }
 

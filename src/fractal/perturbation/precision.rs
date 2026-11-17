@@ -283,8 +283,8 @@ pub(crate) fn compute_perturbation_precision_bits(params: &FractalParams) -> u32
             if exp >= 0 { (24 + exp) as i64 } else { 24 } as u64 + ORBIT_PRECISION_MARGIN_BITS;
         if bits > MAX_PERTURB_PRECISION_BITS as u64 {
             eprintln!(
-                "[PRECISION] ⚠ zoom requiert ~{} bits > max u32 rug/MPFR : précision \
-                 saturée au maximum du type.",
+                "[PRECISION] ⚠ zoom requires ~{} bits > rug/MPFR u32 maximum: precision \
+                 clamped to the type's maximum.",
                 bits
             );
         }

@@ -153,7 +153,7 @@ fn report_reliability(
     if let Some(path) = std::env::var_os("FRACTALL_RELIABILITY_DUMP") {
         let bytes: Vec<u8> = ratios.iter().flat_map(|r| r.to_le_bytes()).collect();
         if let Err(e) = std::fs::write(&path, &bytes) {
-            eprintln!("[RELIABILITY] dump {:?} impossible : {e}", path);
+            eprintln!("[RELIABILITY] cannot write dump {:?}: {e}", path);
         }
     }
 }
@@ -1358,7 +1358,7 @@ pub fn render_perturbation_with_cache(
                 if rel::dd_probe_hopeless(beyond, sample.len()) {
                     keep_f64_unreliable = true;
                     eprintln!(
-                        "[RELIABILITY-DD] sonde : {}/{} pixels non fiables échappent aussi au tier dd — {} pixels ({:.2} %) laissés à leur valeur f64 (non fiables), frame dd non rendue ; FRACTALL_RELIABILITY_GMP_MAX_FRACTION=1 pour tout corriger",
+                        "[RELIABILITY-DD] probe: {}/{} unreliable pixels are also beyond the dd tier — {} pixels ({:.2} %) left at their f64 value (unreliable), dd frame not rendered; set FRACTALL_RELIABILITY_GMP_MAX_FRACTION=1 to correct them all",
                         beyond,
                         sample.len(),
                         unreliable_indices.len(),
@@ -1408,7 +1408,7 @@ pub fn render_perturbation_with_cache(
                 {
                     if perf {
                         eprintln!(
-                            "[DD-ESCALATION] glitch_ratio={:.3} > {:.2} → re-render tier dd (backstop full-GMP évité)",
+                            "[DD-ESCALATION] glitch_ratio={:.3} > {:.2} → re-render tier dd (full-GMP backstop avoided)",
                             glitch_ratio, GLITCH_FALLBACK_THRESHOLD
                         );
                     }
@@ -1540,7 +1540,7 @@ pub fn render_perturbation_with_cache(
                     pure_first.extend_from_slice(&unreliable_indices);
                 } else {
                     eprintln!(
-                        "[RELIABILITY] {} pixels ({:.2} %) non fiables laissés à leur valeur f64 (type {:?}, pas de tier dd) — recalcul GMP estimé hors budget ; FRACTALL_RELIABILITY_GMP_MAX_FRACTION=1 pour tout corriger",
+                        "[RELIABILITY] {} unreliable pixels ({:.2} %) left at their f64 value (type {:?}, no dd tier) — estimated GMP recomputation over budget; set FRACTALL_RELIABILITY_GMP_MAX_FRACTION=1 to correct them all",
                         unreliable_indices.len(),
                         100.0 * unreliable_ratio,
                         params.fractal_type
@@ -1642,7 +1642,7 @@ pub fn render_perturbation_with_cache(
                 }
                 if dd_left_unreliable > 0 {
                     eprintln!(
-                        "[RELIABILITY-DD] {} pixels ({:.2} %) au-delà de la précision du tier dd laissés à leur valeur dd (non fiables) — recalcul GMP estimé hors budget ; FRACTALL_RELIABILITY_GMP_MAX_FRACTION=1 pour tout corriger",
+                        "[RELIABILITY-DD] {} pixels ({:.2} %) beyond the dd tier's precision left at their dd value (unreliable) — estimated GMP recomputation over budget; set FRACTALL_RELIABILITY_GMP_MAX_FRACTION=1 to correct them all",
                         dd_left_unreliable,
                         100.0 * dd_left_unreliable as f64 / frame_pixels.max(1) as f64
                     );

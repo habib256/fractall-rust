@@ -120,7 +120,7 @@ pub fn colorize_output(
     let n = params.width as usize * params.height as usize;
     if out.iterations.len() != n || out.zs.len() != n {
         return Err(format!(
-            "buffers de rendu incomplets : {} itérations / {} zs pour {}×{} px",
+            "incomplete render buffers: {} iterations / {} zs for {}×{} px",
             out.iterations.len(),
             out.zs.len(),
             params.width,
@@ -163,8 +163,8 @@ pub fn colorize_to_rgb_with_extras(
     orbits: &[Option<OrbitData>],
 ) -> Vec<u8> {
     let n = params.width as usize * params.height as usize;
-    assert_eq!(iterations.len(), n, "Taille de la matrice d'itérations invalide");
-    assert_eq!(zs.len(), n, "Taille de la matrice des valeurs z invalide");
+    assert_eq!(iterations.len(), n, "Invalid iteration buffer size");
+    assert_eq!(zs.len(), n, "Invalid z-value buffer size");
     colorize_buffers(
         params,
         iterations,
@@ -209,7 +209,7 @@ pub fn save_png_rgb_with_metadata(
     assert_eq!(
         buffer.len(),
         width as usize * height as usize * 3,
-        "Taille du buffer RGB invalide"
+        "Invalid RGB buffer size"
     );
 
     // Créer les params avec coordonnées HP complètes pour sérialisation
@@ -267,7 +267,7 @@ pub fn load_png_metadata(path: &Path) -> Result<FractalParams, Box<dyn std::erro
         }
     }
 
-    Err("Aucune métadonnée fractall trouvée dans le PNG".into())
+    Err("No fractall metadata found in the PNG".into())
 }
 
 /// Message d'erreur (anglais, destiné à l'utilisateur CLI) d'un PNG sans

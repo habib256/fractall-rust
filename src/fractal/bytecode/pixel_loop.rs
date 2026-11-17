@@ -904,7 +904,7 @@ impl RefF64Source for CompressedSource<'_> {
         // correct-mais-lent, par sûreté.
         debug_assert!(
             false,
-            "wrap_periodic sur source compressée (gate cycle_period)"
+            "wrap_periodic on a compressed source (gate cycle_period)"
         );
         let mut z = self.dec.reset();
         for _ in 0..m {

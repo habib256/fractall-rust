@@ -64,32 +64,32 @@ pub(crate) fn timeline_sample_count(
     velocity: &Dynamic,
 ) -> Result<usize, String> {
     if fps == 0 {
-        return Err("fps doit être > 0".into());
+        return Err("fps must be > 0".into());
     }
     let samples = if let Some(v) = velocity.as_constant() {
         if v <= 0.0 {
             return Err(format!(
-                "vélocité constante {v} ≤ 0 : la vidéo n'avancerait jamais (utilisez une spline pour les segments à reculons)"
+                "constant velocity {v} <= 0: the video would never move forward (use a spline for backward segments)"
             ));
         }
         let intervals = n as f64 * fps as f64 / v;
         if !intervals.is_finite() {
-            return Err("durée de timeline non finie".into());
+            return Err("timeline duration is not finite".into());
         }
         let total = intervals.floor();
         let reaches_end = total / fps as f64 * v >= n as f64;
         total + if reaches_end { 1.0 } else { 2.0 }
     } else {
-        let t_end = velocity.end_time().ok_or("spline sans fin temporelle")?;
+        let t_end = velocity.end_time().ok_or("spline has no end time")?;
         let frames = t_end * fps as f64;
         if !frames.is_finite() || frames < 0.0 {
-            return Err("durée de timeline non finie ou négative".into());
+            return Err("timeline duration is not finite or is negative".into());
         }
         frames.round() + 1.0
     };
     if samples > MAX_TIMELINE_SAMPLES as f64 {
         return Err(format!(
-            "timeline trop longue: {samples:.0} frames (maximum {MAX_TIMELINE_SAMPLES})"
+            "timeline too long: {samples:.0} frames (maximum {MAX_TIMELINE_SAMPLES})"
         ));
     }
     Ok(samples as usize)
@@ -108,7 +108,7 @@ pub fn timeline(n: u32, fps: u32, velocity: &Dynamic) -> Result<Vec<f64>, String
     if let Some(v) = velocity.as_constant() {
         if v <= 0.0 {
             return Err(format!(
-                "vélocité constante {v} ≤ 0 : la vidéo n'avancerait jamais (utilisez une spline pour les segments à reculons)"
+                "constant velocity {v} <= 0: the video would never move forward (use a spline for backward segments)"
             ));
         }
         let total = (n_f * fps as f64 / v).floor() as usize;
@@ -181,7 +181,7 @@ pub fn interpolate_frame(
     out_h: usize,
     z: f64,
 ) -> Vec<u8> {
-    assert!((1.0..2.0 + 1e-9).contains(&z), "z hors [1,2): {z}");
+    assert!((1.0..2.0 + 1e-9).contains(&z), "z outside [1,2): {z}");
     assert_eq!(curr.len(), src_w * src_h * 3);
 
     // Fast path identité : z = 1 et résolutions égales → copie EXACTE de la
@@ -232,11 +232,11 @@ pub fn interpolate_frame(
 /// (classe « colorisation unique », CLAUDE.md) — refusés explicitement.
 pub fn video_outcoloring(name: &str) -> Result<OutColoringMode, String> {
     let mode = OutColoringMode::from_cli_name(name)
-        .ok_or_else(|| format!("outcoloring invalide: '{name}'"))?;
+        .ok_or_else(|| format!("invalid outcoloring: '{name}'"))?;
     if matches!(mode, OutColoringMode::OrbitTraps | OutColoringMode::Wings) {
         return Err(format!(
-            "outcoloring '{name}' non supporté en vidéo (le canal orbites n'est pas \
-             persisté dans les .fmap ; le rendu retomberait sur Smooth)"
+            "outcoloring '{name}' is not supported for video (the orbits channel is not \
+             stored in .fmap files; the render would fall back to Smooth)"
         ));
     }
     Ok(mode)
@@ -262,7 +262,7 @@ pub fn colorize_keyframe(map: &FractalMap, manifest: &Manifest, palette_offset: 
         .validate(map.iterations.len(), distances, &[])
         .map_err(|e| {
             format!(
-                "keyframe non colorisable ({e}) — re-rendre avec [fractal] distance_estimation = true"
+                "cannot colour keyframe ({e}) — re-render with [fractal] distance_estimation = true"
             )
         })?;
     let mut rgb = colorize_to_rgb_with_extras(
@@ -311,7 +311,7 @@ impl<'a> KeyframeCache<'a> {
         if !self.maps.contains_key(&k) {
             let path = keyframe_path(self.project, k);
             let map = load_fmap(&path)
-                .map_err(|e| format!("keyframe {k} illisible ({}) : {e} — lancez `fractall-video render`", path.display()))?;
+                .map_err(|e| format!("cannot read keyframe {k} ({}): {e} — run `fractall-video render`", path.display()))?;
             // Géométrie de la map ≠ géométrie du manifest (dimensions ou
             // supersample modifiés après le rendu) : `interpolate_frame`
             // assertait sur la taille du buffer → PANIC. On refuse proprement
@@ -320,16 +320,16 @@ impl<'a> KeyframeCache<'a> {
             let (exp_w, exp_h) = render_dimensions(self.manifest)?;
             if map.params.width != exp_w || map.params.height != exp_h {
                 return Err(format!(
-                    "keyframe {k} rendue en {}×{} mais le manifest attend {exp_w}×{exp_h} \
-                     (image.width/height/supersample modifiés depuis le rendu) — \
-                     relancez `fractall-video render`",
+                    "keyframe {k} was rendered at {}×{} but the manifest expects {exp_w}×{exp_h} \
+                     (image.width/height/supersample changed since the render) — \
+                     re-run `fractall-video render`",
                     map.params.width, map.params.height
                 ));
             }
             let expected = keyframe_params(self.manifest, k)?;
             if map_fingerprint(&map.params) != map_fingerprint(&expected) {
                 return Err(format!(
-                    "keyframe {k} ne correspond plus au manifest (cible, type, itérations ou canaux de calcul modifiés) — relancez `fractall-video render`"
+                    "keyframe {k} no longer matches the manifest (target, type, iterations or computed channels changed) — re-run `fractall-video render`"
                 ));
             }
             self.maps.insert(k, map);
@@ -367,12 +367,12 @@ impl FrameSink {
                 .as_mut()
                 .expect("stdin ffmpeg piped")
                 .write_all(frame)
-                .map_err(|e| format!("écriture vers ffmpeg: {e}")),
+                .map_err(|e| format!("writing to ffmpeg: {e}")),
             FrameSink::Frames(dir) => {
                 let img = image::RgbImage::from_raw(w, h, frame.to_vec())
-                    .expect("dimensions frame cohérentes");
+                    .expect("consistent frame dimensions");
                 let path = dir.join(format!("frame_{index:06}.png"));
-                img.save(&path).map_err(|e| format!("écriture {}: {e}", path.display()))
+                img.save(&path).map_err(|e| format!("writing {}: {e}", path.display()))
             }
         }
     }
@@ -385,11 +385,11 @@ impl FrameSink {
                     Ok(status) if status.success() => Ok(()),
                     Ok(status) => {
                         let _ = std::fs::remove_file(&out);
-                        Err(format!("ffmpeg a échoué ({status})"))
+                        Err(format!("ffmpeg failed ({status})"))
                     }
                     Err(e) => {
                         let _ = std::fs::remove_file(&out);
-                        Err(format!("attente ffmpeg: {e}"))
+                        Err(format!("waiting for ffmpeg: {e}"))
                     }
                 }
             }
@@ -417,9 +417,9 @@ impl FrameSink {
 /// seulement à l'ancien suffixe situé après la dernière frame courante.
 fn remove_stale_frame_suffix(dir: &Path, frame_count: usize) -> Result<(), String> {
     let entries = std::fs::read_dir(dir)
-        .map_err(|e| format!("lecture du dossier frames {}: {e}", dir.display()))?;
+        .map_err(|e| format!("reading the frames directory {}: {e}", dir.display()))?;
     for entry in entries {
-        let entry = entry.map_err(|e| format!("lecture d'une entrée frames: {e}"))?;
+        let entry = entry.map_err(|e| format!("reading a frames directory entry: {e}"))?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
         let Some(index) = name
@@ -432,7 +432,7 @@ fn remove_stale_frame_suffix(dir: &Path, frame_count: usize) -> Result<(), Strin
         };
         if index >= frame_count {
             std::fs::remove_file(entry.path())
-                .map_err(|e| format!("suppression de la frame obsolète {name}: {e}"))?;
+                .map_err(|e| format!("removing stale frame {name}: {e}"))?;
         }
     }
     Ok(())
@@ -457,7 +457,7 @@ fn spawn_ffmpeg(opts: &AssembleOptions, out: &Path, w: u32, h: u32, fps: u32) ->
         .spawn()
         .map_err(|e| {
             format!(
-                "impossible de lancer '{}' ({e}) — installez ffmpeg ou utilisez --frames-dir",
+                "cannot launch '{}' ({e}) — install ffmpeg or use --frames-dir",
                 opts.ffmpeg
             )
         })
@@ -511,7 +511,7 @@ pub fn assemble_project(
     match outcome {
         AssembleOutcome::Complete(stats) => Ok(stats),
         // Inatteignable sans cancel externe — sémantique historique conservée.
-        AssembleOutcome::Cancelled { .. } => Err("assemblage annulé".into()),
+        AssembleOutcome::Cancelled { .. } => Err("assembly cancelled".into()),
     }
 }
 
@@ -530,13 +530,13 @@ pub fn assemble_project_with_progress(
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     let fps = manifest.video.fps;
     if fps == 0 {
-        return Err("video.fps doit être > 0".into());
+        return Err("video.fps must be > 0".into());
     }
     if !manifest.color.palette_offset.is_finite() {
-        return Err("color.palette_offset doit être fini".into());
+        return Err("color.palette_offset must be finite".into());
     }
     if !manifest.lighting.alpha.is_finite() || !manifest.lighting.beta.is_finite() {
-        return Err("lighting.alpha/beta doivent être finis".into());
+        return Err("lighting.alpha/beta must be finite".into());
     }
     let (out_w, out_h) = (manifest.image.width, manifest.image.height);
     let (src_w, src_h) = render_dimensions(&manifest)
@@ -560,7 +560,7 @@ pub fn assemble_project_with_progress(
             std::fs::create_dir_all(dir)?;
             FrameSink::Frames(dir.clone())
         }
-        _ => return Err("exactement une sortie requise : -o video.mp4 OU --frames-dir DIR".into()),
+        _ => return Err("exactly one output required: -o video.mp4 OR --frames-dir DIR".into()),
     };
 
     let mut cache = KeyframeCache::new(project, &manifest);
@@ -796,7 +796,7 @@ mod tests {
         std::fs::write(&out, b"partial").unwrap();
         let child = Command::new("false").stdin(Stdio::piped()).spawn().unwrap();
         let err = FrameSink::Ffmpeg(child, out.clone()).finish().unwrap_err();
-        assert!(err.contains("échoué"));
+        assert!(err.contains("failed"));
         assert!(!out.exists(), "sortie partielle supprimée");
     }
 
@@ -840,7 +840,7 @@ mod tests {
             ffmpeg: "ffmpeg".into(),
         };
         let err = assemble_project(&dir, &opts).unwrap_err().to_string();
-        assert!(err.contains("ne correspond plus"), "erreur explicite: {err}");
+        assert!(err.contains("no longer matches"), "erreur explicite: {err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -856,7 +856,7 @@ mod tests {
             ffmpeg: "ffmpeg".into(),
         };
         let err = assemble_project(&dir, &opts).unwrap_err().to_string();
-        assert!(err.contains("attendu 2"), "erreur explicite: {err}");
+        assert!(err.contains("expected 2"), "erreur explicite: {err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

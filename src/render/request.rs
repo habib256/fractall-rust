@@ -44,7 +44,7 @@ impl CpuRenderPlan {
     pub fn for_params(params: &FractalParams) -> Self {
         RenderPlan::for_device(params, wisdom::Device::Cpu)
             .into_cpu()
-            .expect("un plan demandé pour CPU doit rester CPU")
+            .expect("a plan requested for the CPU must stay on the CPU")
     }
 
     pub fn wisdom(self) -> WisdomPlan {
@@ -59,7 +59,7 @@ impl GpuRenderPlan {
     pub fn for_params(params: &FractalParams) -> Self {
         RenderPlan::for_device(params, wisdom::Device::Gpu)
             .into_gpu()
-            .expect("un plan demandé pour GPU doit rester GPU")
+            .expect("a plan requested for the GPU must stay on the GPU")
     }
 
     pub fn wisdom(self) -> WisdomPlan {

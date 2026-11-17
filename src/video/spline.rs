@@ -27,7 +27,7 @@ impl Dynamic {
         let s = s.trim();
         if let Ok(v) = s.parse::<f64>() {
             if !v.is_finite() {
-                return Err(format!("valeur non finie: '{s}'"));
+                return Err(format!("non-finite value: '{s}'"));
             }
             return Ok(Dynamic::Constant(v));
         }
@@ -35,26 +35,26 @@ impl Dynamic {
         for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
             let (t_str, v_str) = part
                 .rsplit_once('/')
-                .ok_or_else(|| format!("nœud invalide '{part}' (attendu temps/valeur)"))?;
+                .ok_or_else(|| format!("invalid node '{part}' (expected time/value)"))?;
             let t = parse_time(t_str)?;
             let v = v_str
                 .trim()
                 .parse::<f64>()
-                .map_err(|e| format!("valeur invalide '{v_str}': {e}"))?;
+                .map_err(|e| format!("invalid value '{v_str}': {e}"))?;
             if !v.is_finite() {
-                return Err(format!("valeur non finie: '{v_str}'"));
+                return Err(format!("non-finite value: '{v_str}'"));
             }
             if let Some(&(prev_t, _)) = knots.last() {
                 if t <= prev_t {
                     return Err(format!(
-                        "temps non croissants: {prev_t}s puis {t}s (les nœuds doivent être triés)"
+                        "times not increasing: {prev_t}s then {t}s (nodes must be sorted)"
                     ));
                 }
             }
             knots.push((t, v));
         }
         match knots.len() {
-            0 => Err(format!("dynamique illisible: '{s}'")),
+            0 => Err(format!("unreadable dynamic value: '{s}'")),
             1 => Ok(Dynamic::Constant(knots[0].1)),
             _ => Ok(Dynamic::Spline(MonotoneCubic::new(knots))),
         }
@@ -99,14 +99,14 @@ impl Dynamic {
 fn parse_time(s: &str) -> Result<f64, String> {
     let s = s.trim();
     let value = if let Some((m, sec)) = s.split_once(':') {
-        let m: f64 = m.trim().parse().map_err(|e| format!("minutes invalides '{s}': {e}"))?;
-        let sec: f64 = sec.trim().parse().map_err(|e| format!("secondes invalides '{s}': {e}"))?;
+        let m: f64 = m.trim().parse().map_err(|e| format!("invalid minutes '{s}': {e}"))?;
+        let sec: f64 = sec.trim().parse().map_err(|e| format!("invalid seconds '{s}': {e}"))?;
         m * 60.0 + sec
     } else {
-        s.parse::<f64>().map_err(|e| format!("temps invalide '{s}': {e}"))?
+        s.parse::<f64>().map_err(|e| format!("invalid time '{s}': {e}"))?
     };
     if !value.is_finite() || value < 0.0 {
-        return Err(format!("temps non fini ou négatif: '{s}'"));
+        return Err(format!("time not finite or negative: '{s}'"));
     }
     Ok(value)
 }

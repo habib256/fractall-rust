@@ -154,7 +154,7 @@ fn main() {
             h.state.store(3, Ordering::Release);
         });
         if std::env::var_os("BENCH_VERBOSE").is_some() {
-            eprintln!("  reprises par le fil principal : {stolen}/{iters}");
+            eprintln!("  taken back by the main thread: {stolen}/{iters}");
         }
         (t.elapsed().as_secs_f64(), z)
     };
@@ -173,7 +173,7 @@ fn main() {
     let same = zs[0] == zs[1] && zs[0] == zs[2];
     let per = |t: f64| t / iters as f64 * 1e9;
     println!(
-        "bits={bits} iters={iters}  série {:.0} ns/it  join {:.0} ns/it (×{:.2})  assistant {:.0} ns/it (×{:.2})  identiques={same}",
+        "bits={bits} iters={iters}  serial {:.0} ns/it  join {:.0} ns/it (×{:.2})  helper {:.0} ns/it (×{:.2})  identical={same}",
         per(best[0]),
         per(best[1]),
         best[0] / best[1],

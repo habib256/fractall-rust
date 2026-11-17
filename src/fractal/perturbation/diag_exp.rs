@@ -171,7 +171,7 @@ fn diag_exp_pixel_trajectory() {
         }
     }
     eprintln!("exp iter = {exp_iter}  (trace {} events)", trace.len());
-    eprintln!("rebases: {} (au bout de réf : {})", rebases.len(),
+    eprintln!("rebases: {} (at reference end: {})", rebases.len(),
         rebases.iter().filter(|r| r.1 + 1 >= ref_len).count());
     for &(nn, mm, d) in rebases.iter().filter(|r| r.1 + 1 >= ref_len).take(6) {
         let dn = d.norm_sqr_fexp();

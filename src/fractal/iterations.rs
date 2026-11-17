@@ -214,7 +214,7 @@ pub fn iterate_point_with_formula(
     }
     match params.fractal_type {
         FractalType::VonKoch | FractalType::Dragon => {
-            panic!("Les fractales vectorielles doivent être rendues via render_von_koch/render_dragon")
+            panic!("vector fractals must be rendered via render_von_koch/render_dragon")
         }
         FractalType::Mandelbrot => mandelbrot(params, z_pixel),
         FractalType::Julia => julia(params, z_pixel),
@@ -247,7 +247,7 @@ pub fn iterate_point_with_formula(
         | FractalType::Lyapunov
         | FractalType::Nebulabrot
         | FractalType::AntiBuddhabrot) => panic!(
-            "{special:?} doit être rendu via le dispatcher cancellable, pas iterate_point()"
+            "{special:?} must be rendered via the cancellable dispatcher, not iterate_point()"
         ),
     }
 }
