@@ -40,6 +40,18 @@
 
 use std::sync::OnceLock;
 
+// Décisions « expérience utilisateur » du sage (navigation GUI, itérations
+// automatiques) : modules voisins, exposés ici pour que `wisdom` reste le
+// point d'entrée unique des choix automatiques.
+pub use crate::fractal::wisdom_iter::{
+    assess_iterations, auto_iterations, auto_iterations_applicable, auto_iterations_with,
+    predicted_change, starting_iterations, AutoIterError, AutoIterOptions, AutoIterResult,
+    IterationAdvice, IterationStats, IterationVerdict,
+};
+pub use crate::fractal::wisdom_nav::{
+    FrameCost, NavMode, NavModeDecision, NavModeState, NavPreference,
+};
+
 use crate::fractal::bytecode::harmonic_mla::{harmonic_variant, HarmonicVariant};
 use crate::fractal::perturbation::compress::compress_enabled;
 use crate::fractal::perturbation::delta::pixel_size_exp_threshold;

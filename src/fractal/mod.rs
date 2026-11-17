@@ -11,6 +11,11 @@ pub mod buddhabrot;
 pub(crate) mod density;
 pub mod perturbation;
 pub mod wisdom;
+// Le sage décide aussi de l'expérience utilisateur : mode de navigation GUI
+// (continu / pas à pas) et nombre d'itérations automatique. Ré-exportés par
+// `wisdom`.
+pub mod wisdom_iter;
+pub mod wisdom_nav;
 pub mod view;
 // G10.4 : réutilisation pixels inter-frame XaoS. Consommé par la GUI (build du
 // mapping) et les boucles pixel CPU ; dead-code partiel dans les autres bins.
