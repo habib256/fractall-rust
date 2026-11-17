@@ -100,9 +100,13 @@ struct Cli {
     #[arg(long, allow_hyphen_values = true)]
     ymax: Option<f64>,
 
-    /// Maximum iteration count (otherwise the type's default)
-    #[arg(long)]
-    iterations: Option<u32>,
+    /// Maximum iteration count: a number, or `auto`. When omitted, the count
+    /// comes from --toml / --from-png if they provide one; otherwise it is
+    /// chosen automatically by measuring the view on a small probe render
+    /// (escape-time types; other types keep their default). `auto` forces the
+    /// measurement even over a --toml / --from-png value.
+    #[arg(long, value_name = "N|auto", value_parser = parse_iterations_arg)]
+    iterations: Option<IterationsArg>,
 
     /// Colour palette (0 to 26, default 6 = Plasma)
     #[arg(long)]
@@ -299,6 +303,52 @@ struct Cli {
     export_f3_toml: Option<PathBuf>,
 }
 
+/// Valeur de `--iterations` : un nombre ou `auto`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IterationsArg {
+    Count(u32),
+    Auto,
+}
+
+fn parse_iterations_arg(s: &str) -> Result<IterationsArg, String> {
+    let s = s.trim();
+    if s.eq_ignore_ascii_case("auto") {
+        return Ok(IterationsArg::Auto);
+    }
+    match s.parse::<u32>() {
+        Ok(0) => Err("must be at least 1 (or `auto`)".into()),
+        Ok(n) => Ok(IterationsArg::Count(n)),
+        Err(_) => Err(format!("expected a positive integer or `auto`, got '{s}'")),
+    }
+}
+
+/// D'où vient le plafond d'itérations du rendu (ordre de résolution de
+/// `--iterations`, cf. `resolve_params`). `Auto` = la sonde
+/// `wisdom::auto_iterations_with` le fixera dans `main`, AVANT le rendu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IterChoice {
+    /// `--iterations N` explicite.
+    User,
+    /// Valeur de `--toml` / `--from-png`, `--iterations` absent.
+    Source,
+    /// Défaut du type (type sans plafond « escape-time »).
+    Default,
+    /// Sonde automatique ; `explicit` = `--iterations auto` écrit.
+    Auto { explicit: bool },
+}
+
+impl IterChoice {
+    fn wisdom_source(self) -> fractal::wisdom::IterationSource {
+        use fractal::wisdom::IterationSource as S;
+        match self {
+            IterChoice::User => S::User,
+            IterChoice::Source => S::Source,
+            IterChoice::Default => S::Default,
+            IterChoice::Auto { .. } => S::Auto,
+        }
+    }
+}
+
 /// Erreur de résolution des paramètres : message utilisateur + code de sortie
 /// (2 = usage, 1 = valeur invalide / fichier illisible).
 #[derive(Debug)]
@@ -321,6 +371,12 @@ struct Resolved {
     params: FractalParams,
     aa_samples: u32,
     aa_jitter_scale: f64,
+    /// Provenance du plafond d'itérations ; `Auto` ⇒ sonde avant le rendu.
+    iterations: IterChoice,
+    /// Le TOML a aligné `max_perturb_iterations` / `max_bla_steps` sur ses
+    /// itérations : une valeur automatique doit les suivre (pas de cap TOML
+    /// périmé à côté d'un plafond différent).
+    caps_follow_iterations: bool,
 }
 
 /// Champs extraits d'un TOML de paramètres (format léger rust-fractal-core,
@@ -616,6 +672,10 @@ fn run_from_map(cli: &Cli, map_path: &std::path::Path, output_path: &std::path::
 /// du PNG). Hors `--from-png`, le comportement historique est inchangé.
 fn resolve_params(cli: &Cli) -> Result<Resolved, CliError> {
     let from_png = cli.from_png.is_some();
+    // Une source (--from-png, ou --toml avec `iterations`) fournit-elle le
+    // plafond d'itérations ? Si oui, `--iterations` absent la garde.
+    let mut source_has_iterations = from_png;
+    let mut caps_follow_iterations = false;
 
     let mut params = if let Some(ref png_path) = cli.from_png {
         let params = io::png::params_for_rerender(png_path, cli.width, cli.height)
@@ -759,6 +819,8 @@ fn resolve_params(cli: &Cli) -> Result<Resolved, CliError> {
             // effective caps on both engines.
             params.perturbation.max_perturb_iterations = iters;
             params.perturbation.max_bla_steps = iters;
+            source_has_iterations = true;
+            caps_follow_iterations = true;
         }
 
         if cli.bailout.is_none() {
@@ -835,11 +897,11 @@ fn resolve_params(cli: &Cli) -> Result<Resolved, CliError> {
         params.center_y_hp = Some(cy);
     }
 
-    // Override des itérations si fourni.
-    if let Some(iters) = cli.iterations {
-        if iters > 0 {
-            params.iteration_max = iters;
-        }
+    // Override des itérations si fourni (nombre explicite). `auto` et
+    // l'absence sont résolus en fin de fonction, sur les paramètres FINALS
+    // (type, formule hybride/opcodes) — cf. `iterations_choice`.
+    if let Some(IterationsArg::Count(iters)) = cli.iterations {
+        params.iteration_max = iters;
     }
 
     // Palette et répétitions de couleurs (défaut historique 6 si absente ;
@@ -1029,11 +1091,110 @@ fn resolve_params(cli: &Cli) -> Result<Resolved, CliError> {
         )));
     }
 
+    let iterations = iterations_choice(cli.iterations, source_has_iterations, &params);
+
     Ok(Resolved {
         params,
         aa_samples,
         aa_jitter_scale,
+        iterations,
+        caps_follow_iterations,
     })
+}
+
+/// Ordre de résolution du plafond d'itérations (pur, testé) :
+/// `--iterations N` → N ; `--iterations auto` → sonde, même si une source
+/// fournit une valeur ; absent + valeur de `--toml`/`--from-png` → cette
+/// valeur ; absent sinon → sonde si le type a un plafond « escape-time »
+/// (`wisdom::auto_iterations_applicable`), défaut du type autrement.
+fn iterations_choice(
+    arg: Option<IterationsArg>,
+    source_has_iterations: bool,
+    params: &FractalParams,
+) -> IterChoice {
+    match arg {
+        Some(IterationsArg::Count(_)) => IterChoice::User,
+        Some(IterationsArg::Auto) => IterChoice::Auto { explicit: true },
+        None if source_has_iterations => IterChoice::Source,
+        None if fractal::wisdom::auto_iterations_applicable(params) => {
+            IterChoice::Auto { explicit: false }
+        }
+        None => IterChoice::Default,
+    }
+}
+
+/// Lignes stderr de la sonde automatique (anglais, une ligne d'information,
+/// plus un avertissement si la sonde n'a pas pu conclure franchement).
+fn auto_iterations_messages(r: &fractal::wisdom::AutoIterResult) -> Vec<String> {
+    let summary = r.summary_line();
+    let detail = summary.strip_prefix("Auto iterations: ").unwrap_or(&summary);
+    let mut line = format!("Iterations: auto \u{2192} {detail}");
+    if line.chars().count() <= 90 {
+        line.push_str(" \u{2014} --iterations N overrides");
+    }
+    let mut lines = vec![line];
+    if r.no_escape {
+        lines.push(format!(
+            "Warning: no pixel escaped within {} iterations on the probe, so the view looks \
+             entirely interior (black). If it should show detail, pass a higher --iterations N.",
+            r.last_probe_cap
+        ));
+    }
+    if r.ceiling_hit {
+        lines.push(format!(
+            "Warning: the automatic iteration count hit its ceiling ({}) and the view may need \
+             more; pass --iterations N to set it explicitly.",
+            r.iteration_max
+        ));
+    }
+    lines
+}
+
+/// Exécute la sonde automatique si `choice` la demande : fixe
+/// `params.iteration_max` (et les caps perturbation qui suivaient le TOML),
+/// écrit la ligne d'information et laisse dans `orbit_cache` l'orbite de
+/// référence du dernier tour, réutilisable par le rendu final (même vue,
+/// précision alignée par la sonde). `NotApplicable` garde la valeur courante
+/// (défaut du type ; note seulement si `--iterations auto` était écrit).
+/// Renvoie la provenance EFFECTIVE (pour `[WISDOM] iter_src=`).
+fn apply_auto_iterations(
+    params: &mut FractalParams,
+    choice: IterChoice,
+    caps_follow_iterations: bool,
+    cancel: &Arc<AtomicBool>,
+    orbit_cache: &mut Option<Arc<fractal::perturbation::ReferenceOrbitCache>>,
+) -> IterChoice {
+    let IterChoice::Auto { explicit } = choice else {
+        return choice;
+    };
+    use fractal::wisdom::{auto_iterations_with, AutoIterError, AutoIterOptions};
+    match auto_iterations_with(params, cancel, AutoIterOptions::default(), orbit_cache) {
+        Ok(r) => {
+            params.iteration_max = r.iteration_max;
+            if caps_follow_iterations {
+                params.perturbation.max_perturb_iterations = r.iteration_max;
+                params.perturbation.max_bla_steps = r.iteration_max;
+            }
+            for line in auto_iterations_messages(&r) {
+                eprintln!("{line}");
+            }
+            choice
+        }
+        Err(AutoIterError::NotApplicable) => {
+            if explicit {
+                eprintln!(
+                    "Note: --iterations auto does not apply to {:?} (not an escape-time type); \
+                     using {} iterations.",
+                    params.fractal_type, params.iteration_max
+                );
+            }
+            IterChoice::Default
+        }
+        Err(AutoIterError::Cancelled) => {
+            eprintln!("Error: automatic iteration probe interrupted");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn main() {
@@ -1058,9 +1219,11 @@ fn main() {
     }
 
     let Resolved {
-        params,
+        mut params,
         aa_samples,
         aa_jitter_scale,
+        iterations,
+        caps_follow_iterations,
     } = match resolve_params(&cli) {
         Ok(r) => r,
         Err(e) => {
@@ -1068,6 +1231,27 @@ fn main() {
             std::process::exit(e.code);
         }
     };
+
+    // Le temps de rendu rapporté inclut la sonde d'itérations automatique.
+    let start_time = std::time::Instant::now();
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    // Itérations automatiques (wisdom_iter) : sonde CPU par le dispatcher
+    // unique, AVANT le choix du device et l'export F3 (qui voient ainsi la
+    // valeur finale). L'orbite de référence du dernier tour reste dans
+    // `orbit_cache` et sert au rendu final ; les samples AA re-rendent avec
+    // ce même `params`.
+    let mut orbit_cache = None;
+    fractal::wisdom::set_iteration_source(iterations.wisdom_source());
+    let iterations = apply_auto_iterations(
+        &mut params,
+        iterations,
+        caps_follow_iterations,
+        &cancel,
+        &mut orbit_cache,
+    );
+    fractal::wisdom::set_iteration_source(iterations.wisdom_source());
+    let params = params;
 
     if let Some(path) = cli.export_f3_toml.as_deref() {
         if let Err(error) = save_f3_toml(path, &params) {
@@ -1078,9 +1262,6 @@ fn main() {
     }
 
     // Calcul escape-time (CPU ou GPU).
-    let start_time = std::time::Instant::now();
-    let cancel = Arc::new(AtomicBool::new(false));
-
     // Sortie TYPÉE du dispatcher (G5 `RenderOutput`) : les canaux annexes
     // (distances/orbites) voyagent avec iterations/zs jusqu'à la colorisation
     // vérifiée et --output-map — plus de tuple partiel qui les jette.
@@ -1101,7 +1282,6 @@ fn main() {
     if let Some(gpu) = gpu_renderer.as_ref() {
         println!("GPU initialised ({})", gpu.precision_label());
     }
-    let mut orbit_cache = None;
     let planned = render::render_planned(
         render::PlannedRenderRequest::new(final_plan, render::RenderRequest::new(&params, &cancel)),
         gpu_renderer.as_ref(),
@@ -1424,6 +1604,158 @@ mod tests {
         ]);
         let err = resolve_params(&cli).err().expect("must fail");
         assert!(err.msg.contains("file not found"), "{}", err.msg);
+    }
+
+    fn resolve_full(args: &[&str]) -> Resolved {
+        let mut argv = vec!["fractall-cli"];
+        argv.extend_from_slice(args);
+        resolve_params(&Cli::parse_from(argv)).unwrap_or_else(|e| panic!("{}", e.msg))
+    }
+
+    #[test]
+    fn iterations_argument_parses_numbers_and_auto() {
+        assert_eq!(parse_iterations_arg("5000"), Ok(IterationsArg::Count(5000)));
+        assert_eq!(parse_iterations_arg("auto"), Ok(IterationsArg::Auto));
+        assert_eq!(parse_iterations_arg("AUTO"), Ok(IterationsArg::Auto));
+        assert!(parse_iterations_arg("0").is_err());
+        assert!(parse_iterations_arg("lots").is_err());
+        assert!(Cli::try_parse_from(["fractall-cli", "--iterations", "x"]).is_err());
+    }
+
+    /// Ordre de résolution : nombre explicite > `auto` explicite > valeur
+    /// d'une source > sonde (types escape-time) > défaut du type.
+    #[test]
+    fn iterations_resolution_order() {
+        // Nombre explicite : tel quel, pas de sonde.
+        let r = resolve_full(&["--type", "3", "--iterations", "777", "--output", "x.png"]);
+        assert_eq!(r.iterations, IterChoice::User);
+        assert_eq!(r.params.iteration_max, 777);
+
+        // Absent, type escape-time, aucune source : sonde.
+        let r = resolve_full(&["--type", "3", "--output", "x.png"]);
+        assert_eq!(r.iterations, IterChoice::Auto { explicit: false });
+
+        // Absent, type sans plafond escape-time : défaut du type, inchangé.
+        let r = resolve_full(&["--type", "6", "--output", "x.png"]);
+        assert_eq!(r.iterations, IterChoice::Default);
+        assert_eq!(
+            r.params.iteration_max,
+            default_params_for_type(FractalType::Newton, 1920, 1080).iteration_max
+        );
+
+        // `auto` explicite sur un type non applicable : la sonde dira
+        // NotApplicable (note à l'écran), le défaut reste en place.
+        let r = resolve_full(&["--type", "6", "--iterations", "auto", "--output", "x.png"]);
+        assert_eq!(r.iterations, IterChoice::Auto { explicit: true });
+
+        // TOML avec `iterations` : la valeur de la source, caps alignés.
+        let r = resolve_full(&["--toml", "toml/e50.toml", "--output", "x.png"]);
+        assert_eq!(r.iterations, IterChoice::Source);
+        assert!(r.caps_follow_iterations);
+        assert_eq!(r.params.perturbation.max_perturb_iterations, r.params.iteration_max);
+
+        // `auto` explicite l'emporte sur la valeur du TOML.
+        let r = resolve_full(&["--toml", "toml/e50.toml", "--iterations", "Auto", "--output", "x.png"]);
+        assert_eq!(r.iterations, IterChoice::Auto { explicit: true });
+        assert!(r.caps_follow_iterations);
+
+        // TOML + nombre explicite : le nombre.
+        let r = resolve_full(&["--toml", "toml/e50.toml", "--iterations", "1234", "--output", "x.png"]);
+        assert_eq!(r.iterations, IterChoice::User);
+        assert_eq!(r.params.iteration_max, 1234);
+    }
+
+    #[test]
+    fn iterations_from_png_source_and_explicit_auto() {
+        let png = tmp("iter_src.png");
+        let png_s = png.to_str().unwrap();
+        let original = resolve(&[
+            "--type", "3", "--width", "24", "--height", "16", "--iterations", "321",
+            "--output", png_s,
+        ]);
+        render_to_png(&original, &png);
+        let r = resolve_full(&["--from-png", png_s, "--output", "x.png"]);
+        assert_eq!(r.iterations, IterChoice::Source);
+        assert_eq!(r.params.iteration_max, 321);
+        let r = resolve_full(&["--from-png", png_s, "--iterations", "auto", "--output", "x.png"]);
+        assert_eq!(r.iterations, IterChoice::Auto { explicit: true });
+        let _ = std::fs::remove_file(png);
+    }
+
+    /// Bout en bout : `--iterations` absent sur une vue Mandelbrot moyennement
+    /// profonde (path perturbation) → la sonde fixe le plafond, le rendu
+    /// réutilise son orbite ; le PNG porte la valeur NUMÉRIQUE finale et
+    /// `--from-png` le reproduit au pixel près SANS nouvelle sonde.
+    #[test]
+    fn auto_iterations_end_to_end_png_metadata_and_rerender() {
+        let png = tmp("auto_e2e.png");
+        let png_s = png.to_str().unwrap();
+        let Resolved {
+            mut params,
+            iterations,
+            caps_follow_iterations,
+            ..
+        } = resolve_full(&[
+            "--type", "3", "--width", "96", "--height", "64", "--no-gpu",
+            "--center-x-hp", "-0.743643887037158704752191506114774",
+            "--center-y-hp", "0.131825904205311970493132056385139",
+            "--zoom", "1e14", "--output", png_s,
+        ]);
+        assert_eq!(iterations, IterChoice::Auto { explicit: false });
+        let default_iters = params.iteration_max;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut cache = None;
+        let effective =
+            apply_auto_iterations(&mut params, iterations, caps_follow_iterations, &cancel, &mut cache);
+        assert_eq!(effective, iterations);
+        assert!(cache.is_some(), "the probe leaves its reference orbit for the final render");
+        let auto_iters = params.iteration_max;
+        assert_ne!(auto_iters, default_iters, "the probe must have chosen a value");
+
+        // Rendu final comme `main` : dispatcher unique AVEC le cache de la sonde.
+        let out = render::render_request(render::RenderRequest::new(&params, &cancel), &mut cache)
+            .expect("render");
+        let rgb = io::png::colorize_output(&params, &out).expect("colorize");
+        let [cx, cy, sx, sy] = hp_strings(&params);
+        save_png_rgb_with_metadata(&params, &rgb, &png, &cx, &cy, &sx, &sy).expect("save");
+
+        let saved = io::png::load_png_metadata(&png).expect("fractall PNG metadata");
+        assert_eq!(saved.iteration_max, auto_iters);
+
+        let again = resolve_full(&["--from-png", png_s, "--no-gpu", "--output", "x.png"]);
+        assert_eq!(again.iterations, IterChoice::Source);
+        assert_eq!(again.params.iteration_max, auto_iters);
+        let rgb_again = render_to_png(&again.params, &tmp("auto_e2e_again.png"));
+        assert!(rgb == rgb_again, "--from-png re-render of an auto-iteration PNG differs");
+
+        for p in [png, tmp("auto_e2e_again.png")] {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    #[test]
+    fn auto_iterations_messages_are_one_line_plus_warnings() {
+        let mut r = fractal::wisdom::AutoIterResult {
+            iteration_max: 42_000,
+            rounds: 2,
+            last_probe_cap: 160_000,
+            elapsed: std::time::Duration::from_millis(410),
+            probe_size: (85, 48),
+            max_escaped: 34_565,
+            q99_escaped: Some(30_000),
+            escaped_fraction: 0.6,
+            predicted_change: 0.001,
+            ceiling_hit: false,
+            no_escape: false,
+        };
+        let lines = auto_iterations_messages(&r);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("Iterations: auto \u{2192} 42000 ("), "{}", lines[0]);
+        assert!(!lines[0].starts_with('['), "must not look like a harness tag");
+        r.no_escape = true;
+        let lines = auto_iterations_messages(&r);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].starts_with("Warning:") && lines[1].contains("--iterations N"));
     }
 
     #[test]

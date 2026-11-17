@@ -725,6 +725,69 @@ la mantisse (vérifié : à 1e300, `req_exp=1003` mais `req_prec=8`). Le tier **
 non captée par un détecteur cheap fiable (proxy `cbits` réfuté, cf. TODO G3).
 Seuils calibrés **préservés** (271 unit + 24 golden pixel-exact + sweep-lock).
 
+#### Décisions « expérience utilisateur » du sage (`wisdom_nav`, `wisdom_iter`)
+
+Deux modules voisins, ré-exportés par `fractal::wisdom` (point d'entrée
+unique des choix automatiques). Aucun champ `FractalParams` : « auto » est un
+état CLI/GUI, seule la valeur résolue est stockée.
+
+- **`wisdom_nav`** — mode de navigation GUI, logique PURE (ni horloge ni
+  egui). `NavPreference` {Auto (défaut), Continuous, Stepped} → `NavMode`
+  {Continuous, Stepped} ; la GUI possède un `NavModeState` et le nourrit par
+  `observe_frame(FrameCost{elapsed_secs, divisor, fresh_fraction})` après
+  chaque rendu terminé (coût plein cadre extrapolé `elapsed·d²/fresh` ; image
+  ignorée si < 25 % de pixels calculés), ou `predict(s)` avant la première
+  mesure (marge ×2). Grandeur jugée : image de navigation projetée au diviseur
+  max (4) = plein cadre / 16. Pas à pas si > **0,75 s** (3 × budget 0,25 s)
+  sur **2 mesures consécutives** (une seule si > 4 × le seuil) ; retour au
+  continu si < **0,3 s** sur 2 mesures ; bande morte entre les deux
+  (hystérésis, compteurs remis à zéro). Préférence forcée toujours respectée.
+  `NavModeDecision.message` : texte anglais produit par la lib pour la barre
+  d'état (bascule « Step navigation: … » / « Continuous navigation is back:
+  … », ou avertissement consultatif une fois par épisode lent si Continuous
+  est forcé sur une vue lente).
+- **`wisdom_iter`** — nombre d'itérations automatique. Critère : un plafond
+  `C` suffit si la fraction de pixels dont la classe évadé/plafonné change
+  entre `C` et `4C` reste sous **`TARGET_CHANGE` = 0,2 %** — extrapolée de la
+  queue de la distribution des évasions (loi de puissance sur le surplus
+  `it − m`, `m` = quantile 1 %), sans rendu supplémentaire. Couche par image
+  (`IterationStats::from_iterations` + `assess_iterations`, GUI) : croissance
+  seulement au-delà de **`GROW_THRESHOLD` = 0,5 %** (vise alors 0,2 %),
+  réduction seulement si `C/4` suffit déjà ; jamais sous 1,25 × le quantile
+  99,9 % observé. Sonde ponctuelle (`auto_iterations_with(&params, &cancel,
+  AutoIterOptions::default(), &mut orbit_cache)`, CLI + démarrage GUI) :
+  **4096 pixels** au rapport d'aspect, CPU par le dispatcher unique, ≤ 7
+  tours, plafond max 10 M. Départ (`starting_iterations`) : défaut du type,
+  relevé à `250·log10(zoom)` au-delà de 1e10 (zoom = 4/span),
+  borné à 250 000. Rien ne s'évade : ×4 au moins 2 fois puis tant que le tour
+  suivant tient dans **8 s** de budget, sinon on rend le départ avec
+  `no_escape`. Précision de l'orbite de la sonde alignée sur la vue PLEINE
+  taille ⇒ le cache d'orbite sert au rendu final (verrou
+  `probe_orbit_cache_is_reusable_by_final_render`). Types applicables
+  (`auto_iterations_applicable`) : familles Mandelbrot/Julia bytecode (M, J,
+  BS, Tricorn, Celtic, Buffalo, PerpBS, Multibrot + variantes Julia),
+  hybrides/opcodes, Alpha Mandelbrot (+Julia), Mandelbrot Sin / Julia Sin,
+  Phoenix, Barnsley (M + J) ; NON : vectoriels, densités, Lyapunov, Newton,
+  Nova, Magnet, Mandelbulb, Pickover. Limites connues : vue dont rien ne
+  s'évade dans le budget ⇒ départ + `no_escape` (intérieur indiscernable d'un
+  plafond trop bas) ; sur vue très profonde la sonde coûte ≈ une orbite de
+  référence ; `cancel` n'est pas relevé pendant la correction de fiabilité
+  dd. Calibration rejouable : `cargo run --release --example
+  calibrate_auto_iter`. `AutoIterResult::summary_line()` = ligne anglaise.
+  **Câblage CLI** (`main.rs`) : `iterations_choice` (ordre de résolution, cf.
+  §CLI) puis `apply_auto_iterations` AVANT le choix du device et l'export F3 ;
+  le cache d'orbite de la sonde est passé à `render_planned` ; un TOML qui
+  alignait `max_perturb_iterations`/`max_bla_steps` voit ses caps suivre la
+  valeur auto. `[WISDOM]` gagne en FIN de ligne `iter=N iter_src=user|source|
+  default|auto` (`wisdom::set_iteration_source`, global de processus déclaré
+  par le CLI ; `-` ailleurs) — `_RE_WISDOM` ne lit que le préfixe.
+  ⚠️ Toute invocation CLI à résultat déterministe (golden, baseline, icône)
+  doit porter `--iterations` ou une source qui le fournit.
+- **Câblage GUI** (`gui/app.rs`) : sélecteur « Nav: Auto/Continuous/Step » et
+  « Iter: Auto ». ⚠️ La GUI ne doit PAS lancer l'évaluation par image
+  (`assess_iterations`) sur les frames d'écho XaoS (pixels copiés : la
+  distribution ne décrit pas la vue).
+
 ### Détecteur de fiabilité par pixel (G9.6, `bytecode/reliability.rs`)
 
 Le fast-path f64 Mandelbrot rendait des comptes FAUX sans rien signaler
@@ -1174,7 +1237,14 @@ fractall-cli --type N --output FILE [OPTIONS]
   --type / --width / --height
   --center-x / --center-y (f64) ou --center-x-hp / --center-y-hp (string HP)
   --zoom EXPR (notation scientifique OK, ex: 1.41e219)
-  --iterations N
+  --iterations N|auto     # ordre : N explicite → N ; `auto` explicite → sonde
+                          #   (même sur une valeur --toml/--from-png) ; absent
+                          #   + valeur de --toml/--from-png → cette valeur ;
+                          #   absent sinon → sonde wisdom_iter si
+                          #   `auto_iterations_applicable`, défaut du type
+                          #   sinon. Sonde : ligne stderr « Iterations: auto →
+                          #   N (…) », orbite réutilisée par le rendu, PNG =
+                          #   valeur numérique finale (--from-png ne resonde pas)
   --algorithm auto|f64|perturbation|gmp
   --precision-bits N
   --palette 0-26 / --color-repeat N / --outcoloring MODE

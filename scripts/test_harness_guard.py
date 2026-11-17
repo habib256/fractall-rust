@@ -156,7 +156,7 @@ def run_regression_gates():
 
 
 SAMPLE_CLI_OUTPUT = """\
-[WISDOM] type=Mandelbrot device=Cpu algo=Perturbation tier=f64 variants=- bench=- req_exp=166.1 req_prec=9b tier_mantissa=53b ref_prec=196b pixel_size=3.906e-53
+[WISDOM] type=Mandelbrot device=Cpu algo=Perturbation tier=f64 variants=- bench=- req_exp=166.1 req_prec=9b tier_mantissa=53b ref_prec=196b pixel_size=3.906e-53 iter=200000 iter_src=source
 [PERTURB PERF] 256x256 pixels=65536 zoom=1.00e50 small_image=true orbit=0.120s pixels=0.800s post=0.010s total=0.950s avg_iter/px=12345 max_iter/px=99999 ns/iter=2.1 glitched_initial=0 corrections=0 fallback_ratio=0.000
 [RELIABILITY] mode=Escalate runaway=1e30 flagged=12/65536 (0.0183%) type=Mandelbrot
 [FRACTALL] type=Mandelbrot path=bytecode_f64 prec=196b iter_max=200000 avg_iter/px=12345 max_iter/px=99999 ns/iter=2.1 pixels=0.800s total=0.950s
