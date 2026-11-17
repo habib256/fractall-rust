@@ -17,16 +17,19 @@ use quality::{apply_zoom, compare, compare_gpu, params_from_preset, ComparisonOp
 #[derive(Parser, Debug)]
 #[command(
     name = "fractall-quality",
-    about = "Qualité/régression perturbation vs GMP pur",
+    about = "Quality/regression check: perturbation vs pure GMP",
     version
 )]
 struct Cli {
+    /// Render width in pixels.
     #[arg(long, default_value_t = 256, global = true)]
     width: u32,
 
+    /// Render height in pixels.
     #[arg(long, default_value_t = 256, global = true)]
     height: u32,
 
+    /// Directory receiving the reports.
     #[arg(long, default_value = "quality-reports", global = true)]
     output_dir: PathBuf,
 
@@ -51,6 +54,7 @@ struct Cli {
     #[arg(long, default_value_t = 1.0, global = true)]
     fail_p99_iter_diff: f64,
 
+    /// Fraction of divergent pixels above which -> FAIL.
     #[arg(long, default_value_t = 0.01, global = true)]
     warn_divergence_ratio: f64,
 
@@ -60,70 +64,70 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Lister les presets disponibles.
+    /// List the available presets.
     List,
-    /// Exécuter un preset par nom.
+    /// Run one preset by name.
     Preset { name: String },
-    /// Exécuter toute la suite.
+    /// Run the whole suite.
     Suite,
-    /// Exécuter une scène personnalisée.
+    /// Run a custom scene.
     Compare {
-        /// Type de fractale (id entier, voir fractall-cli --help)
+        /// Fractal type (integer id, see fractall-cli --help)
         #[arg(long = "type")]
         fractal_type: u8,
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         center_x_hp: String,
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         center_y_hp: String,
         #[arg(long)]
         zoom: String,
-        /// Julia seed (requis pour --type 4)
-        #[arg(long)]
+        /// Julia seed (required for --type 4)
+        #[arg(long, allow_hyphen_values = true)]
         julia_re: Option<f64>,
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         julia_im: Option<f64>,
-        /// Nom de sortie (dossier sous output-dir). Défaut "custom".
+        /// Output name (directory under output-dir). Default "custom".
         #[arg(long, default_value = "custom")]
         name: String,
     },
-    /// Parité GPU↔CPU sur l'échelle de presets GPU (verrou G9.4/9.5).
-    /// Rapports sous <output-dir>/gpu/ ; "pert" = GPU, "gmp" = juge GMP pur.
+    /// GPU↔CPU parity on the GPU preset ladder.
+    /// Reports under <output-dir>/gpu/; "pert" = GPU, "gmp" = pure-GMP judge.
     GpuSuite,
-    /// Chronométrage GPU vs CPU (G14.5) : temps total GPU (+ correction CPU
-    /// des pixels non fiables, + repli plein cadre éventuel) contre le CPU
-    /// seul (Auto, et perturbation forcée en option), runs entrelacés,
-    /// ventilation orbite / upload / GPU / readback / correction. Accord des
-    /// images GPU↔CPU rapporté (le juge GMP reste `gpu-suite`).
+    /// GPU vs CPU timing: total GPU time (+ CPU correction of unreliable
+    /// pixels, + full-frame fallback if any) against CPU alone (Auto, and
+    /// optionally forced perturbation), interleaved runs, breakdown
+    /// orbit / upload / GPU / readback / correction. GPU↔CPU image agreement
+    /// is reported (the GMP judge remains `gpu-suite`).
     GpuBench {
-        /// Cas `preset[@zoom]` (presets CPU ou GPU) ; défaut : échelle 1e4→1e25.
+        /// Case `preset[@zoom]` (CPU or GPU presets); default: 1e4→1e25 ladder.
         #[arg(long = "case")]
         cases: Vec<String>,
-        /// Tailles carrées (px de côté).
+        /// Square sizes (side in px).
         #[arg(long, value_delimiter = ',', default_value = "512,1024,2048")]
         sizes: Vec<u32>,
-        /// Runs par bras (entrelacés).
+        /// Runs per arm (interleaved).
         #[arg(long, default_value_t = 5)]
         runs: usize,
-        /// Bras CPU perturbation forcée en plus de CPU Auto.
+        /// Add a forced-perturbation CPU arm besides CPU Auto.
         #[arg(long)]
         cpu_perturbation: bool,
     },
-    /// Parité GPU↔CPU sur une scène personnalisée (mêmes options que compare).
+    /// GPU↔CPU parity on a custom scene (same options as compare).
     GpuCompare {
-        /// Type de fractale (id entier ; GPU : Mandelbrot/Julia/BurningShip)
+        /// Fractal type (integer id; GPU: Mandelbrot/Julia/BurningShip)
         #[arg(long = "type")]
         fractal_type: u8,
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         center_x_hp: String,
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         center_y_hp: String,
         #[arg(long)]
         zoom: String,
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         julia_re: Option<f64>,
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         julia_im: Option<f64>,
-        /// Nom de sortie (dossier sous output-dir/gpu). Défaut "gpu-custom".
+        /// Output name (directory under output-dir/gpu). Default "gpu-custom".
         #[arg(long, default_value = "gpu-custom")]
         name: String,
     },

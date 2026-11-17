@@ -270,6 +270,74 @@ pub fn load_png_metadata(path: &Path) -> Result<FractalParams, Box<dyn std::erro
     Err("Aucune métadonnée fractall trouvée dans le PNG".into())
 }
 
+/// Message d'erreur (anglais, destiné à l'utilisateur CLI) d'un PNG sans
+/// chunk `fractall-params`.
+pub const NOT_A_FRACTALL_PNG: &str = "not a fractall PNG: no embedded parameters — save it from \
+fractall-gui with S or render it with fractall-cli";
+
+/// `fractall-cli --from-png` : paramètres d'un PNG fractall prêts à être
+/// re-rendus à la taille demandée — logique PURE (aucun rendu), testée ici.
+///
+/// Dimensions : `None` garde celle du PNG ; une seule fournie ⇒ l'autre est
+/// dérivée du ratio du PNG (arrondi, ≥ 1).
+///
+/// La VUE est conservée : centre (chaînes HP intactes au caractère près) et
+/// étendue verticale (`span_y` / `span_y_hp` intacts). Si le ratio change,
+/// `span_x` / `span_x_hp` sont dérivés du nouveau ratio en haute précision
+/// (`ViewHp::resize_keep_vertical_span`, jamais par un f64 : à 1e60 le
+/// miroir f64 resterait juste mais une chaîne reconstruite depuis lui
+/// perdrait les chiffres au-delà du 17e). Ratio inchangé (même taille,
+/// upscale ×2…) : spans intacts au caractère près.
+pub fn params_for_rerender(
+    path: &Path,
+    width: Option<u32>,
+    height: Option<u32>,
+) -> Result<FractalParams, String> {
+    if !path.exists() {
+        return Err(format!("{}: file not found", path.display()));
+    }
+    let file =
+        File::open(path).map_err(|e| format!("{}: cannot open file: {e}", path.display()))?;
+    let png_reader = Decoder::new(BufReader::new(file))
+        .read_info()
+        .map_err(|e| format!("{}: not a readable PNG image: {e}", path.display()))?;
+    let text = png_reader
+        .info()
+        .uncompressed_latin1_text
+        .iter()
+        .find(|chunk| chunk.keyword == METADATA_KEY)
+        .map(|chunk| chunk.text.clone())
+        .ok_or_else(|| format!("{}: {NOT_A_FRACTALL_PNG}", path.display()))?;
+    let mut params: FractalParams = serde_json::from_str(&text).map_err(|e| {
+        format!("{}: corrupted fractall parameters in PNG: {e}", path.display())
+    })?;
+
+    let (old_w, old_h) = (params.width.max(1), params.height.max(1));
+    let derive = |given: u32, num: u32, den: u32| -> u32 {
+        ((given as f64 * num as f64 / den as f64).round() as u32).max(1)
+    };
+    let (new_w, new_h) = match (width, height) {
+        (Some(w), Some(h)) => (w, h),
+        (Some(w), None) => (w, derive(w, old_h, old_w)),
+        (None, Some(h)) => (derive(h, old_w, old_h), h),
+        (None, None) => (old_w, old_h),
+    };
+    if new_w == 0 || new_h == 0 {
+        return Err(format!("--width/--height must be >= 1 (got {new_w}x{new_h})"));
+    }
+
+    let same_aspect = new_w as u64 * old_h as u64 == new_h as u64 * old_w as u64;
+    if !same_aspect {
+        let mut view = crate::fractal::ViewHp::from_params(&params);
+        view.resize_keep_vertical_span(new_w, new_h);
+        params.span_x = view.span_x().to_f64();
+        params.span_x_hp = Some(view.span_x().to_string_radix(10, None));
+    }
+    params.width = new_w;
+    params.height = new_h;
+    Ok(params)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,5 +703,99 @@ mod tests {
                 errors.join("\n  - ")
             );
         }
+    }
+
+    /// PNG fractall d'une vue profonde (1e60) à 160×90 pour les tests
+    /// `--from-png` ; renvoie le chemin et les chaînes HP écrites.
+    fn deep_png(tag: &str) -> (std::path::PathBuf, [String; 4]) {
+        let mut params = default_params_for_type(FractalType::Mandelbrot, 160, 90);
+        params.iteration_max = 7000;
+        params.color.color_mode = 3;
+        let hp = [
+            "-1.861369427601275917203958599290880106793222303477204934785274017462633431321514"
+                .to_string(),
+            "0.00008728845098728640945449739639040797666621419255681987270008753766941151815473273"
+                .to_string(),
+            "1.2732395447351626861510701069801148962756771659236515899813387524711743810738122e-60"
+                .to_string(),
+            "7.161972439135290109599769351763146291550684058320540193645030482650355893540193e-61"
+                .to_string(),
+        ];
+        params.center_x = hp[0].parse().unwrap();
+        params.center_y = hp[1].parse().unwrap();
+        params.span_x = hp[2].parse().unwrap();
+        params.span_y = hp[3].parse().unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "fractall_rerender_{}_{}.png",
+            tag,
+            std::process::id()
+        ));
+        let rgb = vec![0u8; 160 * 90 * 3];
+        save_png_rgb_with_metadata(&params, &rgb, &path, &hp[0], &hp[1], &hp[2], &hp[3])
+            .expect("save");
+        (path, hp)
+    }
+
+    fn hp_float(s: &str) -> rug::Float {
+        rug::Float::with_val(1024, rug::Float::parse(s).unwrap())
+    }
+
+    #[test]
+    fn rerender_same_aspect_keeps_every_hp_string() {
+        let (path, hp) = deep_png("same");
+        for (w, h) in [(None, None), (Some(320), Some(180)), (Some(320), None), (None, Some(180))] {
+            let p = params_for_rerender(&path, w, h).unwrap();
+            let expect = if w.is_none() && h.is_none() { (160, 90) } else { (320, 180) };
+            assert_eq!((p.width, p.height), expect);
+            assert_eq!(p.center_x_hp.as_deref(), Some(hp[0].as_str()));
+            assert_eq!(p.center_y_hp.as_deref(), Some(hp[1].as_str()));
+            assert_eq!(p.span_x_hp.as_deref(), Some(hp[2].as_str()));
+            assert_eq!(p.span_y_hp.as_deref(), Some(hp[3].as_str()));
+            assert_eq!(p.iteration_max, 7000);
+            assert_eq!(p.color.color_mode, 3);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Changement de ratio à 1e60 : centre et span_y intacts au caractère
+    /// près, span_x = span_y·w/h exact en haute précision (une dérivation via
+    /// f64 n'aurait que ~16 chiffres significatifs).
+    #[test]
+    fn rerender_aspect_change_keeps_center_and_span_y_in_hp() {
+        let (path, hp) = deep_png("aspect");
+        let p = params_for_rerender(&path, Some(100), Some(100)).unwrap();
+        assert_eq!((p.width, p.height), (100, 100));
+        assert_eq!(p.center_x_hp.as_deref(), Some(hp[0].as_str()));
+        assert_eq!(p.center_y_hp.as_deref(), Some(hp[1].as_str()));
+        assert_eq!(p.span_y_hp.as_deref(), Some(hp[3].as_str()));
+        let span_y = hp_float(&hp[3]);
+        let span_x = hp_float(p.span_x_hp.as_deref().unwrap());
+        let diff = rug::Float::with_val(1024, &span_x - &span_y);
+        let rel = rug::Float::with_val(1024, diff / &span_y).abs();
+        assert!(rel < 1e-70, "span_x HP lost precision: rel {rel}");
+        assert_eq!(p.span_x, span_y.to_f64());
+
+        let wide = params_for_rerender(&path, Some(400), Some(100)).unwrap();
+        let ratio = rug::Float::with_val(1024, hp_float(wide.span_x_hp.as_deref().unwrap()) / &span_y);
+        assert!(rug::Float::with_val(1024, ratio - 4).abs() < 1e-70);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn rerender_errors_are_explicit() {
+        let missing = std::env::temp_dir().join("fractall_rerender_does_not_exist.png");
+        let e = params_for_rerender(&missing, None, None).unwrap_err();
+        assert!(e.contains("file not found"), "{e}");
+
+        let plain = std::env::temp_dir()
+            .join(format!("fractall_rerender_plain_{}.png", std::process::id()));
+        image::RgbImage::new(4, 4).save(&plain).unwrap();
+        let e = params_for_rerender(&plain, None, None).unwrap_err();
+        assert!(e.contains(NOT_A_FRACTALL_PNG), "{e}");
+        let _ = std::fs::remove_file(&plain);
+
+        let (path, _) = deep_png("zero");
+        assert!(params_for_rerender(&path, Some(0), None).is_err());
+        let _ = std::fs::remove_file(&path);
     }
 }

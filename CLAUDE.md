@@ -1195,6 +1195,17 @@ fractall-cli --type N --output FILE [OPTIONS]
   --toml FILE             # charge real/imag/zoom/iterations/rotate/phases/
                           # opcodes + blocs [[formula]] F3 natifs
                           # format léger rust-fractal-core
+  --from-png FILE.png     # re-rend la vue EXACTE d'un PNG fractall (touche S
+                          # GUI ou sortie CLI) ; --type non requis. Toute
+                          # option EXPLICITE écrase la valeur du PNG (les
+                          # options à défaut sont des Option<…>, les drapeaux
+                          # bool n'agissent que posés). Resize : centre et
+                          # span_y (chaînes HP) intacts, span_x(_hp) dérivé
+                          # du nouveau ratio en HP ; une seule dimension ⇒
+                          # l'autre suit le ratio du PNG. Logique pure :
+                          # `io::png::params_for_rerender` +
+                          # `ViewHp::resize_keep_vertical_span` ; overrides :
+                          # `main.rs::resolve_params` (testé). AA non persisté.
   --opcodes "SQR ADD…"    # formule opcodes F3 (rot{DEG} incl.), prioritaire
                           # sur --phases ; ex. "sqr rot{30} add"
   --wisdom-bench          # bench machine (G9.2) : débits par technique →

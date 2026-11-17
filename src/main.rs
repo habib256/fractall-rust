@@ -8,276 +8,319 @@ use clap::Parser;
 use fractall_cli::{fractal, gpu, io, render};
 
 use fractal::{
-    apply_lyapunov_preset, default_params_for_type, AlgorithmMode, FractalType, LyapunovPreset,
-    OutColoringMode, PlaneTransform, ViewHp,
+    apply_lyapunov_preset, default_params_for_type, AlgorithmMode, FractalParams, FractalType,
+    LyapunovPreset, OutColoringMode, PlaneTransform, ViewHp,
 };
 use gpu::GpuRenderer;
 use io::exr::save_iterations_exr;
 use io::f3_toml::save_f3_toml;
 use io::png::save_png_rgb_with_metadata;
 
-/// Utilitaire CLI pour générer des fractales basées sur fractall.
-///
-/// Exemple d'utilisation :
-///   fractall-cli --type 3 --width 1920 --height 1080 --output mandelbrot.png
+/// Command-line fractal renderer built on the fractall engine.
 #[derive(Parser, Debug)]
 #[command(
     name = "fractall-cli",
-    about = "Générateur de fractales (Mandelbrot, Julia, etc.) en ligne de commande",
+    about = "Command-line fractal renderer (Mandelbrot, Julia, Burning Ship, deep zooms, …)",
+    after_help = "Examples:\n  \
+        fractall-cli --type 3 --width 1920 --height 1080 --output mandelbrot.png\n  \
+        fractall-cli --from-png view.png --width 3840 --height 2160 --output view_4k.png\n  \
+        fractall-cli --type 3 --zoom 1e20 --iterations 20000 --output deep.png \\\n      \
+        --center-x-hp -0.74364388703715870475219150611477 \\\n      \
+        --center-y-hp 0.13182590420531197049313205638514",
     version,
-    author = "Arnaud Verhille et contributeurs"
+    author = "Arnaud Verhille and contributors"
 )]
 struct Cli {
-    /// Type de fractale (3=Mandelbrot, 4=Julia, 5=JuliaSin, ..., 23=Multibrot).
-    /// Optionnel quand --toml est fourni (défaut : 3 = Mandelbrot, format
-    /// rust-fractal-core / corpus toml/).
+    /// Fractal type (3=Mandelbrot, 4=Julia, 5=JuliaSin, ..., 23=Multibrot).
+    /// Optional with --toml (default: 3 = Mandelbrot, rust-fractal-core /
+    /// toml/ corpus format) and with --from-png (the PNG's type is kept).
     #[arg(long = "type")]
     fractal_type: Option<u8>,
 
-    /// Hybride multi-phase (G4) : types escape-time séparés par virgule, itérés
-    /// cycliquement. Ex. `--phases mandelbrot,burning_ship` (Mandel-Ship
-    /// alternant), `--phases mandelbrot,mandelbrot,burning_ship` (2×M puis BS).
-    /// CPU f64 uniquement (shallow-mid). Ignore --type pour la formule.
+    /// Multi-phase hybrid: comma-separated escape-time types, iterated
+    /// cyclically. E.g. `--phases mandelbrot,burning_ship` (alternating
+    /// Mandel-Ship), `--phases mandelbrot,mandelbrot,burning_ship` (2×M then
+    /// BS). CPU only. Overrides --type for the formula.
     #[arg(long)]
     phases: Option<String>,
 
-    /// Formule opcodes au format Fraktaler-3 (G4 Op::Rot per-phase) : mots
-    /// `add sqr mul store absx absy negx negy rot{DEG}`, chaque `add` termine
-    /// une phase. Ex. `--opcodes "sqr rot{15} add"` (Mandelbrot roté
-    /// in-formula), `--opcodes "sqr add absx absy sqr add"` (Mandel-Ship).
-    /// Prioritaire sur --phases/--type pour la formule. CPU uniquement.
+    /// Opcode formula in Fraktaler-3 format: words
+    /// `add sqr mul store absx absy negx negy rot{DEG}`, each `add` ends a
+    /// phase. E.g. `--opcodes "sqr rot{15} add"` (Mandelbrot rotated inside
+    /// the formula), `--opcodes "sqr add absx absy sqr add"` (Mandel-Ship).
+    /// Takes precedence over --phases/--type for the formula. CPU only.
     #[arg(long)]
     opcodes: Option<String>,
 
-    /// Largeur de l'image de sortie en pixels
-    #[arg(long, default_value_t = 1920)]
-    width: u32,
-
-    /// Hauteur de l'image de sortie en pixels
-    #[arg(long, default_value_t = 1080)]
-    height: u32,
-
-    /// Centre X du plan complexe (optionnel, sinon valeurs par défaut du type)
+    /// Output image width in pixels (default 1920; with --from-png: the PNG's
+    /// width, or derived from --height and the PNG's aspect ratio)
     #[arg(long)]
+    width: Option<u32>,
+
+    /// Output image height in pixels (default 1080; with --from-png: the PNG's
+    /// height, or derived from --width and the PNG's aspect ratio)
+    #[arg(long)]
+    height: Option<u32>,
+
+    /// Centre X of the complex plane (optional, otherwise the type's default)
+    #[arg(long, allow_hyphen_values = true)]
     center_x: Option<f64>,
 
-    /// Centre Y du plan complexe (optionnel, sinon valeurs par défaut du type)
-    #[arg(long)]
+    /// Centre Y of the complex plane (optional, otherwise the type's default)
+    #[arg(long, allow_hyphen_values = true)]
     center_y: Option<f64>,
 
-    /// Centre X haute précision (string, pour deep zooms > 10^15)
+    /// High-precision centre X (decimal string, for deep zooms beyond 1e15).
+    /// Negative values can be passed directly: --center-x-hp -1.76…
     #[arg(long, allow_hyphen_values = true)]
     center_x_hp: Option<String>,
 
-    /// Centre Y haute précision (string, pour deep zooms > 10^15)
+    /// High-precision centre Y (decimal string, for deep zooms beyond 1e15)
     #[arg(long, allow_hyphen_values = true)]
     center_y_hp: Option<String>,
 
-    /// Zoom (magnification, span = 4/zoom). Supporte notation scientifique (ex: 1.41e219)
+    /// Zoom (magnification, horizontal span = 4/zoom). Scientific notation
+    /// accepted (e.g. 1.41e219)
     #[arg(long)]
     zoom: Option<String>,
 
-    /// Coordonnée minimale X du plan complexe (prioritaire sur center_x/zoom)
-    #[arg(long)]
+    /// Minimum X of the complex plane (takes precedence over center/zoom)
+    #[arg(long, allow_hyphen_values = true)]
     xmin: Option<f64>,
 
-    /// Coordonnée maximale X du plan complexe
-    #[arg(long)]
+    /// Maximum X of the complex plane
+    #[arg(long, allow_hyphen_values = true)]
     xmax: Option<f64>,
 
-    /// Coordonnée minimale Y du plan complexe
-    #[arg(long)]
+    /// Minimum Y of the complex plane
+    #[arg(long, allow_hyphen_values = true)]
     ymin: Option<f64>,
 
-    /// Coordonnée maximale Y du plan complexe
-    #[arg(long)]
+    /// Maximum Y of the complex plane
+    #[arg(long, allow_hyphen_values = true)]
     ymax: Option<f64>,
 
-    /// Nombre maximal d'itérations (sinon valeur par défaut du type)
+    /// Maximum iteration count (otherwise the type's default)
     #[arg(long)]
     iterations: Option<u32>,
 
-    /// Palette de couleurs (0 à 26, défaut 6 = Plasma). Optionnel pour que
-    /// --from-map sache si l'utilisateur veut override la palette de la map.
+    /// Colour palette (0 to 26, default 6 = Plasma)
     #[arg(long)]
     palette: Option<u8>,
 
-    /// Répétitions du gradient de couleur (2-40, pairs recommandés, défaut 40)
+    /// Colour gradient repetitions (2-40, even values recommended, default 40)
     #[arg(long)]
     color_repeat: Option<u32>,
 
-    /// Active le calcul haute précision avec GMP (via rug)
+    /// Enable arbitrary-precision computation with GMP (via rug)
     #[arg(long)]
     gmp: bool,
 
-    /// Précision GMP en bits (ex. 128, 256, 512)
-    #[arg(long, default_value_t = 256)]
-    precision_bits: u32,
+    /// GMP precision in bits, a floor for the automatic precision (e.g. 128,
+    /// 256, 512; default 256)
+    #[arg(long)]
+    precision_bits: Option<u32>,
 
-    /// Mode d'algorithme (auto, f64, perturbation, gmp)
+    /// Algorithm mode (auto, f64, perturbation, gmp)
     #[arg(long)]
     algorithm: Option<String>,
 
-    /// Seuil delta pour activer BLA (ex: 1e-8)
+    /// Delta threshold for enabling BLA (e.g. 1e-8)
     #[arg(long)]
     bla_threshold: Option<f64>,
 
-    /// Multiplicateur du rayon de validité BLA (1.0 = conservateur, >1 = agressif, ex: 2.0)
+    /// BLA validity radius multiplier (1.0 = conservative, >1 = aggressive,
+    /// e.g. 2.0)
     #[arg(long)]
     bla_validity_scale: Option<f64>,
 
-    /// Tolérance de glitch (ex: 1e-4)
+    /// Glitch tolerance (e.g. 1e-4)
     #[arg(long)]
     glitch_tolerance: Option<f64>,
 
-    /// Puissance pour Multibrot (z^d + c), défaut 2.5
+    /// Power for Multibrot (z^d + c), default 2.5
     #[arg(long)]
     multibrot_power: Option<f64>,
 
-    /// Graine d'un type Julia : partie réelle de c (ex. --julia-re=-0.8).
-    /// Sans effet sur les types Mandelbrot-like.
+    /// Julia seed: real part of c (e.g. --julia-re=-0.8).
+    /// No effect on Mandelbrot-like types.
     #[arg(long, allow_hyphen_values = true)]
     julia_re: Option<f64>,
 
-    /// Graine d'un type Julia : partie imaginaire de c (ex. --julia-im=0.156).
+    /// Julia seed: imaginary part of c (e.g. --julia-im=0.156).
     #[arg(long, allow_hyphen_values = true)]
     julia_im: Option<f64>,
 
-    /// Preset Lyapunov (standard, zircon-city, jellyfish, asymmetric, spaceship, heavy-blocks)
+    /// Lyapunov preset (standard, zircon-city, jellyfish, asymmetric,
+    /// spaceship, heavy-blocks)
     #[arg(long)]
     lyapunov_preset: Option<String>,
 
-    /// Mode de colorisation (iter, iter+real, iter+imag, iter+real/imag, iter+all, binary, biomorphs, potential, color-decomp, smooth ; défaut smooth)
+    /// Colouring mode (iter, iter+real, iter+imag, iter+real/imag, iter+all,
+    /// binary, biomorphs, potential, color-decomp, smooth, orbit-traps,
+    /// wings, distance, distance-ao, distance-3d; default smooth)
     #[arg(long)]
     outcoloring: Option<String>,
 
-    /// Transformation du plan complexe (0=mu, 1=1/mu, 2=1/(mu+0.25), 3=lambda, 4=1/lambda, 5=1/lambda-1, 6=1/(mu-1.40115))
-    /// Valeurs acceptées: 0-6 ou noms (mu, 1/mu, 1/(mu+0.25), lambda, 1/lambda, 1/lambda-1, 1/(mu-1.40115))
-    #[arg(long, default_value = "0")]
-    plane: String,
+    /// Complex-plane transformation (0=mu, 1=1/mu, 2=1/(mu+0.25), 3=lambda,
+    /// 4=1/lambda, 5=1/lambda-1, 6=1/(mu-1.40115); default 0).
+    /// Accepted values: 0-6 or names (mu, 1/mu, 1/(mu+0.25), lambda,
+    /// 1/lambda, 1/lambda-1, 1/(mu-1.40115))
+    #[arg(long)]
+    plane: Option<String>,
 
-    /// Active l'estimation de distance (dual numbers, overhead supplementaire)
+    /// Enable distance estimation (dual numbers, extra cost)
     #[arg(long)]
     enable_distance_estimation: bool,
 
-    /// Active la detection de l'interieur (extended dual numbers)
+    /// Enable interior detection (extended dual numbers)
     #[arg(long)]
     enable_interior_detection: bool,
 
-    /// Seuil de detection interieur (defaut 0.001)
-    #[arg(long, default_value_t = 0.001)]
-    interior_threshold: f64,
+    /// Interior detection threshold (default 0.001)
+    #[arg(long)]
+    interior_threshold: Option<f64>,
 
-    /// Forcer le GPU (override de l'auto-sélection wisdom G9.5). Sans
-    /// `--gpu`/`--no-gpu`, le device est choisi automatiquement par benchmark
-    /// machine + viabilité correction (`wisdom::select_device`).
+    /// Force the GPU (overrides the automatic device choice). Without
+    /// `--gpu`/`--no-gpu`, the device is chosen from the machine benchmark
+    /// and correctness constraints (`wisdom::select_device`).
     #[arg(long)]
     gpu: bool,
 
-    /// Forcer le CPU (override de l'auto-sélection wisdom G9.5).
+    /// Force the CPU (overrides the automatic device choice).
     #[arg(long)]
     no_gpu: bool,
 
-    /// [DEPRECATED] Le moteur bytecode est activé par défaut depuis P3.1
-    /// Session E. Ce flag ne sert qu'à rétro-compatibilité et passer
-    /// --bytecode est désormais un no-op (== default). Utiliser --no-bytecode
-    /// pour désactiver explicitement.
+    /// [DEPRECATED] The bytecode engine is on by default; this flag is a
+    /// no-op kept for backward compatibility. Use --no-bytecode to disable.
     #[arg(long, hide = true)]
     bytecode: bool,
 
-    /// Désactive le moteur bytecode unifié et tombe sur le path legacy
-    /// (pas de rebasing F3 : les pixels jugés non fiables sont recalculés en
-    /// GMP un par un). À n'utiliser que pour debug ou comparaison.
+    /// Disable the unified bytecode engine and use the legacy path (no
+    /// Fraktaler-3 rebasing: pixels judged unreliable are recomputed in GMP
+    /// one by one). For debugging or comparison only.
     #[arg(long)]
     no_bytecode: bool,
 
-    /// Active le nucleus finder (Mandelbrot only) : raffine le centre vers
-    /// un minibrot exact via Newton avant de build l'orbite référence. Utile
-    /// pour les deep zoom escape-time où la ref orbit s'évade prématurément
-    /// (cf. e1000, e1121, e8000...). Coût additionnel : un scan de période
-    /// + 1-64 itérations Newton à `precision_bits`, soit quelques secondes
-    /// à zoom modéré, plus à très deep zoom. Inspiré de Fraktaler-3.1
-    /// `hybrid_center`.
+    /// Enable the nucleus finder (Mandelbrot only): refines the centre to an
+    /// exact minibrot with Newton's method before building the reference
+    /// orbit. Useful for escape-time deep zooms where the reference orbit
+    /// escapes too early. Extra cost: a period scan plus 1-64 Newton steps,
+    /// a few seconds at moderate depth, more at very deep zoom. Inspired by
+    /// Fraktaler-3.1 `hybrid_center`.
     #[arg(long)]
     find_nucleus: bool,
 
-    /// Active le tier haute précision **double-double** (~106 bits) pour le path
-    /// perturbation deep-zoom Mandelbrot. Équivalent pur-Rust du `float128` de
-    /// Fraktaler-3 : itère référence + delta en ~106 bits (sans BLA) pour les
-    /// spirales ultra-sensibles où la mantisse f64 (53 b) sature (écart
-    /// d'itération vs GMP, cf. e30/e50). Plus lent (~10×) — n'activer que si
-    /// nécessaire. Mandelbrot escape-time uniquement.
+    /// Enable the **double-double** (~106-bit) tier for deep-zoom Mandelbrot
+    /// perturbation — a pure-Rust equivalent of Fraktaler-3's `float128`, for
+    /// ultra-sensitive spirals where the f64 mantissa (53 bits) saturates.
+    /// Slower (~10×); enable only if needed. Mandelbrot escape-time only.
     #[arg(long)]
     dd_tier: bool,
 
-    /// Rotation du plan en degrés (CCW). Appliquée au mapping pixel→c
-    /// (équivalent F3 `transform.rotate`). Override la valeur du TOML si fournie.
-    #[arg(long)]
+    /// Plane rotation in degrees (counter-clockwise), applied to the
+    /// pixel→c mapping (Fraktaler-3 `transform.rotate`). Overrides the TOML
+    /// value if given.
+    #[arg(long, allow_hyphen_values = true)]
     rotation: Option<f64>,
 
-    /// Anti-aliasing : nombre d'échantillons sous-pixel jitterés moyennés
-    /// (1 = désactivé, défaut). Chaque sample décale la grille d'un offset
-    /// low-discrepancy (Halton, port F3 `radical_inverse` + tente `triangle`)
-    /// puis les rendus colorés sont moyennés. Améliore les bords fins
-    /// (surtout modes Distance/DE). CPU et GPU ; les kernels GPU bytecode et
-    /// perturbation appliquent la même décorrélation par pixel.
-    #[arg(long, default_value_t = 1)]
-    aa_samples: u32,
+    /// Anti-aliasing: number of jittered sub-pixel samples averaged
+    /// (1 = off, default). Each sample shifts the grid by a low-discrepancy
+    /// offset (Halton, port of F3 `radical_inverse` + `triangle` tent), then
+    /// the coloured renders are averaged. Improves thin edges (especially the
+    /// Distance modes). CPU and GPU.
+    #[arg(long)]
+    aa_samples: Option<u32>,
 
-    /// Amplitude du jitter sous-pixel pour l'AA, en pixels. 1.0 = tente pleine
-    /// largeur (défaut quand --aa-samples > 1), 0.5 = demi-pixel. Sans effet si
-    /// --aa-samples = 1. Pilote `FractalParams::jitter_scale`.
+    /// Sub-pixel jitter amplitude for AA, in pixels. 1.0 = full-width tent
+    /// (default when --aa-samples > 1), 0.5 = half a pixel. No effect when
+    /// --aa-samples = 1.
     #[arg(long)]
     jitter_scale: Option<f64>,
 
-    /// Escape radius (bailout) du test d'évasion |z| ≥ bailout. Par défaut, la
-    /// valeur par type (25 pour la famille escape-time, cf. ESCAPE_TIME_BAILOUT).
-    /// Sert notamment à aligner l'ER avec Fraktaler-3 dans le harness de parité.
+    /// Escape radius (bailout) of the |z| ≥ bailout test. Defaults to the
+    /// type's value (25 for the escape-time family). Used notably to match
+    /// Fraktaler-3's escape radius in the parity harness.
     #[arg(long)]
     bailout: Option<f64>,
 
-    /// Fichier de sortie PNG (requis, sauf avec --wisdom-bench)
-    #[arg(long, value_name = "FICHIER")]
+    /// Output PNG file (required, except with --wisdom-bench)
+    #[arg(long, value_name = "FILE")]
     output: Option<PathBuf>,
 
-    /// Écrit AUSSI les buffers bruts du rendu (itérations, z finaux, distances
-    /// éventuelles) dans une map `.fmap` (G12) : recolorisable sans recalcul
-    /// via --from-map, format d'échange des keyframes fractall-video.
-    /// Incompatible avec --aa-samples > 1 (sortie AA = moyenne RGB).
-    #[arg(long, value_name = "FICHIER.fmap")]
+    /// ALSO write the raw render buffers (iterations, final z, distances if
+    /// any) to a `.fmap` map: recolourable without recomputation via
+    /// --from-map; exchange format of fractall-video keyframes.
+    /// Incompatible with --aa-samples > 1 (AA output = averaged RGB).
+    #[arg(long, value_name = "FILE.fmap")]
     output_map: Option<PathBuf>,
 
-    /// Recolorise une map `.fmap` existante SANS recalcul : charge buffers et
-    /// paramètres de la map, applique les overrides couleur explicites
-    /// (--palette, --color-repeat, --outcoloring), écrit le PNG --output.
-    /// Les autres options de rendu sont ignorées.
-    #[arg(long, value_name = "FICHIER.fmap")]
+    /// Recolour an existing `.fmap` map WITHOUT recomputation: loads the
+    /// map's buffers and parameters, applies the explicit colour overrides
+    /// (--palette, --color-repeat, --outcoloring) and writes the --output
+    /// PNG. Other rendering options are ignored.
+    #[arg(long, value_name = "FILE.fmap", conflicts_with = "from_png")]
     from_map: Option<PathBuf>,
 
-    /// Benche les techniques de rendu (CPU std/perturbation f64-exp-dd + GPU
-    /// f32 si disponible) et persiste les débits mesurés (iters/s) dans le
-    /// fichier wisdom par machine (~/.config/fractall/wisdom.toml, override
-    /// FRACTALL_WISDOM_FILE). Consommé par le plan wisdom (ligne [WISDOM]
-    /// bench=…, arbitrage device à venir). Modèle Fraktaler-3 wisdom.cc.
+    /// Re-render the exact view saved in a fractall PNG (key S in
+    /// fractall-gui, or any fractall-cli output): all parameters come from
+    /// the PNG's embedded metadata, and every option given explicitly
+    /// overrides them (--width/--height, --iterations, --palette,
+    /// --algorithm, --aa-samples, …). Resizing keeps the centre and the
+    /// vertical extent of the view; giving only --width or --height keeps
+    /// the PNG's aspect ratio. E.g.
+    /// `--from-png view.png --width 3840 --height 2160 --output big.png`.
+    #[arg(long, value_name = "FILE.png", conflicts_with = "toml")]
+    from_png: Option<PathBuf>,
+
+    /// Benchmark the rendering techniques (CPU std/perturbation f64-exp-dd,
+    /// plus GPU f32 if available) and store the measured throughputs
+    /// (iters/s) in the per-machine wisdom file
+    /// (~/.config/fractall/wisdom.toml, override FRACTALL_WISDOM_FILE), used
+    /// by the automatic device and algorithm choice.
     #[arg(long, default_value_t = false)]
     wisdom_bench: bool,
 
-    /// Charge un fichier TOML léger (real/imag/zoom) ou Fraktaler-3 natif
-    /// (location.*, bailout.*, transform.*, [[formula]]). Les overrides CLI
-    /// restent prioritaires.
-    #[arg(long, value_name = "FICHIER")]
+    /// Load a lightweight TOML (real/imag/zoom) or a native Fraktaler-3 TOML
+    /// (location.*, bailout.*, transform.*, [[formula]]). Explicit command-line
+    /// options still take precedence.
+    #[arg(long, value_name = "FILE")]
     toml: Option<PathBuf>,
 
-    /// Exporte les itérations brutes en EXR au format Fraktaler-3
-    /// (channels N0=uint32 iter, NF=float smooth fraction). Permet la
-    /// comparaison apples-to-apples via scripts/compare_f3.py. Le PNG --output
-    /// reste produit en plus.
-    #[arg(long, value_name = "FICHIER.exr")]
+    /// Export the raw iterations as EXR in Fraktaler-3 format (channels
+    /// N0=uint32 iterations, NF=float smooth fraction), for apples-to-apples
+    /// comparison via scripts/compare_f3.py. The --output PNG is still
+    /// written.
+    #[arg(long, value_name = "FILE.exr")]
     export_iterations: Option<PathBuf>,
 
-    /// Exporte les paramètres résolus au format TOML natif Fraktaler-3 3.1.
-    #[arg(long, value_name = "FICHIER.toml")]
+    /// Export the resolved parameters as a native Fraktaler-3 3.1 TOML.
+    #[arg(long, value_name = "FILE.toml")]
     export_f3_toml: Option<PathBuf>,
+}
+
+/// Erreur de résolution des paramètres : message utilisateur + code de sortie
+/// (2 = usage, 1 = valeur invalide / fichier illisible).
+#[derive(Debug)]
+struct CliError {
+    code: i32,
+    msg: String,
+}
+
+impl CliError {
+    fn usage(msg: impl Into<String>) -> Self {
+        Self { code: 2, msg: msg.into() }
+    }
+    fn invalid(msg: impl Into<String>) -> Self {
+        Self { code: 1, msg: msg.into() }
+    }
+}
+
+/// Paramètres finals d'un rendu CLI + réglages AA (hors `FractalParams`).
+struct Resolved {
+    params: FractalParams,
+    aa_samples: u32,
+    aa_jitter_scale: f64,
 }
 
 /// Champs extraits d'un TOML de paramètres (format léger rust-fractal-core,
@@ -303,11 +346,11 @@ struct TomlParams {
 
 fn load_toml_params(path: &std::path::Path) -> TomlParams {
     let content = std::fs::read_to_string(path).unwrap_or_else(|e| {
-        eprintln!("Erreur lecture TOML {}: {}", path.display(), e);
+        eprintln!("Error reading TOML {}: {}", path.display(), e);
         std::process::exit(1);
     });
     let table: toml::Table = content.parse().unwrap_or_else(|e| {
-        eprintln!("Erreur parsing TOML {}: {}", path.display(), e);
+        eprintln!("Error parsing TOML {}: {}", path.display(), e);
         std::process::exit(1);
     });
 
@@ -332,15 +375,15 @@ fn load_toml_params(path: &std::path::Path) -> TomlParams {
     };
 
     let real = take_str("real").or_else(|| take_nested_str("location", "real")).unwrap_or_else(|| {
-        eprintln!("TOML {}: champ 'real' manquant", path.display());
+        eprintln!("TOML {}: missing 'real' field", path.display());
         std::process::exit(1);
     });
     let imag = take_str("imag").or_else(|| take_nested_str("location", "imag")).unwrap_or_else(|| {
-        eprintln!("TOML {}: champ 'imag' manquant", path.display());
+        eprintln!("TOML {}: missing 'imag' field", path.display());
         std::process::exit(1);
     });
     let zoom = take_str("zoom").or_else(|| take_nested_str("location", "zoom")).unwrap_or_else(|| {
-        eprintln!("TOML {}: champ 'zoom' manquant", path.display());
+        eprintln!("TOML {}: missing 'zoom' field", path.display());
         std::process::exit(1);
     });
     let iterations = table.get("iterations").or_else(|| {
@@ -350,7 +393,7 @@ fn load_toml_params(path: &std::path::Path) -> TomlParams {
         .map(|i| {
             if i > u32::MAX as i64 {
                 eprintln!(
-                "TOML {}: iterations={} > u32::MAX, clamp à {}. TODO: passer iteration_max en u64.",
+                "TOML {}: iterations={} > u32::MAX, clamped to {}.",
                 path.display(),
                 i,
                 u32::MAX
@@ -358,7 +401,7 @@ fn load_toml_params(path: &std::path::Path) -> TomlParams {
                 u32::MAX
             } else if i < 0 {
                 eprintln!(
-                    "TOML {}: iterations négatif ({}), forcé à 1024",
+                    "TOML {}: negative iterations ({}), forced to 1024",
                     path.display(),
                     i
                 );
@@ -482,12 +525,22 @@ fn run_wisdom_bench() {
         }
     };
     match fractal::wisdom_bench::save(&file) {
-        Ok(path) => println!("Wisdom machine écrit : {}", path.display()),
+        Ok(path) => println!("Machine wisdom written: {}", path.display()),
         Err(e) => {
-            eprintln!("Échec d'écriture du wisdom : {e}");
+            eprintln!("Failed to write the wisdom file: {e}");
             std::process::exit(1);
         }
     }
+}
+
+/// Chaînes HP de la vue à persister (repli sur les miroirs f64).
+fn hp_strings(params: &FractalParams) -> [String; 4] {
+    [
+        params.center_x_hp.clone().unwrap_or_else(|| params.center_x.to_string()),
+        params.center_y_hp.clone().unwrap_or_else(|| params.center_y.to_string()),
+        params.span_x_hp.clone().unwrap_or_else(|| params.span_x.to_string()),
+        params.span_y_hp.clone().unwrap_or_else(|| params.span_y.to_string()),
+    ]
 }
 
 /// `--from-map` (G12 jalon 1) : recharge une map `.fmap`, applique les
@@ -497,7 +550,7 @@ fn run_from_map(cli: &Cli, map_path: &std::path::Path, output_path: &std::path::
     let map = match io::fmap::load_fmap(map_path) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("Erreur chargement map {}: {}", map_path.display(), e);
+            eprintln!("Error loading map {}: {}", map_path.display(), e);
             std::process::exit(1);
         }
     };
@@ -512,28 +565,13 @@ fn run_from_map(cli: &Cli, map_path: &std::path::Path, output_path: &std::path::
         match OutColoringMode::from_cli_name(oc) {
             Some(mode) => params.color.out_coloring_mode = mode,
             None => {
-                eprintln!("Mode de colorisation invalide: '{oc}'");
+                eprintln!("Invalid colouring mode: '{oc}'");
                 std::process::exit(1);
             }
         }
     }
 
-    let center_x_hp = params
-        .center_x_hp
-        .clone()
-        .unwrap_or_else(|| params.center_x.to_string());
-    let center_y_hp = params
-        .center_y_hp
-        .clone()
-        .unwrap_or_else(|| params.center_y.to_string());
-    let span_x_hp = params
-        .span_x_hp
-        .clone()
-        .unwrap_or_else(|| params.span_x.to_string());
-    let span_y_hp = params
-        .span_y_hp
-        .clone()
-        .unwrap_or_else(|| params.span_y.to_string());
+    let [center_x_hp, center_y_hp, span_x_hp, span_y_hp] = hp_strings(&params);
     // Le canal `distances` de la map alimente les modes Distance*/DistanceAO/
     // Distance3D. Vérification G5 : un mode qui requiert un canal absent de
     // la map est une ERREUR (le .fmap ne persiste jamais `orbits`, et
@@ -543,7 +581,7 @@ fn run_from_map(cli: &Cli, map_path: &std::path::Path, output_path: &std::path::
     if let Err(e) =
         render::required_channels(&params).validate(map.iterations.len(), distances, &[])
     {
-        eprintln!("Erreur : recolorisation impossible depuis cette map — {e}");
+        eprintln!("Error: cannot recolour from this map — {e}");
         std::process::exit(1);
     }
     let buffer =
@@ -557,72 +595,70 @@ fn run_from_map(cli: &Cli, map_path: &std::path::Path, output_path: &std::path::
         &span_x_hp,
         &span_y_hp,
     ) {
-        eprintln!("Erreur lors de l'écriture du PNG: {e}");
+        eprintln!("Error writing the PNG: {e}");
         std::process::exit(1);
     }
     println!(
-        "PNG recolorisé depuis {} : {}",
+        "PNG recoloured from {}: {}",
         map_path.display(),
         output_path.display()
     );
 }
 
-fn main() {
-    let cli = Cli::parse();
+/// Résolution COMPLÈTE des paramètres de rendu depuis la ligne de commande :
+/// point de départ (défauts du type, TOML ou PNG `--from-png`) puis overrides
+/// explicites. Pure hors `--toml` (qui sort en erreur lui-même) : testée.
+///
+/// Avec `--from-png`, une option non fournie garde la valeur du PNG — c'est
+/// pourquoi les options à défaut (`--width`, `--palette`, `--plane`,
+/// `--precision-bits`, `--aa-samples`…) sont des `Option` et les drapeaux
+/// booléens n'agissent que posés (ils ne peuvent pas désactiver un réglage
+/// du PNG). Hors `--from-png`, le comportement historique est inchangé.
+fn resolve_params(cli: &Cli) -> Result<Resolved, CliError> {
+    let from_png = cli.from_png.is_some();
 
-    // Mode bench wisdom (G9.2) : mesure les débits par technique et persiste
-    // le fichier wisdom machine, puis sort. Pas de rendu --output.
-    if cli.wisdom_bench {
-        run_wisdom_bench();
-        return;
-    }
-    let Some(output_path) = cli.output.clone() else {
-        eprintln!("--output est requis (sauf avec --wisdom-bench)");
-        std::process::exit(2);
-    };
-
-    // Recolorisation depuis une map .fmap (G12 jalon 1) : aucun rendu, aucun
-    // --type requis — tout vient de la map, sauf les overrides couleur.
-    if let Some(ref map_path) = cli.from_map {
-        run_from_map(&cli, map_path, &output_path);
-        return;
-    }
-
-    // Si --toml est fourni sans --type, défaut Mandelbrot (le corpus toml/ ne
-    // contient que des Mandelbrot deep zoom au format rust-fractal-core).
-    let fractal_type_id = match (cli.fractal_type, &cli.toml) {
-        (Some(id), _) => id,
-        (None, Some(_)) => 3,
-        // --phases (hybride G4) implique la convention Mandelbrot (δ₀=0, dc=pixel)
-        // → type 3 par défaut si --type/--toml absents.
-        (None, None) if cli.phases.is_some() => 3,
-        (None, None) => {
-            eprintln!(
-                "--type est requis (ou utilisez --toml <FICHIER> pour le format rust-fractal-core)"
-            );
-            std::process::exit(2);
+    let mut params = if let Some(ref png_path) = cli.from_png {
+        let params = io::png::params_for_rerender(png_path, cli.width, cli.height)
+            .map_err(CliError::invalid)?;
+        if let Some(id) = cli.fractal_type {
+            if FractalType::from_id(id) != Some(params.fractal_type) {
+                eprintln!(
+                    "--type {id} ignored: --from-png keeps the PNG's fractal type ({:?})",
+                    params.fractal_type
+                );
+            }
         }
-    };
-    let fractal_type = match FractalType::from_id(fractal_type_id) {
-        Some(t) => t,
-        None => {
-            eprintln!(
-                "Type de fractale invalide: {} (attendu entre 3 et 23, sauf types spéciaux)",
-                fractal_type_id
-            );
-            std::process::exit(1);
+        params
+    } else {
+        // Si --toml est fourni sans --type, défaut Mandelbrot (le corpus toml/
+        // ne contient que des Mandelbrot deep zoom au format rust-fractal-core).
+        let fractal_type_id = match (cli.fractal_type, &cli.toml) {
+            (Some(id), _) => id,
+            (None, Some(_)) => 3,
+            // --phases (hybride G4) implique la convention Mandelbrot (δ₀=0,
+            // dc=pixel) → type 3 par défaut si --type/--toml absents.
+            (None, None) if cli.phases.is_some() => 3,
+            (None, None) => {
+                return Err(CliError::usage(
+                    "--type is required (or use --from-png <FILE.png> to re-render a saved view, \
+                     or --toml <FILE> for the rust-fractal-core format)",
+                ));
+            }
+        };
+        let fractal_type = FractalType::from_id(fractal_type_id).ok_or_else(|| {
+            CliError::invalid(format!(
+                "Invalid fractal type: {fractal_type_id} (expected 1 to 33, see --help)"
+            ))
+        })?;
+        let width = cli.width.unwrap_or(1920);
+        let height = cli.height.unwrap_or(1080);
+        if width == 0 || height == 0 {
+            return Err(CliError::invalid(format!(
+                "Error: --width/--height must be >= 1 (got {width}x{height})"
+            )));
         }
+        default_params_for_type(fractal_type, width, height)
     };
-
-    // Paramètres par défaut pour ce type.
-    if cli.width == 0 || cli.height == 0 {
-        eprintln!(
-            "Erreur : --width/--height doivent être ≥ 1 (reçu {}×{})",
-            cli.width, cli.height
-        );
-        std::process::exit(1);
-    }
-    let mut params = default_params_for_type(fractal_type, cli.width, cli.height);
 
     // Hybride multi-phase (G4) : --phases type1,type2,… → hybrid_phases.
     if let Some(ref spec) = cli.phases {
@@ -630,10 +666,7 @@ fn main() {
         for name in spec.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
             match FractalType::from_hybrid_name(name) {
                 Some(ft) => phases.push(ft),
-                None => {
-                    eprintln!("--phases : type inconnu '{name}'");
-                    std::process::exit(2);
-                }
+                None => return Err(CliError::usage(format!("--phases: unknown type '{name}'"))),
             }
         }
         if !phases.is_empty() {
@@ -645,8 +678,10 @@ fn main() {
     // pour la formule (précédence dans formula_for_params). Validation tôt.
     if let Some(ref ops) = cli.opcodes {
         if fractall_cli::fractal::bytecode::parse_opcodes_formula(ops).is_none() {
-            eprintln!("--opcodes : formule invalide '{ops}' (mots: add sqr mul store absx absy negx negy rot{{DEG}} ; chaque phase finit par add)");
-            std::process::exit(2);
+            return Err(CliError::usage(format!(
+                "--opcodes: invalid formula '{ops}' (words: add sqr mul store absx absy negx \
+                 negy rot{{DEG}}; each phase ends with add)"
+            )));
         }
         params.formula.hybrid_opcodes = Some(ops.clone());
     }
@@ -663,10 +698,13 @@ fn main() {
             params.height,
             1024,
         )
-        .unwrap_or_else(|| {
-            eprintln!("TOML {}: zoom illisible: '{}'", toml_path.display(), t.zoom);
-            std::process::exit(1);
-        });
+        .ok_or_else(|| {
+            CliError::invalid(format!(
+                "TOML {}: unreadable zoom: '{}'",
+                toml_path.display(),
+                t.zoom
+            ))
+        })?;
         view.write_to_params(&mut params);
         // Le centre décimal fourni est plus exact que sa matérialisation MPFR
         // finie. Le conserver textuellement pour la référence perturbée.
@@ -682,11 +720,10 @@ fn main() {
                     match FractalType::from_hybrid_name(name) {
                         Some(ft) => phases.push(ft),
                         None => {
-                            eprintln!(
-                                "TOML {}: phases — type inconnu '{name}'",
+                            return Err(CliError::usage(format!(
+                                "TOML {}: phases — unknown type '{name}'",
                                 toml_path.display()
-                            );
-                            std::process::exit(2);
+                            )));
                         }
                     }
                 }
@@ -701,12 +738,11 @@ fn main() {
         if cli.opcodes.is_none() {
             if let Some(ref ops) = t.formula_opcodes {
                 if fractall_cli::fractal::bytecode::parse_opcodes_formula(ops).is_none() {
-                    eprintln!(
-                        "TOML {}: [[formula]] opcodes invalides '{}'",
+                    return Err(CliError::usage(format!(
+                        "TOML {}: invalid [[formula]] opcodes '{}'",
                         toml_path.display(),
                         ops
-                    );
-                    std::process::exit(2);
+                    )));
                 }
                 params.formula.hybrid_opcodes = Some(ops.clone());
             }
@@ -753,8 +789,8 @@ fn main() {
         let ymin = cli.ymin.unwrap_or(default_ymin);
         let ymax = cli.ymax.unwrap_or(default_ymax);
         params.set_bounds(xmin, xmax, ymin, ymax);
-        // Les bornes f64 remplacent TOUTE coordonnée HP antérieure (--toml) :
-        // les paths HP-aware liraient sinon les anciennes chaînes.
+        // Les bornes f64 remplacent TOUTE coordonnée HP antérieure (--toml,
+        // --from-png) : les paths HP-aware liraient sinon les anciennes chaînes.
         params.center_x_hp = None;
         params.center_y_hp = None;
         params.span_x_hp = None;
@@ -762,15 +798,13 @@ fn main() {
     }
 
     // Recentrage éventuel (prioritaire sur les bornes).
-    if cli.center_x.is_some() || cli.center_y.is_some() {
-        if let Some(cx) = cli.center_x {
-            params.center_x = cx;
-            params.center_x_hp = None; // override f64 → la chaîne HP (--toml) serait prioritaire
-        }
-        if let Some(cy) = cli.center_y {
-            params.center_y = cy;
-            params.center_y_hp = None;
-        }
+    if let Some(cx) = cli.center_x {
+        params.center_x = cx;
+        params.center_x_hp = None; // override f64 → la chaîne HP (--toml) serait prioritaire
+    }
+    if let Some(cy) = cli.center_y {
+        params.center_y = cy;
+        params.center_y_hp = None;
     }
 
     // Coordonnées haute précision (HP) pour deep zooms.
@@ -790,20 +824,10 @@ fn main() {
 
     // Zoom -> span HP conversion.
     if let Some(ref zoom_str) = cli.zoom {
-        let cx = params
-            .center_x_hp
-            .clone()
-            .unwrap_or_else(|| params.center_x.to_string());
-        let cy = params
-            .center_y_hp
-            .clone()
-            .unwrap_or_else(|| params.center_y.to_string());
+        let [cx, cy, _, _] = hp_strings(&params);
         let view =
             ViewHp::from_center_and_zoom(&cx, &cy, zoom_str, params.width, params.height, 1024)
-                .unwrap_or_else(|| {
-                    eprintln!("Impossible de parser le zoom: '{}'", zoom_str);
-                    std::process::exit(1);
-                });
+                .ok_or_else(|| CliError::invalid(format!("Cannot parse the zoom: '{zoom_str}'")))?;
         view.write_to_params(&mut params);
         // Ne pas remplacer une saisie décimale exacte par l'expansion de son
         // approximation binaire MPFR : à deep zoom cela déplace la référence.
@@ -818,8 +842,13 @@ fn main() {
         }
     }
 
-    // Palette et répétitions de couleurs (défauts historiques 6/40 si absents).
-    params.color.color_mode = cli.palette.unwrap_or(6);
+    // Palette et répétitions de couleurs (défaut historique 6 si absente ;
+    // avec --from-png, celle du PNG).
+    if let Some(p) = cli.palette {
+        params.color.color_mode = p;
+    } else if !from_png {
+        params.color.color_mode = 6;
+    }
     // `color_repeat` : override explicite seulement — le défaut vient du type
     // (`default_params_for_type` : 1 pour les densités, 2 Lyapunov, 40 sinon),
     // comme dans la GUI. Forcer 40 rendait Buddhabrot/Nebulabrot en 40 cycles.
@@ -828,23 +857,23 @@ fn main() {
     }
 
     // GMP haute précision.
-    params.engine.use_gmp = cli.gmp;
-    params.engine.precision_bits = cli.precision_bits.max(64);
+    if !from_png || cli.gmp {
+        params.engine.use_gmp = cli.gmp;
+    }
+    match cli.precision_bits {
+        Some(bits) => params.engine.precision_bits = bits.max(64),
+        None if !from_png => params.engine.precision_bits = 256,
+        None => {}
+    }
 
     // Mode d'algorithme.
     if let Some(mode) = &cli.algorithm {
-        match AlgorithmMode::from_cli_name(mode) {
-            Some(parsed) => {
-                params.engine.algorithm_mode = parsed;
-            }
-            None => {
-                eprintln!(
-                    "Mode d'algorithme invalide: '{}'. Options: auto, f64, perturbation, gmp",
-                    mode
-                );
-                std::process::exit(1);
-            }
-        }
+        let parsed = AlgorithmMode::from_cli_name(mode).ok_or_else(|| {
+            CliError::invalid(format!(
+                "Invalid algorithm mode: '{mode}'. Options: auto, f64, perturbation, gmp"
+            ))
+        })?;
+        params.engine.algorithm_mode = parsed;
     }
 
     if let Some(bla_threshold) = cli.bla_threshold {
@@ -880,17 +909,24 @@ fn main() {
             }
         } else {
             eprintln!(
-                "--julia-re / --julia-im ignorés : {:?} n'est pas un type Julia",
+                "--julia-re / --julia-im ignored: {:?} is not a Julia type",
                 params.fractal_type
             );
         }
     }
 
-    // Distance estimation et interior detection
-    params.channels.enable_distance_estimation = cli.enable_distance_estimation;
-    params.channels.enable_interior_detection = cli.enable_interior_detection;
-    if cli.interior_threshold > 0.0 {
-        params.channels.interior_threshold = cli.interior_threshold;
+    // Distance estimation et interior detection (avec --from-png, un
+    // drapeau absent garde la valeur du PNG).
+    if !from_png || cli.enable_distance_estimation {
+        params.channels.enable_distance_estimation = cli.enable_distance_estimation;
+    }
+    if !from_png || cli.enable_interior_detection {
+        params.channels.enable_interior_detection = cli.enable_interior_detection;
+    }
+    match cli.interior_threshold {
+        Some(t) if t > 0.0 => params.channels.interior_threshold = t,
+        None if !from_png => params.channels.interior_threshold = 0.001,
+        _ => {}
     }
 
     // Tier double-double (~106 b) opt-in pour les spirales deep-zoom sensibles.
@@ -921,10 +957,12 @@ fn main() {
 
     // Anti-aliasing multi-sample (per-frame jitter). jitter_scale est
     // enregistré dans les métadonnées ; l'offset sous-pixel de chaque sample
-    // est appliqué dans la boucle d'accumulation plus bas. CPU et GPU utilisent
-    // le jitter F3 par pixel.
-    let aa_samples = cli.aa_samples.max(1);
-    let aa_jitter_scale = cli.jitter_scale.unwrap_or(1.0);
+    // est appliqué dans la boucle d'accumulation. Le nombre de samples n'est
+    // PAS persisté dans le PNG : --from-png rend sans AA sauf --aa-samples.
+    let aa_samples = cli.aa_samples.unwrap_or(1).max(1);
+    let png_jitter = (from_png && params.sampling.jitter_scale > 0.0)
+        .then_some(params.sampling.jitter_scale);
+    let aa_jitter_scale = cli.jitter_scale.or(png_jitter).unwrap_or(1.0);
     if aa_samples > 1 {
         params.sampling.jitter_scale = aa_jitter_scale;
     }
@@ -936,36 +974,33 @@ fn main() {
     }
 
     // Preset Lyapunov (si applicable).
-    if fractal_type == FractalType::Lyapunov {
+    if params.fractal_type == FractalType::Lyapunov {
         if let Some(preset_name) = &cli.lyapunov_preset {
-            match LyapunovPreset::from_cli_name(preset_name) {
-                Some(preset) => {
-                    apply_lyapunov_preset(&mut params, preset);
-                }
-                None => {
-                    eprintln!(
-                        "Preset Lyapunov invalide: '{}'. Options: standard, zircon-city, jellyfish, asymmetric, spaceship, heavy-blocks",
-                        preset_name
-                    );
-                    std::process::exit(1);
-                }
-            }
+            let preset = LyapunovPreset::from_cli_name(preset_name).ok_or_else(|| {
+                CliError::invalid(format!(
+                    "Invalid Lyapunov preset: '{preset_name}'. Options: standard, zircon-city, \
+                     jellyfish, asymmetric, spaceship, heavy-blocks"
+                ))
+            })?;
+            apply_lyapunov_preset(&mut params, preset);
         }
     }
 
-    // Mode de colorisation (outcoloring, défaut smooth).
-    let outcoloring = cli.outcoloring.as_deref().unwrap_or("smooth");
-    match OutColoringMode::from_cli_name(outcoloring) {
-        Some(mode) => {
-            params.color.out_coloring_mode = mode;
-        }
-        None => {
-            eprintln!(
-                "Mode de colorisation invalide: '{}'. Options: iter, iter+real, iter+imag, iter+real/imag, iter+all, binary, biomorphs, potential, color-decomp, smooth",
-                outcoloring
-            );
-            std::process::exit(1);
-        }
+    // Mode de colorisation (outcoloring, défaut smooth ; avec --from-png,
+    // celui du PNG).
+    let outcoloring = cli
+        .outcoloring
+        .as_deref()
+        .or((!from_png).then_some("smooth"));
+    if let Some(outcoloring) = outcoloring {
+        params.color.out_coloring_mode =
+            OutColoringMode::from_cli_name(outcoloring).ok_or_else(|| {
+                CliError::invalid(format!(
+                    "Invalid colouring mode: '{outcoloring}'. Options: iter, iter+real, \
+                     iter+imag, iter+real/imag, iter+all, binary, biomorphs, potential, \
+                     color-decomp, smooth, orbit-traps, wings, distance, distance-ao, distance-3d"
+                ))
+            })?;
     }
 
     // Invariant inter-groupes `channels ⊇ required_channels` : règle UNIQUE
@@ -975,33 +1010,71 @@ fn main() {
     render::ensure_required_channels(&mut params);
 
     // Transformation du plan (XaoS-style).
-    match PlaneTransform::from_cli_name(&cli.plane) {
-        Some(plane) => {
-            params.plane_transform = plane;
-        }
-        None => {
-            eprintln!(
-                "Plane invalide: '{}'. Options: 0-6, mu, 1/mu, 1/(mu+0.25), lambda, 1/lambda, 1/lambda-1, 1/(mu-1.40115)",
-                cli.plane
-            );
-            std::process::exit(1);
-        }
+    let plane = cli.plane.as_deref().or((!from_png).then_some("0"));
+    if let Some(plane) = plane {
+        params.plane_transform = PlaneTransform::from_cli_name(plane).ok_or_else(|| {
+            CliError::invalid(format!(
+                "Invalid plane: '{plane}'. Options: 0-6, mu, 1/mu, 1/(mu+0.25), lambda, \
+                 1/lambda, 1/lambda-1, 1/(mu-1.40115)"
+            ))
+        })?;
     }
 
     // Garde-fou : un f64 non fini (`--rotation nan`, `--center-x inf`…) se
     // sérialise en `null` dans les métadonnées PNG, que serde refuse au
     // rechargement (drag-and-drop GUI, --from-map) — bug 2026-08-23.
     if let Some(name) = non_finite_param(&params) {
-        eprintln!("Erreur : paramètre '{name}' non fini (NaN/inf) — valeur refusée");
-        std::process::exit(1);
+        return Err(CliError::invalid(format!(
+            "Error: parameter '{name}' is not finite (NaN/inf) — value rejected"
+        )));
     }
+
+    Ok(Resolved {
+        params,
+        aa_samples,
+        aa_jitter_scale,
+    })
+}
+
+fn main() {
+    let cli = Cli::parse();
+
+    // Mode bench wisdom (G9.2) : mesure les débits par technique et persiste
+    // le fichier wisdom machine, puis sort. Pas de rendu --output.
+    if cli.wisdom_bench {
+        run_wisdom_bench();
+        return;
+    }
+    let Some(output_path) = cli.output.clone() else {
+        eprintln!("--output is required (except with --wisdom-bench)");
+        std::process::exit(2);
+    };
+
+    // Recolorisation depuis une map .fmap (G12 jalon 1) : aucun rendu, aucun
+    // --type requis — tout vient de la map, sauf les overrides couleur.
+    if let Some(ref map_path) = cli.from_map {
+        run_from_map(&cli, map_path, &output_path);
+        return;
+    }
+
+    let Resolved {
+        params,
+        aa_samples,
+        aa_jitter_scale,
+    } = match resolve_params(&cli) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{}", e.msg);
+            std::process::exit(e.code);
+        }
+    };
 
     if let Some(path) = cli.export_f3_toml.as_deref() {
         if let Err(error) = save_f3_toml(path, &params) {
-            eprintln!("Erreur export TOML F3 {}: {error}", path.display());
+            eprintln!("Error exporting F3 TOML {}: {error}", path.display());
             std::process::exit(1);
         }
-        println!("TOML F3 écrit: {}", path.display());
+        println!("F3 TOML written: {}", path.display());
     }
 
     // Calcul escape-time (CPU ou GPU).
@@ -1026,7 +1099,7 @@ fn main() {
         None
     };
     if let Some(gpu) = gpu_renderer.as_ref() {
-        println!("GPU initialisé ({})", gpu.precision_label());
+        println!("GPU initialised ({})", gpu.precision_label());
     }
     let mut orbit_cache = None;
     let planned = render::render_planned(
@@ -1037,7 +1110,7 @@ fn main() {
     let (out, rendered_on_gpu): (render::RenderOutput, bool) = match planned {
         Some(result) => {
             if result.fell_back_to_cpu {
-                eprintln!("GPU indisponible ou incompatible, fallback CPU");
+                eprintln!("GPU unavailable or incompatible, falling back to CPU");
             } else if result.device == fractal::wisdom::Device::Gpu {
                 println!(
                     "Mode: GPU {}",
@@ -1051,7 +1124,7 @@ fn main() {
             (result.output, result.device == fractal::wisdom::Device::Gpu)
         }
         None => {
-            eprintln!("Erreur : rendu interrompu ou type non supporté par le dispatcher");
+            eprintln!("Error: render interrupted or type not supported by the dispatcher");
             std::process::exit(1);
         }
     };
@@ -1089,9 +1162,9 @@ fn main() {
             bailout_sq,
             degree,
         ) {
-            Ok(()) => println!("EXR raw écrit: {}", exr_path.display()),
+            Ok(()) => println!("Raw EXR written: {}", exr_path.display()),
             Err(e) => {
-                eprintln!("Erreur écriture EXR {}: {}", exr_path.display(), e);
+                eprintln!("Error writing EXR {}: {}", exr_path.display(), e);
                 std::process::exit(1);
             }
         }
@@ -1100,22 +1173,7 @@ fn main() {
     // Export PNG avec métadonnées.
     let save_start = std::time::Instant::now();
     // Utiliser les strings HP si disponibles, sinon convertir f64
-    let center_x_hp = params
-        .center_x_hp
-        .clone()
-        .unwrap_or_else(|| params.center_x.to_string());
-    let center_y_hp = params
-        .center_y_hp
-        .clone()
-        .unwrap_or_else(|| params.center_y.to_string());
-    let span_x_hp = params
-        .span_x_hp
-        .clone()
-        .unwrap_or_else(|| params.span_x.to_string());
-    let span_y_hp = params
-        .span_y_hp
-        .clone()
-        .unwrap_or_else(|| params.span_y.to_string());
+    let [center_x_hp, center_y_hp, span_x_hp, span_y_hp] = hp_strings(&params);
     let png_result = if aa_samples > 1 {
         // Anti-aliasing multi-sample (per-frame jitter) : sample 0 = le rendu de
         // base déjà calculé (offset (0,0)), samples 1..N re-rendus avec un offset
@@ -1152,13 +1210,13 @@ fn main() {
                 render::render_request(render::RenderRequest::new(&p, &cancel), &mut aa_cache)
             };
             let Some(sample) = sample else {
-                eprintln!("Erreur : rendu AA interrompu (sample {})", k + 1);
+                eprintln!("Error: AA render interrupted (sample {})", k + 1);
                 std::process::exit(1);
             };
             let rgb = match io::png::colorize_output(&p, &sample) {
                 Ok(rgb) => rgb,
                 Err(e) => {
-                    eprintln!("Erreur de colorisation (sample {}): {e}", k + 1);
+                    eprintln!("Colouring error (sample {}): {e}", k + 1);
                     std::process::exit(1);
                 }
             };
@@ -1186,7 +1244,7 @@ fn main() {
         let buffer = match io::png::colorize_output(&params, &out) {
             Ok(rgb) => rgb,
             Err(e) => {
-                eprintln!("Erreur de colorisation: {e}");
+                eprintln!("Colouring error: {e}");
                 std::process::exit(1);
             }
         };
@@ -1201,7 +1259,7 @@ fn main() {
         )
     };
     if let Err(e) = png_result {
-        eprintln!("Erreur lors de l'écriture du PNG: {e}");
+        eprintln!("Error writing the PNG: {e}");
         std::process::exit(1);
     }
 
@@ -1224,9 +1282,9 @@ fn main() {
                 distances: (!out.distances.is_empty()).then(|| out.distances.clone()),
             };
             match io::fmap::save_fmap(&map, map_path) {
-                Ok(()) => println!("Map écrite: {}", map_path.display()),
+                Ok(()) => println!("Map written: {}", map_path.display()),
                 Err(e) => {
-                    eprintln!("Erreur lors de l'écriture de la map: {e}");
+                    eprintln!("Error writing the map: {e}");
                     std::process::exit(1);
                 }
             }
@@ -1235,9 +1293,11 @@ fn main() {
     let save_time = save_start.elapsed();
     let total_time = start_time.elapsed();
 
-    // Affichage du temps de génération.
+    // Affichage du temps de génération. ⚠️ Ligne lue par le harness
+    // (`scripts/harnesslib/axes_perf.py::_RE_GEN`, verrou
+    // `scripts/test_harness_guard.py`) : ne changer le format qu'avec eux.
     println!(
-        "Génération terminée en {:.2}s (rendu: {:.2}s, sauvegarde: {:.2}s)",
+        "Done in {:.2}s (render: {:.2}s, save: {:.2}s)",
         total_time.as_secs_f64(),
         render_time.as_secs_f64(),
         save_time.as_secs_f64()
@@ -1260,4 +1320,115 @@ fn non_finite_param(p: &fractal::FractalParams) -> Option<&'static str> {
         ("seed.im", p.seed.im),
     ];
     checks.iter().find(|(_, v)| !v.is_finite()).map(|(n, _)| *n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("fractall_cli_{}_{}", std::process::id(), name))
+    }
+
+    fn resolve(args: &[&str]) -> FractalParams {
+        let mut argv = vec!["fractall-cli"];
+        argv.extend_from_slice(args);
+        resolve_params(&Cli::parse_from(argv)).unwrap_or_else(|e| panic!("{}", e.msg)).params
+    }
+
+    /// Rendu CPU + colorisation + PNG exactement comme `main` (hors AA).
+    fn render_to_png(params: &FractalParams, path: &std::path::Path) -> Vec<u8> {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let out = render::render_request(render::RenderRequest::new(params, &cancel), &mut None)
+            .expect("render");
+        let rgb = io::png::colorize_output(params, &out).expect("colorize");
+        let [cx, cy, sx, sy] = hp_strings(params);
+        save_png_rgb_with_metadata(params, &rgb, path, &cx, &cy, &sx, &sy).expect("save");
+        rgb
+    }
+
+    /// `--from-png` à taille identique sur un PNG produit par le CLI :
+    /// pixel-identique au rendu d'origine (vue, couleurs, moteur restaurés).
+    #[test]
+    fn from_png_same_size_rerender_is_pixel_identical() {
+        let png = tmp("orig.png");
+        let png_s = png.to_str().unwrap();
+        let original = resolve(&[
+            "--type", "3", "--width", "64", "--height", "48", "--no-gpu",
+            "--center-x-hp", "-0.743643887037158704752191506114774",
+            "--center-y-hp", "0.131825904205311970493132056385139",
+            "--zoom", "1e7", "--iterations", "3000", "--palette", "11",
+            "--color-repeat", "8", "--output", png_s,
+        ]);
+        let rgb_original = render_to_png(&original, &png);
+
+        let again = resolve(&["--from-png", png_s, "--no-gpu", "--output", "unused.png"]);
+        assert_eq!(again.iteration_max, 3000);
+        assert_eq!(again.color.color_mode, 11);
+        assert_eq!(again.color.color_repeat, 8);
+        assert_eq!((again.width, again.height), (64, 48));
+        let rgb_again = render_to_png(&again, &tmp("again.png"));
+        assert!(rgb_original == rgb_again, "--from-png re-render differs from the original");
+
+        // Overrides explicites : appliqués, le reste vient du PNG.
+        let over = resolve(&[
+            "--from-png", png_s, "--palette", "2", "--iterations", "500", "--width", "32",
+            "--output", "unused.png",
+        ]);
+        assert_eq!(over.color.color_mode, 2);
+        assert_eq!(over.iteration_max, 500);
+        assert_eq!(over.color.color_repeat, 8);
+        assert_eq!((over.width, over.height), (32, 24));
+        assert_eq!(over.center_x_hp, again.center_x_hp);
+        assert_eq!(over.span_y_hp, again.span_y_hp);
+
+        for p in [png, tmp("again.png")] {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    /// Changement de ratio : centre et étendue verticale conservés.
+    #[test]
+    fn from_png_aspect_change_keeps_center_and_span_y() {
+        let png = tmp("aspect.png");
+        let png_s = png.to_str().unwrap();
+        let original = resolve(&[
+            "--type", "3", "--width", "40", "--height", "30", "--iterations", "200",
+            "--output", png_s,
+        ]);
+        render_to_png(&original, &png);
+        let wide = resolve(&[
+            "--from-png", png_s, "--width", "80", "--height", "30", "--output", "unused.png",
+        ]);
+        assert_eq!(wide.center_x_hp, Some(original.center_x.to_string()));
+        assert_eq!(wide.center_y_hp, Some(original.center_y.to_string()));
+        assert_eq!(wide.span_y_hp, Some(original.span_y.to_string()));
+        assert_eq!(wide.span_y, original.span_y);
+        assert!((wide.span_x - original.span_y * 80.0 / 30.0).abs() < 1e-12);
+        let _ = std::fs::remove_file(png);
+    }
+
+    #[test]
+    fn from_png_without_metadata_is_an_explicit_error() {
+        let plain = tmp("plain.png");
+        image::RgbImage::new(4, 4).save(&plain).unwrap();
+        let cli = Cli::parse_from([
+            "fractall-cli", "--from-png", plain.to_str().unwrap(), "--output", "x.png",
+        ]);
+        let err = resolve_params(&cli).err().expect("must fail");
+        assert!(err.msg.contains("not a fractall PNG"), "{}", err.msg);
+        let _ = std::fs::remove_file(plain);
+
+        let cli = Cli::parse_from([
+            "fractall-cli", "--from-png", "/nonexistent/view.png", "--output", "x.png",
+        ]);
+        let err = resolve_params(&cli).err().expect("must fail");
+        assert!(err.msg.contains("file not found"), "{}", err.msg);
+    }
+
+    #[test]
+    fn type_is_still_required_without_from_png() {
+        let cli = Cli::parse_from(["fractall-cli", "--output", "x.png"]);
+        assert_eq!(resolve_params(&cli).err().unwrap().code, 2);
+    }
 }

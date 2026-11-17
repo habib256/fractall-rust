@@ -279,6 +279,21 @@ impl ViewHp {
         self.height = height;
     }
 
+    /// Change la surface en conservant le centre et l'étendue VERTICALE
+    /// (`span_y`) : `span_x` est dérivé du nouveau ratio en haute précision.
+    /// Sémantique « re-rendre la même vue à une autre taille » (`--from-png`) :
+    /// un 16:9 ré-rendu en 4:3 garde la même hauteur de plan et rogne/élargit
+    /// horizontalement.
+    pub fn resize_keep_vertical_span(&mut self, width: u32, height: u32) {
+        let width = width.max(1);
+        let height = height.max(1);
+        let target =
+            Float::with_val(self.precision, width) / Float::with_val(self.precision, height);
+        self.span_x = Float::with_val(self.precision, &self.span_y * &target);
+        self.width = width;
+        self.height = height;
+    }
+
     pub fn transform_to(&self, target: &Self) -> ViewTransform {
         let precision = self.precision.max(target.precision);
         let scale_x = Float::with_val(precision, &target.span_x / &self.span_x).to_f64();
@@ -372,6 +387,22 @@ mod tests {
         assert_eq!(view.center_x, center);
         assert!(view.span_x >= old_x);
         assert_eq!(view.dimensions(), (1600, 900));
+    }
+
+    #[test]
+    fn resize_keep_vertical_span_derives_span_x_in_hp() {
+        let mut p = default_params_for_type(FractalType::Mandelbrot, 160, 90);
+        p.span_y_hp = Some("1.234567890123456789012345678901234567890123456789e-60".into());
+        p.span_x_hp = Some("2.194787360219478736021947873602194787360219478736e-60".into());
+        let mut view = ViewHp::from_params(&p);
+        let span_y = view.span_y.clone();
+        view.resize_keep_vertical_span(100, 100);
+        assert_eq!(view.span_y, span_y);
+        assert_eq!(view.span_x, span_y);
+        view.resize_keep_vertical_span(300, 100);
+        let ratio = Float::with_val(view.precision(), &view.span_x / &view.span_y);
+        assert!(Float::with_val(view.precision(), ratio - 3u32).abs() < 1e-70);
+        assert_eq!(view.dimensions(), (300, 100));
     }
 
     #[test]

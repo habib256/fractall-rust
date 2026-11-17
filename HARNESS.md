@@ -139,7 +139,7 @@ brutes. Mêmes seuils que precision (PASS ≤ 0,05 %, FAIL ≥ 0,5 %), même tai
 Rend chaque cas du tier **une fois** en capturant les diagnostics du moteur
 (`[FRACTALL] path=… ns/iter=…`, `[PERTURB PERF] orbit= pixels= post=`,
 `[WISDOM] tier= variants=`, `[DD-ESCALATION]`, `[RELIABILITY] flagged=`) et la
-ligne CLI « Génération terminée en Xs (rendu: Ys, sauvegarde: Zs) ». Par cas :
+ligne CLI « Done in Xs (render: Ys, save: Zs) » (ex-« Génération terminée en … », toujours lue). Par cas :
 **path exécuté**, ventilation du wall-clock en `orbit / bla / pixels / post /
 save / other` (part % ; `bla` = build de la table, chronométré à part depuis
 2026-11-06), phase dominante, ns/iter effectif (skips BLA inclus) recalculé
@@ -427,7 +427,7 @@ correction ⇒ ajouter un golden ou un preset quality qui fige le cas
 | Où va le temps (par cas) | `SCORECARD.md` §Profil, `bench/harness/profile/<cas>.log` |
 | Timing interne par phase | `FRACTALL_PERTURB_STATS` (orbit/BLA/pixels/post), `[WISDOM]` via `FRACTALL_WISDOM=1` |
 | Coût du détecteur de fiabilité | `FRACTALL_RELIABILITY=off|observe|escalate` (A/B), colonne `fiab. %` |
-| Timing CLI parseable | `main.rs` « Génération terminée en Xs (rendu: Ys…) » |
+| Timing CLI parseable | `main.rs` « Done in Xs (render: Ys…) » (ex-« Génération terminée en … ») |
 | Débit par tier numérique | `SCORECARD.md` §Bench, `trend --bench` |
 | Évolution d'un cas | `harness.py trend --case <stem>` |
 | Algorithmes F3 | `fraktaler-3-3.1/fraktaler-3-analysis.md` + `src/` F3 |

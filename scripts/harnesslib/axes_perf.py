@@ -2,8 +2,8 @@
 
 - `axis_profile` : rend chaque cas UNE fois en capturant les diagnostics stderr
   du moteur (`[FRACTALL]`, `[PERTURB PERF]`, `[WISDOM]`, `[DD-ESCALATION]`,
-  `[RELIABILITY]`, `[NUCLEUS]`) et la ligne stdout du CLI « Génération
-  terminée en Xs (rendu: Ys, sauvegarde: Zs) » → OÙ VA LE TEMPS (orbite
+  `[RELIABILITY]`, `[NUCLEUS]`) et la ligne stdout du CLI « Done in Xs
+  (render: Ys, save: Zs) » (ex-« Génération terminée en … ») → OÙ VA LE TEMPS (orbite
   référence / boucle pixel / post / sauvegarde / autre) et QUEL path tourne.
   C'est l'étape « confirmer le path exécuté avant d'optimiser » (leçon G2)
   rendue systématique et versionnée dans le history.
@@ -55,9 +55,13 @@ _RE_WISDOM = re.compile(
 _RE_RELIAB = re.compile(
     r"\[RELIABILITY\] mode=(?P<mode>\S+) runaway=\S+ "
     r"flagged=(?P<flagged>\d+)/(?P<total>\d+) \((?P<pct>[\d.]+)%\)")
+# Ligne finale du CLI : anglais depuis 2026-11 (« Done in Xs (render: Ys,
+# save: Zs) »), français avant (« Génération terminée en … (rendu: …,
+# sauvegarde: …) ») — les deux restent lues (binaires de baseline anciens).
 _RE_GEN = re.compile(
-    r"Génération terminée en (?P<total>[\d.]+)s \(rendu: (?P<render>[\d.]+)s, "
-    r"sauvegarde: (?P<save>[\d.]+)s\)")
+    r"(?:Génération terminée en|Done in) (?P<total>[\d.]+)s "
+    r"\((?:rendu|render): (?P<render>[\d.]+)s, "
+    r"(?:sauvegarde|save): (?P<save>[\d.]+)s\)")
 _RE_NUCLEUS = re.compile(r"\[NUCLEUS\] found period=(?P<period>\d+)")
 
 

@@ -160,7 +160,7 @@ SAMPLE_CLI_OUTPUT = """\
 [PERTURB PERF] 256x256 pixels=65536 zoom=1.00e50 small_image=true orbit=0.120s pixels=0.800s post=0.010s total=0.950s avg_iter/px=12345 max_iter/px=99999 ns/iter=2.1 glitched_initial=0 corrections=0 fallback_ratio=0.000
 [RELIABILITY] mode=Escalate runaway=1e30 flagged=12/65536 (0.0183%) type=Mandelbrot
 [FRACTALL] type=Mandelbrot path=bytecode_f64 prec=196b iter_max=200000 avg_iter/px=12345 max_iter/px=99999 ns/iter=2.1 pixels=0.800s total=0.950s
-Génération terminée en 1.10s (rendu: 0.95s, sauvegarde: 0.05s)
+Done in 1.10s (render: 0.95s, save: 0.05s)
 """
 
 
@@ -215,10 +215,16 @@ def run_profile_parsing():
     _check(axes_perf.effective_threads({"RAYON_NUM_THREADS": "3"}) == 3,
            "profile : threads effectifs = RAYON_NUM_THREADS")
     # path f64 standard (pas de [PERTURB PERF]) : tout le rendu = pixels
-    std = "Génération terminée en 0.30s (rendu: 0.20s, sauvegarde: 0.05s)\n"
+    std = "Done in 0.30s (render: 0.20s, save: 0.05s)\n"
     bd3 = axes_perf.phase_breakdown(axes_perf.parse_profile_output(std), 0.30)
     _check(bd3["secs"]["pixels"] == 0.2 and bd3["dominant"] == "pixels",
            "profile : path std → rendu = pixels")
+    # ligne française des binaires antérieurs (baselines) : toujours lue
+    legacy = "Génération terminée en 0.30s (rendu: 0.20s, sauvegarde: 0.05s)\n"
+    prl = axes_perf.parse_profile_output(legacy)
+    _check(prl["render_s"] == 0.2 and prl["save_s"] == 0.05
+           and prl["gen_total_s"] == 0.3,
+           "profile : ligne CLI française (binaires antérieurs) lue")
     # bench TOML
     ent = axes_perf.parse_bench_toml(
         'version = 1\nmachine = "x"\n[[bench]]\nkey = "cpu_perturb_f64"\n'

@@ -15,9 +15,9 @@ use video::assemble::{assemble_project, AssembleOptions};
 #[derive(Parser)]
 #[command(
     name = "fractall-video",
-    about = "Pipeline vidéo zoom fractall : plan → render → assemble",
+    about = "fractall zoom-video pipeline: plan → render → assemble",
     version,
-    author = "Arnaud Verhille et contributeurs"
+    author = "Arnaud Verhille and contributors"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -26,35 +26,35 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Prépare un projet : lit une config TOML (location/image/fractal/color/
-    /// video), calcule le nombre de keyframes (ceil(log2(zoom))) et écrit
+    /// Prepare a project: read a TOML config (location/image/fractal/color/
+    /// video), compute the number of keyframes (ceil(log2(zoom))) and write
     /// PROJECT/manifest.toml.
     Plan {
-        /// Config TOML d'entrée (mêmes sections que le manifest).
+        /// Input TOML config (same sections as the manifest).
         config: PathBuf,
-        /// Dossier du projet (créé si besoin).
+        /// Project directory (created if needed).
         #[arg(short, long)]
         project: PathBuf,
     },
-    /// Rend les keyframes manquantes du projet en maps .fmap (reprise :
-    /// les maps valides sont skippées ; un changement de palette du manifest
-    /// n'invalide PAS les maps).
+    /// Render the project's missing keyframes as .fmap maps (resumable:
+    /// valid maps are skipped; changing the manifest's palette does NOT
+    /// invalidate the maps).
     Render {
-        /// Dossier du projet (contenant manifest.toml).
+        /// Project directory (containing manifest.toml).
         project: PathBuf,
     },
-    /// Assemble la vidéo : interpole les frames entre keyframes et encode via
-    /// ffmpeg (-o video.mp4) ou écrit des frames PNG (--frames-dir).
+    /// Assemble the video: interpolate frames between keyframes and encode
+    /// with ffmpeg (-o video.mp4) or write PNG frames (--frames-dir).
     Assemble {
-        /// Dossier du projet (keyframes rendues).
+        /// Project directory (rendered keyframes).
         project: PathBuf,
-        /// Fichier vidéo de sortie (encodé par ffmpeg).
+        /// Output video file (encoded by ffmpeg).
         #[arg(short, long)]
         output: Option<PathBuf>,
-        /// Dossier de frames PNG numérotées (fallback sans ffmpeg).
+        /// Directory of numbered PNG frames (fallback without ffmpeg).
         #[arg(long)]
         frames_dir: Option<PathBuf>,
-        /// Binaire ffmpeg à utiliser.
+        /// ffmpeg binary to use.
         #[arg(long, default_value = "ffmpeg")]
         ffmpeg: String,
     },
@@ -65,27 +65,27 @@ fn main() {
     let result: Result<(), Box<dyn std::error::Error>> = match cli.cmd {
         Cmd::Plan { config, project } => video::plan_project(&config, &project).map(|m| {
             println!(
-                "Manifest écrit : {} ({} keyframes → zoom {})",
+                "Manifest written: {} ({} keyframes → zoom {})",
                 project.join("manifest.toml").display(),
                 m.video.keyframes,
                 m.location.zoom
             );
         }),
         Cmd::Render { project } => video::render_project(&project).map(|(rendered, skipped)| {
-            println!("Keyframes : {rendered} rendues, {skipped} réutilisées");
+            println!("Keyframes: {rendered} rendered, {skipped} reused");
         }),
         Cmd::Assemble { project, output, frames_dir, ffmpeg } => {
             let opts = AssembleOptions { output, frames_dir, ffmpeg };
             assemble_project(&project, &opts).map(|stats| {
                 println!(
-                    "Vidéo assemblée : {} frames ({:.1} s)",
+                    "Video assembled: {} frames ({:.1} s)",
                     stats.frames, stats.duration_s
                 );
             })
         }
     };
     if let Err(e) = result {
-        eprintln!("Erreur : {e}");
+        eprintln!("Error: {e}");
         std::process::exit(1);
     }
 }

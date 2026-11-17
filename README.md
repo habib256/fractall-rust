@@ -16,6 +16,27 @@ Fractall is a high-performance fractal explorer written in Rust, featuring GPU r
   <em>Mandelbrot set revealing infinite complexity</em>
 </p>
 
+## Quick start
+
+```bash
+cargo run --release --bin fractall-gui     # or run a release package (see Installation)
+```
+
+1. **Explore** in the GUI: mouse wheel zooms around the cursor, left-drag selects a
+   rectangle to zoom into, middle-drag pans, right-click zooms out.
+2. **Save** the view with `S`: the PNG embeds every parameter (exact coordinates included).
+   Drag and drop that PNG onto the window later to resume exactly where you were.
+3. **Re-render it in 4K** from the command line — same view, any size:
+   ```bash
+   fractall-cli --from-png view.png --width 3840 --height 2160 --output view_4k.png
+   ```
+4. **Deep zoom from the CLI** (negative coordinates can be passed directly):
+   ```bash
+   fractall-cli --type 3 --zoom 3.1415e64 --iterations 70000 --output deep.png \
+       --center-x-hp -1.861369427601275917203958599290880106793222303477204934785274017462633431321514 \
+       --center-y-hp 8.728845098728640945449739639040797666621419255681987270008753766941151815473273e-5
+   ```
+
 ## Features
 
 ### Unlimited Zoom Depth
@@ -58,7 +79,7 @@ Fractall is a high-performance fractal explorer written in Rust, featuring GPU r
 - Share your discoveries — recipients can continue exploring from where you left off
 - TOML parameter files for batch generation (see the `toml/` directory)
 
-## Quick Start
+## Installation
 
 ### Download a release (no toolchain needed)
 
@@ -212,7 +233,18 @@ Type-specific
     --lyapunov-preset <NAME>  standard | zircon-city | jellyfish |
                               asymmetric | spaceship | heavy-blocks
 
-Batch loader
+Re-render & batch loaders
+    --from-png <FILE.png>     Re-render the exact view saved in a fractall PNG
+                              (GUI key S, or any fractall-cli output). --type is
+                              not needed; every option given explicitly overrides
+                              the PNG's value (size, iterations, palette, AA, …).
+                              Resizing keeps the centre and the vertical extent;
+                              with only --width or --height the PNG's aspect
+                              ratio is kept. AA samples are not stored in the
+                              PNG: pass --aa-samples again if wanted
+    --from-map <FILE.fmap>    Recolour a raw .fmap map without recomputing
+                              (--palette / --color-repeat / --outcoloring)
+    --output-map <FILE.fmap>  Also write the raw render buffers as a .fmap map
     --toml <FILE>             Load real/imag/zoom/iterations/rotate
                               from a lightweight rust-fractal-core TOML
                               (auto-routes to Mandelbrot if --type omitted)
@@ -241,6 +273,9 @@ fractall-cli --type 3 \
     --zoom 1e10 \
     --iterations 10000 \
     --output spiral.png
+
+# Re-render a view saved from the GUI (key S) in 4K, 4 AA samples
+fractall-cli --from-png view.png --width 3840 --height 2160 --aa-samples 4 --output view_4k.png
 
 # Batch deep zoom from a corpus TOML (1e50, perturbation path)
 fractall-cli --toml toml/e50.toml --output e50.png
