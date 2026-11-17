@@ -269,7 +269,7 @@ impl VideoStudioApp {
             scrub: Default::default(),
             scrub_positions: None,
             generation: 0,
-            status: "Naviguez vers la cible (molette = zoom, glisser = déplacer) ou déposez un PNG fractall".into(),
+            status: "Navigate to the target (wheel = zoom, drag = pan) or drop a fractall PNG".into(),
         }
     }
 
@@ -326,7 +326,7 @@ impl VideoStudioApp {
             return;
         }
         let Some(params) = self.preview_params(w, h) else {
-            self.status = "Vue invalide — coordonnées illisibles".into();
+            self.status = "Invalid view — unreadable coordinates".into();
             return;
         };
         self.preview_cancel.store(true, Ordering::Relaxed);
@@ -383,12 +383,12 @@ impl VideoStudioApp {
         let params: Result<FractalParams, String> = match path.extension().and_then(|e| e.to_str()) {
             Some("png") => load_png_metadata(path).map_err(|e| e.to_string()),
             Some("fmap") => load_fmap(path).map(|m| m.params).map_err(|e| e.to_string()),
-            _ => Err("format non reconnu (PNG fractall ou .fmap)".into()),
+            _ => Err("unrecognized format (fractall PNG or .fmap)".into()),
         };
         let params = match params {
             Ok(p) => p,
             Err(e) => {
-                self.status = format!("Échec du chargement de {} : {e}", path.display());
+                self.status = format!("Failed to load {}: {e}", path.display());
                 return;
             }
         };
@@ -397,7 +397,7 @@ impl VideoStudioApp {
             self.type_idx = idx;
         } else {
             self.status = format!(
-                "Type {:?} hors famille vidéo — cible adoptée avec le type courant",
+                "Type {:?} not supported for video — target adopted with the current type",
                 params.fractal_type
             );
         }
@@ -416,7 +416,7 @@ impl VideoStudioApp {
         self.settings.iterations = params.iteration_max;
         self.orbit_cache = None;
         self.preview_dirty = true;
-        self.status = format!("Cible adoptée depuis {}", path.display());
+        self.status = format!("Target adopted from {}", path.display());
     }
 
     fn target_view(&self) -> Result<TargetView, String> {
@@ -464,7 +464,7 @@ impl VideoStudioApp {
             job::spawn_generate(manifest, project, self.ffmpeg_available, cancel)
         });
         self.job_running = true;
-        self.job_phase = if assemble_only { "Assemblage…" } else { "Préparation…" }.into();
+        self.job_phase = if assemble_only { "Assembling…" } else { "Preparing…" }.into();
         self.job_progress = 0.0;
         self.job_started = Some(Instant::now());
         self.cancel_requested = false;
@@ -532,7 +532,7 @@ impl VideoStudioApp {
                     );
                 }
                 Ok(VideoJobMsg::AssembleProgress { frame, total }) => {
-                    self.job_phase = format!("Assemblage {frame}/{total}");
+                    self.job_phase = format!("Assembling {frame}/{total}");
                     self.job_progress = 0.5 + 0.5 * frame as f32 / total.max(1) as f32;
                     self.tl_current = None;
                 }
@@ -542,7 +542,7 @@ impl VideoStudioApp {
                 }
                 Ok(VideoJobMsg::Cancelled) => {
                     self.job_result = Some(Err(
-                        "Annulé — keyframes conservées : relancer Générer reprendra ici".into(),
+                        "Cancelled — keyframes kept: running Generate again will resume here".into(),
                     ));
                     finished = true;
                 }
@@ -553,7 +553,7 @@ impl VideoStudioApp {
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     if self.job_running && !finished {
-                        self.job_result = Some(Err("thread vidéo interrompu".into()));
+                        self.job_result = Some(Err("video thread interrupted".into()));
                         finished = true;
                     }
                     break;
@@ -996,7 +996,7 @@ impl VideoStudioApp {
         self.orbit_cache = None;
         self.preview_dirty = true;
         self.scrub.close();
-        self.status = format!("Aperçu keyframe {k} — zoom e{:.1}", k as f64 * 2f64.log10());
+        self.status = format!("Keyframe {k} preview — zoom e{:.1}", k as f64 * 2f64.log10());
     }
 
     /// La courbe de vitesse a changé : recalage des positions de scrub et
@@ -1006,7 +1006,7 @@ impl VideoStudioApp {
         self.scrub_positions = None;
         if self.project_manifest.is_some() && !self.job_running {
             self.status =
-                "Vitesse modifiée — « Ré-assembler » suffit (les keyframes restent valides)"
+                "Speed changed — \"Re-assemble\" is enough (keyframes remain valid)"
                     .into();
         }
     }
@@ -1110,7 +1110,7 @@ impl VideoStudioApp {
                 });
             }
         } else {
-            self.scrub_label = "Aucun projet rendu dans ce dossier — lancez Générer".into();
+            self.scrub_label = "No rendered project in this folder — run Generate".into();
         }
     }
 
@@ -1137,12 +1137,12 @@ impl VideoStudioApp {
                     }
                 }
                 if missing_next {
-                    self.scrub_label.push_str("  (keyframe suivante pas encore rendue)");
+                    self.scrub_label.push_str("  (next keyframe not rendered yet)");
                 }
             }
             Some(ScrubReply::Missing { k, version }) => {
                 if self.scrub.accepts(version) {
-                    self.scrub_label = format!("Keyframe {k} pas encore rendue — Générer la produira");
+                    self.scrub_label = format!("Keyframe {k} not rendered yet — Generate will produce it");
                 }
             }
             None => {}
@@ -1220,7 +1220,7 @@ impl VideoStudioApp {
                 self.preview_dirty = true;
             }
         });
-        if ui.button("⟲ Vue pleine").clicked() {
+        if ui.button("⟲ Full view").clicked() {
             let p = default_params_for_type(self.current_type().1, 800, 600);
             self.view = HpView::new(p.center_x, p.center_y, p.span_x);
             self.orbit_cache = None;
@@ -1230,7 +1230,7 @@ impl VideoStudioApp {
         ui.separator();
 
         // --- Réglages vidéo ---
-        egui::ComboBox::from_label("Résolution")
+        egui::ComboBox::from_label("Resolution")
             .selected_text(if self.resolution_idx < RESOLUTIONS.len() {
                 RESOLUTIONS[self.resolution_idx].0.to_string()
             } else {
@@ -1250,7 +1250,7 @@ impl VideoStudioApp {
                 ui.add(egui::DragValue::new(&mut self.settings.width).range(16..=7680));
                 ui.label("×");
                 ui.add(egui::DragValue::new(&mut self.settings.height).range(16..=4320));
-                ui.label("(arrondi pair)");
+                ui.label("(rounded to even)");
             });
         }
         ui.horizontal(|ui| {
@@ -1272,15 +1272,15 @@ impl VideoStudioApp {
         ui.add(
             egui::Slider::new(&mut self.settings.velocity, 0.05..=4.0)
                 .logarithmic(true)
-                .text("vitesse (×2/s)"),
+                .text("speed (×2/s)"),
         );
         if !self.settings.speed_points.is_empty() {
             ui.horizontal(|ui| {
                 ui.label(format!(
-                    "Courbe vitesse : {} point(s)",
+                    "Speed curve: {} point(s)",
                     self.settings.speed_points.len()
                 ));
-                if ui.small_button("✕ réinitialiser").clicked() {
+                if ui.small_button("✕ reset").clicked() {
                     self.settings.speed_points.clear();
                     self.on_curve_edited();
                 }
@@ -1293,14 +1293,14 @@ impl VideoStudioApp {
             ui.add(egui::DragValue::new(&mut self.settings.iterations_growth).range(0.0..=100_000.0));
         });
         ui.horizontal(|ui| {
-            ui.checkbox(&mut self.settings.lighting, "Éclairage");
+            ui.checkbox(&mut self.settings.lighting, "Lighting");
             ui.add_enabled(
                 self.settings.lighting,
                 egui::Slider::new(&mut self.settings.lighting_beta, 5.0..=90.0).text("β°"),
             );
         });
         ui.horizontal(|ui| {
-            ui.checkbox(&mut self.settings.palette_scroll, "Palette animée");
+            ui.checkbox(&mut self.settings.palette_scroll, "Animated palette");
             ui.add_enabled(
                 self.settings.palette_scroll,
                 egui::DragValue::new(&mut self.settings.palette_cycles)
@@ -1310,14 +1310,14 @@ impl VideoStudioApp {
             ui.label("cycles");
         });
         ui.horizontal(|ui| {
-            ui.label("Dossier");
+            ui.label("Folder");
             ui.add(egui::TextEdit::singleline(&mut self.output_dir).desired_width(180.0));
         });
         // Glyphes limités aux polices egui par défaut (✓/→/🔁 = carrés).
         if self.ffmpeg_available {
-            ui.label("ffmpeg détecté : sortie video.mp4");
+            ui.label("ffmpeg detected: output video.mp4");
         } else {
-            ui.colored_label(egui::Color32::YELLOW, "ffmpeg introuvable : sortie frames PNG");
+            ui.colored_label(egui::Color32::YELLOW, "ffmpeg not found: output PNG frames");
         }
 
         ui.separator();
@@ -1335,15 +1335,15 @@ impl VideoStudioApp {
                 self.settings.supersample,
             ) {
                 Ok(e) => {
-                    ui.label(format!("Zoom cible : {}", self.zoom_label()));
+                    ui.label(format!("Target zoom: {}", self.zoom_label()));
                     ui.label(format!(
-                        "{} keyframes ({} maps, ~{} Mo bruts)",
+                        "{} keyframes ({} maps, ~{} MB raw)",
                         e.keyframes,
                         e.maps,
                         e.map_bytes / 1_000_000
                     ));
                     ui.label(format!(
-                        "{} frames — durée {}:{:04.1}",
+                        "{} frames — duration {}:{:04.1}",
                         e.frames,
                         (e.duration_s / 60.0) as u32,
                         e.duration_s % 60.0
@@ -1362,7 +1362,7 @@ impl VideoStudioApp {
             ui.label(&self.job_phase);
             ui.add(egui::ProgressBar::new(self.job_progress).show_percentage().animate(true));
             if let Some(t0) = self.job_started {
-                ui.label(format!("{:.0} s écoulées", t0.elapsed().as_secs_f64()));
+                ui.label(format!("{:.0} s elapsed", t0.elapsed().as_secs_f64()));
             }
             // ETA pondérée (G13) : les keyframes profondes coûtent plus cher —
             // régression sur les durées mesurées, pas une moyenne naïve.
@@ -1371,29 +1371,29 @@ impl VideoStudioApp {
                     (0..total).filter(|k| !self.tl_done.contains(k)).collect();
                 if let Some(eta) = timeline::eta_seconds(&self.tl_measured, &remaining) {
                     if eta > 0.5 {
-                        ui.label(format!("≈ restant : {}", fmt_duration(eta)));
+                        ui.label(format!("≈ remaining: {}", fmt_duration(eta)));
                     }
                 }
             }
             if self.cancel_requested {
-                ui.label("Annulation…");
-            } else if ui.button("■ Annuler").clicked() {
+                ui.label("Cancelling…");
+            } else if ui.button("■ Cancel").clicked() {
                 self.job_cancel.store(true, Ordering::Relaxed);
                 self.cancel_requested = true;
             }
         } else {
             let ready = !self.output_dir.trim().is_empty();
             ui.horizontal(|ui| {
-                if ui.add_enabled(ready, egui::Button::new("🎬 Générer")).clicked() {
+                if ui.add_enabled(ready, egui::Button::new("🎬 Generate")).clicked() {
                     self.start_job(false);
                 }
                 let has_manifest =
                     Path::new(self.output_dir.trim()).join("manifest.toml").exists();
                 if ui
-                    .add_enabled(ready && has_manifest, egui::Button::new("⟲ Ré-assembler"))
+                    .add_enabled(ready && has_manifest, egui::Button::new("⟲ Re-assemble"))
                     .on_hover_text(
-                        "Refait la vidéo depuis les keyframes existantes \
-                         (palette / éclairage / vitesse) sans recalculer",
+                        "Rebuilds the video from the existing keyframes \
+                         (palette / lighting / speed) without recomputing",
                     )
                     .clicked()
                 {
@@ -1403,10 +1403,10 @@ impl VideoStudioApp {
             if let Some(result) = &self.job_result {
                 match result {
                     Ok(output) => {
-                        ui.colored_label(egui::Color32::LIGHT_GREEN, format!("Terminé : {output}"));
+                        ui.colored_label(egui::Color32::LIGHT_GREEN, format!("Done: {output}"));
                     }
                     Err(e) => {
-                        ui.colored_label(egui::Color32::LIGHT_RED, format!("Échec : {e}"));
+                        ui.colored_label(egui::Color32::LIGHT_RED, format!("Failed: {e}"));
                     }
                 }
             }
@@ -1421,7 +1421,7 @@ impl VideoStudioApp {
     /// miniatures des keyframes (placeholder → provisoire → définitive).
     fn timeline_panel(&mut self, ui: &mut egui::Ui) {
         let Some(total) = self.timeline_len() else {
-            ui.weak("Timeline : naviguez vers une cible pour planifier la vidéo");
+            ui.weak("Timeline: navigate to a target to plan the video");
             return;
         };
         let n = total.saturating_sub(1);
@@ -1435,7 +1435,7 @@ impl VideoStudioApp {
         if self.project_manifest.is_some() && !self.view_center_matches_project() {
             ui.colored_label(
                 egui::Color32::YELLOW,
-                "⚠ La vue courante diffère du projet affiché — « Générer » re-planifiera sur la nouvelle cible",
+                "⚠ The current view differs from the displayed project — \"Generate\" will re-plan on the new target",
             );
         }
 
@@ -1576,14 +1576,14 @@ impl VideoStudioApp {
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "Vitesse : double-clic pour ajouter un point (ralenti/accéléré par zone) — Ré-assembler suffit",
+                "Speed: double-click to add a point (slow down / speed up per zone) — Re-assemble is enough",
                 egui::FontId::proportional(11.0),
                 weak,
             );
         } else if let Some(pp) = resp.hover_pos() {
             let m = curve.multiplier_at(p_of(pp.x));
             resp.on_hover_text(format!(
-                "×{m:.2} à la keyframe {:.1}\nglisser = déplacer · clic droit = supprimer",
+                "×{m:.2} at keyframe {:.1}\ndrag = move · right-click = delete",
                 p_of(pp.x)
             ));
         }
@@ -1617,7 +1617,7 @@ impl VideoStudioApp {
                 self.start_scrub(p);
             }
         }
-        resp.on_hover_text("Scrub : prévisualise la frame vidéo à cette position");
+        resp.on_hover_text("Scrub: preview the video frame at this position");
     }
 
     /// Rangée de miniatures : image si disponible, cadre numéroté sinon,
@@ -1710,7 +1710,7 @@ impl VideoStudioApp {
                 jump = Some(k as u32);
             }
             resp.on_hover_text(format!(
-                "Keyframe {k} — zoom e{:.1}\nClic : aperçu à cette profondeur",
+                "Keyframe {k} — zoom e{:.1}\nClick: preview at this depth",
                 k as f64 * 2f64.log10()
             ));
 
@@ -1754,7 +1754,7 @@ impl VideoStudioApp {
                 ui.put(rect, egui::Spinner::new());
             }
             let painter = ui.painter_at(rect);
-            let label = format!("🎞 {}  —  clic : retour à la navigation", self.scrub_label);
+            let label = format!("🎞 {}  —  click: back to navigation", self.scrub_label);
             painter.rect_filled(
                 egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), 22.0)),
                 0.0,
@@ -1843,7 +1843,7 @@ impl eframe::App for VideoStudioApp {
 
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(format!("Zoom : {}", self.zoom_label()));
+                ui.label(format!("Zoom: {}", self.zoom_label()));
                 if self.preview_rendering {
                     ui.spinner();
                     ui.label("preview…");

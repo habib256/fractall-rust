@@ -567,7 +567,7 @@ impl FractallApp {
                 self.start_render();
             }
             Err(e) => {
-                eprintln!("Erreur chargement PNG: {}", e);
+                eprintln!("Error loading PNG: {}", e);
             }
         }
     }
@@ -577,14 +577,14 @@ impl FractallApp {
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("Erreur lecture TOML: {}", e);
+                eprintln!("Error reading TOML: {}", e);
                 return;
             }
         };
         let table: toml::Table = match content.parse() {
             Ok(t) => t,
             Err(e) => {
-                eprintln!("Erreur parsing TOML: {}", e);
+                eprintln!("Error parsing TOML: {}", e);
                 return;
             }
         };
@@ -592,21 +592,21 @@ impl FractallApp {
         let real_str = match table.get("real").and_then(|v| v.as_str()) {
             Some(s) => s.to_string(),
             None => {
-                eprintln!("TOML: champ 'real' manquant");
+                eprintln!("TOML: missing 'real' field");
                 return;
             }
         };
         let imag_str = match table.get("imag").and_then(|v| v.as_str()) {
             Some(s) => s.to_string(),
             None => {
-                eprintln!("TOML: champ 'imag' manquant");
+                eprintln!("TOML: missing 'imag' field");
                 return;
             }
         };
         let zoom_str = match table.get("zoom").and_then(|v| v.as_str()) {
             Some(s) => s.to_string(),
             None => {
-                eprintln!("TOML: champ 'zoom' manquant");
+                eprintln!("TOML: missing 'zoom' field");
                 return;
             }
         };
@@ -621,7 +621,7 @@ impl FractallApp {
         let zoom_gmp = match Float::parse(&zoom_str) {
             Ok(parsed) => Float::with_val(prec, parsed),
             Err(_) => {
-                eprintln!("TOML: impossible de parser le zoom: '{}'", zoom_str);
+                eprintln!("TOML: cannot parse zoom: '{}'", zoom_str);
                 return;
             }
         };
@@ -658,7 +658,7 @@ impl FractallApp {
         self.orbit_cache = None;
         self.start_render();
 
-        eprintln!("TOML chargé: zoom={}, iterations={}", zoom_str, iterations);
+        eprintln!("TOML loaded: zoom={}, iterations={}", zoom_str, iterations);
     }
 
     /// Lance un rendu haute résolution asynchrone et sauvegarde le résultat.
@@ -778,7 +778,7 @@ impl FractallApp {
                     Ok(rgb) => rgb,
                     Err(e) => {
                         let _ = tx.send(HqRenderEvent::Error(format!(
-                            "Erreur de colorisation: {e}"
+                            "Colorization error: {e}"
                         )));
                         return;
                     }
@@ -1215,7 +1215,7 @@ impl FractallApp {
                             "GPU {}",
                             gpu_renderer
                                 .as_ref()
-                                .expect("un rendu GPU exige un renderer")
+                                .expect("a GPU render requires a renderer")
                                 .precision_label()
                         )
                     } else {
@@ -2275,7 +2275,7 @@ impl eframe::App for FractallApp {
             if self.gpu_renderer.is_none() {
                 self.gpu_renderer = GpuRenderer::new().map(Arc::new);
                 if self.gpu_renderer.is_none() {
-                    eprintln!("⚠️  GPU non disponible - le rendu GPU sera désactivé (mode CPU uniquement)");
+                    eprintln!("⚠️  GPU not available - GPU rendering disabled (CPU only)");
                 }
             }
         }
@@ -2448,9 +2448,9 @@ impl eframe::App for FractallApp {
                     &span_x_hp,
                     &span_y_hp,
                 ) {
-                    eprintln!("Erreur export PNG: {}", e);
+                    eprintln!("PNG export error: {}", e);
                 } else {
-                    println!("Screenshot sauvegardé avec métadonnées: {}", filename);
+                    println!("Screenshot saved with metadata: {}", filename);
                 }
             }
 
@@ -2511,7 +2511,7 @@ impl eframe::App for FractallApp {
                     let type_menu_label = if let Some(seq) =
                         self.params.formula.hybrid_phases.as_ref().filter(|s| !s.is_empty())
                     {
-                        format!("⏷ Hybride: {}", Self::hybrid_seq_label(seq))
+                        format!("⏷ Hybrid: {}", Self::hybrid_seq_label(seq))
                     } else if current_category == current_label {
                         format!("⏷ {}", current_label)
                     } else {
@@ -2538,7 +2538,7 @@ impl eframe::App for FractallApp {
                             }
                         });
 
-                        ui.menu_button("Densité", |ui| {
+                        ui.menu_button("Density", |ui| {
                             for (id, label) in density_types.iter() {
                                 if let Some(fractal_type) = FractalType::from_id(*id) {
                                     if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
@@ -2576,13 +2576,13 @@ impl eframe::App for FractallApp {
 
                         // G4 jalon 5c : éditeur de séquence hybride multi-phase
                         // (phases itérées cycliquement, CLI `--phases`).
-                        ui.menu_button("Hybride (séquence)", |ui| {
+                        ui.menu_button("Hybrid (sequence)", |ui| {
                             let seq_label = if self.hybrid_seq.is_empty() {
                                 "—".to_string()
                             } else {
                                 Self::hybrid_seq_label(&self.hybrid_seq)
                             };
-                            ui.label(format!("Séquence : {seq_label}"));
+                            ui.label(format!("Sequence: {seq_label}"));
                             ui.separator();
                             let eligible: [(FractalType, &str); 7] = [
                                 (FractalType::Mandelbrot, "Mandelbrot"),
@@ -2600,27 +2600,27 @@ impl eframe::App for FractallApp {
                             }
                             ui.separator();
                             ui.horizontal(|ui| {
-                                if ui.button("⌫ Dernier").clicked() {
+                                if ui.button("⌫ Remove last").clicked() {
                                     self.hybrid_seq.pop();
                                 }
-                                if ui.button("🗑 Vider").clicked() {
+                                if ui.button("🗑 Clear").clicked() {
                                     self.hybrid_seq.clear();
                                 }
                             });
                             ui.separator();
                             let can_apply = self.hybrid_seq.len() >= 2;
                             if ui
-                                .add_enabled(can_apply, egui::Button::new("▶ Appliquer (rendu)"))
+                                .add_enabled(can_apply, egui::Button::new("▶ Apply (render)"))
                                 .clicked()
                             {
                                 self.apply_hybrid_sequence();
                                 ui.close();
                             }
                             if !can_apply {
-                                ui.small("≥ 2 phases requises");
+                                ui.small("≥ 2 phases required");
                             }
                             if self.params.formula.hybrid_phases.is_some()
-                                && ui.button("✖ Désactiver (Mandelbrot)").clicked()
+                                && ui.button("✖ Disable (Mandelbrot)").clicked()
                             {
                                 self.hybrid_seq.clear();
                                 self.change_fractal_type(FractalType::Mandelbrot);
@@ -2727,9 +2727,9 @@ impl eframe::App for FractallApp {
                     // sélection rectangle par un zoom continu au bouton maintenu.
                     let old_xaos_nav = self.xaos_nav_mode;
                     ui.checkbox(&mut self.xaos_nav_mode, "XaoS").on_hover_text(
-                        "Navigation à la XaoS : maintenir le bouton gauche = zoom avant continu \
-                         ancré au curseur, bouton droit = zoom arrière. Remplace le clic ×2 et \
-                         la sélection rectangle.",
+                        "XaoS-style navigation: hold the left button = continuous zoom in \
+                         anchored at the cursor, right button = zoom out. Replaces the ×2 click and \
+                         the rectangle selection.",
                     );
                     if old_xaos_nav != self.xaos_nav_mode {
                         // Sortie/entrée du mode : abandonner tout état transitoire.
@@ -2883,7 +2883,7 @@ impl eframe::App for FractallApp {
                                         }
                                     });
                                 } else {
-                                    ui.add_enabled(false, egui::Label::new("🎮 GPU (Non disponible)"));
+                                    ui.add_enabled(false, egui::Label::new("🎮 GPU (unavailable)"));
                                 }
                             }
                         });
@@ -3023,7 +3023,7 @@ impl eframe::App for FractallApp {
                         })
                         .response
                         .on_hover_text(
-                            "Anti-aliasing : échantillons sous-pixel jitterés moyennés (CPU). Off = désactivé.",
+                            "Anti-aliasing: averaged jittered sub-pixel samples (CPU). Off = disabled.",
                         );
                     if self.aa_samples != prev_aa {
                         self.start_render();
@@ -3033,11 +3033,11 @@ impl eframe::App for FractallApp {
                     ui.add_enabled(
                         self.aa_samples > 1,
                         egui::Slider::new(&mut self.aa_jitter_scale, 0.0..=1.0)
-                            .text("filtre")
+                            .text("filter")
                             .fixed_decimals(2),
                     )
                     .on_hover_text(
-                        "Amplitude du jitter AA en pixels : 0 = centre du pixel, 1 = filtre tente complet.",
+                        "AA jitter amplitude in pixels: 0 = pixel center, 1 = full tent filter.",
                     );
                     if self.aa_jitter_scale != prev_jitter_scale {
                         self.start_render();
@@ -3280,12 +3280,12 @@ impl eframe::App for FractallApp {
                             format!("{}m {:.0}s", mins, secs)
                         };
                         ui.label(format!(
-                            "Calcul en cours... ({}) - Passe {}/{}{}",
+                            "Computing... ({}) - Pass {}/{}{}",
                             time_str, current_pass, total_passes, aa_suffix
                         ));
                     } else {
                         ui.label(format!(
-                            "Calcul en cours... - Passe {}/{}{}",
+                            "Computing... - Pass {}/{}{}",
                             current_pass, total_passes, aa_suffix
                         ));
                     }
@@ -3782,7 +3782,7 @@ impl eframe::App for FractallApp {
                     } else if self.rendering {
                         // Pas encore de texture, afficher le spinner
                         ui.spinner();
-                        ui.label("Rendu en cours...");
+                        ui.label("Rendering...");
                     } else {
                         // Premier rendu
                         self.start_render();
@@ -3800,14 +3800,14 @@ impl eframe::App for FractallApp {
 
 fn format_center_status(params: &FractalParams) -> String {
     if let (Some(x), Some(y)) = (&params.center_x_hp, &params.center_y_hp) {
-        return format!("Centre: ({}, {})", x, y);
+        return format!("Center: ({}, {})", x, y);
     }
     if params.center_x.abs() < 1e-6 && params.center_y.abs() < 1e-6 {
-        format!("Centre: ({:.6}, {:.6})", params.center_x, params.center_y)
+        format!("Center: ({:.6}, {:.6})", params.center_x, params.center_y)
     } else if params.center_x.abs() > 1e3 || params.center_y.abs() > 1e3 {
-        format!("Centre: ({:.2e}, {:.2e})", params.center_x, params.center_y)
+        format!("Center: ({:.2e}, {:.2e})", params.center_x, params.center_y)
     } else {
-        format!("Centre: ({:.6}, {:.6})", params.center_x, params.center_y)
+        format!("Center: ({:.6}, {:.6})", params.center_x, params.center_y)
     }
 }
 
@@ -3825,7 +3825,7 @@ mod center_status_tests {
         params.center_x_hp = Some(x.to_string());
         params.center_y_hp = Some(y.to_string());
 
-        assert_eq!(format_center_status(&params), format!("Centre: ({x}, {y})"));
+        assert_eq!(format_center_status(&params), format!("Center: ({x}, {y})"));
     }
 
     #[test]
@@ -3840,7 +3840,7 @@ mod center_status_tests {
         params.center_x_hp = Some(x.clone());
         params.center_y_hp = Some(y.clone());
 
-        assert_eq!(format_center_status(&params), format!("Centre: ({x}, {y})"));
+        assert_eq!(format_center_status(&params), format!("Center: ({x}, {y})"));
     }
 
     #[test]
@@ -3854,11 +3854,11 @@ mod center_status_tests {
             params.center_x_hp = x_hp.map(str::to_string);
             params.center_y_hp = y_hp.map(str::to_string);
             for (x, y, expected) in [
-                (-0.743643887, 0.131825904, "Centre: (-0.743644, 0.131826)"),
-                (1e-8, -2e-8, "Centre: (0.000000, -0.000000)"),
-                (1000.0, -1000.0, "Centre: (1000.000000, -1000.000000)"),
-                (12345.0, -0.125, "Centre: (1.23e4, -1.25e-1)"),
-                (0.125, -12345.0, "Centre: (1.25e-1, -1.23e4)"),
+                (-0.743643887, 0.131825904, "Center: (-0.743644, 0.131826)"),
+                (1e-8, -2e-8, "Center: (0.000000, -0.000000)"),
+                (1000.0, -1000.0, "Center: (1000.000000, -1000.000000)"),
+                (12345.0, -0.125, "Center: (1.23e4, -1.25e-1)"),
+                (0.125, -12345.0, "Center: (1.25e-1, -1.23e4)"),
             ] {
                 params.center_x = x;
                 params.center_y = y;

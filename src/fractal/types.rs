@@ -252,12 +252,12 @@ impl FractalType {
             FractalType::Multibrot | FractalType::MultibrotJulia => "Multibrot",
             FractalType::AlphaMandelbrot | FractalType::AlphaMandelbrotJulia => "Alpha Mandelbrot",
             FractalType::VonKoch | FractalType::Dragon => "Vector",
-            FractalType::Buddhabrot | FractalType::Nebulabrot | FractalType::AntiBuddhabrot => "Densité",
+            FractalType::Buddhabrot | FractalType::Nebulabrot | FractalType::AntiBuddhabrot => "Density",
             FractalType::Lyapunov => "Lyapunov",
-            FractalType::Mandelbulb => "Variantes M",
+            FractalType::Mandelbulb => "M variants",
             FractalType::JuliaSin => "Julia all",
             FractalType::MandelbrotSin => "Mandelbrot Sin",
-            FractalType::Newton | FractalType::Phoenix | FractalType::PickoverStalks => "Autres",
+            FractalType::Newton | FractalType::Phoenix | FractalType::PickoverStalks => "Others",
             FractalType::Nova => "Nova",
         }
     }

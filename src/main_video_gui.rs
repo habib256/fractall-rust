@@ -18,7 +18,7 @@ fn main() {
         options,
         Box::new(|cc| Ok(Box::new(VideoStudioApp::new(cc)))),
     ) {
-        eprintln!("Erreur lors du lancement du studio vidéo: {e}");
+        eprintln!("Failed to launch the video studio: {e}");
         std::process::exit(1);
     }
 }

@@ -12,33 +12,33 @@ fn main() {
                 panic_info.payload().downcast_ref::<String>()
                     .map(|s| s.clone())
             })
-            .unwrap_or_else(|| "Panic inconnu".to_string());
+            .unwrap_or_else(|| "Unknown panic".to_string());
 
-        eprintln!("\n❌ Erreur fatale lors de l'initialisation de la GUI:");
+        eprintln!("\n❌ Fatal error while initializing the GUI:");
         eprintln!("   {}", msg);
         
         // Afficher la localisation si disponible
         if let Some(location) = panic_info.location() {
-            eprintln!("   Fichier: {}:{}:{}", location.file(), location.line(), location.column());
+            eprintln!("   File: {}:{}:{}", location.file(), location.line(), location.column());
         }
         
         if msg.contains("BadAccess") || msg.contains("egl") || msg.contains("wgpu") || msg.contains("EGL") {
-            eprintln!("\n💡 Solutions possibles:");
-            eprintln!("   1. Vérifiez que vous avez un affichage X11 disponible:");
+            eprintln!("\n💡 Possible solutions:");
+            eprintln!("   1. Check that an X11 display is available:");
             eprintln!("      echo $DISPLAY");
-            eprintln!("   2. Si vous êtes en SSH, utilisez X11 forwarding:");
-            eprintln!("      ssh -X utilisateur@serveur");
-            eprintln!("   3. Vérifiez les permissions d'accès au GPU:");
+            eprintln!("   2. Over SSH, use X11 forwarding:");
+            eprintln!("      ssh -X user@server");
+            eprintln!("   3. Check GPU access permissions:");
             eprintln!("      ls -la /dev/dri/");
-            eprintln!("   4. Essayez de définir la variable d'environnement pour forcer un backend:");
+            eprintln!("   4. Try setting the environment variable to force a backend:");
             eprintln!("      WGPU_BACKEND=vulkan cargo run --release --bin fractall-gui");
-            eprintln!("      ou");
+            eprintln!("      or");
             eprintln!("      WGPU_BACKEND=gl cargo run --release --bin fractall-gui");
-            eprintln!("      ou");
+            eprintln!("      or");
             eprintln!("      WGPU_BACKEND=metal cargo run --release --bin fractall-gui");
-            eprintln!("   5. Si vous êtes sur un système headless, essayez:");
+            eprintln!("   5. On a headless system, try:");
             eprintln!("      export DISPLAY=:0");
-            eprintln!("      ou utilisez xvfb-run:");
+            eprintln!("      or use xvfb-run:");
             eprintln!("      xvfb-run -a cargo run --release --bin fractall-gui");
         }
         
@@ -64,7 +64,7 @@ fn main() {
         options,
         Box::new(|cc| Ok(Box::new(FractallApp::new(cc)))),
     ) {
-        eprintln!("Erreur lors du lancement de l'application: {}", e);
+        eprintln!("Failed to launch the application: {}", e);
         std::process::exit(1);
     }
 }

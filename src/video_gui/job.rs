@@ -165,27 +165,27 @@ pub fn first_thumb_params(
     iterations: u32,
 ) -> Result<FractalParams, String> {
     if source_w == 0 || source_h == 0 {
-        return Err("dimensions source nulles pour la miniature".into());
+        return Err("zero source dimensions for the thumbnail".into());
     }
     let parse_center = |name: &str, value: &str| {
-        let parsed = Float::parse(value).map_err(|e| format!("{name} illisible: {e}"))?;
+        let parsed = Float::parse(value).map_err(|e| format!("{name} unreadable: {e}"))?;
         let value = Float::with_val(256, parsed);
         if !value.is_finite() {
-            return Err(format!("{name} non fini"));
+            return Err(format!("{name} not finite"));
         }
         Ok(value)
     };
-    let cx = parse_center("centre réel", center_x_hp)?;
-    let cy = parse_center("centre imaginaire", center_y_hp)?;
+    let cx = parse_center("real center", center_x_hp)?;
+    let cy = parse_center("imaginary center", center_y_hp)?;
 
     let h = THUMB_MAX_H.min(source_h).max(1);
     let w = (((source_w as f64 / source_h as f64) * h as f64).round() as u32).max(1);
     let mut p = default_params_for_type(fractal_type, w, h);
     if !seed.re.is_finite() || !seed.im.is_finite() {
-        return Err("seed Julia non fini".into());
+        return Err("Julia seed not finite".into());
     }
     if !multibrot_power.is_finite() || multibrot_power <= 0.0 {
-        return Err(format!("exposant Multibrot invalide: {multibrot_power}"));
+        return Err(format!("invalid Multibrot exponent: {multibrot_power}"));
     }
     p.seed = seed;
     p.formula.multibrot_power = multibrot_power;
@@ -250,15 +250,15 @@ pub fn estimates(
     let ss = ss.max(1) as u64;
     let render_w = (w as u64)
         .checked_mul(ss)
-        .ok_or("largeur supersamplée trop grande")?;
+        .ok_or("supersampled width too large")?;
     let render_h = (h as u64)
         .checked_mul(ss)
-        .ok_or("hauteur supersamplée trop grande")?;
-    let px = render_w.checked_mul(render_h).ok_or("nombre de pixels trop grand")?;
+        .ok_or("supersampled height too large")?;
+    let px = render_w.checked_mul(render_h).ok_or("pixel count too large")?;
     let map_bytes = (n as u64 + 1)
         .checked_mul(px)
         .and_then(|v| v.checked_mul(4 + 16))
-        .ok_or("estimation de taille trop grande")?;
+        .ok_or("size estimate too large")?;
     Ok(Estimates {
         keyframes: n,
         maps: n + 1,
@@ -638,23 +638,23 @@ pub fn spawn_assemble_only(
 /// itérations). Sinon il faut « Générer ».
 pub(crate) fn check_assemble_only(manifest: &Manifest, project: &Path) -> Result<(), String> {
     let existing = Manifest::load(&project.join("manifest.toml"))
-        .map_err(|_| "aucun projet dans ce dossier — utilisez Générer".to_string())?;
+        .map_err(|_| "no project in this folder — use Generate".to_string())?;
     let mut probe = manifest.clone();
     probe.video.keyframes = video::keyframe_count(&probe.location.zoom)?;
     if existing.video.keyframes != probe.video.keyframes {
         return Err(format!(
-            "le zoom de la vue ({} keyframes) diffère du projet ({} keyframes) — \
-             revenez à la cible du projet ou utilisez Générer",
+            "the view zoom ({} keyframes) differs from the project ({} keyframes) — \
+             go back to the project target or use Generate",
             probe.video.keyframes, existing.video.keyframes
         ));
     }
     let expected = keyframe_params(&probe, 0)?;
     match load_fmap(&keyframe_path(project, 0)) {
         Ok(map0) if map_fingerprint(&map0.params) == map_fingerprint(&expected) => Ok(()),
-        Ok(_) => Err("les keyframes existantes ne correspondent plus aux réglages \
-             (cible, dimensions ou itérations modifiées) — utilisez Générer"
+        Ok(_) => Err("the existing keyframes no longer match the settings \
+             (target, dimensions or iterations changed) — use Generate"
             .into()),
-        Err(_) => Err("aucune keyframe rendue dans ce dossier — utilisez Générer".into()),
+        Err(_) => Err("no rendered keyframe in this folder — use Generate".into()),
     }
 }
 
@@ -1107,7 +1107,7 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         );
         match rx.recv_timeout(Duration::from_secs(60)).expect("réponse attendue") {
-            VideoJobMsg::Error(e) => assert!(e.contains("Générer"), "message : {e}"),
+            VideoJobMsg::Error(e) => assert!(e.contains("Generate"), "message : {e}"),
             other => panic!("Error attendu, eu {other:?}"),
         }
         let _ = std::fs::remove_dir_all(&project);
