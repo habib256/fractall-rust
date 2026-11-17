@@ -30,9 +30,11 @@ cargo run --release --bin fractall-gui     # or run a release package (see Insta
    ```bash
    fractall-cli --from-png view.png --width 3840 --height 2160 --output view_4k.png
    ```
-4. **Deep zoom from the CLI** (negative coordinates can be passed directly):
+4. **Deep zoom from the CLI** (negative coordinates can be passed directly). The
+   iteration count is chosen automatically by measuring the view on a small probe
+   render; pass `--iterations N` to set it yourself:
    ```bash
-   fractall-cli --type 3 --zoom 3.1415e64 --iterations 70000 --output deep.png \
+   fractall-cli --type 3 --zoom 3.1415e64 --output deep.png \
        --center-x-hp -1.861369427601275917203958599290880106793222303477204934785274017462633431321514 \
        --center-y-hp 8.728845098728640945449739639040797666621419255681987270008753766941151815473273e-5
    ```
@@ -180,7 +182,10 @@ Geometry
     --zoom <STRING>         Magnification (span = 4/zoom). Scientific notation OK (e.g. 1.41e219)
     --xmin / --xmax         Alternative bounds
     --ymin / --ymax
-    --iterations <N>        Max iterations
+    --iterations <N|auto>   Max iterations. Omitted: the value from --toml/--from-png
+                            if any, else automatic (measured on a small probe render;
+                            escape-time types only, others keep their default).
+                            `auto` forces the measurement over a --toml/--from-png value.
 
 Coloring
     --palette <0-26>        Color palette [default: 6 = Plasma]
@@ -267,11 +272,11 @@ Output & diagnostics
 # Classic Mandelbrot in 4K
 fractall-cli --type 3 --width 3840 --height 2160 --output mandelbrot.png
 
-# Deep zoom (auto: perturbation + BLA, GMP reference orbit) — renders in seconds
+# Deep zoom (auto: perturbation + BLA, GMP reference orbit, automatic
+# iteration count) — renders in seconds
 fractall-cli --type 3 \
     --center-x-hp=-0.7436438870371587 --center-y-hp=0.13182590420531197 \
     --zoom 1e10 \
-    --iterations 10000 \
     --output spiral.png
 
 # Re-render a view saved from the GUI (key S) in 4K, 4 AA samples

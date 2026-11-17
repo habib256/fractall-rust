@@ -640,6 +640,8 @@ pub fn plan_for(params: &FractalParams, device: Device) -> WisdomPlan {
 
 /// Imprime le plan wisdom sur stderr si `FRACTALL_WISDOM=1` (diagnostic ; ne
 /// remplace pas la ligne `[FRACTALL]` finale). Appelé sur le path perturbation.
+/// `iter=` / `iter_src=` sont AJOUTÉS en fin de ligne : le parseur du harness
+/// (`axes_perf.py::_RE_WISDOM`) ne lit que le préfixe, ne rien réordonner.
 pub fn log_plan_if_enabled(params: &FractalParams) {
     if !matches!(
         std::env::var("FRACTALL_WISDOM").as_deref(),
@@ -660,7 +662,7 @@ pub fn log_plan_if_enabled(params: &FractalParams) {
         .map(|s| format!("{:.2e}", s))
         .unwrap_or_else(|| "-".into());
     eprintln!(
-        "[WISDOM] type={:?} device={:?} algo={:?} tier={} variants={} bench={bench} req_exp={} req_prec={}b tier_mantissa={}b ref_prec={}b pixel_size={:.3e}",
+        "[WISDOM] type={:?} device={:?} algo={:?} tier={} variants={} bench={bench} req_exp={} req_prec={}b tier_mantissa={}b ref_prec={}b pixel_size={:.3e} iter={} iter_src={}",
         params.fractal_type,
         p.device,
         p.algorithm,
@@ -671,7 +673,69 @@ pub fn log_plan_if_enabled(params: &FractalParams) {
         p.tier.map(|t| t.mantissa_bits()).unwrap_or(0),
         p.reference_precision_bits,
         p.pixel_size,
+        params.iteration_max,
+        iteration_source_label(),
     );
+}
+
+/// Provenance du plafond d'itérations du rendu, pour le log `[WISDOM]`
+/// (champ `iter_src=`). Seul l'appelant (CLI) sait si `iteration_max` vient
+/// de l'utilisateur, d'une source (`--toml` / `--from-png`), du défaut du type
+/// ou de la sonde automatique ([`auto_iterations_with`]) : il le déclare une
+/// fois par [`set_iteration_source`] — aucun champ `FractalParams` ajouté.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IterationSource {
+    /// `--iterations N` explicite.
+    User,
+    /// Valeur fournie par `--toml` / `--from-png`.
+    Source,
+    /// Défaut du type (type sans sonde automatique).
+    Default,
+    /// Choisi par la sonde automatique (`wisdom_iter`).
+    Auto,
+}
+
+impl IterationSource {
+    /// Valeur du champ `iter_src=` du log `[WISDOM]`.
+    pub fn label(self) -> &'static str {
+        match self {
+            IterationSource::User => "user",
+            IterationSource::Source => "source",
+            IterationSource::Default => "default",
+            IterationSource::Auto => "auto",
+        }
+    }
+
+    fn code(self) -> u8 {
+        match self {
+            IterationSource::User => 1,
+            IterationSource::Source => 2,
+            IterationSource::Default => 3,
+            IterationSource::Auto => 4,
+        }
+    }
+}
+
+/// 0 = non déclaré (GUI, quality, tests) → `iter_src=-`.
+static ITERATION_SOURCE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Déclare, pour tout le processus, la provenance du plafond d'itérations
+/// écrite par le log `[WISDOM]` (CLI). Sans appel : `iter_src=-`.
+pub fn set_iteration_source(source: IterationSource) {
+    ITERATION_SOURCE.store(source.code(), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn iteration_source_label() -> &'static str {
+    let code = ITERATION_SOURCE.load(std::sync::atomic::Ordering::Relaxed);
+    [
+        IterationSource::User,
+        IterationSource::Source,
+        IterationSource::Default,
+        IterationSource::Auto,
+    ]
+    .into_iter()
+    .find(|s| s.code() == code)
+    .map_or("-", IterationSource::label)
 }
 
 #[cfg(test)]
