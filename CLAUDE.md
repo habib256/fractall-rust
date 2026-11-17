@@ -341,19 +341,19 @@ boucles pixel ; si un jour dz est exporté, brancher ici).
 
 | Crate | Version | Rôle |
 |-------|---------|------|
-| clap | 4.5 | CLI parsing (derive) |
+| clap | 4.6 | CLI parsing (derive) |
 | image | 0.25 | PNG support |
 | num-complex | 0.4 | Arithmétique complexe |
-| rayon | 1.11 | Parallélisme multi-thread |
-| eframe / egui | 0.34 | GUI (wrapper egui, backend wgpu) |
-| wgpu | 22.1 | GPU (Vulkan/Metal/DX12) |
-| pollster | 0.3 | Runtime async GPU |
+| rayon | 1.12 | Parallélisme multi-thread |
+| eframe / egui | 0.37 | GUI (wrapper egui, backend wgpu) |
+| wgpu | 30.0 | GPU (Vulkan/Metal/DX12) |
+| pollster | 1.0 | Runtime async GPU |
 | bytemuck | 1.15 | Sérialisation buffers GPU |
-| rug | 1.24 | Précision arbitraire (GMP/MPFR/MPC) |
+| rug | 1.30 | Précision arbitraire (GMP/MPFR/MPC) |
 | serde / serde_json | 1.0 | Métadonnées PNG |
-| png | 0.17 | Accès chunks PNG bas niveau |
-| toml | 0.8 | Loader paramètres (`toml/`) |
-| naga (dev) | 22.1 | Validation WGSL en tests |
+| png | 0.18 | Accès chunks PNG bas niveau |
+| toml | 1.2 | Loader paramètres (`toml/`) |
+| naga (dev) | 30.0 | Validation WGSL en tests |
 
 ## Système de coordonnées
 

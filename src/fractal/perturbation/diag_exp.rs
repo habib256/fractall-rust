@@ -23,7 +23,8 @@ fn fexp_to_gmp(f: FloatExp, prec: u32) -> Float {
 enum Ev {
     Head,
     Rebase,
-    Bla(u32),
+    // Longueur du saut, lue seulement par l'affichage `{:?}` de la trace.
+    Bla(#[allow(dead_code)] u32),
     Direct,
 }
 

@@ -1514,7 +1514,7 @@ impl VideoStudioApp {
         painter.add(egui::Shape::line(pts, egui::Stroke::new(1.5_f32, accent)));
 
         // Interactions.
-        let resp = ui.interact(rect, ui.id().with("speed-curve"), egui::Sense::click_and_drag());
+        let resp = ui.interact(rect, ui.scope_id().with("speed-curve"), egui::Sense::click_and_drag());
         let pointer = resp.interact_pointer_pos().or_else(|| resp.hover_pos());
         let near = pointer.and_then(|pp| {
             self.settings
@@ -1610,7 +1610,7 @@ impl VideoStudioApp {
                 egui::Stroke::new(1.0_f32, weak),
             );
         }
-        let resp = ui.interact(rect, ui.id().with("tl-ruler"), egui::Sense::click_and_drag());
+        let resp = ui.interact(rect, ui.scope_id().with("tl-ruler"), egui::Sense::click_and_drag());
         if (resp.clicked() || resp.dragged()) && self.panel_size.0 > 0 {
             if let Some(pp) = resp.interact_pointer_pos() {
                 let p = ((((pp.x - rect.min.x) / cell_w) as f64) - 0.5).clamp(0.0, n as f64);
@@ -1705,7 +1705,7 @@ impl VideoStudioApp {
                 visuals.weak_text_color(),
             );
 
-            let resp = ui.interact(cell, ui.id().with(("tl-thumb", k)), egui::Sense::click());
+            let resp = ui.interact(cell, ui.scope_id().with(("tl-thumb", k)), egui::Sense::click());
             if resp.clicked() {
                 jump = Some(k as u32);
             }
@@ -1817,10 +1817,8 @@ impl VideoStudioApp {
 impl eframe::App for VideoStudioApp {
     // eframe 0.34+ exige `ui` sur le trait App ; comme le générateur, toute
     // la logique par panneaux reste dans `update` (stub `ui` vide).
-    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
-
-    #[allow(deprecated)]
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = &ui.ctx().clone();
         self.probe_project();
         self.drain_job_messages();
         self.drain_scan_messages();
@@ -1830,20 +1828,20 @@ impl eframe::App for VideoStudioApp {
 
         // Drag-and-drop : PNG fractall ou .fmap → adoption de la cible.
         let dropped: Vec<PathBuf> = ctx.input(|i| {
-            i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect()
+            i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect()
         });
         if let Some(path) = dropped.first() {
             self.adopt_file(path);
         }
 
-        egui::SidePanel::left("settings")
+        egui::Panel::left("settings")
             .resizable(false)
-            .default_width(320.0)
-            .show(ctx, |ui| {
+            .default_size(320.0)
+            .show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| self.settings_panel(ui));
             });
 
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+        egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(format!("Zoom : {}", self.zoom_label()));
                 if self.preview_rendering {
@@ -1857,11 +1855,11 @@ impl eframe::App for VideoStudioApp {
 
         // Timeline (G13) : courbe de vitesse + scrub + miniatures, au-dessus
         // de la barre de statut.
-        egui::TopBottomPanel::bottom("timeline")
+        egui::Panel::bottom("timeline")
             .resizable(false)
-            .show(ctx, |ui| self.timeline_panel(ui));
+            .show(ui, |ui| self.timeline_panel(ui));
 
-        egui::CentralPanel::default().show(ctx, |ui| self.preview_panel(ui));
+        egui::CentralPanel::default().show(ui, |ui| self.preview_panel(ui));
 
         // Relance de la preview si la vue/les réglages ont changé. Pendant un
         // drag, chaque relance annule la précédente — la passe ¼ étant quasi

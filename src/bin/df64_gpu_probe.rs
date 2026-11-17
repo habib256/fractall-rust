@@ -226,6 +226,7 @@ async fn run() {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: std::env::var("PROBE_FALLBACK").is_ok(),
+            apply_limit_buckets: false,
         })
         .await
         .expect("pas d'adaptateur GPU");
@@ -378,7 +379,7 @@ async fn run() {
     slice.map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
     let _ = device.poll(wgpu::PollType::wait_indefinitely());
     rx.recv().unwrap().unwrap();
-    let data = slice.get_mapped_range();
+    let data = slice.get_mapped_range().expect("buffer mappé");
     let vals: &[f32] = bytemuck::cast_slice(&data);
 
     let exp_tiny = (2.0f32).powi(-30);
@@ -582,7 +583,7 @@ async fn run() {
         sl.map_async(wgpu::MapMode::Read, move |r| tx2.send(r).unwrap());
         let _ = dev64.poll(wgpu::PollType::wait_indefinitely());
         rx2.recv().unwrap().unwrap();
-        let d2 = sl.get_mapped_range();
+        let d2 = sl.get_mapped_range().expect("buffer mappé");
         let v2: &[f32] = bytemuck::cast_slice(&d2);
         let gr = v2[25] as f64;
         let gi = v2[26] as f64;

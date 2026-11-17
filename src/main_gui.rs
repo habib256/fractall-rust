@@ -54,7 +54,6 @@ fn main() {
             .with_inner_size([800.0, 600.0])
             .with_drag_and_drop(true),
         // Préférer l'accélération matérielle
-        hardware_acceleration: eframe::HardwareAcceleration::Preferred,
         // Activer le rendu GPU
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()

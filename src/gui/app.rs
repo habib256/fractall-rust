@@ -2243,13 +2243,11 @@ impl FractallApp {
 }
 
 impl eframe::App for FractallApp {
-    // eframe 0.34+ requires `ui` on the App trait. The legacy `update` callback is
-    // still invoked alongside `ui`, so keep all our panel-based logic in `update`
-    // and provide an empty `ui` stub.
-    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
-
-    #[allow(deprecated)]
-    fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+    // eframe 0.37 : `ui` est l'unique point d'entrée (l'ancien `update` a été
+    // retiré). Les panneaux s'affichent dans le `Ui` racine ; fenêtres et
+    // entrées passent par le `Context` qu'il porte.
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = &ui.ctx().clone();
         // Trace des à-coups d'affichage (FRACTALL_UI_TRACE=1) : signale toute
         // frame UI dont l'intervalle dépasse le seuil, avec les événements de la
         // frame précédente. Sert à distinguer un « pop » de contenu (nouvelle
@@ -2314,7 +2312,8 @@ impl eframe::App for FractallApp {
         // Détection des fichiers déposés (drag-and-drop)
         ctx.input(|i| {
             for file in &i.raw.dropped_files {
-                if let Some(path) = &file.path {
+                {
+                    let path = file.path();
                     match path.extension().and_then(|e| e.to_str()) {
                         Some("png") => self.load_from_png(path),
                         Some("toml") => self.load_from_toml(path),
@@ -2327,7 +2326,7 @@ impl eframe::App for FractallApp {
         // Gestion des raccourcis clavier — inhibés quand un champ texte a le
         // focus (itérations, coordonnées…) : taper `-`, `+`, `c`… dans le champ
         // zoomait / changeait la palette (bug 2026-08-23 ; seul `0` était gaté).
-        let text_field_focused = ctx.wants_keyboard_input();
+        let text_field_focused = ctx.egui_wants_keyboard_input();
         ctx.input(|i| {
             if text_field_focused {
                 return;
@@ -2495,7 +2494,7 @@ impl eframe::App for FractallApp {
         });
 
         // Panneau de contrôle en haut
-        egui::TopBottomPanel::top("controls").show(ctx, |ui| {
+        egui::Panel::top("controls").show(ui, |ui| {
                 ui.horizontal(|ui| {
                     // Menu Type (toutes catégories)
                     ui.label("Type:");
@@ -2512,18 +2511,18 @@ impl eframe::App for FractallApp {
                     let type_menu_label = if let Some(seq) =
                         self.params.formula.hybrid_phases.as_ref().filter(|s| !s.is_empty())
                     {
-                        format!("▼ Hybride: {}", Self::hybrid_seq_label(seq))
+                        format!("⏷ Hybride: {}", Self::hybrid_seq_label(seq))
                     } else if current_category == current_label {
-                        format!("▼ {}", current_label)
+                        format!("⏷ {}", current_label)
                     } else {
-                        format!("▼ {}: {}", current_category, current_label)
+                        format!("⏷ {}: {}", current_category, current_label)
                     };
                     ui.menu_button(&type_menu_label, |ui| {
                         // Nova tout en haut
                         if let Some(fractal_type) = FractalType::from_id(22) {
                             if ui.selectable_label(self.selected_type == fractal_type, "Nova").clicked() {
                                 self.change_fractal_type(fractal_type);
-                                ui.close_menu();
+                                ui.close();
                             }
                         }
 
@@ -2534,7 +2533,7 @@ impl eframe::App for FractallApp {
                                     && self.selected_lyapunov_preset == *preset;
                                 if ui.selectable_label(is_selected, preset.name()).clicked() {
                                     self.change_lyapunov_preset(*preset);
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             }
                         });
@@ -2544,7 +2543,7 @@ impl eframe::App for FractallApp {
                                 if let Some(fractal_type) = FractalType::from_id(*id) {
                                     if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
                                         self.change_fractal_type(fractal_type);
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 }
                             }
@@ -2570,7 +2569,7 @@ impl eframe::App for FractallApp {
                             if let Some(fractal_type) = FractalType::from_id(*id) {
                                 if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
                                     self.change_fractal_type(fractal_type);
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             }
                         }
@@ -2615,7 +2614,7 @@ impl eframe::App for FractallApp {
                                 .clicked()
                             {
                                 self.apply_hybrid_sequence();
-                                ui.close_menu();
+                                ui.close();
                             }
                             if !can_apply {
                                 ui.small("≥ 2 phases requises");
@@ -2625,7 +2624,7 @@ impl eframe::App for FractallApp {
                             {
                                 self.hybrid_seq.clear();
                                 self.change_fractal_type(FractalType::Mandelbrot);
-                                ui.close_menu();
+                                ui.close();
                             }
                         });
 
@@ -2648,7 +2647,7 @@ impl eframe::App for FractallApp {
                                 if let Some(fractal_type) = FractalType::from_id(*id) {
                                     if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
                                         self.change_fractal_type(fractal_type);
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 }
                             }
@@ -2660,7 +2659,7 @@ impl eframe::App for FractallApp {
                         if let Some(fractal_type) = FractalType::from_id(15) {
                             if ui.selectable_label(self.selected_type == fractal_type, "Mandelbulb").clicked() {
                                 self.change_fractal_type(fractal_type);
-                                ui.close_menu();
+                                ui.close();
                             }
                         }
 
@@ -2673,7 +2672,7 @@ impl eframe::App for FractallApp {
                             if let Some(fractal_type) = FractalType::from_id(*id) {
                                 if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
                                     self.change_fractal_type(fractal_type);
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             }
                         }
@@ -2805,7 +2804,7 @@ impl eframe::App for FractallApp {
                                 if is_lyapunov {
                                     self.use_gpu = false;
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
 
                             if is_lyapunov {
@@ -2815,7 +2814,7 @@ impl eframe::App for FractallApp {
                                 ).clicked() {
                                     self.use_gpu = false;
                                     self.params.engine.algorithm_mode = AlgorithmMode::StandardF64;
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             } else {
                                 ui.separator();
@@ -2827,7 +2826,7 @@ impl eframe::App for FractallApp {
                                     ).clicked() {
                                         self.use_gpu = false;
                                         self.params.engine.algorithm_mode = AlgorithmMode::StandardF64;
-                                        ui.close_menu();
+                                        ui.close();
                                     }
 
                                     if ui.selectable_label(
@@ -2836,14 +2835,14 @@ impl eframe::App for FractallApp {
                                     ).clicked() {
                                         self.use_gpu = false;
                                         self.params.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
-                                        ui.close_menu();
+                                        ui.close();
                                     }
 
                                     let plane_ok = self.params.plane_transform == PlaneTransform::Mu;
                                     if ui
                                         .add_enabled(
                                             plane_ok,
-                                            egui::SelectableLabel::new(
+                                            egui::Button::selectable(
                                                 !self.use_gpu && self.params.engine.algorithm_mode == AlgorithmMode::Perturbation,
                                                 "🔬 Perturbation f64",
                                             ),
@@ -2852,7 +2851,7 @@ impl eframe::App for FractallApp {
                                     {
                                         self.use_gpu = false;
                                         self.params.engine.algorithm_mode = AlgorithmMode::Perturbation;
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                 });
 
@@ -2864,14 +2863,14 @@ impl eframe::App for FractallApp {
                                         ).clicked() {
                                             self.use_gpu = true;
                                             self.params.engine.algorithm_mode = AlgorithmMode::StandardF64;
-                                            ui.close_menu();
+                                            ui.close();
                                         }
 
                                         let plane_ok = self.params.plane_transform == PlaneTransform::Mu;
                                         if ui
                                             .add_enabled(
                                                 plane_ok,
-                                                egui::SelectableLabel::new(
+                                                egui::Button::selectable(
                                                     self.use_gpu && self.params.engine.algorithm_mode == AlgorithmMode::Perturbation,
                                                     "🚀 Perturbation f32",
                                                 ),
@@ -2880,7 +2879,7 @@ impl eframe::App for FractallApp {
                                         {
                                             self.use_gpu = true;
                                             self.params.engine.algorithm_mode = AlgorithmMode::Perturbation;
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                     });
                                 } else {
@@ -3153,11 +3152,185 @@ impl eframe::App for FractallApp {
                 });
         }
 
+        // Barre d'état en bas — AVANT le CentralPanel : depuis egui 0.37 les
+        // panneaux s'affichent dans le Ui racine et un panneau ajouté après le
+        // CentralPanel ne reçoit plus d'espace.
+        egui::Panel::bottom("status").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                // Centre, itérations, zoom
+                ui.label(format_center_status(&self.params));
+                ui.separator();
+                ui.label(format!("Iter.: {}", self.params.iteration_max));
+                ui.separator();
+                let base_range = 4.0;
+                let pixel_size = if self.params.width > 0 && self.params.height > 0 {
+                    self.params.span_x.abs().max(self.params.span_y.abs())
+                        / self.params.width as f64
+                } else {
+                    0.0
+                };
+                let zoom = if pixel_size > 0.0 && pixel_size.is_finite() {
+                    base_range / pixel_size
+                } else {
+                    1.0
+                };
+                let zoom_text = if zoom >= 1e6 {
+                    format!("Zoom: {:.2e}", zoom)
+                } else {
+                    format!("Zoom: {:.2}", zoom)
+                };
+                ui.label(zoom_text);
+                ui.separator();
+
+                // ═══════════════════════════════════════════════════════════════
+                // Affichage du mode de calcul effectif
+                // Format: [Device] [Precision] [Algorithme]
+                // Ex: "GPU f32 Perturbation" ou "CPU f64 Standard"
+                // ═══════════════════════════════════════════════════════════════
+
+                let effective_mode = self.effective_algorithm_mode();
+                let gpu_active = self.use_gpu && self.gpu_renderer.is_some();
+
+                let mode_display = if let (Some(device_label), Some(method_label)) = (
+                    &self.last_render_device_label,
+                    &self.last_render_method_label,
+                ) {
+                    if method_label.is_empty() {
+                        device_label.clone()
+                    } else {
+                        format!("{} {}", device_label, method_label)
+                    }
+                } else {
+                    let device = if gpu_active { "GPU" } else { "CPU" };
+
+                    let (precision, algo) = match (gpu_active, effective_mode) {
+                        // GPU modes
+                        (true, AlgorithmMode::Perturbation) => ("f32", "Perturbation"),
+                        (true, AlgorithmMode::StandardF64) => ("f32", "Standard"),
+                        (true, _) => ("f32", "Standard"), // Fallback GPU
+
+                        // CPU modes
+                        (false, AlgorithmMode::ReferenceGmp) => {
+                            // GMP avec bits affichés séparément plus bas
+                            ("GMP", "")
+                        }
+                        (false, AlgorithmMode::Perturbation) => ("f64", "Perturbation"),
+                        (false, AlgorithmMode::StandardF64) => ("f64", "Standard"),
+                        (false, AlgorithmMode::Auto) => ("f64", "Standard"),
+                    };
+
+                    // Cas spécial pour GMP: afficher les bits (précision effective selon le zoom)
+                    if effective_mode == AlgorithmMode::ReferenceGmp && !gpu_active {
+                        let effective_prec =
+                            crate::fractal::perturbation::compute_perturbation_precision_bits(
+                                &self.params,
+                            );
+                        format!("{} GMP {}b", device, effective_prec)
+                    } else {
+                        format!("{} {} {}", device, precision, algo)
+                    }
+                };
+
+                ui.label(mode_display);
+
+                // Afficher la précision GMP effective pour le mode perturbation
+                if effective_mode == AlgorithmMode::Perturbation {
+                    let effective_prec =
+                        crate::fractal::perturbation::compute_perturbation_precision_bits(
+                            &self.params,
+                        );
+                    ui.separator();
+                    ui.label(format!("GMP: {}b", effective_prec));
+                }
+
+                // Statut du rendu progressif.
+                //
+                // En navigation XaoS les rendus s'enchaînent à ~30 Hz : la
+                // barre animée, son pourcentage et le temps écoulé
+                // apparaissent/disparaissent à cette cadence — clignotement
+                // bleu en bas à droite, et largeur de la barre d'état qui
+                // saute. On affiche un état STABLE pendant tout le geste
+                // (y compris entre deux rendus, sinon le label lui-même
+                // clignoterait avec `self.rendering`). Le rendu de
+                // stabilisation, lui, retrouve la barre normale : c'est un
+                // calcul unique dont la progression intéresse l'utilisateur.
+                let nav_active = self.xaos_nav_mode && self.nav.is_active();
+                if nav_active {
+                    ui.separator();
+                    ui.label("Navigation XaoS");
+                } else if self.rendering {
+                    ui.separator();
+                    let progress = self.render_progress.fraction();
+                    let (current_pass, total_passes) = self.render_progress.passes();
+                    let progress_bar = egui::ProgressBar::new(progress)
+                        .show_percentage()
+                        .animate(true);
+                    ui.add(progress_bar);
+                    let aa_suffix = match self.render_progress.aa() {
+                        Some((s, t)) if t > 1 && s > 0 => format!(" - AA {s}/{t}"),
+                        _ => String::new(),
+                    };
+                    if let Some(start) = self.render_start_time {
+                        let elapsed = start.elapsed().as_secs_f64();
+                        let time_str = if elapsed < 60.0 {
+                            format!("{:.1}s", elapsed)
+                        } else {
+                            let mins = (elapsed / 60.0).floor() as u32;
+                            let secs = elapsed % 60.0;
+                            format!("{}m {:.0}s", mins, secs)
+                        };
+                        ui.label(format!(
+                            "Calcul en cours... ({}) - Passe {}/{}{}",
+                            time_str, current_pass, total_passes, aa_suffix
+                        ));
+                    } else {
+                        ui.label(format!(
+                            "Calcul en cours... - Passe {}/{}{}",
+                            current_pass, total_passes, aa_suffix
+                        ));
+                    }
+                } else if self.is_preview {
+                    ui.separator();
+                    ui.label("Preview");
+                }
+
+                // ═══════════════════════════════════════════════════════════════
+                // Temps de rendu aligné à droite
+                // ═══════════════════════════════════════════════════════════════
+
+                // Espace flexible pour pousser le temps à droite
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(render_time) = self.last_render_time {
+                        let time_str = if render_time < 1.0 {
+                            format!("{:.0} ms", render_time * 1000.0)
+                        } else if render_time < 60.0 {
+                            format!("{:.2} s", render_time)
+                        } else {
+                            let mins = (render_time / 60.0).floor() as u32;
+                            let secs = render_time % 60.0;
+                            format!("{}m {:.1}s", mins, secs)
+                        };
+                        ui.label(format!("⏱ {}", time_str));
+                    } else if self.rendering {
+                        if let Some(start) = self.render_start_time {
+                            let elapsed = start.elapsed().as_secs_f64();
+                            let time_str = if elapsed < 1.0 {
+                                format!("{:.0} ms", elapsed * 1000.0)
+                            } else {
+                                format!("{:.1} s", elapsed)
+                            };
+                            ui.label(format!("⏱ {}...", time_str));
+                        }
+                    }
+                });
+            });
+        });
+
         // Interface principale - zone d'affichage de la fractale
         // Désactiver la sélection de texte pour éviter que le curseur devienne un curseur de texte
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(egui::Color32::TRANSPARENT))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 // Désactiver la sélection de texte dans cette zone
                 ui.style_mut().interaction.selectable_labels = false;
                 ui.vertical_centered(|ui| {
@@ -3617,177 +3790,6 @@ impl eframe::App for FractallApp {
                 });
             });
 
-        // Barre d'état en bas
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                // Centre, itérations, zoom
-                ui.label(format_center_status(&self.params));
-                ui.separator();
-                ui.label(format!("Iter.: {}", self.params.iteration_max));
-                ui.separator();
-                let base_range = 4.0;
-                let pixel_size = if self.params.width > 0 && self.params.height > 0 {
-                    self.params.span_x.abs().max(self.params.span_y.abs())
-                        / self.params.width as f64
-                } else {
-                    0.0
-                };
-                let zoom = if pixel_size > 0.0 && pixel_size.is_finite() {
-                    base_range / pixel_size
-                } else {
-                    1.0
-                };
-                let zoom_text = if zoom >= 1e6 {
-                    format!("Zoom: {:.2e}", zoom)
-                } else {
-                    format!("Zoom: {:.2}", zoom)
-                };
-                ui.label(zoom_text);
-                ui.separator();
-
-                // ═══════════════════════════════════════════════════════════════
-                // Affichage du mode de calcul effectif
-                // Format: [Device] [Precision] [Algorithme]
-                // Ex: "GPU f32 Perturbation" ou "CPU f64 Standard"
-                // ═══════════════════════════════════════════════════════════════
-
-                let effective_mode = self.effective_algorithm_mode();
-                let gpu_active = self.use_gpu && self.gpu_renderer.is_some();
-
-                let mode_display = if let (Some(device_label), Some(method_label)) = (
-                    &self.last_render_device_label,
-                    &self.last_render_method_label,
-                ) {
-                    if method_label.is_empty() {
-                        device_label.clone()
-                    } else {
-                        format!("{} {}", device_label, method_label)
-                    }
-                } else {
-                    let device = if gpu_active { "GPU" } else { "CPU" };
-
-                    let (precision, algo) = match (gpu_active, effective_mode) {
-                        // GPU modes
-                        (true, AlgorithmMode::Perturbation) => ("f32", "Perturbation"),
-                        (true, AlgorithmMode::StandardF64) => ("f32", "Standard"),
-                        (true, _) => ("f32", "Standard"), // Fallback GPU
-
-                        // CPU modes
-                        (false, AlgorithmMode::ReferenceGmp) => {
-                            // GMP avec bits affichés séparément plus bas
-                            ("GMP", "")
-                        }
-                        (false, AlgorithmMode::Perturbation) => ("f64", "Perturbation"),
-                        (false, AlgorithmMode::StandardF64) => ("f64", "Standard"),
-                        (false, AlgorithmMode::Auto) => ("f64", "Standard"),
-                    };
-
-                    // Cas spécial pour GMP: afficher les bits (précision effective selon le zoom)
-                    if effective_mode == AlgorithmMode::ReferenceGmp && !gpu_active {
-                        let effective_prec =
-                            crate::fractal::perturbation::compute_perturbation_precision_bits(
-                                &self.params,
-                            );
-                        format!("{} GMP {}b", device, effective_prec)
-                    } else {
-                        format!("{} {} {}", device, precision, algo)
-                    }
-                };
-
-                ui.label(mode_display);
-
-                // Afficher la précision GMP effective pour le mode perturbation
-                if effective_mode == AlgorithmMode::Perturbation {
-                    let effective_prec =
-                        crate::fractal::perturbation::compute_perturbation_precision_bits(
-                            &self.params,
-                        );
-                    ui.separator();
-                    ui.label(format!("GMP: {}b", effective_prec));
-                }
-
-                // Statut du rendu progressif.
-                //
-                // En navigation XaoS les rendus s'enchaînent à ~30 Hz : la
-                // barre animée, son pourcentage et le temps écoulé
-                // apparaissent/disparaissent à cette cadence — clignotement
-                // bleu en bas à droite, et largeur de la barre d'état qui
-                // saute. On affiche un état STABLE pendant tout le geste
-                // (y compris entre deux rendus, sinon le label lui-même
-                // clignoterait avec `self.rendering`). Le rendu de
-                // stabilisation, lui, retrouve la barre normale : c'est un
-                // calcul unique dont la progression intéresse l'utilisateur.
-                let nav_active = self.xaos_nav_mode && self.nav.is_active();
-                if nav_active {
-                    ui.separator();
-                    ui.label("Navigation XaoS");
-                } else if self.rendering {
-                    ui.separator();
-                    let progress = self.render_progress.fraction();
-                    let (current_pass, total_passes) = self.render_progress.passes();
-                    let progress_bar = egui::ProgressBar::new(progress)
-                        .show_percentage()
-                        .animate(true);
-                    ui.add(progress_bar);
-                    let aa_suffix = match self.render_progress.aa() {
-                        Some((s, t)) if t > 1 && s > 0 => format!(" - AA {s}/{t}"),
-                        _ => String::new(),
-                    };
-                    if let Some(start) = self.render_start_time {
-                        let elapsed = start.elapsed().as_secs_f64();
-                        let time_str = if elapsed < 60.0 {
-                            format!("{:.1}s", elapsed)
-                        } else {
-                            let mins = (elapsed / 60.0).floor() as u32;
-                            let secs = elapsed % 60.0;
-                            format!("{}m {:.0}s", mins, secs)
-                        };
-                        ui.label(format!(
-                            "Calcul en cours... ({}) - Passe {}/{}{}",
-                            time_str, current_pass, total_passes, aa_suffix
-                        ));
-                    } else {
-                        ui.label(format!(
-                            "Calcul en cours... - Passe {}/{}{}",
-                            current_pass, total_passes, aa_suffix
-                        ));
-                    }
-                } else if self.is_preview {
-                    ui.separator();
-                    ui.label("Preview");
-                }
-
-                // ═══════════════════════════════════════════════════════════════
-                // Temps de rendu aligné à droite
-                // ═══════════════════════════════════════════════════════════════
-
-                // Espace flexible pour pousser le temps à droite
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some(render_time) = self.last_render_time {
-                        let time_str = if render_time < 1.0 {
-                            format!("{:.0} ms", render_time * 1000.0)
-                        } else if render_time < 60.0 {
-                            format!("{:.2} s", render_time)
-                        } else {
-                            let mins = (render_time / 60.0).floor() as u32;
-                            let secs = render_time % 60.0;
-                            format!("{}m {:.1}s", mins, secs)
-                        };
-                        ui.label(format!("⏱ {}", time_str));
-                    } else if self.rendering {
-                        if let Some(start) = self.render_start_time {
-                            let elapsed = start.elapsed().as_secs_f64();
-                            let time_str = if elapsed < 1.0 {
-                                format!("{:.0} ms", elapsed * 1000.0)
-                            } else {
-                                format!("{:.1} s", elapsed)
-                            };
-                            ui.label(format!("⏱ {}...", time_str));
-                        }
-                    }
-                });
-            });
-        });
 
         // Demander un re-rendu seulement si un rendu est en cours
         if self.rendering || self.hq_render_state.is_running() {

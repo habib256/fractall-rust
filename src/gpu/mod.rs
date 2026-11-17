@@ -190,6 +190,7 @@ impl GpuRenderer {
                         power_preference: wgpu::PowerPreference::HighPerformance,
                         compatible_surface: None,
                         force_fallback_adapter: false,
+                        apply_limit_buckets: false,
                     })
                     .await
                     .ok()?;
@@ -1142,7 +1143,7 @@ impl GpuRenderer {
 
         let gpu_s = t_gpu.elapsed().as_secs_f64();
         let t_readback = Instant::now();
-        let data = buffer_slice.get_mapped_range();
+        let data = buffer_slice.get_mapped_range().ok()?;
         let pixels: &[PixelOut] = bytemuck::cast_slice(&data);
         let mut iterations = Vec::with_capacity(output_count);
         let mut zs = Vec::with_capacity(output_count);
@@ -1641,7 +1642,7 @@ impl GpuRenderer {
                 Err(RecvTimeoutError::Disconnected) => return None,
             }
         }
-        let data = buffer_slice.get_mapped_range();
+        let data = buffer_slice.get_mapped_range().ok()?;
         let pixels: &[PixelOut] = bytemuck::cast_slice(&data);
         let mut iterations = Vec::with_capacity(output_count);
         let mut zs = Vec::with_capacity(output_count);
@@ -1847,7 +1848,7 @@ impl GpuRenderer {
             }
         }
 
-        let data = buffer_slice.get_mapped_range();
+        let data = buffer_slice.get_mapped_range().ok()?;
         let pixels: &[PixelOut] = bytemuck::cast_slice(&data);
         let mut iterations = Vec::with_capacity(output_count);
         let mut zs = Vec::with_capacity(output_count);
@@ -1967,7 +1968,7 @@ impl GpuRenderer {
             }
         }
 
-        let data = buffer_slice.get_mapped_range();
+        let data = buffer_slice.get_mapped_range().ok()?;
         let pixels: &[PixelOut] = bytemuck::cast_slice(&data);
         let mut iterations = Vec::with_capacity(output_count);
         let mut zs = Vec::with_capacity(output_count);

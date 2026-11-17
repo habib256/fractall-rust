@@ -9,7 +9,6 @@ fn main() {
             .with_title("Fractall Video Studio")
             .with_inner_size([1200.0, 800.0])
             .with_drag_and_drop(true),
-        hardware_acceleration: eframe::HardwareAcceleration::Preferred,
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
