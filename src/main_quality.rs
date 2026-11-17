@@ -157,7 +157,7 @@ fn gpu_renderer_or_exit() -> gpu::GpuRenderer {
     match gpu::GpuRenderer::new() {
         Some(r) => r,
         None => {
-            eprintln!("GPU indisponible (wgpu n'a trouvé aucun adaptateur) — gpu-compare/gpu-suite impossibles");
+            eprintln!("GPU unavailable (wgpu found no adapter) — gpu-compare/gpu-suite cannot run");
             std::process::exit(2);
         }
     }
@@ -181,7 +181,7 @@ fn main() {
 
     match cli.command {
         Command::List => {
-            println!("Presets disponibles:");
+            println!("Available presets:");
             for p in presets::PRESETS {
                 println!(
                     "  {:<30} {:?} zoom={} iter={}",
@@ -192,7 +192,7 @@ fn main() {
         }
         Command::Preset { name } => {
             let preset = presets::find(&name).unwrap_or_else(|| {
-                eprintln!("Preset inconnu: '{}'. Liste: {:?}", name, presets::names());
+                eprintln!("Unknown preset: '{}'. Available: {:?}", name, presets::names());
                 std::process::exit(1);
             });
             let params = params_from_preset(preset, &opt);
@@ -209,17 +209,17 @@ fn main() {
                         metrics: &out.metrics,
                     };
                     if let Err(e) = write_report(&cli.output_dir, &inputs) {
-                        eprintln!("Erreur écriture rapport: {e}");
+                        eprintln!("Error writing the report: {e}");
                         std::process::exit(1);
                     }
                     println!(
-                        "Rapport: {}/{}/report.md",
+                        "Report: {}/{}/report.md",
                         cli.output_dir.display(),
                         preset.name
                     );
                 }
                 Err(e) => {
-                    eprintln!("Erreur compare: {e}");
+                    eprintln!("compare error: {e}");
                     std::process::exit(1);
                 }
             }
@@ -243,22 +243,22 @@ fn main() {
                             metrics: &out.metrics,
                         };
                         if let Err(e) = write_report(&cli.output_dir, &inputs) {
-                            eprintln!("Erreur écriture rapport {}: {e}", preset.name);
+                            eprintln!("Error writing the report {}: {e}", preset.name);
                             continue;
                         }
                         rows.push((preset.name.to_string(), out.metrics));
                     }
                     Err(e) => {
-                        eprintln!("Erreur {}: {e}", preset.name);
+                        eprintln!("Error {}: {e}", preset.name);
                     }
                 }
             }
             if let Err(e) = write_suite_summary(&cli.output_dir, &rows) {
-                eprintln!("Erreur écriture summary: {e}");
+                eprintln!("Error writing the summary: {e}");
                 std::process::exit(1);
             }
             if let Err(e) = write_suite_summary_json(&cli.output_dir, &rows, &opt.thresholds) {
-                eprintln!("Erreur écriture summary JSON: {e}");
+                eprintln!("Error writing the JSON summary: {e}");
                 std::process::exit(1);
             }
             println!(
@@ -276,7 +276,7 @@ fn main() {
             name,
         } => {
             let ft = FractalType::from_id(fractal_type).unwrap_or_else(|| {
-                eprintln!("Type invalide: {}", fractal_type);
+                eprintln!("Invalid type: {}", fractal_type);
                 std::process::exit(1);
             });
             let mut params = fractal::default_params_for_type(ft, opt.width, opt.height);
@@ -297,7 +297,7 @@ fn main() {
             }
             if ft == FractalType::Julia {
                 let re = julia_re.unwrap_or_else(|| {
-                    eprintln!("--julia-re requis pour Julia");
+                    eprintln!("--julia-re is required for Julia");
                     std::process::exit(1);
                 });
                 let im = julia_im.unwrap_or(0.0);
@@ -316,13 +316,13 @@ fn main() {
                         metrics: &out.metrics,
                     };
                     if let Err(e) = write_report(&cli.output_dir, &inputs) {
-                        eprintln!("Erreur écriture rapport: {e}");
+                        eprintln!("Error writing the report: {e}");
                         std::process::exit(1);
                     }
-                    println!("Rapport: {}/{}/report.md", cli.output_dir.display(), name);
+                    println!("Report: {}/{}/report.md", cli.output_dir.display(), name);
                 }
                 Err(e) => {
-                    eprintln!("Erreur compare: {e}");
+                    eprintln!("compare error: {e}");
                     std::process::exit(1);
                 }
             }
@@ -349,20 +349,20 @@ fn main() {
                             metrics: &out.metrics,
                         };
                         if let Err(e) = write_report(&gpu_dir, &inputs) {
-                            eprintln!("Erreur écriture rapport: {e}");
+                            eprintln!("Error writing the report: {e}");
                         }
                         rows.push((preset.name.to_string(), out.metrics));
                     }
                     Err(e) => {
-                        eprintln!("Erreur gpu-compare {}: {e}", preset.name);
+                        eprintln!("gpu-compare error {}: {e}", preset.name);
                     }
                 }
             }
             if let Err(e) = write_suite_summary(&gpu_dir, &rows) {
-                eprintln!("Erreur écriture summary: {e}");
+                eprintln!("Error writing the summary: {e}");
             }
             if let Err(e) = write_suite_summary_json(&gpu_dir, &rows, &opt.thresholds) {
-                eprintln!("Erreur écriture summary JSON: {e}");
+                eprintln!("Error writing the JSON summary: {e}");
             }
             println!(
                 "\nGPU suite summary: {}/suite-summary.md",
@@ -390,7 +390,7 @@ fn main() {
             let renderer = gpu_renderer_or_exit();
             let render_gpu = gpu_render_closure(&renderer);
             let ft = FractalType::from_id(fractal_type).unwrap_or_else(|| {
-                eprintln!("Type invalide: {}", fractal_type);
+                eprintln!("Invalid type: {}", fractal_type);
                 std::process::exit(1);
             });
             let mut params = fractal::default_params_for_type(ft, opt.width, opt.height);
@@ -408,7 +408,7 @@ fn main() {
             }
             if ft == FractalType::Julia {
                 let re = julia_re.unwrap_or_else(|| {
-                    eprintln!("--julia-re requis pour Julia");
+                    eprintln!("--julia-re is required for Julia");
                     std::process::exit(1);
                 });
                 let im = julia_im.unwrap_or(0.0);
@@ -428,13 +428,13 @@ fn main() {
                         metrics: &out.metrics,
                     };
                     if let Err(e) = write_report(&gpu_dir, &inputs) {
-                        eprintln!("Erreur écriture rapport: {e}");
+                        eprintln!("Error writing the report: {e}");
                         std::process::exit(1);
                     }
-                    println!("Rapport: {}/{}/report.md", gpu_dir.display(), name);
+                    println!("Report: {}/{}/report.md", gpu_dir.display(), name);
                 }
                 Err(e) => {
-                    eprintln!("Erreur gpu-compare: {e}");
+                    eprintln!("gpu-compare error: {e}");
                     std::process::exit(1);
                 }
             }
@@ -485,13 +485,13 @@ fn run_gpu_bench(
         cases.to_vec()
     };
     println!(
-        "# gpu-bench — {} — kernel perturbation {} — {} runs/bras (entrelacés)",
+        "# gpu-bench — {} — perturbation kernel {} — {} runs/arm (interleaved)",
         renderer.adapter_label(),
-        if renderer.perturbation_kernel_is_f32() { "f32+fiabilité" } else { "f64" },
+        if renderer.perturbation_kernel_is_f32() { "f32+reliability" } else { "f64" },
         runs
     );
     println!(
-        "| cas | taille | GPU total min/med (s) | orbite | upload | GPU | readback | fix CPU | px→CPU | repli | CPU Auto min/med (s) | CPU pert min/med (s) | gain (min) | px ≠ CPU |"
+        "| case | size | GPU total min/med (s) | orbit | upload | GPU | readback | CPU fix | px→CPU | fallback | CPU Auto min/med (s) | CPU pert min/med (s) | speedup (min) | px ≠ CPU |"
     );
     println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
     for case in &cases {
@@ -501,7 +501,7 @@ fn run_gpu_bench(
         let zoom = parts.next().filter(|z| !z.is_empty());
         let iters: Option<u32> = parts.next().and_then(|i| i.parse().ok());
         let Some(preset) = find_any_preset(name) else {
-            eprintln!("cas inconnu : {name}");
+            eprintln!("unknown case: {name}");
             continue;
         };
         for &size in sizes {

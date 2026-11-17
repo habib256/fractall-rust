@@ -1085,7 +1085,7 @@ fn build_hybrid_bla_references(
         if cycle_period > HYBRID_BLA_PERIOD_CAP {
             if crate::fractal::perturbation::perf_enabled() {
                 eprintln!(
-                    "[HYBRID_BLA] cycle_period={} > {} (mémoire prohibitive) → fallback primary only",
+                    "[HYBRID_BLA] cycle_period={} > {} (prohibitive memory) → fallback primary only",
                     cycle_period, HYBRID_BLA_PERIOD_CAP,
                 );
             }
@@ -1399,7 +1399,7 @@ pub fn compute_reference_orbit_cached(
                 None => {
                     if perf {
                         eprintln!(
-                            "[NUCLEUS] hybrid_size dégénéré (atome bord ou orbite escape) — rotation inchangée ({:.3}s)",
+                            "[NUCLEUS] hybrid_size degenerate (boundary atom or escaping orbit) — rotation unchanged ({:.3}s)",
                             t_size.elapsed().as_secs_f64(),
                         );
                     }
@@ -2432,7 +2432,7 @@ fn compute_reference_orbit_phase(
     if atom_truncated && crate::fractal::perturbation::perf_enabled() {
         let z_end = z_ref_f64[z_ref_f64.len() - 1];
         eprintln!(
-            "[ATOM] Reference tronquée à {} iters (atom-domain F3, rebase-at-end). |Z[end]|={:.3e}",
+            "[ATOM] Reference truncated at {} iters (atom-domain F3, rebase-at-end). |Z[end]|={:.3e}",
             z_ref_f64.len(),
             z_end.norm_sqr().sqrt()
         );

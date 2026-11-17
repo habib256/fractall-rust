@@ -48,8 +48,8 @@ fn main() {
         let lut_s = t2.elapsed().as_secs_f64() / N as f64;
 
         println!(
-            "{w}x{h}: rendu={render_s:.3}s  colorisation={:.1}ms (LUT neuf {:.3}ms)  \
-             ratio colorisation/rendu={:.1}%",
+            "{w}x{h}: render={render_s:.3}s  colouring={:.1}ms (fresh LUT {:.3}ms)  \
+             colouring/render ratio={:.1}%",
             colorize_s * 1e3,
             lut_s * 1e3,
             100.0 * colorize_s / render_s
@@ -87,8 +87,8 @@ fn main() {
         }
         let pass_s = t4.elapsed().as_secs_f64() / NP as f64;
         println!(
-            "  tuile 64x64 : solo={:.3}ms  |  passe complète ({tiles_per_frame} tuiles, \
-             pool saturé)={:.1}ms",
+            "  tile 64x64: solo={:.3}ms  |  full pass ({tiles_per_frame} tiles, \
+             saturated pool)={:.1}ms",
             tile_solo * 1e3,
             pass_s * 1e3
         );

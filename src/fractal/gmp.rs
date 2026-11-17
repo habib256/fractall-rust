@@ -278,7 +278,7 @@ pub fn pow_f64_mpc(value: &Complex, exp: f64, prec: u32) -> Complex {
 pub fn iterate_point_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     match g.fractal_type {
         FractalType::VonKoch | FractalType::Dragon => {
-            panic!("Les fractales vectorielles doivent être rendues via render_von_koch/render_dragon")
+            panic!("vector fractals must be rendered via render_von_koch/render_dragon")
         }
         FractalType::Mandelbrot => mandelbrot_mpc(g, z_pixel),
         FractalType::Julia => julia_mpc(g, z_pixel),
@@ -311,7 +311,7 @@ pub fn iterate_point_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
         | FractalType::Lyapunov
         | FractalType::Nebulabrot
         | FractalType::AntiBuddhabrot) => panic!(
-            "{special:?} doit être rendu via le dispatcher cancellable, pas iterate_point_mpc()"
+            "{special:?} must be rendered via the cancellable dispatcher, not iterate_point_mpc()"
         ),
     }
 }
@@ -320,7 +320,7 @@ pub fn iterate_point_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
 pub fn iterate_point_gmp(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
     match g.fractal_type {
         FractalType::VonKoch | FractalType::Dragon => {
-            panic!("Les fractales vectorielles doivent être rendues via render_von_koch/render_dragon")
+            panic!("vector fractals must be rendered via render_von_koch/render_dragon")
         }
         FractalType::Mandelbrot => mandelbrot(g, z_pixel),
         FractalType::Julia => julia(g, z_pixel),
@@ -353,7 +353,7 @@ pub fn iterate_point_gmp(g: &GmpParams, z_pixel: &ComplexF) -> (u32, ComplexF) {
         | FractalType::Lyapunov
         | FractalType::Nebulabrot
         | FractalType::AntiBuddhabrot) => panic!(
-            "{special:?} doit être rendu via le dispatcher cancellable, pas iterate_point_gmp()"
+            "{special:?} must be rendered via the cancellable dispatcher, not iterate_point_gmp()"
         ),
     }
 }

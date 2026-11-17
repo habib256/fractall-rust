@@ -54,14 +54,14 @@ pub(super) fn strip_orbit_arrays_for_compress(
             owned.orbit.z_ref_f64 = Vec::new();
             owned.orbit.z_ref = Vec::new();
             eprintln!(
-                "[COMPRESS] actif : réf via {} waypoints ({:.3} Mo) ; libéré z_ref_f64+z_ref = {:.1} Mo",
+                "[COMPRESS] active: reference via {} waypoints ({:.3} MB); freed z_ref_f64+z_ref = {:.1} MB",
                 wp_count, wp_bytes as f64 / 1e6, full_bytes as f64 / 1e6,
             );
             Arc::new(owned)
         }
         Err(shared) => {
             eprintln!(
-                "[COMPRESS] actif : réf via {} waypoints ({:.3} Mo) ; libération sautée (Arc partagé) — {:.1} Mo évités au prochain rendu",
+                "[COMPRESS] active: reference via {} waypoints ({:.3} MB); free skipped (shared Arc) — {:.1} MB saved on the next render",
                 wp_count, wp_bytes as f64 / 1e6, full_bytes as f64 / 1e6,
             );
             shared

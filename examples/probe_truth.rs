@@ -27,7 +27,7 @@ fn type_from_id(id: u8) -> FractalType {
         4 => FractalType::Julia,
         13 => FractalType::BurningShip,
         14 => FractalType::Tricorn,
-        _ => panic!("type {id} non géré"),
+        _ => panic!("type {id} not handled"),
     }
 }
 

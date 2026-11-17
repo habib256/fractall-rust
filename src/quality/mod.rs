@@ -64,8 +64,8 @@ pub fn compare(params: &FractalParams, opt: &ComparisonOptions) -> Result<Compar
             | FractalType::PerpendicularBurningShip
     ) {
         return Err(format!(
-            "QA suite vs GMP limitée aux types Mandelbrot-family à renderer GMP vérifié \
-             (M/J/BS/Tricorn/Celtic/Buffalo/PerpBS); pas de comparaison fiable pour {:?}",
+            "the QA comparison against GMP is limited to Mandelbrot-family types with a verified \
+             GMP renderer (M/J/BS/Tricorn/Celtic/Buffalo/PerpBS); no reliable comparison for {:?}",
             params.fractal_type
         ));
     }
@@ -161,7 +161,7 @@ pub fn compare_gpu(
     );
     let t0 = Instant::now();
     let (gpu_iters, gpu_zs) = render_gpu(params)
-        .ok_or_else(|| "rendu GPU indisponible (pas de GPU, ou type/config non supporté)".to_string())?;
+        .ok_or_else(|| "GPU render unavailable (no GPU, or unsupported type/configuration)".to_string())?;
     let gpu_time_ms = t0.elapsed().as_secs_f64() * 1000.0;
     println!("[quality] GPU done in {:.0} ms", gpu_time_ms);
 
@@ -290,7 +290,7 @@ pub fn apply_zoom(params: &mut FractalParams, zoom_str: &str) {
             1024,
         )
     })
-    .expect("la vue de fallback zoom=1 est valide");
+    .expect("the zoom=1 fallback view is valid");
     view.write_to_params(params);
 }
 

@@ -140,7 +140,7 @@ fn helper_loop(sh: &Shared) {
                         .lock()
                         .unwrap()
                         .take()
-                        .expect("tâche réclamée mais case vide");
+                        .expect("task claimed but slot empty");
                     imag_half(&mut im, &re, &sh.ci);
                     *sh.result.lock().unwrap() = Some((im, re));
                     // `TAKEN → DONE` par échange : si l'appelant a été lâché
@@ -313,8 +313,8 @@ impl ParSqr {
         t2.assign(&*re - &*im);
         // Les composantes quittent `z` (remplacées par les substituts) et
         // partent dans la case de tâche.
-        let mut job_re = self.spare_re.take().expect("substitut re");
-        let mut job_im = self.spare_im.take().expect("substitut im");
+        let mut job_re = self.spare_re.take().expect("spare re");
+        let mut job_im = self.spare_im.take().expect("spare im");
         std::mem::swap(re, &mut job_re);
         std::mem::swap(im, &mut job_im);
         // État IDLE ici (seul l'appelant l'écrit, et il vient de le faire) :
@@ -341,7 +341,7 @@ impl ParSqr {
                 .lock()
                 .unwrap()
                 .take()
-                .expect("tâche reprise mais case vide");
+                .expect("task reclaimed but slot empty");
             imag_half(&mut i2, &r2, &sh.ci);
             self.steals_in_a_row += 1;
             incident = self.steals_in_a_row >= STARVED_STEALS;
@@ -361,7 +361,7 @@ impl ParSqr {
                         // Assistant mort (panique) : mieux vaut une erreur
                         // franche qu'une attente sans fin.
                         if self.handle.as_ref().is_some_and(|h| h.is_finished()) {
-                            panic!("orbite sur deux cœurs : le fil assistant s'est arrêté en pleine tâche");
+                            panic!("two-core orbit: the helper thread stopped in the middle of a task");
                         }
                         std::thread::yield_now();
                     }
@@ -369,7 +369,7 @@ impl ParSqr {
                     std::hint::spin_loop();
                 }
             }
-            let r = sh.result.lock().unwrap().take().expect("résultat de l'assistant");
+            let r = sh.result.lock().unwrap().take().expect("helper result");
             sh.state.store(IDLE, Ordering::Release);
             r
         };

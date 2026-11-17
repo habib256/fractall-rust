@@ -53,13 +53,13 @@ impl PixelCounter {
     pub fn keep_iterating(self, iteration_max: u32) -> bool {
         debug_assert!(
             self.m <= self.n,
-            "invariant m ≤ n violé ({} > {})",
+            "invariant m <= n violated ({} > {})",
             self.m,
             self.n
         );
         debug_assert!(
             self.n <= iteration_max,
-            "itération absolue hors borne ({} > {})",
+            "absolute iteration out of bounds ({} > {})",
             self.n,
             iteration_max
         );
@@ -97,7 +97,7 @@ impl PixelCounter {
     pub fn set_ref_index(&mut self, m: u32) {
         debug_assert!(
             m <= self.n,
-            "wrap m={m} > n={} (index hors histoire)",
+            "wrap m={m} > n={} (index outside the history)",
             self.n
         );
         self.m = m;

@@ -718,7 +718,7 @@ impl GpuRenderer {
         if !(params.span_x.abs().min(params.span_y.abs()) >= GPU_SPAN_F32_MIN) {
             if stats {
                 eprintln!(
-                    "[GPU PERTURB] fallback CPU: span sous le normal f32 (span_x={:.3e} span_y={:.3e} < {:.0e})",
+                    "[GPU PERTURB] fallback CPU: span below f32 normal range (span_x={:.3e} span_y={:.3e} < {:.0e})",
                     params.span_x, params.span_y, GPU_SPAN_F32_MIN,
                 );
             }
@@ -906,7 +906,7 @@ impl GpuRenderer {
         if ref_truncated && ref_orbit.cycle_period == 0 && !ref_orbit.atom_truncated {
             if stats {
                 eprintln!(
-                    "[GPU PERTURB] fallback CPU: ref tronquée par escape (ref_len={} < iter_max={})",
+                    "[GPU PERTURB] fallback CPU: reference truncated by escape (ref_len={} < iter_max={})",
                     ref_len, params.iteration_max,
                 );
             }
@@ -1361,7 +1361,7 @@ impl GpuRenderer {
 
             if stats {
                 eprintln!(
-                    "[GPU PERTURB] fallback_gmp: glitch_ratio={:.3} > {:.3}, recalculé {} pixels",
+                    "[GPU PERTURB] fallback_gmp: glitch_ratio={:.3} > {:.3}, recomputed {} pixels",
                     glitch_ratio, GLITCH_FALLBACK_THRESHOLD, output_count
                 );
             }
@@ -1436,7 +1436,7 @@ impl GpuRenderer {
             let ratio = unreliable_gpu.len() as f64 / total_pixels;
             if stats {
                 eprintln!(
-                    "[GPU PERTURB] f32: {} px non fiables ({:.3}%) → CPU",
+                    "[GPU PERTURB] f32: {} unreliable px ({:.3}%) → CPU",
                     unreliable_gpu.len(),
                     100.0 * ratio
                 );

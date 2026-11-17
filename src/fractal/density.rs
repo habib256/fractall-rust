@@ -967,7 +967,7 @@ fn run_metropolis<S: Sampler>(
                 })
                 .count();
             eprintln!(
-                "[MH] étape {stage}/{} chaînes_vivantes={alive}/{} fenêtre={stage_span:.3e} spans",
+                "[MH] stage {stage}/{} live_chains={alive}/{} window={stage_span:.3e} spans",
                 plan.stages, plan.chains
             );
         }

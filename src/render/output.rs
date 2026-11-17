@@ -79,18 +79,18 @@ impl ChannelRequirements {
     ) -> Result<(), String> {
         if self.distances && distances.len() < n {
             return Err(
-                "le mode de colorisation Distance/DistanceAO/Distance3D requiert le canal \
-                 `distances`, absent de ce rendu (l'image retomberait silencieusement sur \
-                 Smooth) — activer l'estimation de distance (--enable-distance-estimation / \
-                 [fractal] distance_estimation) et vérifier que le path de rendu la supporte"
+                "the Distance/DistanceAO/Distance3D colouring modes require the `distances` \
+                 channel, which this render did not produce (the image would silently fall \
+                 back to Smooth) — enable distance estimation (--enable-distance-estimation / \
+                 [fractal] distance_estimation) and check that the render path supports it"
                     .to_string(),
             );
         }
         if self.orbits && orbits.len() < n {
             return Err(
-                "le mode de colorisation OrbitTraps/Wings requiert le canal `orbits`, absent \
-                 de ce rendu (l'image retomberait silencieusement sur Smooth) — ces modes ne \
-                 sont produits que par le path f64 standard (enable_orbit_traps)"
+                "the OrbitTraps/Wings colouring modes require the `orbits` channel, which this \
+                 render did not produce (the image would silently fall back to Smooth) — these \
+                 modes are only produced by the standard f64 path (enable_orbit_traps)"
                     .to_string(),
             );
         }

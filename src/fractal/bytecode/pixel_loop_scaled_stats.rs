@@ -68,7 +68,7 @@ pub(super) fn flush_stats(st: &ScaledStats) {
         let tot = (fd + fj + sl).max(1) as f64;
         eprintln!(
             "[EXP-SCALED] pixels={px} fast_direct={fd} ({:.1}%) fast_jump={fj} ({:.1}%) \
-             slow={sl} ({:.2}%) fallback={fb} causes[fin_ref,Z_petit,rebase,bailout,garde]={:?}",
+             slow={sl} ({:.2}%) fallback={fb} causes[ref_end,small_Z,rebase,bailout,guard]={:?}",
             100.0 * fd as f64 / tot,
             100.0 * fj as f64 / tot,
             100.0 * sl as f64 / tot,

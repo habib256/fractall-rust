@@ -520,7 +520,7 @@ fn run_wisdom_bench() {
             TARGET_SECONDS,
         ),
         None => {
-            eprintln!("[WISDOM-BENCH] GPU indisponible — bench CPU uniquement");
+            eprintln!("[WISDOM-BENCH] GPU unavailable — benchmarking the CPU only");
             fractal::wisdom_bench::run_bench(None, TARGET_SECONDS)
         }
     };
@@ -1267,7 +1267,7 @@ fn main() {
     if let Some(ref map_path) = cli.output_map {
         if aa_samples > 1 {
             eprintln!(
-                "[MAP] --output-map ignoré avec --aa-samples > 1 (sortie AA = moyenne RGB, pas des canaux itération)"
+                "[MAP] --output-map ignored with --aa-samples > 1 (AA output is an RGB average, not iteration channels)"
             );
         } else {
             let mut params_to_save = params.clone();

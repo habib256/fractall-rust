@@ -146,7 +146,7 @@ impl Phase {
     pub fn new(ops: Vec<Op>) -> Self {
         debug_assert!(
             matches!(ops.last(), Some(Op::Add)),
-            "Une phase doit se terminer par Op::Add"
+            "a phase must end with Op::Add"
         );
         Self { ops }
     }
@@ -179,7 +179,7 @@ impl Formula {
     pub fn hybrid(phases: Vec<Phase>) -> Self {
         assert!(
             !phases.is_empty(),
-            "Formula::hybrid : phases ne peut pas être vide"
+            "Formula::hybrid: phases must not be empty"
         );
         Self { phases }
     }

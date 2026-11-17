@@ -329,7 +329,7 @@ pub fn names() -> Vec<&'static str> {
 pub const GPU_PRESETS: &[Preset] = &[
     Preset {
         name: "gpu-seahorse-1e2",
-        description: "Parité GPU↔CPU — seahorse zoom 1e2 (shader std f32, bord chaotique).",
+        description: "GPU↔CPU parity — seahorse zoom 1e2 (std f32 shader, chaotic boundary).",
         fractal_type: FractalType::Mandelbrot,
         center_x_hp: "-0.743643887037158",
         center_y_hp: "0.131825904205311",
@@ -341,7 +341,7 @@ pub const GPU_PRESETS: &[Preset] = &[
     },
     Preset {
         name: "gpu-seahorse-1e3",
-        description: "Parité GPU↔CPU — seahorse zoom 1e3 (shader std f32).",
+        description: "GPU↔CPU parity — seahorse zoom 1e3 (std f32 shader).",
         fractal_type: FractalType::Mandelbrot,
         center_x_hp: "-0.743643887037158",
         center_y_hp: "0.131825904205311",
@@ -353,7 +353,7 @@ pub const GPU_PRESETS: &[Preset] = &[
     },
     Preset {
         name: "gpu-seahorse-1e4",
-        description: "Parité GPU↔CPU — seahorse zoom 1e4 (début du path perturbation GPU, pixel<1e-5).",
+        description: "GPU↔CPU parity — seahorse zoom 1e4 (start of the GPU perturbation path, pixel<1e-5).",
         fractal_type: FractalType::Mandelbrot,
         center_x_hp: "-0.743643887037158",
         center_y_hp: "0.131825904205311",
@@ -365,7 +365,7 @@ pub const GPU_PRESETS: &[Preset] = &[
     },
     Preset {
         name: "gpu-seahorse-3e5",
-        description: "Parité GPU↔CPU — seahorse zoom 3e5 (perturbation GPU).",
+        description: "GPU↔CPU parity — seahorse zoom 3e5 (GPU perturbation).",
         fractal_type: FractalType::Mandelbrot,
         center_x_hp: "-0.743643887037158",
         center_y_hp: "0.131825904205311",
@@ -377,7 +377,7 @@ pub const GPU_PRESETS: &[Preset] = &[
     },
     Preset {
         name: "gpu-seahorse-1e6",
-        description: "Parité GPU↔CPU — seahorse zoom 1e6 (perturbation GPU f64).",
+        description: "GPU↔CPU parity — seahorse zoom 1e6 (GPU f64 perturbation).",
         fractal_type: FractalType::Mandelbrot,
         center_x_hp: "-0.743643887037158",
         center_y_hp: "0.131825904205311",
@@ -389,7 +389,7 @@ pub const GPU_PRESETS: &[Preset] = &[
     },
     Preset {
         name: "gpu-seahorse-1e8",
-        description: "Parité GPU↔CPU — seahorse zoom 1e8 (perturbation GPU f64 profonde).",
+        description: "GPU↔CPU parity — seahorse zoom 1e8 (deep GPU f64 perturbation).",
         fractal_type: FractalType::Mandelbrot,
         center_x_hp: "-0.743643887037158",
         center_y_hp: "0.131825904205311",
@@ -402,7 +402,7 @@ pub const GPU_PRESETS: &[Preset] = &[
     // --- Range deep (G9.4b) : au-delà de l'ancien plafond vérifié 1e8. ---
     Preset {
         name: "gpu-mandelbrot-e13",
-        description: "Parité GPU — zoom 1e13 (perturbation f64, réf pleine, coords mandelbrot-e13).",
+        description: "GPU parity — zoom 1e13 (f64 perturbation, full reference, mandelbrot-e13 coords).",
         fractal_type: FractalType::Mandelbrot,
         center_x_hp: "-1.7499537683537087",
         center_y_hp: "0.0",
@@ -420,7 +420,7 @@ pub const GPU_PRESETS: &[Preset] = &[
     // M4. Sur GPU f64 : kernel f64.
     Preset {
         name: "gpu-spiral-e20",
-        description: "Parité GPU — spirale e30 dézoomée à 1e20 (kernel f32 + correction CPU sur Metal).",
+        description: "GPU parity — e30 spiral zoomed out to 1e20 (f32 kernel + CPU correction on Metal).",
         fractal_type: FractalType::Mandelbrot,
         center_x_hp: "-0.0494700290631040937516922267273536301187457124882248793181049402326421947726869034279915499747594190000000000000000000",
         center_y_hp: "-0.6747875758446753640113920531305976563347707068224034806979997947909941983454845111514208499540310299999999999999999880",
@@ -437,7 +437,7 @@ pub const GPU_PRESETS: &[Preset] = &[
     // le kernel GPU (BLA conforme) tient WARN div ~3e-4. Juge GMP ~3 min à 256².
     Preset {
         name: "gpu-mandelbrot-e30-truncated-ref",
-        description: "Parité GPU — zoom 1e30, réf atom-tronquée (rebase-at-end kernel, coords mandelbrot-e30).",
+        description: "GPU parity — zoom 1e30, atom-truncated reference (rebase-at-end kernel, mandelbrot-e30 coords).",
         fractal_type: FractalType::Mandelbrot,
         center_x_hp: "-0.0494700290631040937516922267273536301187457124882248793181049402326421947726869034279915499747594190000000000000000000",
         center_y_hp: "-0.6747875758446753640113920531305976563347707068224034806979997947909941983454845111514208499540310299999999999999999880",

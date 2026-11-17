@@ -339,7 +339,7 @@ pub fn run_bench(
                 );
                 file.bench.push(entry);
             } else {
-                eprintln!("[WISDOM-BENCH] {} : indisponible (GPU ne peut pas cette vue)", key.as_str());
+                eprintln!("[WISDOM-BENCH] {} : unavailable (the GPU cannot render this view)", key.as_str());
             }
         }
     }
@@ -378,12 +378,12 @@ fn measure_gpu(
 
 /// Écrit le fichier wisdom (répertoires créés). Erreur = message, pas de panic.
 pub fn save(file: &WisdomBenchFile) -> Result<PathBuf, String> {
-    let path = bench_file_path().ok_or("chemin wisdom indéterminable (pas de HOME)")?;
+    let path = bench_file_path().ok_or("cannot determine the wisdom file path (HOME is not set)")?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
     }
-    let text = toml::to_string_pretty(file).map_err(|e| format!("sérialisation TOML: {e}"))?;
-    std::fs::write(&path, text).map_err(|e| format!("écriture {}: {e}", path.display()))?;
+    let text = toml::to_string_pretty(file).map_err(|e| format!("TOML serialization: {e}"))?;
+    std::fs::write(&path, text).map_err(|e| format!("writing {}: {e}", path.display()))?;
     Ok(path)
 }
 

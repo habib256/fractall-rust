@@ -10,7 +10,7 @@ static TEMP_SERIAL: AtomicU64 = AtomicU64::new(0);
 fn temp_path(path: &Path, serial: u64) -> Result<PathBuf, std::io::Error> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let name = path.file_name().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "chemin sans nom de fichier")
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no file name")
     })?;
     Ok(parent.join(format!(
         ".{}.tmp-{}-{serial}",
@@ -54,7 +54,7 @@ pub(crate) fn write_atomic(
         return Ok(());
     }
     Err(last_collision
-        .unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::AlreadyExists, "collision temporaire"))
+        .unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::AlreadyExists, "temporary file name collision"))
         .into())
 }
 

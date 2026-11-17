@@ -197,8 +197,9 @@ pub struct Manifest {
 
 impl Manifest {
     pub fn load(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
-        let text = std::fs::read_to_string(path)?;
-        Ok(toml::from_str(&text)?)
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        Ok(toml::from_str(&text).map_err(|e| format!("invalid manifest {}: {e}", path.display()))?)
     }
 
     pub fn save(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -225,9 +226,9 @@ const MAX_KEYFRAMES: u32 = 100_000;
 pub fn keyframe_count(zoom: &str) -> Result<u32, String> {
     let f = Float::parse(zoom)
         .map(|p| Float::with_val(128, p))
-        .map_err(|e| format!("zoom illisible '{zoom}': {e}"))?;
+        .map_err(|e| format!("unreadable zoom '{zoom}': {e}"))?;
     if !f.is_finite() || f <= 0.0 {
-        return Err(format!("zoom invalide '{zoom}' (doit être fini et > 0)"));
+        return Err(format!("invalid zoom '{zoom}' (must be finite and > 0)"));
     }
     // f = m·2^e, m ∈ [0.5, 1) → log2(f) ∈ (e-1, e] ; ceil = e sauf si
     // f == 2^(e-1) exactement (m = 0.5) où c'est e-1.
@@ -237,7 +238,7 @@ pub fn keyframe_count(zoom: &str) -> Result<u32, String> {
     let n = n.max(1);
     if n > MAX_KEYFRAMES as i64 {
         return Err(format!(
-            "zoom trop profond: {n} keyframes (maximum {MAX_KEYFRAMES})"
+            "zoom too deep: {n} keyframes (maximum {MAX_KEYFRAMES})"
         ));
     }
     Ok(n as u32)
@@ -250,7 +251,7 @@ pub(crate) fn validate_project_keyframes(m: &Manifest) -> Result<u32, String> {
     let expected = keyframe_count(&m.location.zoom)?;
     if m.video.keyframes != expected {
         return Err(format!(
-            "video.keyframes={} ne correspond pas à location.zoom (attendu {expected}) — relancez `fractall-video plan`",
+            "video.keyframes={} does not match location.zoom (expected {expected}) — re-run `fractall-video plan`",
             m.video.keyframes
         ));
     }
@@ -268,22 +269,22 @@ fn span_precision(k: u32) -> u32 {
 /// Tous les consommateurs du manifest doivent partager ce calcul.
 pub(crate) fn render_dimensions(m: &Manifest) -> Result<(u32, u32), String> {
     if m.image.width == 0 || m.image.height == 0 {
-        return Err("image.width/height doivent être > 0".into());
+        return Err("image.width/height must be > 0".into());
     }
     let ss = m.image.supersample.max(1);
     let w = m
         .image
         .width
         .checked_mul(ss)
-        .ok_or_else(|| "image.width × supersample déborde u32".to_string())?;
+        .ok_or_else(|| "image.width × supersample overflows u32".to_string())?;
     let h = m
         .image
         .height
         .checked_mul(ss)
-        .ok_or_else(|| "image.height × supersample déborde u32".to_string())?;
+        .ok_or_else(|| "image.height × supersample overflows u32".to_string())?;
     let pixels = w as u64 * h as u64;
     if pixels > usize::MAX as u64 / 16 {
-        return Err("dimensions trop grandes pour les buffers de rendu".into());
+        return Err("dimensions too large for the render buffers".into());
     }
     Ok((w, h))
 }
@@ -293,7 +294,7 @@ pub(crate) fn render_dimensions(m: &Manifest) -> Result<(u32, u32), String> {
 /// 4/2^k` est une puissance de 2, donc **exacte en GMP à toute profondeur**.
 pub fn keyframe_params(m: &Manifest, k: u32) -> Result<FractalParams, String> {
     let ftype = FractalType::from_id(m.fractal.r#type)
-        .ok_or_else(|| format!("type de fractale invalide: {}", m.fractal.r#type))?;
+        .ok_or_else(|| format!("invalid fractal type: {}", m.fractal.r#type))?;
     let (w, h) = render_dimensions(m)?;
     let mut p = default_params_for_type(ftype, w, h);
     match (m.fractal.julia_re, m.fractal.julia_im) {
@@ -301,11 +302,11 @@ pub fn keyframe_params(m: &Manifest, k: u32) -> Result<FractalParams, String> {
             p.seed = num_complex::Complex64::new(re, im);
         }
         (None, None) => {}
-        _ => return Err("fractal.julia_re/julia_im doivent être deux nombres finis".into()),
+        _ => return Err("fractal.julia_re/julia_im must both be finite numbers".into()),
     }
     if let Some(power) = m.fractal.multibrot_power {
         if !power.is_finite() || power <= 0.0 {
-            return Err(format!("fractal.multibrot_power invalide: {power}"));
+            return Err(format!("invalid fractal.multibrot_power: {power}"));
         }
         p.formula.multibrot_power = power;
     }
@@ -314,12 +315,12 @@ pub fn keyframe_params(m: &Manifest, k: u32) -> Result<FractalParams, String> {
     // Centre HP (strings du manifest, vérité absolue) + approximation f64.
     let cx = Float::parse(&m.location.real)
         .map(|v| Float::with_val(prec, v))
-        .map_err(|e| format!("location.real illisible: {e}"))?;
+        .map_err(|e| format!("unreadable location.real: {e}"))?;
     let cy = Float::parse(&m.location.imag)
         .map(|v| Float::with_val(prec, v))
-        .map_err(|e| format!("location.imag illisible: {e}"))?;
+        .map_err(|e| format!("unreadable location.imag: {e}"))?;
     if !cx.is_finite() || !cy.is_finite() {
-        return Err("location.real/imag doivent être finis".into());
+        return Err("location.real/imag must be finite".into());
     }
     p.center_x_hp = Some(m.location.real.clone());
     p.center_y_hp = Some(m.location.imag.clone());
@@ -354,7 +355,7 @@ pub fn keyframe_params(m: &Manifest, k: u32) -> Result<FractalParams, String> {
     p.color.color_repeat = m.color.color_repeat.max(1);
     p.color.color_space = m.color.color_space;
     p.color.out_coloring_mode = OutColoringMode::from_cli_name(&m.color.outcoloring)
-        .ok_or_else(|| format!("outcoloring invalide: '{}'", m.color.outcoloring))?;
+        .ok_or_else(|| format!("invalid outcoloring: '{}'", m.color.outcoloring))?;
     p.channels.enable_distance_estimation = m.fractal.distance_estimation;
     Ok(p)
 }
@@ -397,7 +398,7 @@ pub fn plan_from_manifest(m: &Manifest, project: &Path) -> Result<Manifest, Box<
     let mut m = m.clone();
     m.video.keyframes = keyframe_count(&m.location.zoom)?;
     if !m.fractal.iterations_growth.is_finite() || m.fractal.iterations_growth < 0.0 {
-        return Err("fractal.iterations_growth doit être fini et ≥ 0".into());
+        return Err("fractal.iterations_growth must be finite and >= 0".into());
     }
     // Valide la géométrie tôt (types/outcoloring invalides = erreur au plan,
     // pas au 30e keyframe du render).
@@ -409,7 +410,7 @@ pub fn plan_from_manifest(m: &Manifest, project: &Path) -> Result<Manifest, Box<
     // keyframe (ni, pire, à l'assemblage en Smooth silencieux).
     if oc_mode.requires_distance_channel() && !m.fractal.distance_estimation {
         return Err(format!(
-            "color.outcoloring '{}' requiert [fractal] distance_estimation = true              (le canal distances doit être rendu dans les .fmap)",
+            "color.outcoloring '{}' requires [fractal] distance_estimation = true (the distances channel must be rendered into the .fmap files)",
             m.color.outcoloring
         )
         .into());
@@ -423,10 +424,10 @@ pub fn plan_from_manifest(m: &Manifest, project: &Path) -> Result<Manifest, Box<
             .map_err(|e| format!("dynamics.palette_offset: {e}"))?;
     }
     if !m.color.palette_offset.is_finite() {
-        return Err("color.palette_offset doit être fini".into());
+        return Err("color.palette_offset must be finite".into());
     }
     if !m.lighting.alpha.is_finite() || !m.lighting.beta.is_finite() {
-        return Err("lighting.alpha/beta doivent être finis".into());
+        return Err("lighting.alpha/beta must be finite".into());
     }
     std::fs::create_dir_all(project)?;
     m.save(&project.join("manifest.toml"))?;
@@ -466,10 +467,10 @@ pub fn render_project(project: &Path) -> Result<(usize, usize), Box<dyn std::err
         &Arc::new(AtomicBool::new(false)),
         &mut |ev| match ev {
             KeyframeEvent::Invalidated { k, n } => {
-                println!("[{k}/{n}] keyframe_{k:05}.fmap invalide/obsolète → re-rendu");
+                println!("[{k}/{n}] keyframe_{k:05}.fmap invalid/stale → re-rendering");
             }
             KeyframeEvent::Rendered { k, n, seconds } => {
-                println!("[{k}/{n}] keyframe_{k:05}.fmap rendue en {seconds:.2}s");
+                println!("[{k}/{n}] keyframe_{k:05}.fmap rendered in {seconds:.2}s");
             }
             KeyframeEvent::Started { .. } | KeyframeEvent::Skipped { .. } => {}
         },
@@ -477,7 +478,7 @@ pub fn render_project(project: &Path) -> Result<(usize, usize), Box<dyn std::err
     match outcome {
         RenderOutcome::Complete { rendered, skipped } => Ok((rendered, skipped)),
         // Inatteignable sans cancel externe — sémantique historique conservée.
-        RenderOutcome::Cancelled { .. } => Err("rendu annulé".into()),
+        RenderOutcome::Cancelled { .. } => Err("render cancelled".into()),
     }
 }
 
@@ -595,7 +596,7 @@ pub fn zoom_from_span_x(span_x_hp: &str) -> Result<String, String> {
         256,
     )
     .map(|view| view.zoom_string())
-    .ok_or_else(|| format!("span invalide '{span_x_hp}' (doit être fini et > 0)"))
+    .ok_or_else(|| format!("invalid span '{span_x_hp}' (must be finite and > 0)"))
 }
 
 #[cfg(test)]
@@ -646,7 +647,7 @@ mod tests {
         m.video.keyframes = u32::MAX;
         m.save(&dir.join("manifest.toml")).unwrap();
         let err = render_project(&dir).unwrap_err().to_string();
-        assert!(err.contains("attendu 3"), "erreur explicite: {err}");
+        assert!(err.contains("expected 3"), "erreur explicite: {err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

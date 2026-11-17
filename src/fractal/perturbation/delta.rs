@@ -2218,8 +2218,8 @@ pub fn iterate_pixel_with_dd(request: PerturbPixelRequest<'_>) -> DeltaResult {
         && !params.engine.use_bytecode_engine
     {
         eprintln!(
-            "[WARN] distance_estimation/interior_detection nécessite use_bytecode_engine \
-             (passer --bytecode ou retirer --no-bytecode). Rendu sans ces features."
+            "[WARN] distance_estimation/interior_detection require use_bytecode_engine \
+             (pass --bytecode or drop --no-bytecode). Rendering without these features."
         );
     }
 

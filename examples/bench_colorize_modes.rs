@@ -10,7 +10,7 @@ fn main() {
     let out = render_escape_time(&p);
     let (it, zs) = (out.iterations, out.zs);
     let interior = it.iter().filter(|&&i| i >= 1000).count() as f64 / it.len() as f64;
-    println!("pixels intérieurs : {:.1} %", 100.0 * interior);
+    println!("interior pixels: {:.1} %", 100.0 * interior);
     for mode in [OutColoringMode::Iter, OutColoringMode::Smooth, OutColoringMode::Potential] {
         p.color.out_coloring_mode = mode;
         let mut best = f64::INFINITY;
@@ -20,7 +20,7 @@ fn main() {
             std::hint::black_box(colorize_to_rgb_with_extras(&p, &it, &zs, &[], &[]));
             best = best.min(t.elapsed().as_secs_f64());
         }
-        println!("{mode:?} : {:.2} ms (min de 15)", best * 1e3);
+        println!("{mode:?}: {:.2} ms (min of 15)", best * 1e3);
     }
     // Plancher : même parcours parallèle, écriture d'une constante.
     let mut best = f64::INFINITY;
@@ -37,5 +37,5 @@ fn main() {
         std::hint::black_box(&buf);
         best = best.min(t.elapsed().as_secs_f64());
     }
-    println!("plancher (alloc + parcours) : {:.2} ms", best * 1e3);
+    println!("floor (alloc + traversal): {:.2} ms", best * 1e3);
 }
