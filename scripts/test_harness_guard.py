@@ -22,6 +22,7 @@ from harnesslib import cli as harnesslib_cli  # noqa: E402
 from harnesslib import axes_precision  # noqa: E402
 from harnesslib import hotspots  # noqa: E402
 from harnesslib import axes_ddtruth  # noqa: E402
+from harnesslib import axes_stdtruth  # noqa: E402
 
 
 def _use_tmp(tmp: Path):
@@ -436,6 +437,26 @@ def run_truth_axis():
            and not axes_ddtruth.is_dd_path("bytecode_f64_harmonic_lla")
            and not axes_ddtruth.is_dd_path(None),
            "truth : un juge qui n'a pas rendu en dd n'est pas un juge (n/a)")
+    # Volet path f64 standard (chantier de correction n° 1) : scènes jugées
+    # contre le GMP pur, fusionnées dans les cas de l'axe.
+    quick = axes_stdtruth.scenes(False)
+    full = axes_stdtruth.scenes(True)
+    _check(len(full) == 18 and len(quick) == 9 and set(quick) <= set(full),
+           "truth std : 18 scènes, le tier quick garde le plafond par défaut")
+    _check(all(it == 2500 for _, _, it in quick),
+           "truth std : tier quick = plafond par défaut (2500)")
+    _check(axes_stdtruth.scene_name("seahorse", "1e10", 2500) == "std:seahorse_1e10_2500",
+           "truth std : nom de scène stable")
+    cmd = axes_stdtruth._cmd("seahorse", "1e10", 2500, Path("x.fmap"), ["--algorithm", "gmp"])
+    _check("--no-gpu" in cmd and cmd[-2:] == ["--algorithm", "gmp"]
+           and "--iterations" in cmd,
+           "truth std : juge GMP pur, CPU, plafond explicite")
+    card = {"meta": {"machine": {"cpu": "x", "nproc": 1}}, "truth": {"status": "ok", "cases": {
+        "std:seahorse_1e10_2500": {"status": "ok", "verdict": "FAIL", "diff_px": 3179,
+                                   "frac": 0.0776, "path": "std_f64"}}}}
+    g = {(x["axis"], x["case"]): x["severity"] for x in gaps_mod.compute_gaps(card, None)}
+    _check(g.get(("truth", "std:seahorse_1e10_2500")) == 1,
+           "truth std : FAIL du path standard → gap correction")
 
 
 if __name__ == "__main__":

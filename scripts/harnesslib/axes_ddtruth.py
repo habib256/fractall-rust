@@ -15,7 +15,9 @@ repli GMP par pixel, plafond de budget levé) ; comparaison des itérations
 BRUTES. Le dd n'est pas la vérité absolue (cf. lethal_weapon : plancher du dd
 à 1,6 M itérations) : un FAIL ici est une piste à adjuger contre le GMP pur
 sur quelques pixels, pas un verdict définitif. Les paths sans orbite GMP
-(`std_*`) sont `n/a`.
+(`std_*`) sont `n/a` ici ; ils sont jugés par le volet `axes_stdtruth`
+(scènes peu profondes `std:*`, production Auto vs GMP pur), fusionné dans
+les mêmes cas.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ import os
 import subprocess
 import time
 
+from .axes_stdtruth import axis_stdtruth
 from .axes_precision import (
     _PATH_RE, _PREC_RE, _render, read_fmap_iterations, verdict_for,
 )
@@ -54,7 +57,10 @@ def count_diff(a: list[int], b: list[int]) -> int:
 
 def axis_ddtruth(cases: list[str], size: int = 96, timeout: float = 300.0,
                  mem_limit_mb: int = 0, quarantined: set | None = None,
-                 slow_safe: set | None = None) -> dict:
+                 slow_safe: set | None = None,
+                 std_full: bool | None = False) -> dict:
+    """`std_full` : None = pas de volet f64 standard ; False = plafond par
+    défaut seulement (tier quick) ; True = toutes les scènes."""
     if not CLI.exists():
         cargo_build("fractall-cli")
     if not CLI.exists():
@@ -136,6 +142,8 @@ def axis_ddtruth(cases: list[str], size: int = 96, timeout: float = 300.0,
                          "frac": round(frac, 6), "verdict": verdict,
                          "sentinel": name in SENTINEL_CASES}
         print(f"{path} diff={diff} px ({100 * frac:.3f} %) {verdict}")
+    if std_full is not None:
+        results.update(axis_stdtruth(std_full, timeout, mem_limit_mb))
     ok = [r for r in results.values() if r.get("status") == "ok"]
     verdicts = [r["verdict"] for r in ok]
     return {
