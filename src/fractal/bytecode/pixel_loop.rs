@@ -750,7 +750,13 @@ fn iterate_pixel_unified_single_phase(
                 c.rebase();
                 rebase_count += 1;
             } else {
-                ref_exhausted_flag = true;
+                // Un pixel qui atteint `iteration_max` PILE sur le dernier
+                // point de la référence a fini : il n'est pas « épuisé ».
+                // Sans cette garde, une vue entièrement intérieure (réf de
+                // longueur iteration_max+1, aucun rebase) marquait 100 % des
+                // pixels → frame dd entière pour rien (×10 sur la vue). Même
+                // garde que `pixel_loop_gmp.rs` (`n < iteration_max`).
+                ref_exhausted_flag = c.keep_iterating(iteration_max);
                 break;
             }
         } else {
@@ -1540,7 +1546,13 @@ fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source, O: StepObserver, K: Di
                 rebase_count += 1;
                 z_m = src.reset();
             } else {
-                ref_exhausted_flag = true;
+                // Un pixel qui atteint `iteration_max` PILE sur le dernier
+                // point de la référence a fini : il n'est pas « épuisé ».
+                // Sans cette garde, une vue entièrement intérieure (réf de
+                // longueur iteration_max+1, aucun rebase) marquait 100 % des
+                // pixels → frame dd entière pour rien (×10 sur la vue). Même
+                // garde que `pixel_loop_gmp.rs` (`n < iteration_max`).
+                ref_exhausted_flag = c.keep_iterating(iteration_max);
                 // Pour le z_final du bas : Z[min(m, ref_len-1)] = Z[end].
                 z_m = z_after;
                 break;
@@ -2705,6 +2717,83 @@ mod tests {
                 compile_formula(m, 2.0).unwrap().phases[0],
                 compile_formula(j, 2.0).unwrap().phases[0]
             );
+        }
+    }
+
+    /// Un pixel qui atteint `iteration_max` PILE sur le dernier point de la
+    /// référence a FINI : il ne doit pas être marqué `ref_exhausted`. Sinon
+    /// une vue entièrement intérieure (référence de longueur
+    /// `iteration_max + 1`, ni périodique ni tronquée atom-domain, aucun
+    /// rebase) marquait 100 % des pixels et le pipeline re-rendait toute la
+    /// frame au tier dd pour rien (vue GUI réelle 264×156 : 5,0 → 0,41 s,
+    /// identique au GMP pur). Boucle rapide ET boucle générique.
+    #[test]
+    fn pixel_finishing_on_last_reference_point_is_not_exhausted() {
+        use crate::fractal::perturbation::{effective_pixel_size, orbit::compute_reference_orbit};
+        let (width, height) = (24u32, 14u32);
+        let iter_max = 6400u32;
+        let mut params = default_params_for_type(FractalType::Mandelbrot, width, height);
+        params.center_x_hp = Some(
+            "-7.322647541723557040777984393348525446820125659278667935268758374491342856499556e-1"
+                .into(),
+        );
+        params.center_y_hp = Some(
+            "-2.080330180258656467872993792845119026332559583217740698709065928418477306435652e-1"
+                .into(),
+        );
+        params.center_x = -0.7322647541723557;
+        params.center_y = -0.2080330180258656;
+        let span = 4.0 / 3.6237e13;
+        params.span_x = span;
+        params.span_y = span * height as f64 / width as f64;
+        params.iteration_max = iter_max;
+        params.bailout = 25.0;
+        params.engine.algorithm_mode = AlgorithmMode::Perturbation;
+        let (orbit, _, _) = compute_reference_orbit(&params, None, true).expect("orbite");
+        // Garde anti-vacuité : la scène doit exercer exactement le cas fautif.
+        assert_eq!(orbit.z_ref_f64.len(), iter_max as usize + 1);
+        assert!(!orbit.atom_truncated && orbit.cycle_period == 0);
+        let formula = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
+        let c_norm = effective_pixel_size(&params)
+            * ((width as f64).powi(2) + (height as f64).powi(2)).sqrt();
+        let limits = PixelLoopLimits {
+            iteration_max: iter_max,
+            bailout: 25.0,
+            max_perturb_iterations: iter_max,
+            max_bla_steps: iter_max,
+        };
+        let zero = Complex64::new(0.0, 0.0);
+        // ε de production (2⁻⁵³) et ε large : selon la table, le dernier pas
+        // est direct (cas fautif) ou BLA.
+        for eps in [1.0 / (1u64 << 53) as f64, 6e-8] {
+        let tables = build_bla_table_for_formula(&formula, &orbit.z_ref_f64, c_norm, eps)
+            .expect("table BLA");
+        for j in 0..height {
+            for i in 0..width {
+                let dc = Complex64::new(
+                    ((i as f64 + 0.5) / width as f64 - 0.5) * params.span_x,
+                    ((j as f64 + 0.5) / height as f64 - 0.5) * params.span_y,
+                );
+                let fast = iterate_pixel_unified_mandelbrot(&orbit, &tables[0], dc, limits);
+                let generic = iterate_pixel_unified_single_phase(
+                    &orbit,
+                    &tables[0],
+                    &formula.phases[0],
+                    orbit.cref,
+                    dc,
+                    zero,
+                    limits,
+                    UnifiedOptions {
+                        enable_distance: true,
+                        ..Default::default()
+                    },
+                );
+                for (name, r) in [("rapide", &fast), ("générique", &generic)] {
+                    assert_eq!(r.iteration, iter_max, "{name} ({i},{j})");
+                    assert!(!r.ref_exhausted, "{name} ε {eps:e} ({i},{j}) marqué épuisé");
+                }
+            }
+        }
         }
     }
 
