@@ -1437,6 +1437,32 @@ puis OpenGL ; Windows DX12 / Vulkan.
 - Preview Julia au survol (touche `J` pour basculer).
 - Rendu haute résolution asynchrone (Window / 4K / 8K).
 - Drag-and-drop PNG pour restaurer l'état. Save (S) embed metadata JSON.
+- **Historique de navigation + reprise de session** (`gui/view_history.rs`,
+  logique pure testée ; `app.rs` = câblage). Entrée = snapshot
+  `FractalParams` complet ; « même vue » = `view_key` : params sérialisés
+  MOINS les clés des groupes de préférences (color/sampling/engine/
+  perturbation/channels, frontière de `params_for_type_keeping_preferences`)
+  et MOINS width/height/span_x(_hp)/iteration_max (fenêtre, sage des
+  itérations) → ces changements mettent l'entrée courante à jour EN PLACE.
+  Empilement : `observe` à chaque frame, vue empilée une fois stable
+  `SETTLE` = 600 ms hors geste (bouton maintenu, sélection, inertie,
+  `xaos_nav_dragging`) → une rafale de molette / un pan = UNE entrée ; rien
+  en mode preview Julia ; changement de scène (type, preset Lyapunov,
+  hybride, J, plan, PNG/TOML déposé, reset 0) → `on_new_scene` →
+  `commit` immédiat (fige d'abord la vue en attente). Naviguer après un
+  retour tronque l'avant ; borne 200. Restauration (`restore_params`) : même
+  scène (type + formule) ⇒ géométrie/itérations de l'entrée, préférences
+  COURANTES ; autre scène ⇒ entrée entière. Chaînes HP du centre intactes
+  octet pour octet (taille de fenêtre différente : `ViewHp::resize`). Le
+  rendu repart par `start_render` ; cache d'orbite gardé dans la même scène
+  (le moteur juge), vidé sinon ; XaoS non contourné ; `on_new_view` remet
+  à zéro `AutoGrowGuard` / shrink en attente. Redimensionner la fenêtre
+  n'empile rien (`refresh_current`). **Session** : `on_exit` écrit
+  historique + curseur + case Iter Auto + taille de fenêtre dans
+  `~/.config/fractall/gui-session.json` (override
+  `FRACTALL_GUI_SESSION_FILE`, écriture tmp + rename) ; relue au démarrage
+  (`main_gui.rs`), fichier corrompu/illisible ⇒ vue par défaut sans panique ;
+  `fractall-gui --fresh` l'ignore (et l'écrase à la sortie).
 
 ### Raccourcis clavier
 
@@ -1450,6 +1476,8 @@ puis OpenGL ; Windows DX12 / Vulkan.
 | +/= | Zoom avant (×1.5) |
 | - | Zoom arrière (×1.5) |
 | 0 | Reset vue (ignoré si focus sur champ itérations) |
+| Backspace / Alt+← | Vue précédente (historique ; bouton ◀) — inactif si un champ texte a le focus |
+| Alt+→ | Vue suivante (bouton ▶) |
 | Enter | Valider champ itérations |
 | Molette | Zoom in/out continu ANCRÉ au curseur (`zoom_anchored_hp`, ≈×1.2/cran) |
 | Clic gauche + drag | Sélection rectangle zoom |

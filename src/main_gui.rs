@@ -46,12 +46,31 @@ fn main() {
         default_hook(panic_info);
     }));
 
+    // Reprise de session : la vue (et l'historique) de la dernière fermeture,
+    // sauf `--fresh` (vue par défaut ; la session est réécrite à la sortie).
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("Usage: fractall-gui [--fresh]");
+        println!("  --fresh   ignore the saved session and start from the default view");
+        return;
+    }
+    let fresh = args.iter().any(|a| a == "--fresh");
+    let session = if fresh {
+        None
+    } else {
+        gui::view_history::session_file_path().and_then(|p| gui::view_history::load_session(&p))
+    };
+    let inner_size = session
+        .as_ref()
+        .and_then(|s| s.window_size)
+        .unwrap_or([800.0, 600.0]);
+
     // Configuration pour éviter les problèmes EGL sur NVIDIA
     // Utiliser l'accélération matérielle avec préférence GPU haute performance
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Fractall - Fractal viewer")
-            .with_inner_size([800.0, 600.0])
+            .with_inner_size(inner_size)
             .with_drag_and_drop(true),
         // Préférer l'accélération matérielle
         // Activer le rendu GPU
@@ -62,7 +81,7 @@ fn main() {
     if let Err(e) = eframe::run_native(
         "Fractall",
         options,
-        Box::new(|cc| Ok(Box::new(FractallApp::new(cc)))),
+        Box::new(move |cc| Ok(Box::new(FractallApp::with_session(cc, session)))),
     ) {
         eprintln!("Failed to launch the application: {}", e);
         std::process::exit(1);
