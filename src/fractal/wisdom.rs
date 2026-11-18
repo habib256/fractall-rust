@@ -48,9 +48,6 @@ pub use crate::fractal::wisdom_iter::{
     predicted_change, starting_iterations, AutoIterError, AutoIterOptions, AutoIterResult,
     IterationAdvice, IterationStats, IterationVerdict,
 };
-pub use crate::fractal::wisdom_nav::{
-    FrameCost, NavMode, NavModeDecision, NavModeState, NavPreference,
-};
 
 use crate::fractal::bytecode::harmonic_mla::{harmonic_variant, HarmonicVariant};
 use crate::fractal::perturbation::compress::compress_enabled;

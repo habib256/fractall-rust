@@ -1,17 +1,15 @@
-//! Branchement GUI des décisions du sage (`fractal::wisdom`) : mode de
-//! navigation (`wisdom_nav`) et itérations automatiques (`wisdom_iter`).
+//! Branchement GUI des décisions du sage (`fractal::wisdom`) : itérations
+//! automatiques (`wisdom_iter`).
 //!
 //! Logique PURE (aucune dépendance egui) : quelles mesures nourrir, quand une
 //! passe est éligible à l'évaluation des itérations, garde-fou anti-boucle des
-//! re-rendus automatiques, bascule différée du mode souris, avis de la barre
+//! re-rendus automatiques, avis de la barre
 //! d'état. `gui/app.rs` ne fait qu'exécuter ces décisions — les clics ne sont
 //! pas automatisables, d'où l'extraction testée ici.
 
 use std::time::{Duration, Instant};
 
-use crate::fractal::wisdom::{
-    assess_iterations, FrameCost, IterationStats, IterationVerdict, NavMode,
-};
+use crate::fractal::wisdom::{assess_iterations, IterationStats, IterationVerdict};
 
 /// Durée d'affichage d'un avis du sage dans la barre d'état.
 pub const NOTICE_DURATION: Duration = Duration::from_secs(6);
@@ -37,22 +35,6 @@ pub struct FinalPassInfo {
     pub approx_copies: bool,
     /// `iteration_max` auquel la passe a été rendue.
     pub iteration_cap: u32,
-}
-
-/// Mesure à fournir au sage de navigation pour un rendu terminé, `None` pour
-/// un écho pur (rien calculé). `elapsed_secs` = durée murale du rendu entier ;
-/// avec l'AA multi-sample, le rendu enchaîne `aa_samples` images plein cadre
-/// après les passes : on ramène la durée à UNE image.
-pub fn frame_cost(info: &FinalPassInfo, elapsed_secs: f64, aa_samples: u32) -> Option<FrameCost> {
-    if info.fresh_fraction <= 0.0 {
-        return None;
-    }
-    let frames = if aa_samples > 1 { aa_samples + 1 } else { 1 };
-    Some(FrameCost {
-        elapsed_secs: elapsed_secs / frames as f64,
-        divisor: info.divisor,
-        fresh_fraction: info.fresh_fraction,
-    })
 }
 
 /// La passe peut-elle juger le plafond d'itérations ? Seulement une passe
@@ -162,14 +144,6 @@ pub fn take_pending_shrink(pending: &mut Option<u32>, auto_active: bool, current
     pending.take().filter(|&n| auto_active && n < current_cap)
 }
 
-/// Bascule du mode souris : le mode décidé (`wanted`) ne remplace le mode
-/// appliqué qu'en dehors d'un geste (bouton maintenu, sélection, inertie) —
-/// un changement en plein geste attend le relâchement. `Some(mode)` = le mode
-/// à appliquer maintenant.
-pub fn nav_switch_now(applied: NavMode, wanted: NavMode, gesture_in_progress: bool) -> Option<NavMode> {
-    (applied != wanted && !gesture_in_progress).then_some(wanted)
-}
-
 /// Avis temporaire du sage dans la barre d'état (un seul à la fois : le
 /// suivant remplace le précédent).
 #[derive(Debug, Clone, Default)]
@@ -261,18 +235,6 @@ mod tests {
     }
 
     #[test]
-    fn frame_cost_skips_pure_echo_and_normalises_aa() {
-        let mut p = full_cpu(1000);
-        p.fresh_fraction = 0.0;
-        assert!(frame_cost(&p, 1.0, 1).is_none());
-        let p = FinalPassInfo { divisor: 2, fresh_fraction: 0.5, ..full_cpu(1000) };
-        let c = frame_cost(&p, 0.3, 1).unwrap();
-        assert_eq!((c.elapsed_secs, c.divisor, c.fresh_fraction), (0.3, 2, 0.5));
-        let c = frame_cost(&full_cpu(1000), 5.0, 4).unwrap();
-        assert!((c.elapsed_secs - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
     fn grow_is_capped_per_view_and_resets_on_view_change() {
         let mut g = AutoGrowGuard::default();
         for _ in 0..MAX_CONSECUTIVE_AUTO_GROWS {
@@ -348,14 +310,6 @@ mod tests {
         assert_eq!(p, None);
         let mut p = Some(500);
         assert_eq!(take_pending_shrink(&mut p, true, 400), None, "cap already lower");
-    }
-
-    #[test]
-    fn nav_switch_waits_for_gesture_end() {
-        use NavMode::*;
-        assert_eq!(nav_switch_now(Continuous, Stepped, true), None);
-        assert_eq!(nav_switch_now(Continuous, Stepped, false), Some(Stepped));
-        assert_eq!(nav_switch_now(Stepped, Stepped, false), None);
     }
 
     #[test]
