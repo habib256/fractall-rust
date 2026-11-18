@@ -1449,6 +1449,16 @@ puis OpenGL ; Windows DX12 / Vulkan.
   Clic gauche = zoom in re-centré sur le point ; clic droit = zoom out re-centré
   sur le curseur (symétrique).
 - Preview Julia au survol (touche `J` pour basculer).
+- **Barres (haut, état, progression)** : `horizontal_wrapped` + groupes
+  insécables `wrap_group` (largeur mémorisée de la frame précédente — un
+  `ui.horizontal` ne connaît sa largeur qu'après dessin et déborde sinon).
+  ⚠️ Une barre ne doit JAMAIS changer de hauteur avec l'état du rendu : la
+  zone image change de taille ⇒ redimensionnement ⇒ nouveau rendu ⇒ boucle
+  infinie (vécu 2026-11-18). D'où la barre de progression séparée tout en
+  bas (une ligne fixe) et la hauteur « collante » `sticky_bar_min/record`
+  (max par largeur de fenêtre). ⚠️ eframe est en `default-features = false` :
+  `clipboard` (copie sous Wayland), `system_fonts` et winit par défaut
+  (décorations adwaita : titre + croix sous Wayland) sont à garder.
 - Rendu haute résolution asynchrone (Window / 4K / 8K).
 - Drag-and-drop PNG pour restaurer l'état. Save (S) embed metadata JSON.
 - **Historique de navigation + reprise de session** (`gui/view_history.rs`,
@@ -1496,7 +1506,7 @@ puis OpenGL ; Windows DX12 / Vulkan.
 | Molette | Zoom in/out continu ANCRÉ au curseur (`zoom_anchored_hp`, ≈×1.2/cran) |
 | Clic gauche + drag | Sélection rectangle zoom |
 | Clic droit | Zoom arrière |
-| Clic milieu + drag | Pan |
+| Clic milieu + drag | Pan (jamais de zoom molette tant qu'il est maintenu) |
 
 +/=/-/0 désactivés en mode preview Julia.
 

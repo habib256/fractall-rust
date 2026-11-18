@@ -274,6 +274,15 @@ pub struct FractallApp {
     /// Bouton maintenu en cours (drag de navigation actif) : sélectionne la
     /// config de rendu « navigation » (passe unique) dans `start_render_with`.
     xaos_nav_dragging: bool,
+    /// Pan au bouton du MILIEU maintenu (commencé sur l'image) : la vue suit
+    /// la souris sans zoomer, rendus de navigation enchaînés, rendu pleine
+    /// résolution au relâchement.
+    middle_pan_active: bool,
+    /// Hauteur MAXIMALE vue de chaque barre (haut, état, progression) pour la largeur de
+    /// fenêtre courante : `(largeur, hauteur)`. Une barre qui passe à la
+    /// ligne puis revient (texte « Computing… » pendant le rendu) changerait
+    /// la taille de l'image, donc relancerait le rendu, à l'infini.
+    bar_heights: [(f32, f32); 3],
     /// Machine à états de la navigation continue (vitesse, ancrage, cadence).
     /// Logique PURE et testée dans `gui::nav` — cf. son en-tête pour le pourquoi.
     nav: nav::NavState,
@@ -363,6 +372,46 @@ struct JuliaPreviewMessage {
     height: u32,
     seed: Complex64,
     version: u64,
+}
+
+
+/// Groupe insécable d'une barre `horizontal_wrapped` : passe à la ligne
+/// AVANT d'être dessiné s'il ne tient plus. egui ne connaît la largeur d'un
+/// `ui.horizontal` qu'après l'avoir dessiné (une seule passe), et un groupe
+/// trop large déborde au lieu de passer à la ligne : on mémorise donc sa
+/// largeur de la frame précédente.
+fn wrap_group<R>(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let id = ui.scope_id().with(id_salt);
+    let last_width: Option<f32> = ui.ctx().data(|d| d.get_temp(id));
+    let at_row_start = ui.cursor().min.x <= ui.max_rect().min.x + 1.0;
+    if let Some(width) = last_width {
+        if !at_row_start && width > ui.available_size_before_wrap().x {
+            ui.end_row();
+        }
+    }
+    let response = ui.horizontal(add_contents);
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(id, response.response.rect.width()));
+    response.inner
+}
+
+
+/// Hauteur minimale d'une barre : la plus grande déjà vue pour cette largeur
+/// de fenêtre (remise à zéro quand la largeur change).
+fn sticky_bar_min(slot: &mut (f32, f32), window_width: f32) -> f32 {
+    if (slot.0 - window_width).abs() > 0.5 {
+        *slot = (window_width, 0.0);
+    }
+    slot.1
+}
+
+/// Retient la hauteur rendue d'une barre (maximum pour la largeur courante).
+fn sticky_bar_record(slot: &mut (f32, f32), height: f32) {
+    slot.1 = slot.1.max(height);
 }
 
 impl FractallApp {
@@ -491,6 +540,8 @@ impl FractallApp {
             sage_notice: Default::default(),
             xaos_nav_last_tick: None,
             xaos_nav_dragging: false,
+            middle_pan_active: false,
+            bar_heights: [(0.0, 0.0); 3],
             nav: nav::NavState::new(),
             xaos_nav_settle: false,
             rendering_divisor: 1,
@@ -2797,173 +2848,82 @@ impl eframe::App for FractallApp {
         });
 
         // Panneau de contrôle en haut
-        egui::Panel::top("controls").show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    // Historique de navigation (◀ retour, ▶ avance).
-                    if ui
-                        .add_enabled(self.history.can_back(), egui::Button::new("◀"))
-                        .on_hover_text("Back to the previous view (Backspace or Alt+←)")
-                        .clicked()
-                    {
-                        self.navigate_history(false);
-                    }
-                    if ui
-                        .add_enabled(self.history.can_forward(), egui::Button::new("▶"))
-                        .on_hover_text("Forward to the next view (Alt+→)")
-                        .clicked()
-                    {
-                        self.navigate_history(true);
-                    }
-                    ui.separator();
+        let window_width = ctx.viewport_rect().width();
+        let top_min = sticky_bar_min(&mut self.bar_heights[0], window_width);
+        let top_response = egui::Panel::top("controls").min_size(top_min).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
 
                     // Menu Type (toutes catégories)
-                    ui.label("Type:");
+                    wrap_group(ui, "bar_group_2827", |ui| {
+                        ui.label("Type:");
 
-                    // Menu Type : Mandelbrots à la racine, Julias dans un dossier
-                    let density_types = [(16, "Buddhabrot"), (24, "Nebulabrot"), (33, "Anti-Buddhabrot")];
+                        // Menu Type : Mandelbrots à la racine, Julias dans un dossier
+                        let density_types = [(16, "Buddhabrot"), (24, "Nebulabrot"), (33, "Anti-Buddhabrot")];
 
-                    let current_category = self.selected_type.menu_family();
-                    let current_label = match self.selected_type {
-                        FractalType::Lyapunov => self.selected_lyapunov_preset.name(),
-                        _ => self.selected_type.name(),
-                    };
+                        let current_category = self.selected_type.menu_family();
+                        let current_label = match self.selected_type {
+                            FractalType::Lyapunov => self.selected_lyapunov_preset.name(),
+                            _ => self.selected_type.name(),
+                        };
 
-                    let type_menu_label = if let Some(seq) =
-                        self.params.formula.hybrid_phases.as_ref().filter(|s| !s.is_empty())
-                    {
-                        format!("⏷ Hybrid: {}", Self::hybrid_seq_label(seq))
-                    } else if current_category == current_label {
-                        format!("⏷ {}", current_label)
-                    } else {
-                        format!("⏷ {}: {}", current_category, current_label)
-                    };
-                    ui.menu_button(&type_menu_label, |ui| {
-                        // Nova tout en haut
-                        if let Some(fractal_type) = FractalType::from_id(22) {
-                            if ui.selectable_label(self.selected_type == fractal_type, "Nova").clicked() {
-                                self.change_fractal_type(fractal_type);
-                                ui.close();
-                            }
-                        }
-
-                        // Lyapunov et Densité
-                        ui.menu_button("Lyapunov", |ui| {
-                            for preset in LyapunovPreset::all() {
-                                let is_selected = self.selected_type == FractalType::Lyapunov
-                                    && self.selected_lyapunov_preset == *preset;
-                                if ui.selectable_label(is_selected, preset.name()).clicked() {
-                                    self.change_lyapunov_preset(*preset);
-                                    ui.close();
-                                }
-                            }
-                        });
-
-                        ui.menu_button("Density", |ui| {
-                            for (id, label) in density_types.iter() {
-                                if let Some(fractal_type) = FractalType::from_id(*id) {
-                                    if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
-                                        self.change_fractal_type(fractal_type);
-                                        ui.close();
-                                    }
-                                }
-                            }
-                        });
-
-                        ui.separator();
-
-                        // Mandelbrots à la racine (pas de dossiers)
-                        let mandelbrot_types = [
-                            (3, "Mandelbrot"),
-                            (10, "Barnsley Mandelbrot"),
-                            (12, "Magnet Mandelbrot"),
-                            (13, "Burning Ship"),
-                            (18, "Perp. Burning Ship"),
-                            (14, "Tricorn"),
-                            (19, "Celtic"),
-                            (8, "Buffalo"),
-                            (23, "Multibrot"),
-                            (20, "Alpha Mandelbrot"),
-                            (32, "Mandelbrot Sin"),
-                        ];
-                        for (id, label) in mandelbrot_types.iter() {
-                            if let Some(fractal_type) = FractalType::from_id(*id) {
-                                if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
+                        let type_menu_label = if let Some(seq) =
+                            self.params.formula.hybrid_phases.as_ref().filter(|s| !s.is_empty())
+                        {
+                            format!("⏷ Hybrid: {}", Self::hybrid_seq_label(seq))
+                        } else if current_category == current_label {
+                            format!("⏷ {}", current_label)
+                        } else {
+                            format!("⏷ {}: {}", current_category, current_label)
+                        };
+                        ui.menu_button(&type_menu_label, |ui| {
+                            // Nova tout en haut
+                            if let Some(fractal_type) = FractalType::from_id(22) {
+                                if ui.selectable_label(self.selected_type == fractal_type, "Nova").clicked() {
                                     self.change_fractal_type(fractal_type);
                                     ui.close();
                                 }
                             }
-                        }
 
-                        // G4 jalon 5c : éditeur de séquence hybride multi-phase
-                        // (phases itérées cycliquement, CLI `--phases`).
-                        ui.menu_button("Hybrid (sequence)", |ui| {
-                            let seq_label = if self.hybrid_seq.is_empty() {
-                                "—".to_string()
-                            } else {
-                                Self::hybrid_seq_label(&self.hybrid_seq)
-                            };
-                            ui.label(format!("Sequence: {seq_label}"));
-                            ui.separator();
-                            let eligible: [(FractalType, &str); 7] = [
-                                (FractalType::Mandelbrot, "Mandelbrot"),
-                                (FractalType::BurningShip, "Burning Ship"),
-                                (FractalType::Tricorn, "Tricorn"),
-                                (FractalType::Celtic, "Celtic"),
-                                (FractalType::Buffalo, "Buffalo"),
-                                (FractalType::PerpendicularBurningShip, "Perp. Burning Ship"),
-                                (FractalType::Multibrot, "Multibrot"),
-                            ];
-                            for (t, name) in eligible.iter() {
-                                if ui.button(format!("➕ {name}")).clicked() {
-                                    self.hybrid_seq.push(*t);
-                                }
-                            }
-                            ui.separator();
-                            ui.horizontal(|ui| {
-                                if ui.button("⌫ Remove last").clicked() {
-                                    self.hybrid_seq.pop();
-                                }
-                                if ui.button("🗑 Clear").clicked() {
-                                    self.hybrid_seq.clear();
+                            // Lyapunov et Densité
+                            ui.menu_button("Lyapunov", |ui| {
+                                for preset in LyapunovPreset::all() {
+                                    let is_selected = self.selected_type == FractalType::Lyapunov
+                                        && self.selected_lyapunov_preset == *preset;
+                                    if ui.selectable_label(is_selected, preset.name()).clicked() {
+                                        self.change_lyapunov_preset(*preset);
+                                        ui.close();
+                                    }
                                 }
                             });
-                            ui.separator();
-                            let can_apply = self.hybrid_seq.len() >= 2;
-                            if ui
-                                .add_enabled(can_apply, egui::Button::new("▶ Apply (render)"))
-                                .clicked()
-                            {
-                                self.apply_hybrid_sequence();
-                                ui.close();
-                            }
-                            if !can_apply {
-                                ui.small("≥ 2 phases required");
-                            }
-                            if self.params.formula.hybrid_phases.is_some()
-                                && ui.button("✖ Disable (Mandelbrot)").clicked()
-                            {
-                                self.hybrid_seq.clear();
-                                self.change_fractal_type(FractalType::Mandelbrot);
-                                ui.close();
-                            }
-                        });
 
-                        // Dossier Julia all juste après Alpha Mandelbrot
-                        ui.menu_button("Julia all", |ui| {
-                            let julia_types = [
-                                (4, "Julia"),
-                                (9, "Barnsley Julia"),
-                                (11, "Magnet Julia"),
-                                (25, "Burning Ship Julia"),
-                                (30, "Perpendicular Burning Ship Julia"),
-                                (26, "Tricorn Julia"),
-                                (27, "Celtic Julia"),
-                                (28, "Buffalo Julia"),
-                                (29, "Multibrot Julia"),
-                                (31, "Alpha Mandelbrot Julia"),
-                                (5, "Julia Sin"),
+                            ui.menu_button("Density", |ui| {
+                                for (id, label) in density_types.iter() {
+                                    if let Some(fractal_type) = FractalType::from_id(*id) {
+                                        if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
+                                            self.change_fractal_type(fractal_type);
+                                            ui.close();
+                                        }
+                                    }
+                                }
+                            });
+
+                            ui.separator();
+
+                            // Mandelbrots à la racine (pas de dossiers)
+                            let mandelbrot_types = [
+                                (3, "Mandelbrot"),
+                                (10, "Barnsley Mandelbrot"),
+                                (12, "Magnet Mandelbrot"),
+                                (13, "Burning Ship"),
+                                (18, "Perp. Burning Ship"),
+                                (14, "Tricorn"),
+                                (19, "Celtic"),
+                                (8, "Buffalo"),
+                                (23, "Multibrot"),
+                                (20, "Alpha Mandelbrot"),
+                                (32, "Mandelbrot Sin"),
                             ];
-                            for (id, label) in julia_types.iter() {
+                            for (id, label) in mandelbrot_types.iter() {
                                 if let Some(fractal_type) = FractalType::from_id(*id) {
                                     if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
                                         self.change_fractal_type(fractal_type);
@@ -2971,32 +2931,111 @@ impl eframe::App for FractallApp {
                                     }
                                 }
                             }
-                        });
 
-                        ui.separator();
+                            // G4 jalon 5c : éditeur de séquence hybride multi-phase
+                            // (phases itérées cycliquement, CLI `--phases`).
+                            ui.menu_button("Hybrid (sequence)", |ui| {
+                                let seq_label = if self.hybrid_seq.is_empty() {
+                                    "—".to_string()
+                                } else {
+                                    Self::hybrid_seq_label(&self.hybrid_seq)
+                                };
+                                ui.label(format!("Sequence: {seq_label}"));
+                                ui.separator();
+                                let eligible: [(FractalType, &str); 7] = [
+                                    (FractalType::Mandelbrot, "Mandelbrot"),
+                                    (FractalType::BurningShip, "Burning Ship"),
+                                    (FractalType::Tricorn, "Tricorn"),
+                                    (FractalType::Celtic, "Celtic"),
+                                    (FractalType::Buffalo, "Buffalo"),
+                                    (FractalType::PerpendicularBurningShip, "Perp. Burning Ship"),
+                                    (FractalType::Multibrot, "Multibrot"),
+                                ];
+                                for (t, name) in eligible.iter() {
+                                    if ui.button(format!("➕ {name}")).clicked() {
+                                        self.hybrid_seq.push(*t);
+                                    }
+                                }
+                                ui.separator();
+                                ui.horizontal(|ui| {
+                                    if ui.button("⌫ Remove last").clicked() {
+                                        self.hybrid_seq.pop();
+                                    }
+                                    if ui.button("🗑 Clear").clicked() {
+                                        self.hybrid_seq.clear();
+                                    }
+                                });
+                                ui.separator();
+                                let can_apply = self.hybrid_seq.len() >= 2;
+                                if ui
+                                    .add_enabled(can_apply, egui::Button::new("▶ Apply (render)"))
+                                    .clicked()
+                                {
+                                    self.apply_hybrid_sequence();
+                                    ui.close();
+                                }
+                                if !can_apply {
+                                    ui.small("≥ 2 phases required");
+                                }
+                                if self.params.formula.hybrid_phases.is_some()
+                                    && ui.button("✖ Disable (Mandelbrot)").clicked()
+                                {
+                                    self.hybrid_seq.clear();
+                                    self.change_fractal_type(FractalType::Mandelbrot);
+                                    ui.close();
+                                }
+                            });
 
-                        // Mandelbulb à la racine
-                        if let Some(fractal_type) = FractalType::from_id(15) {
-                            if ui.selectable_label(self.selected_type == fractal_type, "Mandelbulb").clicked() {
-                                self.change_fractal_type(fractal_type);
-                                ui.close();
-                            }
-                        }
+                            // Dossier Julia all juste après Alpha Mandelbrot
+                            ui.menu_button("Julia all", |ui| {
+                                let julia_types = [
+                                    (4, "Julia"),
+                                    (9, "Barnsley Julia"),
+                                    (11, "Magnet Julia"),
+                                    (25, "Burning Ship Julia"),
+                                    (30, "Perpendicular Burning Ship Julia"),
+                                    (26, "Tricorn Julia"),
+                                    (27, "Celtic Julia"),
+                                    (28, "Buffalo Julia"),
+                                    (29, "Multibrot Julia"),
+                                    (31, "Alpha Mandelbrot Julia"),
+                                    (5, "Julia Sin"),
+                                ];
+                                for (id, label) in julia_types.iter() {
+                                    if let Some(fractal_type) = FractalType::from_id(*id) {
+                                        if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
+                                            self.change_fractal_type(fractal_type);
+                                            ui.close();
+                                        }
+                                    }
+                                }
+                            });
 
-                        let autres_types = [
-                            (6, "Newton"),
-                            (7, "Phoenix"),
-                            (21, "Pickover Stalks"),
-                        ];
-                        for (id, label) in autres_types.iter() {
-                            if let Some(fractal_type) = FractalType::from_id(*id) {
-                                if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
+                            ui.separator();
+
+                            // Mandelbulb à la racine
+                            if let Some(fractal_type) = FractalType::from_id(15) {
+                                if ui.selectable_label(self.selected_type == fractal_type, "Mandelbulb").clicked() {
                                     self.change_fractal_type(fractal_type);
                                     ui.close();
                                 }
                             }
-                        }
 
+                            let autres_types = [
+                                (6, "Newton"),
+                                (7, "Phoenix"),
+                                (21, "Pickover Stalks"),
+                            ];
+                            for (id, label) in autres_types.iter() {
+                                if let Some(fractal_type) = FractalType::from_id(*id) {
+                                    if ui.selectable_label(self.selected_type == fractal_type, *label).clicked() {
+                                        self.change_fractal_type(fractal_type);
+                                        ui.close();
+                                    }
+                                }
+                            }
+
+                        });
                     });
 
                     ui.separator();
@@ -3008,32 +3047,33 @@ impl eframe::App for FractallApp {
                     );
                     
                     if is_escape_time {
-                        ui.label("Plane:");
-                        let old_plane = self.params.plane_transform;
-                        egui::ComboBox::from_id_salt("plane_transform")
-                            .selected_text(self.params.plane_transform.name())
-                            .show_ui(ui, |ui| {
-                                for plane in PlaneTransform::all() {
-                                    ui.selectable_value(&mut self.params.plane_transform, *plane, plane.name());
+                        wrap_group(ui, "bar_group_3020", |ui| {
+                            ui.label("Plane:");
+                            let old_plane = self.params.plane_transform;
+                            egui::ComboBox::from_id_salt("plane_transform")
+                                .selected_text(self.params.plane_transform.name())
+                                .show_ui(ui, |ui| {
+                                    for plane in PlaneTransform::all() {
+                                        ui.selectable_value(&mut self.params.plane_transform, *plane, plane.name());
+                                    }
+                                });
+                            if old_plane != self.params.plane_transform {
+                                self.orbit_cache = None;
+                                self.on_new_scene();
+                                if self.params.plane_transform != PlaneTransform::Mu
+                                    && self.params.engine.algorithm_mode == AlgorithmMode::Perturbation
+                                {
+                                    self.params.engine.algorithm_mode = AlgorithmMode::Auto;
                                 }
-                            });
-                        if old_plane != self.params.plane_transform {
-                            self.orbit_cache = None;
-                            self.on_new_scene();
-                            if self.params.plane_transform != PlaneTransform::Mu
-                                && self.params.engine.algorithm_mode == AlgorithmMode::Perturbation
-                            {
-                                self.params.engine.algorithm_mode = AlgorithmMode::Auto;
+                                self.start_render();
                             }
-                            self.start_render();
-                        }
+                        });
                     }
 
                     ui.separator();
 
                     // Checkbox Julia mode (pour les types Mandelbrot-like avec variante Julia)
                     if self.selected_type.has_julia_variant() {
-                        ui.separator();
                         let old_enabled = self.julia_preview_enabled;
                         ui.checkbox(&mut self.julia_preview_enabled, "Julia");
                         if old_enabled && !self.julia_preview_enabled {
@@ -3062,58 +3102,60 @@ impl eframe::App for FractallApp {
 
                     ui.separator();
 
-                    ui.label("Iter:");
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut self.iteration_input)
-                            .desired_width(60.0)
-                    );
-                    self.iteration_input_has_focus = response.has_focus();
-                    // Itérations automatiques (sage) : grisées pour les types
-                    // sans plafond « escape-time » (densité, Lyapunov, Newton…).
-                    let auto_applicable =
-                        crate::fractal::wisdom::auto_iterations_applicable(&self.params);
-                    let mut auto_shown = self.iter_auto && auto_applicable;
-                    let auto_response = ui
-                        .add_enabled(auto_applicable, egui::Checkbox::new(&mut auto_shown, "Auto"))
-                        .on_hover_text(
-                            "fractall adjusts the iteration limit to the view; type a number \
-                             to set it yourself.",
-                        )
-                        .on_disabled_hover_text(
-                            "Automatic iterations do not apply to this fractal type: \
-                             the limit is set by hand.",
+                    wrap_group(ui, "bar_group_3075", |ui| {
+                        ui.label("Iter:");
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut self.iteration_input)
+                                .desired_width(60.0)
                         );
-                    if auto_response.changed() {
-                        self.iter_auto = auto_shown;
-                        self.pending_iter_shrink = None;
-                        if self.iter_auto {
-                            // Réactivation : réévaluer la dernière image terminée
-                            // (un rendu en cours sera évalué à sa fin).
-                            self.auto_grow_guard.reset();
-                            if !self.rendering {
-                                if let Some((info, iterations)) = self.last_final_pass.clone() {
-                                    self.assess_final_pass(&info, &iterations);
+                        self.iteration_input_has_focus = response.has_focus();
+                        // Itérations automatiques (sage) : grisées pour les types
+                        // sans plafond « escape-time » (densité, Lyapunov, Newton…).
+                        let auto_applicable =
+                            crate::fractal::wisdom::auto_iterations_applicable(&self.params);
+                        let mut auto_shown = self.iter_auto && auto_applicable;
+                        let auto_response = ui
+                            .add_enabled(auto_applicable, egui::Checkbox::new(&mut auto_shown, "Auto"))
+                            .on_hover_text(
+                                "fractall adjusts the iteration limit to the view; type a number \
+                                 to set it yourself.",
+                            )
+                            .on_disabled_hover_text(
+                                "Automatic iterations do not apply to this fractal type: \
+                                 the limit is set by hand.",
+                            );
+                        if auto_response.changed() {
+                            self.iter_auto = auto_shown;
+                            self.pending_iter_shrink = None;
+                            if self.iter_auto {
+                                // Réactivation : réévaluer la dernière image terminée
+                                // (un rendu en cours sera évalué à sa fin).
+                                self.auto_grow_guard.reset();
+                                if !self.rendering {
+                                    if let Some((info, iterations)) = self.last_final_pass.clone() {
+                                        self.assess_final_pass(&info, &iterations);
+                                    }
                                 }
                             }
                         }
-                    }
-                    // Appliquer la valeur à la perte de focus ou sur Entrée
-                    if response.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        if let Ok(val) = self.iteration_input.trim().parse::<u32>() {
-                            let val = val.max(1);
-                            if val != self.params.iteration_max {
-                                // Valeur choisie par l'utilisateur : respectée.
-                                self.iter_auto = false;
-                                self.pending_iter_shrink = None;
-                                self.params.iteration_max = val;
-                                self.iteration_input = val.to_string();
-                                self.orbit_cache = None;
-                                self.start_render();
+                        // Appliquer la valeur à la perte de focus ou sur Entrée
+                        if response.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            if let Ok(val) = self.iteration_input.trim().parse::<u32>() {
+                                let val = val.max(1);
+                                if val != self.params.iteration_max {
+                                    // Valeur choisie par l'utilisateur : respectée.
+                                    self.iter_auto = false;
+                                    self.pending_iter_shrink = None;
+                                    self.params.iteration_max = val;
+                                    self.iteration_input = val.to_string();
+                                    self.orbit_cache = None;
+                                    self.start_render();
+                                }
+                            } else {
+                                self.iteration_input = self.params.iteration_max.to_string();
                             }
-                        } else {
-                            self.iteration_input = self.params.iteration_max.to_string();
                         }
-                    }
+                    });
 
                     ui.separator();
 
@@ -3125,97 +3167,70 @@ impl eframe::App for FractallApp {
                     let is_lyapunov = self.selected_type == FractalType::Lyapunov;
 
                     if supports_advanced_modes || is_lyapunov {
-                        ui.label("Tech:");
-                        let gpu_available = self.gpu_renderer.is_some();
-                        let old_use_gpu = self.use_gpu;
                         let old_mode = self.params.engine.algorithm_mode;
+                        let old_use_gpu = self.use_gpu;
+                        wrap_group(ui, "bar_group_3142", |ui| {
+                            ui.label("Tech:");
+                            let gpu_available = self.gpu_renderer.is_some();
 
-                        let render_text = if is_lyapunov {
-                            match self.params.engine.algorithm_mode {
-                                AlgorithmMode::Auto => "🔄 Auto".to_string(),
-                                AlgorithmMode::StandardF64 => "💻 CPU Standard f64".to_string(),
-                                _ => "🔄 Auto".to_string(),
-                            }
-                        } else {
-                            match (self.use_gpu && gpu_available, self.params.engine.algorithm_mode) {
-                                (_, AlgorithmMode::Auto) => "🔄 Auto".to_string(),
-                                (false, AlgorithmMode::StandardF64) => "💻 CPU Standard f64".to_string(),
-                                (false, AlgorithmMode::Perturbation) => "💻 CPU Perturbation f64".to_string(),
-                                (false, AlgorithmMode::ReferenceGmp) => "💻 CPU GMP Reference".to_string(),
-                                (true, AlgorithmMode::StandardF64) => "🎮 GPU Standard f32".to_string(),
-                                (true, AlgorithmMode::Perturbation) => "🎮 GPU Perturbation f32".to_string(),
-                                (true, AlgorithmMode::ReferenceGmp) => "🔄 Auto".to_string(),
-                            }
-                        };
-
-                        ui.menu_button(&render_text, |ui| {
-                            if ui.selectable_label(
-                                self.params.engine.algorithm_mode == AlgorithmMode::Auto,
-                                "🔄 Auto"
-                            ).clicked() {
-                                self.params.engine.algorithm_mode = AlgorithmMode::Auto;
-                                if is_lyapunov {
-                                    self.use_gpu = false;
-                                }
-                                ui.close();
-                            }
-
-                            if is_lyapunov {
-                                if ui.selectable_label(
-                                    !self.use_gpu && self.params.engine.algorithm_mode == AlgorithmMode::StandardF64,
-                                    "💻 CPU Standard f64"
-                                ).clicked() {
-                                    self.use_gpu = false;
-                                    self.params.engine.algorithm_mode = AlgorithmMode::StandardF64;
-                                    ui.close();
+                            let render_text = if is_lyapunov {
+                                match self.params.engine.algorithm_mode {
+                                    AlgorithmMode::Auto => "🔄 Auto".to_string(),
+                                    AlgorithmMode::StandardF64 => "💻 CPU Standard f64".to_string(),
+                                    _ => "🔄 Auto".to_string(),
                                 }
                             } else {
-                                ui.separator();
+                                match (self.use_gpu && gpu_available, self.params.engine.algorithm_mode) {
+                                    (_, AlgorithmMode::Auto) => "🔄 Auto".to_string(),
+                                    (false, AlgorithmMode::StandardF64) => "💻 CPU Standard f64".to_string(),
+                                    (false, AlgorithmMode::Perturbation) => "💻 CPU Perturbation f64".to_string(),
+                                    (false, AlgorithmMode::ReferenceGmp) => "💻 CPU GMP Reference".to_string(),
+                                    (true, AlgorithmMode::StandardF64) => "🎮 GPU Standard f32".to_string(),
+                                    (true, AlgorithmMode::Perturbation) => "🎮 GPU Perturbation f32".to_string(),
+                                    (true, AlgorithmMode::ReferenceGmp) => "🔄 Auto".to_string(),
+                                }
+                            };
 
-                                ui.menu_button("💻 CPU", |ui| {
+                            ui.menu_button(&render_text, |ui| {
+                                if ui.selectable_label(
+                                    self.params.engine.algorithm_mode == AlgorithmMode::Auto,
+                                    "🔄 Auto"
+                                ).clicked() {
+                                    self.params.engine.algorithm_mode = AlgorithmMode::Auto;
+                                    if is_lyapunov {
+                                        self.use_gpu = false;
+                                    }
+                                    ui.close();
+                                }
+
+                                if is_lyapunov {
                                     if ui.selectable_label(
                                         !self.use_gpu && self.params.engine.algorithm_mode == AlgorithmMode::StandardF64,
-                                        "📊 Standard f64"
+                                        "💻 CPU Standard f64"
                                     ).clicked() {
                                         self.use_gpu = false;
                                         self.params.engine.algorithm_mode = AlgorithmMode::StandardF64;
                                         ui.close();
                                     }
+                                } else {
+                                    ui.separator();
 
-                                    if ui.selectable_label(
-                                        !self.use_gpu && self.params.engine.algorithm_mode == AlgorithmMode::ReferenceGmp,
-                                        "🔢 GMP Reference"
-                                    ).clicked() {
-                                        self.use_gpu = false;
-                                        self.params.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
-                                        ui.close();
-                                    }
-
-                                    let plane_ok = self.params.plane_transform == PlaneTransform::Mu;
-                                    if ui
-                                        .add_enabled(
-                                            plane_ok,
-                                            egui::Button::selectable(
-                                                !self.use_gpu && self.params.engine.algorithm_mode == AlgorithmMode::Perturbation,
-                                                "🔬 Perturbation f64",
-                                            ),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.use_gpu = false;
-                                        self.params.engine.algorithm_mode = AlgorithmMode::Perturbation;
-                                        ui.close();
-                                    }
-                                });
-
-                                if gpu_available {
-                                    ui.menu_button("🎮 GPU", |ui| {
+                                    ui.menu_button("💻 CPU", |ui| {
                                         if ui.selectable_label(
-                                            self.use_gpu && self.params.engine.algorithm_mode == AlgorithmMode::StandardF64,
-                                            "⚡ Standard f32"
+                                            !self.use_gpu && self.params.engine.algorithm_mode == AlgorithmMode::StandardF64,
+                                            "📊 Standard f64"
                                         ).clicked() {
-                                            self.use_gpu = true;
+                                            self.use_gpu = false;
                                             self.params.engine.algorithm_mode = AlgorithmMode::StandardF64;
+                                            ui.close();
+                                        }
+
+                                        if ui.selectable_label(
+                                            !self.use_gpu && self.params.engine.algorithm_mode == AlgorithmMode::ReferenceGmp,
+                                            "🔢 GMP Reference"
+                                        ).clicked() {
+                                            self.use_gpu = false;
+                                            self.params.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
                                             ui.close();
                                         }
 
@@ -3224,21 +3239,50 @@ impl eframe::App for FractallApp {
                                             .add_enabled(
                                                 plane_ok,
                                                 egui::Button::selectable(
-                                                    self.use_gpu && self.params.engine.algorithm_mode == AlgorithmMode::Perturbation,
-                                                    "🚀 Perturbation f32",
+                                                    !self.use_gpu && self.params.engine.algorithm_mode == AlgorithmMode::Perturbation,
+                                                    "🔬 Perturbation f64",
                                                 ),
                                             )
                                             .clicked()
                                         {
-                                            self.use_gpu = true;
+                                            self.use_gpu = false;
                                             self.params.engine.algorithm_mode = AlgorithmMode::Perturbation;
                                             ui.close();
                                         }
                                     });
-                                } else {
-                                    ui.add_enabled(false, egui::Label::new("🎮 GPU (unavailable)"));
+
+                                    if gpu_available {
+                                        ui.menu_button("🎮 GPU", |ui| {
+                                            if ui.selectable_label(
+                                                self.use_gpu && self.params.engine.algorithm_mode == AlgorithmMode::StandardF64,
+                                                "⚡ Standard f32"
+                                            ).clicked() {
+                                                self.use_gpu = true;
+                                                self.params.engine.algorithm_mode = AlgorithmMode::StandardF64;
+                                                ui.close();
+                                            }
+
+                                            let plane_ok = self.params.plane_transform == PlaneTransform::Mu;
+                                            if ui
+                                                .add_enabled(
+                                                    plane_ok,
+                                                    egui::Button::selectable(
+                                                        self.use_gpu && self.params.engine.algorithm_mode == AlgorithmMode::Perturbation,
+                                                        "🚀 Perturbation f32",
+                                                    ),
+                                                )
+                                                .clicked()
+                                            {
+                                                self.use_gpu = true;
+                                                self.params.engine.algorithm_mode = AlgorithmMode::Perturbation;
+                                                ui.close();
+                                            }
+                                        });
+                                    } else {
+                                        ui.add_enabled(false, egui::Label::new("🎮 GPU (unavailable)"));
+                                    }
                                 }
-                            }
+                            });
                         });
 
                         if supports_advanced_modes {
@@ -3269,55 +3313,77 @@ impl eframe::App for FractallApp {
                     if ui.button("🎬 Render").clicked() {
                         self.show_render_dialog = true;
                     }
+                    ui.separator();
+                    // Historique de navigation (◀ retour, ▶ avance).
+                    wrap_group(ui, "bar_group_2808", |ui| {
+                        if ui
+                            .add_enabled(self.history.can_back(), egui::Button::new("◀"))
+                            .on_hover_text("Back to the previous view (Backspace or Alt+←)")
+                            .clicked()
+                        {
+                            self.navigate_history(false);
+                        }
+                        if ui
+                            .add_enabled(self.history.can_forward(), egui::Button::new("▶"))
+                            .on_hover_text("Forward to the next view (Alt+→)")
+                            .clicked()
+                        {
+                            self.navigate_history(true);
+                        }
+                    });
                 });
                 
                 ui.separator();
                 
-                ui.horizontal(|ui| {
-                    ui.label("Palette:");
-                    if ui.button("<").clicked() {
-                        self.palette_index = if self.palette_index == 0 { 26 } else { self.palette_index - 1 };
-                        self.params.color.color_mode = self.palette_index;
-                        if !self.iterations.is_empty() {
-                            self.update_texture(ctx);
+                ui.horizontal_wrapped(|ui| {
+                    wrap_group(ui, "bar_group_3291", |ui| {
+                        ui.label("Palette:");
+                        if ui.button("<").clicked() {
+                            self.palette_index = if self.palette_index == 0 { 26 } else { self.palette_index - 1 };
+                            self.params.color.color_mode = self.palette_index;
+                            if !self.iterations.is_empty() {
+                                self.update_texture(ctx);
+                            }
                         }
-                    }
                     
-                    // Afficher la prévisualisation de la palette
-                    let palette_idx = self.palette_index as usize;
-                    if self.palette_preview_textures[palette_idx].is_none() {
-                        let preview_image = generate_palette_preview(self.palette_index, 100, 12, self.params.color.color_space);
-                        self.palette_preview_textures[palette_idx] = Some(ctx.load_texture(
-                            format!("palette_preview_{}", self.palette_index),
-                            preview_image,
-                            egui::TextureOptions::LINEAR
-                        ));
-                    }
-                    
-                    if let Some(ref palette_texture) = self.palette_preview_textures[palette_idx] {
-                        ui.add(egui::Image::new(palette_texture)
-                            .fit_to_exact_size(egui::Vec2::new(100.0, 12.0)));
-                    }
-                    
-                    if ui.button(">").clicked() {
-                        self.palette_index = (self.palette_index + 1) % 27; // 13 palettes maintenant (0-12)
-                        self.params.color.color_mode = self.palette_index;
-                        if !self.iterations.is_empty() {
-                            self.update_texture(ctx);
+                        // Afficher la prévisualisation de la palette
+                        let palette_idx = self.palette_index as usize;
+                        if self.palette_preview_textures[palette_idx].is_none() {
+                            let preview_image = generate_palette_preview(self.palette_index, 100, 12, self.params.color.color_space);
+                            self.palette_preview_textures[palette_idx] = Some(ctx.load_texture(
+                                format!("palette_preview_{}", self.palette_index),
+                                preview_image,
+                                egui::TextureOptions::LINEAR
+                            ));
                         }
-                    }
+                    
+                        if let Some(ref palette_texture) = self.palette_preview_textures[palette_idx] {
+                            ui.add(egui::Image::new(palette_texture)
+                                .fit_to_exact_size(egui::Vec2::new(100.0, 12.0)));
+                        }
+                    
+                        if ui.button(">").clicked() {
+                            self.palette_index = (self.palette_index + 1) % 27; // 13 palettes maintenant (0-12)
+                            self.params.color.color_mode = self.palette_index;
+                            if !self.iterations.is_empty() {
+                                self.update_texture(ctx);
+                            }
+                        }
+                    });
                     
                     ui.separator();
 
-                    ui.label("Outcoloring:");
                     let old_out_mode = self.out_coloring_mode;
-                    egui::ComboBox::from_id_salt("outcoloring_mode")
-                        .selected_text(self.out_coloring_mode.name())
-                        .show_ui(ui, |ui| {
-                            for mode in OutColoringMode::menu_modes() {
-                                ui.selectable_value(&mut self.out_coloring_mode, *mode, mode.name());
-                            }
-                        });
+                    wrap_group(ui, "bar_group_3329", |ui| {
+                        ui.label("Outcoloring:");
+                        egui::ComboBox::from_id_salt("outcoloring_mode")
+                            .selected_text(self.out_coloring_mode.name())
+                            .show_ui(ui, |ui| {
+                                for mode in OutColoringMode::menu_modes() {
+                                    ui.selectable_value(&mut self.out_coloring_mode, *mode, mode.name());
+                                }
+                            });
+                    });
                     if old_out_mode != self.out_coloring_mode {
                         self.params.color.out_coloring_mode = self.out_coloring_mode;
                         // Distance/OrbitTraps/Wings modes require data computed during render
@@ -3336,70 +3402,74 @@ impl eframe::App for FractallApp {
 
                     ui.separator();
 
-                    ui.label("Color Repeat:");
-                    let is_density_type = matches!(
-                        self.selected_type,
-                        FractalType::Buddhabrot | FractalType::Nebulabrot | FractalType::AntiBuddhabrot
-                    );
-                    let (min_repeat, max_repeat) = if is_density_type { (1, 8) } else { (1, 120) };
-                    if is_density_type && self.color_repeat > max_repeat {
-                        self.color_repeat = max_repeat;
-                        self.params.color.color_repeat = self.color_repeat;
-                    }
-                    let old_repeat = self.color_repeat;
-                    ui.add(egui::Slider::new(&mut self.color_repeat, min_repeat..=max_repeat));
-                    if old_repeat != self.color_repeat {
-                        self.params.color.color_repeat = self.color_repeat;
-                        if !self.iterations.is_empty() {
-                            self.update_texture(ctx);
+                    wrap_group(ui, "bar_group_3357", |ui| {
+                        ui.label("Color Repeat:");
+                        let is_density_type = matches!(
+                            self.selected_type,
+                            FractalType::Buddhabrot | FractalType::Nebulabrot | FractalType::AntiBuddhabrot
+                        );
+                        let (min_repeat, max_repeat) = if is_density_type { (1, 8) } else { (1, 120) };
+                        if is_density_type && self.color_repeat > max_repeat {
+                            self.color_repeat = max_repeat;
+                            self.params.color.color_repeat = self.color_repeat;
                         }
-                    }
+                        let old_repeat = self.color_repeat;
+                        ui.add(egui::Slider::new(&mut self.color_repeat, min_repeat..=max_repeat));
+                        if old_repeat != self.color_repeat {
+                            self.params.color.color_repeat = self.color_repeat;
+                            if !self.iterations.is_empty() {
+                                self.update_texture(ctx);
+                            }
+                        }
+                    });
 
                     ui.separator();
 
                     // Anti-aliasing : nombre d'échantillons sous-pixel jitterés
                     // moyennés après les passes progressives (CPU uniquement).
-                    ui.label("AA:");
-                    let prev_aa = self.aa_samples;
-                    egui::ComboBox::from_id_salt("aa_samples")
-                        .width(46.0)
-                        .selected_text(if self.aa_samples <= 1 {
-                            "Off".to_string()
-                        } else {
-                            format!("{}×", self.aa_samples)
-                        })
-                        .show_ui(ui, |ui| {
-                            for &n in &[1u32, 2, 4, 8, 16, 32] {
-                                let label = if n == 1 { "Off".to_string() } else { format!("{n}×") };
-                                ui.selectable_value(&mut self.aa_samples, n, label);
-                            }
-                        })
-                        .response
+                    wrap_group(ui, "bar_group_3382", |ui| {
+                        ui.label("AA:");
+                        let prev_aa = self.aa_samples;
+                        egui::ComboBox::from_id_salt("aa_samples")
+                            .width(46.0)
+                            .selected_text(if self.aa_samples <= 1 {
+                                "Off".to_string()
+                            } else {
+                                format!("{}×", self.aa_samples)
+                            })
+                            .show_ui(ui, |ui| {
+                                for &n in &[1u32, 2, 4, 8, 16, 32] {
+                                    let label = if n == 1 { "Off".to_string() } else { format!("{n}×") };
+                                    ui.selectable_value(&mut self.aa_samples, n, label);
+                                }
+                            })
+                            .response
+                            .on_hover_text(
+                                "Anti-aliasing: averaged jittered sub-pixel samples (CPU). Off = disabled.",
+                            );
+                        if self.aa_samples != prev_aa {
+                            self.start_render();
+                        }
+
+                        let prev_jitter_scale = self.aa_jitter_scale;
+                        ui.add_enabled(
+                            self.aa_samples > 1,
+                            egui::Slider::new(&mut self.aa_jitter_scale, 0.0..=1.0)
+                                .text("filter")
+                                .fixed_decimals(2),
+                        )
                         .on_hover_text(
-                            "Anti-aliasing: averaged jittered sub-pixel samples (CPU). Off = disabled.",
+                            "AA jitter amplitude in pixels: 0 = pixel center, 1 = full tent filter.",
                         );
-                    if self.aa_samples != prev_aa {
-                        self.start_render();
-                    }
+                        if self.aa_jitter_scale != prev_jitter_scale {
+                            self.start_render();
+                        }
+                    });
 
-                    let prev_jitter_scale = self.aa_jitter_scale;
-                    ui.add_enabled(
-                        self.aa_samples > 1,
-                        egui::Slider::new(&mut self.aa_jitter_scale, 0.0..=1.0)
-                            .text("filter")
-                            .fixed_decimals(2),
-                    )
-                    .on_hover_text(
-                        "AA jitter amplitude in pixels: 0 = pixel center, 1 = full tent filter.",
-                    );
-                    if self.aa_jitter_scale != prev_jitter_scale {
-                        self.start_render();
-                    }
-
-                    ui.separator();
 
                 });
         });
+        sticky_bar_record(&mut self.bar_heights[0], top_response.response.rect.height());
 
         // Traiter les messages du rendu HQ en cours
         if let Some(ref receiver) = self.hq_render_receiver {
@@ -3508,42 +3578,70 @@ impl eframe::App for FractallApp {
         // Barre d'état en bas — AVANT le CentralPanel : depuis egui 0.37 les
         // panneaux s'affichent dans le Ui racine et un panneau ajouté après le
         // CentralPanel ne reçoit plus d'espace.
-        egui::Panel::bottom("status").show(ui, |ui| {
+        // Barre de PROGRESSION, tout en bas, sur une seule ligne : temps à
+        // gauche, puis l'état du rendu et la barre qui prend le reste. Elle
+        // garde la même hauteur que le rendu tourne ou non : la barre d'état
+        // au-dessus ne change donc plus de forme quand la progression
+        // apparaît ou disparaît.
+        //
+        // En navigation XaoS les rendus s'enchaînent à ~30 Hz : on affiche un
+        // état STABLE pendant tout le geste (sinon la barre animée et le temps
+        // clignoteraient à cette cadence). Le rendu de stabilisation retrouve
+        // la barre normale.
+        let progress_min = sticky_bar_min(&mut self.bar_heights[2], window_width);
+        let progress_response = egui::Panel::bottom("progress").min_size(progress_min).show(ui, |ui| {
             ui.horizontal(|ui| {
-                // Avis du sage (bascule de navigation, itérations relevées…) :
-                // bien visible à gauche, quelques secondes.
-                if let Some((text, left)) = self.sage_notice.visible(Instant::now()) {
-                    ui.label(
-                        egui::RichText::new(format!(" {text} "))
-                            .strong()
-                            .color(egui::Color32::BLACK)
-                            .background_color(egui::Color32::from_rgb(255, 205, 80)),
+                let format_secs = |secs: f64| {
+                    if secs < 1.0 {
+                        format!("{:.0} ms", secs * 1000.0)
+                    } else if secs < 60.0 {
+                        format!("{:.2} s", secs)
+                    } else {
+                        format!("{}m {:.1}s", (secs / 60.0).floor() as u32, secs % 60.0)
+                    }
+                };
+                let nav_active = self.continuous_nav() && self.nav.is_active();
+                if self.rendering && !nav_active {
+                    let elapsed = self
+                        .render_start_time
+                        .map(|t| t.elapsed().as_secs_f64())
+                        .unwrap_or(0.0);
+                    ui.label(format!("⏱ {}…", format_secs(elapsed)));
+                } else if let Some(render_time) = self.last_render_time {
+                    ui.label(format!("⏱ {}", format_secs(render_time)));
+                }
+                ui.separator();
+                if nav_active {
+                    ui.label("Navigation XaoS");
+                } else if self.rendering {
+                    let (current_pass, total_passes) = self.render_progress.passes();
+                    let aa_suffix = match self.render_progress.aa() {
+                        Some((s, t)) if t > 1 && s > 0 => format!(" - AA {s}/{t}"),
+                        _ => String::new(),
+                    };
+                    ui.label(format!(
+                        "Computing… pass {current_pass}/{total_passes}{aa_suffix}"
+                    ));
+                    ui.add(
+                        egui::ProgressBar::new(self.render_progress.fraction())
+                            .desired_width(ui.available_width())
+                            .show_percentage()
+                            .animate(true),
                     );
-                    ctx.request_repaint_after(left);
-                    ui.separator();
+                } else if self.is_preview {
+                    ui.label("Preview");
+                } else {
+                    ui.label("Ready");
                 }
-                // Centre (compact ; clic = copie pleine précision), itérations, zoom
+            });
+        });
+        sticky_bar_record(&mut self.bar_heights[2], progress_response.response.rect.height());
+
+        let bottom_min = sticky_bar_min(&mut self.bar_heights[1], window_width);
+        let bottom_response = egui::Panel::bottom("status").min_size(bottom_min).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                // Vue exportée (CLI + coordonnées) ; bouton CLI tout à gauche.
                 let export_params = self.export_params();
-                let (full_x, full_y) = crate::gui::coords::center_strings(&export_params);
-                let center_response = ui
-                    .add(
-                        egui::Label::new(crate::gui::coords::format_center_status(
-                            &export_params,
-                        ))
-                        .sense(egui::Sense::click()),
-                    )
-                    .on_hover_text(format!(
-                        "Click to copy full-precision coordinates (as a TOML view \
-                         for fractall-cli --toml).\nre = {}\nim = {}",
-                        crate::gui::coords::exact_coordinate(&full_x),
-                        crate::gui::coords::exact_coordinate(&full_y),
-                    ));
-                if center_response.clicked() {
-                    ctx.copy_text(crate::gui::coords::full_precision_clipboard_text(
-                        &export_params,
-                    ));
-                    self.clipboard_feedback = Some(("Coordinates copied", Instant::now()));
-                }
                 let cli = crate::gui::cli_command::build_cli_command(
                     &export_params,
                     crate::gui::cli_command::CliExtras {
@@ -3568,15 +3666,51 @@ impl eframe::App for FractallApp {
                     ctx.copy_text(cli.command);
                     self.clipboard_feedback = Some(("CLI command copied", Instant::now()));
                 }
-                if let Some((message, at)) = self.clipboard_feedback {
-                    let shown_for = at.elapsed();
-                    if shown_for < CLIPBOARD_FEEDBACK_DURATION {
-                        ui.label(egui::RichText::new(format!("✔ {message}")).weak());
-                        ctx.request_repaint_after(CLIPBOARD_FEEDBACK_DURATION - shown_for);
-                    } else {
-                        self.clipboard_feedback = None;
-                    }
+                ui.separator();
+                // Avis du sage (bascule de navigation, itérations relevées…) :
+                // bien visible à gauche, quelques secondes.
+                if let Some((text, left)) = self.sage_notice.visible(Instant::now()) {
+                    ui.label(
+                        egui::RichText::new(format!(" {text} "))
+                            .strong()
+                            .color(egui::Color32::BLACK)
+                            .background_color(egui::Color32::from_rgb(255, 205, 80)),
+                    );
+                    ctx.request_repaint_after(left);
+                    ui.separator();
                 }
+                // Centre (compact ; clic = copie pleine précision), itérations, zoom
+                wrap_group(ui, "bar_group_3547", |ui| {
+                    let (full_x, full_y) = crate::gui::coords::center_strings(&export_params);
+                    let center_response = ui
+                        .add(
+                            egui::Label::new(crate::gui::coords::format_center_status(
+                                &export_params,
+                            ))
+                            .sense(egui::Sense::click()),
+                        )
+                        .on_hover_text(format!(
+                            "Click to copy full-precision coordinates (as a TOML view \
+                             for fractall-cli --toml).\nre = {}\nim = {}",
+                            crate::gui::coords::exact_coordinate(&full_x),
+                            crate::gui::coords::exact_coordinate(&full_y),
+                        ));
+                    if center_response.clicked() {
+                        ctx.copy_text(crate::gui::coords::full_precision_clipboard_text(
+                            &export_params,
+                        ));
+                        self.clipboard_feedback = Some(("Coordinates copied", Instant::now()));
+                    }
+                    if let Some((message, at)) = self.clipboard_feedback {
+                        let shown_for = at.elapsed();
+                        if shown_for < CLIPBOARD_FEEDBACK_DURATION {
+                            ui.label(egui::RichText::new(format!("✔ {message}")).weak());
+                            ctx.request_repaint_after(CLIPBOARD_FEEDBACK_DURATION - shown_for);
+                        } else {
+                            self.clipboard_feedback = None;
+                        }
+                    }
+                });
                 ui.separator();
                 if self.iter_auto_active() {
                     ui.label(format!("Iter.: {} (auto)", self.params.iteration_max));
@@ -3648,89 +3782,9 @@ impl eframe::App for FractallApp {
                     ui.separator();
                     ui.label(format!("GMP: {}b", effective_prec));
                 }
-
-                // Statut du rendu progressif.
-                //
-                // En navigation XaoS les rendus s'enchaînent à ~30 Hz : la
-                // barre animée, son pourcentage et le temps écoulé
-                // apparaissent/disparaissent à cette cadence — clignotement
-                // bleu en bas à droite, et largeur de la barre d'état qui
-                // saute. On affiche un état STABLE pendant tout le geste
-                // (y compris entre deux rendus, sinon le label lui-même
-                // clignoterait avec `self.rendering`). Le rendu de
-                // stabilisation, lui, retrouve la barre normale : c'est un
-                // calcul unique dont la progression intéresse l'utilisateur.
-                let nav_active = self.continuous_nav() && self.nav.is_active();
-                if nav_active {
-                    ui.separator();
-                    ui.label("Navigation XaoS");
-                } else if self.rendering {
-                    ui.separator();
-                    let progress = self.render_progress.fraction();
-                    let (current_pass, total_passes) = self.render_progress.passes();
-                    let progress_bar = egui::ProgressBar::new(progress)
-                        .show_percentage()
-                        .animate(true);
-                    ui.add(progress_bar);
-                    let aa_suffix = match self.render_progress.aa() {
-                        Some((s, t)) if t > 1 && s > 0 => format!(" - AA {s}/{t}"),
-                        _ => String::new(),
-                    };
-                    if let Some(start) = self.render_start_time {
-                        let elapsed = start.elapsed().as_secs_f64();
-                        let time_str = if elapsed < 60.0 {
-                            format!("{:.1}s", elapsed)
-                        } else {
-                            let mins = (elapsed / 60.0).floor() as u32;
-                            let secs = elapsed % 60.0;
-                            format!("{}m {:.0}s", mins, secs)
-                        };
-                        ui.label(format!(
-                            "Computing... ({}) - Pass {}/{}{}",
-                            time_str, current_pass, total_passes, aa_suffix
-                        ));
-                    } else {
-                        ui.label(format!(
-                            "Computing... - Pass {}/{}{}",
-                            current_pass, total_passes, aa_suffix
-                        ));
-                    }
-                } else if self.is_preview {
-                    ui.separator();
-                    ui.label("Preview");
-                }
-
-                // ═══════════════════════════════════════════════════════════════
-                // Temps de rendu aligné à droite
-                // ═══════════════════════════════════════════════════════════════
-
-                // Espace flexible pour pousser le temps à droite
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some(render_time) = self.last_render_time {
-                        let time_str = if render_time < 1.0 {
-                            format!("{:.0} ms", render_time * 1000.0)
-                        } else if render_time < 60.0 {
-                            format!("{:.2} s", render_time)
-                        } else {
-                            let mins = (render_time / 60.0).floor() as u32;
-                            let secs = render_time % 60.0;
-                            format!("{}m {:.1}s", mins, secs)
-                        };
-                        ui.label(format!("⏱ {}", time_str));
-                    } else if self.rendering {
-                        if let Some(start) = self.render_start_time {
-                            let elapsed = start.elapsed().as_secs_f64();
-                            let time_str = if elapsed < 1.0 {
-                                format!("{:.0} ms", elapsed * 1000.0)
-                            } else {
-                                format!("{:.1} s", elapsed)
-                            };
-                            ui.label(format!("⏱ {}...", time_str));
-                        }
-                    }
-                });
             });
         });
+        sticky_bar_record(&mut self.bar_heights[1], bottom_response.response.rect.height());
 
         // Interface principale - zone d'affichage de la fractale
         // Désactiver la sélection de texte pour éviter que le curseur devienne un curseur de texte
@@ -3862,7 +3916,15 @@ impl eframe::App for FractallApp {
                         // curseur reste fixe). Les petits incréments maximisent la
                         // réutilisation XaoS inter-frame (écho immédiat, raffinement
                         // exact à l'idle) — c'est le chemin de zoom fluide.
-                        if !julia_mode && response.hovered() && !self.selection.is_active() {
+                        // Bouton du milieu maintenu = pan, jamais zoom : appuyer sur
+                        // une molette la fait souvent tourner d'un cran.
+                        let middle_held = ctx.input(|i| i.pointer.middle_down());
+                        if !julia_mode
+                            && response.hovered()
+                            && !self.selection.is_active()
+                            && !middle_held
+                            && !self.middle_pan_active
+                        {
                             let scroll_y = ctx.input(|i| i.smooth_scroll_delta.y);
                             if scroll_y.abs() > 0.5 {
                                 if let Some(pos) = ctx.pointer_hover_pos() {
@@ -3966,6 +4028,48 @@ impl eframe::App for FractallApp {
                             }
                             if outcome.repaint {
                                 ctx.request_repaint();
+                            }
+                        }
+
+                        // Bouton du MILIEU maintenu : déplacement latéral (pan) sans
+                        // zoom, dans les deux modes de navigation. La vue suit la
+                        // souris à chaque frame (le warp G10.1 aligne l'ancienne
+                        // texture) ; un rendu de navigation repart dès que le
+                        // précédent est fini, puis rendu pleine résolution au
+                        // relâchement.
+                        if !julia_mode {
+                            let (middle_down, delta, started_on_image) = ctx.input(|i| {
+                                (
+                                    i.pointer.middle_down(),
+                                    i.pointer.delta(),
+                                    i.pointer
+                                        .press_origin()
+                                        .is_some_and(|p| image_rect.contains(p)),
+                                )
+                            });
+                            if middle_down && (self.middle_pan_active || started_on_image) {
+                                self.middle_pan_active = true;
+                                if delta != egui::Vec2::ZERO
+                                    && image_rect.width() > 0.0
+                                    && image_rect.height() > 0.0
+                                {
+                                    let dx = -(delta.x / image_rect.width()) as f64;
+                                    let dy = -(delta.y / image_rect.height()) as f64;
+                                    self.edit_view_hp(|view| view.pan_by(dx, dy));
+                                }
+                                if !self.rendering {
+                                    self.xaos_nav_dragging = true;
+                                    self.start_render();
+                                    self.xaos_nav_dragging = false;
+                                }
+                                ctx.request_repaint();
+                            } else if self.middle_pan_active {
+                                self.middle_pan_active = false;
+                                self.xaos_nav_dragging = true;
+                                self.xaos_nav_settle = true;
+                                self.start_render();
+                                self.xaos_nav_settle = false;
+                                self.xaos_nav_dragging = false;
                             }
                         }
 
