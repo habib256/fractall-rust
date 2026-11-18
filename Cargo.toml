@@ -1,6 +1,6 @@
 [package]
 name = "fractall-cli"
-version = "0.8.3"
+version = "0.8.4"
 edition = "2021"
 # egui/eframe 0.37 exigent rustc 1.95.
 rust-version = "1.95"
@@ -36,7 +36,11 @@ num-complex = { version = "0.4", features = ["serde"] }
 # Parallélisation multi-cœurs pour le rendu et la colorisation
 rayon = "1.11"
 # GUI avec egui (wgpu backend pour rendu GPU) — 0.29+ pour winit 0.30 (fix crash macOS NSScreen)
-eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu", "x11", "wayland"] }
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu", "x11", "wayland", "clipboard", "system_fonts"] }
+# Fonctions par défaut de winit (comme le `default` d'eframe) : décorations
+# GNOME adwaita sous Wayland — sans elles, cadre de secours sans titre aux
+# boutons carrés —, x11/wayland chargés par dlopen.
+winit = "0.30"
 egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
 # GPU (wgpu) + helpers
 wgpu = "30.0"

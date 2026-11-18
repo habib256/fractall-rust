@@ -69,7 +69,7 @@ fn main() {
     // Utiliser l'accélération matérielle avec préférence GPU haute performance
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Fractall - Fractal viewer")
+            .with_title(concat!("fractall-rust v", env!("CARGO_PKG_VERSION")))
             .with_inner_size(inner_size)
             .with_drag_and_drop(true),
         // Préférer l'accélération matérielle
