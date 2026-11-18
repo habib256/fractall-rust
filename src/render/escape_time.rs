@@ -408,6 +408,12 @@ fn render_escape_time_f64_cancellable_with_reuse(
     // formule mono-phase, aucun canal annexe (orbit traps / distance /
     // intérieur suivent dz point par point). Sinon : chemin scalaire inchangé.
     let batch_phase = batch_phase_for(params);
+    // Traqueur de borne d'erreur du noyau par lots + correction des seuls
+    // pixels signalés (chantier de correction n° 1, `render::std_reliability`).
+    let tracking = batch_phase
+        .as_ref()
+        .and_then(|phase| crate::render::std_reliability::std_tracking_plan(params, phase));
+    let flagged_all: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
     // Chemin scalaire restant (hybrides, canaux annexes, types hors bytecode) :
     // formule compilée une fois aussi.
     let scalar_formula = standard_formula(params);
@@ -522,16 +528,43 @@ fn render_escape_time_f64_cancellable_with_reuse(
             if let Some(phase) = batch_phase.as_ref() {
                 let mut batch_iter = vec![0u32; batch_points.len()];
                 let mut batch_z = vec![Complex64::new(0.0, 0.0); batch_points.len()];
-                crate::fractal::bytecode::interp_batch::iterate_bytecode_f64_batch(
-                    phase,
-                    &batch_points,
-                    params.seed,
-                    is_julia,
-                    params.iteration_max,
-                    params.bailout,
-                    &mut batch_iter,
-                    &mut batch_z,
-                );
+                if tracking.is_some() {
+                    let mut unreliable = vec![false; batch_points.len()];
+                    crate::fractal::bytecode::interp_batch::iterate_bytecode_f64_batch_tracked(
+                        phase,
+                        &batch_points,
+                        params.seed,
+                        is_julia,
+                        params.iteration_max,
+                        params.bailout,
+                        &mut batch_iter,
+                        &mut batch_z,
+                        &mut unreliable,
+                    );
+                    let flagged: Vec<usize> = batch_cells
+                        .iter()
+                        .zip(&unreliable)
+                        .filter(|(_, &u)| u)
+                        .map(|(&(dj, di), _)| (y0 + dj as usize) * width + x0 + di as usize)
+                        .collect();
+                    if !flagged.is_empty() {
+                        flagged_all
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .extend(flagged);
+                    }
+                } else {
+                    crate::fractal::bytecode::interp_batch::iterate_bytecode_f64_batch(
+                        phase,
+                        &batch_points,
+                        params.seed,
+                        is_julia,
+                        params.iteration_max,
+                        params.bailout,
+                        &mut batch_iter,
+                        &mut batch_z,
+                    );
+                }
                 for (k, &(dj, di)) in batch_cells.iter().enumerate() {
                     it_rows[dj as usize][di as usize] = batch_iter[k];
                     z_rows[dj as usize][di as usize] = batch_z[k];
@@ -558,6 +591,26 @@ fn render_escape_time_f64_cancellable_with_reuse(
     if !completed {
         None
     } else {
+        if let Some((correction, escalate)) = tracking {
+            let mut flagged = flagged_all.into_inner().unwrap_or_else(|e| e.into_inner());
+            flagged.sort_unstable();
+            if escalate {
+                crate::render::std_reliability::correct_std_pixels(
+                    params,
+                    correction,
+                    cancel.as_ref(),
+                    &flagged,
+                    &mut iterations,
+                    &mut zs,
+                )?;
+            } else if perf_enabled() {
+                eprintln!(
+                    "[RELIABILITY-STD] flagged={} ({:.3} %) observe-only",
+                    flagged.len(),
+                    100.0 * flagged.len() as f64 / n.max(1) as f64
+                );
+            }
+        }
         // Canal non demandé = canal ABSENT (Vec vide) : la colorisation
         // vérifiée (`render::output`) distingue « produit » de « jeté ».
         if !need_orbits {

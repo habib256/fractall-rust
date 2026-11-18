@@ -57,9 +57,40 @@ opus : 2 800 à 26 700 bits) — 0 pixel d'écart. Axe fuzz rejoué avec une
 seed neuve (`20261106`) : 8 sondes dont 2 Julia hors centre, 8 PASS.
 Pipeline vidéo rejoué de bout en bout (54 keyframes vers 1e16, 1621 frames).
 
-**⚠️ Chantier de correction n° 1, mesuré à 10 h 45 le 2026-11-06 et NON
-traité : le path f64 standard sur un bord chaotique, sous le seuil de
-perturbation.** Seahorse valley (centre du preset), 5000 itérations, 256×160,
+**✅ Chantier de correction n° 1 — TRAITÉ le 2026-11-18** (traqueur dans le
+noyau par lots + recalcul des seuls pixels signalés, piste (2) ci-dessous ;
+`render/std_reliability.rs`, CLAUDE.md §fiabilité). Mesure par l'axe `truth`
+(volet `std:*`, `scripts/harnesslib/axes_stdtruth.py`, production Auto vs
+GMP pur, 256×160) — pixels ≠ GMP avant → après :
+| lieu (zoom, it.) | avant | après |
+|---|---|---|
+| seahorse 1e4 / 1e7 / 1e10, 2500 it. | 185 · 444 · 3179 | 0 · 1 · 3 |
+| seahorse 1e4 / 1e7 / 1e10, 1000 it. | 181 · 49 · 0 | 0 · 0 · 0 |
+| éléphants 1e4 / 1e7 / 1e10, 2500 it. | 703 · 528 · 1390 | 1 · 0 · 2 |
+| éléphants 1e4 / 1e7 / 1e10, 1000 it. | 120 · 0 · 0 | 0 · 0 · 0 |
+| minibrot 6 scènes | 0 | 0 |
+Verdicts : 5 FAIL + 4 WARN + 9 PASS → 18 PASS. Temps (i7-10700F, 720p,
+2500 it., min de 3, sans suivi → avec → perturbation forcée) : défaut
+0,020 → 0,028 → 1,76 s ; défaut 20 000 it. 0,029 → 0,081 → 8,5 s ; seahorse
+1e4 0,029 → 0,058 → 0,17 s ; seahorse 1e7 0,22 → 0,40 → 1,71 s ; éléphants
+1e7 0,20 → 0,49 → 1,61 s ; minibrot 1e7 0,024 → 0,028 → 2,07 s. Traqueur
+seul (mode `observe`) : +15-23 % de phase pixels sans grand bord, +31-35 %
+sur les spirales. Pixels signalés : 1,5-6 % sur les spirales 720p, < 0,04 %
+sur la vue par défaut. Julia par défaut (graine −0,7269+0,1889i, 2500 it.) :
+99 → 3. Opt-in `FRACTALL_RELIABILITY_STD=all` : Tricorn par défaut 3 → 0 ;
+Burning Ship / Celtic par défaut 710 / 357 pixels faux, 7,6 % / 4,0 %
+signalés → au-delà du budget GMP, laissés en f64 avec avertissement
+(frontières à sensibilité extrême, cf. G3). Reste : (a) formules à
+`Mul`/`Rot` (Multibrot entier, opcodes) et chemin scalaire (hybrides,
+canaux distance / intérieur / pièges) sans suivi ; (b) correction des
+familles BS-like moins chère que le GMP pur (perturbation tracée de ces
+familles) ; (c) le z final d'un pixel corrigé dépend de la référence
+(compte juste) — deux verrous tolèrent désormais 1-2 z différents
+(`integer_pan_roundtrip_f64_path`, `keyframe_render_matches_direct_render`
+mis sur le centre HP exact).
+
+Historique du diagnostic (2026-11-06) : le path f64 standard sur un bord
+chaotique, sous le seuil de perturbation. Seahorse valley (centre du preset), 5000 itérations, 256×160,
 contre le GMP pur :
 | zoom | Auto (f64 standard) | perturbation forcée (traqueur + dd) |
 |---|---|---|

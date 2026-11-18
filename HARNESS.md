@@ -125,7 +125,15 @@ golden_spider / rug / olbaid2 / leaded_glass) : rendu de production →
 `.fmap`, rendu juge `--dd-tier` (frame double-double, gardée par son traqueur
 + repli GMP par pixel, plafond de budget levé), comparaison des itérations
 brutes. Mêmes seuils que precision (PASS ≤ 0,05 %, FAIL ≥ 0,5 %), même taille
-(96² quick, 128² sinon). Paths `std_*` = `n/a`.
+(96² quick, 128² sinon). Paths `std_*` = `n/a` pour ce volet.
+- **Volet path f64 standard** (`axes_stdtruth.py`, 2026-11-18, chantier de
+  correction n° 1) : scènes peu profondes `std:<lieu>_<zoom>_<it>` —
+  seahorse, vallée des éléphants, minibrot de l'axe réel × 1e4/1e7/1e10 ×
+  1000/2500 it. (tier quick : 2500 seulement), 256×160 (la basse résolution
+  reste en f64 standard en Auto), production Auto vs `--algorithm gmp` (GMP
+  pur, convergé à 256 b). Mêmes seuils, cas fusionnés dans `truth.cases`.
+  Avant le traqueur du path standard : seahorse 1e10/2500 **FAIL 7,76 %**,
+  1e7 FAIL 1,08 %, éléphants 1e4/1e7/1e10 FAIL 1,7/1,3/3,4 %.
 - Puissance vérifiée : le binaire d'AVANT les correctifs du 2026-11-06
   (troncature BLA comptée ε au lieu de l·ε, rayon harmonic 2⁻²⁴) donne e227
   **FAIL** (67 px, 0,73 % à 96²) et golden_spider / rug / olbaid2 /

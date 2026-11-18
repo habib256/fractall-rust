@@ -45,6 +45,52 @@
 //! point de contrôle par voie, rafraîchi quand le compteur a doublé. Aucune
 //! tolérance — une quasi-période n'est pas un cycle, et `NaN` ne s'égale
 //! jamais. `FRACTALL_STD_CYCLE=0` coupe le raccourci (A/B).
+//!
+//! ## Traqueur de borne d'erreur (2026-11-18, chantier de correction n° 1)
+//!
+//! Sur un bord chaotique à fort plafond, l'arrondi f64 de l'itération DIRECTE
+//! est amplifié par l'orbite (produit des `2|z|`) bien avant que le pas du
+//! pixel n'approche l'ulp : seahorse 1e10, 2500 it., 256×160, 7,8 % de
+//! pixels faux contre le GMP pur. [`iterate_bytecode_f64_batch_tracked`]
+//! propage par voie une borne ABSOLUE `E` de l'écart entre le z calculé et le
+//! z exact du point :
+//!
+//! `E' = E·(2√n + E) + γ·(n + |c|₁)`, `n = |z|²` avant la passe, `γ = 4u`
+//!
+//! (`|z² − z'²| ≤ E·(|z| + |z'|)`, abs/neg sont 1-lipschitziens ; `γ` couvre
+//! l'arrondi du carré, de l'addition et celui de `c` lui-même). Un point est
+//! **non fiable** si sa borne s'EMBALLE (`E ≥` [`reliability_runaway`], 1e30,
+//! même critère que le traqueur de la perturbation) ou si, à l'évasion, elle
+//! dépasse la distance au cercle (`E ≥ |z| − R` : évasion indéterminée, test
+//! du tier exp ; `FRACTALL_STD_MARGIN=0` le coupe — seahorse 1e10 256×160 :
+//! 23 pixels faux non signalés sans lui, 1 avec, pour deux fois plus de
+//! pixels signalés). Le traqueur ne fait que
+//! LIRE l'état des voies : comptes et z sont bit-identiques à la boucle sans
+//! suivi (verrou `tracked_batch_is_bit_identical_to_untracked`) ; la mise à
+//! jour vit dans la boucle de fin de passe (une racine par voie), le test à
+//! la sortie de la voie seulement. Formules suivies : phase carrée à `Sqr`
+//! unique, abs/neg et `Add` final ([`phase_trackable`] — Mandelbrot, Burning
+//! Ship, Tricorn, Celtic, Buffalo, PerpBS et leurs Julia) ; `Mul`/`Rot`
+//! demanderaient une mise à jour par opcode.
+//!
+//! Raccourci des cycles : la voie saute `k` cycles SANS mettre `E` à jour.
+//! Sur un cycle, la récurrence est affine, `E ↦ a·E + b` avec
+//! `a = Π(2√n + E)` ; un cycle EXACT en flottant est attractif (`a < 1` : un
+//! cycle répulsif ne se referme pas au bit près), donc les cycles sautés
+//! mènent `E` vers le point fixe `b/(1 − a)` — de l'ordre de `γ·L/(1 − a)`,
+//! des dizaines d'ordres de grandeur sous le seuil d'emballement : le saut ne
+//! peut pas cacher un emballement. (Une première version cumulait `a` et
+//! prenait le point fixe : +10 % de coût de suivi pour un verdict inchangé.)
+//! L'intérieur ne produit pas de faux positifs en masse : verrou
+//! `tracker_does_not_flag_interior_points` (20 000 it., avec et sans
+//! raccourci).
+//!
+//! Coût (i7-10700F, 720p, 2500 it., phase pixels, min de 7) : +15 à +23 % sur
+//! les vues sans grand bord (défaut, minibrot, extérieur), +31 à +35 % sur
+//! les spirales (seahorse, éléphants 1e7). La racine f64 bat une racine f32
+//! majorée (conversions : +47 % au lieu de +31 %).
+//!
+//! [`reliability_runaway`]: super::reliability::reliability_runaway
 
 use num_complex::Complex64;
 
@@ -110,6 +156,65 @@ pub fn iterate_bytecode_f64_batch(
     );
 }
 
+/// La borne d'erreur du traqueur vaut-elle pour cette phase ? Phase carrée à
+/// `Sqr` unique, opérations 1-lipschitziennes (abs, neg) et `Add` final
+/// unique : Mandelbrot, Burning Ship, Tricorn, Celtic, Buffalo, PerpBS (et
+/// Julia). `Mul`, `Store`, `Rot` : non suivies.
+pub fn phase_trackable(phase: &Phase) -> bool {
+    let sqr = phase.ops.iter().filter(|op| matches!(op, Op::Sqr)).count();
+    let add = phase.ops.iter().filter(|op| matches!(op, Op::Add)).count();
+    sqr == 1
+        && add == 1
+        && matches!(phase.ops.last(), Some(Op::Add))
+        && phase.ops.iter().all(|op| {
+            matches!(
+                op,
+                Op::Sqr | Op::AbsX | Op::AbsY | Op::NegX | Op::NegY | Op::Add
+            )
+        })
+}
+
+/// Comme [`iterate_bytecode_f64_batch`], avec le traqueur de borne d'erreur :
+/// `out_unreliable[i]` vaut `true` quand la borne du point `i` s'est emballée
+/// (compte d'itérations non garanti). Comptes et z identiques au bit près à
+/// la version sans suivi. La phase doit être [`phase_trackable`] (sinon tous
+/// les points sont déclarés fiables : l'appelant doit vérifier).
+#[allow(clippy::too_many_arguments)]
+pub fn iterate_bytecode_f64_batch_tracked(
+    phase: &Phase,
+    points: &[Complex64],
+    seed: Complex64,
+    is_julia: bool,
+    iteration_max: u32,
+    bailout: f64,
+    out_iter: &mut [u32],
+    out_z: &mut [Complex64],
+    out_unreliable: &mut [bool],
+) {
+    assert_eq!(out_unreliable.len(), points.len());
+    if !phase_trackable(phase) {
+        out_unreliable.fill(false);
+        iterate_bytecode_f64_batch(
+            phase, points, seed, is_julia, iteration_max, bailout, out_iter, out_z,
+        );
+        return;
+    }
+    iterate_batch_core::<true>(
+        phase,
+        points,
+        seed,
+        is_julia,
+        iteration_max,
+        bailout,
+        out_iter,
+        out_z,
+        cycle_shortcut_enabled(),
+        out_unreliable,
+        super::reliability::reliability_runaway(),
+        std_margin_enabled(),
+    );
+}
+
 /// Corps de [`iterate_bytecode_f64_batch`] ; `cycle_shortcut` explicite pour
 /// les tests (les deux réglages rendent les mêmes sorties).
 #[allow(clippy::too_many_arguments)]
@@ -124,9 +229,60 @@ fn iterate_batch_impl(
     out_z: &mut [Complex64],
     cycle_shortcut: bool,
 ) {
+    iterate_batch_core::<false>(
+        phase,
+        points,
+        seed,
+        is_julia,
+        iteration_max,
+        bailout,
+        out_iter,
+        out_z,
+        cycle_shortcut,
+        &mut [],
+        f64::INFINITY,
+        false,
+    );
+}
+
+/// Test de détermination à l'évasion (`E ≥ |z| − R` à la sortie) en plus de
+/// l'emballement — actif par défaut, `FRACTALL_STD_MARGIN=0` le coupe.
+fn std_margin_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        !matches!(
+            std::env::var("FRACTALL_STD_MARGIN").ok().as_deref().map(str::trim),
+            Some("0") | Some("off")
+        )
+    })
+}
+
+/// Constante d'arrondi d'une passe (carré + addition + arrondi de `c`).
+const TRACK_GAMMA: f64 = 4.0 * super::reliability::U;
+
+/// Boucle commune ; `TRACK` monomorphise le traqueur (à `false`, le code est
+/// celui d'avant le traqueur : aucune variable de suivi n'est lue).
+#[allow(clippy::too_many_arguments)]
+fn iterate_batch_core<const TRACK: bool>(
+    phase: &Phase,
+    points: &[Complex64],
+    seed: Complex64,
+    is_julia: bool,
+    iteration_max: u32,
+    bailout: f64,
+    out_iter: &mut [u32],
+    out_z: &mut [Complex64],
+    cycle_shortcut: bool,
+    out_unreliable: &mut [bool],
+    runaway: f64,
+    margin: bool,
+) {
     let n = points.len();
     assert_eq!(out_iter.len(), n);
     assert_eq!(out_z.len(), n);
+    if TRACK {
+        assert_eq!(out_unreliable.len(), n);
+    }
     let bailout_sqr = bailout * bailout;
     // Nombre de `Add` de la phase (= incrément du compteur par passe ; 1 en
     // pratique, `Add` terminant la phase).
@@ -147,6 +303,11 @@ fn iterate_batch_impl(
     let mut ck_iter = [0u32; LANES];
     let mut ck_next = [CYCLE_CHECK_PERIOD; LANES];
     let mut passes = 0u32;
+    // Traqueur (lu seulement si TRACK) : borne E, |z|² avant la passe, et
+    // γ·|c|₁ (terme constant de l'arrondi d'une passe).
+    let mut err = [0.0f64; LANES];
+    let mut nprev = [0.0f64; LANES];
+    let mut cabs = [0.0f64; LANES];
 
     let mut next = 0usize;
     let mut live = 0usize;
@@ -178,7 +339,17 @@ fn iterate_batch_impl(
                 if z0.norm_sqr() >= bailout_sqr || iteration_max == 0 {
                     out_iter[i] = 0;
                     out_z[i] = z0;
+                    if TRACK {
+                        out_unreliable[i] = false;
+                    }
                     continue;
+                }
+                if TRACK {
+                    // z₀ = pixel en Julia : arrondi du mapping (u·|z₀|₁) ;
+                    // l'arrondi de `c` est compté à chaque passe par γ.
+                    err[l] = super::reliability::U * (z0.re.abs() + z0.im.abs());
+                    nprev[l] = z0.re * z0.re + z0.im * z0.im;
+                    cabs[l] = TRACK_GAMMA * (c.re.abs() + c.im.abs());
                 }
                 re[l] = z0.re;
                 im[l] = z0.im;
@@ -267,6 +438,12 @@ fn iterate_batch_impl(
             for l in 0..LANES {
                 iter[l] += adds;
                 let norm_sqr = re[l] * re[l] + im[l] * im[l];
+                if TRACK {
+                    let s = nprev[l].sqrt();
+                    let f = 2.0 * s + err[l];
+                    err[l] = err[l] * f + (TRACK_GAMMA * nprev[l] + cabs[l]);
+                    nprev[l] = norm_sqr;
+                }
                 let d = !(norm_sqr < bailout_sqr) | (iter[l] >= iteration_max);
                 done[l] = d;
                 any |= d;
@@ -307,6 +484,16 @@ fn iterate_batch_impl(
                 if slot[l] != NO_SLOT {
                     out_iter[slot[l]] = iter[l];
                     out_z[slot[l]] = Complex64::new(re[l], im[l]);
+                    if TRACK {
+                        let mut u = !(err[l] < runaway);
+                        if margin && !u {
+                            // Évasion indéterminée : l'écart possible au z
+                            // exact dépasse la distance au cercle d'évasion.
+                            let nz = re[l] * re[l] + im[l] * im[l];
+                            u = !(nz < bailout_sqr) && err[l] >= nz.sqrt() - bailout;
+                        }
+                        out_unreliable[slot[l]] = u;
+                    }
                     live -= 1;
                 }
                 load!(l);
@@ -621,6 +808,167 @@ mod tests {
                 500,
                 25.0,
             );
+        }
+    }
+
+    fn run_tracked(
+        formula: &Formula,
+        pts: &[Complex64],
+        seed: Complex64,
+        is_julia: bool,
+        max: u32,
+        shortcut: bool,
+    ) -> (Vec<u32>, Vec<Complex64>, Vec<bool>) {
+        let mut it = vec![u32::MAX; pts.len()];
+        let mut zs = vec![Complex64::new(f64::NAN, f64::NAN); pts.len()];
+        let mut fl = vec![true; pts.len()];
+        iterate_batch_core::<true>(
+            &formula.phases[0],
+            pts,
+            seed,
+            is_julia,
+            max,
+            25.0,
+            &mut it,
+            &mut zs,
+            shortcut,
+            &mut fl,
+            1e30,
+            true,
+        );
+        (it, zs, fl)
+    }
+
+    /// Le traqueur ne fait que LIRE l'état : comptes et z au bit près ceux
+    /// de la boucle sans suivi, avec et sans raccourci des cycles, sur toutes
+    /// les familles suivables, en Mandelbrot et en Julia.
+    #[test]
+    fn tracked_batch_is_bit_identical_to_untracked() {
+        let points = probe_points(600, 0x5EED_0F_7AC4);
+        for ty in [
+            FractalType::Mandelbrot,
+            FractalType::BurningShip,
+            FractalType::Tricorn,
+            FractalType::Celtic,
+            FractalType::Buffalo,
+            FractalType::PerpendicularBurningShip,
+        ] {
+            let formula = compile_formula(ty, 2.0).unwrap();
+            assert!(phase_trackable(&formula.phases[0]), "{ty:?} suivable");
+            for (seed, is_julia) in [
+                (Complex64::new(0.0, 0.0), false),
+                (Complex64::new(-0.8, 0.156), true),
+            ] {
+                for max in [0u32, 1, 7, 300, 5000] {
+                    for shortcut in [false, true] {
+                        let mut it = vec![u32::MAX; points.len()];
+                        let mut zs = vec![Complex64::new(f64::NAN, f64::NAN); points.len()];
+                        iterate_batch_impl(
+                            &formula.phases[0], &points, seed, is_julia, max, 25.0,
+                            &mut it, &mut zs, shortcut,
+                        );
+                        let (it_t, zs_t, _) =
+                            run_tracked(&formula, &points, seed, is_julia, max, shortcut);
+                        for i in 0..points.len() {
+                            assert!(
+                                it[i] == it_t[i] && same(zs[i].re, zs_t[i].re)
+                                    && same(zs[i].im, zs_t[i].im),
+                                "{ty:?} julia={is_julia} max={max} #{i}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // Formules non suivables : jamais signalées, sorties inchangées.
+        let formula = compile_formula(FractalType::Multibrot, 3.0).unwrap();
+        assert!(!phase_trackable(&formula.phases[0]));
+        let mut it = vec![0u32; points.len()];
+        let mut zs = vec![Complex64::new(0.0, 0.0); points.len()];
+        let mut fl = vec![true; points.len()];
+        iterate_bytecode_f64_batch_tracked(
+            &formula.phases[0], &points, Complex64::new(0.0, 0.0), false, 200, 25.0,
+            &mut it, &mut zs, &mut fl,
+        );
+        assert!(fl.iter().all(|&f| !f));
+    }
+
+    /// GMP pur (256 b) d'un point z²+c, bailout 25 : le juge.
+    fn gmp_iterations(c: Complex64, max: u32) -> u32 {
+        use rug::Float;
+        let prec = 256;
+        let (cr, ci) = (Float::with_val(prec, c.re), Float::with_val(prec, c.im));
+        let (mut x, mut y) = (Float::new(prec), Float::new(prec));
+        for k in 1..=max {
+            let xx = Float::with_val(prec, &x * &x);
+            let yy = Float::with_val(prec, &y * &y);
+            let xy = Float::with_val(prec, &x * &y);
+            x = xx - &yy + &cr;
+            y = Float::with_val(prec, &xy * 2u32) + &ci;
+            let n = x.to_f64() * x.to_f64() + y.to_f64() * y.to_f64();
+            if !(n < 625.0) {
+                return k;
+            }
+        }
+        max
+    }
+
+    /// Le traqueur attrape les pixels FAUX du bord chaotique : seahorse
+    /// 1e10, 2500 it. (7,8 % de pixels faux en f64 direct contre le GMP pur
+    /// à 256×160), grille de 48×30 : au moins 95 % des points faux sont
+    /// signalés, et moins d'un point sur trois l'est.
+    #[test]
+    fn tracker_flags_wrong_pixels_on_a_chaotic_edge() {
+        let formula = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
+        let (cx, cy) = (-0.743_643_887_037_158_7, 0.131_825_904_205_311_97);
+        let span = 4e-10;
+        let (w, h) = (48usize, 30usize);
+        let pts: Vec<Complex64> = (0..w * h)
+            .map(|k| {
+                let (i, j) = (k % w, k / w);
+                Complex64::new(
+                    cx + ((i as f64 + 0.5) / w as f64 - 0.5) * span,
+                    cy + ((j as f64 + 0.5) / h as f64 - 0.5) * span * h as f64 / w as f64,
+                )
+            })
+            .collect();
+        let (it, _, fl) =
+            run_tracked(&formula, &pts, Complex64::new(0.0, 0.0), false, 2500, true);
+        let mut wrong = 0;
+        let mut caught = 0;
+        for (k, &c) in pts.iter().enumerate() {
+            if it[k] != gmp_iterations(c, 2500) {
+                wrong += 1;
+                caught += fl[k] as usize;
+            }
+        }
+        let flagged = fl.iter().filter(|&&f| f).count();
+        assert!(wrong > 20, "scène sans pixel faux : le test ne juge rien ({wrong})");
+        assert!(
+            caught * 100 >= wrong * 95,
+            "{caught}/{wrong} pixels faux signalés"
+        );
+        assert!(flagged * 3 < pts.len(), "{flagged}/{} signalés", pts.len());
+    }
+
+    /// Points intérieurs (orbite attirée par un cycle, raccourci actif) à un
+    /// plafond élevé : la borne reste bornée, aucun point signalé — sinon
+    /// toute vue montrant l'intérieur serait recalculée en masse.
+    #[test]
+    fn tracker_does_not_flag_interior_points() {
+        let formula = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
+        let mut r = rng(0x1A7E_0001);
+        let mut pts: Vec<Complex64> = (0..400)
+            .map(|_| Complex64::new(r() * 0.6 - 0.45, r() * 0.8 - 0.4))
+            .collect();
+        pts.extend((0..100).map(|_| Complex64::new(-1.0 + 0.4 * (r() - 0.5), 0.4 * (r() - 0.5))));
+        for shortcut in [true, false] {
+            let (it, _, fl) =
+                run_tracked(&formula, &pts, Complex64::new(0.0, 0.0), false, 20_000, shortcut);
+            let interior: Vec<usize> = (0..pts.len()).filter(|&k| it[k] == 20_000).collect();
+            assert!(interior.len() >= 300, "{} points intérieurs seulement", interior.len());
+            let flagged = interior.iter().filter(|&&k| fl[k]).count();
+            assert_eq!(flagged, 0, "raccourci={shortcut} : {flagged} intérieurs signalés");
         }
     }
 }

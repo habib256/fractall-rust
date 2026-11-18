@@ -147,11 +147,11 @@ def cmd_score(args) -> None:
             mem_limit_mb=mem_limit_mb, quarantined=quarantined,
             slow_safe=slow_safe)
     if "truth" in axes:
-        print("\n== TRUTH (production vs tier dd) ==")
+        print("\n== TRUTH (production vs tier dd ; path std vs GMP pur) ==")
         card["truth"] = axis_ddtruth(
             cases, cfg.get("precision_size", 96), timeout,
             mem_limit_mb=mem_limit_mb, quarantined=quarantined,
-            slow_safe=slow_safe)
+            slow_safe=slow_safe, std_full=args.tier != "quick")
     if "goldens" in axes:
         print("\n== GOLDENS ==")
         card["goldens"] = axis_goldens()

@@ -185,6 +185,7 @@ src/
 │       ├── series.rs       # Taylor series approximation
 ├── render/
 │   ├── escape_time.rs    # dispatcher unique CLI↔GUI (sélection algo)
+│   ├── std_reliability.rs # suivi + correction des pixels non fiables du path f64 standard
 │   └── tiles.rs          # G10.5 file de tuiles priorité-centre + sink streaming
 ├── gpu/                  # wgpu Vulkan/Metal/DX12
 │   ├── mod.rs              # GpuRenderer + pipeline bytecode
@@ -896,12 +897,29 @@ itérations de la frame (`FAMILY_GMP_ITER_BUDGET`), valeur f64 + avertissement
 au-delà. Burning Ship / Tricorn : opt-in `FRACTALL_RELIABILITY_FAMILY=all`
 (107 scènes sondées, aucun pixel faux adjudicable). **Sans suivi** :
 hybrides, DE, Julia au tier exp.
-⚠️ **Le path f64 STANDARD n'a aucun suivi** et il est faux sur les bords
-chaotiques à fort nombre d'itérations, bien avant d'être à court de mantisse
-(seahorse, 5000 itérations, vs GMP pur : 0,5 % de pixels faux à 1e4, 4,2 % à
-1e8, 7,9 % à 1e10, écarts médians de 20 itérations ; la perturbation forcée
-en a 0 à 2). Le mode Auto y reste jusqu'à ~1e12 : chantier ouvert, cf.
-TODO « État actuel ». Ne jamais prendre le rendu Auto peu profond pour juge.
+⚠️ **Path f64 STANDARD : suivi depuis le 2026-11-18** (chantier de
+correction n° 1). Il était faux sans rien signaler sur les bords chaotiques à
+fort plafond, bien avant d'être à court de mantisse (seahorse 1e10, 2500 it.,
+256×160 : 7,8 % de pixels faux vs GMP pur) — l'arrondi de l'itération
+directe est amplifié par le produit des `2|z|`. Le noyau par lots porte un
+traqueur (`interp_batch::iterate_bytecode_f64_batch_tracked`, `const TRACK`,
+bit-identique) : `E' = E·(2√n + E) + 4u·(n + |c|₁)`, signalé si `E ≥ 1e30`
+OU, à l'évasion, `E ≥ |z| − R` ; les SEULS pixels signalés sont recalculés
+par `render/std_reliability.rs` — Mandelbrot / Julia par
+`perturbation::recompute_pixels_cpu` (perturbation tracée autour du centre
+HP → dd → qd → GMP), Mandelbrot/Julia tournés et, en opt-in
+`FRACTALL_RELIABILITY_STD=all`, BS / Tricorn / Celtic / Buffalo / PerpBS par
+GMP pur sous le plafond des familles (0,1 % des pixels OU 5 % des
+itérations). Mesuré (axe `truth`, volet `std:*`, 18 scènes 256×160) :
+5 FAIL + 4 WARN → 18 PASS, pixels faux seahorse 1e10 3179 → 3, éléphants
+1e10 1390 → 2 ; coût du traqueur seul +15-23 % (vues sans grand bord) à
++31-35 % (spirales) sur la phase pixels, total avec correction ×1,4 (défaut
+720p) à ×2,5 (éléphants 1e7 720p), contre ×6 à ×90 pour un re-routage en
+perturbation. ⚠️ Un pixel corrigé est mal conditionné : son z final (pas son
+compte) dépend de la référence — deux vues dont les centres diffèrent au
+17e chiffre (chaîne HP vs f64) ne sont plus égales au bit près sur `zs`.
+Non suivis : formules à `Mul`/`Rot` (Multibrot, opcodes), hybrides et canaux
+annexes (chemin scalaire), plan ≠ Mu, graine non nulle, types sans bytecode.
 ⚠️ **Ne pas chercher à resserrer le terme `l·ε` du saut BLA f64** : à
 ε = 2⁻⁵³ la troncature réelle est négligeable (borne du second ordre
 implémentée et testée : la substituer revient à retirer le terme) et c'est
@@ -964,6 +982,8 @@ Tous lus UNE fois (`OnceLock`). Défaut = comportement de production.
 | Variable | Effet |
 |---|---|
 | `FRACTALL_STD_BATCH=0` | path f64 standard : interpréteur scalaire au lieu du noyau par lots |
+| `FRACTALL_RELIABILITY_STD=0\|all` | path f64 standard : `0` coupe le traqueur et la correction ; défaut Mandelbrot + Julia (correction par perturbation) ; `all` ajoute BS / Tricorn / Celtic / Buffalo / PerpBS (GMP pur sous plafond) |
+| `FRACTALL_STD_MARGIN=0` | path f64 standard : pas de test de détermination à l'évasion (emballement seul — moitié moins de pixels signalés, ~15× plus de pixels faux résiduels sur le volet `std:*`) |
 | `FRACTALL_STD_CYCLE=0` | path f64 standard (lots ET boucles scalaires) : pas de raccourci des cycles exacts — chaque point intérieur itère jusqu'au plafond |
 | `FRACTALL_ORBIT_PAR=0` | orbite de référence : itération GMP sur un seul cœur |
 | `FRACTALL_ORBIT_PAR_MIN_BITS=n` | précision à partir de laquelle l'orbite utilise le fil assistant (défaut 2048) |

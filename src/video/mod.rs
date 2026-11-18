@@ -771,6 +771,12 @@ mod tests {
         let mut direct = default_params_for_type(FractalType::Mandelbrot, 48, 36);
         direct.center_x = -0.7436;
         direct.center_y = 0.1318;
+        // Le centre décimal EXACT du manifest (comme `--center-x-hp`) : le f64
+        // -0.7436 en diffère de 4e-17, et le path f64 standard recalcule ses
+        // pixels non fiables autour du centre HP (chantier de correction
+        // n° 1) — un pixel mal conditionné de la scène dépend de ce 17e chiffre.
+        direct.center_x_hp = Some("-0.7436".into());
+        direct.center_y_hp = Some("0.1318".into());
         direct.span_x = 4.0 / 64.0;
         direct.span_y = direct.span_x * (36.0 / 48.0);
         direct.iteration_max = 300;

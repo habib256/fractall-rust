@@ -2,6 +2,7 @@ pub mod escape_time;
 pub mod output;
 pub mod planned;
 pub mod request;
+pub mod std_reliability;
 pub mod tiles;
 
 #[allow(unused_imports)]
