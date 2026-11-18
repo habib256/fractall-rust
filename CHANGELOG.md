@@ -8,7 +8,48 @@ regroupement par type (Ajouté / Corrigé / Performance / Modifié), et sections
 jalon (`Gx`) pour l'historique. Ce fichier est un résumé actionnable — le détail
 technique vit dans `TODO.md`, `CLAUDE.md`, `SCORECARD.md` et l'historique git.
 
-## [Unreleased] — matinée du 2026-11-06 : Julia, points intérieurs, orbite sur deux cœurs
+## [0.8.4] — 2026-11-18 — GUI pour débutants, path f64 standard juste
+
+Regroupe aussi les sections non publiées du 2026-11-06 ci-dessous.
+
+### Ajouté
+- **GUI : historique de navigation** (◀ ▶, Backspace, Alt+←/→) et **reprise
+  de session** (vue, historique, taille de fenêtre ;
+  `fractall-gui --fresh` pour repartir de la vue par défaut).
+- **Itérations automatiques** (le « sage », `wisdom_iter`) : par défaut en
+  CLI, case « Iter: Auto » dans la GUI.
+- **GUI : coordonnées compactes cliquables** (copie pleine précision) et
+  bouton **📋 CLI** qui copie une commande `fractall-cli` rendant la vue.
+- **`--from-png`** : re-rend la vue exacte d'un PNG fractall ;
+  **`--julia-re` / `--julia-im`**.
+- **GUI : déplacement au bouton du milieu maintenu** (sans zoom).
+- Interface des deux GUI et messages du CLI en anglais.
+
+### Corrigé
+- **Path f64 standard faux sans rien signaler** sur les bords chaotiques à
+  fort plafond (seahorse 1e10 : 7,8 % de pixels faux) : traqueur de borne
+  d'erreur dans le noyau par lots, pixels signalés recalculés
+  (perturbation → dd → qd → GMP). Volet `std:*` de l'axe truth :
+  5 FAIL + 4 WARN → 18 PASS.
+- **Vue entièrement intérieure en perturbation** : chaque pixel était
+  déclaré « référence épuisée » → frame dd entière pour rien (5,0 → 0,41 s,
+  image identique au GMP pur).
+- **GUI sous Wayland** : copier-coller (fonction `clipboard` d'eframe),
+  barre de titre et bouton de fermeture (décorations adwaita de winit),
+  taille de fenêtre enregistrée dans la session.
+- **GUI : barres du haut et du bas** qui passent à la ligne au lieu d'être
+  coupées dans une fenêtre étroite ; progression sur sa propre barre tout en
+  bas (une barre qui changeait de hauteur relançait le rendu sans fin).
+- `--center-{x,y}-hp` accepte les valeurs négatives ; le zoom de la barre
+  d'état suit la convention `--zoom`.
+
+### Modifié
+- Titre de fenêtre « fractall-rust v0.8.4 » ; polices système en secours
+  (fonction `system_fonts`).
+- Le sélecteur expérimental « Nav: Auto » est retiré au profit de la case
+  « XaoS ».
+
+## [0.8.4] (suite) — matinée du 2026-11-06 : Julia, points intérieurs, orbite sur deux cœurs
 
 Branche `matin-20261106`. Mesures : Apple M4 10 threads, machine calme, images
 comparées à l'octet ou aux itérations brutes. Détail : `TODO.md` G14.17 à
@@ -62,7 +103,7 @@ G14.21.
   pas double-double (×1,3, borné par le débit flottant) ; troncature
   atom-domain pour Tricorn / Burning Ship ; `rayon::join` pour l'orbite.
 
-## [Unreleased] — nuit d'optimisation et de correction (2026-11-06, Apple M4)
+## [0.8.4] (suite) — nuit d'optimisation et de correction (2026-11-06, Apple M4)
 
 Mesures : Apple M4 10 threads, A/B entrelacés, images comparées à l'octet ou
 aux itérations brutes. Détail et chiffres par item : `TODO.md` G14.
@@ -136,7 +177,7 @@ aux itérations brutes. Détail et chiffres par item : `TODO.md` G14.
 - Harness utilisable sous macOS (nom de machine, RAM, F3 non lançable
   détecté) ; baseline de l'Apple M4.
 
-## [Unreleased, précédent] — harnais d'optimisation
+## [0.8.4] (suite) — harnais d'optimisation
 
 ### Ajouté
 - **Harness : axe `profile`** (où va le temps) — chaque cas du tier est rendu
