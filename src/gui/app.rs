@@ -22,6 +22,7 @@ use crate::gui::nav;
 use crate::gui::progressive::{upscale_nearest, ProgressiveConfig, RenderMessage};
 use crate::gui::sage::{self, IterAction};
 use crate::gui::texture::rgb_image_to_color_image;
+use crate::gui::view_history::{self, ViewHistory};
 use crate::render::{render_planned, render_request, PlannedRenderRequest, RenderRequest};
 
 /// Précision par défaut pour les calculs de coordonnées haute précision (en bits).
@@ -298,6 +299,16 @@ pub struct FractallApp {
     ui_frame_last: Option<Instant>,
     /// Événements notables de la frame en cours (rendu lancé, texture chargée…).
     ui_frame_events: Vec<String>,
+
+    /// Historique de navigation (retour / avance) — logique pure dans
+    /// `gui::view_history`, nourrie à chaque frame (`observe`) et à chaque
+    /// changement de scène (`on_new_scene` → `commit`).
+    history: ViewHistory,
+    /// Taille intérieure de la fenêtre (points), relevée à chaque frame et
+    /// sauvegardée avec la session.
+    window_size: Option<[f32; 2]>,
+    /// Fichier de session écrit à la fermeture (`None` : pas de HOME).
+    session_path: Option<std::path::PathBuf>,
 }
 
 /// Seuil de signalement d'un trou de frame UI (ms) sous `FRACTALL_UI_TRACE`.
@@ -362,11 +373,33 @@ struct JuliaPreviewMessage {
 }
 
 impl FractallApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        Self::with_session(cc, None)
+    }
+
+    /// Démarre sur la vue courante d'une session sauvegardée (reprise), ou
+    /// sur la vue par défaut si `session` est `None`.
+    pub fn with_session(
+        _cc: &eframe::CreationContext<'_>,
+        session: Option<view_history::Session>,
+    ) -> Self {
         let default_type = FractalType::Mandelbrot;
         let width = 800;
         let height = 600;
-        let params = default_params_for_type(default_type, width, height);
+        let params = match &session {
+            Some(s) => {
+                let mut p = s.current().clone();
+                p.sampling.aa_subpixel_offset = [0.0, 0.0];
+                p.sampling.aa_jitter = None;
+                p
+            }
+            None => default_params_for_type(default_type, width, height),
+        };
+        let history = match &session {
+            Some(s) => ViewHistory::from_session(s),
+            None => ViewHistory::new(&params),
+        };
+        let iter_auto = session.as_ref().is_none_or(|s| s.iter_auto);
 
         // Ne pas créer le GPU ici : init différée au premier update() pour éviter
         // "Parent device is lost" sur NVIDIA (eframe doit d'abord créer sa fenêtre/device).
@@ -381,7 +414,7 @@ impl FractallApp {
         // Canal pour le rendu asynchrone de la preview Julia
         let (julia_preview_tx, julia_preview_rx) = mpsc::channel();
 
-        Self {
+        let mut app = Self {
             params: params.clone(),
             iterations: Arc::new(Vec::new()),
             zs: Arc::new(Vec::new()),
@@ -458,7 +491,7 @@ impl FractallApp {
             // itérations automatiques actives par défaut.
             nav_mode: NavModeState::new(NavPreference::Auto),
             nav_applied: NavMode::Continuous,
-            iter_auto: true,
+            iter_auto,
             auto_grow_guard: Default::default(),
             pending_iter_shrink: None,
             pending_final_pass: None,
@@ -474,7 +507,74 @@ impl FractallApp {
             ui_trace: std::env::var("FRACTALL_UI_TRACE").is_ok_and(|v| v != "0"),
             ui_frame_last: None,
             ui_frame_events: Vec::new(),
+
+            history,
+            window_size: session.as_ref().and_then(|s| s.window_size),
+            session_path: view_history::session_file_path(),
+        };
+        if session.is_some() {
+            app.sync_ui_from_params();
         }
+        app
+    }
+
+    /// Aligne les widgets (type, palette, Lyapunov, séquence hybride, champ
+    /// itérations) sur `self.params` après un remplacement en bloc (reprise
+    /// de session, retour d'historique).
+    fn sync_ui_from_params(&mut self) {
+        self.selected_type = self.params.fractal_type;
+        self.palette_index = self.params.color.color_mode;
+        self.color_repeat = self.params.color.color_repeat;
+        self.out_coloring_mode = self.params.color.out_coloring_mode;
+        if self.params.fractal_type == FractalType::Lyapunov {
+            self.selected_lyapunov_preset = self.params.formula.lyapunov_preset;
+        }
+        if let Some(seq) = &self.params.formula.hybrid_phases {
+            self.hybrid_seq = seq.clone();
+        }
+        self.iteration_input = self.params.iteration_max.to_string();
+    }
+
+    /// Retour (`forward = false`) ou avance dans l'historique : applique la
+    /// vue restaurée et relance le rendu par le chemin normal. Le cache
+    /// d'orbite est gardé pour une même scène (le moteur juge sa validité,
+    /// comme pour un zoom) et vidé sinon ; XaoS décide seul par empreinte.
+    fn navigate_history(&mut self, forward: bool) {
+        let restored = if forward {
+            self.history.forward(&self.params)
+        } else {
+            self.history.back(&self.params)
+        };
+        let Some(restored) = restored else {
+            return;
+        };
+        let scene_changed = restored.fractal_type != self.params.fractal_type
+            || serde_json::to_value(&restored.formula).ok()
+                != serde_json::to_value(&self.params.formula).ok()
+            || restored.plane_transform != self.params.plane_transform;
+        self.params = restored;
+        // Vue canonique reconstruite SANS réécrire les chaînes HP (restaurées
+        // telles quelles, dimensions déjà adaptées par `restore_params`).
+        self.view = ViewHp::from_params(&self.params);
+        self.history.refresh_current(&self.params);
+        self.sync_ui_from_params();
+        // Geste en cours abandonné : la vue vient d'être remplacée.
+        self.nav.reset();
+        self.selection.cancel();
+        self.xaos_nav_last_tick = None;
+        self.xaos_nav_dragging = false;
+        if scene_changed {
+            self.use_gpu = false;
+            self.orbit_cache = None;
+            self.julia_preview_texture = None;
+            self.julia_preview_last_seed = None;
+            self.julia_preview_cancel.store(true, Ordering::Relaxed);
+            self.on_new_scene();
+        } else {
+            // Nouvelle vue pour le sage des itérations.
+            self.on_new_view();
+        }
+        self.start_render();
     }
 
     /// Navigation continue (zoom au bouton maintenu) appliquée à la souris.
@@ -513,6 +613,14 @@ impl FractallApp {
     /// mesure (cf. `NavModeState::reset_view`).
     fn on_new_scene(&mut self) {
         self.nav_mode.reset_view();
+        self.on_new_view();
+        // Historique : la vue en attente est figée, la nouvelle scène empilée.
+        self.history.commit(&self.params);
+    }
+
+    /// Nouvelle vue (retour d'historique dans la même scène) : le garde-fou
+    /// et l'évaluation des itérations automatiques repartent de zéro.
+    fn on_new_view(&mut self) {
         self.auto_grow_guard.reset();
         self.last_final_pass = None;
         self.pending_iter_shrink = None;
@@ -799,10 +907,10 @@ impl FractallApp {
         if explicit_iterations.is_some() {
             self.iter_auto = false;
         }
-        self.on_new_scene();
-
-        // Sync and render
+        // Sync and render (vue synchronisée AVANT `on_new_scene` : c'est
+        // elle que l'historique enregistre).
         self.sync_params_to_hp();
+        self.on_new_scene();
         self.orbit_cache = None;
         self.start_render();
 
@@ -1969,6 +2077,11 @@ impl FractallApp {
         // vue fausse / image uniforme (bug 2026-08-23).
         self.view.resize(new_width, new_height);
         self.view.write_to_params(&mut self.params);
+        // Redimensionner n'est pas naviguer : l'entrée courante suit la
+        // fenêtre (une vue en attente sera empilée à la bonne taille).
+        if !self.history.has_pending() {
+            self.history.refresh_current(&self.params);
+        }
         self.iterations = Arc::new(Vec::new());
         self.zs = Arc::new(Vec::new());
         self.orbits = Arc::new(Vec::new());
@@ -2542,6 +2655,22 @@ impl eframe::App for FractallApp {
         // focus (itérations, coordonnées…) : taper `-`, `+`, `c`… dans le champ
         // zoomait / changeait la palette (bug 2026-08-23 ; seul `0` était gaté).
         let text_field_focused = ctx.egui_wants_keyboard_input();
+        // Historique : Backspace / Alt+← = retour, Alt+→ = avance (jamais
+        // quand un champ texte a le focus : Backspace y efface).
+        if !text_field_focused && !self.iteration_input_has_focus {
+            let (back, forward) = ctx.input(|i| {
+                (
+                    i.key_pressed(egui::Key::Backspace)
+                        || (i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft)),
+                    i.modifiers.alt && i.key_pressed(egui::Key::ArrowRight),
+                )
+            });
+            if back {
+                self.navigate_history(false);
+            } else if forward {
+                self.navigate_history(true);
+            }
+        }
         ctx.input(|i| {
             if text_field_focused {
                 return;
@@ -2713,6 +2842,23 @@ impl eframe::App for FractallApp {
         // Panneau de contrôle en haut
         egui::Panel::top("controls").show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    // Historique de navigation (◀ retour, ▶ avance).
+                    if ui
+                        .add_enabled(self.history.can_back(), egui::Button::new("◀"))
+                        .on_hover_text("Back to the previous view (Backspace or Alt+←)")
+                        .clicked()
+                    {
+                        self.navigate_history(false);
+                    }
+                    if ui
+                        .add_enabled(self.history.can_forward(), egui::Button::new("▶"))
+                        .on_hover_text("Forward to the next view (Alt+→)")
+                        .clicked()
+                    {
+                        self.navigate_history(true);
+                    }
+                    ui.separator();
+
                     // Menu Type (toutes catégories)
                     ui.label("Type:");
 
@@ -4131,9 +4277,40 @@ impl eframe::App for FractallApp {
             });
 
 
+        // Historique : une vue n'est empilée qu'une fois le geste terminé
+        // et la vue stable (`view_history::SETTLE`) ; jamais pendant le mode
+        // preview Julia.
+        let julia_mode = self.selected_type.has_julia_variant() && self.julia_preview_enabled;
+        if !julia_mode {
+            let gesture = ctx.input(|i| i.pointer.any_down())
+                || self.selection.is_active()
+                || self.nav.is_active()
+                || self.xaos_nav_dragging;
+            let now = Instant::now();
+            self.history.observe(&self.params, now, gesture);
+            if let Some(wait) = self.history.time_to_settle(now) {
+                ctx.request_repaint_after(wait + Duration::from_millis(10));
+            }
+        }
+        if let Some(rect) = ctx.input(|i| i.viewport().inner_rect) {
+            self.window_size = Some([rect.width(), rect.height()]);
+        }
+
         // Demander un re-rendu seulement si un rendu est en cours
         if self.rendering || self.hq_render_state.is_running() {
             ctx.request_repaint();
+        }
+    }
+
+    /// Fermeture : la vue courante et l'historique sont sauvegardés pour la
+    /// reprise au prochain démarrage (`fractall-gui --fresh` les ignore).
+    fn on_exit(&mut self) {
+        let Some(path) = self.session_path.clone() else {
+            return;
+        };
+        let session = self.history.to_session(self.iter_auto, self.window_size);
+        if let Err(e) = view_history::save_session(&path, &session) {
+            eprintln!("Could not save the GUI session to {}: {e}", path.display());
         }
     }
 }
