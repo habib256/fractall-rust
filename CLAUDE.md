@@ -544,7 +544,12 @@ Si `params.use_bytecode_engine` ET `compile_formula(type, power)` réussit :
   centres escape-time profonds sur le path perturbation au lieu de tomber en GMP
   par-pixel — c'est ce qui a débloqué la perf deep-zoom (e50 544→1.6 s, e1000
   742→0.5 s, dragon ~6 h→6.5 s à 256², cf. TODO G2). ⚠️ Lire `z_ref[m]` avec `m`
-  clampé à `ref_len-1` (après un pas, `m` peut valoir `ref_len`).
+  clampé à `ref_len-1` (après un pas, `m` peut valoir `ref_len`). ⚠️ Un pixel
+  qui atteint `iteration_max` PILE sur le dernier point de la réf a fini : ne
+  JAMAIS le marquer `ref_exhausted` (garde `keep_iterating`, boucles f64 comme
+  GMP) — sinon une vue entièrement intérieure flaggait 100 % des pixels →
+  frame dd entière pour rien (vue GUI 264×156 : 5,0 → 0,41 s, 2026-11-18 ;
+  verrou `pixel_finishing_on_last_reference_point_is_not_exhausted`).
   **Fallback correction** (Mandelbrot bytecode, `perturbation/mod.rs`) : quand
   `glitch_ratio > GLITCH_FALLBACK_THRESHOLD` (0.30), on **escalade au tier dd**
   (`[DD-ESCALATION]`, re-render pixel-exact GMP ~4-8× plus rapide) au lieu du
@@ -726,27 +731,16 @@ la mantisse (vérifié : à 1e300, `req_exp=1003` mais `req_prec=8`). Le tier **
 non captée par un détecteur cheap fiable (proxy `cbits` réfuté, cf. TODO G3).
 Seuils calibrés **préservés** (271 unit + 24 golden pixel-exact + sweep-lock).
 
-#### Décisions « expérience utilisateur » du sage (`wisdom_nav`, `wisdom_iter`)
+#### Décision « expérience utilisateur » du sage (`wisdom_iter`)
 
-Deux modules voisins, ré-exportés par `fractal::wisdom` (point d'entrée
-unique des choix automatiques). Aucun champ `FractalParams` : « auto » est un
-état CLI/GUI, seule la valeur résolue est stockée.
+Module ré-exporté par `fractal::wisdom` (point d'entrée unique des choix
+automatiques). Aucun champ `FractalParams` : « auto » est un état CLI/GUI,
+seule la valeur résolue est stockée. ⚠️ Un sélecteur de mode de navigation
+piloté par le sage (`wisdom_nav`, « Nav: Auto/Continuous/Step », coût mesuré
+des rendus) a existé du 2026-11-17 au 2026-11-18 : RETIRÉ sur décision de
+l'utilisateur (choix jugé inadapté, menu aussi) — retour à la case « XaoS »
+(off par défaut). Ne pas le réintroduire sans qu'il le demande.
 
-- **`wisdom_nav`** — mode de navigation GUI, logique PURE (ni horloge ni
-  egui). `NavPreference` {Auto (défaut), Continuous, Stepped} → `NavMode`
-  {Continuous, Stepped} ; la GUI possède un `NavModeState` et le nourrit par
-  `observe_frame(FrameCost{elapsed_secs, divisor, fresh_fraction})` après
-  chaque rendu terminé (coût plein cadre extrapolé `elapsed·d²/fresh` ; image
-  ignorée si < 25 % de pixels calculés), ou `predict(s)` avant la première
-  mesure (marge ×2). Grandeur jugée : image de navigation projetée au diviseur
-  max (4) = plein cadre / 16. Pas à pas si > **0,75 s** (3 × budget 0,25 s)
-  sur **2 mesures consécutives** (une seule si > 4 × le seuil) ; retour au
-  continu si < **0,3 s** sur 2 mesures ; bande morte entre les deux
-  (hystérésis, compteurs remis à zéro). Préférence forcée toujours respectée.
-  `NavModeDecision.message` : texte anglais produit par la lib pour la barre
-  d'état (bascule « Step navigation: … » / « Continuous navigation is back:
-  … », ou avertissement consultatif une fois par épisode lent si Continuous
-  est forcé sur une vue lente).
 - **`wisdom_iter`** — nombre d'itérations automatique. Critère : un plafond
   `C` suffit si la fraction de pixels dont la classe évadé/plafonné change
   entre `C` et `4C` reste sous **`TARGET_CHANGE` = 0,2 %** — extrapolée de la
@@ -785,8 +779,8 @@ unique des choix automatiques). Aucun champ `FractalParams` : « auto » est un
   ⚠️ Toute invocation CLI à résultat déterministe (golden, baseline, icône)
   doit porter `--iterations` ou une source qui le fournit.
 - **Câblage GUI** (`gui/app.rs`, décisions pures testées dans `gui/sage.rs`) :
-  sélecteur « Nav: Auto/Continuous/Step » (`nav_mode: NavModeState` = source
-  unique, bascule différée à la fin du geste en cours) et case « Iter: Auto »
+  case « XaoS » (`xaos_nav_mode`, zoom continu au bouton maintenu, off par
+  défaut) et case « Iter: Auto »
   (coupée par une valeur tapée, un PNG ou un TOML déposé). ⚠️ La GUI ne doit
   PAS lancer l'évaluation par image (`assess_iterations`) sur les frames
   d'écho XaoS (pixels copiés : la distribution ne décrit pas la vue) —

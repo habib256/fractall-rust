@@ -15,7 +15,6 @@ use crate::fractal::{
     apply_lyapunov_preset, default_params_for_type, AlgorithmMode, FractalParams, FractalType,
     LyapunovPreset, OutColoringMode, PlaneTransform, ViewHp,
 };
-use crate::fractal::wisdom::{NavMode, NavModeDecision, NavModeState, NavPreference};
 use crate::gpu::GpuRenderer;
 use crate::gui::hq_render_state::{HqRenderEvent, HqRenderResult, HqRenderState};
 use crate::gui::nav;
@@ -248,16 +247,10 @@ pub struct FractallApp {
     julia_preview_cancel: Arc<AtomicBool>,
     julia_preview_rendering: bool,
 
-    /// Sage du mode de navigation (`wisdom_nav`) : préférence utilisateur
-    /// (Auto / Continuous / Step) + mode décidé d'après le coût mesuré des
-    /// rendus. SOURCE de vérité du mode ; `nav_applied` n'en est que la copie
-    /// appliquée à la souris, en retard seulement pendant un geste.
-    nav_mode: NavModeState,
-    /// Mode souris effectivement appliqué : continu = bouton maintenu = zoom
-    /// CONTINU ancré au curseur (gauche = in, droit = out) ; pas à pas = clic
-    /// ×2 / sélection rectangle. Rattrape `nav_mode.mode()` dès qu'aucun
-    /// geste n'est en cours (`sage::nav_switch_now`), jamais ailleurs.
-    nav_applied: NavMode,
+    /// Navigation « à la XaoS » (case de la barre d'outils, off par défaut) :
+    /// bouton maintenu = zoom CONTINU ancré au curseur (gauche = in, droit =
+    /// out) au lieu du clic ×2 / de la sélection rectangle.
+    xaos_nav_mode: bool,
     /// Itérations automatiques (`wisdom_iter`, couche 1 par image) : état
     /// GUI, jamais sérialisé (seule la valeur résolue va dans
     /// `params.iteration_max`). Coupé dès que l'utilisateur tape un nombre.
@@ -489,8 +482,7 @@ impl FractallApp {
 
             // Mode de navigation décidé par le sage (préférence Auto) ;
             // itérations automatiques actives par défaut.
-            nav_mode: NavModeState::new(NavPreference::Auto),
-            nav_applied: NavMode::Continuous,
+            xaos_nav_mode: false,
             iter_auto,
             auto_grow_guard: Default::default(),
             pending_iter_shrink: None,
@@ -577,42 +569,14 @@ impl FractallApp {
         self.start_render();
     }
 
-    /// Navigation continue (zoom au bouton maintenu) appliquée à la souris.
+    /// Navigation continue (zoom au bouton maintenu) : case « XaoS ».
     fn continuous_nav(&self) -> bool {
-        self.nav_applied == NavMode::Continuous
-    }
-
-    /// Affiche le message d'une décision du sage de navigation (la bascule
-    /// effective du mode souris passe par `sync_nav_mode`).
-    fn post_nav_decision(&mut self, decision: NavModeDecision) {
-        if let Some(message) = decision.message {
-            self.sage_notice.post(message, Instant::now());
-        }
-    }
-
-    /// Aligne le mode souris appliqué sur le mode décidé par le sage — hors
-    /// geste seulement (bouton maintenu, sélection, inertie du zoom continu) :
-    /// un changement décidé en plein geste attend le relâchement. Même remise
-    /// à zéro de l'état transitoire que l'ancienne case « XaoS ».
-    fn sync_nav_mode(&mut self, ctx: &Context) {
-        let gesture = ctx.input(|i| i.pointer.any_down())
-            || self.selection.is_active()
-            || self.nav.is_active();
-        if let Some(mode) = sage::nav_switch_now(self.nav_applied, self.nav_mode.mode(), gesture) {
-            self.nav_applied = mode;
-            self.xaos_nav_last_tick = None;
-            self.xaos_nav_dragging = false;
-            self.nav.reset();
-            self.selection.cancel();
-        }
+        self.xaos_nav_mode
     }
 
     /// Nouvelle scène (type, formule, preset, fichier déposé, reset de vue) :
-    /// le coût mesuré et l'historique des itérations automatiques ne valent
-    /// plus. Le mode de navigation courant est conservé jusqu'à la prochaine
-    /// mesure (cf. `NavModeState::reset_view`).
+    /// l'historique des itérations automatiques ne vaut plus.
     fn on_new_scene(&mut self) {
-        self.nav_mode.reset_view();
         self.on_new_view();
         // Historique : la vue en attente est figée, la nouvelle scène empilée.
         self.history.commit(&self.params);
@@ -670,18 +634,12 @@ impl FractallApp {
         }
     }
 
-    /// Fin d'un rendu (AllComplete) : nourrit le sage de navigation avec le
-    /// coût mesuré, puis le sage des itérations avec le buffer final.
+    /// Fin d'un rendu (AllComplete) : nourrit le sage des itérations avec le
+    /// buffer final.
     fn sage_after_render(&mut self) {
         let Some((info, iterations)) = self.pending_final_pass.take() else {
             return;
         };
-        if let Some(elapsed) = self.last_render_time {
-            if let Some(cost) = sage::frame_cost(&info, elapsed, self.aa_samples.max(1)) {
-                let decision = self.nav_mode.observe_frame(cost);
-                self.post_nav_decision(decision);
-            }
-        }
         self.last_final_pass = Some((info, Arc::clone(&iterations)));
         self.assess_final_pass(&info, &iterations);
     }
@@ -2609,7 +2567,6 @@ impl eframe::App for FractallApp {
         // Vérifier si le rendu est terminé
         self.check_render_complete(ctx);
         // Mode souris : appliquer la décision du sage hors geste.
-        self.sync_nav_mode(ctx);
 
         // G10.4 : raffinement idle — la dernière frame contient des pixels
         // copiés (approximés ≤ 0.5 px) ; après ~400 ms sans nouveau rendu,
@@ -3087,57 +3044,20 @@ impl eframe::App for FractallApp {
                         }
                     }
 
-                    // Mode de navigation : préférence de l'utilisateur, Auto
-                    // par défaut (le sage choisit selon le coût mesuré de la
-                    // vue). La bascule effective du mode souris se fait dans
-                    // `sync_nav_mode`, hors geste.
-                    let nav_pref = self.nav_mode.preference();
-                    let mode_name = |m: NavMode| match m {
-                        NavMode::Continuous => "continuous",
-                        NavMode::Stepped => "step",
-                    };
-                    let nav_label = match nav_pref {
-                        NavPreference::Auto => {
-                            format!("Nav: Auto ({})", mode_name(self.nav_mode.mode()))
-                        }
-                        NavPreference::Continuous => "Nav: Continuous".to_string(),
-                        NavPreference::Stepped => "Nav: Step".to_string(),
-                    };
-                    let mut new_pref = nav_pref;
-                    egui::ComboBox::from_id_salt("nav_mode")
-                        .selected_text(nav_label)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut new_pref, NavPreference::Auto, "Auto")
-                                .on_hover_text(
-                                    "fractall picks whichever navigation the current view \
-                                     can sustain: continuous while frames are fast, step \
-                                     when they get slow.",
-                                );
-                            ui.selectable_value(
-                                &mut new_pref,
-                                NavPreference::Continuous,
-                                "Continuous",
-                            )
-                            .on_hover_text(
-                                "XaoS-style: hold the left button to zoom in at the cursor, \
-                                 the right button to zoom out.",
-                            );
-                            ui.selectable_value(&mut new_pref, NavPreference::Stepped, "Step")
-                                .on_hover_text(
-                                    "Click to zoom ×2, right-click to zoom out, drag to \
-                                     select an area.",
-                                );
-                        })
-                        .response
-                        .on_hover_text(
-                            "Navigation mode.\nContinuous: hold the left button to zoom in at \
-                             the cursor, right to zoom out (XaoS-style).\nStep: click to zoom \
-                             ×2, drag to select an area.\nAuto: fractall picks whichever the \
-                             current view can sustain.",
-                        );
-                    if new_pref != nav_pref {
-                        let decision = self.nav_mode.set_preference(new_pref);
-                        self.post_nav_decision(decision);
+                    // Checkbox navigation XaoS : remplace le clic ×2 / la
+                    // sélection rectangle par un zoom continu au bouton maintenu.
+                    let old_xaos_nav = self.xaos_nav_mode;
+                    ui.checkbox(&mut self.xaos_nav_mode, "XaoS").on_hover_text(
+                        "XaoS-style navigation: hold the left button = continuous zoom in \
+                         anchored at the cursor, right button = zoom out. Replaces the ×2 click and \
+                         the rectangle selection.",
+                    );
+                    if old_xaos_nav != self.xaos_nav_mode {
+                        // Sortie/entrée du mode : abandonner tout état transitoire.
+                        self.xaos_nav_last_tick = None;
+                        self.xaos_nav_dragging = false;
+                        self.nav.reset();
+                        self.selection.cancel();
                     }
 
                     ui.separator();
@@ -4292,7 +4212,12 @@ impl eframe::App for FractallApp {
                 ctx.request_repaint_after(wait + Duration::from_millis(10));
             }
         }
-        if let Some(rect) = ctx.input(|i| i.viewport().inner_rect) {
+        // Taille de la zone egui en points logiques (même unité que
+        // `with_inner_size`). ⚠️ PAS `viewport().inner_rect` : sous Wayland
+        // winit ne connaît pas la position de la fenêtre et le laisse à None
+        // — la taille n'était jamais sauvegardée.
+        let rect = ctx.viewport_rect();
+        if rect.width() > 0.0 && rect.height() > 0.0 {
             self.window_size = Some([rect.width(), rect.height()]);
         }
 
