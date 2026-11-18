@@ -158,6 +158,7 @@ python3 scripts/harness.py score --tier quick
 | Zoom out | Right-click / `-` |
 | Pan | Middle-click drag |
 | Reset view | `0` |
+| Previous / next view | `Backspace` or `Alt+←` / `Alt+→`, or the ◀ ▶ toolbar buttons |
 | Change fractal | Type menu — Mandelbrots at root, **Julia all** folder for Julia sets |
 | Julia preview | Hover over Mandelbrot-like types; `J` switches to the full Julia view |
 | Cycle palette | `C` |
@@ -165,6 +166,11 @@ python3 scripts/harness.py score --tier quick
 | Save screenshot | `S` |
 | Switch fractal type | `F1`–`F12` |
 | Load state | Drag & drop a PNG onto the window |
+
+The GUI remembers where you were: on exit it saves the current view and the
+navigation history to `~/.config/fractall/gui-session.json` and resumes there
+on the next start. Run `fractall-gui --fresh` (or press `0`) to start from the
+default view.
 
 ## CLI Reference
 
