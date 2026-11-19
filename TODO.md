@@ -10,7 +10,62 @@
 
 ---
 
-## 🧭 État actuel (2026-11-06) — lire ceci en premier
+## 🧭 État actuel (2026-11-19) — lire ceci en premier
+
+**2026-11-19 — le harness juge les DÉCISIONS et TOUS les types.** Le
+scorecard affichait « aucun gap » : le harness ne voyait ni les choix
+automatiques du moteur ni 25 types sur 33. Trois ajouts (HARNESS.md §7, §8,
+tier micro, Leviers) et ce qu'ils ont trouvé au premier passage :
+
+- **Axe `wisdom`** : regret du plan `auto` contre chaque plan forcé (à sortie
+  équivalente, adjudication GMP automatique sinon) + justesse du plafond de
+  la sonde d'itérations contre le rendu à 4N. Routage : 0 regret (harmonic,
+  f64-standard vs perturbation). **Corrigé le jour même** : la sonde
+  s'emballait sur les types « fuyants » — Barnsley Mandelbrot ×5 : 2,9 M
+  itérations, 37 s à 128×80 → **52 000, 0,66 s** ; Multibrot non entier ×8 :
+  140 000 → 8 900 (1,86 → 0,30 s) ; vues Mandelbrot inchangées au plafond
+  près (`HEAVY_TAIL_RATIO`, `IN_TAIL_FACTOR`, `TAIL_MARGIN_MAX_LIFT`).
+- **Axe `types`** (33 types, vue d'accueil + bord ×4096, juge GMP à
+  convergence vérifiée) et **tier `micro`** (cycle d'A/B de ~5 min sur 4
+  cœurs). Section **Leviers** : la liste de travail quand il n'y a aucun gap.
+
+**Gaps OUVERTS trouvés par ces axes (correction d'abord)** :
+
+1. **Path standard, vue à plafond AUTO** — éléphants 1e7 à 60 000 itérations
+   (le plafond que choisit la sonde) : **1,04 % de pixels faux** vs GMP pur
+   (juge convergé 256 b ≡ 640 b). 425 des 429 pixels faux portent la valeur
+   de la perturbation f64 : le traqueur de la PERTURBATION ne les signale pas
+   (bord parabolique : l'erreur ne s'emballe pas, elle déplace le temps de
+   transit). Piste : test de détermination à l'évasion en perturbation f64
+   (`FRACTALL_F64_MARGIN=1`, à mesurer sur cette scène) ; la perturbation
+   forcée y laisse en plus 3,1 % de pixels « au-delà du dd » non corrigés.
+   Verrou : `truth/std:elephants_1e7_60000` (FAIL tant que c'est ouvert).
+2. **Tricorn bord ×4096 : 2,5 % de pixels faux** (juge convergé). Avec
+   `FRACTALL_RELIABILITY_STD=all` le traqueur les SIGNALE (239 signalés pour
+   65 faux) mais la correction GMP est hors budget → corriger par la
+   perturbation comme Mandelbrot/Julia (Tricorn a ses noyaux), puis activer
+   le suivi par défaut.
+3. **Barnsley Julia : 5 % (bord) et 1 % (accueil) de pixels faux** — même
+   formule en f64 et en GMP ; la carte dilate de |c| ≈ 1,25 par pas, donc
+   f64 perd toute détermination vers 165 itérations. Demande un traqueur
+   (E' = |c|·E, signalé au franchissement de Re z = 0 ou à l'évasion) et une
+   correction en précision étendue.
+4. **Alpha Mandelbrot bord 4,5 %, Mandelbulb bord 3,9 %** (juge convergé) ;
+   PerpBS Julia 0,35 %, Magnet Julia 0,31 % (WARN) : aucun suivi sur ces
+   boucles scalaires.
+5. `CHAOS` (pas des gaps) : Buffalo, Burning Ship, Celtic, Perp. BS,
+   Barnsley M — le juge 256 b diffère du juge 512 b sur 70-85 % des pixels
+   de bord ; le traqueur étendu y signale ~98 % des pixels.
+
+**Leviers de vitesse mesurés (ns par pixel·itération·thread)** : Newton bord
+90, Multibrot non entier 85, Mandelbrot Sin 58, Julia Sin 51, Nova 21 —
+contre 3-6 pour les familles bytecode par lots ; correction de fiabilité du
+path standard à plafond auto (éléphants 1e7 : 43 % de pixels signalés, 53-81 %
+du rendu) ; sonde d'itérations (18-46 % du rendu sur les vues chères).
+
+---
+
+## État au 2026-11-06
 
 **2026-11-06, matin — branche `matin-20261106` (67 commits, fusionnée dans
 `main`), cinq agents Opus en worktrees + relectures indépendantes.** Score

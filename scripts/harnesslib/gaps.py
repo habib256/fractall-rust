@@ -100,7 +100,8 @@ def compute_gaps(card: dict, base: dict | None) -> list[dict]:
             continue
         sev = 1 if c["verdict"] == "FAIL" else 4
         gaps.append(_gap("truth", name, "diff_px", c.get("diff_px"), None, sev,
-                         f"pixels du rendu par défaut ≠ tier dd "
+                         f"pixels du rendu par défaut ≠ "
+                         f"{'GMP pur' if c.get('judge') == 'gmp' else 'tier dd'} "
                          f"({100 * c.get('frac', 0):.2f} %, path {c.get('path')})"))
     # --- wisdom (décisions automatiques : regret, itérations auto) ---
     gaps += wisdom_gaps(card, load_wisdom_adjudications())

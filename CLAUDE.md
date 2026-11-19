@@ -781,8 +781,18 @@ l'utilisateur (choix jugé inadapté, menu aussi) — retour à la case « XaoS 
   s'évade dans le budget ⇒ départ + `no_escape` (intérieur indiscernable d'un
   plafond trop bas) ; sur vue très profonde la sonde coûte ≈ une orbite de
   référence ; `cancel` n'est pas relevé pendant la correction de fiabilité
-  dd. Calibration rejouable : `cargo run --release --example
-  calibrate_auto_iter`. `AutoIterResult::summary_line()` = ligne anglaise.
+  dd. **Queue lourde (2026-11-19)** — types « fuyants » dont l'intérieur
+  apparent finit par s'évader (Barnsley, Multibrot non entier) : la masse
+  par octave décroît de moins de 30 % (`HEAVY_TAIL_RATIO`) alors que le
+  plafond est déjà loin de la médiane des évasions (`IN_TAIL_FACTOR` — sans
+  cette condition seahorse 1e7 serait « lourd » à son plafond de départ).
+  L'extrapolation géométrique n'y vaut rien : la sonde avance par ×4
+  (`HEAVY_TAIL_GROWTH`) en remesurant et s'arrête dès que la prédiction
+  passe sous `GROW_THRESHOLD` ; la marge de queue observée ne relève plus le
+  plafond suffisant que de ×2 (`TAIL_MARGIN_MAX_LIFT`). Barnsley Mandelbrot
+  ×5 : 2,9 M itérations → 52 000 (37 s → 0,66 s à 128×80). Juge : volet
+  `iter` de l'axe `wisdom` du harness. Calibration rejouable : `cargo run
+  --release --example calibrate_auto_iter`. `AutoIterResult::summary_line()` = ligne anglaise.
   **Câblage CLI** (`main.rs`) : `iterations_choice` (ordre de résolution, cf.
   §CLI) puis `apply_auto_iterations` AVANT le choix du device et l'export F3 ;
   le cache d'orbite de la sonde est passé à `render_planned` ; un TOML qui
