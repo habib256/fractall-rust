@@ -409,6 +409,58 @@ fn julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     FractalResult { iteration: i, z, orbit: orbit_data, distance }
 }
 
+/// Racine carrée PRINCIPALE (même branche que `Complex::sqrt` et
+/// `Complex::powf` : argument dans (−π, π], `Im z = −0` du côté −π), sous forme
+/// algébrique — deux racines réelles et une division au lieu de
+/// `hypot`/`atan2`/`sincos`.
+#[inline(always)]
+fn csqrt_principal(z: Complex64) -> Complex64 {
+    let (x, y) = (z.re, z.im);
+    if x == 0.0 && y == 0.0 {
+        return Complex64::new(0.0, y);
+    }
+    let n = x * x + y * y;
+    let r = if n > 1e-290 && n < 1e290 { n.sqrt() } else { x.hypot(y) };
+    let t = (0.5 * (r + x.abs())).sqrt();
+    if x >= 0.0 {
+        Complex64::new(t, y / (2.0 * t))
+    } else {
+        Complex64::new(y.abs() / (2.0 * t), t.copysign(y))
+    }
+}
+
+/// `z^d` pour une puissance DEMI-entière `d = k + ½` (k ≥ 0) :
+/// `z^k · √z`, égal à `exp(d·Log z)` sur la branche principale (l'argument
+/// de `z^k` n'est jamais réduit modulo 2π, celui de `√z` vaut `θ/2`).
+/// Multibrot par défaut (d = 2,5) : boucle ×2,1-2,6 (la racine coûte ~9 ns,
+/// `hypot` + `atan2` + `pow` + `sincos` ~110 ns), plus précis (aucune
+/// exponentielle d'un logarithme arrondi). Pas les mêmes bits que `powf`.
+#[inline(always)]
+fn cpow_half_int(z: Complex64, k: u32) -> Complex64 {
+    // `z^k` ne dépend pas de la racine : calculée en parallèle de la chaîne
+    // racine → racine → division (la boucle est bornée par la latence).
+    let s = csqrt_principal(z);
+    match k {
+        0 => s,
+        1 => s * z,
+        2 => s * (z * z),
+        _ => {
+            let mut zk = z;
+            for _ in 1..k {
+                zk = zk * z;
+            }
+            s * zk
+        }
+    }
+}
+
+/// `Some(k)` si `d = k + ½` exactement, k ≥ 0 entier (k ≤ 64).
+#[inline]
+pub(crate) fn half_integer_power(d: f64) -> Option<u32> {
+    let k = d - 0.5;
+    (k >= 0.0 && k <= 64.0 && k == k.floor()).then_some(k as u32)
+}
+
 #[inline]
 fn julia_sin(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     // JuliaSin_Iteration: z_{n+1} = c * sin(z_n), z_0 = pixel, c = seed
@@ -887,6 +939,7 @@ fn multibrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let d_round = d.round();
     let is_integer = (d - d_round).abs() < 1e-10;
     let int_power = if is_integer { d_round as i32 } else { 0 };
+    let half = if is_integer { None } else { half_integer_power(d) };
 
     match int_power {
         2 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
@@ -912,6 +965,13 @@ fn multibrot(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
             for _ in 1..n {
                 z_pow = z_pow * z;
             }
+            if !z_pow.re.is_finite() || !z_pow.im.is_finite() { break; }
+            z = z_pow + z_pixel;
+            i += 1;
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
+        },
+        _ if half.is_some() => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
+            let z_pow = cpow_half_int(z, half.unwrap_or(0));
             if !z_pow.re.is_finite() || !z_pow.im.is_finite() { break; }
             z = z_pow + z_pixel;
             i += 1;
@@ -1007,6 +1067,7 @@ fn multibrot_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let d_round = d.round();
     let is_integer = (d - d_round).abs() < 1e-10;
     let int_power = if is_integer { d_round as i32 } else { 0 };
+    let half = if is_integer { None } else { half_integer_power(d) };
 
     match int_power {
         2 => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
@@ -1031,6 +1092,13 @@ fn multibrot_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
             for _ in 1..n {
                 z_pow = z_pow * z;
             }
+            if !z_pow.re.is_finite() || !z_pow.im.is_finite() { break; }
+            z = z_pow + p.seed;
+            i += 1;
+            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
+        },
+        _ if half.is_some() => while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
+            let z_pow = cpow_half_int(z, half.unwrap_or(0));
             if !z_pow.re.is_finite() || !z_pow.im.is_finite() { break; }
             z = z_pow + p.seed;
             i += 1;
@@ -1080,6 +1148,50 @@ fn alpha_mandelbrot_julia(p: &FractalParams, z_pixel: Complex64) -> FractalResul
         cyc.observe(&mut i, p.iteration_max, [z.re, z.im]);
     }
     FractalResult { iteration: i, z, orbit: None, distance: None }
+}
+
+#[cfg(test)]
+mod fast_complex_tests {
+    use super::*;
+
+    fn rel(a: Complex64, b: Complex64) -> f64 {
+        (a - b).norm() / b.norm().max(f64::MIN_POSITIVE)
+    }
+
+    fn samples() -> Vec<Complex64> {
+        let mut v = Vec::new();
+        for i in -40..=40 {
+            for j in -40..=40 {
+                v.push(Complex64::new(i as f64 * 0.0973, j as f64 * 0.0517));
+            }
+        }
+        for &(x, y) in &[(-1.5, 0.0), (-1.5, -0.0), (-2.0, 1e-300), (-2.0, -1e-300),
+                         (1e-200, 1e-200), (-1e-200, 0.0), (0.0, -3.0), (3.9, -3.9)] {
+            v.push(Complex64::new(x, y));
+        }
+        v
+    }
+
+    /// `z^(k+½)` algébrique = `powf` (branche principale, y compris de part
+    /// et d'autre de la coupure le long des réels négatifs).
+    #[test]
+    fn half_integer_power_matches_powf_on_principal_branch() {
+        for k in [0u32, 1, 2, 3, 7] {
+            let d = k as f64 + 0.5;
+            assert_eq!(half_integer_power(d), Some(k));
+            for z in samples() {
+                let (a, b) = (cpow_half_int(z, k), z.powf(d));
+                if b.norm() == 0.0 {
+                    assert_eq!(a.norm(), 0.0);
+                    continue;
+                }
+                assert!(rel(a, b) < 1e-12, "z={z:?} d={d}: {a:?} vs {b:?}");
+            }
+        }
+        for d in [2.0, 2.7, -0.5, 0.25, 65.5] {
+            assert_eq!(half_integer_power(d), None, "{d}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1140,6 +1252,13 @@ mod cycle_cut_tests {
             let mut p = default_params_for_type(FractalType::Newton, 64, 48);
             p.seed.re = degree;
             cases.push((format!("Newton degré {degree}"), p));
+        }
+        for power in [0.5, 3.5, 2.7] {
+            for ty in [FractalType::Multibrot, FractalType::MultibrotJulia] {
+                let mut p = default_params_for_type(ty, 64, 48);
+                p.formula.multibrot_power = power;
+                cases.push((format!("{ty:?}^{power}"), p));
+            }
         }
         for power in [2.0, 3.0, 4.0, 6.0] {
             for ty in [FractalType::Multibrot, FractalType::MultibrotJulia] {
