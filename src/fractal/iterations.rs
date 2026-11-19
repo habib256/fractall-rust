@@ -409,6 +409,32 @@ fn julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     FractalResult { iteration: i, z, orbit: orbit_data, distance }
 }
 
+/// `sin(z)` complexe en UN `sincos` et UN `expm1`, au lieu des quatre appels
+/// libm de `Complex::sin` (`sin`/`cos` fusionnés, `sinh` et `cosh` qui
+/// calculent chacun leur exponentielle). Avec `t = e^|y| − 1` :
+/// `sinh|y| = (t + t/(t+1))/2` et `cosh y = 1 + (t/2)·t/(t+1)` — sommes de
+/// termes positifs, sans cancellation (précision ~1 ulp, comme la libm), mais
+/// pas les mêmes bits que `Complex::sin`. Domaine : |Im z| < ~709 (les boucles
+/// Sin l'appellent sous le rayon d'évasion).
+#[inline(always)]
+fn csin(z: Complex64) -> Complex64 {
+    const TINY_HYPERBOLIC: f64 = 1.0 / (1u64 << 28) as f64;
+    let (s, c) = z.re.sin_cos();
+    let a = z.im.abs();
+    if a < TINY_HYPERBOLIC {
+        // sinh y = y·(1 + y²/6), cosh y = 1 + y²/2 : à |y| < 2⁻²⁸ les
+        // corrections sont sous le demi-ulp, l'arrondi correct vaut `y` et 1
+        // (mêmes raccourcis que la libm, qui y répond sans exponentielle —
+        // l'intérieur des vues Sin vit souvent sur l'axe réel).
+        return Complex64::new(s, c * z.im);
+    }
+    let t = a.exp_m1();
+    let q = t / (t + 1.0);
+    let sh = 0.5 * (t + q);
+    let ch = 1.0 + 0.5 * t * q;
+    Complex64::new(s * ch, c * sh.copysign(z.im))
+}
+
 /// Racine carrée PRINCIPALE (même branche que `Complex::sqrt` et
 /// `Complex::powf` : argument dans (−π, π], `Im z = −0` du côté −π), sous forme
 /// algébrique — deux racines réelles et une division au lieu de
@@ -469,7 +495,7 @@ fn julia_sin(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let mut cyc = super::cycle::CycleCut::<2>::new();
     let bailout_sqr = p.bailout * p.bailout;
     while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
-        z = p.seed * z.sin();
+        z = p.seed * csin(z);
         i += 1;
         cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
     }
@@ -484,7 +510,7 @@ fn mandelbrot_sin(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let mut cyc = super::cycle::CycleCut::<2>::new();
     let bailout_sqr = p.bailout * p.bailout;
     while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
-        z = z_pixel * z.sin();
+        z = z_pixel * csin(z);
         i += 1;
         cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
     }
@@ -1170,6 +1196,18 @@ mod fast_complex_tests {
             v.push(Complex64::new(x, y));
         }
         v
+    }
+
+    /// `csin` = `Complex::sin` à quelques ulp près, signes des zéros compris.
+    #[test]
+    fn csin_matches_complex_sin() {
+        for z in samples() {
+            let (a, b) = (csin(z), z.sin());
+            assert!(rel(a, b) < 4.0 * f64::EPSILON, "{z:?}: {a:?} vs {b:?}");
+            if b.im == 0.0 {
+                assert_eq!(a.im.is_sign_negative(), b.im.is_sign_negative(), "{z:?}");
+            }
+        }
     }
 
     /// `z^(k+½)` algébrique = `powf` (branche principale, y compris de part
