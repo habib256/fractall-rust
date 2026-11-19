@@ -371,9 +371,14 @@ fn magnet_julia_f64(
         let qq = q.norm_sqr();
         // Eviter division par zero
         if qq < 1e-24 {
-            // Le vrai |q|² est-il aussi sous le seuil ? |Δq| ≤ 2E + ρ_q.
+            // Le vrai |q|² est-il aussi sous le seuil ? |Δq| ≤ d = 2E + ρ_q,
+            // donc |q*|² ≤ (|q̂| + d)² ≤ (1+δ)|q̂|² + (1+1/δ)d² — c'est CETTE
+            // somme qu'il faut comparer au seuil, pas d² seul : un |q̂| juste
+            // sous 1e-12 avec une borne minuscule passait pour déterminé alors
+            // que le point exact était au-dessus (verrou
+            // `magnet_pole_exit_is_judged_on_q_plus_error`).
             let rho_q = U64 * (q.re.abs() + q.im.abs()) + s2;
-            if 8.0 * g + 2.0 * rho_q * rho_q >= 1e-26 {
+            if SPLIT_X * qq + SPLIT_Y * (8.0 * g + 2.0 * rho_q * rho_q) >= 1e-24 {
                 bad = true;
             }
             break;
@@ -754,6 +759,9 @@ fn dd_stage(params: &FractalParams, points: &[(Dd, Dd)]) -> Option<Vec<(u32, Com
     }
 }
 
+/// Précision minimale de l'étage GMP qui suit le double-double.
+const GMP_FLOOR_BITS: u32 = 256;
+
 /// Recalcule les pixels `flagged` : double-double, puis GMP pur sous budget
 /// pour ceux que le double-double ne garantit pas. `None` si annulé.
 pub fn correct(
@@ -831,8 +839,22 @@ pub fn correct(
         );
     }
     if !rest.is_empty() {
+        // Le GMP arbitre des pixels que le double-double (~106 b) n'a PAS su
+        // déterminer : à la précision de la vue (128 b dès que
+        // `precision_bits` < 128 sur une vue peu profonde) il n'a que ~20 bits
+        // de plus et rend une valeur arbitraire présentée comme corrigée
+        // (verrou `gmp_stage_runs_well_above_dd_precision`). Plancher
+        // GMP_FLOOR_BITS ≈ 2,4 × dd — la précision par défaut.
+        let mut gp;
+        let gmp_params = if params.engine.precision_bits < GMP_FLOOR_BITS {
+            gp = params.clone();
+            gp.engine.precision_bits = GMP_FLOOR_BITS;
+            &gp
+        } else {
+            params
+        };
         crate::render::std_reliability::correct_std_pixels(
-            params,
+            gmp_params,
             crate::render::std_reliability::StdCorrection::GmpCapped,
             cancel,
             &rest,
@@ -1136,6 +1158,57 @@ mod tests {
             }
             eprintln!("{ft:?}: flagged capped={fc} escaped={fe} (log10 it hist {hist:?}) ; ok capped={nc} escaped={ne} ; flagged [diff,same]x[dd_bad,dd_ok] {agree:?} ; dd_bad vs gmp [diff,same] {beyond:?}");
         }
+    }
+
+    /// Sortie « pôle » de Magnet Julia (`|q|² < 1e-24`) : point f64 EXACT
+    /// (vue 1×1) dont le 2e pas tombe en f64 à |q|² = 0,99956e-24 mais à
+    /// 1,00003e-24 en exact. La boucle f64 s'arrêtait à 1 itération et se
+    /// déclarait fiable (elle comparait la seule borne d'erreur au seuil) ;
+    /// le GMP pur continue.
+    #[test]
+    fn magnet_pole_exit_is_judged_on_q_plus_error() {
+        let z0 = Complex64::new(f64::from_bits(0x3fe426b473df3572), f64::from_bits(0x3fedd7afc17c751f));
+        let mut p = default_params_for_type(FractalType::MagnetJulia, 1, 1);
+        p.center_x = z0.re;
+        p.center_y = z0.im;
+        p.span_x = 1e-12;
+        p.span_y = 1e-12;
+        p.iteration_max = 200;
+        let g = crate::fractal::gmp::MpcParams::from_params(&p);
+        let (truth, _) = crate::fractal::gmp::iterate_point_mpc(
+            &g,
+            &crate::fractal::gmp::complex_from_xy(g.prec, Float::with_val(g.prec, z0.re), Float::with_val(g.prec, z0.im)),
+        );
+        let raw = iterate_point(&p, z0).iteration;
+        assert_eq!(raw, 1, "scène : la boucle f64 doit sortir au pôle");
+        assert_ne!(truth, raw, "scène : le point exact ne doit pas sortir au pôle");
+        let (_, _, bad) = iterate_tracked(&p, z0);
+        assert!(bad, "sortie au pôle non déterminée déclarée fiable");
+        let prod = crate::render::render_escape_time(&p);
+        assert_eq!(prod.iterations[0], truth, "rendu de production ≠ GMP pur");
+    }
+
+    /// Pixel de bord Mandelbulb ×6e9 que le double-double ne détermine pas :
+    /// avec `precision_bits` = 64 la vue réclame 128 b, et le GMP à 128 b
+    /// rendait 1667 itérations au lieu de 1492 (GMP 256 b ≡ 512 b).
+    #[test]
+    fn gmp_stage_runs_well_above_dd_precision() {
+        let (w, h) = (24u32, 16u32);
+        let mut p = default_params_for_type(FractalType::Mandelbulb, w, h);
+        let (cx, cy) = ("-6.88218023928699463034588e-1", "-2.67570936992955699034588e-1");
+        p.center_x_hp = Some(cx.into());
+        p.center_y_hp = Some(cy.into());
+        p.center_x = cx.parse().unwrap();
+        p.center_y = cy.parse().unwrap();
+        p.span_x = 6.738679960241853e-10;
+        p.span_y = 6.738679960241853e-10;
+        p.iteration_max = 20_000;
+        p.bailout = 2.0;
+        p.engine.precision_bits = 64;
+        let n = (w * h) as usize;
+        let (mut it, mut zs) = (vec![0u32; n], vec![Complex64::new(0.0, 0.0); n]);
+        correct(&p, &AtomicBool::new(false), &[161], &mut it, &mut zs).unwrap();
+        assert_eq!(it[161], 1492, "pixel au-delà du dd mal arbitré par le GMP");
     }
 
     #[test]
