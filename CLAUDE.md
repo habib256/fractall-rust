@@ -177,6 +177,7 @@ src/
 │   │   ├── interp_batch.rs # idem PAR LOTS, 8 voies entrelacées (path std, défaut)
 │   │   ├── interp_gmp.rs   # interpréteur GMP pour orbite référence
 │   │   ├── delta_form.rs   # DeltaState f64 + DeltaStateExp ComplexExp
+│   │   ├── direct_dd.rs    # itération directe double-double tracée (étage f64 → GMP, Julia/Tricorn)
 │   │   ├── bla_dual.rs     # BLA mat2 unifié via dual-numbers
 │   │   ├── pixel_loop.rs   # BLA + delta-form + rebasing F3 (f64)
 │   │   ├── pixel_loop_exp.rs # idem ComplexExp (tier exp, boucle FloatExp de référence)
@@ -938,6 +939,19 @@ compte) dépend de la référence — deux vues dont les centres diffèrent au
 17e chiffre (chaîne HP vs f64) ne sont plus égales au bit près sur `zs`.
 Non suivis : formules à `Mul`/`Rot` (Multibrot, opcodes), hybrides et canaux
 annexes (chemin scalaire), plan ≠ Mu, graine non nulle, types sans bytecode.
+**Tricorn suivi par défaut + étage double-double DIRECT (2026-11-19)** —
+l'axe `types` du harness a montré 2,5 % de pixels faux sur un bord Tricorn
+×4096 (juge convergé). Tricorn est désormais traité comme Mandelbrot/Julia :
+traqueur du path standard, pixels signalés recalculés par la perturbation
+tracée (`family_tracking_enabled`), puis — nouveau, et valable aussi pour
+Julia — par `bytecode/direct_dd.rs` : l'itération directe en double-double
+(~106 b, 10-15 ns/itération) avec sa propre borne (`E_MAX`, marge
+d'évasion), avant le GMP pur (150 ns/itération). Conditions
+(`direct_dd_phase`) : formule mono-phase à opcodes simples, plan Mu, pixel
+≥ 1e-22, PAS le Mandelbrot non hybride (son tier dd de perturbation passe
+avant). Sortie identique au chemin tout-GMP ; Tricorn bord 128×80 :
+correction 0,17-0,27 s → 0,033 s. Burning Ship reste en opt-in : son bord
+est `CHAOS` (98 % de pixels signalés, juge 256 b ≠ 512 b).
 ⚠️ **L'emballement ne voit pas un bord PARABOLIQUE** (2026-11-19) : près
 d'un point parabolique l'erreur ne s'amplifie pas exponentiellement, elle
 déplace le temps de transit du goulot, et l'orbite s'évade quelques pas plus
@@ -1023,13 +1037,14 @@ Tous lus UNE fois (`OnceLock`). Défaut = comportement de production.
 | `FRACTALL_RELIABILITY=off\|observe\|escalate` | détecteur de fiabilité (défaut `escalate`) |
 | `FRACTALL_RELIABILITY_EXP=0` | coupe le traqueur du tier exp |
 | `FRACTALL_RELIABILITY_DD=0` | coupe le traqueur du tier dd (⚠️ rend l'ε 2⁻⁸⁰ de la BLA dd non gardé) |
-| `FRACTALL_RELIABILITY_FAMILY=0\|all` | suivi de fiabilité hors Mandelbrot : défaut Julia seule ; `all` ajoute Burning Ship et Tricorn ; `0` coupe |
+| `FRACTALL_RELIABILITY_FAMILY=0\|all` | suivi de fiabilité hors Mandelbrot en perturbation : défaut Julia + Tricorn ; `all` ajoute Burning Ship ; `0` coupe |
 | `FRACTALL_QD=0` | pas de tier quad-double : les pixels au-delà du dd vont droit au GMP |
 | `FRACTALL_QD_MAX_FRACTION=f` | plafond du tier qd (défaut 0,01 ; plancher 16 pixels ; ≥ 1 = illimité) |
 | `FRACTALL_DD_RETRY_NOBLA=0` | pas de second essai dd sans BLA avant le GMP |
 | `FRACTALL_RELIABILITY_GMP_MAX_FRACTION=f` | plafond de l'escalade dd → GMP (défaut 0,001 ; ≥ 1 = illimité) |
 | `FRACTALL_DD_PROBE=1` | sonde dd avant l'escalade frame (opt-in) : scène dont la majorité des pixels non fiables échappe aussi au dd ⇒ f64 gardé avec avertissement, frame dd non rendue |
 | `FRACTALL_F64_MARGIN=1` | test de détermination à l'évasion au tier f64 (opt-in, +75-195 %) |
+| `FRACTALL_DIRECT_DD=0` | correction des familles sans tier dd (Julia, Tricorn) : pas d'étage double-double direct, les pixels signalés partent droit au GMP pur (sortie identique, ×5-8 plus lent sur un bord) |
 | `FRACTALL_DD_ESCAPE_SHALLOW=0\|f` | correction dd des vues PEU PROFONDES (pixel ≥ 1e-13) : `0` coupe le test d'évasion relatif (défaut 0,01·\|z\|), une valeur le remplace. Sans lui, bord parabolique à fort plafond (éléphants 1e7, 60 000 it.) : 1,2 % de pixels faux |
 | `FRACTALL_DD_ESCAPE_REL=0.1` | tier dd : pixel non fiable si sa borne ≥ 0,1·\|z\| à l'évasion (opt-in — corrige le dernier pixel faux de seahorse-valley 256², coûte ×2 sur e227 pour 0 pixel changé) |
 | `FRACTALL_DD_FAST=0` | boucle `DoubleDoubleExp` au lieu du chemin rapide dd |

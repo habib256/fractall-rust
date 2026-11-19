@@ -1082,7 +1082,7 @@ fn try_bytecode_unified_path(
         // familles). Julia par défaut ; Burning Ship / Tricorn en opt-in
         // (`FRACTALL_RELIABILITY_FAMILY=all`, cf. `family_tracking_enabled`).
         if reliability.tracks()
-            && family_tracking_enabled(is_julia)
+            && family_tracking_enabled(params.fractal_type)
             && !params.channels.enable_orbit_traps
             && !params.channels.enable_distance_estimation
             && !params.channels.enable_interior_detection
@@ -1186,20 +1186,34 @@ fn try_bytecode_unified_path(
 ///   budget), soit rendues en GMP plein cadre par le repli « référence
 ///   épuisée » (pas de boucle f64 à surveiller). Surcoût mesuré BS +1,5 %.
 /// - `0` : aucun suivi (A/B).
-pub(crate) fn family_tracking_enabled(is_julia: bool) -> bool {
-    // (Julia, BS/Tricorn)
-    static ON: OnceLock<(bool, bool)> = OnceLock::new();
-    let (julia, others) = *ON.get_or_init(|| {
-        match std::env::var("FRACTALL_RELIABILITY_FAMILY").as_deref() {
-            Ok("0") => (false, false),
-            Ok("all") => (true, true),
-            _ => (true, false),
-        }
+///
+/// **Tricorn : suivi par défaut depuis le 2026-11-19.** L'étude ci-dessus
+/// ne regardait que des scènes PROFONDES ; l'axe `types` du harness juge une
+/// vue de bord ×4096 (rendue par le path standard) : 2,5 % de pixels faux à
+/// juge convergé (256 b ≡ 512 b), tous signalés par ce traqueur une fois la
+/// vue recalculée en perturbation (85 signalés, 0 pixel faux restant).
+/// Tricorn est anti-holomorphe mais sans pliage : pas de frontière hirsute,
+/// contrairement à Burning Ship (98 % de pixels signalés sur son bord).
+pub(crate) fn family_tracking_enabled(fractal_type: crate::fractal::FractalType) -> bool {
+    use crate::fractal::FractalType;
+    // (Julia, Tricorn, Burning Ship)
+    static ON: OnceLock<(bool, bool, bool)> = OnceLock::new();
+    let (julia, tricorn, others) = *ON.get_or_init(|| {
+        family_scope(std::env::var("FRACTALL_RELIABILITY_FAMILY").ok().as_deref())
     });
-    if is_julia {
-        julia
-    } else {
-        others
+    match fractal_type {
+        FractalType::Julia => julia,
+        FractalType::Tricorn => tricorn,
+        _ => others,
+    }
+}
+
+/// `(Julia, Tricorn, autres)` suivis pour ce réglage de l'interrupteur.
+fn family_scope(raw: Option<&str>) -> (bool, bool, bool) {
+    match raw {
+        Some("0") => (false, false, false),
+        Some("all") => (true, true, true),
+        _ => (true, true, false),
     }
 }
 

@@ -17,6 +17,7 @@ pub mod bla_dual;
 pub mod bla_dual_exp;
 pub mod compile;
 pub mod delta_form;
+pub mod direct_dd;
 pub mod harmonic_mla;
 pub mod interp;
 pub mod interp_batch;

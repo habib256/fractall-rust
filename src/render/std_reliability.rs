@@ -8,7 +8,7 @@
 //! ([`iterate_bytecode_f64_batch_tracked`]) ; ce module décide QUAND le
 //! brancher et recalcule les SEULS pixels signalés :
 //!
-//! - **Mandelbrot / Julia** (mapping sans K ni offset AA uniforme) :
+//! - **Mandelbrot / Julia / Tricorn** (mapping sans K ni offset AA uniforme) :
 //!   [`recompute_pixels_cpu`] — perturbation f64 tracée autour d'une orbite
 //!   de référence au centre de la vue (≈ 1 ms à ces profondeurs), puis la
 //!   chaîne existante dd → qd → GMP pour ce qu'elle juge encore non fiable.
@@ -105,8 +105,13 @@ fn plan_for(
         return None;
     }
     let escalate = mode == ReliabilityMode::Escalate;
-    let perturbable = matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia)
-        && params.engine.use_bytecode_engine
+    // Tricorn (2026-11-19) : même correction que Mandelbrot / Julia — ses
+    // pixels signalés sont recalculés par la perturbation tracée de la
+    // famille, puis en GMP pur pour ce qu'elle signale encore (pas de dd).
+    let perturbable = matches!(
+        params.fractal_type,
+        FractalType::Mandelbrot | FractalType::Julia | FractalType::Tricorn
+    ) && params.engine.use_bytecode_engine
         && params.transform_matrix().is_none()
         && params.sampling.aa_subpixel_offset == [0.0, 0.0];
     if perturbable {

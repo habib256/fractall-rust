@@ -475,11 +475,16 @@ fn newton(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
             cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
         }
     } else {
-        // General path with powc
+        // Degré entier ≥ 4 (le défaut est 8) : puissances par multiplications
+        // (`powu`, élévation au carré), z^d = z^(d−1)·z. Les deux `powc`
+        // d'avant (exp ∘ log, ~700 instructions par itération) coûtaient
+        // 90 ns par pixel·itération ; les produits sont aussi plus exacts —
+        // c'est ce que fait la boucle GMP (`pow_u32`).
+        let d = degree as u32;
         while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
             let p_c = degree as f64;
-            let z_pow = z.powc(Complex64::new(p_c, 0.0));
-            let z_pow_deriv = z.powc(Complex64::new(p_c - 1.0, 0.0));
+            let z_pow_deriv = z.powu(d - 1);
+            let z_pow = z_pow_deriv * z;
 
             let numerator = z_pow - one;
             let denominator = Complex64::new(p_c, 0.0) * z_pow_deriv;

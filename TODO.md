@@ -49,11 +49,17 @@ tier micro, Leviers) et ce qu'ils ont trouvé au premier passage :
    en coût absolu, pas en fraction, serait plus juste à faible profondeur.
    Verrous : `truth/std:elephants_1e7_60000`,
    `parabolic_edge_at_auto_cap_matches_gmp`.
-2. **Tricorn bord ×4096 : 2,5 % de pixels faux** (juge convergé). Avec
-   `FRACTALL_RELIABILITY_STD=all` le traqueur les SIGNALE (239 signalés pour
-   65 faux) mais la correction GMP est hors budget → corriger par la
-   perturbation comme Mandelbrot/Julia (Tricorn a ses noyaux), puis activer
-   le suivi par défaut.
+2. ~~**Tricorn bord ×4096 : 2,5 % de pixels faux**~~ — **FERMÉ le
+   2026-11-19** : 0 pixel ≠ GMP pur. Tricorn est suivi par défaut (path
+   standard ET perturbation) et ses pixels signalés sont recalculés par la
+   perturbation tracée, puis par le nouvel étage **double-double DIRECT**
+   (`bytecode/direct_dd.rs`, ~10-15 ns/itération contre 150 en GMP), puis en
+   GMP pur pour ce que le dd ne garantit pas. Rendu de la vue : 0,023 s
+   (faux) → 0,054 s (juste) à 128×80 ; sans l'étage dd : 0,19-0,26 s. Sortie
+   identique au chemin tout-GMP (`FRACTALL_DIRECT_DD=0`). L'étage sert aussi
+   Julia. **Suite naturelle** : le brancher sur la correction `GmpCapped` du
+   path standard (Mandelbrot/Julia tournés, et les familles à pliage en
+   opt-in) et y relâcher le budget.
 3. **Barnsley Julia : 5 % (bord) et 1 % (accueil) de pixels faux** — même
    formule en f64 et en GMP ; la carte dilate de |c| ≈ 1,25 par pas, donc
    f64 perd toute détermination vers 165 itérations. Demande un traqueur
@@ -66,8 +72,15 @@ tier micro, Leviers) et ce qu'ils ont trouvé au premier passage :
    Barnsley M — le juge 256 b diffère du juge 512 b sur 70-85 % des pixels
    de bord ; le traqueur étendu y signale ~98 % des pixels.
 
-**Leviers de vitesse mesurés (ns par pixel·itération·thread)** : Newton bord
-90, Multibrot non entier 85, Mandelbrot Sin 58, Julia Sin 51, Nova 21 —
+**Newton ×23 à ×80 (2026-11-19)** : le degré par défaut (8) passait par deux
+`powc` par itération ; puissances entières par `powu` (ce que fait la boucle
+GMP). Accueil 0,205 → 0,009 s, bord 0,89 → 0,011 s à 128×80 (le raccourci
+des cycles exacts mord enfin : le point fixe est atteint au bit près),
+0 pixel ≠ GMP, golden `newton_default` inchangé au pixel près — la décision
+« change des bits » de G14 est donc sans objet.
+
+**Leviers de vitesse mesurés (ns par pixel·itération·thread)** : ~~Newton
+bord 90~~ (corrigé), Multibrot non entier 85, Mandelbrot Sin 58, Julia Sin 51, Nova 21 —
 contre 3-6 pour les familles bytecode par lots ; correction de fiabilité du
 path standard à plafond auto (éléphants 1e7 : 43 % de pixels signalés, 53-81 %
 du rendu) ; sonde d'itérations (18-46 % du rendu sur les vues chères).
