@@ -121,10 +121,21 @@ ITER_SCENES: dict[str, list[str]] = {
     "elephants_1e7": _view(3, ELEPHANTS, "1e7"),
     "minibrot_1e7": _view(3, MINIBROT, "1e7"),
     "burning_ship_home": ["--type", "13"],
+    # Types « fuyants » : l'intérieur apparent finit par s'évader, la queue de
+    # la distribution ne s'éteint pas et la sonde court après (2026-11-19 :
+    # Barnsley Mandelbrot → 2,9 M itérations, 37 s à 128×80 ; Multibrot à
+    # puissance non entière → 140 000).
+    "barnsley_m_zoom": ["--type", "10", "--center-x=-0.4921875",
+                        "--center-y=-1.225", "--zoom", "5.333333333333333"],
+    "multibrot_zoom": ["--type", "23", "--center-x=-0.796875",
+                       "--center-y=-0.16875", "--zoom", "8"],
     "seahorse_1e10": _view(3, SEAHORSE, "1e10"),
 }
 ITER_QUICK = ["mandelbrot_home", "julia_home", "seahorse_1e4", "seahorse_1e7",
-              "elephants_1e7"]
+              "elephants_1e7", "barnsley_m_zoom", "multibrot_zoom"]
+# Budget d'UNE scène du volet itérations (sonde + rendu) : au-delà, un
+# explorateur en « Iter: Auto » est inutilisable sur cette vue → gap.
+ITER_BUDGET_S = 20.0
 ITER_FULL = list(ITER_SCENES)
 
 _RE_AUTO = re.compile(r"Iterations: auto → (\d+) \((.*?)\)")
@@ -270,8 +281,9 @@ def parse_render_s(text: str) -> float | None:
 # --- exécution --------------------------------------------------------------
 
 def _run(args: list[str], out_map: Path, env: dict, timeout: float,
-         mem_limit_mb: int) -> tuple[str, float | None, str]:
-    cmd = [str(CLI)] + args + ["--width", str(WIDTH), "--height", str(HEIGHT),
+         mem_limit_mb: int,
+         size: tuple[int, int] = (WIDTH, HEIGHT)) -> tuple[str, float | None, str]:
+    cmd = [str(CLI)] + args + ["--width", str(size[0]), "--height", str(size[1]),
                                "--no-gpu",
                                "--output", str(out_map.with_suffix(".png")),
                                "--output-map", str(out_map)]
@@ -303,7 +315,8 @@ def _scene_args(dim: dict, case: str) -> list[str] | None:
 
 def _decision_case(dname: str, dim: dict, case: str, runs: int, timeout: float,
                    mem_limit_mb: int, outdir: Path, base_env: dict,
-                   adjudications: dict) -> dict:
+                   adjudications: dict,
+                   size: tuple[int, int] = (WIDTH, HEIGHT)) -> dict:
     args = _scene_args(dim, case)
     if args is None:
         return {"status": "toml_absent"}
@@ -320,7 +333,7 @@ def _decision_case(dname: str, dim: dict, case: str, runs: int, timeout: float,
             env.update(env_over)
             maps[v] = outdir / f"{dname}_{case}_{v}.fmap"
             st, secs, text = _run(args + flags, maps[v], env, timeout,
-                                  mem_limit_mb)
+                                  mem_limit_mb, size)
             if st != "ok":
                 return {"status": st, "variant": v}
             times[v].append(secs)
@@ -353,7 +366,7 @@ def _decision_case(dname: str, dim: dict, case: str, runs: int, timeout: float,
             # `harness/wisdom-adjudications.json`).
             judge_map = outdir / f"{dname}_{case}_gmp.fmap"
             st, secs, _ = _run(args + ["--algorithm", "gmp"], judge_map,
-                               base_env, timeout * 4, mem_limit_mb)
+                               base_env, timeout * 4, mem_limit_mb, size)
             if st == "ok":
                 g = read_fmap_iterations(judge_map)
                 res = adjudged_verdict(
@@ -366,12 +379,13 @@ def _decision_case(dname: str, dim: dict, case: str, runs: int, timeout: float,
 
 
 def _iter_case(name: str, timeout: float, mem_limit_mb: int, outdir: Path,
-               base_env: dict) -> dict:
+               base_env: dict, size: tuple[int, int] = (WIDTH, HEIGHT)) -> dict:
     scene = ITER_SCENES[name]
     m_auto = outdir / f"iter_{name}_auto.fmap"
-    st, wall, text = _run(scene, m_auto, base_env, timeout, mem_limit_mb)
+    st, wall, text = _run(scene, m_auto, base_env,
+                          min(timeout, ITER_BUDGET_S), mem_limit_mb, size)
     if st != "ok":
-        return {"status": st}
+        return {"status": st, "kind": "iter", "budget_s": ITER_BUDGET_S}
     n, probe_s = parse_auto_line(text)
     if n is None:
         return {"status": "no_auto_line"}
@@ -379,7 +393,7 @@ def _iter_case(name: str, timeout: float, mem_limit_mb: int, outdir: Path,
     fiab_pct, fiab_s = parse_reliability(text)
     m_4n = outdir / f"iter_{name}_4n.fmap"
     st, _, _ = _run(scene + ["--iterations", str(4 * n)], m_4n, base_env,
-                    timeout * 4, mem_limit_mb)
+                    timeout * 4, mem_limit_mb, size)
     if st != "ok":
         return {"status": st, "auto_iterations": n}
     a, b = read_fmap_iterations(m_auto), read_fmap_iterations(m_4n)
@@ -398,9 +412,9 @@ def _iter_case(name: str, timeout: float, mem_limit_mb: int, outdir: Path,
         # Ce que le plafond suffisant aurait coûté : même rendu à C, à N.
         m_c = outdir / f"iter_{name}_c.fmap"
         st_n, t_n, _ = _run(scene + ["--iterations", str(n)], m_c, base_env,
-                            timeout, mem_limit_mb)
+                            timeout, mem_limit_mb, size)
         st_c, t_c, _ = _run(scene + ["--iterations", str(c_ok)], m_c, base_env,
-                            timeout, mem_limit_mb)
+                            timeout, mem_limit_mb, size)
         if st_n == "ok" and st_c == "ok" and t_c > 0:
             time_ratio, delta = t_n / t_c, t_n - t_c
             res.update({"time_at_n_s": round(t_n, 4),
@@ -412,7 +426,8 @@ def _iter_case(name: str, timeout: float, mem_limit_mb: int, outdir: Path,
 
 def axis_wisdom(full: bool, runs: int = 3, timeout: float = 300.0,
                 mem_limit_mb: int = 0, adjudications: dict | None = None,
-                only: str | None = None) -> dict:
+                only: str | None = None,
+                size: tuple[int, int] = (WIDTH, HEIGHT)) -> dict:
     """Exécute les deux volets. `only` = `decision` | `iter` | nom de
     dimension, pour un cycle ciblé."""
     outdir = BENCH / "wisdom"
@@ -431,12 +446,12 @@ def axis_wisdom(full: bool, runs: int = 3, timeout: float = 300.0,
     for i, (kind, dname, case) in enumerate(todo, 1):
         name = f"decision:{dname}:{case}" if kind == "decision" else f"iter:{case}"
         print(f"  [{i:>3}/{len(todo)}] wisdom {name:38s}", end=" ", flush=True)
-        jrec = journal_begin("wisdom", name, {"size": f"{WIDTH}x{HEIGHT}"})
+        jrec = journal_begin("wisdom", name, {"size": f"{size[0]}x{size[1]}"})
         if kind == "decision":
             r = _decision_case(dname, DIMENSIONS[dname], case, runs, timeout,
-                               mem_limit_mb, outdir, env, adjudications)
+                               mem_limit_mb, outdir, env, adjudications, size)
         else:
-            r = _iter_case(case, timeout, mem_limit_mb, outdir, env)
+            r = _iter_case(case, timeout, mem_limit_mb, outdir, env, size)
         journal_end(jrec, r["status"] if r["status"] in (
             "timeout", "killed_oom", "aborted", "killed") else "ok")
         cases[name] = r
@@ -445,7 +460,7 @@ def axis_wisdom(full: bool, runs: int = 3, timeout: float = 300.0,
     for r in cases.values():
         if r.get("status") == "ok":
             counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
-    return {"status": "ok", "runs": runs, "size": [WIDTH, HEIGHT],
+    return {"status": "ok", "runs": runs, "size": list(size),
             "counts": counts, "cases": cases,
             "thresholds": {"regret_warn": REGRET_WARN,
                            "regret_fail": REGRET_FAIL,
@@ -485,6 +500,13 @@ def wisdom_gaps(card: dict, adjudications: dict) -> list[dict]:
     correction (1) ; WARN / WASTE / ADJUDICATE non tranché → qualité (4)."""
     out = []
     for name, c in (card.get("wisdom", {}).get("cases") or {}).items():
+        if c.get("status") == "timeout" and c.get("kind") == "iter":
+            out.append({"axis": "wisdom", "case": name, "metric": "status",
+                        "value": "timeout", "baseline": None, "severity": 2,
+                        "note": f"itérations auto : sonde + rendu > "
+                                f"{c.get('budget_s')} s à petite taille — le "
+                                f"plafond choisi s'emballe (type fuyant ?)"})
+            continue
         if c.get("status") != "ok" or c.get("verdict") == "PASS":
             continue
         v = c["verdict"]

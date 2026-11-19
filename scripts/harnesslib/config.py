@@ -50,6 +50,10 @@ WISDOM_ADJUDICATIONS = HARNESS_DIR / "wisdom-adjudications.json"
 # scènes ; la faire tourner au rebaseline pour élargir la couverture.
 FUZZ_SEED_DEFAULT = 20260714
 
+# Axes de `score`. Défaut : tous, sauf si le tier en fixe une liste (`micro`).
+ALL_AXES = ("speed,parity,quality,fuzz,precision,truth,wisdom,types,"
+            "goldens,profile,bench")
+
 SCHEMA = 2   # 2 (2026-11) : sections profile, bench, speed.self, trend
 
 SEVERITY_LABEL = {1: "correction", 2: "robustesse", 3: "vitesse", 4: "qualité"}
@@ -213,6 +217,19 @@ def tier_config(tier: str) -> dict:
     # O(1e3-1e4) plus lent que la perturbation). Le tier `quick` la réduit à 96²
     # (~7× moins de pixels que 256²) pour que le cycle interne reste rapide — les
     # verdicts PASS/WARN/FAIL sont stables en résolution (bord chaotique inclus).
+    # `micro` (2026-11-19) : le cycle INTERNE d'un A/B — quelques minutes sur
+    # 4 cœurs. Petites images (le verdict d'un pixel faux ou d'un regret ne
+    # dépend pas de la résolution ; seul le chrono des cas < 60 ms devient du
+    # bruit), axes essentiels seulement (`axes`), pas de suite quality GMP.
+    # `quick` reste le score de référence avant commit.
+    if tier == "micro":
+        return {"cases": list(QUICK_CASES), "width": 128, "height": 128,
+                "runs": 1, "timeout": 120.0,
+                "quality_width": 48, "quality_height": 48,
+                "fuzz_probes": 1, "precision_size": 48,
+                "scene_size": (128, 80), "wisdom_runs": 2,
+                "judge_timeout": 10.0,
+                "axes": "speed,truth,wisdom,types,profile"}
     if tier == "quick":
         return {"cases": list(QUICK_CASES), "width": 256, "height": 256,
                 "runs": 1, "timeout": 120.0,

@@ -60,11 +60,12 @@ def scenes(full: bool) -> list[tuple[str, str, int]]:
             + AUTO_CAP_SCENES)
 
 
-def _cmd(loc: str, zoom: str, iters: int, out_map, extra: list[str]) -> list[str]:
+def _cmd(loc: str, zoom: str, iters: int, out_map, extra: list[str],
+         size: tuple[int, int] = (WIDTH, HEIGHT)) -> list[str]:
     cx, cy = LOCATIONS[loc]
     return [str(CLI), "--type", "3", f"--center-x-hp={cx}", f"--center-y-hp={cy}",
             "--zoom", zoom, "--iterations", str(iters),
-            "--width", str(WIDTH), "--height", str(HEIGHT), "--no-gpu",
+            "--width", str(size[0]), "--height", str(size[1]), "--no-gpu",
             "--output", str(out_map.with_suffix(".png")),
             "--output-map", str(out_map)] + extra
 
@@ -76,8 +77,8 @@ def _last_path(text: str) -> str | None:
     return m.group(1) if m else None
 
 
-def axis_stdtruth(full: bool, timeout: float = 300.0,
-                  mem_limit_mb: int = 0) -> dict[str, dict]:
+def axis_stdtruth(full: bool, timeout: float = 300.0, mem_limit_mb: int = 0,
+                  size: tuple[int, int] = (WIDTH, HEIGHT)) -> dict[str, dict]:
     """Résultats par scène, au format des cas de l'axe `truth`."""
     outdir = BENCH / "truth-std"
     outdir.mkdir(parents=True, exist_ok=True)
@@ -88,19 +89,19 @@ def axis_stdtruth(full: bool, timeout: float = 300.0,
     for i, (loc, zoom, iters) in enumerate(todo, 1):
         name = scene_name(loc, zoom, iters)
         print(f"  [{i:>3}/{len(todo)}] truth {name:28s}", end=" ", flush=True)
-        jrec = journal_begin("truth", name, {"size": f"{WIDTH}x{HEIGHT}"})
+        jrec = journal_begin("truth", name, {"size": f"{size[0]}x{size[1]}"})
         stem = name.replace(":", "_")
         prod_map = outdir / f"{stem}.prod.fmap"
         judge_map = outdir / f"{stem}.gmp.fmap"
         try:
             t0 = time.monotonic()
             proc = subprocess.run(
-                _cmd(loc, zoom, iters, prod_map, []), stdout=subprocess.PIPE,
+                _cmd(loc, zoom, iters, prod_map, [], size), stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, env=env, timeout=timeout, text=True,
                 errors="replace", preexec_fn=_rlimit_preexec(mem_limit_mb))
             prod_secs = time.monotonic() - t0
             jproc = subprocess.run(
-                _cmd(loc, zoom, iters, judge_map, ["--algorithm", "gmp"]),
+                _cmd(loc, zoom, iters, judge_map, ["--algorithm", "gmp"], size),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
                 timeout=timeout * 4, text=True, errors="replace",
                 preexec_fn=_rlimit_preexec(mem_limit_mb))

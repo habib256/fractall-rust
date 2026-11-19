@@ -255,6 +255,43 @@ auto (60 000) — la scène est depuis jugée par `truth`
 (`axes_stdtruth.AUTO_CAP_SCENES`). Leçon : un axe de vérité à plafond fixe
 (2500) ne juge pas le régime « Iter: Auto ».
 
+### 8. Types — TOUS les types de fractales (`types`, 2026-11-19)
+Le corpus `toml/` et la suite quality sont des zooms Mandelbrot et quelques
+cousins : 25 types sur 33 (Newton, Nova, Magnet, Phoenix, Barnsley, Sin,
+Pickover, Mandelbulb, Lyapunov, densités, vectoriels, variantes Julia)
+n'avaient ni chrono ni juge. L'objectif étant l'explorateur le plus rapide et
+le plus juste sur TOUS les types, l'axe `types`
+(`scripts/harnesslib/axes_types.py`) les regarde tous :
+
+- **Scènes figées** (`harness/type-scenes.json`, régénérées par
+  `harness.py types-scout`) : par type, la vue d'accueil (`home`) et une vue
+  de BORD (`edge`, ~×4096) trouvée en zoomant quatre fois ×8 sur le voisinage
+  5×5 le plus contrasté et le mieux mélangé intérieur/extérieur. Plafond
+  EXPLICITE (5000) : la sonde automatique est jugée par `wisdom`. ⚠️ Régénérer
+  les scènes casse la comparaison à la baseline.
+- **Vitesse** : rendu de production à la taille de scène du tier → secondes
+  et **ns par pixel·itération·thread**, comparable entre types (Newton bord
+  90, Multibrot non entier 85, Mandelbrot Sin 58, contre 3-6 pour les
+  familles bytecode par lots) ; alimente les leviers.
+- **Correction** : production contre `--algorithm gmp` à 64×40. Un écart
+  déclenche un second juge à 512 b : juges discordants ⇒ `CHAOS` (frontière
+  hirsute des familles à pliage, non comparable, aucun gap) ; juges
+  concordants ⇒ la production est FAUSSE (sév. 1). Types sans juge GMP
+  (vectoriels, densités, Lyapunov) : déterminisme + non-platitude.
+
+Premier passage (2026-11-19, 128×80) : Tricorn bord 2,5 % et Barnsley Julia
+bord 5 % de pixels faux à juge convergé ; Buffalo / Burning Ship / Celtic /
+Perp. BS / Barnsley M en `CHAOS`.
+
+### Tier `micro` — le cycle d'un A/B (2026-11-19)
+`harness.py score --tier micro` : images 128² (scènes 128×80, juge 64×40),
+axes `speed,truth,wisdom,types,profile` seulement — pas de suite quality GMP,
+ni fuzz, ni bench. Le verdict d'un pixel faux ou d'un regret ne dépend pas de
+la résolution ; seul le chrono des cas < 60 ms devient du bruit. C'est le
+cycle INTERNE (avant/après un patch) ; `quick` reste le score de référence
+avant commit, `standard` la confirmation d'une affirmation de vitesse.
+`--axes` restreint encore (`--tier micro --axes types`).
+
 ### Leviers — où gagner quand aucun gap ne le dit (`levers`, 2026-11-19)
 Un gap est un DÉFAUT ; « aucun gap » veut dire que rien n'a régressé, pas que
 le moteur est optimal. La section **Leviers** du scorecard (et
@@ -282,8 +319,10 @@ sur les cas profonds. Adjugés au 2026-07-14 : test5 (`both_match_gmp`), rug
 
 ```bash
 python3 scripts/harness.py doctor            # prérequis, axes mesurables ICI, baseline
-python3 scripts/harness.py score [--tier quick|standard|full] \
-        [--axes speed,parity,quality,fuzz,precision,truth,wisdom,goldens,profile,bench] [--cases a,b]
+python3 scripts/harness.py score [--tier micro|quick|standard|full] \
+        [--axes speed,parity,quality,fuzz,precision,truth,wisdom,types,goldens,profile,bench] [--cases a,b]
+                                             # micro = cycle d'A/B léger (128², axes essentiels)
+python3 scripts/harness.py types-scout       # régénère les scènes figées de l'axe types
 python3 scripts/harness.py ab --cases e50 --env FRACTALL_RELIABILITY=off,escalate --runs 3
                                              # A/B isolé (méthode G14) : médiane, bruit, phases, sortie ≡
 python3 scripts/harness.py hotspots --case e1000 --size 1200

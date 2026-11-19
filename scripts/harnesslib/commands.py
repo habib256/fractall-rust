@@ -14,10 +14,11 @@ from .axes_perf import axis_bench, axis_profile
 from .axes_ddtruth import axis_ddtruth
 from .axes_precision import axis_precision
 from .axes_truth import axis_fuzz, axis_goldens, axis_quality
+from .axes_types import axis_types
 from .axes_wisdom import axis_wisdom
 from .levers import compute_levers, print_levers
 from .config import (
-    ADJUDICATIONS, BASELINE, BASELINES_DIR, BENCH, CRASH_JOURNAL, HISTORY_DIR,
+    ALL_AXES, ADJUDICATIONS, BASELINE, BASELINES_DIR, BENCH, CRASH_JOURNAL, HISTORY_DIR,
     REPO, SCHEMA, SCORECARD, baseline_path_for, load_baseline, machine_slug,
     SEVERITY_LABEL, TOML_DIR, _now_iso, cargo_build, find_f3, git_dirty,
     git_sha, load_compare_f3, machine_info, tier_config, CLI, QUALITY,
@@ -54,7 +55,9 @@ def cmd_score(args) -> None:
     height = args.height or cfg["height"]
     runs = args.runs or cfg["runs"]
     timeout = args.timeout or cfg["timeout"]
-    axes = [a.strip() for a in args.axes.split(",") if a.strip()]
+    axes_csv = args.axes or cfg.get("axes") or ALL_AXES
+    axes = [a.strip() for a in axes_csv.split(",") if a.strip()]
+    scene_size = tuple(cfg.get("scene_size", (256, 160)))
 
     # Garde-fou crash : un breadcrumb résiduel = le run précédent est mort
     # pendant un cas (OOM / plantage OS). On le journalise + quarantaine AVANT
@@ -113,6 +116,7 @@ def cmd_score(args) -> None:
         "precision": {"status": "skipped"},
         "truth": {"status": "skipped"},
         "wisdom": {"status": "skipped"},
+        "types": {"status": "skipped"},
         "goldens": {"status": "skipped"},
         "profile": {"status": "skipped"},
         "bench": {"status": "skipped"},
@@ -157,13 +161,20 @@ def cmd_score(args) -> None:
         card["truth"] = axis_ddtruth(
             cases, cfg.get("precision_size", 96), timeout,
             mem_limit_mb=mem_limit_mb, quarantined=quarantined,
-            slow_safe=slow_safe, std_full=args.tier != "quick")
+            slow_safe=slow_safe,
+            std_full=args.tier not in ("micro", "quick"), std_size=scene_size)
     if "wisdom" in axes:
         print("\n== WISDOM (regret des décisions auto ; itérations auto) ==")
         card["wisdom"] = axis_wisdom(
-            args.tier != "quick", runs=3, timeout=timeout,
+            args.tier not in ("micro", "quick"),
+            runs=cfg.get("wisdom_runs", 3), timeout=timeout,
             mem_limit_mb=mem_limit_mb,
-            adjudications=load_wisdom_adjudications())
+            adjudications=load_wisdom_adjudications(), size=scene_size)
+    if "types" in axes:
+        print("\n== TYPES (tous les types : vitesse + juge GMP) ==")
+        card["types"] = axis_types(
+            size=scene_size, timeout=timeout, mem_limit_mb=mem_limit_mb,
+            judge_timeout=cfg.get("judge_timeout", 30.0))
     if "goldens" in axes:
         print("\n== GOLDENS ==")
         card["goldens"] = axis_goldens()

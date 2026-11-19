@@ -24,6 +24,7 @@ from harnesslib import hotspots  # noqa: E402
 from harnesslib import axes_ddtruth  # noqa: E402
 from harnesslib import axes_stdtruth  # noqa: E402
 from harnesslib import axes_wisdom  # noqa: E402
+from harnesslib import axes_types  # noqa: E402
 from harnesslib import levers as levers_mod  # noqa: E402
 
 
@@ -116,6 +117,7 @@ def run():
     run_truth_axis()
     run_wisdom_axis()
     run_levers()
+    run_types_axis()
 
     print("\nTOUS LES TESTS PASSENT ✅")
 
@@ -547,6 +549,10 @@ def run_wisdom_axis():
     _check(sev({"status": "ok", "kind": "iter", "verdict": "FAIL",
                 "under_frac": 0.03, "auto_iterations": 750}) == 1,
            "wisdom iter : sous-itération FAIL → gap correction")
+    _check(sev({"status": "timeout", "kind": "iter", "budget_s": 20.0}) == 2,
+           "wisdom iter : sonde + rendu hors budget → gap robustesse")
+    _check({"barnsley_m_zoom", "multibrot_zoom"} <= set(W.ITER_QUICK),
+           "wisdom iter : les types fuyants sont sondés dès le tier quick")
     txt = ("Iterations: auto → 90000 (max escape 91702 on a 81x51 probe, "
            "2 rounds, 0.56 s) — --iterations N overrides\n"
            "[RELIABILITY-STD] flagged=441 (10.675 %) corrected=441 via=Perturbation time=0.466s\n"
@@ -607,6 +613,59 @@ def run_levers():
            "leviers : section du scorecard")
     _check("aucun levier" in "\n".join(levers_mod.levers_md([])),
            "leviers : section présente même vide")
+
+
+def run_types_axis():
+    """Verrous de l'axe types : tous les types ont une scène figée à plafond
+    explicite, un FAIL est toujours un juge CONVERGÉ, et le tier micro reste
+    léger."""
+    print("\n== axe types ==")
+    T = axes_types
+    _check("types" in config.ALL_AXES.split(","), "types : axe déclaré")
+    sc = T.load_scenes()
+    _check(set(sc) == {str(t) for t in T.ALL_TYPES},
+           "types : une scène figée pour CHACUN des 33 types")
+    judged = [t for t in T.ALL_TYPES if t not in T.NO_JUDGE]
+    _check(all(sc[str(t)].get("edge") for t in judged),
+           "types : chaque type jugé a une vue de bord")
+    _check(all("--iterations" in T.scene_args(t, sc[str(t)], w)
+               for t in judged for w in ("home", "edge")),
+           "types : plafond EXPLICITE (la sonde auto est jugée par wisdom)")
+    _check(all(0.02 < sc[str(t)]["edge"]["capped"] < 0.98
+               or sc[str(t)]["edge"]["distinct"] >= 15 for t in judged),
+           "types : vues de bord non uniformes")
+    # éclaireur : voisinage mixte plafonné/évadé préféré à une équipotentielle
+    w, h, cap = 16, 16, 100
+    it = [cap if x < 8 else 5 + (x % 3) for y in range(h) for x in range(w)]
+    x, _ = T.edge_pixel(it, w, h, cap)
+    _check(5 <= x <= 9, "types : l'éclaireur vise la frontière intérieur/extérieur")
+    _check(T.scene_verdict(0.03, None, False, 0.0) == "FAIL"
+           and T.scene_verdict(0.03, None, False, 0.8) == "CHAOS"
+           and T.scene_verdict(0.0, None, False) == "PASS"
+           and T.scene_verdict(None, True, False) == "PASS"
+           and T.scene_verdict(None, False, False) == "FAIL"
+           and T.scene_verdict(None, True, True) == "WARN",
+           "types : juge non convergé → CHAOS ; non déterministe → FAIL")
+    def sev(c):
+        card = {"meta": {"machine": {"cpu": "x", "nproc": 1}},
+                "types": {"status": "ok", "cases": {"14:Tricorn:edge": c}}}
+        g = [x for x in gaps_mod.compute_gaps(card, None) if x["axis"] == "types"]
+        return g[0]["severity"] if g else None
+    base = {"status": "ok", "path": "std_f64", "diff_px": 65, "frac": 0.025}
+    _check(sev({**base, "verdict": "FAIL", "judge_frac": 0.0}) == 1,
+           "types : FAIL à juge convergé → gap correction (sévérité 1)")
+    _check(sev({**base, "verdict": "FAIL"}) == 4,
+           "types : FAIL à juge NON vérifié → sévérité 4, pas une alerte rouge")
+    _check(sev({**base, "verdict": "CHAOS", "judge_frac": 0.8}) is None,
+           "types : scène chaotique → aucun gap")
+    _check(sev({"status": "timeout"}) == 2, "types : rendu hors délai → robustesse")
+    _check(T.ns_per_px_iter(1.0, 1000.0, 1000, 4) == 4000.0,
+           "types : ns par pixel·itération·thread")
+    micro = config.tier_config("micro")
+    _check(micro["width"] <= 128 and micro["scene_size"][0] <= 128
+           and "quality" not in micro["axes"] and "types" in micro["axes"]
+           and "wisdom" in micro["axes"],
+           "tier micro : petites images, axes essentiels (cycle d'A/B léger)")
 
 
 if __name__ == "__main__":

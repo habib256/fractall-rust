@@ -102,13 +102,19 @@ technique via `--wisdom-bench` isolé).
 **wisdom** (2026-11-19 — juge les DÉCISIONS automatiques : regret du plan
 `auto` contre chaque plan forcé à sortie équivalente, adjudication GMP
 automatique quand l'alternative rapide rend autre chose, et justesse du
-plafond choisi par la sonde d'itérations contre le rendu à 4N). Sans gap, la
+plafond choisi par la sonde d'itérations contre le rendu à 4N), **types**
+(les 33 types : vue d'accueil + vue de bord ×4096 figées dans
+`harness/type-scenes.json`, vitesse en ns/pixel·itération et juge GMP à
+convergence vérifiée — un écart à juge non convergé est `CHAOS`, pas un
+gap). Cycle d'A/B léger : `score --tier micro` (128², axes
+speed/truth/wisdom/types/profile). Sans gap, la
 liste de travail est la section **Leviers** du scorecard (`harness.py
 levers` : temps mesuré trié par ce qui le consomme).
 
 ```bash
 python3 scripts/harness.py doctor                # prérequis + axes mesurables ICI
-python3 scripts/harness.py score --tier quick    # cycle interne (~10 cas, 256²)
+python3 scripts/harness.py score --tier micro    # cycle d'A/B léger (128², axes essentiels, tous types)
+python3 scripts/harness.py score --tier quick    # référence avant commit (~10 cas, 256²)
 python3 scripts/harness.py score --tier standard # 3 runs médiane, avant commit perf
 python3 scripts/harness.py trend --case e50      # évolution d'un cas (temps, ns/iter, path)
 python3 scripts/harness.py ab --cases e50 --env FRACTALL_RELIABILITY=off,escalate  # A/B isolé (G14)

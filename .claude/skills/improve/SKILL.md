@@ -66,9 +66,17 @@ automatiquement les gourmands (pic RSS ≥ seuil) et ceux qui plantent. Le tier
 ## Étape 1 — Mesurer
 
 ```bash
-python3 scripts/harness.py score --tier quick
+python3 scripts/harness.py score --tier micro   # cycle d'A/B (128², axes essentiels)
+python3 scripts/harness.py score --tier quick   # référence avant commit
 ```
 
+- **Cycles légers** : pendant qu'on cherche et qu'on patche, n'utiliser que
+  `--tier micro` (ou `--tier micro --axes types|wisdom|truth`) et des rendus
+  ≤ 128². `quick` une fois avant le commit ; `standard` seulement pour
+  confirmer une affirmation de vitesse.
+- L'objectif couvre TOUS les types de fractales : l'axe `types` (33 types,
+  vue d'accueil + bord ×4096, juge GMP à convergence vérifiée) est la source
+  des gaps hors Mandelbrot ; son `ns/px·it` désigne les boucles lentes.
 - Lire `SCORECARD.md` (généré) : agrégats par axe, **temps fractall par
   cas** (auto-ratio vs baseline), **Profil — où va le temps** (path exécuté,
   orbite/pixels/post/save %, ns/iter, % fiabilité, escalade dd), bench par

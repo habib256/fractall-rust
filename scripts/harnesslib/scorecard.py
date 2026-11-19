@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import json
 
+from .axes_types import types_md
 from .axes_wisdom import wisdom_md
 from .config import HISTORY_DIR, MARKER, SEVERITY_LABEL
 from .levers import compute_levers, levers_md
@@ -233,6 +234,16 @@ def build_scorecard_md(card: dict, base: dict | None) -> str:
         L += ["## Wisdom (décisions automatiques : regret et itérations auto)",
               ""]
         L += wisdom_md(w)
+
+    # Types : tous les types de fractales
+    ty = card.get("types")
+    if ty and ty.get("status") != "skipped":
+        L += ["## Types (tous les types — vitesse et juge GMP)", ""]
+        if ty.get("status") != "ok":
+            L.append(f"_axe indisponible : {ty.get('status')} "
+                     f"(`harness.py types-scout`)._\n")
+        else:
+            L += types_md(ty)
 
     # Goldens
     g = card.get("goldens")

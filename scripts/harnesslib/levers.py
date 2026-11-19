@@ -119,8 +119,24 @@ def _truth_levers(card: dict) -> list[dict]:
     return out
 
 
+def _types_levers(card: dict) -> list[dict]:
+    out = []
+    for name, c in (card.get("types", {}).get("cases") or {}).items():
+        secs = c.get("secs")
+        if c.get("status") == "ok" and secs and secs >= MIN_SECS:
+            out.append(_lever(
+                secs, "types", name,
+                f"rendu `{c.get('path')}` — {c.get('ns_px_iter')} "
+                f"ns/pixel·itération·thread ({c.get('mean_iter')} it. moy.)",
+                "comparer aux autres types du tableau Types : un ns/px·it "
+                "hors norme = boucle scalaire à porter (lots, raccourci de "
+                "cycle)"))
+    return out
+
+
 def compute_levers(card: dict) -> list[dict]:
-    lv = _profile_levers(card) + _wisdom_levers(card) + _truth_levers(card)
+    lv = (_profile_levers(card) + _wisdom_levers(card) + _truth_levers(card)
+          + _types_levers(card))
     lv.sort(key=lambda x: -x["secs"])
     return lv
 

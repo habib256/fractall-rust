@@ -13,9 +13,10 @@ from .ab import cmd_ab
 from .hotspots import cmd_hotspots
 from .commands_insight import cmd_doctor, cmd_trend
 from .commands_guard import cmd_preflight, cmd_quarantine, cmd_slow_safe
-from .config import FUZZ_SEED_DEFAULT
+from .config import ALL_AXES, FUZZ_SEED_DEFAULT
 from .guard import install_signal_handlers
 from .wisdom_opt import cmd_wisdom_opt
+from .axes_types import cmd_types_scout
 
 USAGE = """Scorecard orchestrator — mesure fractall vs Fraktaler-3 (protocole HARNESS.md).
 
@@ -30,9 +31,6 @@ F3 auto-détecté (F3_BIN sinon fraktaler-3-3.1/) ; sans lui speed/parity sont
 """
 
 
-ALL_AXES = ("speed,parity,quality,fuzz,precision,truth,wisdom,goldens,"
-            "profile,bench")
-DEFAULT_AXES = ALL_AXES
 
 
 def main() -> None:
@@ -43,10 +41,14 @@ def main() -> None:
     sub = ap.add_subparsers(dest="command", required=True)
 
     sc = sub.add_parser("score", help="Mesure et écrit un scorecard.")
-    sc.add_argument("--tier", choices=["quick", "standard", "full"],
-                    default="quick")
-    sc.add_argument("--axes", default=DEFAULT_AXES,
-                    help=f"CSV parmi {ALL_AXES} (défaut : tous)")
+    sc.add_argument("--tier", choices=["micro", "quick", "standard", "full"],
+                    default="quick",
+                    help="micro = cycle interne d'A/B (petites images, axes "
+                         "essentiels, quelques minutes) ; quick = référence "
+                         "avant commit")
+    sc.add_argument("--axes", default=None,
+                    help=f"CSV parmi {ALL_AXES} (défaut : ceux du tier — "
+                         f"tous sauf en micro)")
     sc.add_argument("--fuzz-seed", type=int, default=FUZZ_SEED_DEFAULT,
                     help="seed des sondes fuzz (défaut committé ; le faire "
                          "tourner au rebaseline)")
@@ -180,6 +182,13 @@ def main() -> None:
     hs.add_argument("--no-rebuild", action="store_true")
     hs.set_defaults(func=cmd_hotspots)
 
+    ts = sub.add_parser("types-scout",
+                        help="Régénère les scènes figées de l'axe types "
+                             "(harness/type-scenes.json) : vue de bord ×4096 "
+                             "par type. Casse la comparaison à la baseline.")
+    ts.add_argument("--types", default=None, help="CSV d'ids (défaut : tous)")
+    ts.set_defaults(func=cmd_types_scout)
+
     lv = sub.add_parser("levers",
                         help="Où gagner : temps mesuré du dernier score, "
                              "classé par ce qui le consomme (même sans gap).")
@@ -197,7 +206,8 @@ def main() -> None:
                         help="Évolution des métriques clés dans harness/history "
                              "(même machine par défaut).")
     tr.add_argument("--last", type=int, default=12, help="N derniers scores")
-    tr.add_argument("--tier", choices=["quick", "standard", "full"], default=None)
+    tr.add_argument("--tier", choices=["micro", "quick", "standard", "full"],
+                    default=None)
     tr.add_argument("--all-machines", action="store_true")
     tr.add_argument("--case", default=None,
                     help="stem : temps/ratio/ns-iter de CE cas au fil des scores")
