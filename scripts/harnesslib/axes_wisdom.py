@@ -593,7 +593,10 @@ def wisdom_md(w: dict) -> list[str]:
                      f"{c['regret'] if c.get('regret') else '—'} | {ot} | "
                      f"{c['verdict']} |")
         L.append("")
-    it = {n: c for n, c in cases.items() if c.get("kind") == "iter"}
+    # Une scène hors budget (timeout) porte `kind: iter` sans mesure : elle
+    # est listée sous « Non mesurés », pas dans le tableau.
+    it = {n: c for n, c in cases.items()
+          if c.get("kind") == "iter" and c.get("status") == "ok"}
     if it:
         L += ["**Itérations automatiques** — juge : le même rendu à 4N.", "",
               "| Scène | N auto | sous-itération % | suffisant | "

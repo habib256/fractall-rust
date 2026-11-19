@@ -557,7 +557,8 @@ pub struct AutoIterOptions {
     /// au tour précédent sont recalculés (un pixel évadé sous `C` a le même
     /// compte sous `4C`) ; les autres sont repris tels quels par une carte
     /// de copie identité (`fractal::xaos`, consommée par le dispatcher
-    /// unique). `false` = chaque tour re-rend tout (référence des verrous).
+    /// unique). `false` = chaque tour re-rend tout (référence des verrous ;
+    /// défaut forcé par `FRACTALL_AUTO_ITER_INCREMENTAL=0`).
     pub incremental: bool,
 }
 
@@ -569,7 +570,7 @@ impl Default for AutoIterOptions {
             max_rounds: 7,
             start: None,
             no_escape_budget: Duration::from_secs(8),
-            incremental: true,
+            incremental: incremental_default(),
         }
     }
 }
@@ -724,6 +725,12 @@ fn escaped_reuse_map(
     );
     src.err = Arc::new(err);
     build_refine_map(&src, p)
+}
+
+/// `FRACTALL_AUTO_ITER_INCREMENTAL=0` : sonde complète par défaut (A/B).
+fn incremental_default() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("FRACTALL_AUTO_ITER_INCREMENTAL").map_or(true, |v| v != "0"))
 }
 
 /// `FRACTALL_AUTO_ITER_DEBUG=1` : une ligne `[AUTO-ITER]` par tour de sonde.
@@ -1132,7 +1139,11 @@ mod tests {
                 ..AutoIterOptions::default()
             };
             let a = auto_iterations_with(&p, &cancel, full, &mut None).unwrap();
-            let b = auto_iterations_with(&p, &cancel, AutoIterOptions::default(), &mut None).unwrap();
+            let inc = AutoIterOptions {
+                incremental: true,
+                ..full
+            };
+            let b = auto_iterations_with(&p, &cancel, inc, &mut None).unwrap();
             assert_eq!(a.iteration_max, b.iteration_max, "{:?}", p.fractal_type);
             assert_eq!(a.rounds, b.rounds);
             for (k, (x, y)) in a.round_log.iter().zip(&b.round_log).enumerate() {
