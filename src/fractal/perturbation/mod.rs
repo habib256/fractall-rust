@@ -233,7 +233,7 @@ pub(crate) fn direct_dd_pixels(
     dc_ctx: &DcGmpContext,
     flagged: &[usize],
 ) -> (Vec<(usize, u32, Complex64)>, Vec<usize>) {
-    use crate::fractal::bytecode::direct_dd as ddd;
+    use crate::fractal::bytecode::{direct_dd as ddd, direct_simd};
     use crate::fractal::perturbation::dd::DoubleDouble;
     let width = params.width.max(1) as usize;
     let is_julia = crate::fractal::bytecode::Formula::is_julia_for(params.fractal_type);
@@ -241,28 +241,50 @@ pub(crate) fn direct_dd_pixels(
         DoubleDouble::from_f64(params.seed.re),
         DoubleDouble::from_f64(params.seed.im),
     );
-    let tried: Vec<(usize, ddd::DirectDdResult)> = flagged
+    let points: Vec<(DoubleDouble, DoubleDouble)> = flagged
         .par_iter()
         .map(|&idx| {
-            let dc_gmp = dc_ctx.compute_dc(idx % width, idx / width);
-            let mut re = cx.clone();
-            re += dc_gmp.real();
-            let mut im = cy.clone();
-            im += dc_gmp.imag();
-            let point = (ddd::dd_from_gmp(&re), ddd::dd_from_gmp(&im));
-            let (z0, c) = if is_julia { (point, seed) } else { (seed, point) };
-            (idx, ddd::iterate_direct_dd(phase, z0, c, params.iteration_max, params.bailout))
+            let (re, im) = direct_point(cx, cy, dc_ctx, idx, width);
+            (ddd::dd_from_gmp(&re), ddd::dd_from_gmp(&im))
         })
         .collect();
-    split_direct_results(tried)
+    let tried: Vec<ddd::DirectDdResult> = points
+        .par_chunks(direct_chunk(points.len()))
+        .flat_map_iter(|ch| {
+            direct_simd::direct_dd_lanes(phase, ch, seed, is_julia, params.iteration_max, params.bailout)
+        })
+        .collect();
+    split_direct_results(flagged, tried)
+}
+
+/// Pixels par tâche rayon des étages directs (chaque tâche les passe en
+/// voies vectorielles, `bytecode::direct_simd`) : au plus 32, assez de
+/// tâches pour occuper tous les fils (≥ 4 par fil) — mais jamais moins d'un
+/// pixel par voie. Le découpage ne change aucun résultat (voies
+/// indépendantes).
+fn direct_chunk(n: usize) -> usize {
+    let lanes = crate::fractal::bytecode::direct_simd::QD_LANES;
+    (n / (4 * rayon::current_num_threads().max(1))).clamp(lanes, 32)
+}
+
+/// Point exact `centre HP + dc` d'un pixel (dc en GMP : K, jitter AA et
+/// décalage de référence compris).
+fn direct_point(cx: &Float, cy: &Float, dc_ctx: &DcGmpContext, idx: usize, width: usize) -> (Float, Float) {
+    let dc_gmp = dc_ctx.compute_dc(idx % width, idx / width);
+    let mut re = cx.clone();
+    re += dc_gmp.real();
+    let mut im = cy.clone();
+    im += dc_gmp.imag();
+    (re, im)
 }
 
 fn split_direct_results(
-    tried: Vec<(usize, crate::fractal::bytecode::direct_dd::DirectDdResult)>,
+    flagged: &[usize],
+    tried: Vec<crate::fractal::bytecode::direct_dd::DirectDdResult>,
 ) -> (Vec<(usize, u32, Complex64)>, Vec<usize>) {
     let mut fixed = Vec::with_capacity(tried.len());
     let mut rest = Vec::new();
-    for (idx, r) in tried {
+    for (&idx, r) in flagged.iter().zip(tried) {
         if r.reliable {
             fixed.push((idx, r.iteration, r.z));
         } else {
@@ -285,25 +307,25 @@ pub(crate) fn direct_qd_pixels(
     dc_ctx: &DcGmpContext,
     flagged: &[usize],
 ) -> (Vec<(usize, u32, Complex64)>, Vec<usize>) {
-    use crate::fractal::bytecode::direct_dd as ddd;
+    use crate::fractal::bytecode::{direct_dd as ddd, direct_simd};
     use crate::fractal::perturbation::qd::Qd;
     let width = params.width.max(1) as usize;
     let is_julia = crate::fractal::bytecode::Formula::is_julia_for(params.fractal_type);
     let seed = (Qd::from_f64(params.seed.re), Qd::from_f64(params.seed.im));
-    let tried: Vec<(usize, ddd::DirectDdResult)> = flagged
+    let points: Vec<(Qd, Qd)> = flagged
         .par_iter()
         .map(|&idx| {
-            let dc_gmp = dc_ctx.compute_dc(idx % width, idx / width);
-            let mut re = cx.clone();
-            re += dc_gmp.real();
-            let mut im = cy.clone();
-            im += dc_gmp.imag();
-            let point = (ddd::qd_from_gmp(&re), ddd::qd_from_gmp(&im));
-            let (z0, c) = if is_julia { (point, seed) } else { (seed, point) };
-            (idx, ddd::iterate_direct_qd(phase, z0, c, params.iteration_max, params.bailout))
+            let (re, im) = direct_point(cx, cy, dc_ctx, idx, width);
+            (ddd::qd_from_gmp(&re), ddd::qd_from_gmp(&im))
         })
         .collect();
-    split_direct_results(tried)
+    let tried: Vec<ddd::DirectDdResult> = points
+        .par_chunks(direct_chunk(points.len()))
+        .flat_map_iter(|ch| {
+            direct_simd::direct_qd_lanes(phase, ch, seed, is_julia, params.iteration_max, params.bailout)
+        })
+        .collect();
+    split_direct_results(flagged, tried)
 }
 
 /// Étages DIRECTS d'une correction : double-double puis quad-double
@@ -395,6 +417,29 @@ pub(crate) const SHALLOW_QD_ITER_BUDGET: f64 = 0.5;
 /// Décision déterministe (jamais en temps) du budget [`SHALLOW_QD_ITER_BUDGET`].
 pub(crate) fn shallow_direct_qd_allowed(pixel_iters: f64, frame_iters: f64) -> bool {
     pixel_iters <= SHALLOW_QD_ITER_BUDGET * frame_iters
+}
+
+/// Correction d'une vue peu profonde par les étages directs : l'étage
+/// perturbation f64 tracée est-il sauté (pixels envoyés droit au dd direct) ?
+/// Oui quand la référence s'est ÉVADÉE avant le quart du plafond : passé son
+/// bout, chaque pixel rebase sans cesse sur une orbite qui n'offre aucun saut
+/// BLA — la perturbation f64 n'est plus qu'une itération directe avec frais
+/// généraux, et elle déclarait fiables des pixels faux sur un bord
+/// PARABOLIQUE (évasion décalée d'un pas, borne loin de l'emballement).
+/// Éléphants 1e7, 60 000 it., 256×160 (référence évadée à 1 767) : étage f64
+/// 1,1 s (17 747 px, 8 978 réglés) + dd 0,8 s → dd seul 1,25 s, et pixels ≠
+/// GMP pur 256 b 6 → 2. Référence intérieure (seahorse 1e7 / 1e10, longueur
+/// = plafond) : la BLA rend l'étage f64 3-20× moins cher que le dd direct, il
+/// est gardé. Décision déterministe. `FRACTALL_SHALLOW_SKIP_F64=0` la coupe.
+pub(crate) fn short_reference_skips_f64(ref_len: usize, iteration_max: u32) -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let on = *ON.get_or_init(|| {
+        !matches!(
+            std::env::var("FRACTALL_SHALLOW_SKIP_F64").ok().as_deref().map(str::trim),
+            Some("0") | Some("off") | Some("false")
+        )
+    });
+    on && (ref_len as u64) * 4 < iteration_max as u64
 }
 
 /// `FRACTALL_SHALLOW_DIRECT=0` : correction des pixels d'une vue peu profonde
@@ -626,8 +671,22 @@ pub fn recompute_pixels_cpu(
     let runaway = crate::fractal::bytecode::reliability::reliability_runaway() as f32;
     let is_julia = params.fractal_type == FractalType::Julia;
     let t_f64 = Instant::now();
+    // Vue PEU PROFONDE (pixel ≥ `SHALLOW_DD_PIXEL`) : les étages DIRECTS
+    // (double-double puis quad-double, `bytecode::direct_dd`) remplacent la
+    // perturbation dd/qd. À ces profondeurs `c` tient dans 106 bits, la
+    // référence (au centre, souvent évadée tôt) n'offre aucun saut BLA et le
+    // pixel rebase sans cesse : la perturbation dd y coûtait ~7× l'itération
+    // directe (éléphants 1e7, 60 000 it., 256×160 : 18,3 s contre 2,6 s pour
+    // 8 769 pixels) pour une garantie du même ordre.
+    let shallow_direct = shallow_direct_enabled()
+        && effective_pixel_size(params) >= SHALLOW_DD_PIXEL
+        && direct_dd_phase(params, true).is_some();
+    // Et si la référence s'est évadée bien avant le plafond, même l'étage
+    // perturbation f64 est sauté (cf. `short_reference_skips_f64`).
+    let skip_f64 = shallow_direct && short_reference_skips_f64(cache.orbit.z_ref_f64.len(), params.iteration_max);
     let results: Vec<(usize, u32, Complex64, bool)> = indices
         .par_iter()
+        .filter(|_| !skip_f64)
         .map(|&idx| {
             let (i, j) = (idx % width, idx / width);
             let (jx, jy) = match aa_jit {
@@ -659,10 +718,11 @@ pub fn recompute_pixels_cpu(
         })
         .collect();
 
-    let escalate: Vec<usize> = results
-        .iter()
-        .filter_map(|&(idx, _, _, e)| e.then_some(idx))
-        .collect();
+    let escalate: Vec<usize> = if skip_f64 {
+        indices.to_vec()
+    } else {
+        results.iter().filter_map(|&(idx, _, _, e)| e.then_some(idx)).collect()
+    };
     let mut out: Vec<(usize, u32, Complex64)> = results
         .iter()
         .filter(|r| !r.3)
@@ -685,16 +745,8 @@ pub fn recompute_pixels_cpu(
     // Mesuré Apple M4, hôte GPU f32, 1024² : coût d'escalade seahorse 1e6
     // 0,54 → 0,15 s, 1e8 1,92 → 0,74 s, spirale e20 3,49 → 1,08 s.
     let mut escalate = escalate;
-    // Vue PEU PROFONDE (pixel ≥ `SHALLOW_DD_PIXEL`) : les étages DIRECTS
-    // (double-double puis quad-double, `bytecode::direct_dd`) remplacent la
-    // perturbation dd/qd. À ces profondeurs `c` tient dans 106 bits, la
-    // référence (au centre, souvent évadée tôt) n'offre aucun saut BLA et le
-    // pixel rebase sans cesse : la perturbation dd y coûtait ~7× l'itération
-    // directe (éléphants 1e7, 60 000 it., 256×160 : 18,3 s contre 2,6 s pour
-    // 8 769 pixels) pour une garantie du même ordre.
-    let shallow_direct = shallow_direct_enabled()
-        && effective_pixel_size(params) >= SHALLOW_DD_PIXEL
-        && direct_dd_phase(params, true).is_some();
+    // Vue peu profonde : étages directs au lieu de la perturbation dd/qd
+    // (cf. `shallow_direct` plus haut).
     if !shallow_direct && !escalate.is_empty()
         && params.engine.use_bytecode_engine
         && !params.engine.use_dd_tier

@@ -101,6 +101,7 @@ impl DirectNum for Dd {
     }
 }
 
+#[cfg(test)]
 impl DirectNum for Qd {
     /// 2⁻²⁰⁶ : erreur « sloppy » mesurée ≤ 2⁻²¹⁰ relative aux opérandes,
     /// marge ×16 (même unité que la boucle qd de perturbation).
@@ -161,7 +162,25 @@ pub fn iterate_direct_dd(
 /// des pixels que le double-double ne garantit pas, avant le GMP pur. Même
 /// garantie (borne au premier ordre, [`E_MAX`], marge d'évasion), unité
 /// 2⁻²⁰⁶.
+///
+/// Arithmétique de [`super::direct_simd::QdV`] à une voie (renormalisation
+/// sans branchement) : la référence pixel par pixel des voies vectorielles
+/// de production ([`super::direct_simd::direct_qd_lanes`]).
 pub fn iterate_direct_qd(
+    phase: &Phase,
+    z0: (Qd, Qd),
+    c: (Qd, Qd),
+    iteration_max: u32,
+    bailout: f64,
+) -> DirectDdResult {
+    use super::direct_simd::{iterate_lanes, QdV};
+    iterate_lanes::<QdV<1>, 1>(phase, &[c], z0, false, iteration_max, bailout)[0]
+}
+
+/// Ancienne boucle qd mono-pixel (`perturbation::qd`, renormalisation à
+/// branches) : témoin des tests (mêmes comptes que la boucle de production).
+#[cfg(test)]
+pub(crate) fn iterate_direct_qd_branchy(
     phase: &Phase,
     z0: (Qd, Qd),
     c: (Qd, Qd),
