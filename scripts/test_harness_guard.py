@@ -578,6 +578,12 @@ def run_wisdom_axis():
                                           "chosen_s": 2.0}}}))
     _check("adjugé GMP" in md and "1.04 % faux" in md,
            "wisdom : le scorecard montre l'adjudication GMP")
+    md = "\n".join(W.wisdom_md({"counts": {}, "runs": 3, "size": [256, 160],
+                                "cases": {"iter:lent": {"status": "timeout",
+                                                        "kind": "iter",
+                                                        "budget_s": 20.0}}}))
+    _check("`iter:lent` (timeout)" in md,
+           "wisdom iter : scène hors budget listée « non mesurée », pas de KeyError")
 
 
 def run_levers():
