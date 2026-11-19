@@ -915,6 +915,7 @@ fn nova(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let three = Complex64::new(3.0, 0.0);
 
     let mut i = 0u32;
+    let mut cyc = super::cycle::CycleCut::<2>::new();
     while i < p.iteration_max {
         // z^3 and z^2 via multiplication (eliminates 2 powc calls per iteration)
         let z_sq = z * z;
@@ -947,6 +948,7 @@ fn nova(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
         }
 
         i += 1;
+        cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
     }
 
     FractalResult { iteration: i, z, orbit: None, distance: None }
@@ -1280,6 +1282,7 @@ mod cycle_cut_tests {
             FractalType::Multibrot,
             FractalType::MultibrotJulia,
             FractalType::AlphaMandelbrotJulia,
+            FractalType::Nova,
         ]
         .into_iter()
         .map(|ty| (format!("{ty:?}"), default_params_for_type(ty, 64, 48)))
