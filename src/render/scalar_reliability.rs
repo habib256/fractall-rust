@@ -41,6 +41,33 @@
 //!   (Alpha : +114 % → +40 % en sortant de la chaîne ce qui ne dépend pas de
 //!   `g`).
 //!
+//! Puis **Magnet Mandelbrot**, **Mandelbrot Sin** et **Julia Sin**
+//! (2026-11-19, juges GMP enfin assez rapides pour les voir) — bords ×3277 /
+//! ×2608 à 64×40 : 273 / 294 pixels faux sur 2560 → 0 (Julia Sin : 0 faux à
+//! 64×40, 1 à 128×80, suivi pour +1-4 %). Leçons :
+//! - Magnet Mandelbrot = la carte de Magnet Julia avec `s` = le pixel :
+//!   l'erreur du point est ADDITIVE dans `s − 1` et `s − 2`, le
+//!   multiplicateur reste `|z − r|/|q|` (même boucle, `e_s` en plus) ;
+//! - sinus : dérivée exacte `|cos ẑ|² = cos²x + sinh²y`, reste de Taylor
+//!   `½E²·cosh(|y| + E)` (pas de majorant `cosh y` du premier ordre : il
+//!   s'annule près de `Re z = ±π/2`) ; les composantes `sin/cos/sinh/cosh`
+//!   viennent de `iterations::csin_parts`, mêmes bits que `csin` (verrou) ;
+//! - vers le point fixe `z = 0` du sinus, `|sin z|` et la borne décroissent
+//!   jusqu'aux SOUS-NORMAUX : +165 % sur la vue d'accueil, +26 % avec un
+//!   plancher (majorant, donc sûr) [`SIN_FLOOR`] ;
+//! - le double-double du sinus exige `sin/cos/exp` dd ([`dd_trig`], tables
+//!   GMP + Taylor, ~340 ns/itération contre ~15 µs en GMP pur 128 b) : sans
+//!   lui, 29 % de pixels signalés sur le bord iraient au GMP, hors budget.
+//!   Coût réel du bord Mandelbrot Sin 256×160 : ~2 % des pixels sont au-delà
+//!   du dd (vraiment : le dd y diverge du GMP) et le GMP pur de ces pixels
+//!   domine la correction.
+//!
+//! Barnsley aligné sur les autres (même soir) : étage dd à voies entrelacées
+//! avec raccourci de cycle (plus de `hypot`), erreur du pixel span compris
+//! ([`pixel_error`]), arrondi du produit relatif aux OPÉRANDES `|w|₁·|c|₁`.
+//! Son bord Mandelbrot est CHAOS (juge 256 b ≠ 512 b) : 99 % de pixels
+//! signalés, c'est la bonne réponse.
+//!
 //! **Phoenix** résiste (non suivi) : son erreur vit dans un état à deux
 //! composantes `(z, y)` de jacobien `[[2z, p2], [1, 0]]` ; une borne en
 //! modules majore ce jacobien par `[[2|z|, ½], [1, 0]]`, de rayon spectral
@@ -57,6 +84,7 @@ use rayon::prelude::*;
 use rug::Float;
 
 use crate::fractal::bytecode::direct_dd::dd_from_gmp;
+use crate::render::dd_trig::{self, dd_add_fast, DdTrig};
 use crate::fractal::bytecode::reliability::{self as rel, ReliabilityMode};
 use crate::fractal::perturbation::dd::DoubleDouble as Dd;
 use crate::fractal::perturbation::{compute_perturbation_precision_bits, perf_enabled, DcGmpContext};
@@ -91,6 +119,9 @@ fn plan_for(params: &FractalParams, mode: ReliabilityMode, scope_off: bool) -> O
             | FractalType::AlphaMandelbrot
             | FractalType::Mandelbulb
             | FractalType::MagnetJulia
+            | FractalType::MagnetMandelbrot
+            | FractalType::MandelbrotSin
+            | FractalType::JuliaSin
     ) {
         return None;
     }
@@ -112,9 +143,14 @@ fn plan_for(params: &FractalParams, mode: ReliabilityMode, scope_off: bool) -> O
 #[inline]
 pub fn iterate_tracked(params: &FractalParams, z_pixel: Complex64) -> (u32, Complex64, bool) {
     match params.fractal_type {
-        FractalType::BarnsleyJulia => {
-            barnsley_f64(z_pixel, params.seed, false, params.iteration_max, params.bailout)
-        }
+        FractalType::BarnsleyJulia => barnsley_f64(
+            z_pixel,
+            params.seed,
+            pixel_error(params, z_pixel),
+            0.0,
+            params.iteration_max,
+            params.bailout,
+        ),
         FractalType::AlphaMandelbrot => alpha_f64(
             params.seed,
             z_pixel,
@@ -129,14 +165,42 @@ pub fn iterate_tracked(params: &FractalParams, z_pixel: Complex64) -> (u32, Comp
             params.iteration_max,
             params.bailout,
         ),
-        FractalType::MagnetJulia => magnet_julia_f64(
+        FractalType::MagnetJulia => magnet_f64(
             z_pixel,
             params.seed,
+            pixel_error(params, z_pixel),
+            0.0,
+            params.iteration_max,
+            params.bailout,
+        ),
+        FractalType::MagnetMandelbrot => magnet_f64(
+            Complex64::new(0.0, 0.0),
+            z_pixel,
+            0.0,
             pixel_error(params, z_pixel),
             params.iteration_max,
             params.bailout,
         ),
-        _ => barnsley_f64(z_pixel, z_pixel, true, params.iteration_max, params.bailout),
+        FractalType::MandelbrotSin => sin_f64(
+            params.seed,
+            z_pixel,
+            0.0,
+            pixel_error(params, z_pixel),
+            params.iteration_max,
+            params.bailout,
+        ),
+        FractalType::JuliaSin => sin_f64(
+            z_pixel,
+            params.seed,
+            pixel_error(params, z_pixel),
+            0.0,
+            params.iteration_max,
+            params.bailout,
+        ),
+        _ => {
+            let e = pixel_error(params, z_pixel);
+            barnsley_f64(z_pixel, z_pixel, e, e, params.iteration_max, params.bailout)
+        }
     }
 }
 
@@ -243,24 +307,28 @@ fn alpha_f64(
     (i, z, bad)
 }
 
-/// Barnsley f64 tracé. `c_is_pixel` : `c` porte l'arrondi du pixel (variante
-/// Mandelbrot) ; sinon `c` est la graine, exacte.
+/// Barnsley f64 tracé. `e0` : erreur du point de départ, `e_c` : celle de
+/// `c` (le pixel pour la variante Mandelbrot — [`pixel_error`], span compris
+/// — ; 0 pour la graine exacte de Julia).
 fn barnsley_f64(
     z0: Complex64,
     c: Complex64,
-    c_is_pixel: bool,
+    e0: f64,
+    e_c: f64,
     iteration_max: u32,
     bailout: f64,
 ) -> (u32, Complex64, bool) {
     let b2 = bailout * bailout;
     // Majorants L1 (|z| ≤ |re| + |im|) : aucune racine dans la boucle.
     let c_abs = c.norm();
-    let e_c = if c_is_pixel { U64 * c_abs } else { 0.0 };
+    // Arrondis de `z ∓ 1` (propagé par |c|) et du produit complexe (≤ u·|w|₁|c|₁
+    // par composante, relatif aux OPÉRANDES : |z'| seul le sous-estime quand
+    // les deux termes d'une composante se compensent).
+    let k_w = e_c + 2.0 * U64 * (c.re.abs() + c.im.abs());
     let mut z = z0;
     let mut i = 0u32;
     let mut cyc = crate::fractal::cycle::CycleCut::<2>::new();
-    // Arrondi du pixel lui-même (le juge part du point exact).
-    let mut e = U64 * (z0.re.abs() + z0.im.abs());
+    let mut e = e0;
     let mut bad = false;
     while i < iteration_max && z.norm_sqr() < b2 {
         let re = z.re;
@@ -277,7 +345,7 @@ fn barnsley_f64(
             if re.abs() <= e {
                 bad = true;
             }
-            e = c_abs * e + (w.re.abs() + w.im.abs()) * e_c + U64 * (z.re.abs() + z.im.abs());
+            e = c_abs * e + (w.re.abs() + w.im.abs()) * k_w;
             // Test de sortie de CE pas déterminé ssi |z| ∉ [R − E, R + E].
             let n2 = z.norm_sqr();
             let lo = (bailout - e).max(0.0);
@@ -335,19 +403,24 @@ fn mandelbulb_f64(
     (i, z, bad)
 }
 
-/// Magnet Julia f64 tracé : `n = z² + (s − 1)`, `q = 2z + (s − 2)`,
+/// Magnet f64 tracé : `n = z² + (s − 1)`, `q = 2z + (s − 2)`,
 /// `r = n / q`, `z' = r²` (opérations, ordre, sortie sur `|q|² < 1e-24` et
-/// raccourci de cycle de `iterations::magnet_julia`).
+/// raccourci de cycle de `iterations::magnet_julia` / `magnet_mandelbrot`).
 ///
 /// Propagation sans inégalité triangulaire sur le quotient : avec `Δq = 2Δ`
 /// et `Δn = Δ(2z + Δ)`, `n* q̂ − n̂ q* = Δ·(2(z − r) + Δ)·q̂ + arrondis`, donc
 /// `|Δr| ≤ [E(2|z − r| + E) + ρ_n + |r|ρ_q + …] / (|q| − 2E − ρ_q)` — le
 /// facteur `|z − r|` est la dérivée exacte ; `1 + |r|` à la place
 /// signalerait tout l'intérieur. Bornes au carré, sans racine.
-fn magnet_julia_f64(
+///
+/// Magnet MANDELBROT (même carte, `s` = le pixel, `z₀ = 0`) : l'erreur `e_s`
+/// du point entre dans les deux constantes `s − 1` et `s − 2` — additive,
+/// donc comptée avec leur arrondi ; le multiplicateur reste `|z − r|/|q|`.
+fn magnet_f64(
     z0: Complex64,
     seed: Complex64,
     e0: f64,
+    e_s: f64,
     iteration_max: u32,
     bailout: f64,
 ) -> (u32, Complex64, bool) {
@@ -355,9 +428,10 @@ fn magnet_julia_f64(
     let two_r_emax_sq = (2.0 * bailout + E_MAX_NL) * (2.0 * bailout + E_MAX_NL);
     let seed_minus_one = Complex64::new(seed.re - 1.0, seed.im);
     let seed_minus_two = Complex64::new(seed.re - 2.0, seed.im);
-    // Arrondi des constantes (le juge les forme exactes depuis la graine).
-    let s1 = U64 * (seed_minus_one.re.abs() + seed_minus_one.im.abs());
-    let s2 = U64 * (seed_minus_two.re.abs() + seed_minus_two.im.abs());
+    // Arrondi des constantes (le juge les forme exactes depuis la graine ou
+    // le point exact du pixel), plus l'erreur du point lui-même.
+    let s1 = U64 * (seed_minus_one.re.abs() + seed_minus_one.im.abs()) + e_s;
+    let s2 = U64 * (seed_minus_two.re.abs() + seed_minus_two.im.abs()) + e_s;
     let one_m_split = 1.0 - SPLIT;
     let mut z = z0;
     let mut n2 = z.norm_sqr();
@@ -371,9 +445,15 @@ fn magnet_julia_f64(
         let qq = q.norm_sqr();
         // Eviter division par zero
         if qq < 1e-24 {
-            // Le vrai |q|² est-il aussi sous le seuil ? |Δq| ≤ 2E + ρ_q.
+            // Le vrai |q|² est-il aussi sous le seuil ? |Δq| ≤ d = 2E + ρ_q,
+            // donc |q*|² ≤ (|q̂| + d)² ≤ (1+δ)|q̂|² + (1+1/δ)d² — c'est CETTE
+            // somme qu'il faut comparer au seuil, pas d² seul : un |q̂| juste
+            // sous 1e-12 avec une borne minuscule passait pour déterminé alors
+            // que le point exact était au-dessus (verrou
+            // `magnet_pole_exit_is_judged_on_q_plus_error`). Vaut pour les
+            // deux variantes (Magnet Mandelbrot : ρ_q porte l'erreur du pixel).
             let rho_q = U64 * (q.re.abs() + q.im.abs()) + s2;
-            if 8.0 * g + 2.0 * rho_q * rho_q >= 1e-26 {
+            if SPLIT_X * qq + SPLIT_Y * (8.0 * g + 2.0 * rho_q * rho_q) >= 1e-24 {
                 bad = true;
             }
             break;
@@ -410,6 +490,70 @@ fn magnet_julia_f64(
     (i, z, bad)
 }
 
+/// Plancher de `|sin ẑ|₁` dans les bornes Sin (majorant : sûr).
+const SIN_FLOOR: f64 = 1e-60;
+
+/// Mandelbrot Sin / Julia Sin f64 tracé : `z' = k·sin z` (opérations et
+/// raccourci de cycle de `iterations::mandelbrot_sin` — `k` = pixel, `z₀` =
+/// graine — et `julia_sin` — `k` = graine, `z₀` = pixel), `sin` par les
+/// composantes de `iterations::csin_parts` (mêmes bits que `csin`).
+///
+/// Propagation autour du `ẑ` CALCULÉ : `Δ' = k*·(sin z* − sin ẑ) +
+/// (k* − k̂)·sin ẑ + arrondis`, et par Taylor à reste intégral
+/// `|sin(ẑ + Δ) − sin ẑ| ≤ E·|cos ẑ| + ½E²·cosh(|Im ẑ| + E)` — le facteur
+/// `|cos ẑ|` est la dérivée EXACTE (`|cos z|² = cos²x + sinh²y`, sans racine
+/// ni majorant) : il s'annule près de `Re z = ±π/2`, où un majorant `cosh y`
+/// emballerait la borne de tout l'intérieur. `cosh(|y| + E) ≤ cosh y·e^E`,
+/// `e^E ≤ 1,2841` sous [`E_MAX_NL`]. Arrondis : `csin` ≤ 8u par composante
+/// (sincos 1 ulp, `expm1` et ses deux roundings), produit complexe 2u·|k|₁.
+fn sin_f64(
+    z0: Complex64,
+    k: Complex64,
+    e0: f64,
+    e_k: f64,
+    iteration_max: u32,
+    bailout: f64,
+) -> (u32, Complex64, bool) {
+    use crate::fractal::iterations::csin_parts;
+    let b2 = bailout * bailout;
+    let two_r_emax_sq = (2.0 * bailout + E_MAX_NL) * (2.0 * bailout + E_MAX_NL);
+    let k_abs = k.norm();
+    let k1 = k.re.abs() + k.im.abs();
+    // Marges relatives (1e-12) : arrondis du calcul de la borne elle-même.
+    let kk = SPLIT_X * (k_abs + e_k) * (k_abs + e_k) * (1.0 + 1e-12);
+    let a_coef = (e_k + 10.0 * U64 * k1) * (1.0 + 1e-12);
+    let kh = SPLIT_Y * 0.25 * 1.29 * 1.29;
+    let cos_margin = SPLIT_X * (1.0 + 16.0 * U64);
+    let mut z = z0;
+    let mut n2 = z.norm_sqr();
+    let mut i = 0u32;
+    let mut cyc = crate::fractal::cycle::CycleCut::<2>::new();
+    let mut g = e0 * e0; // E²
+    let mut bad = false;
+    while i < iteration_max && n2 < b2 {
+        let (s, c, sh, ch) = csin_parts(z);
+        z = k * Complex64::new(s * ch, c * sh);
+        i += 1;
+        n2 = z.norm_sqr();
+        if !bad {
+            // |Δ'|² ≤ (1+δ)|k*|²·E²·((1+δ)|cos ẑ|² + (1+1/δ)·E²·(1,29·ch/2)²)
+            //        + (1+1/δ)·(a·|sin ẑ|₁)².
+            let cos2 = cos_margin * (c * c + sh * sh);
+            // Plancher (majorant, donc sûr) : vers le point fixe z = 0, |sin z|
+            // et la borne décroissent géométriquement jusqu'aux SOUS-NORMAUX,
+            // dont chaque opération coûte une assistance micro-code (+165 % sur
+            // la vue d'accueil Mandelbrot Sin).
+            let add = a_coef * (s.abs() * ch + c.abs() * sh.abs()).max(SIN_FLOOR);
+            g = kk * g * (cos2 + kh * ch * ch * g) + SPLIT_Y * add * add;
+            if sq_bound_unreliable(n2, b2, two_r_emax_sq, g) {
+                bad = true;
+            }
+        }
+        cyc.observe_each(&mut i, iteration_max, [z.re, z.im]);
+    }
+    (i, z, bad)
+}
+
 /// Complexe double-double minimal des boucles de correction.
 #[derive(Clone, Copy)]
 struct Cdd {
@@ -428,6 +572,13 @@ impl Cdd {
     #[inline(always)]
     fn add(self, o: Self) -> Self {
         Cdd { re: self.re.add(o.re), im: self.im.add(o.im) }
+    }
+    #[inline(always)]
+    fn mul(self, o: Self) -> Self {
+        Cdd {
+            re: self.re.mul(o.re).sub(self.im.mul(o.im)),
+            im: self.re.mul(o.im).add(self.im.mul(o.re)),
+        }
     }
     /// Carré avec la soustraction « rapide » ([`dd_add_fast`]).
     #[inline(always)]
@@ -451,20 +602,6 @@ impl Cdd {
     fn hi(self) -> Complex64 {
         Complex64::new(self.re.hi, self.im.hi)
     }
-}
-
-/// Addition double-double « rapide » (QD sloppy) : un seul `two_sum`, erreur
-/// ≤ 2⁻¹⁰⁴·(|a| + |b|) — relative aux OPÉRANDES, pas au résultat (contre
-/// deux `two_sum` et une erreur relative au résultat pour `Dd::add`). Les
-/// bornes des pas qui l'emploient comptent donc l'arrondi de chaque somme sur
-/// ses opérandes.
-#[inline(always)]
-fn dd_add_fast(a: Dd, b: Dd) -> Dd {
-    let s = a.hi + b.hi;
-    let bb = s - a.hi;
-    let e = (a.hi - (s - bb)) + (b.hi - bb) + (a.lo + b.lo);
-    let hi = s + e;
-    Dd::new(hi, e - (hi - s))
 }
 
 /// Fin d'un pas double-double : `(continuer, fiable)` — la borne `e` doit
@@ -517,7 +654,7 @@ fn mandelbulb_dd_step(z: Cdd, e: f64, c: Cdd) -> (Cdd, f64, f64) {
 /// propagation que [`magnet_julia_f64`]. `E' = ∞` si `|q|` n'est pas
 /// séparé de 0 (le pixel part au GMP, qui décide la sortie `|q|² < 1e-24`).
 #[inline(always)]
-fn magnet_dd_step(z: Cdd, e: f64, s1: Cdd, s2: Cdd) -> (Cdd, f64, f64) {
+fn magnet_dd_step(z: Cdd, e: f64, s1: Cdd, s2: Cdd, e_s: f64) -> (Cdd, f64, f64) {
     let n = z.sqr().add(s1);
     let q = Cdd { re: z.re.mul_f64(2.0), im: z.im.mul_f64(2.0) }.add(s2);
     let qq = q.re.sqr().add(q.im.sqr());
@@ -528,8 +665,9 @@ fn magnet_dd_step(z: Cdd, e: f64, s1: Cdd, s2: Cdd) -> (Cdd, f64, f64) {
     let zn = r.sqr();
     let q_abs = qq.hi.sqrt();
     let r_abs = r.abs_hi();
-    let rho_n = UDD * (2.0 * (z.re.hi * z.re.hi + z.im.hi * z.im.hi) + n.abs_hi() + s1.abs_hi());
-    let rho_q = UDD * (q_abs + s2.abs_hi());
+    let rho_n =
+        UDD * (2.0 * (z.re.hi * z.re.hi + z.im.hi * z.im.hi) + n.abs_hi() + s1.abs_hi()) + e_s;
+    let rho_q = UDD * (q_abs + s2.abs_hi()) + e_s;
     let den = q_abs - 2.0 * e - rho_q;
     let (wr, wi) = (z.re.hi - r.re.hi, z.im.hi - r.im.hi);
     let w = (wr * wr + wi * wi).sqrt();
@@ -541,6 +679,34 @@ fn magnet_dd_step(z: Cdd, e: f64, s1: Cdd, s2: Cdd) -> (Cdd, f64, f64) {
     } else {
         f64::INFINITY
     };
+    (zn, e2, zn.abs_hi())
+}
+
+/// Un pas Sin double-double tracé : `z' = k·sin z`, `(z', E', |z'|)` — même
+/// propagation que [`sin_f64`], erreurs de `sin`/`cos`/`sinh`/`cosh` dd
+/// bornées par [`dd_trig`](crate::render::dd_trig) (absolues, ∝ `cosh y`).
+/// `E' = ∞` hors du domaine des fonctions dd (pixel au GMP).
+#[inline(always)]
+fn sin_dd_step(trig: &DdTrig, z: Cdd, e: f64, k: Cdd, e_k: f64) -> (Cdd, f64, f64) {
+    let (Some((sx, cx)), Some((sh, ch))) = (trig.sin_cos(z.re), trig.sinh_cosh(z.im)) else {
+        return (z, f64::INFINITY, f64::NAN);
+    };
+    let zn = k.mul(Cdd { re: sx.mul(ch), im: cx.mul(sh) });
+    let (s, c, shf, chf) = (sx.hi, cx.hi, sh.hi, ch.hi);
+    let cos_abs = (c * c + shf * shf).sqrt();
+    // Plancher anti-sous-normaux (cf. `sin_f64`).
+    let sin1 = (s.abs() * chf + c.abs() * shf.abs()).max(SIN_FLOOR);
+    // Erreur absolue de sin ẑ (deux composantes, produits dd compris).
+    let eps_sin = 2.0
+        * (dd_trig::SIN_ERR * (1.0 + z.re.hi.abs()) + dd_trig::HYP_ERR + 2.0)
+        * UDD
+        * chf;
+    let k_abs = k.abs_hi();
+    let k1 = k.re.hi.abs() + k.im.hi.abs();
+    let e2 = ((k_abs + e_k) * e * (cos_abs + 0.5 * e * chf * (1.0 + 2.0 * e))
+        + (e_k + 4.0 * UDD * k1) * (sin1 + eps_sin)
+        + k_abs * eps_sin)
+        * (1.0 + 1e-12);
     (zn, e2, zn.abs_hi())
 }
 
@@ -696,50 +862,44 @@ fn dd_lanes(
     out
 }
 
-/// Barnsley double-double tracé. Renvoie `(itérations, z, fiable)`.
-fn barnsley_dd(
-    z0: (Dd, Dd),
-    c: (Dd, Dd),
-    c_is_pixel: bool,
-    iteration_max: u32,
-    bailout: f64,
-) -> (u32, Complex64, bool) {
-    let b2 = bailout * bailout;
-    let c_abs = c.0.hi.hypot(c.1.hi);
-    let e_c = if c_is_pixel { UDD * c_abs } else { 0.0 };
-    let one = Dd::from_f64(1.0);
-    let (mut x, mut y) = z0;
-    let mut i = 0u32;
-    let mut e = UDD * x.hi.hypot(y.hi);
-    while i < iteration_max && x.hi * x.hi + y.hi * y.hi < b2 {
-        if x.hi.abs() <= e {
-            return (i, Complex64::new(x.hi, y.hi), false);
-        }
-        let wx = if x.hi >= 0.0 { x.sub(one) } else { x.add(one) };
-        let w_abs = wx.hi.hypot(y.hi);
-        // (wx + i·y)·(c.re + i·c.im)
-        let nx = wx.mul(c.0).sub(y.mul(c.1));
-        let ny = wx.mul(c.1).add(y.mul(c.0));
-        x = nx;
-        y = ny;
-        let n = x.hi.hypot(y.hi);
-        e = c_abs * e + w_abs * e_c + UDD * n;
-        i += 1;
-        if !n.is_finite() || (n - bailout).abs() <= e || !(e < E_MAX) {
-            return (i, Complex64::new(x.hi, y.hi), false);
-        }
+/// Un pas Barnsley double-double tracé : `z' = (z ∓ 1)·c`, `(z', E', |z'|)`.
+/// Borne LINÉARISÉE (plafond [`E_MAX`], comme `barnsley_f64`) ; `E' = ∞` si
+/// la branche `Re z ≥ 0` n'est pas déterminée ou si la borne dépasse
+/// [`E_MAX`] (le pixel part au GMP). Arrondis relatifs aux opérandes
+/// (`|w|₁·|c|₁`), sans `hypot`.
+#[inline(always)]
+fn barnsley_dd_step(z: Cdd, e: f64, c: Cdd, e_c: f64) -> (Cdd, f64, f64) {
+    if z.re.hi.abs() <= e {
+        return (z, f64::INFINITY, f64::NAN);
     }
-    (i, Complex64::new(x.hi, y.hi), true)
+    let one = Dd::from_f64(1.0);
+    let wx = if z.re.hi >= 0.0 { z.re.sub(one) } else { z.re.add(one) };
+    let w = Cdd { re: wx, im: z.im };
+    let zn = w.mul(c);
+    let w1 = w.re.hi.abs() + w.im.hi.abs();
+    let c1 = c.re.hi.abs() + c.im.hi.abs();
+    let e2 = c.abs_hi() * e + w1 * (e_c + 4.0 * UDD * c1);
+    (zn, if e2 < E_MAX { e2 } else { f64::INFINITY }, zn.abs_hi())
 }
 
-/// Étage double-double des types à voies entrelacées (`None` : Barnsley,
-/// boucle par pixel). `points` : point exact de chaque pixel, arrondi en dd.
+/// Étage double-double (voies entrelacées, tous les types suivis).
+/// `points` : point exact de chaque pixel, arrondi en dd.
 fn dd_stage(params: &FractalParams, points: &[(Dd, Dd)]) -> Option<Vec<(u32, Complex64, bool)>> {
     let (n, r) = (params.iteration_max, params.bailout);
     let seed = (Dd::from_f64(params.seed.re), Dd::from_f64(params.seed.im));
     let seed_c = Cdd { re: seed.0, im: seed.1 };
     let pts = || -> Vec<Cdd> { points.iter().map(|&(re, im)| Cdd { re, im }).collect() };
     match params.fractal_type {
+        // Barnsley : `z₀` = le point (julia = true) ; la variante Mandelbrot
+        // reçoit aussi le point comme `c`, la Julia prend la graine exacte.
+        FractalType::BarnsleyJulia => {
+            let step = move |z: Cdd, e: f64, _: Cdd| barnsley_dd_step(z, e, seed_c, 0.0);
+            Some(dd_lanes_par(&pts(), seed_c, true, n, r, step))
+        }
+        FractalType::BarnsleyMandelbrot => {
+            let step = |z: Cdd, e: f64, c: Cdd| barnsley_dd_step(z, e, c, UDD * c.abs_hi());
+            Some(dd_lanes_par(&pts(), seed_c, true, n, r, step))
+        }
         FractalType::AlphaMandelbrot => {
             Some(dd_lanes_par(&pts(), seed_c, false, n, r, alpha_dd_step))
         }
@@ -747,8 +907,28 @@ fn dd_stage(params: &FractalParams, points: &[(Dd, Dd)]) -> Option<Vec<(u32, Com
         FractalType::MagnetJulia => {
             let s1 = Cdd { re: seed.0.sub(Dd::from_f64(1.0)), im: seed.1 };
             let s2 = Cdd { re: seed.0.sub(Dd::from_f64(2.0)), im: seed.1 };
-            let step = move |z: Cdd, e: f64, _: Cdd| magnet_dd_step(z, e, s1, s2);
+            let step = move |z: Cdd, e: f64, _: Cdd| magnet_dd_step(z, e, s1, s2, 0.0);
             Some(dd_lanes_par(&pts(), seed_c, true, n, r, step))
+        }
+        FractalType::MandelbrotSin => {
+            let trig = DdTrig::get();
+            let step = move |z: Cdd, e: f64, c: Cdd| sin_dd_step(trig, z, e, c, UDD * c.abs_hi());
+            Some(dd_lanes_par(&pts(), seed_c, false, n, r, step))
+        }
+        FractalType::JuliaSin => {
+            let trig = DdTrig::get();
+            let step = move |z: Cdd, e: f64, _: Cdd| sin_dd_step(trig, z, e, seed_c, 0.0);
+            Some(dd_lanes_par(&pts(), seed_c, true, n, r, step))
+        }
+        FractalType::MagnetMandelbrot => {
+            // z₀ = 0 exact ; le point (arrondi en dd) entre dans s − 1, s − 2.
+            let zero = Cdd { re: Dd::ZERO, im: Dd::ZERO };
+            let step = |z: Cdd, e: f64, c: Cdd| {
+                let s1 = Cdd { re: c.re.sub(Dd::from_f64(1.0)), im: c.im };
+                let s2 = Cdd { re: c.re.sub(Dd::from_f64(2.0)), im: c.im };
+                magnet_dd_step(z, e, s1, s2, UDD * c.abs_hi())
+            };
+            Some(dd_lanes_par(&pts(), zero, false, n, r, step))
         }
         _ => None,
     }
@@ -776,9 +956,6 @@ pub fn correct(
     let cy = parse(&params.center_y_hp, params.center_y);
     let dc_ctx = DcGmpContext::new(params, prec);
     let width = params.width.max(1) as usize;
-    let ft = params.fractal_type;
-    let seed = (Dd::from_f64(params.seed.re), Dd::from_f64(params.seed.im));
-    let (n, r) = (params.iteration_max, params.bailout);
     // Point exact de chaque pixel (centre HP + dc en GMP), arrondi en dd.
     let points: Vec<(Dd, Dd)> = flagged
         .par_iter()
@@ -791,23 +968,11 @@ pub fn correct(
             (dd_from_gmp(&re), dd_from_gmp(&im))
         })
         .collect();
-    let lanes = dd_stage(params, &points);
-    let tried: Vec<(usize, u32, Complex64, bool)> = if let Some(res) = lanes {
-        flagged.iter().zip(res).map(|(&idx, (it, z, ok))| (idx, it, z, ok)).collect()
-    } else {
-        flagged
-            .par_iter()
-            .zip(points.par_iter())
-            .map(|(&idx, &point)| {
-                let (it, z, ok) = if ft == FractalType::BarnsleyJulia {
-                    barnsley_dd(point, seed, false, n, r)
-                } else {
-                    barnsley_dd(point, point, true, n, r)
-                };
-                (idx, it, z, ok)
-            })
-            .collect()
-    };
+    // Tout type suivi a son étage dd ; sinon tout part au GMP.
+    let res = dd_stage(params, &points)
+        .unwrap_or_else(|| vec![(0, Complex64::new(0.0, 0.0), false); points.len()]);
+    let tried: Vec<(usize, u32, Complex64, bool)> =
+        flagged.iter().zip(res).map(|(&idx, (it, z, ok))| (idx, it, z, ok)).collect();
     if cancel.load(Ordering::Relaxed) {
         return None;
     }
@@ -904,12 +1069,21 @@ mod tests {
 
     /// Vues d'accueil (`None`) et de bord (scènes de l'axe `types`).
     const SCENES: &[(FractalType, Option<(f64, f64, f64)>)] = &[
+        (FractalType::BarnsleyJulia, Some((-0.50238037109375, -1.9626342773437502, 2048.0))),
+        (FractalType::BarnsleyMandelbrot, None),
+        (FractalType::BarnsleyMandelbrot, Some((-0.1156768798828125, -1.3585296630859376, 2730.666666666666))),
         (FractalType::AlphaMandelbrot, None),
         (FractalType::AlphaMandelbrot, Some((-1.260833740234375, -0.350164794921875, 4096.0))),
         (FractalType::Mandelbulb, None),
         (FractalType::Mandelbulb, Some((-0.7341842651367188, -0.23336334228515626, 5461.333))),
         (FractalType::MagnetJulia, None),
         (FractalType::MagnetJulia, Some((0.233306884765625, -1.676715087890625, 4096.0))),
+        (FractalType::MagnetMandelbrot, None),
+        (FractalType::MagnetMandelbrot, Some((0.6216079711914062, -1.4390701293945312, 3276.8))),
+        (FractalType::MandelbrotSin, None),
+        (FractalType::MandelbrotSin, Some((-1.9899086401850268, -0.5337651978513115, 2607.5945876176133))),
+        (FractalType::JuliaSin, None),
+        (FractalType::JuliaSin, Some((4.7936899621426774e-05, -0.00012437648618453408, 2607.5945876176133))),
     ];
 
     fn scene_params(ft: FractalType, view: Option<(f64, f64, f64)>, w: usize, h: usize) -> FractalParams {
@@ -965,7 +1139,11 @@ mod tests {
                     assert_eq!(z.im.to_bits(), r.z.im.to_bits(), "{ft:?} pixel {k}");
                     flagged += bad as usize;
                 }
-                assert!(flagged < w * h / 2, "{ft:?} {view:?} : {flagged} signalés");
+                // Bord Barnsley Mandelbrot : CHAOS (juge 256 b ≠ 512 b sur
+                // 73 % des pixels) — tout signaler y est la bonne réponse.
+                if !(ft == FractalType::BarnsleyMandelbrot && view.is_some()) {
+                    assert!(flagged < w * h / 2, "{ft:?} {view:?} : {flagged} signalés");
+                }
             }
         }
     }
@@ -975,7 +1153,11 @@ mod tests {
     /// Mandelbrot / Mandelbulb / Magnet Julia ; plus aucun avec.
     #[test]
     fn tracked_scalar_edges_match_gmp() {
-        for &(ft, view) in SCENES.iter().filter(|s| s.1.is_some()) {
+        // Julia Sin : aucun pixel faux à cette taille (1 à 128×80, corrigé —
+        // `diag_julia_sin_wrong`) : rien à verrouiller contre le GMP. Bord
+        // Barnsley Mandelbrot : juge non convergé (CHAOS), pas un juge.
+        let judged = |ft: FractalType| !matches!(ft, FractalType::JuliaSin | FractalType::BarnsleyMandelbrot);
+        for &(ft, view) in SCENES.iter().filter(|s| s.1.is_some() && judged(s.0)) {
             let (w, h) = (64usize, 40usize);
             let mut p = scene_params(ft, view, w, h);
             p.iteration_max = 5000;
@@ -983,13 +1165,16 @@ mod tests {
             let prod = crate::render::render_escape_time(&p);
             let mut g = p.clone();
             g.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
+            let t = std::time::Instant::now();
             let gmp = crate::render::render_escape_time(&g);
+            eprintln!("{ft:?} juge GMP : {:.1} s", t.elapsed().as_secs_f64());
             let wrong = prod.iterations.iter().zip(&gmp.iterations).filter(|(a, b)| a != b).count();
             let raw_wrong = scene_points(&p, w, h)
                 .iter()
                 .zip(&gmp.iterations)
                 .filter(|(&zp, &gi)| iterate_point(&p, zp).iteration != gi)
                 .count();
+            eprintln!("{ft:?} bord : {raw_wrong} pixels faux sans suivi, {wrong} avec");
             assert!(raw_wrong >= 5, "{ft:?} : scène sans pixel faux à corriger ({raw_wrong})");
             assert!(wrong <= 1, "{ft:?} : {wrong} pixels ≠ GMP pur (sans suivi : {raw_wrong})");
         }
@@ -1084,12 +1269,62 @@ mod tests {
             }
             assert!(capped > 0 && capped < pts.len(), "{ft:?} : grille sans mélange ({capped})");
         }
+        // Mandelbrot Sin (graine 1) : même verrou, pas transcendant compris.
+        let trig = DdTrig::get();
+        let step = |z: Cdd, e: f64, c: Cdd| sin_dd_step(trig, z, e, c, UDD * c.abs_hi());
+        let seed = Cdd { re: Dd::from_f64(1.0), im: Dd::ZERO };
+        let (cx, cy, span) = (-1.9899086401850268, -0.5337651978513115, 4e-3);
+        let pts: Vec<Cdd> = (0..103)
+            .map(|k| {
+                let (i, j) = ((k % 11) as f64, (k / 11) as f64);
+                let re = Dd::from_f64(cx + span * (i / 10.0 - 0.5)).add(Dd::new(1e-20 * i, 0.0));
+                Cdd { re, im: Dd::from_f64(cy + span * (j / 9.0 - 0.5)) }
+            })
+            .collect();
+        let lanes = dd_lanes(&pts, seed, false, 2000, 4.0, step);
+        let mut capped = 0;
+        for (k, (&pc, &(it, z, ok))) in pts.iter().zip(&lanes).enumerate() {
+            let (it1, z1, ok1) = dd_pixel(seed, pc, 2000, 4.0, step);
+            assert_eq!((it, ok), (it1, ok1), "Sin point {k}");
+            assert_eq!(z.re.to_bits(), z1.re.to_bits(), "Sin point {k}");
+            assert_eq!(z.im.to_bits(), z1.im.to_bits(), "Sin point {k}");
+            capped += (it == 2000) as usize;
+        }
+        assert!(capped > 0 && capped < pts.len(), "Sin : grille sans mélange ({capped})");
+    }
+
+    /// Compte dd d'un point SANS borne (pas suivi, `E` remis à 0).
+    fn dd_untracked(p: &FractalParams, zp: Complex64) -> u32 {
+        let c = Cdd { re: Dd::from_f64(zp.re), im: Dd::from_f64(zp.im) };
+        let seed = Cdd { re: Dd::from_f64(p.seed.re), im: Dd::from_f64(p.seed.im) };
+        let zero = Cdd { re: Dd::ZERO, im: Dd::ZERO };
+        let (n, r) = (p.iteration_max, p.bailout);
+        let trig = DdTrig::get();
+        let (z0, step): (Cdd, Box<dyn Fn(Cdd, f64, Cdd) -> (Cdd, f64, f64)>) = match p.fractal_type {
+            FractalType::MandelbrotSin => (seed, Box::new(|z, _, c| sin_dd_step(trig, z, 0.0, c, 0.0))),
+            FractalType::MagnetMandelbrot => (
+                zero,
+                Box::new(|z, _, c: Cdd| {
+                    let s1 = Cdd { re: c.re.sub(Dd::from_f64(1.0)), im: c.im };
+                    let s2 = Cdd { re: c.re.sub(Dd::from_f64(2.0)), im: c.im };
+                    magnet_dd_step(z, 0.0, s1, s2, 0.0)
+                }),
+            ),
+            FractalType::AlphaMandelbrot => (seed, Box::new(|z, _, c| alpha_dd_step(z, 0.0, c))),
+            FractalType::Mandelbulb => (seed, Box::new(|z, _, c| mandelbulb_dd_step(z, 0.0, c))),
+            _ => return u32::MAX,
+        };
+        let step = |z: Cdd, _e: f64, c: Cdd| {
+            let (z, _, nn) = step(z, 0.0, c);
+            (z, 0.0, nn)
+        };
+        dd_pixel(z0, c, n, r, step).0
     }
 
     #[test]
     #[ignore]
     fn diag_flag_breakdown() {
-        for &(ft, view) in SCENES.iter().filter(|s| s.1.is_some()) {
+        for &(ft, view) in SCENES.iter().filter(|s| s.1.is_some() && s.0 != FractalType::BarnsleyMandelbrot) {
             let (w, h) = (128usize, 80usize);
             let mut p = scene_params(ft, view, w, h);
             p.iteration_max = 5000;
@@ -1119,7 +1354,9 @@ mod tests {
                                     Float::with_val(256, zp.im),
                                 ),
                             );
-                            beyond[(git == dit) as usize] += 1;
+                            // dd mené à son terme SANS borne : le signalement
+                            // dd était-il nécessaire ?
+                            beyond[(git == dd_untracked(&p, zp)) as usize] += 1;
                         }
                     }
                     let capped = it >= p.iteration_max;
@@ -1136,6 +1373,57 @@ mod tests {
             }
             eprintln!("{ft:?}: flagged capped={fc} escaped={fe} (log10 it hist {hist:?}) ; ok capped={nc} escaped={ne} ; flagged [diff,same]x[dd_bad,dd_ok] {agree:?} ; dd_bad vs gmp [diff,same] {beyond:?}");
         }
+    }
+
+    /// Julia Sin, vues d'accueil et de bord : pixels faux sans / avec suivi.
+    #[test]
+    #[ignore]
+    fn diag_julia_sin_wrong() {
+        for &(ft, view) in SCENES.iter().filter(|s| s.0 == FractalType::JuliaSin) {
+            for (w, h) in [(64usize, 40usize), (128, 80)] {
+                let mut p = scene_params(ft, view, w, h);
+                p.iteration_max = 5000;
+                let prod = crate::render::render_escape_time(&p);
+                let mut g = p.clone();
+                g.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
+                let gmp = crate::render::render_escape_time(&g);
+                let wrong = prod.iterations.iter().zip(&gmp.iterations).filter(|(a, b)| a != b).count();
+                let raw_wrong = scene_points(&p, w, h)
+                    .iter()
+                    .zip(&gmp.iterations)
+                    .filter(|(&zp, &gi)| iterate_point(&p, zp).iteration != gi)
+                    .count();
+                eprintln!("JuliaSin {view:?} {w}x{h} : {raw_wrong} faux sans suivi, {wrong} avec");
+            }
+        }
+    }
+
+    /// Sortie « pôle » de Magnet Julia (`|q|² < 1e-24`) : point f64 EXACT
+    /// (vue 1×1) dont le 2e pas tombe en f64 à |q|² = 0,99956e-24 mais à
+    /// 1,00003e-24 en exact. La boucle f64 s'arrêtait à 1 itération et se
+    /// déclarait fiable (elle comparait la seule borne d'erreur au seuil) ;
+    /// le GMP pur continue.
+    #[test]
+    fn magnet_pole_exit_is_judged_on_q_plus_error() {
+        let z0 = Complex64::new(f64::from_bits(0x3fe426b473df3572), f64::from_bits(0x3fedd7afc17c751f));
+        let mut p = default_params_for_type(FractalType::MagnetJulia, 1, 1);
+        p.center_x = z0.re;
+        p.center_y = z0.im;
+        p.span_x = 1e-12;
+        p.span_y = 1e-12;
+        p.iteration_max = 200;
+        let g = crate::fractal::gmp::MpcParams::from_params(&p);
+        let (truth, _) = crate::fractal::gmp::iterate_point_mpc(
+            &g,
+            &crate::fractal::gmp::complex_from_xy(g.prec, Float::with_val(g.prec, z0.re), Float::with_val(g.prec, z0.im)),
+        );
+        let raw = iterate_point(&p, z0).iteration;
+        assert_eq!(raw, 1, "scène : la boucle f64 doit sortir au pôle");
+        assert_ne!(truth, raw, "scène : le point exact ne doit pas sortir au pôle");
+        let (_, _, bad) = iterate_tracked(&p, z0);
+        assert!(bad, "sortie au pôle non déterminée déclarée fiable");
+        let prod = crate::render::render_escape_time(&p);
+        assert_eq!(prod.iterations[0], truth, "rendu de production ≠ GMP pur");
     }
 
     #[test]

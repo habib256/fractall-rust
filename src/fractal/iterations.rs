@@ -435,6 +435,26 @@ fn csin(z: Complex64) -> Complex64 {
     Complex64::new(s * ch, c * sh.copysign(z.im))
 }
 
+/// Composantes de [`csin`] pour le suivi de fiabilité
+/// (`render::scalar_reliability`) : `(sin x, cos x, sinh y, cosh y)`, `sinh`
+/// signé comme `y`. `Complex64::new(s·ch, c·sh)` rend EXACTEMENT les bits de
+/// `csin` (raccourci compris : `s·1 = s`, `sh = y`) — verrou
+/// `csin_parts_rebuild_csin_bit_for_bit`. Ne pas modifier l'un sans l'autre.
+#[inline(always)]
+pub(crate) fn csin_parts(z: Complex64) -> (f64, f64, f64, f64) {
+    const TINY_HYPERBOLIC: f64 = 1.0 / (1u64 << 28) as f64;
+    let (s, c) = z.re.sin_cos();
+    let a = z.im.abs();
+    if a < TINY_HYPERBOLIC {
+        return (s, c, z.im, 1.0);
+    }
+    let t = a.exp_m1();
+    let q = t / (t + 1.0);
+    let sh = 0.5 * (t + q);
+    let ch = 1.0 + 0.5 * t * q;
+    (s, c, sh.copysign(z.im), ch)
+}
+
 /// Racine carrée PRINCIPALE (même branche que `Complex::sqrt` et
 /// `Complex::powf` : argument dans (−π, π], `Im z = −0` du côté −π), sous forme
 /// algébrique — deux racines réelles et une division au lieu de
@@ -1198,6 +1218,24 @@ mod fast_complex_tests {
             v.push(Complex64::new(x, y));
         }
         v
+    }
+
+    /// Les composantes exposées au suivi de fiabilité recomposent `csin` au
+    /// bit près (signes des zéros, raccourci |Im z| < 2⁻²⁸ compris).
+    #[test]
+    fn csin_parts_rebuild_csin_bit_for_bit() {
+        let mut zs = samples();
+        for &y in &[0.0, -0.0, 1e-9, -1e-9, 3.7e-9, 2e-8, -0.3, 5.0] {
+            for &x in &[0.0, -0.0, 1.0, -2.5, 3.14159, 1e-300] {
+                zs.push(Complex64::new(x, y));
+            }
+        }
+        for z in zs {
+            let (s, c, sh, ch) = csin_parts(z);
+            let (a, b) = (csin(z), Complex64::new(s * ch, c * sh));
+            assert_eq!(a.re.to_bits(), b.re.to_bits(), "{z}");
+            assert_eq!(a.im.to_bits(), b.im.to_bits(), "{z}");
+        }
     }
 
     /// `csin` = `Complex::sin` à quelques ulp près, signes des zéros compris.
