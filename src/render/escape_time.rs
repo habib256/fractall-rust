@@ -257,7 +257,12 @@ pub fn render_request(
             wisdom::Algorithm::StandardF64 => {
                 let reuse = build_reuse(params, reuse);
                 return render_escape_time_f64_cancellable_with_reuse(
-                    params, cancel, reuse, xaos, tiles,
+                    params,
+                    cancel,
+                    reuse,
+                    xaos,
+                    tiles,
+                    Some(orbit_cache),
                 );
             }
         }
@@ -267,7 +272,7 @@ pub fn render_request(
     if params.engine.use_gmp {
         return render_escape_time_gmp_cancellable_with_reuse(params, cancel, reuse, xaos, tiles);
     }
-    render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse, xaos, tiles)
+    render_escape_time_f64_cancellable_with_reuse(params, cancel, reuse, xaos, tiles, None)
 }
 
 /// Calcule le niveau de zoom à partir des paramètres.
@@ -343,7 +348,7 @@ fn render_escape_time_f64_cancellable(
     params: &FractalParams,
     cancel: &Arc<AtomicBool>,
 ) -> Option<RenderOutput> {
-    render_escape_time_f64_cancellable_with_reuse(params, cancel, None, None, None)
+    render_escape_time_f64_cancellable_with_reuse(params, cancel, None, None, None, None)
 }
 
 /// Phase unique à itérer par lots sur le path f64 standard, ou `None` quand le
@@ -373,6 +378,9 @@ fn render_escape_time_f64_cancellable_with_reuse(
     reuse: Option<ReuseData<'_>>,
     xaos: Option<&XaosMap>,
     tiles: Option<&TileOpts>,
+    // Cache d'orbite du dispatcher : la correction de fiabilité par
+    // perturbation y lit / range sa référence (cf. `std_reliability::correct_std_pixels_cached`).
+    orbit_cache: Option<&mut Option<Arc<ReferenceOrbitCache>>>,
 ) -> Option<RenderOutput> {
     let width = params.width as usize;
     let height = params.height as usize;
@@ -637,13 +645,14 @@ fn render_escape_time_f64_cancellable_with_reuse(
             let mut flagged = flagged_all.into_inner().unwrap_or_else(|e| e.into_inner());
             flagged.sort_unstable();
             if escalate {
-                crate::render::std_reliability::correct_std_pixels(
+                crate::render::std_reliability::correct_std_pixels_cached(
                     params,
                     correction,
                     cancel.as_ref(),
                     &flagged,
                     &mut iterations,
                     &mut zs,
+                    orbit_cache,
                 )?;
             } else if perf_enabled() {
                 eprintln!(
