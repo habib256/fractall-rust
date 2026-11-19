@@ -31,15 +31,24 @@ tier micro, Leviers) et ce qu'ils ont trouvé au premier passage :
 
 **Gaps OUVERTS trouvés par ces axes (correction d'abord)** :
 
-1. **Path standard, vue à plafond AUTO** — éléphants 1e7 à 60 000 itérations
-   (le plafond que choisit la sonde) : **1,04 % de pixels faux** vs GMP pur
-   (juge convergé 256 b ≡ 640 b). 425 des 429 pixels faux portent la valeur
-   de la perturbation f64 : le traqueur de la PERTURBATION ne les signale pas
-   (bord parabolique : l'erreur ne s'emballe pas, elle déplace le temps de
-   transit). Piste : test de détermination à l'évasion en perturbation f64
-   (`FRACTALL_F64_MARGIN=1`, à mesurer sur cette scène) ; la perturbation
-   forcée y laisse en plus 3,1 % de pixels « au-delà du dd » non corrigés.
-   Verrou : `truth/std:elephants_1e7_60000` (FAIL tant que c'est ouvert).
+1. ~~**Path standard, vue à plafond AUTO**~~ — **FERMÉ le 2026-11-19.**
+   Éléphants 1e7 à 60 000 itérations (le plafond que choisit la sonde) :
+   1,17 % de pixels faux vs GMP pur à 128×80 (juge convergé 256 b ≡ 640 b)
+   → **0,05 %** (5 px, PASS), +12 % de temps sur la scène. Cause : la borne
+   du tier dd ne s'EMBALLE pas au bord parabolique (l'erreur déplace le temps
+   de transit du goulot, l'orbite s'évade quelques pas après) ; elle est
+   seulement comparable à |z| à l'évasion. Remède : test d'évasion relatif
+   (0,01·|z|) dans la correction dd, **limité aux vues peu profondes**
+   (pixel ≥ 1e-13, `shallow_dd_escape_rel`, `FRACTALL_DD_ESCAPE_SHALLOW=0`)
+   — sur le corpus profond le même test ne change aucun pixel et coûte
+   jusqu'à ×2 (e227). A/B d'identité : e50, e227, golden_spider, rug, dragon
+   identiques à l'octet. `FRACTALL_F64_MARGIN=1` n'y changeait rien (119 px).
+   **Reste ouvert** : la perturbation FORCÉE sur cette vue laisse 3,6 % de
+   pixels « au-delà du dd » non corrigés (plafonds qd 1 % / GMP 0,1 % en
+   fraction de pixels alors que le GMP y coûte 150 ns/itération) — un budget
+   en coût absolu, pas en fraction, serait plus juste à faible profondeur.
+   Verrous : `truth/std:elephants_1e7_60000`,
+   `parabolic_edge_at_auto_cap_matches_gmp`.
 2. **Tricorn bord ×4096 : 2,5 % de pixels faux** (juge convergé). Avec
    `FRACTALL_RELIABILITY_STD=all` le traqueur les SIGNALE (239 signalés pour
    65 faux) mais la correction GMP est hors budget → corriger par la

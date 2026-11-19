@@ -938,6 +938,17 @@ compte) dépend de la référence — deux vues dont les centres diffèrent au
 17e chiffre (chaîne HP vs f64) ne sont plus égales au bit près sur `zs`.
 Non suivis : formules à `Mul`/`Rot` (Multibrot, opcodes), hybrides et canaux
 annexes (chemin scalaire), plan ≠ Mu, graine non nulle, types sans bytecode.
+⚠️ **L'emballement ne voit pas un bord PARABOLIQUE** (2026-11-19) : près
+d'un point parabolique l'erreur ne s'amplifie pas exponentiellement, elle
+déplace le temps de transit du goulot, et l'orbite s'évade quelques pas plus
+tard — la borne dd vaut alors une fraction de |z|, très loin de 1e30. Vallée
+des éléphants 1e7 au plafond de la sonde auto (60 000) : 1,17 % de pixels
+faux, tous des valeurs dd « fiables ». D'où le test d'évasion relatif
+(`E ≥ 0,01·|z|` ⇒ second essai sans BLA, puis qd / GMP) dans
+`correct_pixels_dd`, **en vue peu profonde seulement**
+(`shallow_dd_escape_rel`, pixel ≥ 1e-13) : en profond il ne change aucun
+pixel du corpus et coûte jusqu'à ×2. Le plafond FIXE (2500) de l'axe truth
+ne pouvait pas le voir : c'est la scène à plafond auto qui l'a montré.
 ⚠️ **Ne pas chercher à resserrer le terme `l·ε` du saut BLA f64** : à
 ε = 2⁻⁵³ la troncature réelle est négligeable (borne du second ordre
 implémentée et testée : la substituer revient à retirer le terme) et c'est
@@ -1019,6 +1030,7 @@ Tous lus UNE fois (`OnceLock`). Défaut = comportement de production.
 | `FRACTALL_RELIABILITY_GMP_MAX_FRACTION=f` | plafond de l'escalade dd → GMP (défaut 0,001 ; ≥ 1 = illimité) |
 | `FRACTALL_DD_PROBE=1` | sonde dd avant l'escalade frame (opt-in) : scène dont la majorité des pixels non fiables échappe aussi au dd ⇒ f64 gardé avec avertissement, frame dd non rendue |
 | `FRACTALL_F64_MARGIN=1` | test de détermination à l'évasion au tier f64 (opt-in, +75-195 %) |
+| `FRACTALL_DD_ESCAPE_SHALLOW=0\|f` | correction dd des vues PEU PROFONDES (pixel ≥ 1e-13) : `0` coupe le test d'évasion relatif (défaut 0,01·\|z\|), une valeur le remplace. Sans lui, bord parabolique à fort plafond (éléphants 1e7, 60 000 it.) : 1,2 % de pixels faux |
 | `FRACTALL_DD_ESCAPE_REL=0.1` | tier dd : pixel non fiable si sa borne ≥ 0,1·\|z\| à l'évasion (opt-in — corrige le dernier pixel faux de seahorse-valley 256², coûte ×2 sur e227 pour 0 pixel changé) |
 | `FRACTALL_DD_FAST=0` | boucle `DoubleDoubleExp` au lieu du chemin rapide dd |
 | `FRACTALL_LAZY_LO=0` | capture eager de la partie basse de l'orbite |
