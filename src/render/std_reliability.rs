@@ -34,6 +34,7 @@
 //! [`recompute_pixels_cpu`]: crate::fractal::perturbation::recompute_pixels_cpu
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use num_complex::Complex64;
 use rayon::prelude::*;
@@ -44,9 +45,10 @@ use crate::fractal::bytecode::reliability::{self as rel, ReliabilityMode};
 use crate::fractal::bytecode::Phase;
 use crate::fractal::gmp::{complex_from_xy, complex_to_complex64, iterate_point_mpc, MpcParams};
 use crate::fractal::perturbation::{
-    compute_perturbation_precision_bits, direct_dd_phase, direct_dd_pixels, perf_enabled,
+    compute_perturbation_precision_bits, direct_dd_phase, direct_stages, perf_enabled,
     recompute_pixels_cpu, DcGmpContext,
 };
+use crate::fractal::perturbation::ReferenceOrbitCache;
 use crate::fractal::{FractalParams, FractalType, PlaneTransform};
 
 /// Réglage `FRACTALL_RELIABILITY_STD`.
@@ -188,6 +190,25 @@ pub fn correct_std_pixels(
     iterations: &mut [u32],
     zs: &mut [Complex64],
 ) -> Option<usize> {
+    correct_std_pixels_cached(params, correction, cancel, flagged, iterations, zs, None)
+}
+
+/// [`correct_std_pixels`] avec le cache d'orbite du dispatcher : la référence
+/// de la correction par perturbation (orbite GMP au centre + tables) y est
+/// LUE si elle est valide pour la vue (`ReferenceOrbitCache::is_valid_for` :
+/// même centre HP, précision et plafond suffisants) et y est RANGÉE sinon —
+/// passes progressives GUI, rendu final après la sonde d'itérations. Seahorse
+/// 1e7 à 90 000 it. : la référence (orbite intérieure de 90 001 points)
+/// faisait la moitié du temps de correction.
+pub fn correct_std_pixels_cached(
+    params: &FractalParams,
+    correction: StdCorrection,
+    cancel: &AtomicBool,
+    flagged: &[usize],
+    iterations: &mut [u32],
+    zs: &mut [Complex64],
+    orbit_cache: Option<&mut Option<Arc<ReferenceOrbitCache>>>,
+) -> Option<usize> {
     if flagged.is_empty() {
         return Some(0);
     }
@@ -226,23 +247,36 @@ pub fn correct_std_pixels(
         StdCorrection::Perturbation => {
             let mut orbit_params = params.clone();
             orbit_params.engine.precision_bits = compute_perturbation_precision_bits(params);
+            let previous = orbit_cache.as_ref().and_then(|c| c.as_ref()).cloned();
             let cache = crate::fractal::perturbation::orbit::compute_reference_orbit_cached(
                 &orbit_params,
                 Some(cancel),
-                None,
+                previous.as_ref(),
                 None,
                 false,
             )?;
+            let hit = previous.as_ref().is_some_and(|p| Arc::ptr_eq(p, &cache));
+            if let Some(slot) = orbit_cache {
+                *slot = Some(Arc::clone(&cache));
+            }
+            if perf_enabled() {
+                eprintln!(
+                    "[RELIABILITY-STD] reference orbit+bla={:.3}s ref_len={} cache={}",
+                    t.elapsed().as_secs_f64(),
+                    cache.orbit.z_ref_f64.len(),
+                    if hit { "hit" } else { "miss" }
+                );
+            }
             recompute_pixels_cpu(&orbit_params, &cache, flagged)
         }
         StdCorrection::GmpCapped | StdCorrection::Budgeted => {
             let ctx = GmpPointContext::new(params);
-            // Étage double-double DIRECT d'abord (~10-15 ns/itération contre
-            // ~150 en GMP pur) : il ne rend que des pixels garantis, le reste
-            // seul passe au GMP sous plafond.
+            // Étages DIRECTS d'abord — double-double (~10-15 ns/itération)
+            // puis quad-double, contre ~150 en GMP pur : ils ne rendent que
+            // des pixels garantis, le reste seul passe au GMP sous plafond.
             let (mut fixed, rest) = match direct_dd_phase(params, true) {
                 Some(phase) => {
-                    direct_dd_pixels(params, &phase, &ctx.cx, &ctx.cy, &ctx.dc_ctx, flagged)
+                    direct_stages(params, &phase, &ctx.cx, &ctx.cy, &ctx.dc_ctx, flagged)
                 }
                 None => (Vec::new(), flagged.to_vec()),
             };
@@ -361,6 +395,7 @@ fn gmp_pixels(
 mod tests {
     use super::*;
     use crate::fractal::bytecode::compile_formula;
+    use crate::fractal::perturbation::direct_dd_pixels;
     use crate::fractal::default_params_for_type;
 
     fn phase(ty: FractalType) -> Phase {
@@ -449,6 +484,15 @@ mod tests {
         let late = gmp.iterations.iter().filter(|&&n| n > 5_000).count();
         assert!(late * 20 > (w * h) as usize, "scène sans bord tardif ({late})");
         assert!(wrong * 500 <= (w * h) as usize, "{wrong} pixels ≠ GMP pur sur {}", w * h);
+        // Même vue en perturbation FORCÉE (plein cadre) : ses pixels au-delà
+        // du dd dépassaient les plafonds qd (1 %) et GMP (0,1 %) en fraction
+        // de pixels et restaient faux (4,2 % à 256×160). Le qd direct sous
+        // budget en itérations (`SHALLOW_QD_ITER_BUDGET`) les corrige.
+        let mut f = p.clone();
+        f.engine.algorithm_mode = crate::fractal::AlgorithmMode::Perturbation;
+        let forced = crate::render::render_escape_time(&f);
+        let wrong = forced.iterations.iter().zip(&gmp.iterations).filter(|(x, y)| x != y).count();
+        assert!(wrong * 500 <= (w * h) as usize, "perturbation forcée : {wrong} pixels ≠ GMP pur");
     }
 
     /// Vue de l'axe `types` (zoom = 4/span_x, plafond figé).
@@ -505,6 +549,62 @@ mod tests {
             total_refused += refused.len();
         }
         assert!(total_ok > 500 && total_refused > 50, "dd fiable {total_ok}, refusé {total_refused}");
+    }
+
+    /// Étage quad-double DIRECT : sur le bord parabolique des éléphants
+    /// (1e7, 60 000 it.), les pixels que le double-double direct refuse sont
+    /// en majorité garantis par le qd, et chaque pixel qd « fiable » a le
+    /// MÊME compte que le GMP pur. Anti-vacuité : le dd refuse bien des
+    /// pixels et le qd en garantit.
+    #[test]
+    fn direct_qd_stage_agrees_with_gmp_beyond_dd() {
+        use crate::fractal::perturbation::direct_qd_pixels;
+        let cancel = AtomicBool::new(false);
+        let (w, h) = (40u32, 25u32);
+        let p = scene(FractalType::Mandelbrot, 0.27631692275258796, 0.0085, 1e7, w, h, 60_000);
+        let phase = direct_dd_phase(&p, true).expect("phase dd");
+        let ctx = GmpPointContext::new(&p);
+        let all: Vec<usize> = (0..(w * h) as usize).collect();
+        let (_, refused) = direct_dd_pixels(&p, &phase, &ctx.cx, &ctx.cy, &ctx.dc_ctx, &all);
+        let (qd, rest) = direct_qd_pixels(&p, &phase, &ctx.cx, &ctx.cy, &ctx.dc_ctx, &refused);
+        let gmp = gmp_pixels(&p, &ctx, &cancel, &qd.iter().map(|f| f.0).collect::<Vec<_>>()).unwrap();
+        for (&(idx, it, _), &(gidx, git, _)) in qd.iter().zip(&gmp) {
+            assert_eq!(idx, gidx);
+            assert_eq!(it, git, "pixel {idx} : qd {it} ≠ GMP {git}");
+        }
+        assert!(refused.len() >= 20, "dd refusés : {}", refused.len());
+        assert!(qd.len() * 2 > refused.len(), "qd garantis {} sur {} (reste {})", qd.len(), refused.len(), rest.len());
+    }
+
+    /// La référence de la correction du path standard passe par le cache
+    /// d'orbite du dispatcher : rangée au premier rendu, RELUE (même `Arc`)
+    /// par un second rendu de la même vue à plafond ≤, sortie identique au
+    /// bit près à celle d'un rendu sans cache.
+    #[test]
+    fn std_correction_reference_goes_through_the_orbit_cache() {
+        use crate::render::{render_request, RenderRequest};
+        let (w, h) = (48u32, 30u32);
+        let mut p = default_params_for_type(FractalType::Mandelbrot, w, h);
+        p.center_x_hp = Some("-0.743643887037158704752191506114774".into());
+        p.center_y_hp = Some("0.131825904205311970493132056385139".into());
+        p.center_x = -0.743_643_887_037_158_7;
+        p.center_y = 0.131_825_904_205_311_97;
+        p.span_x = 4e-10;
+        p.span_y = 4e-10 * h as f64 / w as f64;
+        p.span_x_hp = None;
+        p.span_y_hp = None;
+        p.iteration_max = 2500;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut cache = None;
+        let first = render_request(RenderRequest::new(&p, &cancel), &mut cache).unwrap();
+        let stored = cache.clone().expect("référence de correction rangée dans le cache");
+        let mut q = p.clone();
+        q.iteration_max = 2000;
+        let second = render_request(RenderRequest::new(&q, &cancel), &mut cache).unwrap();
+        assert!(Arc::ptr_eq(&stored, cache.as_ref().unwrap()), "référence relue");
+        let fresh = crate::render::render_escape_time(&q);
+        assert_eq!(second.iterations, fresh.iterations);
+        assert_eq!(first.iterations, crate::render::render_escape_time(&p).iterations);
     }
 
     /// Perp. Burning Ship Julia, bord ×4096 de l'axe `types` : 9 pixels ≠ GMP
