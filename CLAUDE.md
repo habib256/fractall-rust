@@ -178,6 +178,7 @@ src/
 │   │   ├── interp_gmp.rs   # interpréteur GMP pour orbite référence
 │   │   ├── delta_form.rs   # DeltaState f64 + DeltaStateExp ComplexExp
 │   │   ├── direct_dd.rs    # itération directe double-double tracée (étage f64 → GMP, Julia/Tricorn)
+│   │   ├── direct_simd.rs  # étages directs dd/qd VECTORISÉS (8 pixels de front, sans branchement)
 │   │   ├── bla_dual.rs     # BLA mat2 unifié via dual-numbers
 │   │   ├── pixel_loop.rs   # BLA + delta-form + rebasing F3 (f64)
 │   │   ├── pixel_loop_exp.rs # idem ComplexExp (tier exp, boucle FloatExp de référence)
@@ -1059,6 +1060,27 @@ passes GUI (pas entre tours de sonde : `is_valid_for` exige un plafond ≥).
 Verrous `direct_qd_stage_agrees_with_gmp_beyond_dd`,
 `std_correction_reference_goes_through_the_orbit_cache`,
 `parabolic_edge_at_auto_cap_matches_gmp` (étendu à la perturbation forcée).
+**Étages directs VECTORISÉS (`bytecode/direct_simd.rs`, 2026-11-19)** —
+8 pixels de front, chaque composante dd/qd est un vecteur de 8 flottants,
+voie rechargée dès qu'elle sort. dd : 27,7 → 8,0 ns/it. (natif), 33,5 →
+15,4 (baseline x86-64 des releases) ; qd : 121,6 → 32,6 / 150,8 → 74,9.
+Éléphants 1e7 60 000 it. 256×160 : correction 7,65 → 2,73 s. dd identique
+au bit à `iterate_direct_dd` ; le qd a une renormalisation SANS branchement
+(bits de z ≠ ancien `Qd` quand une composante est nulle, borne U_QD = 2⁻²⁰⁶
+vérifiée contre rug) ; l'ancienne boucle reste en témoin
+(`iterate_direct_qd_branchy`). ⚠️ Des voies entrelacées sur un dd/qd
+scalaire à branches ne donnent que ×1,5 : le gain vient de la
+VECTORISATION, donc d'une arithmétique sans branchement. ⚠️ Sans `fma` à la
+compilation (releases x86-64 baseline), `f64::mul_add` est un APPEL libm, ni
+inliné ni vectorisé : `two_prod` passe par `cfg!(target_feature = "fma")`
+sinon découpage de Dekker (mêmes bits, verrou `dekker_matches_fma`).
+**Étage f64 sauté quand la référence est courte** (`short_reference_skips_
+f64` : vue peu profonde ET référence évadée avant le quart du plafond) :
+une perturbation autour d'une référence évadée tôt n'est qu'une itération
+directe avec frais généraux, et son traqueur ratait un décalage d'une
+itération au bord parabolique (éléphants : 6 → 2 px faux). Référence
+intérieure (seahorse) : l'étage f64 avec BLA reste 3-20× moins cher, gardé.
+`FRACTALL_SHALLOW_SKIP_F64=0`. Banc : test `--ignored bench_direct_simd`.
 ⚠️ **Ne pas chercher à resserrer le terme `l·ε` du saut BLA f64** : à
 ε = 2⁻⁵³ la troncature réelle est négligeable (borne du second ordre
 implémentée et testée : la substituer revient à retirer le terme) et c'est
@@ -1145,6 +1167,7 @@ Tous lus UNE fois (`OnceLock`). Défaut = comportement de production.
 | `FRACTALL_DD_PROBE=1` | sonde dd avant l'escalade frame (opt-in) : scène dont la majorité des pixels non fiables échappe aussi au dd ⇒ f64 gardé avec avertissement, frame dd non rendue |
 | `FRACTALL_F64_MARGIN=1` | test de détermination à l'évasion au tier f64 (opt-in, +75-195 %) |
 | `FRACTALL_SHALLOW_DIRECT=0` | vues peu profondes : correction par perturbation dd/qd au lieu des étages directs dd puis qd (93 px faux sur éléphants 1e7 en perturbation forcée) |
+| `FRACTALL_SHALLOW_SKIP_F64=0` | vue peu profonde à référence courte : garde l'étage de perturbation f64 tracée avant le dd direct |
 | `FRACTALL_DIRECT_QD=0` | coupe l'étage qd direct (les pixels que le dd direct refuse partent au GMP) |
 | `FRACTALL_DIRECT_DD=0` | correction des familles sans tier dd (Julia, Tricorn) et correction `GmpCapped` du path standard : pas d'étage double-double direct, les pixels signalés partent droit au GMP pur (sortie identique, ×5-8 plus lent sur un bord) |
 | `FRACTALL_DD_ESCAPE_SHALLOW=0\|f` | correction dd des vues PEU PROFONDES (pixel ≥ 1e-13) : `0` coupe le test d'évasion relatif (défaut 0,01·\|z\|), une valeur le remplace. Sans lui, bord parabolique à fort plafond (éléphants 1e7, 60 000 it.) : 1,2 % de pixels faux |
