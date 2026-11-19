@@ -541,7 +541,7 @@ pub fn recompute_pixels_cpu(
                 delta::PerturbPixelRequest::new(
                     params,
                     &cache.orbit,
-                    &cache.bla_table,
+                    &cache.conformal_bla,
                     delta0,
                     dc_term,
                 )
@@ -1124,6 +1124,14 @@ pub fn render_perturbation_with_cache(
     if cache.hybrid_refs.is_none() {
         crate::fractal::perturbation::delta::prewarm_bla_entry(params, &cache.orbit);
     }
+    // Table conformale (paresseuse) : quand le path bytecode ne s'applique pas,
+    // TOUS les pixels passent par le repli legacy qui la lit — la bâtir ici,
+    // pool rayon libre, plutôt qu'au premier pixel.
+    if !params.engine.use_bytecode_engine
+        || crate::fractal::perturbation::delta::bytecode_path_label(params).is_none()
+    {
+        cache.prewarm_conformal_bla();
+    }
     let t_bla = t_bla_start.elapsed();
 
     // ── COMPRESS phase 2 (FRACTALL_COMPRESS_REF=1) : la boucle pixel lit la
@@ -1282,7 +1290,7 @@ pub fn render_perturbation_with_cache(
                         iterate_pixel_with_dd(delta::PerturbPixelRequest {
                             params,
                             ref_orbit: &cache_ref.orbit,
-                            bla_table: &cache_ref.bla_table,
+                            bla_table: &cache_ref.conformal_bla,
                             series_table: cache_ref.series_table.as_ref(),
                             delta0,
                             dc: dc_term,

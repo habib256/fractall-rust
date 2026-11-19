@@ -7,7 +7,7 @@ use crate::fractal::bytecode::bla_dual::BlaTableUnified;
 use crate::fractal::bytecode::bla_dual_exp::BlaTableUnifiedExp;
 use crate::fractal::bytecode::pixel_loop_exp::iterate_pixel_unified_exp;
 use crate::fractal::bytecode::{build_bla_table_for_formula, Formula};
-use crate::fractal::perturbation::bla::BlaTable;
+use crate::fractal::perturbation::bla::LazyBlaTable;
 use crate::fractal::perturbation::orbit::{HybridBlaReferences, ReferenceOrbit};
 use crate::fractal::perturbation::pixel_math::{
     compute_adaptive_glitch_tolerance, compute_smooth_iteration,
@@ -2154,7 +2154,9 @@ fn fast_multibrot_batch_f64(
 pub struct PerturbPixelRequest<'a> {
     pub params: &'a FractalParams,
     pub ref_orbit: &'a ReferenceOrbit,
-    pub bla_table: &'a BlaTable,
+    /// Table conformale de `ref_orbit`, construite seulement si le repli
+    /// legacy la lit (cf. [`LazyBlaTable`]).
+    pub bla_table: &'a LazyBlaTable,
     pub series_table: Option<&'a SeriesTable>,
     pub delta0: ComplexExp,
     pub dc: ComplexExp,
@@ -2167,7 +2169,7 @@ impl<'a> PerturbPixelRequest<'a> {
     pub fn new(
         params: &'a FractalParams,
         ref_orbit: &'a ReferenceOrbit,
-        bla_table: &'a BlaTable,
+        bla_table: &'a LazyBlaTable,
         delta0: ComplexExp,
         dc: ComplexExp,
     ) -> Self {
@@ -2224,6 +2226,11 @@ pub fn iterate_pixel_with_dd(request: PerturbPixelRequest<'_>) -> DeltaResult {
             return result;
         }
     }
+
+    // Repli legacy : SEUL lecteur CPU de la table conformale — construite ici
+    // à la première lecture (même orbite, mêmes paramètres que l'ancien build
+    // eager du cache).
+    let bla_table = bla_table.get(&ref_orbit.z_ref_f64);
 
     // Distance estimation et interior detection sont supportés par le
     // path bytecode (cf. dispatch ci-dessus). Si bytecode désactivé,

@@ -746,7 +746,7 @@ impl GpuRenderer {
         // Rare (GPU perturbation > 1 M iters est hors du régime f32 viable), donc
         // pas de coût sur l'usage GPU nominal.
         let rebuilt_bla;
-        let bla_table = if supports_bla && cache.bla_table.num_levels() == 0 {
+        let bla_table = if supports_bla && cache.bla_table().num_levels() == 0 {
             rebuilt_bla = crate::fractal::perturbation::bla::build_bla_table(
                 &ref_orbit.z_ref_f64,
                 &orbit_params,
@@ -754,7 +754,7 @@ impl GpuRenderer {
             );
             &rebuilt_bla
         } else {
-            &cache.bla_table
+            cache.bla_table()
         };
         let bla_levels = if supports_bla && !env_flag("FRACTALL_GPU_NO_BLA") {
             bla_table.num_levels().min(MAX_LEVELS)

@@ -51,6 +51,10 @@ pub(super) fn strip_orbit_arrays_for_compress(
         + cache.orbit.z_ref.len() * std::mem::size_of::<ComplexExp>();
     match Arc::try_unwrap(cache) {
         Ok(mut owned) => {
+            // La table conformale (paresseuse) se bâtit DEPUIS `z_ref_f64` :
+            // la construire avant de vider le tableau, comme le build eager
+            // d'avant (sinon un repli legacy lirait une table vide).
+            owned.prewarm_conformal_bla();
             owned.orbit.z_ref_f64 = Vec::new();
             owned.orbit.z_ref = Vec::new();
             eprintln!(
