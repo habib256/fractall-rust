@@ -191,14 +191,20 @@ pub(crate) const DIRECT_DD_MIN_PIXEL: f64 = 1e-22;
 
 /// Phase à itérer par l'étage double-double direct de la correction, ou
 /// `None` s'il ne s'applique pas : formule mono-phase à opcodes simples, plan
-/// Mu, vue assez peu profonde, et PAS le Mandelbrot non hybride (son tier dd
-/// de perturbation, plus rapide, passe avant). Graine non nulle d'un type
-/// Mandelbrot-like : exclue (le GMP pur de repli ne la porte pas non plus).
-fn direct_dd_phase(params: &FractalParams) -> Option<crate::fractal::bytecode::Phase> {
+/// Mu, vue assez peu profonde, et — sauf `with_dd_tier_types` — PAS le
+/// Mandelbrot non hybride (dans la correction par perturbation son tier dd
+/// de perturbation, plus rapide, passe avant ; la correction `GmpCapped` du
+/// path standard, qui sert le Mandelbrot TOURNÉ, n'a pas ce tier). Graine
+/// non nulle d'un type Mandelbrot-like : exclue (le GMP pur de repli ne la
+/// porte pas non plus).
+pub(crate) fn direct_dd_phase(
+    params: &FractalParams,
+    with_dd_tier_types: bool,
+) -> Option<crate::fractal::bytecode::Phase> {
     use crate::fractal::bytecode::{direct_dd, formula_for_params, Formula};
     if !direct_dd::direct_dd_enabled()
         || params.is_hybrid_formula()
-        || crate::fractal::wisdom::dd_tier_applicable(params)
+        || (!with_dd_tier_types && crate::fractal::wisdom::dd_tier_applicable(params))
         || params.plane_transform != crate::fractal::PlaneTransform::Mu
         || !(effective_pixel_size(params) >= DIRECT_DD_MIN_PIXEL)
     {
@@ -213,6 +219,51 @@ fn direct_dd_phase(params: &FractalParams) -> Option<crate::fractal::bytecode::P
         return None;
     }
     Some(formula.phases.remove(0))
+}
+
+/// Étage double-double DIRECT d'une correction : itère les pixels `flagged`
+/// (indices plein cadre) en double-double tracé depuis le point exact
+/// `centre HP + dc` (dc en GMP : K, jitter AA et décalage de référence
+/// compris). Renvoie `(pixels garantis, pixels à recalculer en GMP)`.
+pub(crate) fn direct_dd_pixels(
+    params: &FractalParams,
+    phase: &crate::fractal::bytecode::Phase,
+    cx: &Float,
+    cy: &Float,
+    dc_ctx: &DcGmpContext,
+    flagged: &[usize],
+) -> (Vec<(usize, u32, Complex64)>, Vec<usize>) {
+    use crate::fractal::bytecode::direct_dd as ddd;
+    use crate::fractal::perturbation::dd::DoubleDouble;
+    let width = params.width.max(1) as usize;
+    let is_julia = crate::fractal::bytecode::Formula::is_julia_for(params.fractal_type);
+    let seed = (
+        DoubleDouble::from_f64(params.seed.re),
+        DoubleDouble::from_f64(params.seed.im),
+    );
+    let tried: Vec<(usize, ddd::DirectDdResult)> = flagged
+        .par_iter()
+        .map(|&idx| {
+            let dc_gmp = dc_ctx.compute_dc(idx % width, idx / width);
+            let mut re = cx.clone();
+            re += dc_gmp.real();
+            let mut im = cy.clone();
+            im += dc_gmp.imag();
+            let point = (ddd::dd_from_gmp(&re), ddd::dd_from_gmp(&im));
+            let (z0, c) = if is_julia { (point, seed) } else { (seed, point) };
+            (idx, ddd::iterate_direct_dd(phase, z0, c, params.iteration_max, params.bailout))
+        })
+        .collect();
+    let mut fixed = Vec::with_capacity(tried.len());
+    let mut rest = Vec::new();
+    for (idx, r) in tried {
+        if r.reliable {
+            fixed.push((idx, r.iteration, r.z));
+        } else {
+            rest.push(idx);
+        }
+    }
+    (fixed, rest)
 }
 
 /// Taille de pixel au-dessus de laquelle une vue est « peu profonde » pour la
@@ -572,34 +623,10 @@ pub fn recompute_pixels_cpu(
         // tier dd de perturbation (Julia, Tricorn) en vue peu profonde : ~10×
         // moins cher par itération ; un pixel qu'il ne garantit pas garde le
         // chemin GMP (cf. `bytecode::direct_dd`).
-        if let Some(phase) = direct_dd_phase(params) {
-            use crate::fractal::bytecode::direct_dd as ddd;
-            let is_julia = crate::fractal::bytecode::Formula::is_julia_for(params.fractal_type);
-            let seed = (
-                crate::fractal::perturbation::dd::DoubleDouble::from_f64(params.seed.re),
-                crate::fractal::perturbation::dd::DoubleDouble::from_f64(params.seed.im),
-            );
-            let tried: Vec<(usize, ddd::DirectDdResult)> = escalate
-                .par_iter()
-                .map(|&idx| {
-                    let dc_gmp = dc_ctx.compute_dc(idx % width, idx / width);
-                    let mut re = cx.clone();
-                    re += dc_gmp.real();
-                    let mut im = cy.clone();
-                    im += dc_gmp.imag();
-                    let point = (ddd::dd_from_gmp(&re), ddd::dd_from_gmp(&im));
-                    let (z0, c) = if is_julia { (point, seed) } else { (seed, point) };
-                    (idx, ddd::iterate_direct_dd(&phase, z0, c, params.iteration_max, params.bailout))
-                })
-                .collect();
-            escalate.clear();
-            for (idx, r) in tried {
-                if r.reliable {
-                    out.push((idx, r.iteration, r.z));
-                } else {
-                    escalate.push(idx);
-                }
-            }
+        if let Some(phase) = direct_dd_phase(params, false) {
+            let (fixed, rest) = direct_dd_pixels(params, &phase, &cx, &cy, &dc_ctx, &escalate);
+            out.extend(fixed);
+            escalate = rest;
         }
         out.par_extend(escalate.par_iter().map(|&idx| {
             let dc_gmp = dc_ctx.compute_dc(idx % width, idx / width);
