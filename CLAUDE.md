@@ -1037,6 +1037,28 @@ faux, tous des valeurs dd « fiables ». D'où le test d'évasion relatif
 (`shallow_dd_escape_rel`, pixel ≥ 1e-13) : en profond il ne change aucun
 pixel du corpus et coûte jusqu'à ×2. Le plafond FIXE (2500) de l'axe truth
 ne pouvait pas le voir : c'est la scène à plafond auto qui l'a montré.
+**Vue peu profonde : corriger par itération DIRECTE dd puis qd, jamais par
+perturbation dd (2026-11-19)** — pixel ≥ 1e-13, Mandelbrot, dans
+`recompute_pixels_cpu` et la correction plein cadre. La référence au centre
+s'y évade tôt (1 767 points aux éléphants 1e7) : chaque pixel rebase sans
+cesse, la BLA ne saute rien, et la perturbation dd coûte ~7× l'itération
+directe dd. Chaîne : perturbation f64 tracée → **dd direct** → **qd direct**
+(`direct_dd.rs` générique sur `DirectNum`, `iterate_direct_qd`) → GMP.
+Éléphants 1e7, 60 000 it., 256×160 : GMP 1 848 px → 63, correction ÷2,5-3,
+pixels faux 12 → 6 ; perturbation FORCÉE sur la même vue 4,2 % de pixels
+faux → 6 px. Le qd direct règle ~98 % de ce que le dd refuse pour ~2,5×
+moins cher que le GMP 256 b ; pas de plafond en fraction de pixels sur le
+path standard (il ne remplace que du GMP), budget `SHALLOW_QD_ITER_BUDGET`
+(Σ itérations ≤ 0,5 × frame) en perturbation plein cadre. `GmpCapped` gagne
+le même étage qd. ⚠️ Au bord parabolique à fort plafond le traqueur NE
+surestime PAS : 73 % des pixels signalés (12 944 / 17 747) sont réellement
+faux en f64 brut — le levier est le prix par pixel, pas le détecteur.
+**Référence de correction du path standard dans le cache d'orbite**
+(`correct_std_pixels_cached`) : relue au rendu final après sonde et entre
+passes GUI (pas entre tours de sonde : `is_valid_for` exige un plafond ≥).
+Verrous `direct_qd_stage_agrees_with_gmp_beyond_dd`,
+`std_correction_reference_goes_through_the_orbit_cache`,
+`parabolic_edge_at_auto_cap_matches_gmp` (étendu à la perturbation forcée).
 ⚠️ **Ne pas chercher à resserrer le terme `l·ε` du saut BLA f64** : à
 ε = 2⁻⁵³ la troncature réelle est négligeable (borne du second ordre
 implémentée et testée : la substituer revient à retirer le terme) et c'est
@@ -1122,6 +1144,8 @@ Tous lus UNE fois (`OnceLock`). Défaut = comportement de production.
 | `FRACTALL_RELIABILITY_GMP_MAX_FRACTION=f` | plafond de l'escalade dd → GMP (défaut 0,001 ; ≥ 1 = illimité) |
 | `FRACTALL_DD_PROBE=1` | sonde dd avant l'escalade frame (opt-in) : scène dont la majorité des pixels non fiables échappe aussi au dd ⇒ f64 gardé avec avertissement, frame dd non rendue |
 | `FRACTALL_F64_MARGIN=1` | test de détermination à l'évasion au tier f64 (opt-in, +75-195 %) |
+| `FRACTALL_SHALLOW_DIRECT=0` | vues peu profondes : correction par perturbation dd/qd au lieu des étages directs dd puis qd (93 px faux sur éléphants 1e7 en perturbation forcée) |
+| `FRACTALL_DIRECT_QD=0` | coupe l'étage qd direct (les pixels que le dd direct refuse partent au GMP) |
 | `FRACTALL_DIRECT_DD=0` | correction des familles sans tier dd (Julia, Tricorn) et correction `GmpCapped` du path standard : pas d'étage double-double direct, les pixels signalés partent droit au GMP pur (sortie identique, ×5-8 plus lent sur un bord) |
 | `FRACTALL_DD_ESCAPE_SHALLOW=0\|f` | correction dd des vues PEU PROFONDES (pixel ≥ 1e-13) : `0` coupe le test d'évasion relatif (défaut 0,01·\|z\|), une valeur le remplace. Sans lui, bord parabolique à fort plafond (éléphants 1e7, 60 000 it.) : 1,2 % de pixels faux |
 | `FRACTALL_DD_ESCAPE_REL=0.1` | tier dd : pixel non fiable si sa borne ≥ 0,1·\|z\| à l'évasion (opt-in — corrige le dernier pixel faux de seahorse-valley 256², coûte ×2 sur e227 pour 0 pixel changé) |
