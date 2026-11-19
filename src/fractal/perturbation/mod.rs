@@ -185,6 +185,82 @@ fn with_uncapped_perturb_limits(params: &FractalParams) -> FractalParams {
 /// n'a pu être construite (annulation). `track` : détecteur de fiabilité dd
 /// (faux = boucle dd complète « meilleur effort », celle d'avant le
 /// garde-fou, pour les pixels laissés hors budget GMP).
+/// Taille de pixel minimale de l'étage double-double DIRECT : en dessous, `c`
+/// ne tient plus dans 106 bits avec une marge utile (|c|·2⁻¹⁰⁴ ≈ 1e-31).
+pub(crate) const DIRECT_DD_MIN_PIXEL: f64 = 1e-22;
+
+/// Phase à itérer par l'étage double-double direct de la correction, ou
+/// `None` s'il ne s'applique pas : formule mono-phase à opcodes simples, plan
+/// Mu, vue assez peu profonde, et PAS le Mandelbrot non hybride (son tier dd
+/// de perturbation, plus rapide, passe avant). Graine non nulle d'un type
+/// Mandelbrot-like : exclue (le GMP pur de repli ne la porte pas non plus).
+fn direct_dd_phase(params: &FractalParams) -> Option<crate::fractal::bytecode::Phase> {
+    use crate::fractal::bytecode::{direct_dd, formula_for_params, Formula};
+    if !direct_dd::direct_dd_enabled()
+        || params.is_hybrid_formula()
+        || crate::fractal::wisdom::dd_tier_applicable(params)
+        || params.plane_transform != crate::fractal::PlaneTransform::Mu
+        || !(effective_pixel_size(params) >= DIRECT_DD_MIN_PIXEL)
+    {
+        return None;
+    }
+    let mandelbrot_like = !Formula::is_julia_for(params.fractal_type);
+    if mandelbrot_like && (params.seed.re != 0.0 || params.seed.im != 0.0) {
+        return None;
+    }
+    let mut formula = formula_for_params(params)?;
+    if formula.phases.len() != 1 || !direct_dd::phase_supported(&formula.phases[0]) {
+        return None;
+    }
+    Some(formula.phases.remove(0))
+}
+
+/// Taille de pixel au-dessus de laquelle une vue est « peu profonde » pour la
+/// correction dd : le domaine que le mode Auto rend par le path f64 standard
+/// (pixel > ~1e-12), avec une décade de marge.
+pub(crate) const SHALLOW_DD_PIXEL: f64 = 1e-13;
+
+/// Seuil relatif de la borne dd à l'évasion sur une vue peu profonde.
+pub(crate) const SHALLOW_DD_ESCAPE_REL: f64 = 0.01;
+
+/// Détermination relative de l'évasion au tier dd, **active sur les vues peu
+/// profondes** : `Some(seuil)` si `pixel_size ≥ SHALLOW_DD_PIXEL`
+/// (`FRACTALL_DD_ESCAPE_SHALLOW=0` la coupe, une valeur la remplace).
+///
+/// Pourquoi : l'emballement (`E ≥ 1e30`) suppose une longue amplification
+/// chaotique après la perte de détermination. Près d'un point PARABOLIQUE
+/// l'erreur déplace le temps de transit du goulot et l'orbite s'évade
+/// quelques pas plus tard — la borne dd est alors comparable à |z| mais loin
+/// de 1e30. Trouvé par l'axe `wisdom` du harness (2026-11-19) : vallée des
+/// éléphants 1e7 à 60 000 itérations (le plafond que choisit la sonde
+/// automatique), 128×80 — 120 pixels faux (1,17 %) contre GMP pur (juge
+/// convergé 256 b ≡ 640 b) → 5 avec ce test, pour +3 % de temps.
+///
+/// Pourquoi seulement en vue peu profonde : sur le corpus profond le même
+/// test ne change AUCUN pixel et coûte jusqu'à ×2 (e227, mesuré le même
+/// jour à 128², seuil 0,01) — cf. `pixel_loop_dd::dd_escape_bound`, qui reste
+/// l'opt-in global. Ici l'orbite fait 256 b et le second essai sans BLA,
+/// puis le GMP par pixel, sont bon marché.
+pub(crate) fn shallow_dd_escape_rel(pixel_size: f64) -> Option<f64> {
+    static OVERRIDE: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
+    let rel = *OVERRIDE.get_or_init(|| {
+        match std::env::var("FRACTALL_DD_ESCAPE_SHALLOW").ok().as_deref().map(str::trim) {
+            Some("0") | Some("off") | Some("false") => None,
+            Some(v) => Some(v.parse::<f64>().ok().filter(|x| *x > 0.0).unwrap_or(SHALLOW_DD_ESCAPE_REL)),
+            None => Some(SHALLOW_DD_ESCAPE_REL),
+        }
+    });
+    shallow_dd_escape_rel_for(pixel_size, rel)
+}
+
+fn shallow_dd_escape_rel_for(pixel_size: f64, rel: Option<f64>) -> Option<f64> {
+    if pixel_size.is_finite() && pixel_size >= SHALLOW_DD_PIXEL {
+        rel
+    } else {
+        None
+    }
+}
+
 fn correct_pixels_dd(
     params: &FractalParams,
     base: &ReferenceOrbitCache,
@@ -235,6 +311,7 @@ fn correct_pixels_dd(
     let limits = crate::fractal::bytecode::pixel_loop::PixelLoopLimits::from(&dd_params);
     let track_dd = track && crate::fractal::bytecode::reliability::reliability_tracks_dd();
     let runaway = crate::fractal::bytecode::reliability::reliability_runaway() as f32;
+    let shallow_rel = if track_dd { shallow_dd_escape_rel(effective_pixel_size(params)) } else { None };
     let t_bla = t1.elapsed();
     let t2 = Instant::now();
     let width = params.width.max(1) as usize;
@@ -294,7 +371,7 @@ fn correct_pixels_dd(
                 // Détecteur de fiabilité au niveau dd : un pixel dont la borne
                 // dd s'emballe ENCORE (sensibilité > 106 b) est rendu
                 // « encore glitché » → l'appelant le recalcule en GMP.
-                let (r, bound) =
+                let (mut r, mut bound) =
                     crate::fractal::bytecode::pixel_loop_dd::iterate_pixel_unified_ddexp_mandelbrot_tracked(
                         orbit,
                         Some(&dd_table),
@@ -303,6 +380,29 @@ fn correct_pixels_dd(
                         limits,
                         track_dd,
                     );
+                // Vue peu profonde : détermination RELATIVE de l'évasion
+                // (cf. `shallow_dd_escape_rel`). Second essai sans BLA, puis
+                // « non fiable » si la borne reste comparable à |z|.
+                if let Some(rel) = shallow_rel {
+                    let undetermined = |r: &crate::fractal::bytecode::pixel_loop_exp::UnifiedPixelResultExp, b: f32| {
+                        r.iteration < limits.iteration_max
+                            && b < runaway
+                            && (b as f64) >= rel * r.z_final.norm().max(1.0)
+                    };
+                    if undetermined(&r, bound) {
+                        let (r2, b2) =
+                            crate::fractal::bytecode::pixel_loop_dd::iterate_pixel_unified_ddexp_mandelbrot_tracked(
+                                orbit,
+                                None,
+                                dc_dd,
+                                ComplexDDExp::ZERO,
+                                limits,
+                                track_dd,
+                            );
+                        bound = if undetermined(&r2, b2) { f32::INFINITY } else { b2 };
+                        r = r2;
+                    }
+                }
                 let status = if r.ref_exhausted {
                     DdFix::RefExhausted
                 } else if !(bound < runaway) {
@@ -468,6 +568,39 @@ pub fn recompute_pixels_cpu(
         let cx = parse(&params.center_x_hp, params.center_x);
         let cy = parse(&params.center_y_hp, params.center_y);
         let dc_ctx = DcGmpContext::new(params, prec);
+        // Étage double-double DIRECT avant le GMP pur, pour les familles sans
+        // tier dd de perturbation (Julia, Tricorn) en vue peu profonde : ~10×
+        // moins cher par itération ; un pixel qu'il ne garantit pas garde le
+        // chemin GMP (cf. `bytecode::direct_dd`).
+        if let Some(phase) = direct_dd_phase(params) {
+            use crate::fractal::bytecode::direct_dd as ddd;
+            let is_julia = crate::fractal::bytecode::Formula::is_julia_for(params.fractal_type);
+            let seed = (
+                crate::fractal::perturbation::dd::DoubleDouble::from_f64(params.seed.re),
+                crate::fractal::perturbation::dd::DoubleDouble::from_f64(params.seed.im),
+            );
+            let tried: Vec<(usize, ddd::DirectDdResult)> = escalate
+                .par_iter()
+                .map(|&idx| {
+                    let dc_gmp = dc_ctx.compute_dc(idx % width, idx / width);
+                    let mut re = cx.clone();
+                    re += dc_gmp.real();
+                    let mut im = cy.clone();
+                    im += dc_gmp.imag();
+                    let point = (ddd::dd_from_gmp(&re), ddd::dd_from_gmp(&im));
+                    let (z0, c) = if is_julia { (point, seed) } else { (seed, point) };
+                    (idx, ddd::iterate_direct_dd(&phase, z0, c, params.iteration_max, params.bailout))
+                })
+                .collect();
+            escalate.clear();
+            for (idx, r) in tried {
+                if r.reliable {
+                    out.push((idx, r.iteration, r.z));
+                } else {
+                    escalate.push(idx);
+                }
+            }
+        }
         out.par_extend(escalate.par_iter().map(|&idx| {
             let dc_gmp = dc_ctx.compute_dc(idx % width, idx / width);
             let mut re = cx.clone();
@@ -2395,6 +2528,22 @@ mod tests {
             "zoom continu (cache réutilisé) diverge du rendu frais : {ndiff}/{} px",
             it_reuse.len()
         );
+    }
+
+    /// Le test d'évasion relatif du tier dd n'est actif qu'en vue peu
+    /// profonde : le corpus profond (e227 : 0 pixel changé, ×2 en temps)
+    /// garde le critère d'emballement seul.
+    #[test]
+    fn shallow_dd_escape_test_is_scoped_by_pixel_size() {
+        use super::{shallow_dd_escape_rel_for, SHALLOW_DD_ESCAPE_REL, SHALLOW_DD_PIXEL};
+        let on = Some(SHALLOW_DD_ESCAPE_REL);
+        assert_eq!(shallow_dd_escape_rel_for(4e-7 / 128.0, on), on);
+        assert_eq!(shallow_dd_escape_rel_for(SHALLOW_DD_PIXEL, on), on);
+        assert_eq!(shallow_dd_escape_rel_for(1e-20, on), None);
+        assert_eq!(shallow_dd_escape_rel_for(1e-230, on), None);
+        assert_eq!(shallow_dd_escape_rel_for(0.0, on), None);
+        assert_eq!(shallow_dd_escape_rel_for(f64::NAN, on), None);
+        assert_eq!(shallow_dd_escape_rel_for(1e-9, None), None, "interrupteur coupé");
     }
 
     /// Verrou du décalage centre − référence dans la CORRECTION dd (G10.2 ×

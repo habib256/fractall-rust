@@ -23,6 +23,9 @@ from harnesslib import axes_precision  # noqa: E402
 from harnesslib import hotspots  # noqa: E402
 from harnesslib import axes_ddtruth  # noqa: E402
 from harnesslib import axes_stdtruth  # noqa: E402
+from harnesslib import axes_wisdom  # noqa: E402
+from harnesslib import axes_types  # noqa: E402
+from harnesslib import levers as levers_mod  # noqa: E402
 
 
 def _use_tmp(tmp: Path):
@@ -112,6 +115,9 @@ def run():
     run_precision_axis()
     run_hotspots_parsing()
     run_truth_axis()
+    run_wisdom_axis()
+    run_levers()
+    run_types_axis()
 
     print("\nTOUS LES TESTS PASSENT ✅")
 
@@ -441,10 +447,15 @@ def run_truth_axis():
     # contre le GMP pur, fusionnées dans les cas de l'axe.
     quick = axes_stdtruth.scenes(False)
     full = axes_stdtruth.scenes(True)
-    _check(len(full) == 18 and len(quick) == 9 and set(quick) <= set(full),
-           "truth std : 18 scènes, le tier quick garde le plafond par défaut")
-    _check(all(it == 2500 for _, _, it in quick),
+    auto_cap = axes_stdtruth.AUTO_CAP_SCENES
+    _check(len(full) == 18 + len(auto_cap) and len(quick) == 9 + len(auto_cap)
+           and set(quick) <= set(full),
+           "truth std : 18 scènes + plafonds auto, quick ⊂ full")
+    _check(all(it == 2500 for sc in quick if sc not in auto_cap
+               for _, _, it in [sc]),
            "truth std : tier quick = plafond par défaut (2500)")
+    _check(("elephants", "1e7", 60000) in quick,
+           "truth std : la scène au plafond AUTO est jugée dès le tier quick")
     _check(axes_stdtruth.scene_name("seahorse", "1e10", 2500) == "std:seahorse_1e10_2500",
            "truth std : nom de scène stable")
     cmd = axes_stdtruth._cmd("seahorse", "1e10", 2500, Path("x.fmap"), ["--algorithm", "gmp"])
@@ -457,6 +468,204 @@ def run_truth_axis():
     g = {(x["axis"], x["case"]): x["severity"] for x in gaps_mod.compute_gaps(card, None)}
     _check(g.get(("truth", "std:seahorse_1e10_2500")) == 1,
            "truth std : FAIL du path standard → gap correction")
+
+
+def run_wisdom_axis():
+    """Verrous de l'axe wisdom : le regret ne compte qu'à sortie équivalente,
+    le bruit ne fait pas un verdict, l'adjudication GMP tranche dans le bon
+    ordre, et le volet itérations juge la classe évadé/plafonné."""
+    print("\n== axe wisdom ==")
+    W = axes_wisdom
+    _check("wisdom" in harnesslib_cli.ALL_AXES.split(","), "wisdom : axe déclaré")
+    _check(W.diff_frac([1, 2, 3, 4], [1, 2, 9, 4]) == 0.25
+           and W.diff_frac([1, 2], [1, 2, 3, 4]) == 0.5,
+           "wisdom : fraction de pixels ≠ (longueurs comprises)")
+    # alternative équivalente nettement plus rapide → FAIL de vitesse
+    r = W.regret_verdict(2.0, {"a": {"secs": 1.0, "frac": 0.0},
+                               "b": {"secs": 3.0, "frac": 0.0}})
+    _check(r["verdict"] == "FAIL" and r["best_equiv"] == "a" and r["regret"] == 2.0,
+           "wisdom : auto ×2 plus lent à sortie équivalente → FAIL")
+    r = W.regret_verdict(1.15, {"a": {"secs": 1.0, "frac": 0.0}})
+    _check(r["verdict"] == "WARN", "wisdom : regret 1,15 → WARN")
+    # sous le plancher de bruit absolu : jamais un verdict
+    r = W.regret_verdict(0.10, {"a": {"secs": 0.05, "frac": 0.0}})
+    _check(r["verdict"] == "PASS", "wisdom : écart < 60 ms → PASS (bruit)")
+    # plus rapide mais sortie ≠ → ADJUDICATE, PAS un gap de vitesse
+    r = W.regret_verdict(2.0, {"a": {"secs": 1.0, "frac": 0.03},
+                               "b": {"secs": 1.95, "frac": 0.0}})
+    _check(r["verdict"] == "ADJUDICATE" and r["best_other"] == "a"
+           and r["best_equiv"] == "b",
+           "wisdom : alternative rapide à sortie ≠ → ADJUDICATE")
+    base = {"verdict": "ADJUDICATE", "chosen_s": 2.0, "best_other": "a",
+            "best_other_s": 1.0, "path": "std_f64"}
+    j = W.adjudged_verdict(base, 0.0104, 0.0416)
+    _check(j["verdict"] == "FAIL" and j["adjudged"] == "auto_wrong",
+           "wisdom : production fausse vs GMP → FAIL de correction")
+    j2 = W.adjudged_verdict(base, 0.0, 0.0416)
+    _check(j2["verdict"] == "PASS" and j2["adjudged"] == "alt_wrong",
+           "wisdom : alternative fausse, production juste → PASS (wisdom a raison)")
+    j3 = W.adjudged_verdict(base, 0.0, 0.0)
+    _check(j3["verdict"] == "FAIL" and j3["adjudged"] == "alt_right"
+           and j3["regret"] == 2.0,
+           "wisdom : alternative juste ET plus rapide → vrai regret")
+    # gaps : sévérités
+    def card(c):
+        return {"meta": {"machine": {"cpu": "x", "nproc": 1}},
+                "wisdom": {"status": "ok", "cases": {"k": c}}}
+    def sev(c):
+        g = [x for x in gaps_mod.compute_gaps(card(c), None) if x["axis"] == "wisdom"]
+        return g[0]["severity"] if g else None
+    dec = {"status": "ok", "kind": "decision", "path": "std_f64",
+           "out_frac": {"a": 0.03}, "best_other": "a", "best_other_s": 1.0,
+           "best_equiv": "b", "best_equiv_s": 1.95, "regret": 1.4,
+           "regret_s": 0.5}
+    _check(sev({**dec, **j, "kind": "decision", "status": "ok"}) == 1,
+           "wisdom : production fausse → gap correction (sévérité 1)")
+    _check(sev({**dec, "verdict": "FAIL"}) == 3,
+           "wisdom : regret FAIL → gap vitesse (sévérité 3)")
+    _check(sev({**dec, "verdict": "ADJUDICATE", "regret_other": 1.5}) == 4,
+           "wisdom : ADJUDICATE non tranché → gap qualité (sévérité 4)")
+    _check(sev({**dec, "verdict": "ADJUDICATE", "adj_status": "known"}) is None,
+           "wisdom : ADJUDICATE déjà adjugé → aucun gap")
+    _check(sev({**dec, "verdict": "PASS"}) is None, "wisdom : PASS → aucun gap")
+    # volet itérations
+    n = 100
+    at_n = [100, 100, 50, 100]          # 3 plafonnés à N
+    at_4n = [400, 150, 50, 400]         # un seul s'évade avant 4N
+    _check(W.under_iteration_frac(at_n, at_4n, n) == 0.25,
+           "wisdom iter : pixels plafonnés à N qui s'évadent avant 4N")
+    flat = [5] * 999 + [1600]           # rien n'évade entre 25 et 1600
+    _check(W.smallest_sufficient(flat, 1600) == 25,
+           "wisdom iter : plus petit N/4^k qui satisfait encore le critère")
+    busy = [5] * 900 + [300] * 100      # 10 % évadent entre 100 et 400
+    _check(W.smallest_sufficient(busy, 1600) == 400,
+           "wisdom iter : descente stoppée dès que le critère casse")
+    _check(W.iter_verdict(0.03, 1, None) == "FAIL"
+           and W.iter_verdict(0.01, 1, None) == "WARN"
+           and W.iter_verdict(0.001, 4, 3.0) == "PASS"
+           and W.iter_verdict(0.001, 16, 3.0, 0.5) == "WASTE"
+           and W.iter_verdict(0.001, 16, 3.0, 0.01) == "PASS",
+           "wisdom iter : verdicts (4× de marge est voulu ; bruit ignoré)")
+    _check(sev({"status": "ok", "kind": "iter", "verdict": "FAIL",
+                "under_frac": 0.03, "auto_iterations": 750}) == 1,
+           "wisdom iter : sous-itération FAIL → gap correction")
+    _check(sev({"status": "timeout", "kind": "iter", "budget_s": 20.0}) == 2,
+           "wisdom iter : sonde + rendu hors budget → gap robustesse")
+    _check({"barnsley_m_zoom", "multibrot_zoom"} <= set(W.ITER_QUICK),
+           "wisdom iter : les types fuyants sont sondés dès le tier quick")
+    txt = ("Iterations: auto → 90000 (max escape 91702 on a 81x51 probe, "
+           "2 rounds, 0.56 s) — --iterations N overrides\n"
+           "[RELIABILITY-STD] flagged=441 (10.675 %) corrected=441 via=Perturbation time=0.466s\n"
+           "[RELIABILITY-STD] flagged=4315 (10.535 %) corrected=4315 via=Perturbation time=0.508s\n"
+           "Done in 1.63s (render: 1.61s, save: 0.02s)\n")
+    _check(W.parse_auto_line(txt) == (90000, 0.56),
+           "wisdom iter : N et durée de sonde lus dans la ligne auto")
+    _check(W.parse_render_s(txt) == 1.61, "wisdom iter : durée de rendu lue")
+    _check(W.parse_reliability(txt) == (10.535, 0.508),
+           "wisdom iter : fiabilité du DERNIER rendu (pas celle de la sonde)")
+    for dname, dim in W.DIMENSIONS.items():
+        _check("auto" in dim["variants"] and set(dim["quick"]) <= set(dim["full"]),
+               f"wisdom : dimension {dname} — variante auto, quick ⊂ full")
+        for sc, a in (dim.get("scenes") or {}).items():
+            _check("--iterations" in a,
+                   f"wisdom : scène {sc} à plafond EXPLICITE (sonde hors chrono)")
+    _check(all("--iterations" not in W.ITER_SCENES[s] for s in W.ITER_FULL)
+           and set(W.ITER_QUICK) <= set(W.ITER_FULL),
+           "wisdom iter : scènes SANS plafond (c'est la sonde qu'on juge)")
+    md = "\n".join(W.wisdom_md({"counts": {"PASS": 1}, "runs": 3, "size": [256, 160],
+                                "cases": {"decision:algorithm:x": {**dec, **j,
+                                          "status": "ok", "kind": "decision",
+                                          "chosen_s": 2.0}}}))
+    _check("adjugé GMP" in md and "1.04 % faux" in md,
+           "wisdom : le scorecard montre l'adjudication GMP")
+
+
+def run_levers():
+    """Verrous des leviers : classés par secondes, planchers respectés, et
+    présents même quand il n'y a aucun gap."""
+    print("\n== leviers ==")
+    card = {"meta": {"machine": {"cpu": "x", "nproc": 1}},
+            "profile": {"status": "ok", "cases": {
+                "dragon": {"status": "ok", "wall_s": 2.8, "path": "bytecode_f64",
+                           "reliability_flagged_pct": 0.72, "ns_per_iter_thread": 0.04,
+                           "secs": {"orbit": 1.04, "bla": 0.04, "pixels": 0.71,
+                                    "post": 0.94, "save": 0.0, "other": 0.04}},
+                "test5": {"status": "ok", "wall_s": 0.02, "path": "bytecode_f64",
+                          "secs": {"orbit": 0.001, "pixels": 0.001, "other": 0.02}}}},
+            "wisdom": {"status": "ok", "cases": {
+                "iter:elephants_1e7": {"status": "ok", "kind": "iter", "verdict": "PASS",
+                                       "auto_iterations": 60000, "render_s": 9.0,
+                                       "probe_s": 1.6, "fiab_s": 7.3, "fiab_pct": 43.3,
+                                       "path": "std_f64"}}}}
+    lv = levers_mod.compute_levers(card)
+    _check(not gaps_mod.compute_gaps(card, None) and len(lv) >= 4,
+           "leviers : une liste de travail même sans aucun gap")
+    _check([x["secs"] for x in lv] == sorted((x["secs"] for x in lv), reverse=True),
+           "leviers : triés par secondes décroissantes")
+    _check(lv[0]["case"] == "iter:elephants_1e7" and "fiabilité" in lv[0]["what"],
+           "leviers : la correction de fiabilité à N auto arrive en tête")
+    _check(all(x["case"] != "test5" for x in lv),
+           "leviers : rien sous le plancher de mesure (50 ms)")
+    _check(not any(x["case"] == "dragon" and "BLA" in x["what"] for x in lv),
+           "leviers : une phase < 10 % de son cas n'est pas un levier")
+    md = "\n".join(levers_mod.levers_md(lv))
+    _check("## Leviers" in md and "elephants_1e7" in md and "| 1 |" in md,
+           "leviers : section du scorecard")
+    _check("aucun levier" in "\n".join(levers_mod.levers_md([])),
+           "leviers : section présente même vide")
+
+
+def run_types_axis():
+    """Verrous de l'axe types : tous les types ont une scène figée à plafond
+    explicite, un FAIL est toujours un juge CONVERGÉ, et le tier micro reste
+    léger."""
+    print("\n== axe types ==")
+    T = axes_types
+    _check("types" in config.ALL_AXES.split(","), "types : axe déclaré")
+    sc = T.load_scenes()
+    _check(set(sc) == {str(t) for t in T.ALL_TYPES},
+           "types : une scène figée pour CHACUN des 33 types")
+    judged = [t for t in T.ALL_TYPES if t not in T.NO_JUDGE]
+    _check(all(sc[str(t)].get("edge") for t in judged),
+           "types : chaque type jugé a une vue de bord")
+    _check(all("--iterations" in T.scene_args(t, sc[str(t)], w)
+               for t in judged for w in ("home", "edge")),
+           "types : plafond EXPLICITE (la sonde auto est jugée par wisdom)")
+    _check(all(0.02 < sc[str(t)]["edge"]["capped"] < 0.98
+               or sc[str(t)]["edge"]["distinct"] >= 15 for t in judged),
+           "types : vues de bord non uniformes")
+    # éclaireur : voisinage mixte plafonné/évadé préféré à une équipotentielle
+    w, h, cap = 16, 16, 100
+    it = [cap if x < 8 else 5 + (x % 3) for y in range(h) for x in range(w)]
+    x, _ = T.edge_pixel(it, w, h, cap)
+    _check(5 <= x <= 9, "types : l'éclaireur vise la frontière intérieur/extérieur")
+    _check(T.scene_verdict(0.03, None, False, 0.0) == "FAIL"
+           and T.scene_verdict(0.03, None, False, 0.8) == "CHAOS"
+           and T.scene_verdict(0.0, None, False) == "PASS"
+           and T.scene_verdict(None, True, False) == "PASS"
+           and T.scene_verdict(None, False, False) == "FAIL"
+           and T.scene_verdict(None, True, True) == "WARN",
+           "types : juge non convergé → CHAOS ; non déterministe → FAIL")
+    def sev(c):
+        card = {"meta": {"machine": {"cpu": "x", "nproc": 1}},
+                "types": {"status": "ok", "cases": {"14:Tricorn:edge": c}}}
+        g = [x for x in gaps_mod.compute_gaps(card, None) if x["axis"] == "types"]
+        return g[0]["severity"] if g else None
+    base = {"status": "ok", "path": "std_f64", "diff_px": 65, "frac": 0.025}
+    _check(sev({**base, "verdict": "FAIL", "judge_frac": 0.0}) == 1,
+           "types : FAIL à juge convergé → gap correction (sévérité 1)")
+    _check(sev({**base, "verdict": "FAIL"}) == 4,
+           "types : FAIL à juge NON vérifié → sévérité 4, pas une alerte rouge")
+    _check(sev({**base, "verdict": "CHAOS", "judge_frac": 0.8}) is None,
+           "types : scène chaotique → aucun gap")
+    _check(sev({"status": "timeout"}) == 2, "types : rendu hors délai → robustesse")
+    _check(T.ns_per_px_iter(1.0, 1000.0, 1000, 4) == 4000.0,
+           "types : ns par pixel·itération·thread")
+    micro = config.tier_config("micro")
+    _check(micro["width"] <= 128 and micro["scene_size"][0] <= 128
+           and "quality" not in micro["axes"] and "types" in micro["axes"]
+           and "wisdom" in micro["axes"],
+           "tier micro : petites images, axes essentiels (cycle d'A/B léger)")
 
 
 if __name__ == "__main__":

@@ -89,6 +89,9 @@ pub const CHECK_FACTOR: f64 = 4.0;
 /// [`TAIL_QUANTILE`] des évasions observées (cf. [`assess_iterations`]).
 pub const TAIL_MARGIN: f64 = 1.25;
 
+/// Relèvement maximal du plafond suffisant par la marge de queue observée.
+pub const TAIL_MARGIN_MAX_LIFT: f64 = 2.0;
+
 /// Quantile de la queue observée protégé par [`TAIL_MARGIN`].
 pub const TAIL_QUANTILE: f64 = 0.999;
 
@@ -296,6 +299,50 @@ pub struct IterationAdvice {
     /// Aucun pixel ne s'est évadé : vue entièrement intérieure OU plafond
     /// bien trop bas (zoom profond) — indiscernables sur ce seul buffer.
     pub no_escape: bool,
+    /// La queue des évasions est lourde ([`HEAVY_TAIL_RATIO`]) : chaque ×4
+    /// de plafond n'achète presque rien (type « fuyant »).
+    pub heavy_tail: bool,
+}
+
+/// Ratio de masse par octave de la queue observée sous `stats.cap`
+/// (`n2 / n1`, cf. [`predicted_change`]) ; `None` sans évasion.
+fn tail_ratio(stats: &IterationStats) -> Option<f64> {
+    let cap_f = stats.cap as f64;
+    let n_below = stats.below(cap_f);
+    if n_below == 0 {
+        return None;
+    }
+    let base_idx = ((n_below - 1) as f64 * BASE_QUANTILE).floor() as usize;
+    let m = stats.sample[base_idx] as f64;
+    let e = (cap_f - m).max(1.0);
+    let count = |lo: f64, hi: f64| -> f64 {
+        stats
+            .below((m + hi).min(cap_f))
+            .saturating_sub(stats.below(m + lo)) as f64
+    };
+    Some((count(e / 2.0, e) + 0.5) / (count(e / 4.0, e / 2.0) + 0.5))
+}
+
+/// Le plafond est-il DANS la queue ? Vrai si le surplus du plafond vaut au
+/// moins [`IN_TAIL_FACTOR`] fois le surplus médian des évasions. Tant qu'il
+/// est encore dans le gros de la distribution, un ratio par octave proche de
+/// 1 ne dit rien de la queue (seahorse 1e7 au plafond de départ 2 500 :
+/// médiane ~1 000, `r` ≥ 0,7, puis 0,3-0,5 dès 10 000).
+fn cap_is_in_tail(stats: &IterationStats) -> bool {
+    let cap_f = stats.cap as f64;
+    let n_below = stats.below(cap_f);
+    if n_below < 2 {
+        return false;
+    }
+    let m = stats.sample[((n_below - 1) as f64 * BASE_QUANTILE).floor() as usize] as f64;
+    let median = stats.sample[(n_below - 1) / 2] as f64;
+    cap_f - m >= IN_TAIL_FACTOR * (median - m).max(1.0)
+}
+
+/// Queue lourde : plafond dans la queue ET masse par octave qui décroît de
+/// moins de 30 % ([`HEAVY_TAIL_RATIO`]).
+fn tail_is_heavy(stats: &IterationStats) -> bool {
+    cap_is_in_tail(stats) && tail_ratio(stats).is_some_and(|r| r >= HEAVY_TAIL_RATIO)
 }
 
 /// Arrondit vers le haut à 2 chiffres significatifs (34 565 → 35 000).
@@ -328,6 +375,25 @@ fn smallest_sufficient(stats: &IterationStats) -> u32 {
     }
     best.max(MIN_ITERATIONS.min(stats.cap))
 }
+
+/// Ratio par octave au-delà duquel la queue est « lourde » : l'extrapolation
+/// géométrique `Σ r^j ≈ 1/(1−r)` y devient si sensible au bruit sur `r`
+/// qu'elle ne vaut plus rien. Mesuré le 2026-11-19 (axe `wisdom` du
+/// harness) : Barnsley Mandelbrot ×5 (queue 0,52 → 0,43 → 0,24 → 0,23 →
+/// 0,17 → 0,09 % par octave, `r` ≈ 0,8) — la sonde sautait à 2,9 M
+/// itérations (37 s à 128×80) quand son propre critère est satisfait vers
+/// 150 000 ; la marge [`TAIL_MARGIN`] sur la queue OBSERVÉE rend ensuite le
+/// dépassement irréversible. Seahorse / éléphants décroissent d'un facteur
+/// ≥ 2 par octave (`r` ≤ 0,5) : non concernés.
+pub const HEAVY_TAIL_RATIO: f64 = 0.7;
+
+/// Rapport surplus du plafond / surplus médian à partir duquel le plafond
+/// est « dans la queue » (cf. `cap_is_in_tail`).
+pub const IN_TAIL_FACTOR: f64 = 8.0;
+
+/// Croissance maximale par tour de la SONDE sur une queue lourde : on avance
+/// par ×4 et on REMESURE, au lieu d'extrapoler.
+pub const HEAVY_TAIL_GROWTH: u32 = 4;
 
 /// Plafond > `stats.cap` à viser quand la prédiction dépasse la cible :
 /// prolonge le modèle de queue sur une grille ×2^(1/4) (jusqu'à ×64), au
@@ -391,6 +457,7 @@ pub fn assess_iterations(stats: &IterationStats) -> IterationAdvice {
             predicted_change: 0.0,
             recommended: stats.cap,
             no_escape: stats.total > 0,
+            heavy_tail: false,
         };
     }
     let now = predicted_change(stats, stats.cap);
@@ -406,15 +473,23 @@ pub fn assess_iterations(stats: &IterationStats) -> IterationAdvice {
             predicted_change: now,
             recommended: to,
             no_escape: false,
+            heavy_tail: tail_is_heavy(stats),
         };
     }
     // Marge sur la queue OBSERVÉE : jamais sous `TAIL_MARGIN × q99,9 %` des
     // évasions — une image pleine résolution échantillonne la queue plus loin
     // qu'une sonde de 4 000 pixels, et ces derniers pixels de bord restent
     // ainsi colorés au lieu de virer au noir.
-    let tail = stats.escaped_quantile(TAIL_QUANTILE).unwrap_or(0) as f64 * TAIL_MARGIN;
-    let rec = round_up_nice((smallest_sufficient(stats) as f64).max(tail).ceil() as u64)
-        .min(stats.cap);
+    //
+    // La marge ne relève le plafond SUFFISANT que d'un facteur
+    // [`TAIL_MARGIN_MAX_LIFT`] au plus : sur une queue lourde le quantile
+    // observé suit le plafond sondé, et un tour qui a dépassé le besoin
+    // rendait ce dépassement irréversible (seahorse 1e7 : sonde à 640 k ⇒
+    // 490 k choisis quand 90 k tiennent la cible ; Barnsley : 2,9 M).
+    let suff = smallest_sufficient(stats) as f64;
+    let tail = (stats.escaped_quantile(TAIL_QUANTILE).unwrap_or(0) as f64 * TAIL_MARGIN)
+        .min(suff * TAIL_MARGIN_MAX_LIFT);
+    let rec = round_up_nice(suff.max(tail).ceil() as u64).min(stats.cap);
     let verdict = if (rec as u64) * (SHRINK_FACTOR as u64) <= stats.cap as u64 {
         IterationVerdict::Shrink(rec)
     } else {
@@ -425,6 +500,7 @@ pub fn assess_iterations(stats: &IterationStats) -> IterationAdvice {
         predicted_change: now,
         recommended: rec,
         no_escape: false,
+        heavy_tail: false,
     }
 }
 
@@ -671,10 +747,21 @@ pub fn auto_iterations_with(
             let pred = predicted_change(&stats, chosen);
             return Ok(finish(chosen, false, false, pred));
         }
+        // Queue lourde : un ×4 de plus coûte ×4 et ne change presque rien.
+        // On s'arrête au seuil de croissance de la couche par image
+        // ([`GROW_THRESHOLD`], celui que la GUI applique en régime établi),
+        // pas à la cible — sinon la sonde court jusqu'au plafond maximal.
+        if advice.heavy_tail && rounds >= 2 && advice.predicted_change <= GROW_THRESHOLD {
+            return Ok(finish(cap, false, false, advice.predicted_change));
+        }
         if last_round {
             return Ok(finish(cap, cap >= ceiling, false, advice.predicted_change));
         }
-        cap = advice.recommended.max(cap.saturating_add(1)).min(ceiling);
+        let mut next = advice.recommended.max(cap.saturating_add(1));
+        if advice.heavy_tail {
+            next = next.min(cap.saturating_mul(HEAVY_TAIL_GROWTH));
+        }
+        cap = next.min(ceiling);
     }
 }
 
@@ -682,6 +769,49 @@ pub fn auto_iterations_with(
 mod tests {
     use super::*;
     use crate::fractal::default_params_for_type;
+
+    /// Type « fuyant » (Barnsley Mandelbrot, queue lourde) : la sonde ne
+    /// court plus jusqu'au plafond maximal. Avant le 2026-11-19 cette vue
+    /// donnait 2,9 M itérations (37 s à 128×80) ; son propre critère est
+    /// satisfait vers 150 000.
+    #[test]
+    fn leaky_type_probe_stops_on_a_confirmed_heavy_tail() {
+        let mut p = default_params_for_type(FractalType::BarnsleyMandelbrot, 96, 60);
+        p.center_x = -0.4921875;
+        p.center_y = -1.225;
+        p.span_x = 0.75;
+        p.span_y = 0.75 * 60.0 / 96.0;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let r = auto_iterations(&p, &cancel).expect("sonde");
+        assert!(!r.no_escape && !r.ceiling_hit);
+        assert!(
+            r.iteration_max <= 700_000,
+            "queue lourde : la sonde s'emballe encore ({})",
+            r.iteration_max
+        );
+        assert!(r.iteration_max >= 5_000, "plafond trop bas ({})", r.iteration_max);
+        assert!(r.predicted_change <= GROW_THRESHOLD, "{}", r.predicted_change);
+    }
+
+    /// `heavy_tail` suit le ratio de masse par octave de la queue.
+    #[test]
+    fn heavy_tail_flag_follows_the_octave_ratio() {
+        let cap = 2_500u32;
+        // alpha = 0,3 : la masse par octave ne perd que 19 % (r ≈ 0,81).
+        let heavy = IterationStats::from_iterations(&synthetic(40_000, 0.4, 0.0, 20.0, 0.3, cap), cap);
+        let a = assess_iterations(&heavy);
+        assert!(a.predicted_change > TARGET_CHANGE && a.heavy_tail);
+        assert!(tail_ratio(&heavy).unwrap() >= HEAVY_TAIL_RATIO && cap_is_in_tail(&heavy));
+        // alpha = 2 : la masse par octave est divisée par 4.
+        let light = IterationStats::from_iterations(&synthetic(40_000, 0.4, 0.0, 300.0, 2.0, cap), cap);
+        assert!(tail_ratio(&light).unwrap() < HEAVY_TAIL_RATIO);
+        assert!(!assess_iterations(&light).heavy_tail);
+        // Plafond encore dans le gros de la distribution : jamais « lourd »,
+        // même si la masse par octave monte encore.
+        let bulk: Vec<u32> = (0..10_000u32).map(|i| if i % 3 == 0 { cap } else { 600 + i % 1800 }).collect();
+        let bs = IterationStats::from_iterations(&bulk, cap);
+        assert!(!cap_is_in_tail(&bs) && !tail_is_heavy(&bs));
+    }
 
     /// Buffer synthétique : `interior` pixels plafonnés + évasions en loi de
     /// puissance `P(T > t) ∝ (t/t0)^-alpha` au-delà de `offset`.

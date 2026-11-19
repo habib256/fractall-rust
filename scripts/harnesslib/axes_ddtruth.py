@@ -58,7 +58,8 @@ def count_diff(a: list[int], b: list[int]) -> int:
 def axis_ddtruth(cases: list[str], size: int = 96, timeout: float = 300.0,
                  mem_limit_mb: int = 0, quarantined: set | None = None,
                  slow_safe: set | None = None,
-                 std_full: bool | None = False) -> dict:
+                 std_full: bool | None = False,
+                 std_size: tuple[int, int] = (256, 160)) -> dict:
     """`std_full` : None = pas de volet f64 standard ; False = plafond par
     défaut seulement (tier quick) ; True = toutes les scènes."""
     if not CLI.exists():
@@ -143,7 +144,7 @@ def axis_ddtruth(cases: list[str], size: int = 96, timeout: float = 300.0,
                          "sentinel": name in SENTINEL_CASES}
         print(f"{path} diff={diff} px ({100 * frac:.3f} %) {verdict}")
     if std_full is not None:
-        results.update(axis_stdtruth(std_full, timeout, mem_limit_mb))
+        results.update(axis_stdtruth(std_full, timeout, mem_limit_mb, std_size))
     ok = [r for r in results.values() if r.get("status") == "ok"]
     verdicts = [r["verdict"] for r in ok]
     return {

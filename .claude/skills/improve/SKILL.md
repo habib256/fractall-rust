@@ -66,9 +66,17 @@ automatiquement les gourmands (pic RSS ≥ seuil) et ceux qui plantent. Le tier
 ## Étape 1 — Mesurer
 
 ```bash
-python3 scripts/harness.py score --tier quick
+python3 scripts/harness.py score --tier micro   # cycle d'A/B (128², axes essentiels)
+python3 scripts/harness.py score --tier quick   # référence avant commit
 ```
 
+- **Cycles légers** : pendant qu'on cherche et qu'on patche, n'utiliser que
+  `--tier micro` (ou `--tier micro --axes types|wisdom|truth`) et des rendus
+  ≤ 128². `quick` une fois avant le commit ; `standard` seulement pour
+  confirmer une affirmation de vitesse.
+- L'objectif couvre TOUS les types de fractales : l'axe `types` (33 types,
+  vue d'accueil + bord ×4096, juge GMP à convergence vérifiée) est la source
+  des gaps hors Mandelbrot ; son `ns/px·it` désigne les boucles lentes.
 - Lire `SCORECARD.md` (généré) : agrégats par axe, **temps fractall par
   cas** (auto-ratio vs baseline), **Profil — où va le temps** (path exécuté,
   orbite/pixels/post/save %, ns/iter, % fiabilité, escalade dd), bench par
@@ -76,8 +84,14 @@ python3 scripts/harness.py score --tier quick
 - Si `$ARGUMENTS` désigne un axe/cas, filtrer les gaps dessus ; sinon prendre
   le gap #1 (priorités : correction > robustesse > vitesse > qualité —
   cf. HARNESS.md §Priorités). **Aucun gap ?** La liste de travail est alors
-  `TODO.md` G14 (plan des optimisations) — choisir l'item dont le profil
-  montre le plus gros levier (phase dominante × nombre de cas).
+  la section **Leviers** du scorecard (`harness.py levers` : temps mesuré
+  trié par ce qui le consomme, avec la commande qui ouvre chaque piste),
+  recoupée avec `TODO.md` G14 (plan des optimisations).
+- L'axe `wisdom` juge les DÉCISIONS automatiques (routage harmonic,
+  f64-standard vs perturbation, itérations auto) : un FAIL de regret = seuil
+  à recalibrer dans `fractal/wisdom.rs` ; `adjugé GMP : auto x % faux` = le
+  rendu de production est faux (correction, priorité 1). Cycle ciblé :
+  `harness.py wisdom-optimality --only algorithm`.
 - Pas de baseline pour CETTE machine (`doctor` le dit) ? La créer d'abord :
   `python3 scripts/harness.py baseline` (→ `harness/baselines/<machine>.json`,
   la baseline de la machine de dev n'est pas touchée) puis committer — sinon

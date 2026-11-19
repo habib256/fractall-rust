@@ -10,7 +10,111 @@
 
 ---
 
-## 🧭 État actuel (2026-11-06) — lire ceci en premier
+## 🧭 État actuel (2026-11-19) — lire ceci en premier
+
+**2026-11-19 — le harness juge les DÉCISIONS et TOUS les types.** Le
+scorecard affichait « aucun gap » : le harness ne voyait ni les choix
+automatiques du moteur ni 25 types sur 33. Trois ajouts (HARNESS.md §7, §8,
+tier micro, Leviers) et ce qu'ils ont trouvé au premier passage :
+
+- **Axe `wisdom`** : regret du plan `auto` contre chaque plan forcé (à sortie
+  équivalente, adjudication GMP automatique sinon) + justesse du plafond de
+  la sonde d'itérations contre le rendu à 4N. Routage : 0 regret (harmonic,
+  f64-standard vs perturbation). **Corrigé le jour même** : la sonde
+  s'emballait sur les types « fuyants » — Barnsley Mandelbrot ×5 : 2,9 M
+  itérations, 37 s à 128×80 → **52 000, 0,66 s** ; Multibrot non entier ×8 :
+  140 000 → 8 900 (1,86 → 0,30 s) ; vues Mandelbrot inchangées au plafond
+  près (`HEAVY_TAIL_RATIO`, `IN_TAIL_FACTOR`, `TAIL_MARGIN_MAX_LIFT`).
+- **Axe `types`** (33 types, vue d'accueil + bord ×4096, juge GMP à
+  convergence vérifiée) et **tier `micro`** (cycle d'A/B de ~5 min sur 4
+  cœurs). Section **Leviers** : la liste de travail quand il n'y a aucun gap.
+
+**Gaps OUVERTS trouvés par ces axes (correction d'abord)** :
+
+1. ~~**Path standard, vue à plafond AUTO**~~ — **FERMÉ le 2026-11-19.**
+   Éléphants 1e7 à 60 000 itérations (le plafond que choisit la sonde) :
+   1,17 % de pixels faux vs GMP pur à 128×80 (juge convergé 256 b ≡ 640 b)
+   → **0,05 %** (5 px, PASS), +12 % de temps sur la scène. Cause : la borne
+   du tier dd ne s'EMBALLE pas au bord parabolique (l'erreur déplace le temps
+   de transit du goulot, l'orbite s'évade quelques pas après) ; elle est
+   seulement comparable à |z| à l'évasion. Remède : test d'évasion relatif
+   (0,01·|z|) dans la correction dd, **limité aux vues peu profondes**
+   (pixel ≥ 1e-13, `shallow_dd_escape_rel`, `FRACTALL_DD_ESCAPE_SHALLOW=0`)
+   — sur le corpus profond le même test ne change aucun pixel et coûte
+   jusqu'à ×2 (e227). A/B d'identité : e50, e227, golden_spider, rug, dragon
+   identiques à l'octet. `FRACTALL_F64_MARGIN=1` n'y changeait rien (119 px).
+   **Reste ouvert** : la perturbation FORCÉE sur cette vue laisse 3,6 % de
+   pixels « au-delà du dd » non corrigés (plafonds qd 1 % / GMP 0,1 % en
+   fraction de pixels alors que le GMP y coûte 150 ns/itération) — un budget
+   en coût absolu, pas en fraction, serait plus juste à faible profondeur.
+   Verrous : `truth/std:elephants_1e7_60000`,
+   `parabolic_edge_at_auto_cap_matches_gmp`.
+2. ~~**Tricorn bord ×4096 : 2,5 % de pixels faux**~~ — **FERMÉ le
+   2026-11-19** : 0 pixel ≠ GMP pur. Tricorn est suivi par défaut (path
+   standard ET perturbation) et ses pixels signalés sont recalculés par la
+   perturbation tracée, puis par le nouvel étage **double-double DIRECT**
+   (`bytecode/direct_dd.rs`, ~10-15 ns/itération contre 150 en GMP), puis en
+   GMP pur pour ce que le dd ne garantit pas. Rendu de la vue : 0,023 s
+   (faux) → 0,054 s (juste) à 128×80 ; sans l'étage dd : 0,19-0,26 s. Sortie
+   identique au chemin tout-GMP (`FRACTALL_DIRECT_DD=0`). L'étage sert aussi
+   Julia. **Suite naturelle** : le brancher sur la correction `GmpCapped` du
+   path standard (Mandelbrot/Julia tournés, et les familles à pliage en
+   opt-in) et y relâcher le budget.
+3. ~~**Barnsley Julia : 5 % (bord) et 1 % (accueil) de pixels faux**~~ —
+   **FERMÉ le 2026-11-19** : 0 pixel ≠ GMP pur sur les deux vues. Premier
+   membre de `render/scalar_reliability.rs` : boucle f64 TRACÉE
+   bit-identique (borne `E' = |c|·E + u·|z|`, signalé si `|Re z| ≤ E` au
+   test de branche, si l'évasion n'est pas déterminée ou si `E ≥ 1e-3`),
+   pixels signalés refaits en double-double (point exact depuis le centre
+   HP), reste en GMP pur sous budget. Coût à 128×80 : accueil 0,007 →
+   0,008 s (3,4 % de pixels signalés), bord 0,009 → 0,015 s (12,5 %).
+   Barnsley Mandelbrot suit le même chemin (+30 %) mais reste `CHAOS`
+   (juge 256 b ≠ 512 b ; 6,5 % de pixels au-delà du double-double laissés
+   en f64 avec avertissement).
+4. **Alpha Mandelbrot bord 4,5 %, Mandelbulb bord 3,9 %** (juge convergé) ;
+   PerpBS Julia 0,35 %, Magnet Julia 0,31 % (WARN) : aucun suivi sur ces
+   boucles scalaires.
+
+   **Chantier pour 4 (motif posé par Barnsley, reste à étendre) — boucles
+   scalaires tracées + double-double.** Analyse du 2026-11-19 : (a) détecter
+   par orbite JUMELLE (second passage f64 depuis un point décalé de 2⁻⁴⁴ ;
+   comptes différents ⇒ pixel mal conditionné) est générique mais coûte ×2
+   sur toute la frame ; (b) corriger en GMP coûte ~150× le f64 par pixel :
+   à 10 % de pixels signalés la frame prend ×15 — juste mais inutilisable ;
+   le budget actuel (0,1 % des pixels ou 5 % des itérations) refuserait.
+   La voie rapide ET juste est celle de `bytecode/direct_dd.rs` étendue aux
+   types sans bytecode : rendre `barnsley_*`, `alpha_mandelbrot`,
+   `mandelbulb`, `magnet_*`, `phoenix` génériques sur un trait `Real`
+   (f64 / `DoubleDouble`), porter une borne d'erreur par type (Barnsley :
+   `E' = |c|·E + u`, indéterminé si `|Re z| ≤ E` au test de branche), et
+   n'envoyer au GMP que ce que le double-double ne garantit pas. Le motif
+   existe (`scalar_reliability` : `plan` / `iterate_tracked` / `correct`) ;
+   chaque type restant demande sa boucle tracée f64 + double-double et son
+   verrou bit-identique. Juge prêt : scènes 11, 15, 20, 30 de l'axe
+   `types`.
+5. `CHAOS` (pas des gaps) : Buffalo, Burning Ship, Celtic, Perp. BS,
+   Barnsley M — le juge 256 b diffère du juge 512 b sur 70-85 % des pixels
+   de bord ; le traqueur étendu y signale ~98 % des pixels.
+
+**Suite quality après les changements du jour (2026-11-19, 64², 2 min)** :
+17 PASS · 0 WARN · 0 FAIL, max_diff 0 sur les 17 presets.
+
+**Newton ×23 à ×80 (2026-11-19)** : le degré par défaut (8) passait par deux
+`powc` par itération ; puissances entières par `powu` (ce que fait la boucle
+GMP). Accueil 0,205 → 0,009 s, bord 0,89 → 0,011 s à 128×80 (le raccourci
+des cycles exacts mord enfin : le point fixe est atteint au bit près),
+0 pixel ≠ GMP, golden `newton_default` inchangé au pixel près — la décision
+« change des bits » de G14 est donc sans objet.
+
+**Leviers de vitesse mesurés (ns par pixel·itération·thread)** : ~~Newton
+bord 90~~ (corrigé), Multibrot non entier 85, Mandelbrot Sin 58, Julia Sin 51, Nova 21 —
+contre 3-6 pour les familles bytecode par lots ; correction de fiabilité du
+path standard à plafond auto (éléphants 1e7 : 43 % de pixels signalés, 53-81 %
+du rendu) ; sonde d'itérations (18-46 % du rendu sur les vues chères).
+
+---
+
+## État au 2026-11-06
 
 **2026-11-06, matin — branche `matin-20261106` (67 commits, fusionnée dans
 `main`), cinq agents Opus en worktrees + relectures indépendantes.** Score

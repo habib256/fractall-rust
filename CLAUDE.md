@@ -99,14 +99,28 @@ qui voit une précision d'orbite insuffisante : le juge GMP de quality partage
 la formule du moteur), **profil** (où va le temps : path exécuté + ventilation
 orbite/pixels/post/sauvegarde + ns/iter + % fiabilité), **bench** (iters/s par
 technique via `--wisdom-bench` isolé).
+**wisdom** (2026-11-19 — juge les DÉCISIONS automatiques : regret du plan
+`auto` contre chaque plan forcé à sortie équivalente, adjudication GMP
+automatique quand l'alternative rapide rend autre chose, et justesse du
+plafond choisi par la sonde d'itérations contre le rendu à 4N), **types**
+(les 33 types : vue d'accueil + vue de bord ×4096 figées dans
+`harness/type-scenes.json`, vitesse en ns/pixel·itération et juge GMP à
+convergence vérifiée — un écart à juge non convergé est `CHAOS`, pas un
+gap). Cycle d'A/B léger : `score --tier micro` (128², axes
+speed/truth/wisdom/types/profile). Sans gap, la
+liste de travail est la section **Leviers** du scorecard (`harness.py
+levers` : temps mesuré trié par ce qui le consomme).
 
 ```bash
 python3 scripts/harness.py doctor                # prérequis + axes mesurables ICI
-python3 scripts/harness.py score --tier quick    # cycle interne (~10 cas, 256²)
+python3 scripts/harness.py score --tier micro    # cycle d'A/B léger (128², axes essentiels, tous types)
+python3 scripts/harness.py score --tier quick    # référence avant commit (~10 cas, 256²)
 python3 scripts/harness.py score --tier standard # 3 runs médiane, avant commit perf
 python3 scripts/harness.py trend --case e50      # évolution d'un cas (temps, ns/iter, path)
 python3 scripts/harness.py ab --cases e50 --env FRACTALL_RELIABILITY=off,escalate  # A/B isolé (G14)
 python3 scripts/harness.py hotspots --case e1000 --size 1200  # profil ÉCHANTILLONNÉ : quelles fonctions (binaire symbolisé)
+python3 scripts/harness.py levers                # où gagner : temps mesuré, trié (même sans gap)
+python3 scripts/harness.py wisdom-optimality --only algorithm  # axe wisdom seul (harmonic|algorithm|iter)
 python3 scripts/harness.py baseline              # fige la référence de CETTE machine (harness/baselines/)
 python3 scripts/test_harness_guard.py            # verrous du harness (CI)
 ```
@@ -163,6 +177,7 @@ src/
 │   │   ├── interp_batch.rs # idem PAR LOTS, 8 voies entrelacées (path std, défaut)
 │   │   ├── interp_gmp.rs   # interpréteur GMP pour orbite référence
 │   │   ├── delta_form.rs   # DeltaState f64 + DeltaStateExp ComplexExp
+│   │   ├── direct_dd.rs    # itération directe double-double tracée (étage f64 → GMP, Julia/Tricorn)
 │   │   ├── bla_dual.rs     # BLA mat2 unifié via dual-numbers
 │   │   ├── pixel_loop.rs   # BLA + delta-form + rebasing F3 (f64)
 │   │   ├── pixel_loop_exp.rs # idem ComplexExp (tier exp, boucle FloatExp de référence)
@@ -186,6 +201,7 @@ src/
 ├── render/
 │   ├── escape_time.rs    # dispatcher unique CLI↔GUI (sélection algo)
 │   ├── std_reliability.rs # suivi + correction des pixels non fiables du path f64 standard
+│   ├── scalar_reliability.rs # idem pour les boucles SCALAIRES hors bytecode (Barnsley : f64 tracé → dd → GMP)
 │   └── tiles.rs          # G10.5 file de tuiles priorité-centre + sink streaming
 ├── gpu/                  # wgpu Vulkan/Metal/DX12
 │   ├── mod.rs              # GpuRenderer + pipeline bytecode
@@ -767,8 +783,18 @@ l'utilisateur (choix jugé inadapté, menu aussi) — retour à la case « XaoS 
   s'évade dans le budget ⇒ départ + `no_escape` (intérieur indiscernable d'un
   plafond trop bas) ; sur vue très profonde la sonde coûte ≈ une orbite de
   référence ; `cancel` n'est pas relevé pendant la correction de fiabilité
-  dd. Calibration rejouable : `cargo run --release --example
-  calibrate_auto_iter`. `AutoIterResult::summary_line()` = ligne anglaise.
+  dd. **Queue lourde (2026-11-19)** — types « fuyants » dont l'intérieur
+  apparent finit par s'évader (Barnsley, Multibrot non entier) : la masse
+  par octave décroît de moins de 30 % (`HEAVY_TAIL_RATIO`) alors que le
+  plafond est déjà loin de la médiane des évasions (`IN_TAIL_FACTOR` — sans
+  cette condition seahorse 1e7 serait « lourd » à son plafond de départ).
+  L'extrapolation géométrique n'y vaut rien : la sonde avance par ×4
+  (`HEAVY_TAIL_GROWTH`) en remesurant et s'arrête dès que la prédiction
+  passe sous `GROW_THRESHOLD` ; la marge de queue observée ne relève plus le
+  plafond suffisant que de ×2 (`TAIL_MARGIN_MAX_LIFT`). Barnsley Mandelbrot
+  ×5 : 2,9 M itérations → 52 000 (37 s → 0,66 s à 128×80). Juge : volet
+  `iter` de l'axe `wisdom` du harness. Calibration rejouable : `cargo run
+  --release --example calibrate_auto_iter`. `AutoIterResult::summary_line()` = ligne anglaise.
   **Câblage CLI** (`main.rs`) : `iterations_choice` (ordre de résolution, cf.
   §CLI) puis `apply_auto_iterations` AVANT le choix du device et l'export F3 ;
   le cache d'orbite de la sonde est passé à `render_planned` ; un TOML qui
@@ -914,6 +940,43 @@ compte) dépend de la référence — deux vues dont les centres diffèrent au
 17e chiffre (chaîne HP vs f64) ne sont plus égales au bit près sur `zs`.
 Non suivis : formules à `Mul`/`Rot` (Multibrot, opcodes), hybrides et canaux
 annexes (chemin scalaire), plan ≠ Mu, graine non nulle, types sans bytecode.
+**Tricorn suivi par défaut + étage double-double DIRECT (2026-11-19)** —
+l'axe `types` du harness a montré 2,5 % de pixels faux sur un bord Tricorn
+×4096 (juge convergé). Tricorn est désormais traité comme Mandelbrot/Julia :
+traqueur du path standard, pixels signalés recalculés par la perturbation
+tracée (`family_tracking_enabled`), puis — nouveau, et valable aussi pour
+Julia — par `bytecode/direct_dd.rs` : l'itération directe en double-double
+(~106 b, 10-15 ns/itération) avec sa propre borne (`E_MAX`, marge
+d'évasion), avant le GMP pur (150 ns/itération). Conditions
+(`direct_dd_phase`) : formule mono-phase à opcodes simples, plan Mu, pixel
+≥ 1e-22, PAS le Mandelbrot non hybride (son tier dd de perturbation passe
+avant). Sortie identique au chemin tout-GMP ; Tricorn bord 128×80 :
+correction 0,17-0,27 s → 0,033 s. Burning Ship reste en opt-in : son bord
+est `CHAOS` (98 % de pixels signalés, juge 256 b ≠ 512 b).
+**Boucles scalaires suivies (`render/scalar_reliability.rs`, 2026-11-19)** —
+les types hors bytecode n'avaient aucun suivi. Barnsley (Julia et
+Mandelbrot) est le premier : la carte `z' = (z ∓ 1)·c` dilate de |c| par pas
+(f64 épuisé vers 130 itérations) et sa branche `Re z ≥ 0` bascule sur un
+bit — 5 % de pixels faux sur un bord Barnsley Julia, 1 % sur la vue
+d'accueil. Boucle f64 tracée BIT-IDENTIQUE à `iterations::barnsley_*`
+(verrou `tracked_barnsley_is_bit_identical_to_production_loop`), pixels
+signalés refaits en double-double, reste en GMP sous le budget `GmpCapped`.
+⚠️ Dans une boucle tracée : pas de racine carrée par itération (majorants
+L1, tests sur `norm_sqr`) et suivi INERTE une fois le pixel signalé — la
+première version coûtait ×2,8 sur les vues chaotiques, celle-ci +30 %.
+Interrupteur : `FRACTALL_RELIABILITY_STD=0`. Étendre à un type = sa boucle
+tracée f64 + dd et une entrée dans `scalar_reliability::plan`.
+⚠️ **L'emballement ne voit pas un bord PARABOLIQUE** (2026-11-19) : près
+d'un point parabolique l'erreur ne s'amplifie pas exponentiellement, elle
+déplace le temps de transit du goulot, et l'orbite s'évade quelques pas plus
+tard — la borne dd vaut alors une fraction de |z|, très loin de 1e30. Vallée
+des éléphants 1e7 au plafond de la sonde auto (60 000) : 1,17 % de pixels
+faux, tous des valeurs dd « fiables ». D'où le test d'évasion relatif
+(`E ≥ 0,01·|z|` ⇒ second essai sans BLA, puis qd / GMP) dans
+`correct_pixels_dd`, **en vue peu profonde seulement**
+(`shallow_dd_escape_rel`, pixel ≥ 1e-13) : en profond il ne change aucun
+pixel du corpus et coûte jusqu'à ×2. Le plafond FIXE (2500) de l'axe truth
+ne pouvait pas le voir : c'est la scène à plafond auto qui l'a montré.
 ⚠️ **Ne pas chercher à resserrer le terme `l·ε` du saut BLA f64** : à
 ε = 2⁻⁵³ la troncature réelle est négligeable (borne du second ordre
 implémentée et testée : la substituer revient à retirer le terme) et c'est
@@ -988,13 +1051,15 @@ Tous lus UNE fois (`OnceLock`). Défaut = comportement de production.
 | `FRACTALL_RELIABILITY=off\|observe\|escalate` | détecteur de fiabilité (défaut `escalate`) |
 | `FRACTALL_RELIABILITY_EXP=0` | coupe le traqueur du tier exp |
 | `FRACTALL_RELIABILITY_DD=0` | coupe le traqueur du tier dd (⚠️ rend l'ε 2⁻⁸⁰ de la BLA dd non gardé) |
-| `FRACTALL_RELIABILITY_FAMILY=0\|all` | suivi de fiabilité hors Mandelbrot : défaut Julia seule ; `all` ajoute Burning Ship et Tricorn ; `0` coupe |
+| `FRACTALL_RELIABILITY_FAMILY=0\|all` | suivi de fiabilité hors Mandelbrot en perturbation : défaut Julia + Tricorn ; `all` ajoute Burning Ship ; `0` coupe |
 | `FRACTALL_QD=0` | pas de tier quad-double : les pixels au-delà du dd vont droit au GMP |
 | `FRACTALL_QD_MAX_FRACTION=f` | plafond du tier qd (défaut 0,01 ; plancher 16 pixels ; ≥ 1 = illimité) |
 | `FRACTALL_DD_RETRY_NOBLA=0` | pas de second essai dd sans BLA avant le GMP |
 | `FRACTALL_RELIABILITY_GMP_MAX_FRACTION=f` | plafond de l'escalade dd → GMP (défaut 0,001 ; ≥ 1 = illimité) |
 | `FRACTALL_DD_PROBE=1` | sonde dd avant l'escalade frame (opt-in) : scène dont la majorité des pixels non fiables échappe aussi au dd ⇒ f64 gardé avec avertissement, frame dd non rendue |
 | `FRACTALL_F64_MARGIN=1` | test de détermination à l'évasion au tier f64 (opt-in, +75-195 %) |
+| `FRACTALL_DIRECT_DD=0` | correction des familles sans tier dd (Julia, Tricorn) : pas d'étage double-double direct, les pixels signalés partent droit au GMP pur (sortie identique, ×5-8 plus lent sur un bord) |
+| `FRACTALL_DD_ESCAPE_SHALLOW=0\|f` | correction dd des vues PEU PROFONDES (pixel ≥ 1e-13) : `0` coupe le test d'évasion relatif (défaut 0,01·\|z\|), une valeur le remplace. Sans lui, bord parabolique à fort plafond (éléphants 1e7, 60 000 it.) : 1,2 % de pixels faux |
 | `FRACTALL_DD_ESCAPE_REL=0.1` | tier dd : pixel non fiable si sa borne ≥ 0,1·\|z\| à l'évasion (opt-in — corrige le dernier pixel faux de seahorse-valley 256², coûte ×2 sur e227 pour 0 pixel changé) |
 | `FRACTALL_DD_FAST=0` | boucle `DoubleDoubleExp` au lieu du chemin rapide dd |
 | `FRACTALL_LAZY_LO=0` | capture eager de la partie basse de l'orbite |

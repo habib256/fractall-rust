@@ -8,7 +8,7 @@
 //! ([`iterate_bytecode_f64_batch_tracked`]) ; ce module décide QUAND le
 //! brancher et recalcule les SEULS pixels signalés :
 //!
-//! - **Mandelbrot / Julia** (mapping sans K ni offset AA uniforme) :
+//! - **Mandelbrot / Julia / Tricorn** (mapping sans K ni offset AA uniforme) :
 //!   [`recompute_pixels_cpu`] — perturbation f64 tracée autour d'une orbite
 //!   de référence au centre de la vue (≈ 1 ms à ces profondeurs), puis la
 //!   chaîne existante dd → qd → GMP pour ce qu'elle juge encore non fiable.
@@ -66,6 +66,12 @@ fn std_scope() -> StdScope {
     *SCOPE.get_or_init(|| parse_scope(std::env::var("FRACTALL_RELIABILITY_STD").ok().as_deref()))
 }
 
+/// Le suivi du path standard est-il coupé (`FRACTALL_RELIABILITY_STD=0`) ?
+/// Partagé avec le suivi des boucles scalaires (`scalar_reliability`).
+pub(crate) fn std_scope_is_off() -> bool {
+    std_scope() == StdScope::Off
+}
+
 /// Correction des pixels signalés : par perturbation (Mandelbrot / Julia) ou
 /// par GMP pur sous plafond (autres familles).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,8 +111,13 @@ fn plan_for(
         return None;
     }
     let escalate = mode == ReliabilityMode::Escalate;
-    let perturbable = matches!(params.fractal_type, FractalType::Mandelbrot | FractalType::Julia)
-        && params.engine.use_bytecode_engine
+    // Tricorn (2026-11-19) : même correction que Mandelbrot / Julia — ses
+    // pixels signalés sont recalculés par la perturbation tracée de la
+    // famille, puis en GMP pur pour ce qu'elle signale encore (pas de dd).
+    let perturbable = matches!(
+        params.fractal_type,
+        FractalType::Mandelbrot | FractalType::Julia | FractalType::Tricorn
+    ) && params.engine.use_bytecode_engine
         && params.transform_matrix().is_none()
         && params.sampling.aa_subpixel_offset == [0.0, 0.0];
     if perturbable {
@@ -292,6 +303,40 @@ mod tests {
         let after = wrong(&prod.iterations);
         assert!(before * 100 > pts.len() * 3, "sans suivi : {before} pixels faux attendus en masse");
         assert!(after <= 3, "path standard corrigé : {after} pixels ≠ GMP (avant : {before})");
+    }
+
+    /// Bord PARABOLIQUE au plafond que choisit la sonde d'itérations
+    /// (vallée des éléphants 1e7, 60 000 it.) : la borne dd des pixels
+    /// corrigés ne s'emballe pas — l'orbite s'évade juste après le goulot —
+    /// mais elle est comparable à |z|. Avant le test d'évasion relatif des
+    /// vues peu profondes (`shallow_dd_escape_rel`) : 1,2 % de pixels faux
+    /// contre GMP pur à 128×80, invisibles au plafond 2500.
+    #[test]
+    fn parabolic_edge_at_auto_cap_matches_gmp() {
+        let (w, h) = (64u32, 40u32);
+        let mut p = default_params_for_type(FractalType::Mandelbrot, w, h);
+        p.center_x_hp = Some("0.27631692275258796".into());
+        p.center_y_hp = Some("0.0085".into());
+        p.center_x = 0.276_316_922_752_587_96;
+        p.center_y = 0.0085;
+        p.span_x = 4e-7;
+        p.span_y = 4e-7 * h as f64 / w as f64;
+        p.span_x_hp = None;
+        p.span_y_hp = None;
+        p.iteration_max = 60_000;
+        assert_eq!(
+            crate::fractal::wisdom::select_algorithm(&p, crate::fractal::wisdom::Device::Cpu),
+            crate::fractal::wisdom::Algorithm::StandardF64,
+        );
+        let prod = crate::render::render_escape_time(&p);
+        let mut g = p.clone();
+        g.engine.algorithm_mode = crate::fractal::AlgorithmMode::ReferenceGmp;
+        let gmp = crate::render::render_escape_time(&g);
+        let wrong = prod.iterations.iter().zip(&gmp.iterations).filter(|(x, y)| x != y).count();
+        // Anti-vacuité : la vue a bien un bord (ni tout évadé tôt, ni intérieur).
+        let late = gmp.iterations.iter().filter(|&&n| n > 5_000).count();
+        assert!(late * 20 > (w * h) as usize, "scène sans bord tardif ({late})");
+        assert!(wrong * 500 <= (w * h) as usize, "{wrong} pixels ≠ GMP pur sur {}", w * h);
     }
 
     #[test]

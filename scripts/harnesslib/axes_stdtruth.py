@@ -44,17 +44,28 @@ def scene_name(loc: str, zoom: str, iters: int) -> str:
     return f"std:{loc}_{zoom}_{iters}"
 
 
+# Scènes au plafond que CHOISIT la sonde d'itérations automatiques (le
+# régime réel d'un utilisateur « Iter: Auto », pas le défaut 2500). Trouvée par
+# l'axe `wisdom` le 2026-11-19 : éléphants 1e7 à 60 000 itérations, 43 % de
+# pixels signalés, 1,04 % de pixels FAUX vs GMP pur (juge convergé : 256 b ==
+# 640 b à 3 px près) — invisible à 2500. Jugées dans tous les tiers.
+AUTO_CAP_SCENES = [("elephants", "1e7", 60000)]
+
+
 def scenes(full: bool) -> list[tuple[str, str, int]]:
-    """Scènes jugées. Tier quick : le plafond par défaut (2500) seulement."""
+    """Scènes jugées. Tier quick : le plafond par défaut (2500) seulement,
+    plus les scènes à plafond automatique."""
     iters = ITERATIONS if full else [2500]
-    return [(loc, z, it) for loc in LOCATIONS for z in ZOOMS for it in iters]
+    return ([(loc, z, it) for loc in LOCATIONS for z in ZOOMS for it in iters]
+            + AUTO_CAP_SCENES)
 
 
-def _cmd(loc: str, zoom: str, iters: int, out_map, extra: list[str]) -> list[str]:
+def _cmd(loc: str, zoom: str, iters: int, out_map, extra: list[str],
+         size: tuple[int, int] = (WIDTH, HEIGHT)) -> list[str]:
     cx, cy = LOCATIONS[loc]
     return [str(CLI), "--type", "3", f"--center-x-hp={cx}", f"--center-y-hp={cy}",
             "--zoom", zoom, "--iterations", str(iters),
-            "--width", str(WIDTH), "--height", str(HEIGHT), "--no-gpu",
+            "--width", str(size[0]), "--height", str(size[1]), "--no-gpu",
             "--output", str(out_map.with_suffix(".png")),
             "--output-map", str(out_map)] + extra
 
@@ -66,8 +77,8 @@ def _last_path(text: str) -> str | None:
     return m.group(1) if m else None
 
 
-def axis_stdtruth(full: bool, timeout: float = 300.0,
-                  mem_limit_mb: int = 0) -> dict[str, dict]:
+def axis_stdtruth(full: bool, timeout: float = 300.0, mem_limit_mb: int = 0,
+                  size: tuple[int, int] = (WIDTH, HEIGHT)) -> dict[str, dict]:
     """Résultats par scène, au format des cas de l'axe `truth`."""
     outdir = BENCH / "truth-std"
     outdir.mkdir(parents=True, exist_ok=True)
@@ -78,19 +89,19 @@ def axis_stdtruth(full: bool, timeout: float = 300.0,
     for i, (loc, zoom, iters) in enumerate(todo, 1):
         name = scene_name(loc, zoom, iters)
         print(f"  [{i:>3}/{len(todo)}] truth {name:28s}", end=" ", flush=True)
-        jrec = journal_begin("truth", name, {"size": f"{WIDTH}x{HEIGHT}"})
+        jrec = journal_begin("truth", name, {"size": f"{size[0]}x{size[1]}"})
         stem = name.replace(":", "_")
         prod_map = outdir / f"{stem}.prod.fmap"
         judge_map = outdir / f"{stem}.gmp.fmap"
         try:
             t0 = time.monotonic()
             proc = subprocess.run(
-                _cmd(loc, zoom, iters, prod_map, []), stdout=subprocess.PIPE,
+                _cmd(loc, zoom, iters, prod_map, [], size), stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, env=env, timeout=timeout, text=True,
                 errors="replace", preexec_fn=_rlimit_preexec(mem_limit_mb))
             prod_secs = time.monotonic() - t0
             jproc = subprocess.run(
-                _cmd(loc, zoom, iters, judge_map, ["--algorithm", "gmp"]),
+                _cmd(loc, zoom, iters, judge_map, ["--algorithm", "gmp"], size),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
                 timeout=timeout * 4, text=True, errors="replace",
                 preexec_fn=_rlimit_preexec(mem_limit_mb))

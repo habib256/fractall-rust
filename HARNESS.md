@@ -215,14 +215,93 @@ adjuger vs GMP (`fractall-quality compare`) avant toute décision. Rapport
 `bench/harness/ab/ab.md` + `ab.json`. C'est l'étape 2 de la méthode G14 (TODO),
 avant la confirmation `score --tier standard --cases …`.
 
-### Axe wisdom-optimality (`wisdom-optimality`, G9)
-Commande séparée (pas dans `score`) : pour un échantillon 2-régimes, le plan
-CHOISI par le wisdom (`auto`) est chronométré contre les plans forcés (`bla`,
-`lla`) ; FAIL = plus lent > 25 % **à sortie identique** ; ADJUDICATE = plus
-lent mais l'alternative rend AUTRE CHOSE (tradeoff correction possible →
-vérifier vs GMP, puis persister dans `harness/wisdom-adjudications.json` :
-marqué `déjà-adjugé✓` tant que le régime ne change pas). Rapport
-`bench/harness/wisdom-opt/wisdom-opt.md`.
+### 7. Wisdom — les décisions automatiques (`wisdom`, 2026-11-19)
+Tous les autres axes jugent un RENDU ; celui-ci juge le CHOIX qui l'a
+produit. Un seuil de routage mal calibré — ou devenu faux parce qu'un chemin
+a été accéléré depuis — ne casse rien : il rend juste, plus lentement qu'il
+ne pourrait. Deux volets (`scripts/harnesslib/axes_wisdom.py`), 256×160,
+CPU :
+
+- **Regret de routage** (`decision:<dimension>:<cas>`). Le plan `auto` est
+  chronométré contre chaque plan FORCÉ de la dimension, en passes
+  ENTRELACÉES (3, médiane). Dimensions : `harmonic` (LLA vs BLA, cas
+  `toml/`), `algorithm` (f64 standard vs perturbation, de part et d'autre de
+  la bascule Auto — y compris au plafond que choisit la sonde d'itérations).
+  Le regret ne compte qu'à **sortie équivalente** (itérations brutes des
+  `.fmap` égales à 0,05 % près) : WARN > ×1,10, FAIL > ×1,25, jamais sous
+  60 ms d'écart. Une alternative plus rapide à sortie ≠ est un compromis de
+  correction → `ADJUDICATE` ; sur une vue peu profonde l'axe **tranche
+  lui-même contre le GMP pur** : production fausse ⇒ gap de CORRECTION
+  (sév. 1) ; alternative juste ⇒ vrai regret (sév. 3) ; alternative fausse
+  ⇒ PASS (le wisdom a raison de payer). Les cas `toml/` profonds gardent
+  l'adjudication persistée (`harness/wisdom-adjudications.json`).
+- **Itérations automatiques** (`iter:<scène>`). La scène est rendue SANS
+  `--iterations` : c'est la sonde `wisdom_iter` qu'on juge, contre le même
+  rendu à 4N. Sous-itération = pixels plafonnés à N qui s'évadent avant 4N
+  (PASS ≤ 0,5 % — le seuil de croissance du moteur —, FAIL > 2 % : sév. 1).
+  Sur-provision = plus petit N/4^k qui satisfait encore le critère du moteur,
+  et ce qu'il aurait coûté (`WASTE` à partir de ×16 et ×1,25 en temps : 4×
+  de marge est voulu). Rapporte aussi la durée de la sonde et la part de la
+  correction de fiabilité au plafond choisi → alimentent les leviers.
+
+Ajouter une dimension = une entrée de `DIMENSIONS` (variantes par variable
+d'environnement ou option CLI). Cycle ciblé :
+`harness.py wisdom-optimality [--only harmonic|algorithm|decision|iter]
+[--quick]` (rapport `bench/harness/wisdom/`).
+
+⚠️ Premier passage (2026-11-19) : 0 regret de routage, mais l'adjudication a
+trouvé **1,04 % de pixels faux en production** sur éléphants 1e7 au plafond
+auto (60 000) — la scène est depuis jugée par `truth`
+(`axes_stdtruth.AUTO_CAP_SCENES`). Leçon : un axe de vérité à plafond fixe
+(2500) ne juge pas le régime « Iter: Auto ».
+
+### 8. Types — TOUS les types de fractales (`types`, 2026-11-19)
+Le corpus `toml/` et la suite quality sont des zooms Mandelbrot et quelques
+cousins : 25 types sur 33 (Newton, Nova, Magnet, Phoenix, Barnsley, Sin,
+Pickover, Mandelbulb, Lyapunov, densités, vectoriels, variantes Julia)
+n'avaient ni chrono ni juge. L'objectif étant l'explorateur le plus rapide et
+le plus juste sur TOUS les types, l'axe `types`
+(`scripts/harnesslib/axes_types.py`) les regarde tous :
+
+- **Scènes figées** (`harness/type-scenes.json`, régénérées par
+  `harness.py types-scout`) : par type, la vue d'accueil (`home`) et une vue
+  de BORD (`edge`, ~×4096) trouvée en zoomant quatre fois ×8 sur le voisinage
+  5×5 le plus contrasté et le mieux mélangé intérieur/extérieur. Plafond
+  EXPLICITE (5000) : la sonde automatique est jugée par `wisdom`. ⚠️ Régénérer
+  les scènes casse la comparaison à la baseline.
+- **Vitesse** : rendu de production à la taille de scène du tier → secondes
+  et **ns par pixel·itération·thread**, comparable entre types (Newton bord
+  90, Multibrot non entier 85, Mandelbrot Sin 58, contre 3-6 pour les
+  familles bytecode par lots) ; alimente les leviers.
+- **Correction** : production contre `--algorithm gmp` à 64×40. Un écart
+  déclenche un second juge à 512 b : juges discordants ⇒ `CHAOS` (frontière
+  hirsute des familles à pliage, non comparable, aucun gap) ; juges
+  concordants ⇒ la production est FAUSSE (sév. 1). Types sans juge GMP
+  (vectoriels, densités, Lyapunov) : déterminisme + non-platitude.
+
+Premier passage (2026-11-19, 128×80) : Tricorn bord 2,5 % et Barnsley Julia
+bord 5 % de pixels faux à juge convergé ; Buffalo / Burning Ship / Celtic /
+Perp. BS / Barnsley M en `CHAOS`.
+
+### Tier `micro` — le cycle d'un A/B (2026-11-19)
+`harness.py score --tier micro` : images 128² (scènes 128×80, juge 64×40),
+axes `speed,truth,wisdom,types,profile` seulement — pas de suite quality GMP,
+ni fuzz, ni bench. Le verdict d'un pixel faux ou d'un regret ne dépend pas de
+la résolution ; seul le chrono des cas < 60 ms devient du bruit. C'est le
+cycle INTERNE (avant/après un patch) ; `quick` reste le score de référence
+avant commit, `standard` la confirmation d'une affirmation de vitesse.
+`--axes` restreint encore (`--tier micro --axes types`).
+
+### Leviers — où gagner quand aucun gap ne le dit (`levers`, 2026-11-19)
+Un gap est un DÉFAUT ; « aucun gap » veut dire que rien n'a régressé, pas que
+le moteur est optimal. La section **Leviers** du scorecard (et
+`harness.py levers`) classe le temps MESURÉ par ce qui le consomme, tous axes
+confondus : secondes par (cas, phase) du profil, correction de fiabilité et
+sonde d'itérations des scènes en itérations auto, regret de routage, rendus
+de production du volet standard de `truth`. Chaque ligne porte la commande
+qui l'ouvre (`ab`, `hotspots`, item TODO). C'est un classement de pistes, pas
+un budget (les scènes n'ont pas la même taille) ; planchers : 50 ms et 10 %
+du cas. C'est la liste de travail de la boucle quand `gaps` est vide.
 
 ### Arbitre 3-voies (`adjudicate`, G8.2 2026-07-14)
 **F3 n'est PAS ground truth aux zooms modérés** (wisdom défaut = tier float
@@ -240,8 +319,10 @@ sur les cas profonds. Adjugés au 2026-07-14 : test5 (`both_match_gmp`), rug
 
 ```bash
 python3 scripts/harness.py doctor            # prérequis, axes mesurables ICI, baseline
-python3 scripts/harness.py score [--tier quick|standard|full] \
-        [--axes speed,parity,quality,fuzz,precision,truth,goldens,profile,bench] [--cases a,b]
+python3 scripts/harness.py score [--tier micro|quick|standard|full] \
+        [--axes speed,parity,quality,fuzz,precision,truth,wisdom,types,goldens,profile,bench] [--cases a,b]
+                                             # micro = cycle d'A/B léger (128², axes essentiels)
+python3 scripts/harness.py types-scout       # régénère les scènes figées de l'axe types
 python3 scripts/harness.py ab --cases e50 --env FRACTALL_RELIABILITY=off,escalate --runs 3
                                              # A/B isolé (méthode G14) : médiane, bruit, phases, sortie ≡
 python3 scripts/harness.py hotspots --case e1000 --size 1200
@@ -251,7 +332,9 @@ python3 scripts/harness.py trend [--case e50] [--bench] [--all-machines]
 python3 scripts/harness.py baseline          # fige le dernier score comme référence
 python3 scripts/harness.py gaps              # ré-affiche les gaps du dernier score
 python3 scripts/harness.py adjudicate <stem> # arbitre 3-voies d'un cas parité
-python3 scripts/harness.py wisdom-optimality # le wisdom n'est jamais battu >10 %
+python3 scripts/harness.py levers            # où gagner : temps mesuré, trié (même sans gap)
+python3 scripts/harness.py wisdom-optimality [--only harmonic|algorithm|iter]
+                                             # axe wisdom seul : regret des décisions auto
 python3 scripts/harness.py preflight         # vet le corpus SOUS cap mémoire
 python3 scripts/harness.py quarantine list   # cas exclus des sweeps (crash/OOM)
 python3 scripts/harness.py slow-safe list    # cas corrects hors budget temps
@@ -347,8 +430,9 @@ les gourmands/plantants — sans jamais risquer l'OS.
 
 À priorité égale : le gap au **meilleur levier** (impact × certitude de
 diagnostic / effort). En cas de doute, préférer le cas le plus petit qui
-reproduit le problème. Pour la vitesse, le levier se lit dans le profil :
-une phase à 60 % du wall sur 8 cas/10 vaut plus qu'un cas isolé.
+reproduit le problème. Pour la vitesse, le levier se lit dans la section
+**Leviers** du scorecard (`harness.py levers`) : une phase à 60 % du wall
+sur 8 cas/10 vaut plus qu'un cas isolé.
 
 ## Invariants (ne JAMAIS transiger)
 
