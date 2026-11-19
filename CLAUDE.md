@@ -99,6 +99,12 @@ qui voit une précision d'orbite insuffisante : le juge GMP de quality partage
 la formule du moteur), **profil** (où va le temps : path exécuté + ventilation
 orbite/pixels/post/sauvegarde + ns/iter + % fiabilité), **bench** (iters/s par
 technique via `--wisdom-bench` isolé).
+**wisdom** (2026-11-19 — juge les DÉCISIONS automatiques : regret du plan
+`auto` contre chaque plan forcé à sortie équivalente, adjudication GMP
+automatique quand l'alternative rapide rend autre chose, et justesse du
+plafond choisi par la sonde d'itérations contre le rendu à 4N). Sans gap, la
+liste de travail est la section **Leviers** du scorecard (`harness.py
+levers` : temps mesuré trié par ce qui le consomme).
 
 ```bash
 python3 scripts/harness.py doctor                # prérequis + axes mesurables ICI
@@ -107,6 +113,8 @@ python3 scripts/harness.py score --tier standard # 3 runs médiane, avant commit
 python3 scripts/harness.py trend --case e50      # évolution d'un cas (temps, ns/iter, path)
 python3 scripts/harness.py ab --cases e50 --env FRACTALL_RELIABILITY=off,escalate  # A/B isolé (G14)
 python3 scripts/harness.py hotspots --case e1000 --size 1200  # profil ÉCHANTILLONNÉ : quelles fonctions (binaire symbolisé)
+python3 scripts/harness.py levers                # où gagner : temps mesuré, trié (même sans gap)
+python3 scripts/harness.py wisdom-optimality --only algorithm  # axe wisdom seul (harmonic|algorithm|iter)
 python3 scripts/harness.py baseline              # fige la référence de CETTE machine (harness/baselines/)
 python3 scripts/test_harness_guard.py            # verrous du harness (CI)
 ```

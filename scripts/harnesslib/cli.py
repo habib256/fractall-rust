@@ -6,7 +6,8 @@ import argparse
 
 from .commands import (
     cmd_render,
-    cmd_adjudicate, cmd_baseline, cmd_gaps, cmd_journal, cmd_score,
+    cmd_adjudicate, cmd_baseline, cmd_gaps, cmd_journal, cmd_levers,
+    cmd_score,
 )
 from .ab import cmd_ab
 from .hotspots import cmd_hotspots
@@ -20,15 +21,17 @@ USAGE = """Scorecard orchestrator — mesure fractall vs Fraktaler-3 (protocole 
 
 Produit `harness/history/<UTC>-<sha>.json` + `SCORECARD.md` (gaps triés).
 Axes : speed (ratio wall-clock vs F3), parity (compare_f3.py), quality
-(fractall-quality suite vs GMP), fuzz (sondes pert vs GMP), goldens (cargo test
-golden_images).
+(fractall-quality suite vs GMP), fuzz (sondes pert vs GMP), precision, truth,
+wisdom (regret des décisions automatiques + itérations auto), goldens, profile,
+bench. `levers` : où gagner quand aucun gap ne le dit.
 
 F3 auto-détecté (F3_BIN sinon fraktaler-3-3.1/) ; sans lui speed/parity sont
 `f3_unavailable` et le reste tourne. Sans numpy/OpenEXR : `f3_deps_missing`.
 """
 
 
-ALL_AXES = "speed,parity,quality,fuzz,precision,truth,goldens,profile,bench"
+ALL_AXES = ("speed,parity,quality,fuzz,precision,truth,wisdom,goldens,"
+            "profile,bench")
 DEFAULT_AXES = ALL_AXES
 
 
@@ -103,9 +106,11 @@ def main() -> None:
     wo = sub.add_parser("wisdom-optimality",
                         help="Vérifie que le plan choisi par le wisdom n'est "
                              "jamais battu >10%% par un plan forcé (critère G9).")
-    wo.add_argument("--cases", default=None,
-                    help="CSV de stems (défaut : échantillon 2-régimes)")
-    wo.add_argument("--size", type=int, default=None)
+    wo.add_argument("--only", default=None,
+                    help="decision | iter | nom de dimension (harmonic, "
+                         "algorithm) — défaut : tout")
+    wo.add_argument("--quick", action="store_true",
+                    help="échantillon du tier quick (défaut : complet)")
     wo.add_argument("--runs", type=int, default=None)
     wo.add_argument("--no-rebuild", action="store_true")
     wo.set_defaults(func=cmd_wisdom_opt)
@@ -174,6 +179,12 @@ def main() -> None:
     hs.add_argument("--top", type=int, default=15)
     hs.add_argument("--no-rebuild", action="store_true")
     hs.set_defaults(func=cmd_hotspots)
+
+    lv = sub.add_parser("levers",
+                        help="Où gagner : temps mesuré du dernier score, "
+                             "classé par ce qui le consomme (même sans gap).")
+    lv.add_argument("--top", type=int, default=15)
+    lv.set_defaults(func=cmd_levers)
 
     dr = sub.add_parser("doctor",
                         help="Prérequis machine, axes mesurables ici, état de "

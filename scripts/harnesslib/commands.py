@@ -14,13 +14,18 @@ from .axes_perf import axis_bench, axis_profile
 from .axes_ddtruth import axis_ddtruth
 from .axes_precision import axis_precision
 from .axes_truth import axis_fuzz, axis_goldens, axis_quality
+from .axes_wisdom import axis_wisdom
+from .levers import compute_levers, print_levers
 from .config import (
     ADJUDICATIONS, BASELINE, BASELINES_DIR, BENCH, CRASH_JOURNAL, HISTORY_DIR,
     REPO, SCHEMA, SCORECARD, baseline_path_for, load_baseline, machine_slug,
     SEVERITY_LABEL, TOML_DIR, _now_iso, cargo_build, find_f3, git_dirty,
     git_sha, load_compare_f3, machine_info, tier_config, CLI, QUALITY,
 )
-from .gaps import compute_gaps, load_adjudications, self_speed_ratio, sort_gaps
+from .gaps import (
+    compute_gaps, load_adjudications, load_wisdom_adjudications,
+    self_speed_ratio, sort_gaps,
+)
 from .guard import (
     check_stale_inflight, default_mem_limit_mb, journal_begin, journal_end,
     load_quarantine, load_slow_safe, reconcile_quarantine_from_journal,
@@ -107,6 +112,7 @@ def cmd_score(args) -> None:
         "fuzz": {"status": "skipped"},
         "precision": {"status": "skipped"},
         "truth": {"status": "skipped"},
+        "wisdom": {"status": "skipped"},
         "goldens": {"status": "skipped"},
         "profile": {"status": "skipped"},
         "bench": {"status": "skipped"},
@@ -152,6 +158,12 @@ def cmd_score(args) -> None:
             cases, cfg.get("precision_size", 96), timeout,
             mem_limit_mb=mem_limit_mb, quarantined=quarantined,
             slow_safe=slow_safe, std_full=args.tier != "quick")
+    if "wisdom" in axes:
+        print("\n== WISDOM (regret des décisions auto ; itérations auto) ==")
+        card["wisdom"] = axis_wisdom(
+            args.tier != "quick", runs=3, timeout=timeout,
+            mem_limit_mb=mem_limit_mb,
+            adjudications=load_wisdom_adjudications())
     if "goldens" in axes:
         print("\n== GOLDENS ==")
         card["goldens"] = axis_goldens()
@@ -176,12 +188,14 @@ def cmd_score(args) -> None:
     card["meta"]["baseline_file"] = base.get("_file") if base else None
     card["speed_self"] = self_speed_ratio(card, base) if base else {}
     card["gaps"] = compute_gaps(card, base)
+    card["levers"] = compute_levers(card)
 
     hist = write_history(card)
     SCORECARD.write_text(build_scorecard_md(card, base))
     print(f"\n✓ history : {hist.relative_to(REPO)}")
     print(f"✓ scorecard : {SCORECARD.relative_to(REPO)}")
     _print_gaps(card["gaps"])
+    print_levers(card["levers"])
 
 def cmd_render(args) -> None:
     """Régénère SCORECARD.md (gaps recalculés vs baseline courante) depuis un
@@ -195,6 +209,7 @@ def cmd_render(args) -> None:
     card["meta"]["baseline_file"] = base.get("_file") if base else None
     card["speed_self"] = self_speed_ratio(card, base) if base else {}
     card["gaps"] = compute_gaps(card, base)
+    card["levers"] = compute_levers(card)
     if args.update_history:
         path.write_text(json.dumps(card, indent=2, ensure_ascii=False))
     SCORECARD.write_text(build_scorecard_md(card, base))
@@ -240,6 +255,20 @@ def cmd_gaps(_args) -> None:
     card = json.loads(latest.read_text())
     print(f"Gaps du dernier score ({latest.name}) :\n")
     _print_gaps(card.get("gaps", []))
+
+def cmd_levers(args) -> None:
+    """Leviers du dernier score : le temps mesuré, classé par ce qui le
+    consomme. La liste de travail quand `gaps` est vide."""
+    latest = latest_history()
+    if latest is None:
+        sys.exit("Aucun history — lance d'abord `harness.py score`.")
+    card = json.loads(latest.read_text())
+    print(f"Leviers du dernier score ({latest.name}) :")
+    levers = compute_levers(card)
+    if not levers:
+        print("  aucun (axes profile / wisdom absents du score ?)")
+    print_levers(levers, top=args.top)
+
 
 def _print_gaps(gaps: list[dict]) -> None:
     gaps = sort_gaps(gaps)

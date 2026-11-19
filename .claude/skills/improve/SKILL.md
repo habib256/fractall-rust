@@ -76,8 +76,14 @@ python3 scripts/harness.py score --tier quick
 - Si `$ARGUMENTS` désigne un axe/cas, filtrer les gaps dessus ; sinon prendre
   le gap #1 (priorités : correction > robustesse > vitesse > qualité —
   cf. HARNESS.md §Priorités). **Aucun gap ?** La liste de travail est alors
-  `TODO.md` G14 (plan des optimisations) — choisir l'item dont le profil
-  montre le plus gros levier (phase dominante × nombre de cas).
+  la section **Leviers** du scorecard (`harness.py levers` : temps mesuré
+  trié par ce qui le consomme, avec la commande qui ouvre chaque piste),
+  recoupée avec `TODO.md` G14 (plan des optimisations).
+- L'axe `wisdom` juge les DÉCISIONS automatiques (routage harmonic,
+  f64-standard vs perturbation, itérations auto) : un FAIL de regret = seuil
+  à recalibrer dans `fractal/wisdom.rs` ; `adjugé GMP : auto x % faux` = le
+  rendu de production est faux (correction, priorité 1). Cycle ciblé :
+  `harness.py wisdom-optimality --only algorithm`.
 - Pas de baseline pour CETTE machine (`doctor` le dit) ? La créer d'abord :
   `python3 scripts/harness.py baseline` (→ `harness/baselines/<machine>.json`,
   la baseline de la machine de dev n'est pas touchée) puis committer — sinon

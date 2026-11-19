@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 
+from .axes_wisdom import wisdom_gaps
 from .config import ADJUDICATIONS, WISDOM_ADJUDICATIONS
 
 def load_adjudications() -> dict:
@@ -100,6 +101,8 @@ def compute_gaps(card: dict, base: dict | None) -> list[dict]:
         gaps.append(_gap("truth", name, "diff_px", c.get("diff_px"), None, sev,
                          f"pixels du rendu par défaut ≠ tier dd "
                          f"({100 * c.get('frac', 0):.2f} %, path {c.get('path')})"))
+    # --- wisdom (décisions automatiques : regret, itérations auto) ---
+    gaps += wisdom_gaps(card, load_wisdom_adjudications())
     # --- parity ---
     adjudications = load_adjudications()
     p = card.get("parity", {})

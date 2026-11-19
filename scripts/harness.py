@@ -10,7 +10,7 @@ Enveloppe mince : la logique vit dans le package `scripts/harnesslib/`
   axes_truth.py      axes contre la vérité GMP : quality, fuzz, goldens
   gaps.py            gaps triés + régressions vs baseline
   scorecard.py       SCORECARD.md + harness/history
-  commands*.py       sous-commandes ; wisdom_opt.py : axe wisdom-optimality
+  commands*.py       sous-commandes ; axes_wisdom.py : axe wisdom ; levers.py
   cli.py             argparse
 
   python3 scripts/harness.py --help

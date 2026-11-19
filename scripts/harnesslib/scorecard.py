@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 import json
 
+from .axes_wisdom import wisdom_md
 from .config import HISTORY_DIR, MARKER, SEVERITY_LABEL
+from .levers import compute_levers, levers_md
 from .gaps import _comparable, _same_machine, sort_gaps
 
 def _delta(cur, base, better="lower"):
@@ -225,6 +227,13 @@ def build_scorecard_md(card: dict, base: dict | None) -> str:
                      "du 2026-11-06). Un FAIL se juge contre le GMP pur : le dd a "
                      "son propre plancher._\n")
 
+    # Wisdom : décisions automatiques
+    w = card.get("wisdom")
+    if w and w.get("status") != "skipped":
+        L += ["## Wisdom (décisions automatiques : regret et itérations auto)",
+              ""]
+        L += wisdom_md(w)
+
     # Goldens
     g = card.get("goldens")
     if g and g.get("status") != "skipped":
@@ -318,6 +327,9 @@ def build_scorecard_md(card: dict, base: dict | None) -> str:
             L.append(f"- **correctness_wins** (F3 dégénéré rendu par "
                      f"fractall) : {', '.join(bf['correctness_wins'])}")
         L.append("")
+
+    # Leviers : où gagner, même sans gap
+    L += levers_md(card.get("levers") or compute_levers(card))
 
     # Gaps top-10
     gaps = sort_gaps(card.get("gaps", []))

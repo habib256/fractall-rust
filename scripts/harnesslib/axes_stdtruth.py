@@ -44,10 +44,20 @@ def scene_name(loc: str, zoom: str, iters: int) -> str:
     return f"std:{loc}_{zoom}_{iters}"
 
 
+# Scènes au plafond que CHOISIT la sonde d'itérations automatiques (le
+# régime réel d'un utilisateur « Iter: Auto », pas le défaut 2500). Trouvée par
+# l'axe `wisdom` le 2026-11-19 : éléphants 1e7 à 60 000 itérations, 43 % de
+# pixels signalés, 1,04 % de pixels FAUX vs GMP pur (juge convergé : 256 b ==
+# 640 b à 3 px près) — invisible à 2500. Jugées dans tous les tiers.
+AUTO_CAP_SCENES = [("elephants", "1e7", 60000)]
+
+
 def scenes(full: bool) -> list[tuple[str, str, int]]:
-    """Scènes jugées. Tier quick : le plafond par défaut (2500) seulement."""
+    """Scènes jugées. Tier quick : le plafond par défaut (2500) seulement,
+    plus les scènes à plafond automatique."""
     iters = ITERATIONS if full else [2500]
-    return [(loc, z, it) for loc in LOCATIONS for z in ZOOMS for it in iters]
+    return ([(loc, z, it) for loc in LOCATIONS for z in ZOOMS for it in iters]
+            + AUTO_CAP_SCENES)
 
 
 def _cmd(loc: str, zoom: str, iters: int, out_map, extra: list[str]) -> list[str]:
