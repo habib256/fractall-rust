@@ -371,9 +371,14 @@ fn magnet_julia_f64(
         let qq = q.norm_sqr();
         // Eviter division par zero
         if qq < 1e-24 {
-            // Le vrai |q|² est-il aussi sous le seuil ? |Δq| ≤ 2E + ρ_q.
+            // Le vrai |q|² est-il aussi sous le seuil ? |Δq| ≤ d = 2E + ρ_q,
+            // donc |q*|² ≤ (|q̂| + d)² ≤ (1+δ)|q̂|² + (1+1/δ)d² — c'est CETTE
+            // somme qu'il faut comparer au seuil, pas d² seul : un |q̂| juste
+            // sous 1e-12 avec une borne minuscule passait pour déterminé alors
+            // que le point exact était au-dessus (verrou
+            // `magnet_pole_exit_is_judged_on_q_plus_error`).
             let rho_q = U64 * (q.re.abs() + q.im.abs()) + s2;
-            if 8.0 * g + 2.0 * rho_q * rho_q >= 1e-26 {
+            if SPLIT_X * qq + SPLIT_Y * (8.0 * g + 2.0 * rho_q * rho_q) >= 1e-24 {
                 bad = true;
             }
             break;
@@ -1136,6 +1141,34 @@ mod tests {
             }
             eprintln!("{ft:?}: flagged capped={fc} escaped={fe} (log10 it hist {hist:?}) ; ok capped={nc} escaped={ne} ; flagged [diff,same]x[dd_bad,dd_ok] {agree:?} ; dd_bad vs gmp [diff,same] {beyond:?}");
         }
+    }
+
+    /// Sortie « pôle » de Magnet Julia (`|q|² < 1e-24`) : point f64 EXACT
+    /// (vue 1×1) dont le 2e pas tombe en f64 à |q|² = 0,99956e-24 mais à
+    /// 1,00003e-24 en exact. La boucle f64 s'arrêtait à 1 itération et se
+    /// déclarait fiable (elle comparait la seule borne d'erreur au seuil) ;
+    /// le GMP pur continue.
+    #[test]
+    fn magnet_pole_exit_is_judged_on_q_plus_error() {
+        let z0 = Complex64::new(f64::from_bits(0x3fe426b473df3572), f64::from_bits(0x3fedd7afc17c751f));
+        let mut p = default_params_for_type(FractalType::MagnetJulia, 1, 1);
+        p.center_x = z0.re;
+        p.center_y = z0.im;
+        p.span_x = 1e-12;
+        p.span_y = 1e-12;
+        p.iteration_max = 200;
+        let g = crate::fractal::gmp::MpcParams::from_params(&p);
+        let (truth, _) = crate::fractal::gmp::iterate_point_mpc(
+            &g,
+            &crate::fractal::gmp::complex_from_xy(g.prec, Float::with_val(g.prec, z0.re), Float::with_val(g.prec, z0.im)),
+        );
+        let raw = iterate_point(&p, z0).iteration;
+        assert_eq!(raw, 1, "scène : la boucle f64 doit sortir au pôle");
+        assert_ne!(truth, raw, "scène : le point exact ne doit pas sortir au pôle");
+        let (_, _, bad) = iterate_tracked(&p, z0);
+        assert!(bad, "sortie au pôle non déterminée déclarée fiable");
+        let prod = crate::render::render_escape_time(&p);
+        assert_eq!(prod.iterations[0], truth, "rendu de production ≠ GMP pur");
     }
 
     #[test]
