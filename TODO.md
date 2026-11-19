@@ -62,15 +62,31 @@ tier micro, Leviers) et ce qu'ils ont trouvé au premier passage :
    opt-in) et y relâcher le budget.
 3. **Barnsley Julia : 5 % (bord) et 1 % (accueil) de pixels faux** — même
    formule en f64 et en GMP ; la carte dilate de |c| ≈ 1,25 par pas, donc
-   f64 perd toute détermination vers 165 itérations. Demande un traqueur
-   (E' = |c|·E, signalé au franchissement de Re z = 0 ou à l'évasion) et une
-   correction en précision étendue.
+   f64 perd toute détermination vers 165 itérations.
 4. **Alpha Mandelbrot bord 4,5 %, Mandelbulb bord 3,9 %** (juge convergé) ;
    PerpBS Julia 0,35 %, Magnet Julia 0,31 % (WARN) : aucun suivi sur ces
    boucles scalaires.
+
+   **Chantier conçu pour 3 et 4 (non commencé) — boucles scalaires
+   génériques sur le type numérique.** Analyse du 2026-11-19 : (a) détecter
+   par orbite JUMELLE (second passage f64 depuis un point décalé de 2⁻⁴⁴ ;
+   comptes différents ⇒ pixel mal conditionné) est générique mais coûte ×2
+   sur toute la frame ; (b) corriger en GMP coûte ~150× le f64 par pixel :
+   à 10 % de pixels signalés la frame prend ×15 — juste mais inutilisable ;
+   le budget actuel (0,1 % des pixels ou 5 % des itérations) refuserait.
+   La voie rapide ET juste est celle de `bytecode/direct_dd.rs` étendue aux
+   types sans bytecode : rendre `barnsley_*`, `alpha_mandelbrot`,
+   `mandelbulb`, `magnet_*`, `phoenix` génériques sur un trait `Real`
+   (f64 / `DoubleDouble`), porter une borne d'erreur par type (Barnsley :
+   `E' = |c|·E + u`, indéterminé si `|Re z| ≤ E` au test de branche), et
+   n'envoyer au GMP que ce que le double-double ne garantit pas. Juge
+   prêt : les scènes 9, 11, 15, 20, 30 de l'axe `types`.
 5. `CHAOS` (pas des gaps) : Buffalo, Burning Ship, Celtic, Perp. BS,
    Barnsley M — le juge 256 b diffère du juge 512 b sur 70-85 % des pixels
    de bord ; le traqueur étendu y signale ~98 % des pixels.
+
+**Suite quality après les changements du jour (2026-11-19, 64², 2 min)** :
+17 PASS · 0 WARN · 0 FAIL, max_diff 0 sur les 17 presets.
 
 **Newton ×23 à ×80 (2026-11-19)** : le degré par défaut (8) passait par deux
 `powc` par itération ; puissances entières par `powu` (ce que fait la boucle
