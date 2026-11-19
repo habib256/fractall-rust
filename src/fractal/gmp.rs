@@ -1255,15 +1255,23 @@ fn tricorn_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     (i, z)
 }
 
+// Mandelbulb et Alpha Mandelbrot EN PLACE (2026-11-19) : mêmes arrondis au
+// bit près que les versions `clone` + `mpc_mul` (`pow_u32_mpc(z, 8)` = trois
+// `mpc_mul(b, b)` correctement arrondis = trois `sqr_in_place`), sans
+// allocation par itération. Elles servent de dernier étage à la correction
+// des pixels signalés (`render::scalar_reliability`) et de juge.
 fn mandelbulb_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     let mut z = g.seed.clone();
+    let mut sq = sqr_scratch(&z);
+    let mut cyc = MpcCycle::new(&z);
     let mut i = 0u32;
     while i < g.iteration_max && mpc_below_bailout(&z, g) {
-        let z_pow = pow_u32_mpc(&z, 8, g.prec);
-        let mut z_next = z_pow;
-        z_next += z_pixel;
-        z = z_next;
+        sqr_in_place(&mut z, &mut sq);
+        sqr_in_place(&mut z, &mut sq);
+        sqr_in_place(&mut z, &mut sq);
+        z += z_pixel;
         i += 1;
+        cyc.observe(&mut i, g.iteration_max, &z);
     }
     (i, z)
 }
@@ -1319,20 +1327,25 @@ fn celtic_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
 }
 
 fn alpha_mandelbrot_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    use rug::Assign;
     let mut z = g.seed.clone();
+    let mut sq = sqr_scratch(&z);
+    let mut z_sq = Complex::new(z.prec());
+    let mut m = Complex::new(z.prec());
+    let mut cyc = MpcCycle::new(&z);
     let mut i = 0u32;
     while i < g.iteration_max && mpc_below_bailout(&z, g) {
-        let mut z_sq = z.clone();
-        z_sq *= &z;
-        let mut m = z_sq.clone();
+        // s = z² ; m = s + c ; z' = (s + m²) + c — mêmes arrondis, même ordre.
+        z_sq.assign(&z);
+        sqr_in_place(&mut z_sq, &mut sq);
+        m.assign(&z_sq);
         m += z_pixel;
-        let mut m_sq = m.clone();
-        m_sq *= &m;
-        let mut z_next = z_sq;
-        z_next += &m_sq;
-        z_next += z_pixel;
-        z = z_next;
+        sqr_in_place(&mut m, &mut sq);
+        z.assign(&z_sq);
+        z += &m;
+        z += z_pixel;
         i += 1;
+        cyc.observe(&mut i, g.iteration_max, &z);
     }
     (i, z)
 }
@@ -1720,6 +1733,73 @@ mod mpc_loop_tests {
             }
         }
         assert_eq!(checked, 8 * 400);
+    }
+
+    /// Mandelbulb et Alpha Mandelbrot EN PLACE == anciennes boucles `clone` +
+    /// `mpc_mul` / `pow_u32_mpc`, au bit près (compte ET z), sur une grille
+    /// d'accueil et de bord, plafond bas (pas de raccourci de cycle atteint
+    /// par l'ancienne boucle, qui n'en a pas : on compare aussi un plafond
+    /// où l'intérieur est raccourci, le compte et z restant identiques).
+    #[test]
+    fn in_place_alpha_and_mandelbulb_match_clone_loops() {
+        fn alpha_ref(g: &MpcParams, c: &Complex) -> (u32, Complex) {
+            let mut z = g.seed.clone();
+            let mut i = 0u32;
+            while i < g.iteration_max && mpc_below_bailout(&z, g) {
+                let mut z_sq = z.clone();
+                z_sq *= &z;
+                let mut m = z_sq.clone();
+                m += c;
+                let mut m_sq = m.clone();
+                m_sq *= &m;
+                let mut z_next = z_sq;
+                z_next += &m_sq;
+                z_next += c;
+                z = z_next;
+                i += 1;
+            }
+            (i, z)
+        }
+        fn bulb_ref(g: &MpcParams, c: &Complex) -> (u32, Complex) {
+            let mut z = g.seed.clone();
+            let mut i = 0u32;
+            while i < g.iteration_max && mpc_below_bailout(&z, g) {
+                let mut z_next = pow_u32_mpc(&z, 8, g.prec);
+                z_next += c;
+                z = z_next;
+                i += 1;
+            }
+            (i, z)
+        }
+        let mut n = 0;
+        for ft in [FractalType::AlphaMandelbrot, FractalType::Mandelbulb] {
+            for (cx, cy, span) in [(-0.4, 0.0, 3.0), (-1.2608, -0.35016, 0.01), (-0.7342, -0.2334, 0.01)] {
+                for iters in [200u32, 3000] {
+                    let mut params = default_params_for_type(ft, 8, 8);
+                    params.engine.precision_bits = 160;
+                    params.iteration_max = iters;
+                    let g = MpcParams::from_params(&params);
+                    for j in 0..9 {
+                        for k in 0..9 {
+                            let c = Complex::with_val(
+                                g.prec,
+                                (cx + span * (k as f64 / 8.0 - 0.5), cy + span * (j as f64 / 8.0 - 0.5)),
+                            );
+                            let (a, za) = iterate_point_mpc(&g, &c);
+                            let (b, zb) = if ft == FractalType::Mandelbulb {
+                                bulb_ref(&g, &c)
+                            } else {
+                                alpha_ref(&g, &c)
+                            };
+                            assert_eq!(a, b, "{ft:?} ({cx},{cy}) {j},{k} iters={iters}");
+                            assert!(same(&za, &zb), "{ft:?} ({cx},{cy}) {j},{k} : z ≠");
+                            n += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(n, 2 * 3 * 2 * 81);
     }
 
     /// Le test d'évasion en deux temps décide comme la norme exacte, y
