@@ -201,6 +201,7 @@ src/
 ├── render/
 │   ├── escape_time.rs    # dispatcher unique CLI↔GUI (sélection algo)
 │   ├── std_reliability.rs # suivi + correction des pixels non fiables du path f64 standard
+│   ├── scalar_reliability.rs # idem pour les boucles SCALAIRES hors bytecode (Barnsley : f64 tracé → dd → GMP)
 │   └── tiles.rs          # G10.5 file de tuiles priorité-centre + sink streaming
 ├── gpu/                  # wgpu Vulkan/Metal/DX12
 │   ├── mod.rs              # GpuRenderer + pipeline bytecode
@@ -952,6 +953,19 @@ d'évasion), avant le GMP pur (150 ns/itération). Conditions
 avant). Sortie identique au chemin tout-GMP ; Tricorn bord 128×80 :
 correction 0,17-0,27 s → 0,033 s. Burning Ship reste en opt-in : son bord
 est `CHAOS` (98 % de pixels signalés, juge 256 b ≠ 512 b).
+**Boucles scalaires suivies (`render/scalar_reliability.rs`, 2026-11-19)** —
+les types hors bytecode n'avaient aucun suivi. Barnsley (Julia et
+Mandelbrot) est le premier : la carte `z' = (z ∓ 1)·c` dilate de |c| par pas
+(f64 épuisé vers 130 itérations) et sa branche `Re z ≥ 0` bascule sur un
+bit — 5 % de pixels faux sur un bord Barnsley Julia, 1 % sur la vue
+d'accueil. Boucle f64 tracée BIT-IDENTIQUE à `iterations::barnsley_*`
+(verrou `tracked_barnsley_is_bit_identical_to_production_loop`), pixels
+signalés refaits en double-double, reste en GMP sous le budget `GmpCapped`.
+⚠️ Dans une boucle tracée : pas de racine carrée par itération (majorants
+L1, tests sur `norm_sqr`) et suivi INERTE une fois le pixel signalé — la
+première version coûtait ×2,8 sur les vues chaotiques, celle-ci +30 %.
+Interrupteur : `FRACTALL_RELIABILITY_STD=0`. Étendre à un type = sa boucle
+tracée f64 + dd et une entrée dans `scalar_reliability::plan`.
 ⚠️ **L'emballement ne voit pas un bord PARABOLIQUE** (2026-11-19) : près
 d'un point parabolique l'erreur ne s'amplifie pas exponentiellement, elle
 déplace le temps de transit du goulot, et l'orbite s'évade quelques pas plus

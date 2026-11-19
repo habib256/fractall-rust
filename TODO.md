@@ -60,15 +60,23 @@ tier micro, Leviers) et ce qu'ils ont trouvé au premier passage :
    Julia. **Suite naturelle** : le brancher sur la correction `GmpCapped` du
    path standard (Mandelbrot/Julia tournés, et les familles à pliage en
    opt-in) et y relâcher le budget.
-3. **Barnsley Julia : 5 % (bord) et 1 % (accueil) de pixels faux** — même
-   formule en f64 et en GMP ; la carte dilate de |c| ≈ 1,25 par pas, donc
-   f64 perd toute détermination vers 165 itérations.
+3. ~~**Barnsley Julia : 5 % (bord) et 1 % (accueil) de pixels faux**~~ —
+   **FERMÉ le 2026-11-19** : 0 pixel ≠ GMP pur sur les deux vues. Premier
+   membre de `render/scalar_reliability.rs` : boucle f64 TRACÉE
+   bit-identique (borne `E' = |c|·E + u·|z|`, signalé si `|Re z| ≤ E` au
+   test de branche, si l'évasion n'est pas déterminée ou si `E ≥ 1e-3`),
+   pixels signalés refaits en double-double (point exact depuis le centre
+   HP), reste en GMP pur sous budget. Coût à 128×80 : accueil 0,007 →
+   0,008 s (3,4 % de pixels signalés), bord 0,009 → 0,015 s (12,5 %).
+   Barnsley Mandelbrot suit le même chemin (+30 %) mais reste `CHAOS`
+   (juge 256 b ≠ 512 b ; 6,5 % de pixels au-delà du double-double laissés
+   en f64 avec avertissement).
 4. **Alpha Mandelbrot bord 4,5 %, Mandelbulb bord 3,9 %** (juge convergé) ;
    PerpBS Julia 0,35 %, Magnet Julia 0,31 % (WARN) : aucun suivi sur ces
    boucles scalaires.
 
-   **Chantier conçu pour 3 et 4 (non commencé) — boucles scalaires
-   génériques sur le type numérique.** Analyse du 2026-11-19 : (a) détecter
+   **Chantier pour 4 (motif posé par Barnsley, reste à étendre) — boucles
+   scalaires tracées + double-double.** Analyse du 2026-11-19 : (a) détecter
    par orbite JUMELLE (second passage f64 depuis un point décalé de 2⁻⁴⁴ ;
    comptes différents ⇒ pixel mal conditionné) est générique mais coûte ×2
    sur toute la frame ; (b) corriger en GMP coûte ~150× le f64 par pixel :
@@ -79,8 +87,11 @@ tier micro, Leviers) et ce qu'ils ont trouvé au premier passage :
    `mandelbulb`, `magnet_*`, `phoenix` génériques sur un trait `Real`
    (f64 / `DoubleDouble`), porter une borne d'erreur par type (Barnsley :
    `E' = |c|·E + u`, indéterminé si `|Re z| ≤ E` au test de branche), et
-   n'envoyer au GMP que ce que le double-double ne garantit pas. Juge
-   prêt : les scènes 9, 11, 15, 20, 30 de l'axe `types`.
+   n'envoyer au GMP que ce que le double-double ne garantit pas. Le motif
+   existe (`scalar_reliability` : `plan` / `iterate_tracked` / `correct`) ;
+   chaque type restant demande sa boucle tracée f64 + double-double et son
+   verrou bit-identique. Juge prêt : scènes 11, 15, 20, 30 de l'axe
+   `types`.
 5. `CHAOS` (pas des gaps) : Buffalo, Burning Ship, Celtic, Perp. BS,
    Barnsley M — le juge 256 b diffère du juge 512 b sur 70-85 % des pixels
    de bord ; le traqueur étendu y signale ~98 % des pixels.

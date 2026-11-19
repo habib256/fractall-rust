@@ -66,6 +66,12 @@ fn std_scope() -> StdScope {
     *SCOPE.get_or_init(|| parse_scope(std::env::var("FRACTALL_RELIABILITY_STD").ok().as_deref()))
 }
 
+/// Le suivi du path standard est-il coupé (`FRACTALL_RELIABILITY_STD=0`) ?
+/// Partagé avec le suivi des boucles scalaires (`scalar_reliability`).
+pub(crate) fn std_scope_is_off() -> bool {
+    std_scope() == StdScope::Off
+}
+
 /// Correction des pixels signalés : par perturbation (Mandelbrot / Julia) ou
 /// par GMP pur sous plafond (autres familles).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

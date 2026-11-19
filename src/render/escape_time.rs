@@ -414,6 +414,12 @@ fn render_escape_time_f64_cancellable_with_reuse(
         .as_ref()
         .and_then(|phase| crate::render::std_reliability::std_tracking_plan(params, phase));
     let flagged_all: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+    // Types à boucle scalaire suivie (Barnsley — `render::scalar_reliability`).
+    let scalar_track = if batch_phase.is_none() && !need_orbits && !need_distances {
+        crate::render::scalar_reliability::plan(params)
+    } else {
+        None
+    };
     // Chemin scalaire restant (hybrides, canaux annexes, types hors bytecode) :
     // formule compilée une fois aussi.
     let scalar_formula = standard_formula(params);
@@ -444,6 +450,7 @@ fn render_escape_time_f64_cancellable_with_reuse(
             // Points de la tuile à itérer par lot + leur case (ligne, colonne).
             let mut batch_points: Vec<Complex64> = Vec::new();
             let mut batch_cells: Vec<(u32, u32)> = Vec::new();
+            let mut scalar_flagged: Vec<usize> = Vec::new();
             if batch_phase.is_some() {
                 batch_points.reserve(tw * th);
                 batch_cells.reserve(tw * th);
@@ -505,6 +512,16 @@ fn render_escape_time_f64_cancellable_with_reuse(
                         batch_cells.push((dj as u32, di as u32));
                         continue;
                     }
+                    if scalar_track.is_some() {
+                        let (iteration, z_final, unreliable) =
+                            crate::render::scalar_reliability::iterate_tracked(params, z_pixel);
+                        *iter = iteration;
+                        *z = z_final;
+                        if unreliable {
+                            scalar_flagged.push(j * width + i);
+                        }
+                        continue;
+                    }
                     let FractalResult {
                         iteration,
                         z: z_final,
@@ -524,6 +541,12 @@ fn render_escape_time_f64_cancellable_with_reuse(
                         dist_row[di] = distance.unwrap_or(f64::INFINITY);
                     }
                 }
+            }
+            if !scalar_flagged.is_empty() {
+                flagged_all
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .extend(scalar_flagged);
             }
             if let Some(phase) = batch_phase.as_ref() {
                 let mut batch_iter = vec![0u32; batch_points.len()];
@@ -591,6 +614,25 @@ fn render_escape_time_f64_cancellable_with_reuse(
     if !completed {
         None
     } else {
+        if let Some(escalate) = scalar_track {
+            let mut flagged = std::mem::take(&mut *flagged_all.lock().unwrap_or_else(|e| e.into_inner()));
+            flagged.sort_unstable();
+            if escalate {
+                crate::render::scalar_reliability::correct(
+                    params,
+                    cancel.as_ref(),
+                    &flagged,
+                    &mut iterations,
+                    &mut zs,
+                )?;
+            } else if perf_enabled() {
+                eprintln!(
+                    "[RELIABILITY-SCALAR] flagged={} ({:.3} %) observe-only",
+                    flagged.len(),
+                    100.0 * flagged.len() as f64 / n.max(1) as f64
+                );
+            }
+        }
         if let Some((correction, escalate)) = tracking {
             let mut flagged = flagged_all.into_inner().unwrap_or_else(|e| e.into_inner());
             flagged.sort_unstable();
