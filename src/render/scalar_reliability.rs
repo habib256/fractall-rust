@@ -759,6 +759,9 @@ fn dd_stage(params: &FractalParams, points: &[(Dd, Dd)]) -> Option<Vec<(u32, Com
     }
 }
 
+/// Précision minimale de l'étage GMP qui suit le double-double.
+const GMP_FLOOR_BITS: u32 = 256;
+
 /// Recalcule les pixels `flagged` : double-double, puis GMP pur sous budget
 /// pour ceux que le double-double ne garantit pas. `None` si annulé.
 pub fn correct(
@@ -836,8 +839,22 @@ pub fn correct(
         );
     }
     if !rest.is_empty() {
+        // Le GMP arbitre des pixels que le double-double (~106 b) n'a PAS su
+        // déterminer : à la précision de la vue (128 b dès que
+        // `precision_bits` < 128 sur une vue peu profonde) il n'a que ~20 bits
+        // de plus et rend une valeur arbitraire présentée comme corrigée
+        // (verrou `gmp_stage_runs_well_above_dd_precision`). Plancher
+        // GMP_FLOOR_BITS ≈ 2,4 × dd — la précision par défaut.
+        let mut gp;
+        let gmp_params = if params.engine.precision_bits < GMP_FLOOR_BITS {
+            gp = params.clone();
+            gp.engine.precision_bits = GMP_FLOOR_BITS;
+            &gp
+        } else {
+            params
+        };
         crate::render::std_reliability::correct_std_pixels(
-            params,
+            gmp_params,
             crate::render::std_reliability::StdCorrection::GmpCapped,
             cancel,
             &rest,
@@ -1169,6 +1186,29 @@ mod tests {
         assert!(bad, "sortie au pôle non déterminée déclarée fiable");
         let prod = crate::render::render_escape_time(&p);
         assert_eq!(prod.iterations[0], truth, "rendu de production ≠ GMP pur");
+    }
+
+    /// Pixel de bord Mandelbulb ×6e9 que le double-double ne détermine pas :
+    /// avec `precision_bits` = 64 la vue réclame 128 b, et le GMP à 128 b
+    /// rendait 1667 itérations au lieu de 1492 (GMP 256 b ≡ 512 b).
+    #[test]
+    fn gmp_stage_runs_well_above_dd_precision() {
+        let (w, h) = (24u32, 16u32);
+        let mut p = default_params_for_type(FractalType::Mandelbulb, w, h);
+        let (cx, cy) = ("-6.88218023928699463034588e-1", "-2.67570936992955699034588e-1");
+        p.center_x_hp = Some(cx.into());
+        p.center_y_hp = Some(cy.into());
+        p.center_x = cx.parse().unwrap();
+        p.center_y = cy.parse().unwrap();
+        p.span_x = 6.738679960241853e-10;
+        p.span_y = 6.738679960241853e-10;
+        p.iteration_max = 20_000;
+        p.bailout = 2.0;
+        p.engine.precision_bits = 64;
+        let n = (w * h) as usize;
+        let (mut it, mut zs) = (vec![0u32; n], vec![Complex64::new(0.0, 0.0); n]);
+        correct(&p, &AtomicBool::new(false), &[161], &mut it, &mut zs).unwrap();
+        assert_eq!(it[161], 1492, "pixel au-delà du dd mal arbitré par le GMP");
     }
 
     #[test]
