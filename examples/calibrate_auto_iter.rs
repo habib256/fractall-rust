@@ -9,7 +9,11 @@
 //!
 //! Usage :
 //!   cargo run --release --example calibrate_auto_iter -- [--truth 320x180]
-//!       [--full] [--timeout SECS] [--max-author N] [--presets] [fichiers.toml…]
+//!       [--full] [--timeout SECS] [--max-author N] [--presets] [--probe-ab]
+//!       [fichiers.toml…]
+//! `--probe-ab` : pas de rendu de vérité ; la sonde COMPLÈTE (chaque tour
+//! re-rend tout) contre la sonde INCRÉMENTALE (seuls les pixels plafonnés
+//! sont recalculés) — N choisi, durée, pixels calculés, par vue.
 //! Sans fichier : tout `toml/*.toml`. Une vue dont un rendu dépasse
 //! `--timeout` (défaut 120 s) est marquée TIMEOUT. `--max-author N` saute les
 //! fichiers dont l'auteur demande plus de N itérations.
@@ -142,6 +146,7 @@ fn main() {
     let mut timeout = 120.0f64;
     let mut max_author = u32::MAX;
     let mut presets = false;
+    let mut probe_ab = false;
     let mut files: Vec<PathBuf> = Vec::new();
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -153,6 +158,7 @@ fn main() {
             }
             "--full" => full = true,
             "--presets" => presets = true,
+            "--probe-ab" => probe_ab = true,
             "--timeout" => timeout = args.next().unwrap().parse().unwrap(),
             "--max-author" => max_author = args.next().unwrap().parse().unwrap(),
             _ => files.push(PathBuf::from(a)),
@@ -173,6 +179,10 @@ fn main() {
         cases.extend(preset_cases(vw, vh));
     }
     let to = Duration::from_secs_f64(timeout);
+    if probe_ab {
+        probe_ab_table(&cases, max_author, to);
+        return;
+    }
     println!(
         "{:<28} {:>9} {:>9} {:>7} {:>9} {:>6} {:>8} {:>8} {:>8} {:>8} {:>8}  notes",
         "case", "author", "auto", "ratio", "maxesc", "rnds", "probe_s", "chg4x%", "esc%", "tA_s", "t1080_s(fresh/reuse)"
@@ -250,4 +260,53 @@ fn main() {
             notes
         );
     }
+}
+
+/// `--probe-ab` : sonde complète contre sonde incrémentale, même vue.
+fn probe_ab_table(cases: &[Case], max_author: u32, to: Duration) {
+    println!(
+        "{:<28} {:>9} {:>9} {:>5} {:>8} {:>8} {:>9} {:>9}  verdict",
+        "case", "N_full", "N_inc", "rnds", "t_full", "t_inc", "px_full", "px_inc"
+    );
+    let (mut same, mut diff, mut t_full_sum, mut t_inc_sum) = (0, 0, 0.0, 0.0);
+    for c in cases.iter().filter(|c| c.author <= max_author) {
+        let run = |incremental: bool| {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let opts = AutoIterOptions {
+                incremental,
+                ..AutoIterOptions::default()
+            };
+            let (res, secs) = with_watchdog(&cancel, to, || auto_iterations_with(&c.params, &cancel, opts, &mut None));
+            res.ok().map(|r| {
+                let px: usize = r.round_log.iter().map(|x| x.computed).sum();
+                (r.iteration_max, r.rounds, secs, px)
+            })
+        };
+        match (run(false), run(true)) {
+            (Some(f), Some(i)) => {
+                let ok = f.0 == i.0;
+                if ok {
+                    same += 1;
+                } else {
+                    diff += 1;
+                }
+                t_full_sum += f.2;
+                t_inc_sum += i.2;
+                println!(
+                    "{:<28} {:>9} {:>9} {:>5} {:>8.3} {:>8.3} {:>9} {:>9}  {}",
+                    c.name,
+                    f.0,
+                    i.0,
+                    format!("{}/{}", f.1, i.1),
+                    f.2,
+                    i.2,
+                    f.3,
+                    i.3,
+                    if ok { "same" } else { "DIFF" }
+                );
+            }
+            _ => println!("{:<28} TIMEOUT/CANCELLED", c.name),
+        }
+    }
+    println!("same N: {same}, different N: {diff}, probe time full {t_full_sum:.2} s, incremental {t_inc_sum:.2} s");
 }
