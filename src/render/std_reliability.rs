@@ -348,7 +348,13 @@ struct GmpPointContext {
 
 impl GmpPointContext {
     fn new(params: &FractalParams) -> Self {
-        let prec = compute_perturbation_precision_bits(params);
+        // Plancher 256 b : cet étage ARBITRE ce que le dd (~106 b) et le qd
+        // (~212 b) directs n'ont pas garanti. Avec un `precision_bits`
+        // utilisateur abaissé la formule retombe à 128 b sur une vue peu
+        // profonde — moins que le qd qu'elle doit départager (même défaut
+        // fermé dans `scalar_reliability::correct`, Mandelbulb 1667 ≠ 1492).
+        // 256 est la valeur par défaut : sorties par défaut inchangées.
+        let prec = compute_perturbation_precision_bits(params).max(256);
         let mut gp = params.clone();
         gp.engine.precision_bits = prec;
         let parse = |hp: &Option<String>, f: f64| match hp.as_deref().map(Float::parse) {
