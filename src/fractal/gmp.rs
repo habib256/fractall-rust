@@ -275,6 +275,68 @@ pub fn pow_f64_mpc(value: &Complex, exp: f64, prec: u32) -> Complex {
     Complex::with_val(prec, (r_pow.clone() * cos_a, r_pow * sin_a))
 }
 
+/// `z ← z^d` des boucles Multibrot GMP, sans allocation par itération :
+/// puissance entière par multiplications, demi-entière `k + ½` par
+/// `z^k · √z` (branche principale, comme `atan2` : égal à `exp(d·Log z)`),
+/// sinon forme polaire générique (`pow_f64_mpc`, qui alloue). Les deux
+/// premières n'appellent ni `atan2` ni `pow` ni `sin`/`cos` MPFR.
+struct MultibrotPow {
+    /// `Some(n)` : `z^n` entier ; `None` + `half` : demi-entier.
+    int_power: Option<u32>,
+    half: Option<u32>,
+    d: f64,
+    ops: MpfrOps,
+    sq: (Float, Float),
+    s: Complex,
+    zk: Complex,
+}
+
+impl MultibrotPow {
+    fn new(d: f64, z: &Complex) -> Self {
+        let prec = z.prec().0.max(z.prec().1);
+        let int_power = (d >= 1.0 && d <= 64.0 && d == d.floor()).then_some(d as u32);
+        let half = if int_power.is_some() {
+            None
+        } else {
+            crate::fractal::iterations::half_integer_power(d)
+        };
+        Self { int_power, half, d, ops: MpfrOps::new(prec), sq: sqr_scratch(z), s: z.clone(), zk: z.clone() }
+    }
+
+    #[inline]
+    fn apply(&mut self, z: &mut Complex) {
+        use rug::Assign;
+        let k = match (self.int_power, self.half) {
+            (Some(n), _) => n,
+            (None, Some(k)) => k,
+            (None, None) => {
+                *z = pow_f64_mpc(z, self.d, z.prec().0);
+                return;
+            }
+        };
+        // zk = z^k (k ≥ 1) : carré en place puis multiplications.
+        if k >= 1 {
+            self.zk.assign(&*z);
+            if k >= 2 {
+                sqr_in_place(&mut self.zk, &mut self.sq);
+            }
+            for _ in 2..k {
+                self.ops.mul_assign(&mut self.zk, z);
+            }
+        }
+        if self.half.is_some() {
+            self.s.assign(&*z);
+            self.ops.sqrt_assign(&mut self.s);
+            if k >= 1 {
+                self.ops.mul_assign(&mut self.s, &self.zk);
+            }
+            std::mem::swap(z, &mut self.s);
+        } else {
+            std::mem::swap(z, &mut self.zk);
+        }
+    }
+}
+
 pub fn iterate_point_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     match g.fractal_type {
         FractalType::VonKoch | FractalType::Dragon => {
@@ -927,6 +989,157 @@ pub(crate) fn sqr_scratch(z: &Complex) -> (Float, Float) {
     (Float::new(p), Float::new(p))
 }
 
+/// Opérations complexes sur MPFR à tampons RÉUTILISÉS, pour les juges GMP des
+/// types à sinus / division / racine (Julia Sin, Mandelbrot Sin, Magnet
+/// Mandelbrot, Nova, Multibrot). MPC alloue ses temporaires à chaque appel
+/// (cf. [`sqr_in_place`]) et `mpc_div` / `mpc_sin` paient en plus l'arrondi
+/// CORRECT (boucle de Ziv) : ces juges dépassaient le budget de l'axe `types`
+/// (40-55 s pour 64×40 pixels, verdicts « n/a »).
+///
+/// - [`Self::mul_assign`] : produits EXACTS dans des tampons à précision
+///   double, puis UN arrondi par composante — même valeur au bit près que
+///   `mpc_mul` (verrou `mpfr_mul_matches_mpc_mul`) ;
+/// - division, racine, sinus : quelques ulp à la précision de travail, sans
+///   garantie d'arrondi correct. Sans conséquence pour un juge à ≥ 256 b dont
+///   l'axe vérifie la convergence contre le même juge à 512 b.
+pub(crate) struct MpfrOps {
+    /// Produits exacts (précision double).
+    a: Float,
+    b: Float,
+    c: Float,
+    d: Float,
+    /// |q|² de la dernière [`Self::norm_q`] (précision double).
+    n: Float,
+    /// Temporaires à la précision de travail.
+    u: Float,
+    v: Float,
+    w: Float,
+    x: Float,
+}
+
+impl MpfrOps {
+    pub(crate) fn new(prec: u32) -> Self {
+        let p2 = prec.saturating_mul(2);
+        Self {
+            a: Float::new(p2),
+            b: Float::new(p2),
+            c: Float::new(p2),
+            d: Float::new(p2),
+            n: Float::new(p2),
+            u: Float::new(prec),
+            v: Float::new(prec),
+            w: Float::new(prec),
+            x: Float::new(prec),
+        }
+    }
+
+    /// `z ← z·y`, arrondi correct par composante (= `mpc_mul`). Précisions de
+    /// `z` et `y` ≤ celle de [`Self::new`].
+    #[inline]
+    pub(crate) fn mul_assign(&mut self, z: &mut Complex, y: &Complex) {
+        use rug::Assign;
+        let (zr, zi) = z.as_mut_real_imag();
+        let (yr, yi) = (y.real(), y.imag());
+        self.a.assign(&*zr * yr);
+        self.b.assign(&*zi * yi);
+        self.c.assign(&*zr * yi);
+        self.d.assign(&*zi * yr);
+        zr.assign(&self.a - &self.b);
+        zi.assign(&self.c + &self.d);
+    }
+
+    /// `|q|²` (exact aux arrondis de la somme près), gardé pour
+    /// [`Self::div_assign_by_normed`].
+    #[inline]
+    pub(crate) fn norm_q(&mut self, q: &Complex) -> &Float {
+        use rug::Assign;
+        self.a.assign(q.real().square_ref());
+        self.b.assign(q.imag().square_ref());
+        self.n.assign(&self.a + &self.b);
+        &self.n
+    }
+
+    /// `z ← z / q` par `z·q̄ / |q|²`, `|q|²` venant de [`Self::norm_q`] sur
+    /// ce même `q`.
+    #[inline]
+    pub(crate) fn div_assign_by_normed(&mut self, z: &mut Complex, q: &Complex) {
+        use rug::Assign;
+        let (zr, zi) = z.as_mut_real_imag();
+        let (qr, qi) = (q.real(), q.imag());
+        self.a.assign(&*zr * qr);
+        self.b.assign(&*zi * qi);
+        self.c.assign(&*zi * qr);
+        self.d.assign(&*zr * qi);
+        self.a += &self.b;
+        self.c -= &self.d;
+        zr.assign(&self.a / &self.n);
+        zi.assign(&self.c / &self.n);
+    }
+
+    /// `z ← sin z = sin x·cosh y + i·cos x·sinh y` (un `sin_cos` et un
+    /// `sinh_cosh` MPFR).
+    #[inline]
+    pub(crate) fn sin_assign(&mut self, z: &mut Complex) {
+        use rug::Assign;
+        let (zr, zi) = z.as_mut_real_imag();
+        // Argument minuscule (|t| < 2^-(p/2+2), zéro compris) : sin t = t,
+        // sinh t = t, cos t = cosh t = 1 à moins d'un ulp. Indispensable, pas
+        // un confort : l'intérieur de Mandelbrot Sin (|c| < 1) tend vers 0
+        // sans jamais l'atteindre en MPFR (exposant illimité), et
+        // `mpfr_sinh_cosh` travaille alors à p + log2(1/|t|) bits pour
+        // calculer e^t − e^-t — 600 µs par itération au bout de quelques
+        // milliers de pas (vue d'accueil 16×10 : 129 s).
+        let tiny = |t: &Float| t.get_exp().map_or(true, |e| e < -((t.prec() / 2) as i32) - 2);
+        self.u.assign(&*zr);
+        if tiny(zr) {
+            self.v.assign(1u32);
+        } else {
+            self.u.sin_cos_mut(&mut self.v);
+        }
+        self.w.assign(&*zi);
+        if tiny(zi) {
+            self.x.assign(1u32);
+        } else {
+            self.w.sinh_cosh_mut(&mut self.x);
+        }
+        zr.assign(&self.u * &self.x);
+        zi.assign(&self.v * &self.w);
+    }
+
+    /// `z ← √z`, branche PRINCIPALE (comme `mpc_sqrt` et `atan2` : argument
+    /// dans (−π, π], `Im z = −0` du côté −π), forme algébrique.
+    #[inline]
+    pub(crate) fn sqrt_assign(&mut self, z: &mut Complex) {
+        use rug::Assign;
+        let (zr, zi) = z.as_mut_real_imag();
+        if zr.is_zero() && zi.is_zero() {
+            zr.assign(0u32);
+            return;
+        }
+        self.a.assign(zr.square_ref());
+        self.b.assign(zi.square_ref());
+        self.n.assign(&self.a + &self.b);
+        self.n.sqrt_mut();
+        self.n += &*zr.as_abs();
+        self.n >>= 1u32;
+        self.u.assign(self.n.sqrt_ref()); // t
+        self.v.assign(&self.u);
+        self.v <<= 1u32; // 2t
+        if !zr.is_sign_negative() {
+            *zi /= &self.v;
+            zr.assign(&self.u);
+        } else {
+            zr.assign(&*zi.as_abs());
+            *zr /= &self.v;
+            let neg = zi.is_sign_negative();
+            zi.assign(&self.u);
+            if neg {
+                rug::ops::NegAssign::neg_assign(zi);
+            }
+        }
+    }
+}
+
 /// Raccourci des cycles EXACTS pour les boucles GMP (même principe que
 /// `fractal/cycle.rs`, cf. sa doc) : dès que `z` reprend, à sa précision, la
 /// valeur exacte d'un point de contrôle (Brent, test tous les 8 pas), l'orbite
@@ -1012,24 +1225,28 @@ fn julia_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
 
 fn julia_sin_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     let mut z = z_pixel.clone();
+    let mut cyc = MpcCycle::new(&z);
     let mut i = 0u32;
+    let mut ops = MpfrOps::new(g.prec);
     while i < g.iteration_max && mpc_below_bailout(&z, g) {
-        let mut sin_z = z.clone().sin();
-        sin_z *= &g.seed;
-        z = sin_z;
+        ops.sin_assign(&mut z);
+        ops.mul_assign(&mut z, &g.seed);
         i += 1;
+        cyc.observe(&mut i, g.iteration_max, &z);
     }
     (i, z)
 }
 
 fn mandelbrot_sin_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     let mut z = g.seed.clone();
+    let mut cyc = MpcCycle::new(&z);
     let mut i = 0u32;
+    let mut ops = MpfrOps::new(g.prec);
     while i < g.iteration_max && mpc_below_bailout(&z, g) {
-        let mut sin_z = z.clone().sin();
-        sin_z *= z_pixel;
-        z = sin_z;
+        ops.sin_assign(&mut z);
+        ops.mul_assign(&mut z, z_pixel);
         i += 1;
+        cyc.observe(&mut i, g.iteration_max, &z);
     }
     (i, z)
 }
@@ -1173,20 +1390,32 @@ fn magnet_mandelbrot_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     c_minus_two_re -= Float::with_val(g.prec, 2.0);
     let c_minus_two = complex_from_xy(g.prec, c_minus_two_re, c.imag().clone());
     let threshold = Float::with_val(g.prec, 1e-24);
+    let mut cyc = MpcCycle::new(&z);
+    // Tampons réutilisés : aucune allocation par itération (cf. `MpfrOps`).
+    let mut ops = MpfrOps::new(g.prec);
+    let mut sq = sqr_scratch(&z);
+    let mut n = z.clone();
+    let mut q = z.clone();
     while i < g.iteration_max && mpc_below_bailout(&z, g) {
-        let mut n = z.clone();
-        n *= &z;
+        use rug::Assign;
+        n.assign(&z);
+        sqr_in_place(&mut n, &mut sq);
         n += &c_minus_one;
-        let mut q = z.clone();
-        q *= Complex::with_val(g.prec, (2, 0));
+        q.assign(&z);
+        {
+            let (qr, qi) = q.as_mut_real_imag();
+            *qr <<= 1u32;
+            *qi <<= 1u32;
+        }
         q += &c_minus_two;
-        if complex_norm_sqr(&q, g.prec) < threshold {
+        if *ops.norm_q(&q) < threshold {
             break;
         }
-        let ratio = n / q;
-        z = ratio.clone();
-        z *= &ratio;
+        ops.div_assign_by_normed(&mut n, &q);
+        sqr_in_place(&mut n, &mut sq);
+        std::mem::swap(&mut z, &mut n);
         i += 1;
+        cyc.observe(&mut i, g.iteration_max, &z);
     }
     (i, z)
 }
@@ -1255,15 +1484,23 @@ fn tricorn_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     (i, z)
 }
 
+// Mandelbulb et Alpha Mandelbrot EN PLACE (2026-11-19) : mêmes arrondis au
+// bit près que les versions `clone` + `mpc_mul` (`pow_u32_mpc(z, 8)` = trois
+// `mpc_mul(b, b)` correctement arrondis = trois `sqr_in_place`), sans
+// allocation par itération. Elles servent de dernier étage à la correction
+// des pixels signalés (`render::scalar_reliability`) et de juge.
 fn mandelbulb_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     let mut z = g.seed.clone();
+    let mut sq = sqr_scratch(&z);
+    let mut cyc = MpcCycle::new(&z);
     let mut i = 0u32;
     while i < g.iteration_max && mpc_below_bailout(&z, g) {
-        let z_pow = pow_u32_mpc(&z, 8, g.prec);
-        let mut z_next = z_pow;
-        z_next += z_pixel;
-        z = z_next;
+        sqr_in_place(&mut z, &mut sq);
+        sqr_in_place(&mut z, &mut sq);
+        sqr_in_place(&mut z, &mut sq);
+        z += z_pixel;
         i += 1;
+        cyc.observe(&mut i, g.iteration_max, &z);
     }
     (i, z)
 }
@@ -1319,20 +1556,25 @@ fn celtic_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
 }
 
 fn alpha_mandelbrot_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    use rug::Assign;
     let mut z = g.seed.clone();
+    let mut sq = sqr_scratch(&z);
+    let mut z_sq = Complex::new(z.prec());
+    let mut m = Complex::new(z.prec());
+    let mut cyc = MpcCycle::new(&z);
     let mut i = 0u32;
     while i < g.iteration_max && mpc_below_bailout(&z, g) {
-        let mut z_sq = z.clone();
-        z_sq *= &z;
-        let mut m = z_sq.clone();
+        // s = z² ; m = s + c ; z' = (s + m²) + c — mêmes arrondis, même ordre.
+        z_sq.assign(&z);
+        sqr_in_place(&mut z_sq, &mut sq);
+        m.assign(&z_sq);
         m += z_pixel;
-        let mut m_sq = m.clone();
-        m_sq *= &m;
-        let mut z_next = z_sq;
-        z_next += &m_sq;
-        z_next += z_pixel;
-        z = z_next;
+        sqr_in_place(&mut m, &mut sq);
+        z.assign(&z_sq);
+        z += &m;
+        z += z_pixel;
         i += 1;
+        cyc.observe(&mut i, g.iteration_max, &z);
     }
     (i, z)
 }
@@ -1371,48 +1613,54 @@ fn pickover_stalks_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
 fn nova_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     let mut z = Complex::with_val(g.prec, (1.0, 0.0));
     let mut i = 0u32;
-    let a_relax = Complex::with_val(g.prec, (1.0, 0.0));
-    let p_poly = 3u32;
     let conv_epsilon = Float::with_val(g.prec, 1e-7f64);
     let mut conv_epsilon_sq = conv_epsilon.clone();
     conv_epsilon_sq *= &conv_epsilon;
+    let mut cyc = MpcCycle::new(&z);
+    // Tampons réutilisés : aucune allocation par itération (cf. `MpfrOps`).
+    // Pas de Newton non relaxé (a = 1) pour p(z) = z³ − 1, comme la boucle f64.
+    let mut ops = MpfrOps::new(g.prec);
+    let mut sq = sqr_scratch(&z);
+    let denom_epsilon = Float::with_val(g.prec, 1e-10f64);
+    let mut denom_epsilon_sqr = denom_epsilon.clone();
+    denom_epsilon_sqr *= &denom_epsilon;
+    let (mut z2, mut num, mut z_prev) = (z.clone(), z.clone(), z.clone());
+    let mut diff_sq = Float::new(g.prec);
+    let mut z_sq = Float::new(g.prec);
     while i < g.iteration_max {
-        let z_pow = pow_u32_mpc(&z, p_poly, g.prec);
-        let z_pow_deriv = pow_u32_mpc(&z, p_poly - 1, g.prec);
-        let mut numerator = z_pow.clone();
-        numerator -= Complex::with_val(g.prec, (1.0, 0.0));
-        let p_poly_f = Float::with_val(g.prec, p_poly);
-        let mut denom_re = z_pow_deriv.real().clone();
-        denom_re *= &p_poly_f;
-        let mut denom_im = z_pow_deriv.imag().clone();
-        denom_im *= &p_poly_f;
-        let denominator = complex_from_xy(g.prec, denom_re, denom_im);
-        let denom_epsilon = Float::with_val(g.prec, 1e-10f64);
-        let mut denom_epsilon_sqr = denom_epsilon.clone();
-        denom_epsilon_sqr *= &denom_epsilon;
-        if complex_norm_sqr(&denominator, g.prec) < denom_epsilon_sqr {
+        use rug::Assign;
+        z2.assign(&z);
+        sqr_in_place(&mut z2, &mut sq);
+        num.assign(&z2);
+        ops.mul_assign(&mut num, &z); // z³
+        *num.mut_real() -= 1u32;
+        {
+            let (dr, di) = z2.as_mut_real_imag(); // 3·z²
+            *dr *= 3u32;
+            *di *= 3u32;
+        }
+        if *ops.norm_q(&z2) < denom_epsilon_sqr {
             break;
         }
-        let mut newton_step = numerator / denominator;
-        newton_step *= &a_relax;
-        let z_prev = z.clone();
-        let mut z_next = z - &newton_step;
-        z_next += z_pixel;
-        z = z_next;
-        let diff = z.clone() - z_prev;
-        let diff_sq = complex_norm_sqr(&diff, g.prec);
-        let z_sq = complex_norm_sqr(&z, g.prec);
-        let one = Float::with_val(g.prec, 1.0);
-        let denom = if z_sq < one { one } else { z_sq };
-        let mut ratio = diff_sq;
-        ratio /= &denom;
-        if ratio < conv_epsilon_sq {
+        ops.div_assign_by_normed(&mut num, &z2); // pas de Newton
+        z_prev.assign(&z);
+        z -= &num;
+        z += z_pixel;
+        num.assign(&z);
+        num -= &z_prev;
+        diff_sq.assign(ops.norm_q(&num));
+        z_sq.assign(ops.norm_q(&z));
+        if z_sq > 1u32 {
+            diff_sq /= &z_sq;
+        }
+        if diff_sq < conv_epsilon_sq {
             break;
         }
-        if complex_norm_sqr(&z, g.prec) > g.bailout_sqr {
+        if z_sq > g.bailout_sqr {
             break;
         }
         i += 1;
+        cyc.observe(&mut i, g.iteration_max, &z);
     }
     (i, z)
 }
@@ -1421,12 +1669,13 @@ fn multibrot_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     let mut z = g.seed.clone();
     let mut i = 0u32;
     let d = g.multibrot_power;
+    let mut cyc = MpcCycle::new(&z);
+    let mut pw = MultibrotPow::new(d, &z);
     while i < g.iteration_max && mpc_below_bailout(&z, g) {
-        let z_pow = pow_f64_mpc(&z, d, g.prec);
-        let mut z_next = z_pow;
-        z_next += z_pixel;
-        z = z_next;
+        pw.apply(&mut z);
+        z += z_pixel;
         i += 1;
+        cyc.observe(&mut i, g.iteration_max, &z);
     }
     (i, z)
 }
@@ -1506,12 +1755,13 @@ fn multibrot_julia_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     let mut z = z_pixel.clone();
     let mut i = 0u32;
     let d = g.multibrot_power;
+    let mut cyc = MpcCycle::new(&z);
+    let mut pw = MultibrotPow::new(d, &z);
     while i < g.iteration_max && mpc_below_bailout(&z, g) {
-        let z_pow = pow_f64_mpc(&z, d, g.prec);
-        let mut z_next = z_pow;
-        z_next += &g.seed;
-        z = z_next;
+        pw.apply(&mut z);
+        z += &g.seed;
         i += 1;
+        cyc.observe(&mut i, g.iteration_max, &z);
     }
     (i, z)
 }
@@ -1720,6 +1970,136 @@ mod mpc_loop_tests {
             }
         }
         assert_eq!(checked, 8 * 400);
+    }
+
+    /// `MpfrOps` : la multiplication rend EXACTEMENT `mpc_mul` ; division,
+    /// racine principale et sinus restent à quelques ulp de MPC (arrondi
+    /// correct), branche de la racine comprise de part et d'autre de la
+    /// coupure des réels négatifs.
+    #[test]
+    fn mpfr_ops_match_mpc() {
+        let mut s = 0x0F1E_2D3C_4B5A_6978u64;
+        let mut rnd = move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            (s >> 11) as f64 / (1u64 << 53) as f64
+        };
+        // Écart relatif à |référence| en ulp de la précision.
+        let ulps = |a: &Complex, b: &Complex, prec: u32| -> f64 {
+            let mut d = a.clone();
+            d -= b;
+            let num = complex_norm_sqr(&d, prec).sqrt();
+            let den = complex_norm_sqr(b, prec).sqrt();
+            if den.is_zero() {
+                return if num.is_zero() { 0.0 } else { f64::INFINITY };
+            }
+            (num / den).to_f64() * 2f64.powi(prec as i32)
+        };
+        for prec in [64u32, 128, 256, 512] {
+            let mut ops = MpfrOps::new(prec);
+            for k in 0..300u32 {
+                let mut z = Complex::with_val(prec, (rnd() * 6.0 - 3.0, rnd() * 6.0 - 3.0));
+                z *= Complex::with_val(prec, (rnd(), rnd()));
+                let mut y = Complex::with_val(prec, (rnd() * 4.0 - 2.0, rnd() * 4.0 - 2.0));
+                y *= Complex::with_val(prec, (rnd(), rnd()));
+                match k % 6 {
+                    1 => z = Complex::with_val(prec, (-(rnd() + 0.1), 0.0)),
+                    2 => z = Complex::with_val(prec, (-(rnd() + 0.1), -0.0)),
+                    3 => z = Complex::with_val(prec, (0.0, rnd() - 0.5)),
+                    // Arguments minuscules (raccourci du sinus).
+                    4 => z = Complex::with_val(prec, (rnd() * 1e-200, -rnd() * 1e-250)),
+                    _ => {}
+                }
+                let mut a = z.clone();
+                ops.mul_assign(&mut a, &y);
+                let b = Complex::with_val(prec, &z * &y);
+                assert!(same(&a, &b), "prec={prec} k={k}: mul ≠ mpc_mul");
+
+                let mut a = z.clone();
+                ops.norm_q(&y);
+                ops.div_assign_by_normed(&mut a, &y);
+                let b = Complex::with_val(prec, &z / &y);
+                assert!(ulps(&a, &b, prec) < 8.0, "prec={prec} k={k}: div");
+
+                let mut a = z.clone();
+                ops.sqrt_assign(&mut a);
+                let b = Complex::with_val(prec, z.sqrt_ref());
+                assert!(ulps(&a, &b, prec) < 8.0, "prec={prec} k={k} z={z:?}: sqrt {a:?} vs {b:?}");
+
+                let mut a = z.clone();
+                ops.sin_assign(&mut a);
+                let b = Complex::with_val(prec, z.sin_ref());
+                assert!(ulps(&a, &b, prec) < 8.0, "prec={prec} k={k}: sin");
+            }
+        }
+    }
+
+    /// Mandelbulb et Alpha Mandelbrot EN PLACE == anciennes boucles `clone` +
+    /// `mpc_mul` / `pow_u32_mpc`, au bit près (compte ET z), sur une grille
+    /// d'accueil et de bord, plafond bas (pas de raccourci de cycle atteint
+    /// par l'ancienne boucle, qui n'en a pas : on compare aussi un plafond
+    /// où l'intérieur est raccourci, le compte et z restant identiques).
+    #[test]
+    fn in_place_alpha_and_mandelbulb_match_clone_loops() {
+        fn alpha_ref(g: &MpcParams, c: &Complex) -> (u32, Complex) {
+            let mut z = g.seed.clone();
+            let mut i = 0u32;
+            while i < g.iteration_max && mpc_below_bailout(&z, g) {
+                let mut z_sq = z.clone();
+                z_sq *= &z;
+                let mut m = z_sq.clone();
+                m += c;
+                let mut m_sq = m.clone();
+                m_sq *= &m;
+                let mut z_next = z_sq;
+                z_next += &m_sq;
+                z_next += c;
+                z = z_next;
+                i += 1;
+            }
+            (i, z)
+        }
+        fn bulb_ref(g: &MpcParams, c: &Complex) -> (u32, Complex) {
+            let mut z = g.seed.clone();
+            let mut i = 0u32;
+            while i < g.iteration_max && mpc_below_bailout(&z, g) {
+                let mut z_next = pow_u32_mpc(&z, 8, g.prec);
+                z_next += c;
+                z = z_next;
+                i += 1;
+            }
+            (i, z)
+        }
+        let mut n = 0;
+        for ft in [FractalType::AlphaMandelbrot, FractalType::Mandelbulb] {
+            for (cx, cy, span) in [(-0.4, 0.0, 3.0), (-1.2608, -0.35016, 0.01), (-0.7342, -0.2334, 0.01)] {
+                for iters in [200u32, 3000] {
+                    let mut params = default_params_for_type(ft, 8, 8);
+                    params.engine.precision_bits = 160;
+                    params.iteration_max = iters;
+                    let g = MpcParams::from_params(&params);
+                    for j in 0..9 {
+                        for k in 0..9 {
+                            let c = Complex::with_val(
+                                g.prec,
+                                (cx + span * (k as f64 / 8.0 - 0.5), cy + span * (j as f64 / 8.0 - 0.5)),
+                            );
+                            let (a, za) = iterate_point_mpc(&g, &c);
+                            let (b, zb) = if ft == FractalType::Mandelbulb {
+                                bulb_ref(&g, &c)
+                            } else {
+                                alpha_ref(&g, &c)
+                            };
+                            assert_eq!(a, b, "{ft:?} ({cx},{cy}) {j},{k} iters={iters}");
+                            assert!(same(&za, &zb), "{ft:?} ({cx},{cy}) {j},{k} : z ≠");
+                            n += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(n, 2 * 3 * 2 * 81);
     }
 
     /// Le test d'évasion en deux temps décide comme la norme exacte, y

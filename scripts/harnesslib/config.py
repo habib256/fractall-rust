@@ -228,7 +228,7 @@ def tier_config(tier: str) -> dict:
                 "quality_width": 48, "quality_height": 48,
                 "fuzz_probes": 1, "precision_size": 48,
                 "scene_size": (128, 80), "wisdom_runs": 2,
-                "judge_timeout": 10.0,
+                "judge_timeout": 30.0,
                 "axes": "speed,truth,wisdom,types,profile"}
     if tier == "quick":
         return {"cases": list(QUICK_CASES), "width": 256, "height": 256,

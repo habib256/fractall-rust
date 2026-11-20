@@ -223,7 +223,7 @@ mod tests {
 
         let (orbit, _, _) =
             compute_reference_orbit(&params, None, true).expect("compute_reference_orbit failed");
-        let bla_table = build_bla_table(&orbit.z_ref_f64, &params, orbit.cref);
+        let bla_table = crate::fractal::perturbation::bla::LazyBlaTable::ready(build_bla_table(&orbit.z_ref_f64, &params, orbit.cref));
 
         let mut classification_diffs = 0usize;
         let mut iter_diffs: Vec<i64> = Vec::new();

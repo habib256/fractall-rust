@@ -60,7 +60,9 @@ use std::time::{Duration, Instant};
 use crate::fractal::perturbation::{compute_perturbation_precision_bits, log2_zoom, ReferenceOrbitCache};
 use crate::fractal::types::{FractalParams, FractalType, OutColoringMode};
 use crate::fractal::wisdom::{select_algorithm, Algorithm, Device};
+use crate::fractal::xaos::{build_refine_map, params_fingerprint, view_strings, XaosMap, XaosSourceFrame};
 use crate::render::{render_request, RenderRequest};
+use num_complex::Complex64;
 
 /// Fraction de pixels dont la classification peut changer entre `C` et `4C`
 /// que l'on vise. Calibrée sur le corpus `toml/` (cf.
@@ -551,6 +553,13 @@ pub struct AutoIterOptions {
     /// (zoom profond dont les évasions commencent loin) tant que son temps
     /// cumulé reste sous ce budget ; au-delà elle conclut « vue intérieure ».
     pub no_escape_budget: Duration,
+    /// Sonde INCRÉMENTALE : à partir du 2e tour, seuls les pixels plafonnés
+    /// au tour précédent sont recalculés (un pixel évadé sous `C` a le même
+    /// compte sous `4C`) ; les autres sont repris tels quels par une carte
+    /// de copie identité (`fractal::xaos`, consommée par le dispatcher
+    /// unique). `false` = chaque tour re-rend tout (référence des verrous ;
+    /// défaut forcé par `FRACTALL_AUTO_ITER_INCREMENTAL=0`).
+    pub incremental: bool,
 }
 
 impl Default for AutoIterOptions {
@@ -561,6 +570,7 @@ impl Default for AutoIterOptions {
             max_rounds: 7,
             start: None,
             no_escape_budget: Duration::from_secs(8),
+            incremental: incremental_default(),
         }
     }
 }
@@ -590,6 +600,24 @@ pub struct AutoIterResult {
     pub ceiling_hit: bool,
     /// Aucun pixel ne s'est évadé, même après croissance (vue intérieure).
     pub no_escape: bool,
+    /// Journal des tours (plafond, durée, pixels plafonnés / recalculés) :
+    /// diagnostic (`FRACTALL_AUTO_ITER_DEBUG=1`) et verrous du TRAVAIL de
+    /// la sonde (le temps mural est trop bruité pour en juger).
+    pub round_log: Vec<ProbeRound>,
+}
+
+/// Un tour de sonde.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProbeRound {
+    /// Plafond du tour.
+    pub cap: u32,
+    /// Durée murale du tour.
+    pub secs: f64,
+    /// Pixels de la sonde plafonnés à ce tour.
+    pub capped: usize,
+    /// Pixels effectivement CALCULÉS à ce tour (les autres sont repris du
+    /// tour précédent).
+    pub computed: usize,
 }
 
 impl AutoIterResult {
@@ -659,6 +687,58 @@ fn probe_params(params: &FractalParams, w: u32, h: u32, cap: u32) -> FractalPara
     p
 }
 
+/// Carte de copie du tour suivant de la sonde : MÊME vue, mêmes dimensions,
+/// plafond relevé. Un pixel évadé sous `prev_cap` (`it < prev_cap`) a le même
+/// compte et le même `z` final sous tout plafond plus haut : il est repris
+/// tel quel ; un pixel plafonné est recalculé. Mécanisme : la carte de
+/// raffinement XaoS (identité à tolérance exacte) sur une frame source dont
+/// l'erreur de position vaut 0 pour les pixels évadés et « infinie » pour
+/// les plafonnés — le dispatcher unique et ses quatre boucles pixel la
+/// consomment déjà (copie AVANT calcul : un pixel repris n'est ni recalculé
+/// ni signalé au traqueur de fiabilité). `None` (rien à reprendre, ou vue
+/// non éligible à la copie — rotation, K, nucleus) ⇒ tour complet.
+fn escaped_reuse_map(
+    prev_iters: &Arc<Vec<u32>>,
+    prev_zs: &Arc<Vec<Complex64>>,
+    prev_cap: u32,
+    p: &FractalParams,
+) -> Option<XaosMap> {
+    let n = p.width as usize * p.height as usize;
+    if prev_iters.len() != n || prev_zs.len() != n || p.iteration_max <= prev_cap {
+        return None;
+    }
+    // Hors de toute tolérance : le pixel plafonné n'est jamais copié.
+    const NOT_REUSABLE: f32 = 1.0e6;
+    let err: Vec<[f32; 2]> = prev_iters
+        .iter()
+        .map(|&it| if it < prev_cap { [0.0, 0.0] } else { [NOT_REUSABLE; 2] })
+        .collect();
+    let mut src = XaosSourceFrame::exact(
+        Arc::clone(prev_iters),
+        Arc::clone(prev_zs),
+        p.width,
+        p.height,
+        view_strings(p),
+        // Seul `iteration_max` diffère du tour précédent, et il ne change
+        // pas le compte d'un pixel évadé : la frame est déclarée compatible.
+        params_fingerprint(p),
+    );
+    src.err = Arc::new(err);
+    build_refine_map(&src, p)
+}
+
+/// `FRACTALL_AUTO_ITER_INCREMENTAL=0` : sonde complète par défaut (A/B).
+fn incremental_default() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("FRACTALL_AUTO_ITER_INCREMENTAL").map_or(true, |v| v != "0"))
+}
+
+/// `FRACTALL_AUTO_ITER_DEBUG=1` : une ligne `[AUTO-ITER]` par tour de sonde.
+fn debug_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("FRACTALL_AUTO_ITER_DEBUG").is_ok_and(|v| v != "0"))
+}
+
 /// Sonde ponctuelle avec les réglages par défaut et sans cache d'orbite.
 /// CLI : `match auto_iterations(&params, &cancel) { Ok(r) => { params.
 /// iteration_max = r.iteration_max; eprintln!("{}", r.summary_line()) }
@@ -693,14 +773,24 @@ pub fn auto_iterations_with(
     let first_cap = cap;
     let mut no_escape_growths = 0u32;
     let mut rounds = 0u32;
+    let mut round_log: Vec<ProbeRound> = Vec::new();
+    // Buffers du tour précédent et son plafond (sonde incrémentale).
+    let mut previous: Option<(Arc<Vec<u32>>, Arc<Vec<Complex64>>, u32)> = None;
     loop {
         if cancel.load(Ordering::Relaxed) {
             return Err(AutoIterError::Cancelled);
         }
         let round_started = Instant::now();
         let p = probe_params(params, w, h, cap);
-        let out = render_request(RenderRequest::new(&p, cancel), orbit_cache)
-            .ok_or(AutoIterError::Cancelled)?;
+        let reuse = match (&previous, opts.incremental) {
+            (Some((iters, zs, prev_cap)), true) => escaped_reuse_map(iters, zs, *prev_cap, &p),
+            _ => None,
+        };
+        let mut request = RenderRequest::new(&p, cancel);
+        if let Some(map) = reuse.as_ref() {
+            request = request.with_xaos(map);
+        }
+        let out = render_request(request, orbit_cache).ok_or(AutoIterError::Cancelled)?;
         if cancel.load(Ordering::Relaxed) {
             return Err(AutoIterError::Cancelled);
         }
@@ -708,6 +798,25 @@ pub fn auto_iterations_with(
         let stats = IterationStats::from_iterations(&out.iterations, cap);
         let advice = assess_iterations(&stats);
         let last_round = rounds >= opts.max_rounds || cap >= ceiling;
+        round_log.push(ProbeRound {
+            cap,
+            secs: round_started.elapsed().as_secs_f64(),
+            capped: stats.capped,
+            computed: stats.total - reuse.as_ref().map_or(0, |m| m.copied),
+        });
+        if debug_enabled() {
+            eprintln!(
+                "[AUTO-ITER] round {rounds} cap={cap} {:.3}s capped={} computed={} escaped={} pred={:.5} rec={} heavy={}",
+                round_started.elapsed().as_secs_f64(),
+                stats.capped,
+                round_log.last().map_or(0, |r| r.computed),
+                stats.escaped,
+                advice.predicted_change,
+                advice.recommended,
+                advice.heavy_tail
+            );
+        }
+        let log = round_log.clone();
 
         let finish = |chosen: u32, ceiling_hit: bool, no_escape: bool, pred: f64| AutoIterResult {
             iteration_max: chosen,
@@ -721,6 +830,7 @@ pub fn auto_iterations_with(
             predicted_change: pred,
             ceiling_hit,
             no_escape,
+            round_log: log.clone(),
         };
 
         if advice.no_escape {
@@ -735,6 +845,7 @@ pub fn auto_iterations_with(
                         <= opts.no_escape_budget.as_secs_f64())
             {
                 no_escape_growths += 1;
+                // Rien d'évadé : aucun pixel à reprendre au tour suivant.
                 cap = cap.saturating_mul(4).min(ceiling);
                 continue;
             }
@@ -757,6 +868,7 @@ pub fn auto_iterations_with(
         if last_round {
             return Ok(finish(cap, cap >= ceiling, false, advice.predicted_change));
         }
+        previous = Some((Arc::new(out.iterations), Arc::new(out.zs), cap));
         let mut next = advice.recommended.max(cap.saturating_add(1));
         if advice.heavy_tail {
             next = next.min(cap.saturating_mul(HEAVY_TAIL_GROWTH));
@@ -963,6 +1075,89 @@ mod tests {
         assert!(!r.no_escape && !r.ceiling_hit, "{r:?}");
         assert!(r.iteration_max > r.max_escaped / 2, "{r:?}");
         assert!(r.iteration_max < 200_000, "{r:?}");
+    }
+
+    /// Rendu de sonde au plafond `4·cap` avec la carte de reprise des pixels
+    /// évadés sous `cap` == rendu complet au plafond `4·cap`, au bit près
+    /// (itérations ET z final), et seuls les pixels plafonnés sont calculés.
+    fn assert_incremental_round_is_exact(params: &FractalParams, cap: u32) {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (w, h) = probe_dimensions(params.width, params.height, 1024);
+        let low = probe_params(params, w, h, cap);
+        let first = render_request(RenderRequest::new(&low, &cancel), &mut None).unwrap();
+        let high = probe_params(params, w, h, cap * 4);
+        let fresh = render_request(RenderRequest::new(&high, &cancel), &mut None).unwrap();
+        let (iters, zs) = (Arc::new(first.iterations.clone()), Arc::new(first.zs.clone()));
+        let map = escaped_reuse_map(&iters, &zs, cap, &high).expect("carte de reprise");
+        let escaped: Vec<usize> = (0..iters.len()).filter(|&k| iters[k] < cap).collect();
+        assert!(!escaped.is_empty() && escaped.len() < iters.len(), "vue sans mélange");
+        assert_eq!(map.copied, escaped.len(), "seuls les pixels évadés sont repris");
+        for (k, &it) in iters.iter().enumerate() {
+            let (i, j) = (k % w as usize, k / w as usize);
+            assert_eq!(map.source_index(i, j).is_some(), it < cap, "pixel {k}");
+        }
+        let inc = render_request(RenderRequest::new(&high, &cancel).with_xaos(&map), &mut None).unwrap();
+        assert_eq!(inc.iterations, fresh.iterations, "itérations");
+        let zs_equal = inc
+            .zs
+            .iter()
+            .zip(&fresh.zs)
+            .all(|(a, b)| a.re.to_bits() == b.re.to_bits() && a.im.to_bits() == b.im.to_bits());
+        assert!(zs_equal, "z final");
+    }
+
+    /// Path f64 standard (suivi + correction) puis path perturbation.
+    #[test]
+    fn incremental_probe_round_matches_full_round_bit_for_bit() {
+        let mut home = default_params_for_type(FractalType::Mandelbrot, 640, 360);
+        home.iteration_max = 2500;
+        assert_eq!(select_algorithm(&home, Device::Cpu), Algorithm::StandardF64);
+        assert_incremental_round_is_exact(&home, 300);
+        let deep = view("-0.743643887037158704752191506114774", "0.131825904205311970493132056385139", "1e13");
+        assert_eq!(select_algorithm(&deep, Device::Cpu), Algorithm::Perturbation);
+        assert_incremental_round_is_exact(&deep, 4000);
+    }
+
+    /// La sonde incrémentale choisit le MÊME plafond que la sonde complète,
+    /// tour pour tour (mêmes plafonds, mêmes pixels plafonnés), en ne
+    /// calculant aux tours ≥ 2 que les pixels plafonnés au tour précédent.
+    #[test]
+    fn incremental_probe_matches_full_probe() {
+        let mut bs = default_params_for_type(FractalType::BurningShip, 640, 360);
+        bs.iteration_max = 2500;
+        let mut multibrot = default_params_for_type(FractalType::Multibrot, 160, 100);
+        multibrot.center_x = -0.796875;
+        multibrot.center_y = -0.16875;
+        multibrot.span_x = 0.5;
+        multibrot.span_y = 0.5 * 100.0 / 160.0;
+        let seahorse = view("-0.743643887037158704752191506114774", "0.131825904205311970493132056385139", "1e13");
+        let mut multi_round = 0;
+        for p in [bs, multibrot, seahorse] {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let full = AutoIterOptions {
+                incremental: false,
+                ..AutoIterOptions::default()
+            };
+            let a = auto_iterations_with(&p, &cancel, full, &mut None).unwrap();
+            let inc = AutoIterOptions {
+                incremental: true,
+                ..full
+            };
+            let b = auto_iterations_with(&p, &cancel, inc, &mut None).unwrap();
+            assert_eq!(a.iteration_max, b.iteration_max, "{:?}", p.fractal_type);
+            assert_eq!(a.rounds, b.rounds);
+            for (k, (x, y)) in a.round_log.iter().zip(&b.round_log).enumerate() {
+                assert_eq!((x.cap, x.capped), (y.cap, y.capped), "tour {k}");
+                assert_eq!(x.computed, (a.probe_size.0 * a.probe_size.1) as usize, "complet : tout calculé");
+                if k > 0 {
+                    assert_eq!(y.computed, b.round_log[k - 1].capped, "tour {k} : plafonnés seuls");
+                }
+            }
+            if a.rounds > 1 {
+                multi_round += 1;
+            }
+        }
+        assert!(multi_round >= 2, "verrou vide : trop peu de sondes à plusieurs tours");
     }
 
     /// Path perturbation : l'orbite du dernier tour reste valide pour le

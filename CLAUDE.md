@@ -178,6 +178,7 @@ src/
 │   │   ├── interp_gmp.rs   # interpréteur GMP pour orbite référence
 │   │   ├── delta_form.rs   # DeltaState f64 + DeltaStateExp ComplexExp
 │   │   ├── direct_dd.rs    # itération directe double-double tracée (étage f64 → GMP, Julia/Tricorn)
+│   │   ├── direct_simd.rs  # étages directs dd/qd VECTORISÉS (8 pixels de front, sans branchement)
 │   │   ├── bla_dual.rs     # BLA mat2 unifié via dual-numbers
 │   │   ├── pixel_loop.rs   # BLA + delta-form + rebasing F3 (f64)
 │   │   ├── pixel_loop_exp.rs # idem ComplexExp (tier exp, boucle FloatExp de référence)
@@ -201,7 +202,8 @@ src/
 ├── render/
 │   ├── escape_time.rs    # dispatcher unique CLI↔GUI (sélection algo)
 │   ├── std_reliability.rs # suivi + correction des pixels non fiables du path f64 standard
-│   ├── scalar_reliability.rs # idem pour les boucles SCALAIRES hors bytecode (Barnsley : f64 tracé → dd → GMP)
+│   ├── scalar_reliability.rs # idem pour les boucles SCALAIRES hors bytecode (Barnsley, Alpha, Mandelbulb, Magnet, Sin : f64 tracé → dd → GMP)
+│   ├── dd_trig.rs        # sin/cos/exp en double-double (étage dd du sinus)
 │   └── tiles.rs          # G10.5 file de tuiles priorité-centre + sink streaming
 ├── gpu/                  # wgpu Vulkan/Metal/DX12
 │   ├── mod.rs              # GpuRenderer + pipeline bytecode
@@ -795,6 +797,24 @@ l'utilisateur (choix jugé inadapté, menu aussi) — retour à la case « XaoS 
   ×5 : 2,9 M itérations → 52 000 (37 s → 0,66 s à 128×80). Juge : volet
   `iter` de l'axe `wisdom` du harness. Calibration rejouable : `cargo run
   --release --example calibrate_auto_iter`. `AutoIterResult::summary_line()` = ligne anglaise.
+  **Sonde INCRÉMENTALE (2026-11-19)** — un pixel évadé sous le plafond C a
+  le même compte et le même z sous 4C : à partir du 2e tour seuls les pixels
+  PLAFONNÉS sont recalculés (éléphants 1e7 : 4131/4131/4131/4131 pixels par
+  tour → 4131/2152/845/13, sonde 7,65 → 3,94 s ; N identique sur 83/83 vues
+  du corpus). Mécanisme : la carte de raffinement XaoS (`build_refine_map`)
+  sur une frame source dont l'erreur vaut 0 pour un pixel évadé et 1e6 pour
+  un plafonné, passée au dispatcher unique — ⚠️ ne JAMAIS écrire un second
+  mécanisme de rendu partiel dans `wisdom_iter`. Vue non éligible à la copie
+  (rotation, K, nucleus, AA) ⇒ tour complet. ⚠️ La sonde a besoin de comptes
+  CORRIGÉS par la fiabilité : sur des comptes f64 bruts le N choisi est
+  gonflé jusqu'à ×1,56 (seahorse 1e7 : 90 000 → 140 000). ⚠️ Un tour
+  incrémental ne calcule que les pixels difficiles : le ratio de pixels non
+  fiables (calculé sur les pixels calculés) peut y déclencher l'escalade dd
+  plein cadre plus souvent — correct, seulement plus cher. Verrous
+  `incremental_probe_round_matches_full_round_bit_for_bit`,
+  `incremental_probe_matches_full_probe`. `FRACTALL_AUTO_ITER_INCREMENTAL=0`
+  (A/B), `FRACTALL_AUTO_ITER_DEBUG=1` (une ligne `[AUTO-ITER]` par tour) ;
+  outils `examples/probe_bench.rs`, `calibrate_auto_iter -- --probe-ab`.
   **Câblage CLI** (`main.rs`) : `iterations_choice` (ordre de résolution, cf.
   §CLI) puis `apply_auto_iterations` AVANT le choix du device et l'export F3 ;
   le cache d'orbite de la sonde est passé à `render_planned` ; un TOML qui
@@ -953,6 +973,26 @@ d'évasion), avant le GMP pur (150 ns/itération). Conditions
 avant). Sortie identique au chemin tout-GMP ; Tricorn bord 128×80 :
 correction 0,17-0,27 s → 0,033 s. Burning Ship reste en opt-in : son bord
 est `CHAOS` (98 % de pixels signalés, juge 256 b ≠ 512 b).
+**Étage dd direct dans la correction `GmpCapped` du path standard
+(2026-11-19)** — `perturbation::direct_dd_pixels` (partagé avec
+`recompute_pixels_cpu`) passe AVANT le GMP pur pour Mandelbrot/Julia tournés
+et les familles à pliage ; le plafond GMP ne s'applique plus qu'au reste
+(seahorse 1e7 tourné 30° : 310 px faux sans suivi → 0, correction 0,77 →
+0,065 s). Les opcodes abs n'exigent aucun test au pli : abs est
+1-lipschitzien, la borne absolue lui survit (verrou
+`direct_dd_stage_agrees_with_gmp_on_fold_families`). **Suivies par défaut** :
+variantes Julia de Burning Ship / Tricorn / Buffalo / Perp. BS (Perp. BS
+Julia bord 9 px faux → 0). **Mode `StdCorrection::Budgeted`** (Perp. BS
+Mandelbrot-like, accueil 2 px faux → 0) : rien n'est corrigé au-delà de 2 %
+de pixels signalés (`FOLD_FLAG_BUDGET`), seuls les pixels ÉVADÉS sont tentés
+(86 % des signalés sont des orbites chaotiques bornées que le dd ne garantit
+jamais : les tenter coûtait ×3 pour rien), GMP sous le seul plafond en
+pixels (le budget de 5 % des itérations y coûtait ×4). Restent en opt-in
+`all` : BS / Celtic / Buffalo Mandelbrot-like (accueil 5-10 % de signalés,
+bord CHAOS) et Celtic Julia (intérieur à attracteur chaotique borné : borne
+emballée sur 52 % du bord sans compte faux, ×7). ⚠️ Le z final d'un pixel
+corrigé par le dd n'est garanti qu'à `max(E_MAX, 0,01·|z|)` : un verrou ne
+compare à l'octet que les ITÉRATIONS.
 **Boucles scalaires suivies (`render/scalar_reliability.rs`, 2026-11-19)** —
 les types hors bytecode n'avaient aucun suivi. Barnsley (Julia et
 Mandelbrot) est le premier : la carte `z' = (z ∓ 1)·c` dilate de |c| par pas
@@ -966,6 +1006,52 @@ L1, tests sur `norm_sqr`) et suivi INERTE une fois le pixel signalé — la
 première version coûtait ×2,8 sur les vues chaotiques, celle-ci +30 %.
 Interrupteur : `FRACTALL_RELIABILITY_STD=0`. Étendre à un type = sa boucle
 tracée f64 + dd et une entrée dans `scalar_reliability::plan`.
+**Alpha Mandelbrot, Mandelbulb, Magnet Julia suivis (2026-11-19)** — bords
+×4096 : 116 / 101 / 8 px faux → 0 (juge convergé). Coût : traqueur seul
++22 à +42 % (Alpha au-dessus de la cible), rendu de bord ×1,9-2,3 (17-22 %
+de pixels signalés, dont un sur cinq réellement faux), accueil dans le
+bruit. Étage dd à voies entrelacées monomorphisées (41-44 ns/it.) avec
+raccourci des cycles exacts (Magnet : 40 → 1,3 ns/it.). ⚠️ Règles payées
+cette nuit : (1) le multiplicateur d'un pas est le module de la dérivée
+EXACTE (Alpha `|1+2m|`, pas `1+2|m|` qui signale 100 % des pixels ; Magnet
+`|z−r|/|q|`) — l'inégalité triangulaire détruit les annulations ; (2) ne
+jamais élever à une puissance un majorant sans racine de |z| (×1,083 devient
+×1,74 sur |z|⁷) : suivre `g = E²`, multiplicateurs au carré exacts par
+`norm_sqr`, sommes par `(x+y)² ≤ (1+δ)x² + (1+1/δ)y²` ; (3) une borne NON
+linéarisée reste rigoureuse à grande erreur : seuil 0,25 au lieu de 1e-3,
+c'est le test d'évasion qui décide ; (4) la chaîne de dépendance de `g` ne
+doit pas être plus longue que celle de `z` (Alpha +114 % → +40 %) ; (5) le
+raccourci de cycle de l'étage dd compare AUSSI la borne ; (6) l'addition dd
+« rapide » a une erreur relative aux OPÉRANDES, pas au résultat. **Phoenix
+reste non suivi** (2 px) : toute borne en modules du couple (z, y) a un
+rayon spectral > 1 dès |z| > ¼ et s'emballe sur 100 % du bord alors que le
+vrai jacobien contracte par les phases. Verrous
+`tracked_scalar_loops_are_bit_identical_to_production_loops`,
+`dd_lanes_match_single_pixel_loop`, `tracked_scalar_edges_match_gmp`.
+**Magnet Mandelbrot, Mandelbrot Sin, Julia Sin suivis (2026-11-20)** — les
+juges GMP accélérés ont montré 11 % de pixels faux sur les bords Magnet
+Mandelbrot (273 px) et Mandelbrot Sin (294 px) : 0 après suivi. Magnet M =
+la carte de Magnet Julia avec `s` = le pixel (`magnet_f64` commune). Sinus :
+multiplicateur = dérivée EXACTE `|cos ẑ|² = cos²x + sinh²y`, reste
+`½E²·cosh(|y|+E)` ; composantes par `iterations::csin_parts` (verrou
+`csin_parts_rebuild_csin_bit_for_bit`) ; étage dd par `render/dd_trig.rs`
+(sin/cos/exp double-double, constantes GMP en `OnceLock`, ~340 ns/it. contre
+~15 µs en GMP ; verrou `dd_trig_matches_mpfr_within_bounds`). Traqueur seul
++1 à +26 %. ⚠️ **Le prix est au bord** : Mandelbrot Sin 256×160 1,8 → 13,9 s
+(29 % de pixels signalés, 1,8 % au-delà du dd → GMP), Magnet M 0,65 → 3,2 s
+— les pixels envoyés au GMP sont nécessaires (15-30 % divergent en dd mené à
+son terme). ⚠️ Règles : (1) une borne qui décroît vers un point fixe nul
+passe en SOUS-NORMAUX (assistance micro-code, +165 % sur l'intérieur de
+Mandelbrot Sin) → plancher sur le facteur additif (`SIN_FLOOR`) ; (2) un
+majorant `cosh y` du multiplicateur ne s'annule pas près de Re z = ±π/2 et
+emballe l'intérieur ; (3) une sortie sur SEUIL (pôle de Magnet,
+`|q|² < 1e-24`) se juge sur |q̂| + erreur, pas sur l'erreur seule (verrou
+`magnet_pole_exit_is_judged_on_q_plus_error`) ; (4) « dd signalé ≠ GMP » ne
+prouve rien : un pixel signalé s'arrête au pas du signalement — pour juger
+le dd, le mener à son terme sans borne (`dd_untracked`) ; (5) l'étage GMP qui
+arbitre le dd/qd ne descend JAMAIS sous 256 b (`GMP_FLOOR_BITS` ; avec
+`precision_bits` abaissé il tombait à 128 b : Mandelbulb 1667 « corrigé » au
+lieu de 1492 — même plancher dans `std_reliability`).
 ⚠️ **L'emballement ne voit pas un bord PARABOLIQUE** (2026-11-19) : près
 d'un point parabolique l'erreur ne s'amplifie pas exponentiellement, elle
 déplace le temps de transit du goulot, et l'orbite s'évade quelques pas plus
@@ -977,6 +1063,49 @@ faux, tous des valeurs dd « fiables ». D'où le test d'évasion relatif
 (`shallow_dd_escape_rel`, pixel ≥ 1e-13) : en profond il ne change aucun
 pixel du corpus et coûte jusqu'à ×2. Le plafond FIXE (2500) de l'axe truth
 ne pouvait pas le voir : c'est la scène à plafond auto qui l'a montré.
+**Vue peu profonde : corriger par itération DIRECTE dd puis qd, jamais par
+perturbation dd (2026-11-19)** — pixel ≥ 1e-13, Mandelbrot, dans
+`recompute_pixels_cpu` et la correction plein cadre. La référence au centre
+s'y évade tôt (1 767 points aux éléphants 1e7) : chaque pixel rebase sans
+cesse, la BLA ne saute rien, et la perturbation dd coûte ~7× l'itération
+directe dd. Chaîne : perturbation f64 tracée → **dd direct** → **qd direct**
+(`direct_dd.rs` générique sur `DirectNum`, `iterate_direct_qd`) → GMP.
+Éléphants 1e7, 60 000 it., 256×160 : GMP 1 848 px → 63, correction ÷2,5-3,
+pixels faux 12 → 6 ; perturbation FORCÉE sur la même vue 4,2 % de pixels
+faux → 6 px. Le qd direct règle ~98 % de ce que le dd refuse pour ~2,5×
+moins cher que le GMP 256 b ; pas de plafond en fraction de pixels sur le
+path standard (il ne remplace que du GMP), budget `SHALLOW_QD_ITER_BUDGET`
+(Σ itérations ≤ 0,5 × frame) en perturbation plein cadre. `GmpCapped` gagne
+le même étage qd. ⚠️ Au bord parabolique à fort plafond le traqueur NE
+surestime PAS : 73 % des pixels signalés (12 944 / 17 747) sont réellement
+faux en f64 brut — le levier est le prix par pixel, pas le détecteur.
+**Référence de correction du path standard dans le cache d'orbite**
+(`correct_std_pixels_cached`) : relue au rendu final après sonde et entre
+passes GUI (pas entre tours de sonde : `is_valid_for` exige un plafond ≥).
+Verrous `direct_qd_stage_agrees_with_gmp_beyond_dd`,
+`std_correction_reference_goes_through_the_orbit_cache`,
+`parabolic_edge_at_auto_cap_matches_gmp` (étendu à la perturbation forcée).
+**Étages directs VECTORISÉS (`bytecode/direct_simd.rs`, 2026-11-19)** —
+8 pixels de front, chaque composante dd/qd est un vecteur de 8 flottants,
+voie rechargée dès qu'elle sort. dd : 27,7 → 8,0 ns/it. (natif), 33,5 →
+15,4 (baseline x86-64 des releases) ; qd : 121,6 → 32,6 / 150,8 → 74,9.
+Éléphants 1e7 60 000 it. 256×160 : correction 7,65 → 2,73 s. dd identique
+au bit à `iterate_direct_dd` ; le qd a une renormalisation SANS branchement
+(bits de z ≠ ancien `Qd` quand une composante est nulle, borne U_QD = 2⁻²⁰⁶
+vérifiée contre rug) ; l'ancienne boucle reste en témoin
+(`iterate_direct_qd_branchy`). ⚠️ Des voies entrelacées sur un dd/qd
+scalaire à branches ne donnent que ×1,5 : le gain vient de la
+VECTORISATION, donc d'une arithmétique sans branchement. ⚠️ Sans `fma` à la
+compilation (releases x86-64 baseline), `f64::mul_add` est un APPEL libm, ni
+inliné ni vectorisé : `two_prod` passe par `cfg!(target_feature = "fma")`
+sinon découpage de Dekker (mêmes bits, verrou `dekker_matches_fma`).
+**Étage f64 sauté quand la référence est courte** (`short_reference_skips_
+f64` : vue peu profonde ET référence évadée avant le quart du plafond) :
+une perturbation autour d'une référence évadée tôt n'est qu'une itération
+directe avec frais généraux, et son traqueur ratait un décalage d'une
+itération au bord parabolique (éléphants : 6 → 2 px faux). Référence
+intérieure (seahorse) : l'étage f64 avec BLA reste 3-20× moins cher, gardé.
+`FRACTALL_SHALLOW_SKIP_F64=0`. Banc : test `--ignored bench_direct_simd`.
 ⚠️ **Ne pas chercher à resserrer le terme `l·ε` du saut BLA f64** : à
 ε = 2⁻⁵³ la troncature réelle est négligeable (borne du second ordre
 implémentée et testée : la substituer revient à retirer le terme) et c'est
@@ -1044,6 +1173,10 @@ Tous lus UNE fois (`OnceLock`). Défaut = comportement de production.
 | `FRACTALL_STD_CYCLE=0` | path f64 standard (lots ET boucles scalaires) : pas de raccourci des cycles exacts — chaque point intérieur itère jusqu'au plafond |
 | `FRACTALL_ORBIT_PAR=0` | orbite de référence : itération GMP sur un seul cœur |
 | `FRACTALL_ORBIT_PAR_MIN_BITS=n` | précision à partir de laquelle l'orbite utilise le fil assistant (défaut 2048) |
+| `FRACTALL_ORBIT_RESUME=0` | orbite de référence recalculée de zéro quand le plafond monte (pas de prolongation) |
+| `FRACTALL_CONFORMAL_BLA_EAGER=1` | table BLA conformale legacy construite avec l'orbite (au lieu de la première lecture) |
+| `FRACTALL_AUTO_ITER_INCREMENTAL=0` | sonde d'itérations : chaque tour recalcule tous les pixels |
+| `FRACTALL_AUTO_ITER_DEBUG=1` | une ligne `[AUTO-ITER]` par tour de sonde (plafond, durée, pixels calculés) |
 | `FRACTALL_EXP_SCALED=0` | tier exp : boucle FloatExp au lieu du « double mis à l'échelle » |
 | `FRACTALL_EXP_SCALED_STATS=1` | ventilation des tours de la boucle scaled (rapide / lent / causes de repli) |
 | `FRACTALL_JULIA_FAST=0` | Julia en perturbation : pas générique au lieu du fast-path inline (⚠️ sans effet tant que le suivi de fiabilité Julia est actif : couper aussi `FRACTALL_RELIABILITY_FAMILY=0`) |
@@ -1058,7 +1191,10 @@ Tous lus UNE fois (`OnceLock`). Défaut = comportement de production.
 | `FRACTALL_RELIABILITY_GMP_MAX_FRACTION=f` | plafond de l'escalade dd → GMP (défaut 0,001 ; ≥ 1 = illimité) |
 | `FRACTALL_DD_PROBE=1` | sonde dd avant l'escalade frame (opt-in) : scène dont la majorité des pixels non fiables échappe aussi au dd ⇒ f64 gardé avec avertissement, frame dd non rendue |
 | `FRACTALL_F64_MARGIN=1` | test de détermination à l'évasion au tier f64 (opt-in, +75-195 %) |
-| `FRACTALL_DIRECT_DD=0` | correction des familles sans tier dd (Julia, Tricorn) : pas d'étage double-double direct, les pixels signalés partent droit au GMP pur (sortie identique, ×5-8 plus lent sur un bord) |
+| `FRACTALL_SHALLOW_DIRECT=0` | vues peu profondes : correction par perturbation dd/qd au lieu des étages directs dd puis qd (93 px faux sur éléphants 1e7 en perturbation forcée) |
+| `FRACTALL_SHALLOW_SKIP_F64=0` | vue peu profonde à référence courte : garde l'étage de perturbation f64 tracée avant le dd direct |
+| `FRACTALL_DIRECT_QD=0` | coupe l'étage qd direct (les pixels que le dd direct refuse partent au GMP) |
+| `FRACTALL_DIRECT_DD=0` | correction des familles sans tier dd (Julia, Tricorn) et correction `GmpCapped` du path standard : pas d'étage double-double direct, les pixels signalés partent droit au GMP pur (sortie identique, ×5-8 plus lent sur un bord) |
 | `FRACTALL_DD_ESCAPE_SHALLOW=0\|f` | correction dd des vues PEU PROFONDES (pixel ≥ 1e-13) : `0` coupe le test d'évasion relatif (défaut 0,01·\|z\|), une valeur le remplace. Sans lui, bord parabolique à fort plafond (éléphants 1e7, 60 000 it.) : 1,2 % de pixels faux |
 | `FRACTALL_DD_ESCAPE_REL=0.1` | tier dd : pixel non fiable si sa borne ≥ 0,1·\|z\| à l'évasion (opt-in — corrige le dernier pixel faux de seahorse-valley 256², coûte ×2 sur e227 pour 0 pixel changé) |
 | `FRACTALL_DD_FAST=0` | boucle `DoubleDoubleExp` au lieu du chemin rapide dd |
@@ -1089,6 +1225,26 @@ ses temporaires à chaque appel (60 % du temps dans `malloc` au profil) : dans
 une boucle GMP chaude, passer par MPFR sur tampons réutilisés — mais ne
 JAMAIS former `fl(x²) − fl(y²)` (double arrondi) si l'on veut les bits de
 `mpc_sqr`.
+
+**Types à racine / sinus / division (2026-11-19)** — f64 : Multibrot
+DEMI-entier (défaut 2,5) par `z^k·√z` algébrique (même branche que `powf`,
+signe de ±0 sur l'axe réel négatif compris) : ×2,1-2,6 ; sinus complexe
+`csin` par un `sincos` + un `expm1`, raccourci |Im z| < 2⁻²⁸ (sans lui
+l'accueil Mandelbrot Sin, dont l'intérieur est sur l'axe réel, perdait
+25 %) : ×1,1-1,3 ; Nova a le raccourci des cycles exacts. Juges GMP de ces
+types (`gmp.rs::MpfrOps`, tampons MPFR réutilisés + `MpcCycle` + puissances
+entières par multiplications) : Magnet M accueil 32 → 1,2 s, Multibrot
+Julia bord 135 → 2,2 s, Mandelbrot Sin accueil > 150 → 8 s — des scènes de
+l'axe `types` jusque-là `gmp:timeout` deviennent jugeables. `MpfrOps::mul`
+rend les bits de `mpc_mul` (verrou) ; division, racine et sinus sont à
+quelques ulp, non correctement arrondis. ⚠️ MPFR ne sous-déborde pas :
+l'intérieur de Mandelbrot Sin tend vers 0 sans l'atteindre, le raccourci de
+cycle ne mord jamais et `mpfr_sinh_cosh` travaille à p + log2(1/|t|) bits
+(~600 µs/itération) — d'où le raccourci du sinus d'argument minuscule.
+⚠️ Le `ns/px·it` de Pickover n'a pas de sens (sa sortie « itération » est
+une valeur de piège). Reste : ces boucles sont bornées par la LATENCE
+(sqrt → div, sincos/expm1) — le levier est un traitement par voies comme
+`interp_batch`.
 
 **Itération GMP de l'orbite** (`orbit.rs::fast_sqr_scratch`, Mandelbrot
 mono-phase) : `re' = (re+im)(re−im) + cr`, `im' = 2·re·im + ci` en 2
@@ -1139,8 +1295,37 @@ HP en GMP à chaque pixel au-delà de 1e308 (mémo depuis, verrou
 `hp_pixel_size_memo_follows_its_key`) ; l'outil pour le voir est
 `harness.py hotspots`.
 
+**Table BLA conformale PARESSEUSE** (`bla.rs::LazyBlaTable`, 2026-11-19) :
+la table legacy n'est lue qu'en repli hors bytecode ; elle n'est plus
+construite qu'à la première lecture (sonde seahorse 1e7 à 160 000 it. :
+0,37 s → 0 ; e8000 −0,1 s). ⚠️ Ne jamais construire une table DANS
+`OnceLock::get_or_init` ni sous un Mutex quand la lecture peut venir d'un
+worker rayon : le build est parallèle, le thread constructeur peut voler une
+tâche pixel qui relit la cellule → ré-entrée, blocage. Construire hors
+verrou puis `set` (le premier gagne) ; les chemins qui la liront à coup sûr
+la pré-construisent hors boucle ; la construire AVANT
+`strip_orbit_arrays_for_compress` (qui vide `z_ref_f64`).
+`FRACTALL_CONFORMAL_BLA_EAGER=1` (A/B).
+
+**Orbite PROLONGÉE** (`orbit.rs::OrbitTail`, `compute_reference_orbit_
+resuming`, 2026-11-19) : quand seul le plafond monte (sonde d'itérations,
+auto-ajustement, GUI), la boucle GMP reprend à la fin de l'orbite du cache
+au lieu de repartir de 0 — vue intérieure 1e300, sonde 76k → 304k → 1,2 M :
+10,2 → 7,6 s. Identique au bit près à une orbite fraîche (verrou
+`resumed_orbit_matches_fresh_orbit_bit_for_bit`). Périmètre : Mandelbrot non
+hybride, hors fast-path dd ≤ 96 b, sans orbite dense / compression / Brent.
+⚠️ La boucle GMP ne porte d'un tour à l'autre que z et dZ/dC : tout nouvel
+état porté par la boucle doit entrer dans `OrbitTail` (ou exclure la
+reprise). `FRACTALL_ORBIT_RESUME=0` (A/B).
+
 **Cache d'orbite** (`ReferenceOrbitCache`) : orbite + BLA réutilisées si même
-centre / type / précision. ⚠️ **Régime atom-domain** (`is_valid_for` +
+centre / type / précision. ⚠️ Le cache retient le plafond DEMANDÉ à sa
+construction (`requested_iteration_max`) : le relèvement du plafond du rendu
+à `cache.iteration_max` ne vaut que pour l'auto-ajustement de la série, donc
+seulement si la vue demande au moins autant — un cache bâti à 5000 puis
+réutilisé à 2000 (GUI) rendait TOUS les pixels au plafond du cache (défaut
+ancien fermé le 2026-11-20, verrou
+`lowering_the_cap_with_a_reused_orbit_matches_fresh_render`). ⚠️ **Régime atom-domain** (`is_valid_for` +
 `can_subset_reuse` → `atom_regime_scale_mismatch`) : la troncature atom-domain
 de la référence dépend de l'ÉCHELLE de vue (`atom_radius_sqr = span_vue²`), donc
 une référence est baked à son span de construction. En zoom profond

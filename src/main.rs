@@ -1747,6 +1747,7 @@ mod tests {
             predicted_change: 0.001,
             ceiling_hit: false,
             no_escape: false,
+            round_log: Vec::new(),
         };
         let lines = auto_iterations_messages(&r);
         assert_eq!(lines.len(), 1);

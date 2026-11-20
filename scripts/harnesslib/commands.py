@@ -174,7 +174,7 @@ def cmd_score(args) -> None:
         print("\n== TYPES (tous les types : vitesse + juge GMP) ==")
         card["types"] = axis_types(
             size=scene_size, timeout=timeout, mem_limit_mb=mem_limit_mb,
-            judge_timeout=cfg.get("judge_timeout", 30.0))
+            judge_timeout=cfg.get("judge_timeout", 90.0))
     if "goldens" in axes:
         print("\n== GOLDENS ==")
         card["goldens"] = axis_goldens()

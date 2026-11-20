@@ -191,14 +191,20 @@ pub(crate) const DIRECT_DD_MIN_PIXEL: f64 = 1e-22;
 
 /// Phase à itérer par l'étage double-double direct de la correction, ou
 /// `None` s'il ne s'applique pas : formule mono-phase à opcodes simples, plan
-/// Mu, vue assez peu profonde, et PAS le Mandelbrot non hybride (son tier dd
-/// de perturbation, plus rapide, passe avant). Graine non nulle d'un type
-/// Mandelbrot-like : exclue (le GMP pur de repli ne la porte pas non plus).
-fn direct_dd_phase(params: &FractalParams) -> Option<crate::fractal::bytecode::Phase> {
+/// Mu, vue assez peu profonde, et — sauf `with_dd_tier_types` — PAS le
+/// Mandelbrot non hybride (dans la correction par perturbation son tier dd
+/// de perturbation, plus rapide, passe avant ; la correction `GmpCapped` du
+/// path standard, qui sert le Mandelbrot TOURNÉ, n'a pas ce tier). Graine
+/// non nulle d'un type Mandelbrot-like : exclue (le GMP pur de repli ne la
+/// porte pas non plus).
+pub(crate) fn direct_dd_phase(
+    params: &FractalParams,
+    with_dd_tier_types: bool,
+) -> Option<crate::fractal::bytecode::Phase> {
     use crate::fractal::bytecode::{direct_dd, formula_for_params, Formula};
     if !direct_dd::direct_dd_enabled()
         || params.is_hybrid_formula()
-        || crate::fractal::wisdom::dd_tier_applicable(params)
+        || (!with_dd_tier_types && crate::fractal::wisdom::dd_tier_applicable(params))
         || params.plane_transform != crate::fractal::PlaneTransform::Mu
         || !(effective_pixel_size(params) >= DIRECT_DD_MIN_PIXEL)
     {
@@ -213,6 +219,151 @@ fn direct_dd_phase(params: &FractalParams) -> Option<crate::fractal::bytecode::P
         return None;
     }
     Some(formula.phases.remove(0))
+}
+
+/// Étage double-double DIRECT d'une correction : itère les pixels `flagged`
+/// (indices plein cadre) en double-double tracé depuis le point exact
+/// `centre HP + dc` (dc en GMP : K, jitter AA et décalage de référence
+/// compris). Renvoie `(pixels garantis, pixels à recalculer en GMP)`.
+pub(crate) fn direct_dd_pixels(
+    params: &FractalParams,
+    phase: &crate::fractal::bytecode::Phase,
+    cx: &Float,
+    cy: &Float,
+    dc_ctx: &DcGmpContext,
+    flagged: &[usize],
+) -> (Vec<(usize, u32, Complex64)>, Vec<usize>) {
+    use crate::fractal::bytecode::{direct_dd as ddd, direct_simd};
+    use crate::fractal::perturbation::dd::DoubleDouble;
+    let width = params.width.max(1) as usize;
+    let is_julia = crate::fractal::bytecode::Formula::is_julia_for(params.fractal_type);
+    let seed = (
+        DoubleDouble::from_f64(params.seed.re),
+        DoubleDouble::from_f64(params.seed.im),
+    );
+    let points: Vec<(DoubleDouble, DoubleDouble)> = flagged
+        .par_iter()
+        .map(|&idx| {
+            let (re, im) = direct_point(cx, cy, dc_ctx, idx, width);
+            (ddd::dd_from_gmp(&re), ddd::dd_from_gmp(&im))
+        })
+        .collect();
+    let tried: Vec<ddd::DirectDdResult> = points
+        .par_chunks(direct_chunk(points.len()))
+        .flat_map_iter(|ch| {
+            direct_simd::direct_dd_lanes(phase, ch, seed, is_julia, params.iteration_max, params.bailout)
+        })
+        .collect();
+    split_direct_results(flagged, tried)
+}
+
+/// Pixels par tâche rayon des étages directs (chaque tâche les passe en
+/// voies vectorielles, `bytecode::direct_simd`) : au plus 32, assez de
+/// tâches pour occuper tous les fils (≥ 4 par fil) — mais jamais moins d'un
+/// pixel par voie. Le découpage ne change aucun résultat (voies
+/// indépendantes).
+fn direct_chunk(n: usize) -> usize {
+    let lanes = crate::fractal::bytecode::direct_simd::QD_LANES;
+    (n / (4 * rayon::current_num_threads().max(1))).clamp(lanes, 32)
+}
+
+/// Point exact `centre HP + dc` d'un pixel (dc en GMP : K, jitter AA et
+/// décalage de référence compris).
+fn direct_point(cx: &Float, cy: &Float, dc_ctx: &DcGmpContext, idx: usize, width: usize) -> (Float, Float) {
+    let dc_gmp = dc_ctx.compute_dc(idx % width, idx / width);
+    let mut re = cx.clone();
+    re += dc_gmp.real();
+    let mut im = cy.clone();
+    im += dc_gmp.imag();
+    (re, im)
+}
+
+fn split_direct_results(
+    flagged: &[usize],
+    tried: Vec<crate::fractal::bytecode::direct_dd::DirectDdResult>,
+) -> (Vec<(usize, u32, Complex64)>, Vec<usize>) {
+    let mut fixed = Vec::with_capacity(tried.len());
+    let mut rest = Vec::new();
+    for (&idx, r) in flagged.iter().zip(tried) {
+        if r.reliable {
+            fixed.push((idx, r.iteration, r.z));
+        } else {
+            rest.push(idx);
+        }
+    }
+    (fixed, rest)
+}
+
+/// Étage quad-double DIRECT (~212 bits) : comme [`direct_dd_pixels`], pour
+/// les pixels que le double-double direct ne garantit pas. Pas de plafond en
+/// fraction de pixels : il ne remplace que du GMP pur, plusieurs fois plus
+/// cher (éléphants 1e7, 60 000 it., 256×160 : 3 885 pixels en 7,8-9,6 s contre
+/// 24,8 s en GMP pur à 256 b, machine chargée).
+pub(crate) fn direct_qd_pixels(
+    params: &FractalParams,
+    phase: &crate::fractal::bytecode::Phase,
+    cx: &Float,
+    cy: &Float,
+    dc_ctx: &DcGmpContext,
+    flagged: &[usize],
+) -> (Vec<(usize, u32, Complex64)>, Vec<usize>) {
+    use crate::fractal::bytecode::{direct_dd as ddd, direct_simd};
+    use crate::fractal::perturbation::qd::Qd;
+    let width = params.width.max(1) as usize;
+    let is_julia = crate::fractal::bytecode::Formula::is_julia_for(params.fractal_type);
+    let seed = (Qd::from_f64(params.seed.re), Qd::from_f64(params.seed.im));
+    let points: Vec<(Qd, Qd)> = flagged
+        .par_iter()
+        .map(|&idx| {
+            let (re, im) = direct_point(cx, cy, dc_ctx, idx, width);
+            (ddd::qd_from_gmp(&re), ddd::qd_from_gmp(&im))
+        })
+        .collect();
+    let tried: Vec<ddd::DirectDdResult> = points
+        .par_chunks(direct_chunk(points.len()))
+        .flat_map_iter(|ch| {
+            direct_simd::direct_qd_lanes(phase, ch, seed, is_julia, params.iteration_max, params.bailout)
+        })
+        .collect();
+    split_direct_results(flagged, tried)
+}
+
+/// Étages DIRECTS d'une correction : double-double puis quad-double
+/// (`FRACTALL_DIRECT_QD=0` coupe le second). Renvoie `(pixels garantis,
+/// pixels à recalculer en GMP)`.
+pub(crate) fn direct_stages(
+    params: &FractalParams,
+    phase: &crate::fractal::bytecode::Phase,
+    cx: &Float,
+    cy: &Float,
+    dc_ctx: &DcGmpContext,
+    flagged: &[usize],
+) -> (Vec<(usize, u32, Complex64)>, Vec<usize>) {
+    let t = Instant::now();
+    let (mut fixed, rest) = direct_dd_pixels(params, phase, cx, cy, dc_ctx, flagged);
+    let t_dd = t.elapsed();
+    let n_dd = fixed.len();
+    let t = Instant::now();
+    let rest = if !rest.is_empty() && crate::fractal::bytecode::direct_dd::direct_qd_enabled() {
+        let (fq, rq) = direct_qd_pixels(params, phase, cx, cy, dc_ctx, &rest);
+        fixed.extend(fq);
+        rq
+    } else {
+        rest
+    };
+    if perf_enabled() {
+        eprintln!(
+            "[DIRECT] px={} dd_kept={} dd={:.3}s qd_kept={} qd_kept_iters={} qd={:.3}s rest={}",
+            flagged.len(),
+            n_dd,
+            t_dd.as_secs_f64(),
+            fixed.len() - n_dd,
+            fixed[n_dd..].iter().map(|f| f.1 as u64).sum::<u64>(),
+            t.elapsed().as_secs_f64(),
+            rest.len()
+        );
+    }
+    (fixed, rest)
 }
 
 /// Taille de pixel au-dessus de laquelle une vue est « peu profonde » pour la
@@ -251,6 +402,57 @@ pub(crate) fn shallow_dd_escape_rel(pixel_size: f64) -> Option<f64> {
         }
     });
     shallow_dd_escape_rel_for(pixel_size, rel)
+}
+
+/// Budget du qd DIRECT de la correction plein cadre d'une vue peu profonde :
+/// Σ itérations (comptes f64/dd, une estimation par défaut) des pixels
+/// au-delà du dd ≤ cette fraction des itérations de la frame. Le qd direct
+/// coûte un ordre de grandeur de plus qu'une itération de perturbation f64 :
+/// le budget borne la correction à quelques fois le rendu, pour des pixels
+/// qui sinon restaient FAUX (plafond qd 1 %, GMP 0,1 % des pixels). Éléphants
+/// 1e7, 60 000 it., `--algorithm perturbation`, 256×160 : 4,2 % de pixels
+/// faux → 0,015 %, 13,9 → 10,8 s (avec le dd direct).
+pub(crate) const SHALLOW_QD_ITER_BUDGET: f64 = 0.5;
+
+/// Décision déterministe (jamais en temps) du budget [`SHALLOW_QD_ITER_BUDGET`].
+pub(crate) fn shallow_direct_qd_allowed(pixel_iters: f64, frame_iters: f64) -> bool {
+    pixel_iters <= SHALLOW_QD_ITER_BUDGET * frame_iters
+}
+
+/// Correction d'une vue peu profonde par les étages directs : l'étage
+/// perturbation f64 tracée est-il sauté (pixels envoyés droit au dd direct) ?
+/// Oui quand la référence s'est ÉVADÉE avant le quart du plafond : passé son
+/// bout, chaque pixel rebase sans cesse sur une orbite qui n'offre aucun saut
+/// BLA — la perturbation f64 n'est plus qu'une itération directe avec frais
+/// généraux, et elle déclarait fiables des pixels faux sur un bord
+/// PARABOLIQUE (évasion décalée d'un pas, borne loin de l'emballement).
+/// Éléphants 1e7, 60 000 it., 256×160 (référence évadée à 1 767) : étage f64
+/// 1,1 s (17 747 px, 8 978 réglés) + dd 0,8 s → dd seul 1,25 s, et pixels ≠
+/// GMP pur 256 b 6 → 2. Référence intérieure (seahorse 1e7 / 1e10, longueur
+/// = plafond) : la BLA rend l'étage f64 3-20× moins cher que le dd direct, il
+/// est gardé. Décision déterministe. `FRACTALL_SHALLOW_SKIP_F64=0` la coupe.
+pub(crate) fn short_reference_skips_f64(ref_len: usize, iteration_max: u32) -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let on = *ON.get_or_init(|| {
+        !matches!(
+            std::env::var("FRACTALL_SHALLOW_SKIP_F64").ok().as_deref().map(str::trim),
+            Some("0") | Some("off") | Some("false")
+        )
+    });
+    on && (ref_len as u64) * 4 < iteration_max as u64
+}
+
+/// `FRACTALL_SHALLOW_DIRECT=0` : correction des pixels d'une vue peu profonde
+/// par la perturbation dd/qd (comportement d'avant) au lieu des étages
+/// directs dd/qd (cf. `recompute_pixels_cpu`). Lu une fois.
+fn shallow_direct_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        !matches!(
+            std::env::var("FRACTALL_SHALLOW_DIRECT").ok().as_deref().map(str::trim),
+            Some("0") | Some("off") | Some("false")
+        )
+    })
 }
 
 fn shallow_dd_escape_rel_for(pixel_size: f64, rel: Option<f64>) -> Option<f64> {
@@ -468,8 +670,23 @@ pub fn recompute_pixels_cpu(
     let aa_jit = params.sampling.aa_jitter;
     let runaway = crate::fractal::bytecode::reliability::reliability_runaway() as f32;
     let is_julia = params.fractal_type == FractalType::Julia;
+    let t_f64 = Instant::now();
+    // Vue PEU PROFONDE (pixel ≥ `SHALLOW_DD_PIXEL`) : les étages DIRECTS
+    // (double-double puis quad-double, `bytecode::direct_dd`) remplacent la
+    // perturbation dd/qd. À ces profondeurs `c` tient dans 106 bits, la
+    // référence (au centre, souvent évadée tôt) n'offre aucun saut BLA et le
+    // pixel rebase sans cesse : la perturbation dd y coûtait ~7× l'itération
+    // directe (éléphants 1e7, 60 000 it., 256×160 : 18,3 s contre 2,6 s pour
+    // 8 769 pixels) pour une garantie du même ordre.
+    let shallow_direct = shallow_direct_enabled()
+        && effective_pixel_size(params) >= SHALLOW_DD_PIXEL
+        && direct_dd_phase(params, true).is_some();
+    // Et si la référence s'est évadée bien avant le plafond, même l'étage
+    // perturbation f64 est sauté (cf. `short_reference_skips_f64`).
+    let skip_f64 = shallow_direct && short_reference_skips_f64(cache.orbit.z_ref_f64.len(), params.iteration_max);
     let results: Vec<(usize, u32, Complex64, bool)> = indices
         .par_iter()
+        .filter(|_| !skip_f64)
         .map(|&idx| {
             let (i, j) = (idx % width, idx / width);
             let (jx, jy) = match aa_jit {
@@ -490,7 +707,7 @@ pub fn recompute_pixels_cpu(
                 delta::PerturbPixelRequest::new(
                     params,
                     &cache.orbit,
-                    &cache.bla_table,
+                    &cache.conformal_bla,
                     delta0,
                     dc_term,
                 )
@@ -501,22 +718,36 @@ pub fn recompute_pixels_cpu(
         })
         .collect();
 
-    let escalate: Vec<usize> = results
-        .iter()
-        .filter_map(|&(idx, _, _, e)| e.then_some(idx))
-        .collect();
+    let escalate: Vec<usize> = if skip_f64 {
+        indices.to_vec()
+    } else {
+        results.iter().filter_map(|&(idx, _, _, e)| e.then_some(idx)).collect()
+    };
     let mut out: Vec<(usize, u32, Complex64)> = results
         .iter()
         .filter(|r| !r.3)
         .map(|&(idx, it, z, _)| (idx, it, z))
         .collect();
+    let perf = perf_enabled();
+    if perf {
+        eprintln!(
+            "[RECOMPUTE] f64 px={} kept={} escalated={} time={:.3}s ref_len={}",
+            indices.len(),
+            out.len(),
+            escalate.len(),
+            t_f64.elapsed().as_secs_f64(),
+            cache.orbit.z_ref_f64.len()
+        );
+    }
     // Escalade préférée : tier dd sur les seuls pixels que le f64 juge aussi
     // non fiables (même arithmétique que l'escalade du plein cadre, ~25× moins
     // chère que le GMP par point) ; ce qui reste glitché en dd passe au GMP.
     // Mesuré Apple M4, hôte GPU f32, 1024² : coût d'escalade seahorse 1e6
     // 0,54 → 0,15 s, 1e8 1,92 → 0,74 s, spirale e20 3,49 → 1,08 s.
     let mut escalate = escalate;
-    if !escalate.is_empty()
+    // Vue peu profonde : étages directs au lieu de la perturbation dd/qd
+    // (cf. `shallow_direct` plus haut).
+    if !shallow_direct && !escalate.is_empty()
         && params.engine.use_bytecode_engine
         && !params.engine.use_dd_tier
         && !params.engine.find_nucleus
@@ -568,39 +799,18 @@ pub fn recompute_pixels_cpu(
         let cx = parse(&params.center_x_hp, params.center_x);
         let cy = parse(&params.center_y_hp, params.center_y);
         let dc_ctx = DcGmpContext::new(params, prec);
-        // Étage double-double DIRECT avant le GMP pur, pour les familles sans
-        // tier dd de perturbation (Julia, Tricorn) en vue peu profonde : ~10×
-        // moins cher par itération ; un pixel qu'il ne garantit pas garde le
+        // Étages DIRECTS (double-double puis quad-double) avant le GMP pur :
+        // familles sans tier dd de perturbation (Julia, Tricorn) et, en vue
+        // peu profonde, Mandelbrot. ~10× (dd) et ~2,5× (qd) moins chers par
+        // itération que le GMP ; un pixel qu'ils ne garantissent pas garde le
         // chemin GMP (cf. `bytecode::direct_dd`).
-        if let Some(phase) = direct_dd_phase(params) {
-            use crate::fractal::bytecode::direct_dd as ddd;
-            let is_julia = crate::fractal::bytecode::Formula::is_julia_for(params.fractal_type);
-            let seed = (
-                crate::fractal::perturbation::dd::DoubleDouble::from_f64(params.seed.re),
-                crate::fractal::perturbation::dd::DoubleDouble::from_f64(params.seed.im),
-            );
-            let tried: Vec<(usize, ddd::DirectDdResult)> = escalate
-                .par_iter()
-                .map(|&idx| {
-                    let dc_gmp = dc_ctx.compute_dc(idx % width, idx / width);
-                    let mut re = cx.clone();
-                    re += dc_gmp.real();
-                    let mut im = cy.clone();
-                    im += dc_gmp.imag();
-                    let point = (ddd::dd_from_gmp(&re), ddd::dd_from_gmp(&im));
-                    let (z0, c) = if is_julia { (point, seed) } else { (seed, point) };
-                    (idx, ddd::iterate_direct_dd(&phase, z0, c, params.iteration_max, params.bailout))
-                })
-                .collect();
-            escalate.clear();
-            for (idx, r) in tried {
-                if r.reliable {
-                    out.push((idx, r.iteration, r.z));
-                } else {
-                    escalate.push(idx);
-                }
-            }
+        if let Some(phase) = direct_dd_phase(params, shallow_direct) {
+            let (fixed, rest) = direct_stages(params, &phase, &cx, &cy, &dc_ctx, &escalate);
+            out.extend(fixed);
+            escalate = rest;
         }
+        let t_gmp = Instant::now();
+        let n_gmp = escalate.len();
         out.par_extend(escalate.par_iter().map(|&idx| {
             let dc_gmp = dc_ctx.compute_dc(idx % width, idx / width);
             let mut re = cx.clone();
@@ -610,6 +820,9 @@ pub fn recompute_pixels_cpu(
             let (it, z) = iterate_point_mpc(&gmp_params, &complex_from_xy(prec, re, im));
             (idx, it, complex_to_complex64(&z))
         }));
+        if perf {
+            eprintln!("[RECOMPUTE] gmp px={} time={:.3}s", n_gmp, t_gmp.elapsed().as_secs_f64());
+        }
     }
     out
 }
@@ -894,9 +1107,18 @@ pub fn render_perturbation_with_cache(
     } else {
         None
     };
-    let params = if cache.iteration_max > params.iteration_max || nucleus_k.is_some() {
+    // ⚠️ Le relèvement ne vaut que pour l'auto-ajustement : un cache bâti pour
+    // un plafond UTILISATEUR plus haut (5000) puis réutilisé par une vue qui
+    // demande moins (2000) ne doit pas imposer son plafond — tous les pixels
+    // sortaient avec des comptes au-delà du plafond demandé.
+    let cache_lift = if params.iteration_max >= cache.requested_iteration_max {
+        cache.iteration_max
+    } else {
+        params.iteration_max
+    };
+    let params = if cache_lift > params.iteration_max || nucleus_k.is_some() {
         let mut adjusted = params.clone();
-        adjusted.iteration_max = adjusted.iteration_max.max(cache.iteration_max);
+        adjusted.iteration_max = adjusted.iteration_max.max(cache_lift);
         if let Some((k, rot_deg)) = nucleus_k {
             adjusted.transform_k = Some(k);
             adjusted.rotation = rot_deg;
@@ -1097,6 +1319,14 @@ pub fn render_perturbation_with_cache(
     if cache.hybrid_refs.is_none() {
         crate::fractal::perturbation::delta::prewarm_bla_entry(params, &cache.orbit);
     }
+    // Table conformale (paresseuse) : quand le path bytecode ne s'applique pas,
+    // TOUS les pixels passent par le repli legacy qui la lit — la bâtir ici,
+    // pool rayon libre, plutôt qu'au premier pixel.
+    if !params.engine.use_bytecode_engine
+        || crate::fractal::perturbation::delta::bytecode_path_label(params).is_none()
+    {
+        cache.prewarm_conformal_bla();
+    }
     let t_bla = t_bla_start.elapsed();
 
     // ── COMPRESS phase 2 (FRACTALL_COMPRESS_REF=1) : la boucle pixel lit la
@@ -1255,7 +1485,7 @@ pub fn render_perturbation_with_cache(
                         iterate_pixel_with_dd(delta::PerturbPixelRequest {
                             params,
                             ref_orbit: &cache_ref.orbit,
-                            bla_table: &cache_ref.bla_table,
+                            bla_table: &cache_ref.conformal_bla,
                             series_table: cache_ref.series_table.as_ref(),
                             delta0,
                             dc: dc_term,
@@ -1680,8 +1910,44 @@ pub fn render_perturbation_with_cache(
                     );
                 }
             }
+            // Vue peu profonde : double-double DIRECT au lieu de la
+            // perturbation dd (cf. `recompute_pixels_cpu`) — ~4× moins cher (éléphants
+            // 1e7 forcé : 10,0 → 2,3 s pour 8 769 pixels) et plus strict ; ce qu'il
+            // ne garantit pas suit l'étage qd.
+            let shallow_phase = if dd_ok
+                && shallow_direct_enabled()
+                && effective_pixel_size(params) >= SHALLOW_DD_PIXEL
+            {
+                direct_dd_phase(params, true)
+            } else {
+                None
+            };
             let fixed = if family_pure {
                 Some(Vec::new())
+            } else if let Some(phase) = shallow_phase.as_ref() {
+                let prec = compute_perturbation_precision_bits(params);
+                let parse = |hp: &Option<String>, f: f64| match hp.as_deref().map(Float::parse) {
+                    Some(Ok(v)) => Float::with_val(prec, v),
+                    _ => Float::with_val(prec, f),
+                };
+                let cx = parse(&params.center_x_hp, params.center_x);
+                let cy = parse(&params.center_y_hp, params.center_y);
+                let dc_ctx = DcGmpContext::new(params, prec);
+                let t_d = Instant::now();
+                let (ok, rest) =
+                    direct_dd_pixels(params, phase, &cx, &cy, &dc_ctx, &unreliable_indices);
+                if perf_enabled() {
+                    eprintln!(
+                        "[RELIABILITY-DD-DIRECT] px={} kept={} time={:.3}s",
+                        unreliable_indices.len(),
+                        ok.len(),
+                        t_d.elapsed().as_secs_f64()
+                    );
+                }
+                let mut v: Vec<(usize, u32, Complex64, DdFix)> =
+                    ok.into_iter().map(|(i, it, z)| (i, it, z, DdFix::Ok)).collect();
+                v.extend(rest.into_iter().map(|i| (i, 0, Complex64::new(0.0, 0.0), DdFix::Unreliable)));
+                Some(v)
             } else if dd_ok {
                 correct_pixels_dd(
                     params,
@@ -1730,6 +1996,52 @@ pub fn render_perturbation_with_cache(
         // Tier qd (~212 b, G14.1 h) AVANT le GMP : sous son propre plafond
         // déterministe ; ce qu'il rend fiable est réglé, le reste (borne qd
         // emballée, hors domaine) suit la politique GMP ci-dessous.
+        // Vue PEU PROFONDE : quad-double DIRECT d'abord, sous un budget en
+        // COÛT (itérations), pas en fraction de pixels — le plafond qd de 1 %
+        // des pixels est calibré pour le profond (orbites de millions
+        // d'itérations à 200+ bits) ; ici `c` tient dans 106 bits et le qd
+        // direct coûte ~4× moins que le GMP par itération (cf.
+        // `shallow_direct_qd_allowed`).
+        if !dd_unreliable.is_empty()
+            && !params.engine.find_nucleus
+            && effective_pixel_size(params) >= SHALLOW_DD_PIXEL
+            && crate::fractal::bytecode::direct_dd::direct_qd_enabled()
+            && shallow_direct_enabled()
+        {
+            if let Some(phase) = direct_dd_phase(params, true) {
+                let est: f64 = dd_unreliable.iter().map(|&i| iterations[i] as f64).sum();
+                let frame: f64 = iterations.iter().map(|&n| n as f64).sum();
+                if shallow_direct_qd_allowed(est, frame) {
+                    let prec = compute_perturbation_precision_bits(params);
+                    let parse = |hp: &Option<String>, f: f64| match hp.as_deref().map(Float::parse) {
+                        Some(Ok(v)) => Float::with_val(prec, v),
+                        _ => Float::with_val(prec, f),
+                    };
+                    let cx = parse(&params.center_x_hp, params.center_x);
+                    let cy = parse(&params.center_y_hp, params.center_y);
+                    let dc_ctx = DcGmpContext::new(params, prec);
+                    let t_q = Instant::now();
+                    let n_in = dd_unreliable.len();
+                    let (fixed, rest) = direct_qd_pixels(params, &phase, &cx, &cy, &dc_ctx, &dd_unreliable);
+                    if cancel.load(Ordering::Relaxed) {
+                        return None;
+                    }
+                    for (idx, it, z) in fixed {
+                        iterations[idx] = it;
+                        zs[idx] = z;
+                    }
+                    dd_unreliable = rest;
+                    if perf_enabled() {
+                        eprintln!(
+                            "[RELIABILITY-QD-DIRECT] px={} kept={} time={:.3}s",
+                            n_in,
+                            n_in - dd_unreliable.len(),
+                            t_q.elapsed().as_secs_f64()
+                        );
+                    }
+                }
+            }
+        }
         if !dd_unreliable.is_empty() {
             dd_unreliable = qd_stage(params, &cache, cancel.as_ref(), dd_unreliable, width * height, &mut iterations, &mut zs)?;
         }
@@ -2609,6 +2921,48 @@ mod tests {
             "vue zoomée à orbite réutilisée ≠ rendu frais : {ndiff}/{} pixels",
             fresh.0.len()
         );
+    }
+
+    /// Baisser le plafond d'itérations avec un cache d'orbite bâti pour un
+    /// plafond plus haut (GUI : 5000 puis 2000) rend la vue au plafond
+    /// DEMANDÉ, comme un rendu frais — le cache imposait le sien.
+    #[test]
+    fn lowering_the_cap_with_a_reused_orbit_matches_fresh_render() {
+        use super::{render_perturbation_with_cache, ReferenceOrbitCache};
+        let (w, h) = (64u32, 40u32);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let make = |iters: u32| -> FractalParams {
+            let mut p = default_params_for_type(FractalType::Mandelbrot, w, h);
+            p.engine.algorithm_mode = AlgorithmMode::Perturbation;
+            p.iteration_max = iters;
+            let span_x = 4.0e-25_f64;
+            let span_y = span_x * h as f64 / w as f64;
+            p.center_x = -0.743643887037158704752191506114774;
+            p.center_y = 0.131825904205311970493132056385139;
+            p.center_x_hp = Some("-0.743643887037158704752191506114774".into());
+            p.center_y_hp = Some("0.131825904205311970493132056385139".into());
+            p.span_x = span_x;
+            p.span_y = span_y;
+            p.span_x_hp = Some(format!("{span_x:.17e}"));
+            p.span_y_hp = Some(format!("{span_y:.17e}"));
+            p
+        };
+        let (_high, cache): (_, Arc<ReferenceOrbitCache>) =
+            render_perturbation_with_cache(&make(5000), &cancel, None, None, None, None)
+                .expect("plafond haut");
+        let low = make(2000);
+        let (reused, _) =
+            render_perturbation_with_cache(&low, &cancel, None, Some(&cache), None, None)
+                .expect("plafond bas, cache réutilisé");
+        let (fresh, _) = render_perturbation_with_cache(&low, &cancel, None, None, None, None)
+            .expect("plafond bas, rendu frais");
+        // Anti-vacuité : le plafond bas mord (des pixels y butent), sinon
+        // l'abaisser ne changerait rien.
+        let capped = fresh.0.iter().filter(|&&i| i >= 2000).count();
+        assert!(capped > 0, "le plafond bas ne mord pas");
+        assert!(reused.0.iter().all(|&i| i <= 2000), "compte au-delà du plafond demandé");
+        let ndiff = reused.0.iter().zip(&fresh.0).filter(|(a, b)| a != b).count();
+        assert!(ndiff <= 2, "plafond abaissé, cache réutilisé ≠ rendu frais : {ndiff} pixels");
     }
 
     #[test]

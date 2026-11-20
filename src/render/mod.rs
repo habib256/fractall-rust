@@ -1,3 +1,4 @@
+pub(crate) mod dd_trig;
 pub mod escape_time;
 pub mod output;
 pub mod planned;

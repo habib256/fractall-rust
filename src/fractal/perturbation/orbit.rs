@@ -7,7 +7,7 @@ use rug::{Assign, Complex, Float};
 
 use crate::fractal::bytecode::{Formula, GmpInterpState};
 use crate::fractal::gmp::{complex_to_complex64, pow_f64_mpc};
-use crate::fractal::perturbation::bla::{build_bla_table, BlaTable};
+use crate::fractal::perturbation::bla::{BlaTable, LazyBlaTable};
 use crate::fractal::perturbation::series::{
     build_series_table_ho, compute_adaptive_series_order, validate_series_with_probes_tiled,
     SeriesTable,
@@ -293,12 +293,12 @@ fn orbit_reserve(n: usize) -> usize {
 pub struct HybridBlaReferences {
     /// Primary reference (phase 0)
     pub primary: ReferenceOrbit,
-    /// Primary BLA table (phase 0)
-    pub primary_bla: BlaTable,
+    /// Primary BLA table (phase 0) — construite à la première lecture.
+    pub primary_bla: LazyBlaTable,
     /// Secondary references for other phases (if cycle detected)
     pub phases: Vec<ReferenceOrbit>,
     /// BLA tables for each phase (one per reference)
-    pub phase_bla_tables: Vec<BlaTable>,
+    pub phase_bla_tables: Vec<LazyBlaTable>,
     /// Cycle period (0 if no cycle detected)
     pub cycle_period: u32,
     /// Cycle start index in the orbit
@@ -307,7 +307,7 @@ pub struct HybridBlaReferences {
 
 impl HybridBlaReferences {
     /// Get the BLA table for a specific phase
-    pub fn get_bla_table(&self, phase: u32) -> &BlaTable {
+    pub fn get_bla_table(&self, phase: u32) -> &LazyBlaTable {
         if phase == 0 {
             &self.primary_bla
         } else if (phase as usize) <= self.phase_bla_tables.len() {
@@ -423,6 +423,41 @@ pub struct ReferenceOrbit {
     /// (`phases[m % N]`) → garbage (prouvé : [M,BS] @3e10 = 1 couleur uniforme).
     /// Vide pour les rendus single-phase.
     pub hybrid_phase_refs: Vec<ReferenceOrbit>,
+    /// État de fin de la boucle GMP (z pleine précision + dZ/dC atom-domain)
+    /// qui permet de PROLONGER l'orbite à un plafond d'itérations plus grand
+    /// au lieu de la recalculer depuis 0 (cf. [`OrbitTail`]). `None` hors du
+    /// périmètre prolongeable (fast-path dd, hybrides, orbite GMP dense,
+    /// compression, Brent, types autres que Mandelbrot).
+    pub tail: Option<OrbitTail>,
+}
+
+/// État de fin d'une orbite GMP Mandelbrot, assez pour la PROLONGER.
+///
+/// La boucle de `compute_reference_orbit_phase` ne porte d'un tour au suivant
+/// que `z` (GMP) et, sous la troncature atom-domain, `dZ/dC` (ComplexExp) ;
+/// tout le reste est stocké dans les tableaux de l'orbite ou ne dépend que de
+/// l'indice. Reprendre la boucle à `i = len − 1` avec cet état produit donc
+/// l'orbite qu'un calcul frais au plafond plus grand aurait produite, au bit
+/// près — à condition que tout ce qui paramètre la boucle soit identique
+/// ([`OrbitTailKey`] + `cref_gmp`), ce que la reprise vérifie elle-même.
+#[derive(Clone, Debug)]
+pub struct OrbitTail {
+    z: Complex,
+    atom_dz: ComplexExp,
+    key: OrbitTailKey,
+}
+
+/// Tout ce qui paramètre la boucle GMP en dehors du plafond d'itérations.
+#[derive(Clone, Debug, PartialEq)]
+struct OrbitTailKey {
+    prec: u32,
+    seed_bits: (u64, u64),
+    build_dd: bool,
+    build_lo: bool,
+    lazy_lo: bool,
+    atom_period_enabled: bool,
+    /// `atom_radius_sqr` (échelle de vue) : (mantisse en bits, exposant).
+    atom_radius_sqr: (u64, i32),
 }
 
 impl ReferenceOrbit {
@@ -510,6 +545,7 @@ impl ReferenceOrbit {
             atom_truncated: self.atom_truncated,
             compressed_f64: None,
             hybrid_phase_refs: Vec::new(),
+            tail: None,
         })
     }
 
@@ -718,6 +754,7 @@ impl ReferenceOrbit {
             atom_truncated: false,
             compressed_f64: None,
             hybrid_phase_refs: Vec::new(),
+            tail: None,
         })
     }
 }
@@ -727,7 +764,10 @@ impl ReferenceOrbit {
 #[derive(Clone, Debug)]
 pub struct ReferenceOrbitCache {
     pub orbit: ReferenceOrbit,
-    pub bla_table: BlaTable,
+    /// Table BLA conformale historique, construite à la PREMIÈRE lecture
+    /// (cf. [`LazyBlaTable`]) : le path CPU bytecode ne la lit qu'en repli
+    /// legacy. Lecture : [`ReferenceOrbitCache::bla_table`].
+    pub conformal_bla: LazyBlaTable,
     /// Hybrid BLA references (multiple phases if cycle detected)
     pub hybrid_refs: Option<HybridBlaReferences>,
     /// Standalone series table for iteration skipping (optional)
@@ -739,6 +779,12 @@ pub struct ReferenceOrbitCache {
     pub fractal_type: FractalType,
     pub precision_bits: u32,
     pub iteration_max: u32,
+    /// Plafond DEMANDÉ par la vue qui a bâti ce cache, avant tout
+    /// auto-ajustement par la série (`iteration_max` ≥ celui-ci). Sert à
+    /// distinguer « plafond relevé par l'auto-ajustement » (à propager au
+    /// rendu) de « cache bâti pour un plafond utilisateur plus haut » (à ne
+    /// PAS imposer à une vue qui demande moins).
+    pub requested_iteration_max: u32,
     /// Julia seed (for Julia-type fractals)
     pub seed_re: f64,
     pub seed_im: f64,
@@ -774,6 +820,26 @@ pub struct ReferenceOrbitCache {
 }
 
 impl ReferenceOrbitCache {
+    /// Table BLA conformale de l'orbite du cache, construite au besoin.
+    /// ⚠️ À lire AVANT `strip_orbit_arrays_for_compress` (qui vide
+    /// `z_ref_f64`) : le strip la pré-construit pour cette raison.
+    pub fn bla_table(&self) -> &BlaTable {
+        self.conformal_bla.get(&self.orbit.z_ref_f64)
+    }
+
+    /// Pré-construit les tables conformales (primaire et phases hybrides
+    /// Brent) hors de la boucle pixel — à appeler quand le repli legacy les
+    /// lira à coup sûr.
+    pub fn prewarm_conformal_bla(&self) {
+        self.conformal_bla.prewarm(&self.orbit.z_ref_f64);
+        if let Some(h) = &self.hybrid_refs {
+            h.primary_bla.prewarm(&h.primary.z_ref_f64);
+            for (orbit, table) in h.phases.iter().zip(&h.phase_bla_tables) {
+                table.prewarm(&orbit.z_ref_f64);
+            }
+        }
+    }
+
     /// La troncature atom-domain de la référence dépend de l'**échelle de vue** :
     /// le critère `|Z|² < s²·|dZ|²` (orbit.rs, `atom_radius_sqr = span_vue²`)
     /// coupe TÔT à grand span et TARD à petit span. Conséquence : la longueur
@@ -911,7 +977,7 @@ impl ReferenceOrbitCache {
     /// au lieu du preset (params.precision_bits) pour garantir la cohérence.
     pub fn new(
         orbit: ReferenceOrbit,
-        bla_table: BlaTable,
+        conformal_bla: LazyBlaTable,
         series_table: Option<SeriesTable>,
         params: &FractalParams,
         center_x_gmp: String,
@@ -924,13 +990,14 @@ impl ReferenceOrbitCache {
 
         Self {
             orbit,
-            bla_table,
+            conformal_bla,
             series_table,
             center_x_gmp,
             center_y_gmp,
             fractal_type: params.fractal_type,
             precision_bits: computed_precision, // Stocker la précision calculée au lieu du preset
             iteration_max: params.iteration_max,
+            requested_iteration_max: params.iteration_max,
             seed_re: params.seed.re,
             seed_im: params.seed.im,
             bla_threshold: params.perturbation.bla_threshold,
@@ -1055,7 +1122,7 @@ impl ReferenceOrbitCache {
 /// For Hybrid BLA: you need one BLA table per reference.
 fn build_hybrid_bla_references(
     primary_orbit: &ReferenceOrbit,
-    primary_bla: &BlaTable,
+    primary_bla: &LazyBlaTable,
     params: &FractalParams,
     cancel: Option<&AtomicBool>,
 ) -> Option<HybridBlaReferences> {
@@ -1136,10 +1203,12 @@ fn build_hybrid_bla_references(
                 // compressé (gaté `cycle_period == 0`) — pas de réf compressée.
                 compressed_f64: None,
                 hybrid_phase_refs: Vec::new(),
+                tail: None,
             };
 
-            // Build BLA table for this phase reference (one BLA table per reference)
-            let phase_bla = build_bla_table(&phase_orbit.z_ref_f64, params, phase_orbit.cref);
+            // Table BLA de la phase (une par référence) : différée — elle n'est
+            // lue que par le repli legacy de `iterate_pixel_hybrid_bla`.
+            let phase_bla = LazyBlaTable::deferred(params, phase_orbit.cref);
 
             phases.push(phase_orbit);
             phase_bla_tables.push(phase_bla);
@@ -1165,6 +1234,17 @@ fn build_hybrid_bla_references(
         // réelles (cycle détecté, branche ci-dessus).
         None
     }
+}
+
+/// `FRACTALL_CONFORMAL_BLA_EAGER=1` : table BLA conformale construite à la
+/// création du cache (comportement d'avant la construction paresseuse).
+fn conformal_bla_eager() -> bool {
+    static EAGER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *EAGER.get_or_init(|| {
+        std::env::var("FRACTALL_CONFORMAL_BLA_EAGER")
+            .map(|v| matches!(v.trim(), "1" | "true" | "on" | "yes"))
+            .unwrap_or(false)
+    })
 }
 
 /// Compute the reference orbit and BLA table, using cache if available.
@@ -1475,21 +1555,23 @@ pub fn compute_reference_orbit_cached(
 
     // Compute orbit + BLA + series, potentially re-running with doubled iteration_max
     let t_orbit_first = Instant::now();
-    let (mut orbit, mut center_x_gmp, mut center_y_gmp) = compute_reference_orbit_with_progress(
+    // Orbite du cache périmé (plafond trop bas : sonde d'itérations, GUI qui
+    // monte les itérations) : PROLONGÉE plutôt que recalculée depuis 0 quand
+    // tout le reste concorde (vérifié par la reprise, cf. `OrbitTail`).
+    let prior = cache.map(|c| &c.orbit);
+    let (mut orbit, mut center_x_gmp, mut center_y_gmp) = compute_reference_orbit_resuming(
         &adjusted_params,
         cancel,
         store_dense_gmp,
         ref_progress,
+        prior,
     )?;
     let mut dt_orbit = t_orbit_first.elapsed();
 
-    let t_bla_first = Instant::now();
-    let mut bla_table = if skip_conformal_bla {
-        BlaTable::empty()
-    } else {
-        build_bla_table(&orbit.z_ref_f64, &adjusted_params, orbit.cref)
-    };
-    let mut dt_bla = t_bla_first.elapsed();
+    // Table BLA conformale : DIFFÉRÉE (cf. `LazyBlaTable`), recette posée
+    // après la boucle d'auto-ajustement avec les paramètres FINAUX — ceux avec
+    // lesquels le build eager de la dernière manche l'aurait construite.
+    let mut dt_bla = std::time::Duration::ZERO;
 
     let mut series_table: Option<SeriesTable> = None;
     let mut dt_series = std::time::Duration::ZERO;
@@ -1498,24 +1580,17 @@ pub fn compute_reference_orbit_cached(
         if round > 0 {
             // Recompute orbit + BLA with adjusted iteration_max
             let t_orbit_start = Instant::now();
-            let result = compute_reference_orbit_with_progress(
+            let result = compute_reference_orbit_resuming(
                 &adjusted_params,
                 cancel,
                 store_dense_gmp,
                 ref_progress,
+                Some(&orbit),
             )?;
             orbit = result.0;
             center_x_gmp = result.1;
             center_y_gmp = result.2;
             dt_orbit = t_orbit_start.elapsed();
-
-            let t_bla_start = Instant::now();
-            bla_table = if skip_conformal_bla {
-                BlaTable::empty()
-            } else {
-                build_bla_table(&orbit.z_ref_f64, &adjusted_params, orbit.cref)
-            };
-            dt_bla = t_bla_start.elapsed();
         }
 
         // Build series table for standalone series approximation (if enabled).
@@ -1652,6 +1727,19 @@ pub fn compute_reference_orbit_cached(
         break; // No adjustment needed, use current results
     }
 
+    let bla_table = if skip_conformal_bla {
+        LazyBlaTable::ready(BlaTable::empty())
+    } else {
+        LazyBlaTable::deferred(&adjusted_params, orbit.cref)
+    };
+    // A/B : `FRACTALL_CONFORMAL_BLA_EAGER=1` rétablit le build à la création
+    // du cache (même table, payée même quand personne ne la lit).
+    if conformal_bla_eager() {
+        let t_bla = Instant::now();
+        bla_table.prewarm(&orbit.z_ref_f64);
+        dt_bla = t_bla.elapsed();
+    }
+
     // Build Hybrid BLA references (detect cycles and create references for each phase)
     // For Hybrid BLA: you need one BLA table per reference
     let t_hybrid = Instant::now();
@@ -1692,6 +1780,7 @@ pub fn compute_reference_orbit_cached(
         hybrid_refs,
     );
     cache.nucleus_transform = nucleus_transform;
+    cache.requested_iteration_max = params.iteration_max;
     Some(Arc::new(cache))
 }
 
@@ -1751,7 +1840,33 @@ pub fn compute_reference_orbit_with_progress(
     // pendant tout le calcul — indistinguable d'un hang.
     ref_progress: Option<&std::sync::atomic::AtomicU32>,
 ) -> Option<(ReferenceOrbit, String, String)> {
-    compute_reference_orbit_phase(params, cancel, force_dense_gmp, ref_progress, 0)
+    compute_reference_orbit_phase(params, cancel, force_dense_gmp, ref_progress, 0, None)
+}
+
+/// Comme [`compute_reference_orbit_with_progress`], en PROLONGEANT `prior`
+/// quand c'est possible : même centre, même précision, même échelle de vue,
+/// mêmes options de stockage, orbite GMP Mandelbrot de longueur
+/// ≤ `iteration_max + 1` (cf. [`OrbitTail`]). Résultat identique au bit près
+/// à un calcul frais ; `prior` incompatible ⇒ calcul frais.
+pub fn compute_reference_orbit_resuming(
+    params: &FractalParams,
+    cancel: Option<&AtomicBool>,
+    force_dense_gmp: bool,
+    ref_progress: Option<&std::sync::atomic::AtomicU32>,
+    prior: Option<&ReferenceOrbit>,
+) -> Option<(ReferenceOrbit, String, String)> {
+    compute_reference_orbit_phase(params, cancel, force_dense_gmp, ref_progress, 0, prior)
+}
+
+/// `FRACTALL_ORBIT_RESUME=0` : jamais de prolongation d'orbite (A/B).
+fn orbit_resume_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        !matches!(
+            std::env::var("FRACTALL_ORBIT_RESUME").as_deref().map(str::trim),
+            Ok("0") | Ok("off") | Ok("false")
+        )
+    })
 }
 
 /// Cœur du build d'orbite, paramétré par la PHASE DE DÉPART (G4 jalon 5, port
@@ -1765,6 +1880,7 @@ fn compute_reference_orbit_phase(
     force_dense_gmp: bool,
     ref_progress: Option<&std::sync::atomic::AtomicU32>,
     phase_start: usize,
+    prior: Option<&ReferenceOrbit>,
 ) -> Option<(ReferenceOrbit, String, String)> {
     // Utiliser la précision calculée au lieu du preset
     use crate::fractal::perturbation::compute_perturbation_precision_bits;
@@ -1919,6 +2035,7 @@ fn compute_reference_orbit_phase(
                 // path plein).
                 compressed_f64: None,
                 hybrid_phase_refs: Vec::new(),
+                tail: None,
             },
             cx_str,
             cy_str,
@@ -2017,26 +2134,86 @@ fn compute_reference_orbit_phase(
         0
     });
 
-    // Store high-precision, f64, and full GMP versions (cf. `z_ref_complexexp`).
-    let z_f64 = complex_to_complex64(&z);
-    z_ref.push(z_ref_complexexp(&z, z_f64));
-    z_ref_f64.push(z_f64);
-    if build_dd {
-        z_ref_dd.push(super::dd::ComplexDDExp {
-            re: gmp_float_to_ddexp(z.real()),
-            im: gmp_float_to_ddexp(z.imag()),
+    // Prolongation (cf. `OrbitTail`) : périmètre = boucle GMP Mandelbrot à
+    // pas `fast_sqr` (l'interpréteur bytecode porte un état propre), sans
+    // orbite dense, compression, Brent ni phases.
+    let resumable = phase_start == 0
+        && matches!(params.fractal_type, FractalType::Mandelbrot)
+        && !is_hybrid
+        && !store_dense_gmp
+        && fast_orbit_sqr_enabled()
+        && !super::compress::compress_stats_enabled()
+        && !super::compress::compress_enabled()
+        && !period_detection_requested(params);
+    let tail_key = OrbitTailKey {
+        prec,
+        seed_bits: (params.seed.re.to_bits(), params.seed.im.to_bits()),
+        build_dd,
+        build_lo,
+        lazy_lo,
+        atom_period_enabled: atom_period_enabled_for(params, is_hybrid),
+        atom_radius_sqr: {
+            let r2 = atom_radius_sqr_for(params);
+            (r2.mantissa.to_bits(), r2.exponent)
+        },
+    };
+    let resume = prior
+        .filter(|_| resumable && orbit_resume_enabled())
+        .and_then(|p| p.tail.as_ref().map(|t| (p, t)))
+        .filter(|(p, t)| {
+            t.key == tail_key
+                && p.cref_gmp == cref
+                && p.phase_offset == 0
+                && p.cycle_period == 0
+                && !p.z_ref_f64.is_empty()
+                && p.z_ref_f64.len() <= params.iteration_max as usize + 1
         });
-    }
-    if build_lo {
-        z_ref_lo.push(gmp_low_part(&z, *z_ref.last().unwrap(), &mut lo_scratch));
-    }
-    if store_dense_gmp {
-        z_ref_gmp.push(z.clone());
-        high_precision_data.push(z.clone());
-    }
-    if lazy_lo {
-        high_precision_data.push(z.clone()); // point de contrôle d'index 0
-    }
+    // Indice de reprise de la boucle, et orbite déjà tronquée (atom-domain :
+    // un calcul frais s'arrêterait au même indice, quel que soit le plafond).
+    let (resume_from, resumed_truncated) = match resume {
+        Some((p, t)) => {
+            // Dans les tampons déjà réservés au plafond courant.
+            z_ref.extend_from_slice(&p.z_ref);
+            z_ref_f64.extend_from_slice(&p.z_ref_f64);
+            z_ref_dd.extend_from_slice(&p.z_ref_dd);
+            z_ref_lo.extend_from_slice(&p.z_ref_lo);
+            high_precision_data.extend_from_slice(&p.high_precision_data);
+            z.assign(&t.z);
+            if crate::fractal::perturbation::perf_enabled() {
+                eprintln!(
+                    "[ORBIT RESUME] {} -> {} iters ({}b){}",
+                    p.z_ref_f64.len() - 1,
+                    params.iteration_max,
+                    prec,
+                    if p.atom_truncated { " (atom-truncated, reused as is)" } else { "" },
+                );
+            }
+            (p.z_ref_f64.len() as u32 - 1, p.atom_truncated)
+        }
+        None => {
+            // Store high-precision, f64, and full GMP versions (cf. `z_ref_complexexp`).
+            let z_f64 = complex_to_complex64(&z);
+            z_ref.push(z_ref_complexexp(&z, z_f64));
+            z_ref_f64.push(z_f64);
+            if build_dd {
+                z_ref_dd.push(super::dd::ComplexDDExp {
+                    re: gmp_float_to_ddexp(z.real()),
+                    im: gmp_float_to_ddexp(z.imag()),
+                });
+            }
+            if build_lo {
+                z_ref_lo.push(gmp_low_part(&z, *z_ref.last().unwrap(), &mut lo_scratch));
+            }
+            if store_dense_gmp {
+                z_ref_gmp.push(z.clone());
+                high_precision_data.push(z.clone());
+            }
+            if lazy_lo {
+                high_precision_data.push(z.clone()); // point de contrôle d'index 0
+            }
+            (0, false)
+        }
+    };
 
     // Period detection state for early termination (inspired by rust-fractal-core).
     //
@@ -2139,10 +2316,7 @@ fn compute_reference_orbit_phase(
     // le pixel loop f64 cycle la réf tronquée par rebase-at-end (`atom_truncated`).
     // NB : le fast-path dd (≤96 b, ~zoom < 1e19) court-circuite cette boucle GMP →
     // pas de troncature sur cette tranche (réf déjà bon marché).
-    let atom_period_enabled = matches!(params.fractal_type, FractalType::Mandelbrot)
-        && !is_hybrid
-        && super::delta::atom_hp_enabled()
-        && super::effective_pixel_size(params) < super::delta::ATOM_PERIOD_PIXEL_SIZE_THRESHOLD;
+    let atom_period_enabled = atom_period_enabled_for(params, is_hybrid);
     // G4 jalon 5d : troncature atom-domain GÉNÉRIQUE pour les hybrides (port F3
     // `hybrid_reference`, `hybrid.cc:81-98` : dZdC est un **mat2** bas-précision,
     // critère `|inv(radius·dZdC)·Z| < 1`). Récurrence par phase entière via les
@@ -2157,16 +2331,11 @@ fn compute_reference_orbit_phase(
         && bytecode_formula.is_some()
         && super::delta::atom_hp_enabled()
         && super::effective_pixel_size(params) < super::delta::ATOM_PERIOD_PIXEL_SIZE_THRESHOLD;
-    let atom_radius_sqr = {
-        let (adx, ady) = super::effective_spans_fexp(params);
-        let r = if adx.partial_cmp(&ady) == Some(std::cmp::Ordering::Greater) {
-            adx
-        } else {
-            ady
-        };
-        r.sqr()
+    let atom_radius_sqr = atom_radius_sqr_for(params);
+    let mut atom_dz = match resume {
+        Some((_, t)) => t.atom_dz,
+        None => ComplexExp::zero(),
     };
-    let mut atom_dz = ComplexExp::zero();
     // J = dZ/dC mat2 row-major [j00, j01, j10, j11] en FloatExp (J₀ = 0).
     let mut atom_j = [
         FloatExp::zero(),
@@ -2174,7 +2343,7 @@ fn compute_reference_orbit_phase(
         FloatExp::zero(),
         FloatExp::zero(),
     ];
-    let mut atom_truncated = false;
+    let mut atom_truncated = resumed_truncated;
 
     // Compression d'orbite (G8.2, Imagina PTWithCompression) : fantôme f64 en
     // parallèle du build. Tourne sous `FRACTALL_COMPRESS_REF_STATS=1` (phase 1,
@@ -2215,7 +2384,8 @@ fn compute_reference_orbit_phase(
         .as_ref()
         .and_then(|_| super::orbit_par::ParSqr::new(&cref, prec));
 
-    for i in 0..params.iteration_max {
+    let loop_end = if resumed_truncated { resume_from } else { params.iteration_max };
+    for i in resume_from..loop_end {
         if let Some(cancel) = cancel {
             if i % 256 == 0 && cancel.load(Ordering::Relaxed) {
                 return None;
@@ -2429,6 +2599,12 @@ fn compute_reference_orbit_phase(
             }
         }
     }
+    // État de fin pour une prolongation ultérieure (cf. `OrbitTail`).
+    let tail = resumable.then(|| OrbitTail {
+        z: z.clone(),
+        atom_dz,
+        key: tail_key.clone(),
+    });
     if atom_truncated && crate::fractal::perturbation::perf_enabled() {
         let z_end = z_ref_f64[z_ref_f64.len() - 1];
         eprintln!(
@@ -2512,7 +2688,7 @@ fn compute_reference_orbit_phase(
         let mut refs = Vec::with_capacity(n_phases - 1);
         for p in 1..n_phases {
             let (orbit_p, _, _) =
-                compute_reference_orbit_phase(params, cancel, force_dense_gmp, None, p)?;
+                compute_reference_orbit_phase(params, cancel, force_dense_gmp, None, p, None)?;
             refs.push(orbit_p);
         }
         refs
@@ -2538,10 +2714,44 @@ fn compute_reference_orbit_phase(
             atom_truncated,
             compressed_f64,
             hybrid_phase_refs,
+            tail,
         },
         cx_str,
         cy_str,
     ))
+}
+
+/// `FRACTALL_PERIOD=1` (Brent, opt-in) et pas `FRACTALL_NO_PERIOD=1`, pour un
+/// Mandelbrot — même lecture que `enable_period_detection` (hors gate hybride).
+fn period_detection_requested(params: &FractalParams) -> bool {
+    let on = |k: &str| {
+        std::env::var(k)
+            .ok()
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false)
+    };
+    matches!(params.fractal_type, FractalType::Mandelbrot)
+        && on("FRACTALL_PERIOD")
+        && !on("FRACTALL_NO_PERIOD")
+}
+
+/// Troncature atom-domain active pour cette vue (cf. la boucle GMP).
+fn atom_period_enabled_for(params: &FractalParams, is_hybrid: bool) -> bool {
+    matches!(params.fractal_type, FractalType::Mandelbrot)
+        && !is_hybrid
+        && super::delta::atom_hp_enabled()
+        && super::effective_pixel_size(params) < super::delta::ATOM_PERIOD_PIXEL_SIZE_THRESHOLD
+}
+
+/// `r²` du critère atom-domain : carré du plus grand span de la vue.
+fn atom_radius_sqr_for(params: &FractalParams) -> FloatExp {
+    let (adx, ady) = super::effective_spans_fexp(params);
+    let r = if adx.partial_cmp(&ady) == Some(std::cmp::Ordering::Greater) {
+        adx
+    } else {
+        ady
+    };
+    r.sqr()
 }
 
 fn complex_norm_sqr(value: &Complex, prec: u32) -> Float {
@@ -2974,7 +3184,7 @@ mod conformal_bla_skip_tests {
         let cache = compute_reference_orbit_cached(&params, None, None, None, false)
             .expect("orbite référence");
         assert_eq!(
-            cache.bla_table.num_levels(),
+            cache.bla_table().num_levels(),
             0,
             "la BlaTable conformale doit être vide (sautée) au-delà du seuil"
         );
@@ -2992,8 +3202,169 @@ mod conformal_bla_skip_tests {
         let cache = compute_reference_orbit_cached(&params, None, None, None, false)
             .expect("orbite référence");
         assert!(
-            cache.bla_table.num_levels() > 0,
+            cache.bla_table().num_levels() > 0,
             "la BlaTable conformale doit être construite sous le seuil"
         );
+    }
+
+    fn assert_tables_bit_identical(a: &BlaTable, b: &BlaTable) {
+        assert_eq!(a.level_offsets, b.level_offsets);
+        assert_eq!(a.level_lengths, b.level_lengths);
+        assert_eq!(a.nodes.len(), b.nodes.len());
+        let bits = |c: Complex64| (c.re.to_bits(), c.im.to_bits());
+        for (x, y) in a.nodes.iter().zip(&b.nodes) {
+            assert_eq!(bits(x.a), bits(y.a));
+            assert_eq!(bits(x.b), bits(y.b));
+            assert_eq!(bits(x.c), bits(y.c));
+            assert_eq!(bits(x.d), bits(y.d));
+            assert_eq!(bits(x.e), bits(y.e));
+            assert_eq!(x.validity_radius.to_bits(), y.validity_radius.to_bits());
+            assert_eq!(x.burning_ship_valid, y.burning_ship_valid);
+        }
+        assert_eq!(a.nc_level_offsets, b.nc_level_offsets);
+        assert_eq!(a.nc_level_lengths, b.nc_level_lengths);
+        assert_eq!(
+            a.nc_nodes.as_ref().map(|v| v.len()),
+            b.nc_nodes.as_ref().map(|v| v.len())
+        );
+    }
+
+    /// Construction PARESSEUSE (2026-11-19) : rien n'est bâti à la création
+    /// du cache, et la table lue ensuite est celle que le build eager
+    /// produisait (mêmes paramètres finaux, même orbite) au bit près — y
+    /// compris Burning Ship (table non conforme) et une vue à auto-ajustement.
+    #[test]
+    fn conformal_bla_is_lazy_and_identical_to_eager_build() {
+        for (ty, cx, cy, iters) in [
+            (FractalType::Mandelbrot, -0.5, 0.0, 20_000u32),
+            (FractalType::Mandelbrot, -0.743_643_887_037_158_7, 0.131_825_904_205_311_97, 5_000),
+            (FractalType::BurningShip, -1.76, -0.03, 3_000),
+            (FractalType::Julia, 0.0, 0.0, 3_000),
+        ] {
+            let mut params = default_params_for_type(ty, 64, 48);
+            params.center_x = cx;
+            params.center_y = cy;
+            params.span_x = 1e-6;
+            params.span_y = 0.75e-6;
+            params.iteration_max = iters;
+            let cache = compute_reference_orbit_cached(&params, None, None, None, false)
+                .expect("orbite référence");
+            if !conformal_bla_eager() {
+                assert!(!cache.conformal_bla.is_built(), "{ty:?} : table bâtie à la création");
+            }
+            let mut eager_params = params.clone();
+            eager_params.iteration_max = cache.iteration_max;
+            eager_params.engine.precision_bits = cache.precision_bits;
+            let eager = crate::fractal::perturbation::bla::build_bla_table(
+                &cache.orbit.z_ref_f64,
+                &eager_params,
+                cache.orbit.cref,
+            );
+            assert_tables_bit_identical(cache.bla_table(), &eager);
+            assert!(cache.conformal_bla.is_built());
+        }
+    }
+}
+
+#[cfg(test)]
+mod orbit_resume_tests {
+    use super::*;
+    use crate::fractal::{default_params_for_type, FractalType, ViewHp};
+
+    const SEAHORSE_X: &str = "-0.743643887037158704752191506114774";
+    const SEAHORSE_Y: &str = "0.131825904205311970493132056385139";
+
+    fn view(cx: &str, cy: &str, zoom: &str, iters: u32) -> FractalParams {
+        let mut p = default_params_for_type(FractalType::Mandelbrot, 64, 40);
+        let v = ViewHp::from_center_and_zoom(cx, cy, zoom, 64, 40, 1024).expect("vue");
+        v.write_to_params(&mut p);
+        p.center_x_hp = Some(cx.to_string());
+        p.center_y_hp = Some(cy.to_string());
+        p.iteration_max = iters;
+        p
+    }
+
+    fn fresh(p: &FractalParams) -> ReferenceOrbit {
+        compute_reference_orbit_with_progress(p, None, false, None).expect("orbite").0
+    }
+
+    /// Égalité au bit près de tout ce qu'une orbite expose (Debug f64 =
+    /// représentation aller-retour : distingue -0.0, NaN et le dernier ulp).
+    fn assert_same_orbit(a: &ReferenceOrbit, b: &ReferenceOrbit, what: &str) {
+        let d = |x: &dyn std::fmt::Debug| format!("{x:?}");
+        assert_eq!(a.z_ref_f64.len(), b.z_ref_f64.len(), "{what} : longueur");
+        assert_eq!(d(&a.z_ref_f64), d(&b.z_ref_f64), "{what} : z_ref_f64");
+        assert_eq!(d(&a.z_ref), d(&b.z_ref), "{what} : z_ref");
+        assert_eq!(d(&a.z_ref_lo), d(&b.z_ref_lo), "{what} : z_ref_lo");
+        assert_eq!(d(&a.z_ref_dd), d(&b.z_ref_dd), "{what} : z_ref_dd");
+        assert_eq!(a.high_precision_data, b.high_precision_data, "{what} : points de contrôle");
+        assert_eq!(a.data_storage_interval, b.data_storage_interval, "{what} : intervalle");
+        assert_eq!(a.extended_iterations, b.extended_iterations, "{what} : extended");
+        assert_eq!(a.atom_truncated, b.atom_truncated, "{what} : atom_truncated");
+        assert_eq!(a.cref_gmp, b.cref_gmp, "{what} : cref");
+        assert_eq!(d(&a.cref), d(&b.cref), "{what} : cref f64");
+        let (ta, tb) = (a.tail.as_ref().expect("tail a"), b.tail.as_ref().expect("tail b"));
+        assert_eq!(ta.z, tb.z, "{what} : z de fin");
+        assert_eq!(d(&ta.atom_dz), d(&tb.atom_dz), "{what} : dZ/dC de fin");
+        assert_eq!(ta.key, tb.key, "{what} : clé");
+        // Lecture paresseuse des parties basses : mêmes valeurs.
+        assert_eq!(d(&a.lazy_low_parts()), d(&b.lazy_low_parts()), "{what} : parties basses");
+    }
+
+    /// Verrou (2026-11-19) : une orbite PROLONGÉE de N₁ à N₂ itérations est
+    /// l'orbite fraîche à N₂, au bit près — fin naturelle (reprise de la
+    /// boucle, à travers des points de contrôle paresseux), fin tronquée par
+    /// l'atom-domain pendant la prolongation, orbite déjà tronquée ou évadée
+    /// (réutilisée telle quelle), et à > 2048 bits (pas sur deux cœurs).
+    #[test]
+    fn resumed_orbit_matches_fresh_orbit_bit_for_bit() {
+        let deep_x = format!("{SEAHORSE_X}{}", "0".repeat(700));
+        let deep_y = format!("{SEAHORSE_Y}{}", "0".repeat(700));
+        let cases: Vec<(String, String, &str, Vec<u32>)> = vec![
+            (SEAHORSE_X.into(), SEAHORSE_Y.into(), "1e25", vec![700, 3000, 9000, 40_000]),
+            (SEAHORSE_X.into(), SEAHORSE_Y.into(), "1e30", vec![1500, 2048, 20_000]),
+            (deep_x, deep_y, "1e700", vec![900, 2500, 6000]),
+        ];
+        let mut extended_steps = 0usize;
+        for (cx, cy, zoom, caps) in cases {
+            let mut prev: Option<ReferenceOrbit> = None;
+            for &cap in &caps {
+                let p = view(&cx, &cy, zoom, cap);
+                let want = fresh(&p);
+                assert!(want.tail.is_some(), "{zoom} : orbite GMP sans état de fin");
+                if let Some(prior) = prev.as_ref() {
+                    let got = compute_reference_orbit_resuming(&p, None, false, None, Some(prior))
+                        .expect("orbite prolongée")
+                        .0;
+                    if !prior.atom_truncated {
+                        extended_steps += got.z_ref_f64.len() - prior.z_ref_f64.len();
+                    }
+                    let what = format!("{zoom} {} -> {cap}", prior.z_ref_f64.len() - 1);
+                    assert_same_orbit(&got, &want, &what);
+                    prev = Some(got);
+                } else {
+                    prev = Some(want);
+                }
+            }
+        }
+        assert!(extended_steps > 10_000, "verrou vide : {extended_steps} pas prolongés");
+    }
+
+    /// Une orbite incompatible (autre échelle de vue, plafond plus BAS) n'est
+    /// jamais prolongée : le résultat reste le calcul frais.
+    #[test]
+    fn incompatible_prior_is_ignored() {
+        let a = view(SEAHORSE_X, SEAHORSE_Y, "1e25", 3000);
+        let prior = fresh(&a);
+        let lower = view(SEAHORSE_X, SEAHORSE_Y, "1e25", 1000);
+        let got = compute_reference_orbit_resuming(&lower, None, false, None, Some(&prior))
+            .expect("orbite")
+            .0;
+        assert_same_orbit(&got, &fresh(&lower), "plafond plus bas");
+        let other = view(SEAHORSE_X, SEAHORSE_Y, "3e25", 6000);
+        let got = compute_reference_orbit_resuming(&other, None, false, None, Some(&prior))
+            .expect("orbite")
+            .0;
+        assert_same_orbit(&got, &fresh(&other), "autre échelle");
     }
 }

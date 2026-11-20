@@ -543,6 +543,7 @@ mod tests {
             atom_truncated: false,
             compressed_f64: None,
             hybrid_phase_refs: Vec::new(),
+            tail: None,
         }
     }
 }

@@ -10,7 +10,73 @@
 
 ---
 
-## 🧭 État actuel (2026-11-19) — lire ceci en premier
+## 🧭 État actuel (2026-11-20) — lire ceci en premier
+
+**Nuit du 2026-11-19 au 20 — campagne à agents parallèles (qualité / vitesse /
+sagesse).** Scorecard micro `d2f0f54` : **gaps 6 → 1** ; axe `types`
+39 → **51 PASS**, 2 FAIL → 0, 4 WARN → 1, N/A 10 → 1 (11 CHAOS) ; truth
+24 PASS ; wisdom 16 PASS ; 629 tests lib, goldens, navigation profonde verts.
+Deux relectures indépendantes du diff (aucun défaut dans la première moitié ;
+deux défauts corrigés + un défaut ANCIEN trouvé dans la seconde). Détail des
+mécanismes et des pièges : CLAUDE.md (paragraphes datés 2026-11-19).
+
+*Qualité (pixels ≠ GMP pur, juge convergé)* :
+- Alpha Mandelbrot bord 116 → 0, Mandelbulb bord 101 → 0, Magnet Julia 8 → 0
+  (`scalar_reliability` : boucles tracées en `g = E²`, dd à voies, GMP).
+- **Magnet Mandelbrot bord 273 → 0, Mandelbrot Sin bord 294 → 0** — défauts
+  invisibles jusqu'ici (juge en timeout), révélés par l'accélération des juges
+  GMP la même nuit ; sin/cos/exp double-double (`render/dd_trig.rs`). Julia
+  Sin et Barnsley (dd à voies, terme de span) alignés. Golden
+  `magnet_mandelbrot_default` régénéré (24 px, nouvelle sortie ≡ GMP 256 et
+  512 b).
+- Perp. BS Julia bord 9 → 0, Perp. BS accueil 2 → 0 ; variantes Julia des
+  familles à pliage suivies par défaut ; dd direct dans `GmpCapped` (vue
+  tournée seahorse 1e7 : 310 → 0).
+- Éléphants 1e7 à plafond auto : 12 → 2 px ; perturbation FORCÉE sur cette
+  vue 4,2 % → 6 px (ferme le « reste ouvert » de l'ancien gap 1).
+- Relecture : sortie au pôle de Magnet jugée sur |q̂| + erreur ; GMP de
+  correction jamais sous 256 b (scalaire ET path standard) ; **plafond
+  abaissé avec un cache d'orbite réutilisé** (GUI 5000 → 2000 : tous les
+  pixels sortaient au plafond du cache — défaut ancien,
+  `requested_iteration_max`).
+
+*Vitesse* :
+- Correction des vues peu profondes par étages DIRECTS dd → qd vectorisés
+  (8 pixels de front) : éléphants 1e7 60 000 it. 256×160, correction
+  ~38 s (machine chargée) → 7,65 → **2,73 s** ; dd 27,7 → 8,0 ns/it., qd
+  121,6 → 32,6.
+- Table BLA conformale paresseuse (sonde seahorse 1e7 : 1,17 → 0,78 s) ;
+  orbite PROLONGÉE quand le plafond monte (vue 1e300 : 10,2 → 7,6 s).
+- Multibrot demi-entier ×2,1-2,6 ; sinus complexe ×1,1-1,3 ; juges GMP des
+  types à racine/sinus/division jusqu'à ×60.
+
+*Sagesse* :
+- Sonde d'itérations incrémentale (seuls les pixels plafonnés sont
+  recalculés) : éléphants 1e7 sonde ÷2, N identique sur 83/83 vues.
+- Harness : délais du juge `types` relevés (micro 30 s, autres 90 s).
+
+**Ouverts (par priorité)** :
+1. **Coût des bords suivis des boucles scalaires** — le prix de la justesse :
+   Mandelbrot Sin bord 0,43 → 5,3 s à 128×80 (29 % de pixels signalés, GMP
+   du sinus ~15 µs/it. sur 1,8 % de pixels), Magnet Mandelbrot 0,15 → 1,1 s,
+   Alpha / Mandelbulb ×1,9-2,3. Levier : étage quad-double scalaire avant le
+   GMP, dd du sinus plus rapide.
+2. **Binaires de RELEASE sans FMA** : `perturbation/dd.rs` et `qd.rs`
+   utilisent `mul_add`, appel libm en `target-cpu=x86-64` ; le harness mesure
+   en natif et ne le voit pas. À mesurer en baseline ; dispatch à l'exécution
+   à évaluer pour les noyaux chauds.
+3. Phoenix bord 2 px (WARN) : aucune borne en modules ne tient (rayon
+   spectral > 1) — borne en coordonnées complexes ou orbite jumelle.
+4. `32:MandelbrotSin:edge` : juge encore en timeout au tier micro (~75 s).
+5. `CHAOS` (pas des gaps) : Buffalo, Burning Ship, Celtic, Perp. BS,
+   Barnsley M, Multibrot bord.
+6. Leviers restants : boucles scalaires par voies (latence sqrt/div/sincos) ;
+   sonde incrémentale sans gain sur vue tournée ; orbite prolongée absente
+   pour Julia et le fast-path dd ; triple-double (~20 % de l'étage qd).
+
+---
+
+## État au 2026-11-19 (matin)
 
 **2026-11-19 — le harness juge les DÉCISIONS et TOUS les types.** Le
 scorecard affichait « aucun gap » : le harness ne voyait ni les choix

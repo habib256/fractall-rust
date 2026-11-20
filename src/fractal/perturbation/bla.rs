@@ -323,6 +323,74 @@ fn compute_bla_coefficients(
     }
 }
 
+/// Table BLA conformale construite à la PREMIÈRE lecture.
+///
+/// Sur le path CPU bytecode (le défaut), la `BlaTable` historique n'est lue
+/// qu'en repli legacy (`try_bytecode_unified_path` renvoie `None`) ; la
+/// construire avec l'orbite coûtait 0,3-0,4 s à 160 000 itérations (sonde
+/// d'itérations, correction des pixels du path standard) pour une table que
+/// personne ne lisait. Ici la recette (paramètres du build + `cref`) est
+/// gardée et la table bâtie par [`LazyBlaTable::get`] sur l'orbite que le
+/// lecteur passe — celle-là même dont la table eager aurait été bâtie : sortie
+/// identique au bit près (le build est une fonction pure de ses entrées).
+///
+/// ⚠️ Aucun verrou n'est tenu pendant le build : il est parallèle (rayon) et
+/// peut être déclenché DEPUIS un worker de la boucle pixel ; un `OnceLock::
+/// get_or_init` y bloquerait d'autres workers pendant que le thread
+/// constructeur attend des tâches rayon — et un vol de tâche pixel par ce
+/// même thread ré-entrerait l'init (blocage). Deux lecteurs simultanés
+/// peuvent donc construire chacun la table (même résultat, le premier
+/// `set` gagne). Les chemins qui la liront à coup sûr la pré-construisent
+/// hors boucle ([`LazyBlaTable::prewarm`]).
+#[derive(Clone, Debug)]
+pub struct LazyBlaTable {
+    cell: std::sync::OnceLock<BlaTable>,
+    recipe: Option<std::sync::Arc<(FractalParams, Complex64)>>,
+}
+
+impl LazyBlaTable {
+    /// Table déjà construite (ou volontairement vide).
+    pub fn ready(table: BlaTable) -> Self {
+        let cell = std::sync::OnceLock::new();
+        let _ = cell.set(table);
+        Self { cell, recipe: None }
+    }
+
+    /// Table différée : `build_bla_table(z_ref_f64, params, cref)` à la
+    /// première lecture.
+    pub fn deferred(params: &FractalParams, cref: Complex64) -> Self {
+        Self {
+            cell: std::sync::OnceLock::new(),
+            recipe: Some(std::sync::Arc::new((params.clone(), cref))),
+        }
+    }
+
+    /// La table a-t-elle été construite (ou fournie) ?
+    pub fn is_built(&self) -> bool {
+        self.cell.get().is_some()
+    }
+
+    /// La table, construite au besoin depuis `z_ref_f64` — l'orbite à laquelle
+    /// la table appartient (`ReferenceOrbit::z_ref_f64` du même cache).
+    pub fn get(&self, z_ref_f64: &[Complex64]) -> &BlaTable {
+        if let Some(t) = self.cell.get() {
+            return t;
+        }
+        let built = match &self.recipe {
+            Some(r) => build_bla_table(z_ref_f64, &r.0, r.1),
+            None => BlaTable::empty(),
+        };
+        let _ = self.cell.set(built);
+        self.cell.get().expect("LazyBlaTable: set juste au-dessus")
+    }
+
+    /// Construit la table maintenant (hors boucle pixel, tout le pool rayon
+    /// libre) si elle ne l'est pas encore.
+    pub fn prewarm(&self, z_ref_f64: &[Complex64]) {
+        let _ = self.get(z_ref_f64);
+    }
+}
+
 /// Build BLA table from the f64 reference orbit.
 ///
 /// # Bivariate Linear Approximation

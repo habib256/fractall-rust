@@ -23,6 +23,7 @@ use num_complex::Complex64;
 
 use super::{Op, Phase};
 use crate::fractal::perturbation::dd::DoubleDouble as Dd;
+use crate::fractal::perturbation::qd::Qd;
 
 /// Unité d'arrondi des opérations double-double, avec deux bits de garde
 /// (les `dd_mul` / `dd_add` « sloppy » tiennent ~2⁻¹⁰⁴ relatif).
@@ -47,6 +48,102 @@ pub fn phase_supported(phase: &Phase) -> bool {
     super::interp_batch::phase_trackable(phase)
 }
 
+/// Arithmétique d'une itération directe tracée : double-double ou
+/// quad-double (mêmes opérations, dans le même ordre — le code monomorphisé
+/// pour [`Dd`] est celui d'avant la généralisation).
+pub trait DirectNum: Copy {
+    /// Unité d'arrondi relative aux opérandes (bits de garde compris).
+    const UNIT: f64;
+    fn hi(self) -> f64;
+    fn add(self, o: Self) -> Self;
+    fn sub(self, o: Self) -> Self;
+    fn mul(self, o: Self) -> Self;
+    fn sqr(self) -> Self;
+    /// `2·x` (exact pour le qd ; le dd garde son `mul_f64(2.0)` historique).
+    fn twice(self) -> Self;
+    fn neg(self) -> Self;
+    fn abs(self) -> Self;
+}
+
+impl DirectNum for Dd {
+    const UNIT: f64 = DD_UNIT;
+    #[inline(always)]
+    fn hi(self) -> f64 {
+        self.hi
+    }
+    #[inline(always)]
+    fn add(self, o: Self) -> Self {
+        Dd::add(self, o)
+    }
+    #[inline(always)]
+    fn sub(self, o: Self) -> Self {
+        Dd::sub(self, o)
+    }
+    #[inline(always)]
+    fn mul(self, o: Self) -> Self {
+        Dd::mul(self, o)
+    }
+    #[inline(always)]
+    fn sqr(self) -> Self {
+        Dd::sqr(self)
+    }
+    #[inline(always)]
+    fn twice(self) -> Self {
+        Dd::mul_f64(self, 2.0)
+    }
+    #[inline(always)]
+    fn neg(self) -> Self {
+        Dd::neg(self)
+    }
+    #[inline(always)]
+    fn abs(self) -> Self {
+        Dd::abs(self)
+    }
+}
+
+#[cfg(test)]
+impl DirectNum for Qd {
+    /// 2⁻²⁰⁶ : erreur « sloppy » mesurée ≤ 2⁻²¹⁰ relative aux opérandes,
+    /// marge ×16 (même unité que la boucle qd de perturbation).
+    const UNIT: f64 = super::pixel_loop_qd::U_QD;
+    #[inline(always)]
+    fn hi(self) -> f64 {
+        self.0[0]
+    }
+    #[inline(always)]
+    fn add(self, o: Self) -> Self {
+        Qd::add(self, o)
+    }
+    #[inline(always)]
+    fn sub(self, o: Self) -> Self {
+        Qd::sub(self, o)
+    }
+    #[inline(always)]
+    fn mul(self, o: Self) -> Self {
+        Qd::mul(self, o)
+    }
+    #[inline(always)]
+    fn sqr(self) -> Self {
+        Qd::sqr(self)
+    }
+    #[inline(always)]
+    fn twice(self) -> Self {
+        Qd::mul_pow2(self, 2.0)
+    }
+    #[inline(always)]
+    fn neg(self) -> Self {
+        Qd::neg(self)
+    }
+    #[inline(always)]
+    fn abs(self) -> Self {
+        if self.0[0] < 0.0 {
+            self.neg()
+        } else {
+            self
+        }
+    }
+}
+
 /// Itère `phase` depuis `z0` avec la constante `c` (Mandelbrot-like :
 /// `z0 = 0`, `c` = pixel ; Julia : `z0` = pixel, `c` = graine). Même
 /// sémantique de compte que `interp::iterate_bytecode_f64` (test de sortie
@@ -58,34 +155,78 @@ pub fn iterate_direct_dd(
     iteration_max: u32,
     bailout: f64,
 ) -> DirectDdResult {
+    iterate_direct(phase, z0, c, iteration_max, bailout)
+}
+
+/// Comme [`iterate_direct_dd`] en quad-double (~212 bits) : l'étage suivant
+/// des pixels que le double-double ne garantit pas, avant le GMP pur. Même
+/// garantie (borne au premier ordre, [`E_MAX`], marge d'évasion), unité
+/// 2⁻²⁰⁶.
+///
+/// Arithmétique de [`super::direct_simd::QdV`] à une voie (renormalisation
+/// sans branchement) : la référence pixel par pixel des voies vectorielles
+/// de production ([`super::direct_simd::direct_qd_lanes`]).
+pub fn iterate_direct_qd(
+    phase: &Phase,
+    z0: (Qd, Qd),
+    c: (Qd, Qd),
+    iteration_max: u32,
+    bailout: f64,
+) -> DirectDdResult {
+    use super::direct_simd::{iterate_lanes, QdV};
+    iterate_lanes::<QdV<1>, 1>(phase, &[c], z0, false, iteration_max, bailout)[0]
+}
+
+/// Ancienne boucle qd mono-pixel (`perturbation::qd`, renormalisation à
+/// branches) : témoin des tests (mêmes comptes que la boucle de production).
+#[cfg(test)]
+pub(crate) fn iterate_direct_qd_branchy(
+    phase: &Phase,
+    z0: (Qd, Qd),
+    c: (Qd, Qd),
+    iteration_max: u32,
+    bailout: f64,
+) -> DirectDdResult {
+    iterate_direct(phase, z0, c, iteration_max, bailout)
+}
+
+/// Corps commun de [`iterate_direct_dd`] / [`iterate_direct_qd`].
+#[inline(always)]
+fn iterate_direct<N: DirectNum>(
+    phase: &Phase,
+    z0: (N, N),
+    c: (N, N),
+    iteration_max: u32,
+    bailout: f64,
+) -> DirectDdResult {
     let b2 = bailout * bailout;
     // Zone où le test de marge exact vaut d'être fait : |z| à moins de E_MAX
     // (majoré) du rayon.
     let near_lo = (bailout - 2.0 * E_MAX).max(0.0);
     let near2 = near_lo * near_lo;
-    let c_abs = c.0.hi.abs() + c.1.hi.abs();
+    let c_abs = c.0.hi().abs() + c.1.hi().abs();
     let (mut x, mut y) = z0;
     let mut e = 0.0f64;
     let mut iter = 0u32;
-    let out = |iter: u32, x: Dd, y: Dd, reliable: bool| DirectDdResult {
+    let out = |iter: u32, x: N, y: N, reliable: bool| DirectDdResult {
         iteration: iter,
-        z: Complex64::new(x.hi, y.hi),
+        z: Complex64::new(x.hi(), y.hi()),
         reliable,
     };
     if !phase_supported(phase) {
         return out(0, x, y, false);
     }
-    if x.hi * x.hi + y.hi * y.hi >= b2 {
+    if x.hi() * x.hi() + y.hi() * y.hi() >= b2 {
         return out(0, x, y, true);
     }
     while iter < iteration_max {
         for op in &phase.ops {
             match op {
                 Op::Sqr => {
-                    let n = x.hi * x.hi + y.hi * y.hi;
-                    e = e * (2.0 * n.sqrt() + e) + DD_UNIT * n;
+                    let n = x.hi() * x.hi() + y.hi() * y.hi();
+                    e = e * (2.0 * n.sqrt() + e) + N::UNIT * n;
                     let re = x.sqr().sub(y.sqr());
-                    let im = x.mul(y).mul_f64(2.0);
+                    let im = x.mul(y).twice();
                     x = re;
                     y = im;
                 }
@@ -96,13 +237,13 @@ pub fn iterate_direct_dd(
                 Op::Add => {
                     x = x.add(c.0);
                     y = y.add(c.1);
-                    e += DD_UNIT * (x.hi.abs() + y.hi.abs() + c_abs);
+                    e += N::UNIT * (x.hi().abs() + y.hi().abs() + c_abs);
                     iter += 1;
                 }
                 _ => return out(iter, x, y, false),
             }
         }
-        let n = x.hi * x.hi + y.hi * y.hi;
+        let n = x.hi() * x.hi() + y.hi() * y.hi();
         if !n.is_finite() {
             return out(iter, x, y, false);
         }
@@ -131,6 +272,25 @@ pub fn dd_from_gmp(v: &rug::Float) -> Dd {
     }
     let rest = rug::Float::with_val(v.prec().max(128), v - hi);
     Dd::new(hi, rest.to_f64())
+}
+
+/// Valeur quad-double d'un flottant GMP (212 bits de tête).
+pub fn qd_from_gmp(v: &rug::Float) -> Qd {
+    let mut scratch = rug::Float::new(v.prec().max(64));
+    Qd::from_float(v, &mut scratch)
+}
+
+/// Interrupteur `FRACTALL_DIRECT_QD=0` (A/B) : pas d'étage quad-double
+/// direct — les pixels que le double-double direct ne garantit pas partent
+/// droit au GMP pur, comme avant.
+pub fn direct_qd_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        !matches!(
+            std::env::var("FRACTALL_DIRECT_QD").ok().as_deref().map(str::trim),
+            Some("0") | Some("off") | Some("false")
+        )
+    })
 }
 
 /// Interrupteur `FRACTALL_DIRECT_DD=0` (A/B) : les pixels signalés partent
@@ -200,6 +360,36 @@ mod tests {
         // (exposant ln 2 par pas) — 106 bits sont épuisés en ~100 pas.
         let r = iterate_direct_dd(phase, (dd(0.0), dd(0.0)), (dd(-1.999_999_9), dd(1e-12)), 100_000, 25.0);
         assert!(!r.reliable || r.iteration < 400, "{r:?}");
+    }
+
+    /// Le quad-double rend les mêmes comptes que le double-double là où les
+    /// deux sont fiables, et tient environ deux fois plus longtemps sur une
+    /// orbite chaotique (212 bits contre 106 : ~ln 2 perdu par pas).
+    #[test]
+    fn direct_qd_matches_dd_and_lasts_twice_as_long() {
+        let f = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
+        let phase = &f.phases[0];
+        let q = |v: f64| Qd::from_f64(v);
+        let mut checked = 0;
+        for j in 0..20 {
+            for i in 0..20 {
+                let c = Complex64::new(-2.2 + 3.3 * i as f64 / 19.0, -1.6 + 3.2 * j as f64 / 19.0);
+                let a = iterate_direct_dd(phase, (dd(0.0), dd(0.0)), (dd(c.re), dd(c.im)), 2000, 25.0);
+                let b = iterate_direct_qd(phase, (q(0.0), q(0.0)), (q(c.re), q(c.im)), 2000, 25.0);
+                if a.reliable {
+                    assert!(b.reliable, "c={c}");
+                    assert_eq!(a.iteration, b.iteration, "c={c}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 300, "{checked}");
+        // Axe réel près de la pointe : orbite bornée chaotique (exposant ~ln 2).
+        let c = (-1.99, 0.0);
+        let a = iterate_direct_dd(phase, (dd(0.0), dd(0.0)), (dd(c.0), dd(c.1)), 100_000, 25.0);
+        let b = iterate_direct_qd(phase, (q(0.0), q(0.0)), (q(c.0), q(c.1)), 100_000, 25.0);
+        assert!(!a.reliable && !b.reliable, "{a:?} {b:?}");
+        assert!(b.iteration as f64 >= 1.8 * a.iteration as f64, "dd {} qd {}", a.iteration, b.iteration);
     }
 
     /// Les 106 bits servent : deux `c` égaux en f64 mais distincts en
