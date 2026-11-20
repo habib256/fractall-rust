@@ -202,7 +202,8 @@ src/
 ├── render/
 │   ├── escape_time.rs    # dispatcher unique CLI↔GUI (sélection algo)
 │   ├── std_reliability.rs # suivi + correction des pixels non fiables du path f64 standard
-│   ├── scalar_reliability.rs # idem pour les boucles SCALAIRES hors bytecode (Barnsley : f64 tracé → dd → GMP)
+│   ├── scalar_reliability.rs # idem pour les boucles SCALAIRES hors bytecode (Barnsley, Alpha, Mandelbulb, Magnet, Sin : f64 tracé → dd → GMP)
+│   ├── dd_trig.rs        # sin/cos/exp en double-double (étage dd du sinus)
 │   └── tiles.rs          # G10.5 file de tuiles priorité-centre + sink streaming
 ├── gpu/                  # wgpu Vulkan/Metal/DX12
 │   ├── mod.rs              # GpuRenderer + pipeline bytecode
@@ -1027,6 +1028,30 @@ rayon spectral > 1 dès |z| > ¼ et s'emballe sur 100 % du bord alors que le
 vrai jacobien contracte par les phases. Verrous
 `tracked_scalar_loops_are_bit_identical_to_production_loops`,
 `dd_lanes_match_single_pixel_loop`, `tracked_scalar_edges_match_gmp`.
+**Magnet Mandelbrot, Mandelbrot Sin, Julia Sin suivis (2026-11-20)** — les
+juges GMP accélérés ont montré 11 % de pixels faux sur les bords Magnet
+Mandelbrot (273 px) et Mandelbrot Sin (294 px) : 0 après suivi. Magnet M =
+la carte de Magnet Julia avec `s` = le pixel (`magnet_f64` commune). Sinus :
+multiplicateur = dérivée EXACTE `|cos ẑ|² = cos²x + sinh²y`, reste
+`½E²·cosh(|y|+E)` ; composantes par `iterations::csin_parts` (verrou
+`csin_parts_rebuild_csin_bit_for_bit`) ; étage dd par `render/dd_trig.rs`
+(sin/cos/exp double-double, constantes GMP en `OnceLock`, ~340 ns/it. contre
+~15 µs en GMP ; verrou `dd_trig_matches_mpfr_within_bounds`). Traqueur seul
++1 à +26 %. ⚠️ **Le prix est au bord** : Mandelbrot Sin 256×160 1,8 → 13,9 s
+(29 % de pixels signalés, 1,8 % au-delà du dd → GMP), Magnet M 0,65 → 3,2 s
+— les pixels envoyés au GMP sont nécessaires (15-30 % divergent en dd mené à
+son terme). ⚠️ Règles : (1) une borne qui décroît vers un point fixe nul
+passe en SOUS-NORMAUX (assistance micro-code, +165 % sur l'intérieur de
+Mandelbrot Sin) → plancher sur le facteur additif (`SIN_FLOOR`) ; (2) un
+majorant `cosh y` du multiplicateur ne s'annule pas près de Re z = ±π/2 et
+emballe l'intérieur ; (3) une sortie sur SEUIL (pôle de Magnet,
+`|q|² < 1e-24`) se juge sur |q̂| + erreur, pas sur l'erreur seule (verrou
+`magnet_pole_exit_is_judged_on_q_plus_error`) ; (4) « dd signalé ≠ GMP » ne
+prouve rien : un pixel signalé s'arrête au pas du signalement — pour juger
+le dd, le mener à son terme sans borne (`dd_untracked`) ; (5) l'étage GMP qui
+arbitre le dd/qd ne descend JAMAIS sous 256 b (`GMP_FLOOR_BITS` ; avec
+`precision_bits` abaissé il tombait à 128 b : Mandelbulb 1667 « corrigé » au
+lieu de 1492 — même plancher dans `std_reliability`).
 ⚠️ **L'emballement ne voit pas un bord PARABOLIQUE** (2026-11-19) : près
 d'un point parabolique l'erreur ne s'amplifie pas exponentiellement, elle
 déplace le temps de transit du goulot, et l'orbite s'évade quelques pas plus
@@ -1294,7 +1319,13 @@ hybride, hors fast-path dd ≤ 96 b, sans orbite dense / compression / Brent.
 reprise). `FRACTALL_ORBIT_RESUME=0` (A/B).
 
 **Cache d'orbite** (`ReferenceOrbitCache`) : orbite + BLA réutilisées si même
-centre / type / précision. ⚠️ **Régime atom-domain** (`is_valid_for` +
+centre / type / précision. ⚠️ Le cache retient le plafond DEMANDÉ à sa
+construction (`requested_iteration_max`) : le relèvement du plafond du rendu
+à `cache.iteration_max` ne vaut que pour l'auto-ajustement de la série, donc
+seulement si la vue demande au moins autant — un cache bâti à 5000 puis
+réutilisé à 2000 (GUI) rendait TOUS les pixels au plafond du cache (défaut
+ancien fermé le 2026-11-20, verrou
+`lowering_the_cap_with_a_reused_orbit_matches_fresh_render`). ⚠️ **Régime atom-domain** (`is_valid_for` +
 `can_subset_reuse` → `atom_regime_scale_mismatch`) : la troncature atom-domain
 de la référence dépend de l'ÉCHELLE de vue (`atom_radius_sqr = span_vue²`), donc
 une référence est baked à son span de construction. En zoom profond
