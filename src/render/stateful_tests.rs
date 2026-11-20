@@ -465,6 +465,49 @@ fn julia_seed_nudge_with_kept_cache_matches_fresh() {
     assert!(d <= 2, "graine Julia décalée, cache gardé : {d} px ≠ frais");
 }
 
+/// Hybrides en perturbation FORCÉE (menu Tech de la GUI) hors régime
+/// atom-domain : zoom ×2 ancré hors centre ⇒ réutilisation subset de la
+/// référence (décalage `centre − cref` dans les boucles multi-phase).
+#[test]
+fn hybrid_offcentre_subset_reuse_matches_fresh() {
+    for (k, phases) in [
+        vec![FractalType::Mandelbrot, FractalType::Mandelbrot],
+        vec![FractalType::Mandelbrot, FractalType::BurningShip],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mk = |dx: f64, span: &str| {
+            let mut p = seahorse(dx, span, (64, 40), 3000);
+            p.formula.hybrid_phases = Some(phases.clone());
+            p
+        };
+        let mut cache: Cache = None;
+        render(&mk(0.0, "3.2e-11"), &mut cache);
+        let before = cache.clone().unwrap();
+        let p = mk(10.0, "1.6e-11");
+        let s = render(&p, &mut cache);
+        assert!(Arc::ptr_eq(&before, cache.as_ref().unwrap()), "référence non réutilisée (k={k})");
+        let f = fresh(&p);
+        if k == 0 {
+            assert_structured(&f, "[M,M] seahorse");
+        }
+        let d = diff_indices(&s, &f).len();
+        // Hybrides non suivis (pas de traqueur) : la dépendance à la
+        // référence au plancher f64 fait différer quelques pixels de bord.
+        // [M,M] == z²+c : juge GMP pur ; [M,BS] : borne sur l'écart seul.
+        // Symétrie : le rendu frais a autant de pixels faux que le rendu à
+        // état ⇒ bruit de référence, pas un défaut de l'état.
+        let (bad, rev) = if k == 0 {
+            (stateful_only_wrong(&p, &s, &f), stateful_only_wrong(&p, &f, &s))
+        } else {
+            (0, 0)
+        };
+        eprintln!("[STATEFUL] hybrid subset k={k}: diff={d} stateful_only_wrong={bad} fresh_only_wrong={rev}");
+        assert!(bad <= rev + 1 && d <= 20, "hybride {phases:?} subset hors centre : {d} px ≠ frais, {bad} faux");
+    }
+}
+
 // ── 7. Hybrides / opcodes : changement de séquence, cache gardé ─────────────
 
 #[test]
