@@ -902,16 +902,17 @@ fn view_center_strings(params: &FractalParams, prec: u32) -> (String, String) {
 
 impl ReferenceOrbitCache {
     /// Le plafond de `params` est-il servi par ce cache comme par un rendu
-    /// frais ? Un cache AUTO-AJUSTÉ par la série (`iteration_max` >
-    /// `requested_iteration_max`) ne connaît que l'issue de l'ajustement
-    /// pour le plafond demandé à sa construction : un rendu frais à un autre
-    /// plafond refait l'heuristique depuis CE plafond (skip / plafond) et
-    /// peut s'arrêter ailleurs — servir le cache imposait le plafond relevé
-    /// (cf. `cache_lift`, mod.rs).
+    /// frais ? Quand la série a été bâtie, l'auto-ajustement a été ÉVALUÉ
+    /// (skip validé / plafond) et son issue n'est connue que pour le plafond
+    /// demandé à la construction : un rendu frais à un autre plafond refait
+    /// l'heuristique depuis CE plafond et peut s'arrêter ailleurs (c = i,
+    /// span 4e-10 : 40 → 160 mais 64 → 128, et 40 relevé même par un cache
+    /// bâti à 200 sans ajustement). Servir le cache imposait le plafond
+    /// relevé (`cache_lift`, mod.rs) ou tronquait sous celui du frais. Sans
+    /// série, aucun ajustement possible : tout plafond ≤ `iteration_max`.
     fn cap_compatible(&self, params: &FractalParams) -> bool {
         self.iteration_max >= params.iteration_max
-            && (self.iteration_max == self.requested_iteration_max
-                || params.iteration_max == self.requested_iteration_max)
+            && (self.series_table.is_none() || params.iteration_max == self.requested_iteration_max)
     }
 
     /// Table BLA conformale de l'orbite du cache, construite au besoin.
@@ -1071,7 +1072,7 @@ impl ReferenceOrbitCache {
             && gmp_ok
             && center_ok
             && self.precision_bits >= required_prec  // Comparer précision calculée du cache avec précision calculée requise
-            && self.iteration_max >= params.iteration_max
+            && self.cap_compatible(params)
             // Graine EXACTE (pas de tolérance) : une vue Julia profonde
             // distingue des graines à quelques ulp — l'ancienne tolérance
             // 1e-15 rendait la nouvelle graine avec l'orbite de l'ancienne
@@ -1181,7 +1182,7 @@ impl ReferenceOrbitCache {
         if !(self.fractal_type == params.fractal_type
             && gmp_ok
             && self.precision_bits >= required_prec
-            && self.iteration_max >= params.iteration_max
+            && self.cap_compatible(params)
             && self.seed_re == params.seed.re
             && self.seed_im == params.seed.im
             && (self.bla_threshold - params.perturbation.bla_threshold).abs() < 1e-20

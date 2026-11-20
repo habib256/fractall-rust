@@ -288,11 +288,20 @@ fn same_view_with_find_nucleus_reuses_orbit_and_matches_fresh() {
     let mut p = e30(0.0, "4e-25", (64, 40), 20000);
     p.engine.find_nucleus = true;
     let mut cache: Cache = None;
+    let t = std::time::Instant::now();
     let first = render(&p, &mut cache);
+    let t_first = t.elapsed();
     let built = cache.clone().unwrap();
     let key = built.nucleus_search.clone().expect("recherche du nucleus enregistrée");
     assert!(key.period.is_some(), "scène sans nucleus trouvé : test vide");
+    let t = std::time::Instant::now();
     let second = render(&p, &mut cache);
+    eprintln!(
+        "[STATEFUL] find_nucleus même vue : 1er rendu {:.3}s, 2e {:.3}s (période {:?})",
+        t_first.as_secs_f64(),
+        t.elapsed().as_secs_f64(),
+        key.period
+    );
     assert!(
         Arc::ptr_eq(&built, cache.as_ref().unwrap()),
         "même vue + find_nucleus : orbite recalculée au lieu d'être réutilisée"
@@ -623,36 +632,43 @@ fn scan_scenes() {
     }
 }
 
-/// Diagnostic : scènes où l'auto-ajustement de la série relève le plafond.
+/// Auto-ajustement de la série (`ReferenceOrbitCache::requested_iteration_max`
+/// < `iteration_max`) : scène où il se déclenche réellement — point de
+/// Misiurewicz c = i, span 4e-10, 640×32 (image « non petite »), plafond 40
+/// relevé à 160 (skip validé 21 > 25 % de 40). Un rendu frais à 64 s'arrête,
+/// lui, à 128 : le cache ne connaît l'issue de l'ajustement QUE pour le plafond
+/// demandé à sa construction. Séquence : même plafond, intermédiaires,
+/// supérieur — chaque rendu sur cache == frais.
 #[test]
-#[ignore]
-fn scan_auto_adjust() {
-    use crate::fractal::perturbation::orbit::compute_reference_orbit_cached;
-    let centers = [
-        ("seahorse", SEAHORSE_X, SEAHORSE_Y, FractalType::Mandelbrot),
-        ("e30", E30_X, E30_Y, FractalType::Mandelbrot),
-        ("julia", JULIA_X, JULIA_Y, FractalType::Julia),
-    ];
-    for (name, x, y, ty) in centers {
-        for span in ["4e-4", "4e-6", "4e-8", "4e-10", "4e-11"] {
-            for size in [(64u32, 40u32), (160, 104), (640, 32)] {
-                for it in [200u32, 1000, 5000, 10000] {
-                    let mut p = view(ty, x, y, 0.0, 0.0, span, size, it);
-                    p.engine.algorithm_mode = AlgorithmMode::Perturbation;
-                    let mut op = p.clone();
-                    op.engine.precision_bits =
-                        crate::fractal::perturbation::compute_perturbation_precision_bits(&p);
-                    if let Some(c) = compute_reference_orbit_cached(&op, None, None, None, false) {
-                        if c.iteration_max != c.requested_iteration_max {
-                            eprintln!(
-                                "[SCAN-ADJ] {name} span={span} size={size:?} it={it} → {} (len {})",
-                                c.iteration_max,
-                                c.orbit.z_ref_f64.len()
-                            );
-                        }
-                    }
-                }
-            }
-        }
+fn auto_adjusted_cache_serves_only_its_requested_cap() {
+    let mk = |it: u32| {
+        let mut p = view(FractalType::Mandelbrot, "0", "1", 0.0, 0.0, "4e-10", (640, 32), it);
+        p.engine.algorithm_mode = AlgorithmMode::Perturbation;
+        p
+    };
+    let mut cache: Cache = None;
+    render(&mk(40), &mut cache);
+    let c = cache.clone().unwrap();
+    assert!(
+        c.iteration_max > c.requested_iteration_max,
+        "scène sans auto-ajustement : test vide ({} / {})",
+        c.iteration_max,
+        c.requested_iteration_max
+    );
+    for it in [40u32, 64, 100, 200, 40] {
+        let p = mk(it);
+        let s = render(&p, &mut cache);
+        let f = fresh(&p);
+        assert_structured(&f, "frais");
+        let d = diff_indices(&s, &f);
+        assert!(
+            d.is_empty(),
+            "plafond {it} après cache auto-ajusté : {} pixels ≠ frais (max sur cache {:?}, frais {:?}, cache {}/{})",
+            d.len(),
+            s.iterations.iter().max(),
+            f.iterations.iter().max(),
+            cache.as_ref().unwrap().requested_iteration_max,
+            cache.as_ref().unwrap().iteration_max
+        );
     }
 }

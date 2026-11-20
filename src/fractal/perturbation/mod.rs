@@ -1111,6 +1111,9 @@ pub fn render_perturbation_with_cache(
     // un plafond UTILISATEUR plus haut (5000) puis réutilisé par une vue qui
     // demande moins (2000) ne doit pas imposer son plafond — tous les pixels
     // sortaient avec des comptes au-delà du plafond demandé.
+    // Un cache dont la série a été bâtie n'est d'ailleurs servi qu'au plafond
+    // demandé à sa construction (`ReferenceOrbitCache::cap_compatible`) : le
+    // relèvement y est alors exactement celui d'un rendu frais.
     let cache_lift = if params.iteration_max >= cache.requested_iteration_max {
         cache.iteration_max
     } else {
