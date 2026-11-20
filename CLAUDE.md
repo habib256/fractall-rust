@@ -1388,7 +1388,19 @@ construction (`requested_iteration_max`) : le relèvement du plafond du rendu
 seulement si la vue demande au moins autant — un cache bâti à 5000 puis
 réutilisé à 2000 (GUI) rendait TOUS les pixels au plafond du cache (défaut
 ancien fermé le 2026-11-20, verrou
-`lowering_the_cap_with_a_reused_orbit_matches_fresh_render`). ⚠️ **Régime atom-domain** (`is_valid_for` +
+`lowering_the_cap_with_a_reused_orbit_matches_fresh_render`). **Séquences à
+état verrouillées** (`render/stateful_tests.rs`, 2026-11-20 : une séquence
+par le dispatcher avec le MÊME `orbit_cache`, dernière frame comparée à un
+rendu frais, juge GMP quand les références diffèrent) — trois défauts de
+`is_valid_for` fermés : `find_nucleus` basculé cache gardé (2532/2560 px
+faux : champ `find_nucleus` du cache), `use_dd_tier` basculé (frame rendue
+en f64 sans le dire : exige `has_dd()`), graine Julia décalée de quelques
+ulp (tolérance 1e-15 → comparaison EXACTE, aussi dans `can_subset_reuse`).
+⚠️ Un test de séquence sur une vue sans structure ne prouve rien :
+`assert_structured` (≥ 20 comptes distincts). ⚠️ Tout réglage qui change
+l'orbite ou ce qu'elle porte doit entrer dans `is_valid_for`. Ouvert : un
+cache bâti avec nucleus est rejeté à chaque passe (centre = nucleus ≠
+centre de vue) → nucleus + orbite refaits par passe progressive. ⚠️ **Régime atom-domain** (`is_valid_for` +
 `can_subset_reuse` → `atom_regime_scale_mismatch`) : la troncature atom-domain
 de la référence dépend de l'ÉCHELLE de vue (`atom_radius_sqr = span_vue²`), donc
 une référence est baked à son span de construction. En zoom profond
