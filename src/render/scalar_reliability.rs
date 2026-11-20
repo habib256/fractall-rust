@@ -269,6 +269,18 @@ fn sq_bound_unreliable(n2: f64, b2: f64, two_r_emax_sq: f64, g: f64) -> bool {
     d * d <= g * two_r_emax_sq || !(g < E_MAX_NL * E_MAX_NL)
 }
 
+/// Le test de sortie AVANT le premier pas est-il indéterminé ? `n2` = `|ẑ₀|²`
+/// tel que la boucle le compare à `R²` (arrondi ≤ 2u relatif), `e0` = erreur
+/// du point de départ. Un pixel Julia à portée d'erreur du rayon sortait au
+/// pas 0 « fiable » sans qu'aucune borne ne soit jamais lue (verrou
+/// `julia_start_on_the_bailout_circle_is_not_declared_reliable`).
+#[inline]
+pub(crate) fn start_undetermined(n2: f64, e0: f64, bailout: f64) -> bool {
+    let lo = (bailout - e0).max(0.0);
+    let hi = bailout + e0;
+    n2 >= lo * lo * (1.0 - 4.0 * U64) && n2 <= hi * hi * (1.0 + 4.0 * U64)
+}
+
 /// Alpha Mandelbrot f64 tracé : `s = z²`, `m = s + c`, `z' = s + m² + c`
 /// (opérations et ordre de `iterations::alpha_mandelbrot`). `e_c` : erreur
 /// du point `c` ; la graine est exacte.
@@ -359,7 +371,9 @@ fn barnsley_f64(
     let mut i = 0u32;
     let mut cyc = crate::fractal::cycle::CycleCut::<2>::new();
     let mut e = e0;
-    let mut bad = false;
+    // Point de départ (le pixel, à `e0` près) : sa sortie au pas 0 doit être
+    // déterminée elle aussi (la boucle ne lit `bad` qu'après un pas).
+    let mut bad = start_undetermined(z0.norm_sqr(), e0, bailout);
     while i < iteration_max && z.norm_sqr() < b2 {
         let re = z.re;
         let w = if re >= 0.0 {
@@ -476,7 +490,9 @@ fn magnet_f64(
     let mut i = 0u32;
     let mut cyc = crate::fractal::cycle::CycleCut::<2>::new();
     let mut e = e0;
-    let mut bad = false;
+    // Point de départ (le pixel, à `e0` près) : sa sortie au pas 0 doit être
+    // déterminée elle aussi (la boucle ne lit `bad` qu'après un pas).
+    let mut bad = start_undetermined(z0.norm_sqr(), e0, bailout);
     while i < iteration_max && n2 < b2 {
         let n = z * z + seed_minus_one;
         let q = Complex64::new(2.0, 0.0) * z + seed_minus_two;
@@ -578,7 +594,9 @@ fn sin_f64(
     let mut i = 0u32;
     let mut cyc = crate::fractal::cycle::CycleCut::<2>::new();
     let mut e = e0;
-    let mut bad = false;
+    // Point de départ (le pixel, à `e0` près) : sa sortie au pas 0 doit être
+    // déterminée elle aussi (la boucle ne lit `bad` qu'après un pas).
+    let mut bad = start_undetermined(z0.norm_sqr(), e0, bailout);
     while i < iteration_max && n2 < b2 {
         let (s, c, sh, ch) = csin_parts(z);
         z = k * Complex64::new(s * ch, c * sh);
@@ -2007,5 +2025,115 @@ mod tests {
         let mut d = p.clone();
         d.channels.enable_distance_estimation = true;
         assert_eq!(plan_for(&d, ReliabilityMode::Escalate, false), None);
+    }
+
+    /// Un pixel dont le point exact est JUSTE sous le rayon d'évasion (à
+    /// 2⁻⁷⁰ relatif) mais dont les parties hautes f64 donnent une norme
+    /// arrondie au-dessus : l'étage dd (et qd) jugeait l'évasion sur cette
+    /// norme f64 avec une marge `e` (~2⁻¹⁰³·R) qui ignore son arrondi
+    /// (~2⁻⁵²·R) — évasion déclarée FIABLE au mauvais pas.
+    #[test]
+    fn dd_stage_escape_test_covers_f64_norm_rounding() {
+        const P: u32 = 400;
+        let r = 3.7f64;
+        let mut found = None;
+        for k in 1..400_000u32 {
+            let th = k as f64 * 0.000_731;
+            let mut cr = Float::with_val(P, th).cos();
+            let mut ci = Float::with_val(P, th).sin();
+            let shrink = Float::with_val(P, 1.0) - Float::with_val(P, Float::i_exp(1, -70));
+            cr *= r;
+            cr *= &shrink;
+            ci *= r;
+            ci *= &shrink;
+            let (h, v) = (cr.to_f64(), ci.to_f64());
+            let n2 = h * h + v * v;
+            if n2 >= r * r && n2.sqrt() > r {
+                found = Some((cr, ci));
+                break;
+            }
+        }
+        let (cr, ci) = found.expect("aucun point trouvé");
+        // Anti-vacuité : l'ancien test de sortie (`|n − R| > e` sans l'arrondi
+        // de la norme f64) acceptait ce pas — la borne dd y vaut ~2⁻¹⁰³·R.
+        let (h, v) = (cr.to_f64(), ci.to_f64());
+        let n = (h * h + v * v).sqrt();
+        let e_dd = UDD * (r + r + n);
+        assert!((n - r).abs() > e_dd, "scène : l'ancien test aurait refusé ce pas");
+        let mut p = default_params_for_type(FractalType::Mandelbulb, 1, 1);
+        p.center_x_hp = Some(cr.to_string_radix(10, None));
+        p.center_y_hp = Some(ci.to_string_radix(10, None));
+        p.center_x = cr.to_f64();
+        p.center_y = ci.to_f64();
+        p.span_x = 1e-10;
+        p.span_y = 1e-10;
+        p.bailout = r;
+        p.iteration_max = 50;
+        // Vérité : |c| < R, donc pas d'évasion au premier pas.
+        let pts = [(dd_from_gmp(&cr), dd_from_gmp(&ci))];
+        let res = dd_stage(&p, &pts).unwrap();
+        let mut g = p.clone();
+        g.engine.precision_bits = P;
+        let gp = crate::fractal::gmp::MpcParams::from_params(&g);
+        let (truth, _) = crate::fractal::gmp::iterate_point_mpc(
+            &gp,
+            &crate::fractal::gmp::complex_from_xy(P, cr.clone(), ci.clone()),
+        );
+        assert!(truth >= 2, "scène : le point exact ne doit pas s'évader au premier pas ({truth})");
+        assert!(!(res[0].2 && res[0].0 != truth), "dd : évasion {} déclarée fiable, vérité {truth}", res[0].0);
+        let q = [Cqd { re: qd_from_gmp(&cr), im: qd_from_gmp(&ci) }];
+        let rq = qd_stage(&p, &q).unwrap();
+        assert!(!(rq[0].2 && rq[0].0 != truth), "qd : évasion {} déclarée fiable, vérité {truth}", rq[0].0);
+        let prod = crate::render::render_escape_time(&p);
+        assert_eq!(prod.iterations[0], truth, "rendu de production ≠ GMP pur");
+    }
+
+    /// Pixel Julia Sin dont le point exact est JUSTE sous le rayon (2⁻⁷⁰
+    /// relatif) mais dont la norme f64 arrondit au rayon : la boucle f64 sort
+    /// au pas 0, et la boucle tracée — qui ne juge la sortie qu'APRÈS un pas —
+    /// la déclarait fiable (0 itération, vérité ≥ 1).
+    #[test]
+    fn julia_start_on_the_bailout_circle_is_not_declared_reliable() {
+        const P: u32 = 400;
+        let mut p = default_params_for_type(FractalType::JuliaSin, 1, 1);
+        let r = p.bailout;
+        let mut found = None;
+        for k in 1..400_000u32 {
+            let th = Float::with_val(P, k) * 0.000_731f64;
+            let shrink = Float::with_val(P, 1.0) - Float::with_val(P, Float::i_exp(1, -70));
+            let mut zr = Float::with_val(P, th.cos_ref());
+            let mut zi = Float::with_val(P, th.sin_ref());
+            zr *= r;
+            zr *= &shrink;
+            zi *= r;
+            zi *= &shrink;
+            let (h, v) = (zr.to_f64(), zi.to_f64());
+            if h * h + v * v >= r * r {
+                found = Some((zr, zi));
+                break;
+            }
+        }
+        let (zr, zi) = found.expect("aucun point trouvé");
+        p.center_x_hp = Some(zr.to_string_radix(10, None));
+        p.center_y_hp = Some(zi.to_string_radix(10, None));
+        p.center_x = zr.to_f64();
+        p.center_y = zi.to_f64();
+        p.span_x = 1e-10;
+        p.span_y = 1e-10;
+        p.iteration_max = 50;
+        let zp = Complex64::new(p.center_x, p.center_y);
+        assert_eq!(iterate_point(&p, zp).iteration, 0, "scène : la boucle f64 doit sortir au pas 0");
+        let mut g = p.clone();
+        g.engine.precision_bits = P;
+        let gp = crate::fractal::gmp::MpcParams::from_params(&g);
+        let (truth, _) = crate::fractal::gmp::iterate_point_mpc(
+            &gp,
+            &crate::fractal::gmp::complex_from_xy(P, zr.clone(), zi.clone()),
+        );
+        assert!(truth >= 1, "scène : le point exact ne doit pas sortir au pas 0");
+        let (_, _, bad) = iterate_tracked(&p, zp);
+        assert!(bad, "sortie au pas 0 indéterminée déclarée fiable");
+        let prod = crate::render::render_escape_time(&p);
+        assert_eq!(prod.iterations[0], truth, "rendu de production ≠ GMP pur");
     }
 }

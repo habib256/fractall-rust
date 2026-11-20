@@ -29,7 +29,7 @@ use rayon::prelude::*;
 use rug::float::Constant;
 use rug::Float;
 
-use crate::fractal::bytecode::direct_dd::qd_from_gmp;
+use crate::fractal::bytecode::direct_dd::{qd_from_gmp, NORM_REL};
 use crate::fractal::cycle::CycleCut;
 use crate::fractal::perturbation::qd::Qd;
 use crate::fractal::{FractalParams, FractalType};
@@ -151,9 +151,15 @@ impl LaneZ<9> for Cqd {
 
 /// Fin d'un pas tracé : `(continuer, fiable)` — borne petite, évasion
 /// déterminée (même test que l'étage dd).
+///
+/// ⚠️ La sortie est décidée sur la norme f64 des parties hautes : son
+/// arrondi (~2⁻⁵²·R) dépasse de très loin la borne dd/qd (~2⁻¹⁰³·R). Sans
+/// le terme `NORM_REL·n`, un point exact juste SOUS le rayon dont la norme
+/// f64 arrondit au-dessus sortait « fiable » au mauvais pas (verrou
+/// `dd_stage_escape_test_covers_f64_norm_rounding`).
 #[inline(always)]
 pub(crate) fn step_ok(n: f64, bailout: f64, e: f64) -> bool {
-    n.is_finite() && (n - bailout).abs() > e && e < E_MAX_NL
+    n.is_finite() && (n - bailout).abs() > e + NORM_REL * n && e < E_MAX_NL
 }
 
 /// `LANES` pixels de front, chaque voie rechargée dès qu'elle finit. Chaque
@@ -188,10 +194,14 @@ pub(crate) fn lanes<Z: LaneZ<S>, const S: usize, const LANES: usize>(
             loop {
                 if idx[l] != FREE {
                     let h = z[l].hi_c();
-                    if it[l] < iteration_max && h.re * h.re + h.im * h.im < b2 {
+                    let n2 = h.re * h.re + h.im * h.im;
+                    // Point de départ : sa sortie (ou non) doit être
+                    // déterminée comme celle d'un pas (`step_ok`).
+                    let ok0 = it[l] > 0 || step_ok(n2.sqrt(), bailout, e[l]);
+                    if ok0 && it[l] < iteration_max && n2 < b2 {
                         break;
                     }
-                    out[idx[l]] = (it[l], h, true);
+                    out[idx[l]] = (it[l], h, ok0);
                     idx[l] = FREE;
                 }
                 if next == points.len() {

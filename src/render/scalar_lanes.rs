@@ -498,10 +498,13 @@ where
             loop {
                 if idx[l] != FREE {
                     let (h, v) = (x.hi().0[l], y.hi().0[l]);
-                    if it[l] < iteration_max && h * h + v * v < b2 {
+                    let n2 = h * h + v * v;
+                    // Point de départ : sortie déterminée comme celle d'un pas.
+                    let ok0 = it[l] > 0 || step_ok(n2.sqrt(), bailout, e[l]);
+                    if ok0 && it[l] < iteration_max && n2 < b2 {
                         break;
                     }
-                    out[idx[l]] = (it[l], Complex64::new(h, v), true);
+                    out[idx[l]] = (it[l], Complex64::new(h, v), ok0);
                     idx[l] = FREE;
                 }
                 if next == points.len() {

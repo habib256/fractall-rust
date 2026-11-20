@@ -211,7 +211,8 @@ pub fn phoenix_f64(z0: Complex64, e0: f64, iteration_max: u32, bailout: f64) -> 
     let mut sr = z.re * z.re;
     let mut si = z.im * z.im;
     let mut n2 = sr + si;
-    let mut bad = false;
+    // Point de départ : sortie au pas 0 déterminée (cf. `start_undetermined`).
+    let mut bad = crate::render::scalar_reliability::start_undetermined(n2, e0, bailout);
     while i < iteration_max && n2 < b2 {
         let t = z.re * z.im;
         let z_temp = Complex64::new((sr - si + p1) + y.re * p2, (t + t) + y.im * p2);
@@ -365,10 +366,13 @@ fn dd_lanes(points: &[Cdd], iteration_max: u32, bailout: f64) -> Vec<(u32, Compl
         for l in 0..DD_LANES {
             loop {
                 if idx[l] != FREE {
-                    if it[l] < iteration_max && st[l].n2() < b2 {
+                    let n2 = st[l].n2();
+                    // Point de départ : sortie déterminée comme celle d'un pas.
+                    let ok0 = it[l] > 0 || dd_reliable(&st[l], n2, b2, two_r_emax_sq);
+                    if ok0 && it[l] < iteration_max && n2 < b2 {
                         break;
                     }
-                    out[idx[l]] = (it[l], hi(st[l].z), true);
+                    out[idx[l]] = (it[l], hi(st[l].z), ok0);
                     idx[l] = FREE;
                 }
                 if next == points.len() {

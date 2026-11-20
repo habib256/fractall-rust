@@ -280,6 +280,60 @@ fn toggling_find_nucleus_with_kept_cache_matches_fresh() {
     toggle_case("find_nucleus", |p| p.engine.find_nucleus = true);
 }
 
+/// Même vue avec `find_nucleus`, rendue deux fois avec le cache threadé (passes
+/// GUI, sonde puis rendu final) : le centre du cache est le NUCLEUS, pas celui
+/// de la vue — il était rejeté à chaque passe (recherche + orbite refaites).
+#[test]
+fn same_view_with_find_nucleus_reuses_orbit_and_matches_fresh() {
+    let mut p = e30(0.0, "4e-25", (64, 40), 20000);
+    p.engine.find_nucleus = true;
+    let mut cache: Cache = None;
+    let t = std::time::Instant::now();
+    let first = render(&p, &mut cache);
+    let t_first = t.elapsed();
+    let built = cache.clone().unwrap();
+    let key = built.nucleus_search.clone().expect("recherche du nucleus enregistrée");
+    assert!(key.period.is_some(), "scène sans nucleus trouvé : test vide");
+    let t = std::time::Instant::now();
+    let second = render(&p, &mut cache);
+    eprintln!(
+        "[STATEFUL] find_nucleus même vue : 1er rendu {:.3}s, 2e {:.3}s (période {:?})",
+        t_first.as_secs_f64(),
+        t.elapsed().as_secs_f64(),
+        key.period
+    );
+    assert!(
+        Arc::ptr_eq(&built, cache.as_ref().unwrap()),
+        "même vue + find_nucleus : orbite recalculée au lieu d'être réutilisée"
+    );
+    let f = fresh(&p);
+    assert_structured(&f, "frais");
+    assert_eq!(first.iterations, second.iterations, "second rendu ≠ premier");
+    assert_eq!(second.iterations, f.iterations, "rendu sur cache ≠ frais");
+}
+
+/// Pan / zoom après un rendu `find_nucleus` : la recherche dépend du centre
+/// et de l'échelle de vue — le cache ne doit pas être resservi tel quel.
+#[test]
+fn pan_or_zoom_after_find_nucleus_matches_fresh() {
+    let mut base = e30(0.0, "4e-25", (64, 40), 20000);
+    base.engine.find_nucleus = true;
+    for (label, mut p) in [
+        ("pan 5 px", e30(5.0, "4e-25", (64, 40), 20000)),
+        ("zoom ×2", e30(0.0, "2e-25", (64, 40), 20000)),
+    ] {
+        p.engine.find_nucleus = true;
+        let mut cache: Cache = None;
+        render(&base, &mut cache);
+        let built = cache.clone().unwrap();
+        let s = render(&p, &mut cache);
+        assert!(!Arc::ptr_eq(&built, cache.as_ref().unwrap()), "{label} : cache resservi");
+        let f = fresh(&p);
+        assert_structured(&f, label);
+        assert_eq!(s.iterations, f.iterations, "{label} : ≠ frais");
+    }
+}
+
 #[test]
 fn toggling_dd_tier_with_kept_cache_matches_fresh() {
     toggle_case("use_dd_tier", |p| p.engine.use_dd_tier = true);
@@ -575,5 +629,55 @@ fn scan_scenes() {
         let minesc = v[0];
         v.dedup();
         eprintln!("[SCAN] {n} span={:?} it={} distinct={} capped={} min={} maxesc={} t={:.2}s", p.span_x_hp, p.iteration_max, v.len(), capped, minesc, maxesc, t.elapsed().as_secs_f64());
+    }
+}
+
+/// Auto-ajustement de la série (`ReferenceOrbitCache::requested_iteration_max`
+/// < `iteration_max`) : scène où il se déclenche réellement — point de
+/// Misiurewicz c = i, span 4e-10, 640×32 (image « non petite »), plafond 40
+/// relevé à 160 (skip validé 21 > 25 % de 40). Un rendu frais à 64 s'arrête,
+/// lui, à 128 : le cache ne connaît l'issue de l'ajustement QUE pour le plafond
+/// demandé à sa construction. Séquence : même plafond, intermédiaires,
+/// supérieur — chaque rendu sur cache == frais.
+///
+/// ⚠️ DÉFAUT CONNU, test ignoré : sans correctif, le dernier plafond (40, après
+/// un cache bâti à 200 SANS ajustement) rend 733/20480 pixels ≠ frais (cache
+/// servi à 40, le frais relève à 160). Le correctif « cache à série servi au
+/// seul plafond demandé » le ferme mais casse la réutilisation sonde → rendu
+/// final (`probe_orbit_cache_is_reusable_by_final_render`) : il faut un critère
+/// qui prédise l'issue de l'heuristique au nouveau plafond (skip validé ×4 ≤
+/// plafond, même géométrie) et un `cache_lift` limité au plafond demandé.
+#[test]
+#[ignore]
+fn auto_adjusted_cache_serves_only_its_requested_cap() {
+    let mk = |it: u32| {
+        let mut p = view(FractalType::Mandelbrot, "0", "1", 0.0, 0.0, "4e-10", (640, 32), it);
+        p.engine.algorithm_mode = AlgorithmMode::Perturbation;
+        p
+    };
+    let mut cache: Cache = None;
+    render(&mk(40), &mut cache);
+    let c = cache.clone().unwrap();
+    assert!(
+        c.iteration_max > c.requested_iteration_max,
+        "scène sans auto-ajustement : test vide ({} / {})",
+        c.iteration_max,
+        c.requested_iteration_max
+    );
+    for it in [40u32, 64, 100, 200, 40] {
+        let p = mk(it);
+        let s = render(&p, &mut cache);
+        let f = fresh(&p);
+        assert_structured(&f, "frais");
+        let d = diff_indices(&s, &f);
+        assert!(
+            d.is_empty(),
+            "plafond {it} après cache auto-ajusté : {} pixels ≠ frais (max sur cache {:?}, frais {:?}, cache {}/{})",
+            d.len(),
+            s.iterations.iter().max(),
+            f.iterations.iter().max(),
+            cache.as_ref().unwrap().requested_iteration_max,
+            cache.as_ref().unwrap().iteration_max
+        );
     }
 }

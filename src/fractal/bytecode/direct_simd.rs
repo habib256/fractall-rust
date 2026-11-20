@@ -40,7 +40,7 @@
 
 use num_complex::Complex64;
 
-use super::direct_dd::{phase_supported, DirectDdResult, DD_UNIT, E_MAX};
+use super::direct_dd::{phase_supported, DirectDdResult, DD_UNIT, E_MAX, NORM_REL};
 use super::{Op, Phase};
 use crate::fractal::eft;
 use crate::fractal::perturbation::dd::DoubleDouble as Dd;
@@ -163,7 +163,8 @@ fn two_prod<const L: usize, const M: u8>(a: V<L>, b: V<L>) -> (V<L>, V<L>) {
         }
     } else if M == TP_AUTO && eft::fma_runtime() {
         for l in 0..L {
-            e[l] = eft::fma_call(a.0[l], b.0[l], -p.0[l]);
+            // SAFETY : FMA détecté (`eft::fma_runtime`, condition de la branche).
+            e[l] = unsafe { eft::fma_call(a.0[l], b.0[l], -p.0[l]) };
         }
     } else {
         let mut ok = true;
@@ -497,8 +498,12 @@ pub fn iterate_lanes<N: LaneNum<L>, const L: usize>(
                 }
                 let (z0, c) = start(points[next]);
                 let (zx, zy) = (hi1(z0.0), hi1(z0.1));
-                if zx * zx + zy * zy >= b2 {
-                    out[next] = res(0, zx, zy, true);
+                // Test initial, même marge que les tests de sortie (arrondi de
+                // la norme f64, `NORM_REL`) : un point de départ à portée
+                // d'arrondi du rayon n'est pas déterminé.
+                let n0 = zx * zx + zy * zy;
+                if n0 >= b2 || n0.sqrt() * (1.0 + NORM_REL) >= bailout {
+                    out[next] = res(0, zx, zy, n0 >= b2 && n0.sqrt() * (1.0 - NORM_REL) >= bailout);
                     next += 1;
                     continue;
                 }
@@ -555,8 +560,8 @@ pub fn iterate_lanes<N: LaneNum<L>, const L: usize>(
             let verdict = if !n.is_finite() {
                 Some(false)
             } else if n >= b2 {
-                Some(el < E_MAX.max(0.01 * n.sqrt()) && n.sqrt() - el >= bailout)
-            } else if !(el < E_MAX) || (n >= near2 && n.sqrt() + el >= bailout) {
+                Some(el < E_MAX.max(0.01 * n.sqrt()) && n.sqrt() * (1.0 - NORM_REL) - el >= bailout)
+            } else if !(el < E_MAX) || (n >= near2 && n.sqrt() * (1.0 + NORM_REL) + el >= bailout) {
                 Some(false)
             } else {
                 None
@@ -655,6 +660,71 @@ mod tests {
     }
     fn qd(v: f64) -> Qd {
         Qd::from_f64(v)
+    }
+
+    /// Point dont le module exact est JUSTE sous `r` (2⁻⁷⁰ relatif) mais dont
+    /// la norme f64 des parties hautes dépasse `r` d'au moins un ulp — et le
+    /// même juste au-dessus avec une norme f64 en dessous.
+    pub(crate) fn straddling_point(r: f64, below: bool) -> (rug::Float, rug::Float) {
+        const P: u32 = 400;
+        for k in 1..400_000u32 {
+            let th = rug::Float::with_val(P, k) * 0.000_731f64;
+            let mut cr = rug::Float::with_val(P, th.cos_ref());
+            let mut ci = rug::Float::with_val(P, th.sin_ref());
+            let eps = rug::Float::with_val(P, rug::Float::i_exp(1, -70));
+            let f = if below { rug::Float::with_val(P, 1.0) - eps } else { rug::Float::with_val(P, 1.0) + eps };
+            cr *= r;
+            cr *= &f;
+            ci *= r;
+            ci *= &f;
+            let (h, v) = (cr.to_f64(), ci.to_f64());
+            let n = (h * h + v * v).sqrt();
+            if (below && n > r) || (!below && n < r) {
+                return (cr, ci);
+            }
+        }
+        panic!("aucun point trouvé (r = {r}, below = {below})");
+    }
+
+    /// Étages directs dd / qd (scalaire et voies) : la sortie est décidée sur
+    /// la norme f64 des parties hautes, dont l'arrondi (~2⁻⁵²·R) dépasse de
+    /// très loin la borne (~2⁻¹⁰²·R). Un `c` dont le module exact est juste
+    /// sous R sortait « fiable » au premier pas (vérité : au second) ; un `c`
+    /// juste au-dessus était déclaré non évadé.
+    #[test]
+    fn direct_stages_escape_test_covers_f64_norm_rounding() {
+        use crate::fractal::bytecode::direct_dd::{dd_from_gmp, qd_from_gmp};
+        let r = 25.0;
+        let f = compile_formula(FractalType::Mandelbrot, 2.0).unwrap();
+        let phase = &f.phases[0];
+        for below in [true, false] {
+            let (cr, ci) = straddling_point(r, below);
+            // Vérité (|c| exact) : pas d'évasion au pas 1 si below, sinon au pas 1.
+            let truth = if below { 2 } else { 1 };
+            // Anti-vacuité : l'ancien test (marge = borne seule) acceptait le
+            // verdict faux — la borne vaut ~UNIT·(|h| + |v| + |c|).
+            let (h, v) = (cr.to_f64(), ci.to_f64());
+            let n = (h * h + v * v).sqrt();
+            let e_old = DD_UNIT * 4.0 * r;
+            assert!(if below { n - e_old >= r } else { n + e_old < r }, "scène vacante");
+            let cd = (dd_from_gmp(&cr), dd_from_gmp(&ci));
+            let cq = (qd_from_gmp(&cr), qd_from_gmp(&ci));
+            let z0d = (Dd::ZERO, Dd::ZERO);
+            let z0q = (Qd::ZERO, Qd::ZERO);
+            let all = [
+                ("dd", iterate_direct_dd(phase, z0d, cd, 50, r)),
+                ("dd voies", direct_dd_lanes(phase, &[cd], z0d, false, 50, r)[0]),
+                ("qd", iterate_direct_qd(phase, z0q, cq, 50, r)),
+                ("qd voies", direct_qd_lanes(phase, &[cq], z0q, false, 50, r)[0]),
+            ];
+            for (name, res) in all {
+                assert!(
+                    !res.reliable || res.iteration == truth,
+                    "{name} below={below} : {} déclaré fiable, vérité {truth}",
+                    res.iteration
+                );
+            }
+        }
     }
 
     /// Points du bord parabolique des éléphants (1e7) : `w×h` pixels de la

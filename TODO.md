@@ -33,6 +33,15 @@ tests lib, goldens, navigation profonde verts.
   f64 linéaires Magnet/Sin (signalés −10 points) ; **binaires de release
   baseline x86-64 ramenés au natif** par FMA/AVX2 aiguillés à l'exécution
   (`eft.rs` : éléphants 4,40 → 2,20 s).
+- *Relecture indépendante du second lot* : deux failles de la garantie
+  fermées (évasion des étages dd/qd jugée sur une norme f64 sans marge
+  d'arrondi ; sortie au pas 0 des boucles tracées Julia) ; cache à nucleus
+  reconnu par les entrées de la recherche (2e rendu 0,60 → 0,14 s).
+- **OUVERT (correction, GUI à état)** : cache d'orbite dont la série s'est
+  auto-ajustée, ou bâti sans série, servi à un autre plafond ≠ rendu frais
+  (733/20 480 px, verrou ignoré `auto_adjusted_cache_serves_only_its_
+  requested_cap`). Piste : ne servir à un plafond L ≠ demandé que si
+  l'heuristique ne s'y déclencherait pas ; `cache_lift` au seul cas égal.
 - *Ouverts* : coût du traqueur Phoenix (voies ?) ; étage qd Magnet M sur
   orbites bornées chaotiques (levier = vitesse du pas qd) ; Lyapunov
   baseline ×1,2-1,4 ; MinGW / CPU sans AVX2 non mesurés ; cache à nucleus
