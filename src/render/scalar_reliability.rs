@@ -531,6 +531,12 @@ const SIN_FLOOR: f64 = 1e-60;
 /// emballerait la borne de tout l'intérieur. `cosh(|y| + E) ≤ cosh y·e^E`,
 /// `e^E ≤ 1,2841` sous [`E_MAX_NL`]. Arrondis : `csin` ≤ 8u par composante
 /// (sincos 1 ulp, `expm1` et ses deux roundings), produit complexe 2u·|k|₁.
+///
+/// Borne LINÉAIRE `E` depuis le 2026-11-20 (une racine par pas, `|cos ẑ|`,
+/// à côté d'un `sincos` et d'un `expm1`) : au carré, le découpage
+/// `(x + y)² ≤ (1 + δ)x² + (1 + 1/δ)y²` coûtait `(1 + δ)²` par pas et
+/// pesait 32× le terme en `E²` — bord Mandelbrot Sin 29 → 24 % de pixels
+/// signalés, comptes inchangés (juge GMP pur).
 fn sin_f64(
     z0: Complex64,
     k: Complex64,
@@ -545,15 +551,15 @@ fn sin_f64(
     let k_abs = k.norm();
     let k1 = k.re.abs() + k.im.abs();
     // Marges relatives (1e-12) : arrondis du calcul de la borne elle-même.
-    let kk = SPLIT_X * (k_abs + e_k) * (k_abs + e_k) * (1.0 + 1e-12);
+    let kk = (k_abs + e_k) * (1.0 + 1e-12);
     let a_coef = (e_k + 10.0 * U64 * k1) * (1.0 + 1e-12);
-    let kh = SPLIT_Y * 0.25 * 1.29 * 1.29;
-    let cos_margin = SPLIT_X * (1.0 + 16.0 * U64);
+    let kh = 0.5 * 1.29;
+    let cos_margin = 1.0 + 16.0 * U64;
     let mut z = z0;
     let mut n2 = z.norm_sqr();
     let mut i = 0u32;
     let mut cyc = crate::fractal::cycle::CycleCut::<2>::new();
-    let mut g = e0 * e0; // E²
+    let mut e = e0;
     let mut bad = false;
     while i < iteration_max && n2 < b2 {
         let (s, c, sh, ch) = csin_parts(z);
@@ -561,16 +567,17 @@ fn sin_f64(
         i += 1;
         n2 = z.norm_sqr();
         if !bad {
-            // |Δ'|² ≤ (1+δ)|k*|²·E²·((1+δ)|cos ẑ|² + (1+1/δ)·E²·(1,29·ch/2)²)
-            //        + (1+1/δ)·(a·|sin ẑ|₁)².
-            let cos2 = cos_margin * (c * c + sh * sh);
+            // |Δ'| ≤ |k*|·E·(|cos ẑ| + E·1,29·ch/2) + a·|sin ẑ|₁ (borne
+            // LINÉAIRE en E depuis 2026-11-20 : la version au carré payait
+            // (1+δ)² par pas et 32× le terme en E²).
+            let cos_abs = cos_margin * (c * c + sh * sh).sqrt();
             // Plancher (majorant, donc sûr) : vers le point fixe z = 0, |sin z|
             // et la borne décroissent géométriquement jusqu'aux SOUS-NORMAUX,
             // dont chaque opération coûte une assistance micro-code (+165 % sur
             // la vue d'accueil Mandelbrot Sin).
             let add = a_coef * (s.abs() * ch + c.abs() * sh.abs()).max(SIN_FLOOR);
-            g = kk * g * (cos2 + kh * ch * ch * g) + SPLIT_Y * add * add;
-            if sq_bound_unreliable(n2, b2, two_r_emax_sq, g) {
+            e = (kk * e * (cos_abs + kh * ch * e) + add) * (1.0 + 16.0 * U64);
+            if sq_bound_unreliable(n2, b2, two_r_emax_sq, e * e) {
                 bad = true;
             }
         }
@@ -1646,7 +1653,10 @@ mod tests {
         let mut out = String::new();
         for &(ft, view) in SCENES
             .iter()
-            .filter(|s| matches!(s.0, FractalType::MagnetJulia | FractalType::MagnetMandelbrot))
+            .filter(|s| match std::env::var("MAGNET_BENCH_TYPES") {
+                Ok(t) => t.split(',').any(|x| format!("{:?}", s.0) == x),
+                Err(_) => matches!(s.0, FractalType::MagnetJulia | FractalType::MagnetMandelbrot),
+            })
         {
             let tag = format!("{ft:?} {}", if view.is_some() { "edge" } else { "home" });
             for (w, h) in [(64usize, 40usize), (128, 80), (256, 160)] {
@@ -1706,8 +1716,11 @@ mod tests {
                 scene_points(&p, w, h).into_iter().filter(|&zp| iterate_tracked(&p, zp).2).collect();
             let dd = dd_stage(&p, &dd_points(&flagged)).unwrap();
             let dd_capped = dd.iter().filter(|r| r.2 && r.0 >= p.iteration_max).count();
-            let beyond: Vec<Complex64> =
-                flagged.iter().zip(&dd).filter(|(_, r)| !r.2).map(|(&zp, _)| zp).collect();
+            let beyond: Vec<Complex64> = if std::env::var("PROBE_SET").as_deref() == Ok("dd") {
+                flagged.iter().zip(&dd).filter(|(_, r)| r.2 && r.0 >= p.iteration_max).map(|(&zp, _)| zp).collect()
+            } else {
+                flagged.iter().zip(&dd).filter(|(_, r)| !r.2).map(|(&zp, _)| zp).collect()
+            };
             let julia = ft == FractalType::MagnetJulia;
             let radii = [1e-2, 1e-3, 1e-4, 1e-6, 1e-9];
             let period: u32 = std::env::var("PROBE_K").ok().and_then(|v| v.parse().ok()).unwrap_or(128);
@@ -1775,6 +1788,43 @@ mod tests {
             }
             let mut st: Vec<u32> = certs.iter().map(|c| c.0).collect();
             st.sort_unstable();
+            // Pixels qd plafonnés : période, multiplicateur, distance au cycle.
+            if std::env::var("PROBE_ORBITS").is_ok() {
+                for (&zp, r) in beyond.iter().zip(&rows).take(400) {
+                    if r.0 < p.iteration_max {
+                        continue;
+                    }
+                    let pt = Cqd { re: Qd::from_f64(zp.re), im: Qd::from_f64(zp.im) };
+                    let one = Qd::from_f64(1.0);
+                    let s1 = Cqd { re: pt.re.sub(one), im: pt.im };
+                    let s2 = Cqd { re: pt.re.sub(Qd::from_f64(2.0)), im: pt.im };
+                    let mut z = if julia { pt } else { Cqd::ZERO };
+                    let mut hist = Vec::new();
+                    let mut first_near1 = None;
+                    for i in 0..p.iteration_max {
+                        let (nz, _, _) = crate::render::scalar_qd::magnet_qd_step(z, 0.0, s1, s2, 0.0);
+                        z = nz;
+                        let h = z.hi();
+                        if first_near1.is_none() && (h - Complex64::new(1.0, 0.0)).norm() < 1e-3 {
+                            first_near1 = Some(i);
+                        }
+                        hist.push(h);
+                    }
+                    let n = hist.len() - 1;
+                    let per = (1..200).min_by(|&a, &b| {
+                        (hist[n] - hist[n - a]).norm().partial_cmp(&(hist[n] - hist[n - b]).norm()).unwrap()
+                    });
+                    let per = per.unwrap();
+                    let d0 = (hist[n] - hist[n - per]).norm();
+                    let d1 = (hist[n - per] - hist[n - 2 * per]).norm();
+                    eprintln!(
+                        "   plafonné : z_fin {:.4} {:+.4} période {per} d0 {d0:.2e} λ≈{:.5} près de 1 au pas {first_near1:?}",
+                        hist[n].re,
+                        hist[n].im,
+                        d0 / d1
+                    );
+                }
+            }
             let saved: u64 = certs.iter().map(|c| (p.iteration_max - c.0) as u64).sum();
             let total: u64 = rows.iter().map(|r| r.0 as u64).sum::<u64>() + saved;
             eprintln!("   pas qd économisés {saved} / {total}");
