@@ -365,10 +365,13 @@ fn dd_lanes(points: &[Cdd], iteration_max: u32, bailout: f64) -> Vec<(u32, Compl
         for l in 0..DD_LANES {
             loop {
                 if idx[l] != FREE {
-                    if it[l] < iteration_max && st[l].n2() < b2 {
+                    let n2 = st[l].n2();
+                    // Point de départ : sortie déterminée comme celle d'un pas.
+                    let ok0 = it[l] > 0 || dd_reliable(&st[l], n2, b2, two_r_emax_sq);
+                    if ok0 && it[l] < iteration_max && n2 < b2 {
                         break;
                     }
-                    out[idx[l]] = (it[l], hi(st[l].z), true);
+                    out[idx[l]] = (it[l], hi(st[l].z), ok0);
                     idx[l] = FREE;
                 }
                 if next == points.len() {

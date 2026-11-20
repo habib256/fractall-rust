@@ -33,6 +33,17 @@ pub const DD_UNIT: f64 = 1.0 / (1u128 << 102) as f64;
 /// déterminé en double-double : la boucle s'arrête et rend « non fiable ».
 pub const E_MAX: f64 = 1e-3;
 
+/// Écart relatif maximal entre une norme recalculée en f64 sur les seules
+/// PARTIES HAUTES (troncature des parties basses ≤ 2⁻⁵³, deux carrés, une
+/// somme, une racine) et le module exact du nombre dd/qd : 8·2⁻⁵³ (marge
+/// ×2). Les tests d'évasion des étages dd/qd décident sur cette norme f64,
+/// dont l'arrondi (~2⁻⁵²·R) dépasse de très loin leur borne (~2⁻¹⁰³·R) : il
+/// doit entrer dans la marge, sinon un point exact juste sous le rayon dont
+/// la norme f64 arrondit au-dessus sort « fiable » au mauvais pas (verrous
+/// `direct_stages_escape_test_covers_f64_norm_rounding`,
+/// `dd_stage_escape_test_covers_f64_norm_rounding`).
+pub const NORM_REL: f64 = 8.0 / (1u64 << 53) as f64;
+
 /// Résultat d'un pixel.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DirectDdResult {
@@ -216,8 +227,10 @@ fn iterate_direct<N: DirectNum>(
     if !phase_supported(phase) {
         return out(0, x, y, false);
     }
-    if x.hi() * x.hi() + y.hi() * y.hi() >= b2 {
-        return out(0, x, y, true);
+    // Test initial, même marge que les tests de sortie (cf. `NORM_REL`).
+    let n0 = x.hi() * x.hi() + y.hi() * y.hi();
+    if n0 >= b2 || n0.sqrt() * (1.0 + NORM_REL) >= bailout {
+        return out(0, x, y, n0 >= b2 && n0.sqrt() * (1.0 - NORM_REL) >= bailout);
     }
     while iter < iteration_max {
         for op in &phase.ops {
@@ -249,7 +262,7 @@ fn iterate_direct<N: DirectNum>(
         }
         if n >= b2 {
             // Évasion déterminée ssi |z| − E ≥ R (et la borne est saine).
-            let ok = e < E_MAX.max(0.01 * n.sqrt()) && n.sqrt() - e >= bailout;
+            let ok = e < E_MAX.max(0.01 * n.sqrt()) && n.sqrt() * (1.0 - NORM_REL) - e >= bailout;
             return out(iter, x, y, ok);
         }
         // `!(e < E_MAX)` attrape aussi NaN.
@@ -257,7 +270,7 @@ fn iterate_direct<N: DirectNum>(
             return out(iter, x, y, false);
         }
         // Pas encore évadé, mais à portée d'erreur du rayon : indéterminé.
-        if n >= near2 && n.sqrt() + e >= bailout {
+        if n >= near2 && n.sqrt() * (1.0 + NORM_REL) + e >= bailout {
             return out(iter, x, y, false);
         }
     }

@@ -62,7 +62,8 @@ pub fn two_prod(a: f64, b: f64) -> (f64, f64) {
         two_prod_fma(a, b)
     } else if fma_runtime() {
         let p = a * b;
-        (p, fma_call(a, b, -p))
+        // SAFETY : FMA détecté (`fma_runtime`).
+        (p, unsafe { fma_call(a, b, -p) })
     } else {
         two_prod_dekker(a, b)
     }
@@ -118,10 +119,15 @@ pub fn avx2_fma_dispatch() -> bool {
     }
 }
 
-/// `a·b + c` arrondi une fois, par l'instruction FMA. À n'appeler que si
-/// [`fma_runtime`] (ou [`fma_inline`]) est vrai.
+/// `a·b + c` arrondi une fois, par l'instruction FMA.
+///
+/// # Safety
+/// [`fma_runtime`] (ou [`fma_inline`]) doit être vrai : sinon l'instruction
+/// FMA est exécutée sur un CPU qui ne l'a pas (`SIGILL`). `unsafe` parce que
+/// la précondition n'est vérifiée qu'en debug — une fonction SÛRE et
+/// publique ne doit pas pouvoir provoquer cela.
 #[inline(always)]
-pub fn fma_call(a: f64, b: f64, c: f64) -> f64 {
+pub unsafe fn fma_call(a: f64, b: f64, c: f64) -> f64 {
     #[cfg(target_arch = "x86_64")]
     {
         if fma_inline() {
@@ -129,7 +135,7 @@ pub fn fma_call(a: f64, b: f64, c: f64) -> f64 {
         }
         debug_assert!(fma_runtime());
         // SAFETY : `fma_hw` n'exige que la fonctionnalité CPU `fma`, que
-        // l'appelant a vérifiée par `fma_runtime()` (détection `cpuid`).
+        // l'appelant garantit (contrat de `fma_call`, détection `cpuid`).
         unsafe { fma_hw(a, b, c) }
     }
     #[cfg(not(target_arch = "x86_64"))]
