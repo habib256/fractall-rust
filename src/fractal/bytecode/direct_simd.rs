@@ -28,16 +28,21 @@
 //!   dans ces cas ; la borne tracée (`U_QD` = 2⁻²⁰⁶, marge ×16 sur l'erreur
 //!   mesurée) couvre l'arithmétique réellement faite.
 //!
-//! `two_prod` : FMA matériel si le binaire est compilé avec `fma`
-//! (`cfg!(target_feature = "fma")`, cas `target-cpu=native`) ; sinon
-//! découpage de Dekker. Les deux sont EXACTS (produit sans erreur) : mêmes
-//! bits. Sans `fma` à la compilation, `f64::mul_add` est un appel de
-//! bibliothèque — ni inliné ni vectorisé — d'où la seconde voie.
+//! `two_prod` (cf. [`two_prod`] et `crate::fractal::eft`) : FMA en ligne si
+//! le binaire est compilé avec `fma` ; dans un binaire baseline x86-64 sur
+//! CPU à AVX2 + FMA, les étages passent par une copie compilée avec
+//! `avx2,fma` (aiguillage à l'exécution, [`direct_dd_lanes`]) où le FMA est en
+//! ligne et vectorisé — éléphants 1e7 60 000 it. : étages directs 6,0 → 3,2 s ;
+//! sans FMA, découpage de Dekker. Tous EXACTS (produit sans erreur) : mêmes
+//! bits (verrou `two_prod_modes_give_identical_lanes`). Sans `fma` à la
+//! compilation, `f64::mul_add` est un appel de bibliothèque — ni inliné ni
+//! vectorisé, et logiciel sur un CPU sans FMA.
 
 use num_complex::Complex64;
 
 use super::direct_dd::{phase_supported, DirectDdResult, DD_UNIT, E_MAX};
 use super::{Op, Phase};
+use crate::fractal::eft;
 use crate::fractal::perturbation::dd::DoubleDouble as Dd;
 use crate::fractal::perturbation::qd::Qd;
 
@@ -129,36 +134,59 @@ fn quick_two_sum<const L: usize>(a: V<L>, b: V<L>) -> (V<L>, V<L>) {
     (s, b - (s - a))
 }
 
-/// Produit sans erreur : FMA matériel si disponible À LA COMPILATION, sinon
-/// Dekker (exact tant que |a|, |b| < 2⁹⁹⁶ — voies libres exceptées, dont la
-/// sortie n'est jamais lue). Mêmes bits dans les deux cas.
+/// Mode du produit sans erreur des voies (paramètre `M` de [`DdV`] /
+/// [`QdV`]) : choix à l'exécution (défaut de production).
+pub const TP_AUTO: u8 = 0;
+/// `mul_add` en ligne : variante compilée avec `avx2,fma` (cf.
+/// [`direct_dd_lanes`]), où c'est l'instruction `vfmadd`, vectorisée.
+pub const TP_FMA: u8 = 1;
+/// Découpage de Dekker forcé (chemin des CPU sans FMA ; tests).
+pub const TP_DEKKER: u8 = 2;
+
+/// Produit sans erreur, mêmes bits dans tous les modes :
+/// - [`TP_FMA`] ou FMA connu à la compilation : `mul_add` en ligne ;
+/// - [`TP_AUTO`], baseline x86_64 sur CPU à FMA (sans AVX2, sinon la
+///   variante `avx2,fma` est prise en amont) : appel de `eft::fma_call` voie
+///   par voie — mesuré plus rapide que Dekker vectorisé en SSE2 (éléphants
+///   1e7, étages directs 5,6 s contre 9,7 s) ;
+/// - CPU sans FMA ([`TP_AUTO`]) ou [`TP_DEKKER`] : Dekker sans branchement
+///   sur toutes les voies ; une voie hors du domaine exact de Dekker
+///   (`eft::dekker_exact` — en pratique une voie libre partie à l'infini) est
+///   refaite par `mul_add`, hors ligne.
 #[inline(always)]
-fn two_prod<const L: usize>(a: V<L>, b: V<L>) -> (V<L>, V<L>) {
+fn two_prod<const L: usize, const M: u8>(a: V<L>, b: V<L>) -> (V<L>, V<L>) {
     let p = a * b;
     let mut e = [0.0; L];
-    if cfg!(target_feature = "fma") {
+    if M == TP_FMA || (M == TP_AUTO && eft::fma_inline()) {
         for l in 0..L {
             e[l] = a.0[l].mul_add(b.0[l], -p.0[l]);
         }
-    } else {
+    } else if M == TP_AUTO && eft::fma_runtime() {
         for l in 0..L {
-            e[l] = dekker_err(a.0[l], b.0[l], p.0[l]);
+            e[l] = eft::fma_call(a.0[l], b.0[l], -p.0[l]);
+        }
+    } else {
+        let mut ok = true;
+        for l in 0..L {
+            e[l] = eft::dekker_err(a.0[l], b.0[l], p.0[l]);
+            ok &= eft::dekker_exact(a.0[l], b.0[l], p.0[l]);
+        }
+        if !ok {
+            two_prod_fixup(&a.0, &b.0, &p.0, &mut e);
         }
     }
     (p, V(e))
 }
 
-/// Erreur exacte `a·b − p` par découpage de Dekker (sans FMA).
-#[inline(always)]
-pub fn dekker_err(a: f64, b: f64, p: f64) -> f64 {
-    const SPLIT: f64 = 134_217_729.0; // 2^27 + 1
-    let t = SPLIT * a;
-    let ah = t - (t - a);
-    let al = a - ah;
-    let t = SPLIT * b;
-    let bh = t - (t - b);
-    let bl = b - bh;
-    ((ah * bh - p) + ah * bl + al * bh) + al * bl
+/// Voies hors domaine de Dekker : erreur par `mul_add` (exact).
+#[cold]
+#[inline(never)]
+fn two_prod_fixup<const L: usize>(a: &[f64; L], b: &[f64; L], p: &[f64; L], e: &mut [f64; L]) {
+    for l in 0..L {
+        if !eft::dekker_exact(a[l], b[l], p[l]) {
+            e[l] = a[l].mul_add(b[l], -p[l]);
+        }
+    }
 }
 
 /// Arithmétique d'un étage direct en voies vectorielles.
@@ -181,12 +209,12 @@ pub trait LaneNum<const L: usize>: Copy {
 
 /// Double-double en voies : mêmes opérations que `perturbation::dd`.
 #[derive(Clone, Copy, Debug)]
-pub struct DdV<const L: usize> {
+pub struct DdV<const L: usize, const M: u8 = TP_AUTO> {
     hi: V<L>,
     lo: V<L>,
 }
 
-impl<const L: usize> LaneNum<L> for DdV<L> {
+impl<const L: usize, const M: u8> LaneNum<L> for DdV<L, M> {
     type Scalar = Dd;
     const UNIT: f64 = DD_UNIT;
     #[inline(always)]
@@ -220,7 +248,7 @@ impl<const L: usize> LaneNum<L> for DdV<L> {
     /// `dd::mul` (QD `dd_mul`).
     #[inline(always)]
     fn mul(self, o: Self) -> Self {
-        let (p1, p2) = two_prod(self.hi, o.hi);
+        let (p1, p2) = two_prod::<L, M>(self.hi, o.hi);
         let p2 = p2 + (self.hi * o.lo + self.lo * o.hi);
         let (hi, lo) = quick_two_sum(p1, p2);
         DdV { hi, lo }
@@ -228,7 +256,7 @@ impl<const L: usize> LaneNum<L> for DdV<L> {
     /// `dd::sqr`.
     #[inline(always)]
     fn sqr(self) -> Self {
-        let (p1, p2) = two_prod(self.hi, self.hi);
+        let (p1, p2) = two_prod::<L, M>(self.hi, self.hi);
         let p2 = p2 + V::splat(2.0) * (self.hi * self.lo);
         let (hi, lo) = quick_two_sum(p1, p2);
         DdV { hi, lo }
@@ -237,7 +265,7 @@ impl<const L: usize> LaneNum<L> for DdV<L> {
     #[inline(always)]
     fn twice(self) -> Self {
         let two = V::splat(2.0);
-        let (p1, p2) = two_prod(self.hi, two);
+        let (p1, p2) = two_prod::<L, M>(self.hi, two);
         let p2 = p2 + self.lo * two;
         let (hi, lo) = quick_two_sum(p1, p2);
         DdV { hi, lo }
@@ -287,9 +315,9 @@ fn three_sum2<const L: usize>(a: &mut V<L>, b: &mut V<L>, c: V<L>) {
 /// Quad-double en voies : algorithmes « sloppy » de QD (Hida, Li, Bailey),
 /// renormalisation sans branchement.
 #[derive(Clone, Copy, Debug)]
-pub struct QdV<const L: usize>(pub [V<L>; 4]);
+pub struct QdV<const L: usize, const M: u8 = TP_AUTO>(pub [V<L>; 4]);
 
-impl<const L: usize> LaneNum<L> for QdV<L> {
+impl<const L: usize, const M: u8> LaneNum<L> for QdV<L, M> {
     type Scalar = Qd;
     /// 2⁻²⁰⁶ (même unité que la boucle qd de perturbation).
     const UNIT: f64 = super::pixel_loop_qd::U_QD;
@@ -330,12 +358,12 @@ impl<const L: usize> LaneNum<L> for QdV<L> {
     #[inline(always)]
     fn mul(self, o: Self) -> Self {
         let (a, b) = (self.0, o.0);
-        let (p0, q0) = two_prod(a[0], b[0]);
-        let (mut p1, q1) = two_prod(a[0], b[1]);
-        let (mut p2, q2) = two_prod(a[1], b[0]);
-        let (mut p3, q3) = two_prod(a[0], b[2]);
-        let (mut p4, q4) = two_prod(a[1], b[1]);
-        let (mut p5, q5) = two_prod(a[2], b[0]);
+        let (p0, q0) = two_prod::<L, M>(a[0], b[0]);
+        let (mut p1, q1) = two_prod::<L, M>(a[0], b[1]);
+        let (mut p2, q2) = two_prod::<L, M>(a[1], b[0]);
+        let (mut p3, q3) = two_prod::<L, M>(a[0], b[2]);
+        let (mut p4, q4) = two_prod::<L, M>(a[1], b[1]);
+        let (mut p5, q5) = two_prod::<L, M>(a[2], b[0]);
         let mut q0 = q0;
         three_sum(&mut p1, &mut p2, &mut q0);
         let (mut q1, mut q2) = (q1, q2);
@@ -355,10 +383,10 @@ impl<const L: usize> LaneNum<L> for QdV<L> {
     fn sqr(self) -> Self {
         let a = self.0;
         let two = V::splat(2.0);
-        let (p0, q0) = two_prod(a[0], a[0]);
-        let (p1, q1) = two_prod(two * a[0], a[1]);
-        let (p2, q2) = two_prod(two * a[0], a[2]);
-        let (p3, q3) = two_prod(a[1], a[1]);
+        let (p0, q0) = two_prod::<L, M>(a[0], a[0]);
+        let (p1, q1) = two_prod::<L, M>(two * a[0], a[1]);
+        let (p2, q2) = two_prod::<L, M>(two * a[0], a[2]);
+        let (p3, q3) = two_prod::<L, M>(a[1], a[1]);
         let (p1, q0) = two_sum(q0, p1);
         let (q0, q1) = two_sum(q0, q1);
         let (p2, p3) = two_sum(p2, p3);
@@ -545,7 +573,30 @@ pub fn direct_dd_lanes(
     iteration_max: u32,
     bailout: f64,
 ) -> Vec<DirectDdResult> {
+    #[cfg(all(target_arch = "x86_64", not(all(target_feature = "avx2", target_feature = "fma"))))]
+    if eft::avx2_fma_dispatch() {
+        // SAFETY : la variante n'exige que `avx2` et `fma`, présents
+        // (`avx2_fma_dispatch` = détection `cpuid`, lue une fois).
+        return unsafe { direct_dd_lanes_avx2(phase, points, other, julia, iteration_max, bailout) };
+    }
     iterate_lanes::<DdV<DD_LANES>, DD_LANES>(phase, points, other, julia, iteration_max, bailout)
+}
+
+/// [`direct_dd_lanes`] compilée avec `avx2,fma` (binaire baseline sur CPU
+/// récent) : `two_prod` y est `vfmadd` en ligne, les voies en `ymm`. Mêmes
+/// opérations IEEE (Rust ne contracte jamais `a·b + c` implicitement) :
+/// sortie identique au bit près (verrou `avx2_lanes_match_baseline_lanes`).
+#[cfg(all(target_arch = "x86_64", not(all(target_feature = "avx2", target_feature = "fma"))))]
+#[target_feature(enable = "avx2,fma")]
+fn direct_dd_lanes_avx2(
+    phase: &Phase,
+    points: &[(Dd, Dd)],
+    other: (Dd, Dd),
+    julia: bool,
+    iteration_max: u32,
+    bailout: f64,
+) -> Vec<DirectDdResult> {
+    iterate_lanes::<DdV<DD_LANES, TP_FMA>, DD_LANES>(phase, points, other, julia, iteration_max, bailout)
 }
 
 /// Étage quad-double direct sur `points`, en voies : résultats identiques au
@@ -558,7 +609,26 @@ pub fn direct_qd_lanes(
     iteration_max: u32,
     bailout: f64,
 ) -> Vec<DirectDdResult> {
+    #[cfg(all(target_arch = "x86_64", not(all(target_feature = "avx2", target_feature = "fma"))))]
+    if eft::avx2_fma_dispatch() {
+        // SAFETY : cf. `direct_dd_lanes`.
+        return unsafe { direct_qd_lanes_avx2(phase, points, other, julia, iteration_max, bailout) };
+    }
     iterate_lanes::<QdV<QD_LANES>, QD_LANES>(phase, points, other, julia, iteration_max, bailout)
+}
+
+/// [`direct_qd_lanes`] compilée avec `avx2,fma` (cf. [`direct_dd_lanes_avx2`]).
+#[cfg(all(target_arch = "x86_64", not(all(target_feature = "avx2", target_feature = "fma"))))]
+#[target_feature(enable = "avx2,fma")]
+fn direct_qd_lanes_avx2(
+    phase: &Phase,
+    points: &[(Qd, Qd)],
+    other: (Qd, Qd),
+    julia: bool,
+    iteration_max: u32,
+    bailout: f64,
+) -> Vec<DirectDdResult> {
+    iterate_lanes::<QdV<QD_LANES, TP_FMA>, QD_LANES>(phase, points, other, julia, iteration_max, bailout)
 }
 
 #[cfg(test)]
@@ -659,6 +729,56 @@ mod tests {
         assert!(refused > 10, "anti-vacuité : {refused} pixels dd refusés");
     }
 
+    /// Les trois réalisations du produit sans erreur (choix à l'exécution,
+    /// Dekker forcé, variante `avx2,fma` de production) rendent les mêmes
+    /// résultats AU BIT PRÈS sur les étages dd et qd complets.
+    #[test]
+    fn two_prod_modes_give_identical_lanes() {
+        let pts = mixed_points();
+        #[cfg(all(target_arch = "x86_64", not(all(target_feature = "avx2", target_feature = "fma"))))]
+        let avx = std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma");
+        let mut checked = 0;
+        for ft in FAMILIES {
+            let f = compile_formula(ft, 2.0).unwrap();
+            let phase = &f.phases[0];
+            let julia = ft == FractalType::Julia;
+            let n = if ft == FractalType::Mandelbrot { 20_000 } else { 2000 };
+            let p: Vec<(Dd, Dd)> = pts.iter().map(|c| (dd(c.re), dd(c.im))).collect();
+            let o = if julia { (dd(-0.8), dd(0.156)) } else { (dd(0.0), dd(0.0)) };
+            let auto = lanes_at::<DdV<8>, 8>(phase, &p, o, julia, n);
+            let mut others = vec![("dekker", lanes_at::<DdV<8, TP_DEKKER>, 8>(phase, &p, o, julia, n))];
+            #[cfg(all(target_arch = "x86_64", not(all(target_feature = "avx2", target_feature = "fma"))))]
+            if avx {
+                // SAFETY : AVX2 + FMA détectés.
+                others.push(("avx2", unsafe { direct_dd_lanes_avx2(phase, &p, o, julia, n, 25.0) }));
+            }
+            others.push(("dispatch", direct_dd_lanes(phase, &p, o, julia, n, 25.0)));
+            for (name, got) in &others {
+                for (k, (g, w)) in got.iter().zip(&auto).enumerate() {
+                    assert!(same(g, w), "dd {name} {ft:?} pixel {k} : {g:?} ≠ {w:?}");
+                    checked += 1;
+                }
+            }
+            let q: Vec<(Qd, Qd)> = pts.iter().map(|c| (qd(c.re), qd(c.im))).collect();
+            let oq = if julia { (qd(-0.8), qd(0.156)) } else { (qd(0.0), qd(0.0)) };
+            let auto = lanes_at::<QdV<8>, 8>(phase, &q, oq, julia, n);
+            let mut others = vec![("dekker", lanes_at::<QdV<8, TP_DEKKER>, 8>(phase, &q, oq, julia, n))];
+            #[cfg(all(target_arch = "x86_64", not(all(target_feature = "avx2", target_feature = "fma"))))]
+            if avx {
+                // SAFETY : AVX2 + FMA détectés.
+                others.push(("avx2", unsafe { direct_qd_lanes_avx2(phase, &q, oq, julia, n, 25.0) }));
+            }
+            others.push(("dispatch", direct_qd_lanes(phase, &q, oq, julia, n, 25.0)));
+            for (name, got) in &others {
+                for (k, (g, w)) in got.iter().zip(&auto).enumerate() {
+                    assert!(same(g, w), "qd {name} {ft:?} pixel {k} : {g:?} ≠ {w:?}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 2000);
+    }
+
     /// Voies qd == une voie (`iterate_direct_qd`) au bit près ; et mêmes
     /// comptes / verdicts que l'ancienne boucle qd à renormalisation à
     /// branches (`perturbation::qd`).
@@ -704,9 +824,10 @@ mod tests {
         assert!(checked > 500);
     }
 
-    /// Dekker == FMA : produit sans erreur, mêmes bits.
+    /// Dekker == FMA en voies : produit sans erreur, mêmes bits, voies hors
+    /// domaine (infinis, sous-dépassement) comprises.
     #[test]
-    fn dekker_matches_fma() {
+    fn lane_two_prod_dekker_matches_fma() {
         let mut s = 0x2545F4914F6CDD1Du64;
         let mut r = || {
             s ^= s << 13;
@@ -715,10 +836,18 @@ mod tests {
             let m = (s >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0;
             m * 2f64.powi(((s % 200) as i32) - 100)
         };
-        for _ in 0..100_000 {
-            let (a, b) = (r(), r());
-            let p = a * b;
-            assert_eq!(dekker_err(a, b, p).to_bits(), a.mul_add(b, -p).to_bits(), "{a:e}·{b:e}");
+        for k in 0..50_000 {
+            let mut a = V::<4>([r(), r(), r(), r()]);
+            let b = V::<4>([r(), r(), r(), r()]);
+            if k % 7 == 0 {
+                a.0[k % 4] = [f64::INFINITY, 1e-320, 0.0, 2f64.powi(1000)][k % 4];
+            }
+            let (p, e) = two_prod::<4, TP_DEKKER>(a, b);
+            for l in 0..4 {
+                let (pf, ef) = eft::two_prod_fma(a.0[l], b.0[l]);
+                assert_eq!(p.0[l].to_bits(), pf.to_bits());
+                assert!(e.0[l].to_bits() == ef.to_bits() || (ef.is_nan() && e.0[l].is_nan()));
+            }
         }
     }
 

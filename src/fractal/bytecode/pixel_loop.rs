@@ -940,31 +940,7 @@ pub fn iterate_pixel_unified_mandelbrot(
     dc: Complex64,
     limits: PixelLoopLimits,
 ) -> UnifiedPixelResult {
-    let PixelLoopLimits {
-        iteration_max,
-        bailout,
-        max_perturb_iterations,
-        max_bla_steps,
-    } = limits;
-    let ref_len = ref_orbit.z_ref_f64.len();
-    let mut src = SliceSource {
-        z: &ref_orbit.z_ref_f64,
-        cursor: 0,
-    };
-    iterate_pixel_unified_mandelbrot_impl(
-        MandelbrotKernel,
-        ref_orbit,
-        &mut src,
-        ref_len,
-        bla,
-        dc,
-        Complex64::new(0.0, 0.0),
-        iteration_max,
-        bailout,
-        max_perturb_iterations,
-        max_bla_steps,
-        &mut NoObserve,
-    )
+    run_fast_kernel(MandelbrotKernel, ref_orbit, bla, dc, Complex64::new(0.0, 0.0), limits)
 }
 
 /// Pas direct de la boucle rapide, monomorphisé. Renvoie `(δ', terme
@@ -1071,9 +1047,43 @@ fn sqr_delta(z: Complex64, delta: Complex64) -> (Complex64, Complex64) {
     (linear + delta * delta, linear)
 }
 
-/// Boucle rapide avec un noyau donné, sans traqueur.
+/// Boucle rapide avec un noyau donné, sans traqueur. Même aiguillage à
+/// l'exécution que [`tracked_loop`] (copie `avx2,fma` dans les binaires
+/// baseline sur CPU récent, identique au bit près).
 #[inline(always)]
 fn run_fast_kernel<K: DirectKernel>(
+    kernel: K,
+    ref_orbit: &ReferenceOrbit,
+    bla: &BlaTableUnified,
+    dc: Complex64,
+    delta_initial: Complex64,
+    limits: PixelLoopLimits,
+) -> UnifiedPixelResult {
+    #[cfg(all(target_arch = "x86_64", not(all(target_feature = "avx2", target_feature = "fma"))))]
+    if crate::fractal::eft::avx2_fma_dispatch() {
+        // SAFETY : la variante n'exige que `avx2` et `fma`, présents
+        // (`avx2_fma_dispatch` = détection `cpuid`, lue une fois).
+        return unsafe { untracked_loop_avx2(kernel, ref_orbit, bla, dc, delta_initial, limits) };
+    }
+    untracked_loop_body(kernel, ref_orbit, bla, dc, delta_initial, limits)
+}
+
+/// [`untracked_loop_body`] compilée avec `avx2,fma` (cf. [`run_fast_kernel`]).
+#[cfg(all(target_arch = "x86_64", not(all(target_feature = "avx2", target_feature = "fma"))))]
+#[target_feature(enable = "avx2,fma")]
+fn untracked_loop_avx2<K: DirectKernel>(
+    kernel: K,
+    ref_orbit: &ReferenceOrbit,
+    bla: &BlaTableUnified,
+    dc: Complex64,
+    delta_initial: Complex64,
+    limits: PixelLoopLimits,
+) -> UnifiedPixelResult {
+    untracked_loop_body(kernel, ref_orbit, bla, dc, delta_initial, limits)
+}
+
+#[inline(always)]
+fn untracked_loop_body<K: DirectKernel>(
     kernel: K,
     ref_orbit: &ReferenceOrbit,
     bla: &BlaTableUnified,
@@ -1147,31 +1157,7 @@ pub fn iterate_pixel_unified_julia(
     delta_initial: Complex64,
     limits: PixelLoopLimits,
 ) -> UnifiedPixelResult {
-    let PixelLoopLimits {
-        iteration_max,
-        bailout,
-        max_perturb_iterations,
-        max_bla_steps,
-    } = limits;
-    let ref_len = ref_orbit.z_ref_f64.len();
-    let mut src = SliceSource {
-        z: &ref_orbit.z_ref_f64,
-        cursor: 0,
-    };
-    iterate_pixel_unified_mandelbrot_impl(
-        JuliaKernel,
-        ref_orbit,
-        &mut src,
-        ref_len,
-        bla,
-        Complex64::new(0.0, 0.0),
-        delta_initial,
-        iteration_max,
-        bailout,
-        max_perturb_iterations,
-        max_bla_steps,
-        &mut NoObserve,
-    )
+    run_fast_kernel(JuliaKernel, ref_orbit, bla, Complex64::new(0.0, 0.0), delta_initial, limits)
 }
 
 /// Variante **suivie** des boucles rapides Julia / Burning Ship / Tricorn
@@ -1198,46 +1184,14 @@ pub fn iterate_pixel_unified_family_tracked(
     bla_epsilon: f64,
 ) -> Option<(UnifiedPixelResult, ShadowTracker)> {
     use super::Op::{AbsX, AbsY, Add, NegY, Sqr};
-    #[inline(always)]
-    fn run<K: DirectKernel>(
-        kernel: K,
-        ref_orbit: &ReferenceOrbit,
-        bla: &BlaTableUnified,
-        dc: Complex64,
-        delta_initial: Complex64,
-        limits: PixelLoopLimits,
-        bla_epsilon: f64,
-    ) -> (UnifiedPixelResult, ShadowTracker) {
-        let ref_len = ref_orbit.z_ref_f64.len();
-        let mut src = SliceSource {
-            z: &ref_orbit.z_ref_f64,
-            cursor: 0,
-        };
-        let mut tracker = ShadowTracker::new(dc, bla_epsilon);
-        let res = iterate_pixel_unified_mandelbrot_impl(
-            kernel,
-            ref_orbit,
-            &mut src,
-            ref_len,
-            bla,
-            dc,
-            delta_initial,
-            limits.iteration_max,
-            limits.bailout,
-            limits.max_perturb_iterations,
-            limits.max_bla_steps,
-            &mut tracker,
-        );
-        (res, tracker)
-    }
     let zero = Complex64::new(0.0, 0.0);
     Some(match (phase.ops.as_slice(), is_julia) {
-        ([Sqr, Add], true) => run(JuliaKernel, ref_orbit, bla, zero, delta_initial, limits, bla_epsilon),
+        ([Sqr, Add], true) => tracked_loop(JuliaKernel, ref_orbit, bla, zero, delta_initial, limits, bla_epsilon),
         ([AbsX, AbsY, Sqr, Add], false) => {
-            run(BurningShipKernel, ref_orbit, bla, dc, delta_initial, limits, bla_epsilon)
+            tracked_loop(BurningShipKernel, ref_orbit, bla, dc, delta_initial, limits, bla_epsilon)
         }
         ([NegY, Sqr, Add], false) => {
-            run(TricornKernel, ref_orbit, bla, dc, delta_initial, limits, bla_epsilon)
+            tracked_loop(TricornKernel, ref_orbit, bla, dc, delta_initial, limits, bla_epsilon)
         }
         _ => return None,
     })
@@ -1269,33 +1223,82 @@ pub fn iterate_pixel_unified_mandelbrot_tracked(
     limits: PixelLoopLimits,
     bla_epsilon: f64,
 ) -> (UnifiedPixelResult, ShadowTracker) {
-    let PixelLoopLimits {
-        iteration_max,
-        bailout,
-        max_perturb_iterations,
-        max_bla_steps,
-    } = limits;
+    tracked_loop(MandelbrotKernel, ref_orbit, bla, dc, Complex64::new(0.0, 0.0), limits, bla_epsilon)
+}
+
+/// Boucle rapide TRACÉE (Mandelbrot, Julia, Burning Ship, Tricorn), avec
+/// aiguillage à l'exécution : binaire baseline x86-64 des releases sur CPU à
+/// AVX2 + FMA (`eft::avx2_fma_dispatch`) → copie compilée avec `avx2,fma`
+/// ([`tracked_loop_avx2`]) — ×1,3 sur la phase pixels (e50 128²
+/// mono-thread : 1,73 → 1,33 s, le niveau du binaire `target-cpu=native`).
+/// Mêmes opérations IEEE, même ordre (Rust ne contracte jamais `a·b + c`
+/// implicitement) : identique au bit près, borne du traqueur comprise
+/// (verrou `avx2_tracked_loop_matches_baseline_loop`).
+#[inline(always)]
+fn tracked_loop<K: DirectKernel>(
+    kernel: K,
+    ref_orbit: &ReferenceOrbit,
+    bla: &BlaTableUnified,
+    dc: Complex64,
+    delta_initial: Complex64,
+    limits: PixelLoopLimits,
+    bla_epsilon: f64,
+) -> (UnifiedPixelResult, ShadowTracker) {
+    #[cfg(all(target_arch = "x86_64", not(all(target_feature = "avx2", target_feature = "fma"))))]
+    if crate::fractal::eft::avx2_fma_dispatch() {
+        // SAFETY : la variante n'exige que `avx2` et `fma`, présents
+        // (`avx2_fma_dispatch` = détection `cpuid`, lue une fois).
+        return unsafe { tracked_loop_avx2(kernel, ref_orbit, bla, dc, delta_initial, limits, bla_epsilon) };
+    }
+    tracked_loop_body(kernel, ref_orbit, bla, dc, delta_initial, limits, bla_epsilon)
+}
+
+/// [`tracked_loop_body`] compilée avec `avx2,fma` (cf. [`tracked_loop`]).
+#[cfg(all(target_arch = "x86_64", not(all(target_feature = "avx2", target_feature = "fma"))))]
+#[target_feature(enable = "avx2,fma")]
+fn tracked_loop_avx2<K: DirectKernel>(
+    kernel: K,
+    ref_orbit: &ReferenceOrbit,
+    bla: &BlaTableUnified,
+    dc: Complex64,
+    delta_initial: Complex64,
+    limits: PixelLoopLimits,
+    bla_epsilon: f64,
+) -> (UnifiedPixelResult, ShadowTracker) {
+    tracked_loop_body(kernel, ref_orbit, bla, dc, delta_initial, limits, bla_epsilon)
+}
+
+#[inline(always)]
+fn tracked_loop_body<K: DirectKernel>(
+    kernel: K,
+    ref_orbit: &ReferenceOrbit,
+    bla: &BlaTableUnified,
+    dc: Complex64,
+    delta_initial: Complex64,
+    limits: PixelLoopLimits,
+    bla_epsilon: f64,
+) -> (UnifiedPixelResult, ShadowTracker) {
     let ref_len = ref_orbit.z_ref_f64.len();
     let mut src = SliceSource {
         z: &ref_orbit.z_ref_f64,
         cursor: 0,
     };
     let mut tracker = ShadowTracker::new(dc, bla_epsilon);
-    let result = iterate_pixel_unified_mandelbrot_impl(
-        MandelbrotKernel,
+    let res = iterate_pixel_unified_mandelbrot_impl(
+        kernel,
         ref_orbit,
         &mut src,
         ref_len,
         bla,
         dc,
-        Complex64::new(0.0, 0.0),
-        iteration_max,
-        bailout,
-        max_perturb_iterations,
-        max_bla_steps,
+        delta_initial,
+        limits.iteration_max,
+        limits.bailout,
+        limits.max_perturb_iterations,
+        limits.max_bla_steps,
         &mut tracker,
     );
-    (result, tracker)
+    (res, tracker)
 }
 
 /// Variante COMPRESSÉE (`FRACTALL_COMPRESS_REF=1`, G8.2 phase 2) : lit la
@@ -1345,7 +1348,13 @@ pub fn iterate_pixel_unified_mandelbrot_compressed(
 /// code logiquement identique à l'ancienne indexation directe (bit-identique,
 /// verrouillé par les goldens). `ref_len` est passé explicitement (longueur
 /// logique pour la source compressée ; `z_ref_f64` peut être vide).
+///
+/// `inline(always)` seulement quand une copie `avx2,fma` existe (le corps
+/// doit être fondu dans la fonction à `target_feature`) ; en
+/// `target-cpu=native`, laissé à l'heuristique comme avant l'aiguillage (le
+/// même attribut a coûté ×2 au noyau par lots tracé, cf. `interp_batch`).
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(all(target_feature = "avx2", target_feature = "fma")), inline(always))]
 fn iterate_pixel_unified_mandelbrot_impl<S: RefF64Source, O: StepObserver, K: DirectKernel>(
     kernel: K,
     ref_orbit: &ReferenceOrbit,
@@ -1707,6 +1716,93 @@ mod tests {
             "détecteur trop bavard : {flagged}/{} flaggés",
             width * height
         );
+    }
+
+    /// Boucle tracée compilée `avx2,fma` (aiguillage des binaires baseline)
+    /// == boucle compilée pour la cible, au bit près : compte, z, rebases,
+    /// sauts BLA ET borne du traqueur. Sans objet sur un CPU sans AVX2/FMA.
+    #[test]
+    fn avx2_tracked_loop_matches_baseline_loop() {
+        // Sans objet dans un binaire déjà compilé avec AVX2 + FMA (pas de copie).
+        #[cfg(all(target_arch = "x86_64", not(all(target_feature = "avx2", target_feature = "fma"))))]
+        {
+            if !(std::arch::is_x86_feature_detected!("avx2")
+                && std::arch::is_x86_feature_detected!("fma"))
+            {
+                return;
+            }
+            fn check<K: DirectKernel>(kernel: K, ty: FractalType, julia: bool) -> (u32, u32) {
+                let (width, height, iter_max) = (40u32, 28u32, 4000u32);
+                let (cx, cy, zoom) = match (ty, julia) {
+                    (FractalType::Mandelbrot, false) => (-0.743643887037158, 0.131825904205312, 1e10),
+                    // Point fixe répulsif de c = -0.8+0.156i (bord de Julia).
+                    (FractalType::Mandelbrot, true) => {
+                        let s = Complex64::new(-0.8, 0.156);
+                        let f = (Complex64::new(1.0, 0.0) + (Complex64::new(1.0, 0.0) - s * 4.0).sqrt()) * 0.5;
+                        (f.re, f.im, 1e6)
+                    }
+                    (FractalType::BurningShip, _) => (-1.7492060, -0.0286762, 1e3),
+                    _ => (-0.7, 0.15, 1e3),
+                };
+                let span_x = 4.0 / zoom;
+                let span_y = span_x * height as f64 / width as f64;
+                let fty = if julia { FractalType::Julia } else { ty };
+                let mut p = default_params_for_type(fty, width, height);
+                p.center_x = cx;
+                p.center_y = cy;
+                p.span_x = span_x;
+                p.span_y = span_y;
+                p.iteration_max = iter_max;
+                p.engine.algorithm_mode = AlgorithmMode::Perturbation;
+                p.bailout = 25.0;
+                p.seed = if julia { Complex64::new(-0.8, 0.156) } else { Complex64::new(0.0, 0.0) };
+                let (orbit, _, _) = compute_reference_orbit(&p, None, true).expect("orbite");
+                let formula = compile_formula(fty, 2.0).unwrap();
+                let c_norm = 0.5 * span_x.hypot(span_y);
+                let eps = 6e-8;
+                let tables = build_bla_table_for_formula(&formula, &orbit.z_ref_f64, c_norm, eps)
+                    .expect("BLA table build");
+                let bla = &tables[0];
+                let limits = PixelLoopLimits::uncapped(iter_max, 25.0);
+                let (mut rebases, mut jumps) = (0u32, 0u32);
+                for j in 0..height {
+                    for i in 0..width {
+                        let d = Complex64::new(
+                            ((i as f64 + 0.5) / width as f64 - 0.5) * span_x,
+                            ((j as f64 + 0.5) / height as f64 - 0.5) * span_y,
+                        );
+                        let (dc, d0) = if julia { (Complex64::new(0.0, 0.0), d) } else { (d, Complex64::new(0.0, 0.0)) };
+                        let u = untracked_loop_body(kernel, &orbit, bla, dc, d0, limits);
+                        // SAFETY : AVX2 + FMA détectés.
+                        let v = unsafe { untracked_loop_avx2(kernel, &orbit, bla, dc, d0, limits) };
+                        assert_eq!((u.iteration, u.rebase_count, u.bla_steps), (v.iteration, v.rebase_count, v.bla_steps));
+                        assert_eq!((u.z_final.re.to_bits(), u.z_final.im.to_bits()), (v.z_final.re.to_bits(), v.z_final.im.to_bits()));
+                        let (a, ta) = tracked_loop_body(kernel, &orbit, bla, dc, d0, limits, eps);
+                        // SAFETY : AVX2 + FMA détectés.
+                        let (b, tb) = unsafe { tracked_loop_avx2(kernel, &orbit, bla, dc, d0, limits, eps) };
+                        let at = format!("{ty:?} julia={julia} px ({i},{j})");
+                        assert_eq!(a.iteration, b.iteration, "{at}");
+                        assert_eq!(a.z_final.re.to_bits(), b.z_final.re.to_bits(), "{at}");
+                        assert_eq!(a.z_final.im.to_bits(), b.z_final.im.to_bits(), "{at}");
+                        assert_eq!(a.rebase_count, b.rebase_count, "{at}");
+                        assert_eq!(a.bla_steps, b.bla_steps, "{at}");
+                        assert_eq!(ta.error_bound().to_bits(), tb.error_bound().to_bits(), "{at}");
+                        rebases += a.rebase_count;
+                        jumps += a.bla_steps;
+                    }
+                }
+                (rebases, jumps)
+            }
+            let (r, j) = check(MandelbrotKernel, FractalType::Mandelbrot, false);
+            assert!(r > 0 && j > 0, "Mandelbrot rebases={r} jumps={j}");
+            for (r, j) in [
+                check(JuliaKernel, FractalType::Mandelbrot, true),
+                check(BurningShipKernel, FractalType::BurningShip, false),
+                check(TricornKernel, FractalType::Tricorn, false),
+            ] {
+                assert!(r + j > 0, "anti-vacuité : rebases={r} jumps={j}");
+            }
+        }
     }
 
     /// **G4 jalon 5 — verrou GMP des hybrides genuine en perturbation.**

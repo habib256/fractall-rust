@@ -9,6 +9,7 @@ pub mod lyapunov;
 pub mod vectorial;
 pub mod buddhabrot;
 pub(crate) mod density;
+pub mod eft;
 pub mod perturbation;
 pub mod wisdom;
 // Le sage décide aussi de l'expérience utilisateur : mode de navigation GUI

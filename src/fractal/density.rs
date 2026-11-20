@@ -548,8 +548,15 @@ impl Density {
             // replié sur la première colonne ou la première ligne. Le path MPC
             // arrondissait déjà correctement — c'est le path f64 qui salissait
             // ses deux bords.
-            let px = point.0.floor();
-            let py = point.1.floor();
+            //
+            // Sans `floor` explicite pourtant : pour une largeur entière `w`,
+            // `floor(x) ∈ [0, w)` ⇔ `x ∈ [0, w)` (NaN rejeté des deux côtés),
+            // et sur `[0, w)` la conversion `as usize` (troncature) EST le
+            // `floor`. Même pixel, même rejet — mais sans SSE4.1 (binaires
+            // baseline x86-64 des releases) `f64::floor` est une fonction
+            // LOGICIELLE de compiler-builtins, ~8 % des instructions du
+            // Buddhabrot.
+            let (px, py) = (point.0, point.1);
             if !(px >= 0.0 && px < self.width as f64 && py >= 0.0 && py < self.height as f64) {
                 continue;
             }

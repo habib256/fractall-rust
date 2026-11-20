@@ -18,27 +18,9 @@
 //! mis à l'échelle 2^s (cf. `bytecode::pixel_loop_qd`) qui garde δ et dc loin
 //! du sous-normal.
 
-/// Somme sans erreur (Knuth).
-#[inline(always)]
-fn two_sum(a: f64, b: f64) -> (f64, f64) {
-    let s = a + b;
-    let bb = s - a;
-    (s, (a - (s - bb)) + (b - bb))
-}
-
-/// Somme sans erreur rapide, `|a| ≥ |b|` (ou a = 0).
-#[inline(always)]
-fn quick_two_sum(a: f64, b: f64) -> (f64, f64) {
-    let s = a + b;
-    (s, b - (s - a))
-}
-
-/// Produit sans erreur (FMA).
-#[inline(always)]
-fn two_prod(a: f64, b: f64) -> (f64, f64) {
-    let p = a * b;
-    (p, a.mul_add(b, -p))
-}
+// Transformations sans erreur partagées (FMA si compilé avec `fma`, sinon
+// Dekker gardé — mêmes bits ; cf. `crate::fractal::eft`).
+use crate::fractal::eft::{quick_two_sum, two_prod, two_sum};
 
 /// `three_sum` QD : (a, b, c) ← somme renormalisée à trois termes.
 #[inline(always)]
