@@ -1083,7 +1083,10 @@ pub fn render_perturbation_with_cache(
     let use_full_gmp = should_use_full_gmp_perturbation(params);
 
     // Use cached orbit/BLA or compute fresh
-    let cache = compute_reference_orbit_cached(
+    // `effective_cap` : plafond que l'auto-ajustement de la série donne à un
+    // rendu FRAIS de cette vue, décidé aussi quand l'orbite vient du cache
+    // (cf. `orbit::auto_adjusted_cap`).
+    let (cache, effective_cap) = orbit::compute_reference_orbit_cached_with_cap(
         &orbit_params,
         Some(cancel.as_ref()),
         orbit_cache,
@@ -1107,15 +1110,11 @@ pub fn render_perturbation_with_cache(
     } else {
         None
     };
-    // ⚠️ Le relèvement ne vaut que pour l'auto-ajustement : un cache bâti pour
-    // un plafond UTILISATEUR plus haut (5000) puis réutilisé par une vue qui
-    // demande moins (2000) ne doit pas imposer son plafond — tous les pixels
-    // sortaient avec des comptes au-delà du plafond demandé.
-    let cache_lift = if params.iteration_max >= cache.requested_iteration_max {
-        cache.iteration_max
-    } else {
-        params.iteration_max
-    };
+    // ⚠️ Le relèvement est la décision d'auto-ajustement d'un rendu FRAIS de
+    // cette vue, jamais le plafond du cache : un cache bâti pour un plafond
+    // utilisateur plus haut (5000) réutilisé à 2000 imposait ses 5000, et un
+    // cache bâti à 200 sans ajustement servi à 40 ne relevait pas à 160.
+    let cache_lift = effective_cap;
     let params = if cache_lift > params.iteration_max || nucleus_k.is_some() {
         let mut adjusted = params.clone();
         adjusted.iteration_max = adjusted.iteration_max.max(cache_lift);

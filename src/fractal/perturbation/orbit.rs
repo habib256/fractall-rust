@@ -785,6 +785,10 @@ pub struct ReferenceOrbitCache {
     /// rendu) de « cache bâti pour un plafond utilisateur plus haut » (à ne
     /// PAS imposer à une vue qui demande moins).
     pub requested_iteration_max: u32,
+    /// Géométrie (largeur, hauteur, bits des spans f64) de la vue qui a bâti
+    /// ce cache : avec `requested_iteration_max`, clé du raccourci de
+    /// [`auto_adjusted_cap`] (même vue ⇒ même décision que le build).
+    pub build_view: [u64; 4],
     /// Julia seed (for Julia-type fractals)
     pub seed_re: f64,
     pub seed_im: f64,
@@ -1095,6 +1099,7 @@ impl ReferenceOrbitCache {
             precision_bits: computed_precision, // Stocker la précision calculée au lieu du preset
             iteration_max: params.iteration_max,
             requested_iteration_max: params.iteration_max,
+            build_view: build_view_key(params),
             seed_re: params.seed.re,
             seed_im: params.seed.im,
             bla_threshold: params.perturbation.bla_threshold,
@@ -1363,12 +1368,269 @@ pub fn compute_reference_orbit_cached(
     // GPU/legacy/tests passent `false` → exact-center uniquement (offset toujours 0).
     allow_subset_reuse: bool,
 ) -> Option<Arc<ReferenceOrbitCache>> {
+    compute_reference_orbit_cached_impl(
+        params,
+        cancel,
+        cache,
+        ref_progress,
+        allow_subset_reuse,
+        false,
+    )
+    .map(|(c, _)| c)
+}
+
+/// Comme [`compute_reference_orbit_cached`], mais renvoie aussi le plafond
+/// EFFECTIF du rendu : celui que l'auto-ajustement de la série donnerait à un
+/// rendu frais de `params` ([`auto_adjusted_cap`]). Un cache dont l'orbite ne
+/// couvre pas ce plafond est invalidé (orbite prolongée/rebâtie).
+pub fn compute_reference_orbit_cached_with_cap(
+    params: &FractalParams,
+    cancel: Option<&AtomicBool>,
+    cache: Option<&Arc<ReferenceOrbitCache>>,
+    ref_progress: Option<&std::sync::atomic::AtomicU32>,
+    allow_subset_reuse: bool,
+) -> Option<(Arc<ReferenceOrbitCache>, u32)> {
+    compute_reference_orbit_cached_impl(
+        params,
+        cancel,
+        cache,
+        ref_progress,
+        allow_subset_reuse,
+        true,
+    )
+}
+
+// Auto-adjustment of iteration_max based on series skip ratio.
+// Inspired by rust-fractal-core: if the series skips >25% of iterations,
+// double iteration_max and recompute (up to 2 rounds, capped at 10M).
+// This reveals detail hidden behind an insufficient iteration count.
+const MAX_AUTO_ADJUST_ROUNDS: u32 = 2;
+const SKIP_RATIO_INCREASE: f64 = 0.25;
+const SKIP_RATIO_DECREASE: f64 = 0.125;
+const MAX_ITERATION_CAP: u32 = 10_000_000;
+
+fn env_flag_on(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
+}
+
+/// Entrées constantes (sur une vue) de la construction de la série et de
+/// l'auto-ajustement. Partagées par le build frais et par la décision sur
+/// cache ([`auto_adjusted_cap`]) : une seule définition de l'heuristique.
+struct SeriesPolicy {
+    pixel_count: u64,
+    small_image: bool,
+    disable_series: bool,
+    force_series: bool,
+    auto_adjust_enabled: bool,
+    series_will_be_used: bool,
+    is_julia: bool,
+}
+
+impl SeriesPolicy {
+    fn new(params: &FractalParams) -> Self {
+        // La série (Taylor HO) n'est CONSOMMÉE que par : (a) l'auto-adjust
+        // d'`iteration_max` (via `validated_skip`), et (b) le path perturbation
+        // LEGACY (`compute_series_skip` par pixel). Le path bytecode (BLA mat2 +
+        // rebase F3), qui rend Mandelbrot/Julia/BS/… par défaut, l'ignore
+        // totalement. Donc si le rendu passe par bytecode ET que l'auto-adjust est
+        // désactivé (parité F3 / `FRACTALL_NO_AUTO_ADJUST=1`), construire la série
+        // est du travail MORT — 0.77 s sur dragon (orbite 5 M, interval 10 →
+        // 500 k entrées order-4). On l'évite alors (zéro changement de sortie).
+        let auto_adjust_enabled = std::env::var("FRACTALL_NO_AUTO_ADJUST")
+            .ok()
+            .map(|v| v != "1" && v.to_lowercase() != "true")
+            .unwrap_or(true);
+        Self {
+            pixel_count: (params.width as u64).saturating_mul(params.height as u64),
+            small_image: params.width.max(params.height) <= 512,
+            disable_series: env_flag_on("FRACTALL_PERTURB_DISABLE_SERIES"),
+            force_series: env_flag_on("FRACTALL_PERTURB_FORCE_SERIES"),
+            auto_adjust_enabled,
+            series_will_be_used: auto_adjust_enabled || !super::uses_bytecode_path(params),
+            is_julia: params.fractal_type == FractalType::Julia,
+        }
+    }
+
+    fn should_build(&self, adjusted: &FractalParams, atom_truncated: bool) -> bool {
+        // `series_will_be_used` court-circuite le build mort sur le path bytecode
+        // sans auto-adjust. `force_series` (debug) reste prioritaire.
+        //
+        // Réf ATOM-TRONQUÉE + path bytecode : la série n'y sert QU'À
+        // l'heuristique auto-adjust (les pixels bytecode ne la lisent jamais),
+        // et cette heuristique ignore les réfs atom-tronquées → build 100 %
+        // mort. On le saute : dragon 96² série 0.59 s / total 1.98 s (30 %).
+        let series_dead_for_atom = atom_truncated
+            && crate::fractal::perturbation::delta::bytecode_path_label(adjusted).is_some();
+        // G4 jalon 5b : la série Taylor est z²+c hardcodée → JAMAIS pour un
+        // hybride (coefficients faux pour [M,BS] ; et pour [M,M] son seul
+        // usage — l'heuristique auto-adjust — misfire : skip 32 % → doublement
+        // ×4 de iteration_max, re-rendus parasites, cf. e50 96²).
+        !self.disable_series
+            && !adjusted.is_hybrid_formula()
+            && (self.force_series
+                || (self.series_will_be_used
+                    && !series_dead_for_atom
+                    && adjusted.perturbation.series_standalone
+                    && matches!(
+                        adjusted.fractal_type,
+                        FractalType::Mandelbrot | FractalType::Julia
+                    )
+                    && (!self.small_image || adjusted.iteration_max >= 5000)
+                    && (self.pixel_count >= 16_384 || adjusted.iteration_max >= 10_000)))
+    }
+}
+
+/// Table de série validée pour la vue `adjusted` sur l'orbite `z_ref_f64`.
+fn build_validated_series(
+    adjusted: &FractalParams,
+    z_ref_f64: &[Complex64],
+    is_julia: bool,
+) -> SeriesTable {
+    let pixel_size = (adjusted.span_x.abs() / adjusted.width.max(1) as f64)
+        .max(adjusted.span_y.abs() / adjusted.height.max(1) as f64);
+    let adaptive_order = compute_adaptive_series_order(
+        pixel_size,
+        adjusted.iteration_max,
+        adjusted.perturbation.series_order,
+    );
+    let series_order = adaptive_order.max(4);
+    let interval = if z_ref_f64.len() > 100_000 { 10 } else { 1 };
+    let mut table = build_series_table_ho(z_ref_f64, is_julia, series_order, interval);
+    if pixel_size > 0.0 && pixel_size.is_finite() {
+        let tiled = validate_series_with_probes_tiled(
+            &table,
+            z_ref_f64,
+            is_julia,
+            pixel_size,
+            adjusted.width as usize,
+            adjusted.height as usize,
+            4,
+        );
+        table.validated_skip = tiled.global_min;
+        table.tiled_validation = Some(tiled);
+    }
+    table
+}
+
+/// Une manche de l'auto-ajustement : `Some(nouveau plafond)` pour recommencer
+/// la manche suivante à ce plafond, `None` pour s'arrêter au plafond courant.
+///
+/// `FRACTALL_NO_AUTO_ADJUST=1` la coupe (parité F3 : F3 ne fait pas cet
+/// ajustement).
+fn auto_adjust_next(
+    policy: &SeriesPolicy,
+    round: u32,
+    current_cap: u32,
+    requested_cap: u32,
+    table: Option<&SeriesTable>,
+    atom_truncated: bool,
+) -> Option<u32> {
+    if round >= MAX_AUTO_ADJUST_ROUNDS || !policy.auto_adjust_enabled || current_cap == 0 {
+        return None;
+    }
+    let table = table?;
+    let skip_ratio = table.validated_skip as f64 / current_cap as f64;
+    // Réf ATOM-TRONQUÉE : `validated_skip` sature à la période atom (ref_len ≪
+    // iteration_max, intentionnel — le pixel loop cycle par rebase-at-end). Ce
+    // n'est PAS un signal « iter_max trop bas » : doubler recalculerait
+    // l'orbite entière pour re-tronquer au même point (dragon 96² total
+    // 4.0→1.6 s) et gonflerait l'iter_max des pixels intérieurs.
+    if skip_ratio > SKIP_RATIO_INCREASE && !atom_truncated && current_cap < MAX_ITERATION_CAP {
+        // Series skips >25% of iterations: double and recompute
+        return Some(current_cap.saturating_mul(2).min(MAX_ITERATION_CAP));
+    }
+    if skip_ratio < SKIP_RATIO_DECREASE && current_cap > requested_cap {
+        // Series skips <12.5%: reduce back towards the requested cap, never below.
+        let new_max = current_cap.min(current_cap / 2).max(requested_cap);
+        if new_max < current_cap {
+            return Some(new_max);
+        }
+    }
+    None
+}
+
+/// Plafond qu'un rendu FRAIS de `params` atteindrait après l'auto-ajustement,
+/// décidé sur l'orbite du cache — ou `None` si l'orbite du cache ne couvre pas
+/// un plafond que la décision doit examiner (le cache ne sert pas alors).
+///
+/// L'orbite d'un plafond `X` ≤ `cache.iteration_max` est le préfixe de celle
+/// du cache (mêmes arrêts par évasion/troncature, indices locaux) : la série
+/// y est rebâtie comme le ferait le rendu frais, manche par manche.
+/// Raccourci : même plafond demandé et même géométrie qu'à la construction ⇒
+/// la décision du build, `cache.iteration_max`.
+pub fn auto_adjusted_cap(params: &FractalParams, cache: &ReferenceOrbitCache) -> Option<u32> {
+    let requested = params.iteration_max;
+    if requested == cache.requested_iteration_max && cache.build_view == build_view_key(params) {
+        return Some(cache.iteration_max);
+    }
+    let mut adjusted = params.clone();
+    if params.engine.find_nucleus {
+        if let Some((k, rot)) = cache.nucleus_transform {
+            adjusted.transform_k = Some(k);
+            adjusted.rotation = rot;
+        }
+    }
+    let policy = SeriesPolicy::new(params);
+    let z = &cache.orbit.z_ref_f64;
+    for round in 0..=MAX_AUTO_ADJUST_ROUNDS {
+        let cap = adjusted.iteration_max;
+        if cap > cache.iteration_max {
+            return None;
+        }
+        let len = z.len().min(cap as usize + 1);
+        let atom_truncated = cache.orbit.atom_truncated && z.len() <= cap as usize + 1;
+        let table = if policy.should_build(&adjusted, atom_truncated) {
+            Some(build_validated_series(&adjusted, &z[..len], policy.is_julia))
+        } else {
+            None
+        };
+        match auto_adjust_next(&policy, round, cap, requested, table.as_ref(), atom_truncated) {
+            Some(n) => adjusted.iteration_max = n,
+            None => return Some(cap),
+        }
+    }
+    Some(adjusted.iteration_max)
+}
+
+/// Géométrie qui entre dans la décision d'auto-ajustement (taille et spans).
+fn build_view_key(params: &FractalParams) -> [u64; 4] {
+    [
+        params.width as u64,
+        params.height as u64,
+        params.span_x.to_bits(),
+        params.span_y.to_bits(),
+    ]
+}
+
+fn compute_reference_orbit_cached_impl(
+    params: &FractalParams,
+    cancel: Option<&AtomicBool>,
+    cache: Option<&Arc<ReferenceOrbitCache>>,
+    ref_progress: Option<&std::sync::atomic::AtomicU32>,
+    allow_subset_reuse: bool,
+    with_cap: bool,
+) -> Option<(Arc<ReferenceOrbitCache>, u32)> {
     let perf = crate::fractal::perturbation::perf_enabled();
     let t_all = Instant::now();
 
     // Check if cache is valid
     if let Some(cached) = cache {
-        if cached.is_valid_for(params) || (allow_subset_reuse && cached.can_subset_reuse(params)) {
+        let reusable =
+            cached.is_valid_for(params) || (allow_subset_reuse && cached.can_subset_reuse(params));
+        // Plafond effectif décidé comme un rendu frais ; orbite qui ne le
+        // couvre pas ⇒ pas de réutilisation.
+        let cap = if reusable && with_cap {
+            auto_adjusted_cap(params, cached)
+        } else {
+            Some(cached.iteration_max)
+        };
+        if let (true, Some(cap)) = (reusable, cap) {
             if perf {
                 let subset = !cached.is_valid_for(params);
                 eprintln!(
@@ -1380,18 +1642,9 @@ pub fn compute_reference_orbit_cached(
                     t_all.elapsed().as_secs_f64()
                 );
             }
-            return Some(Arc::clone(cached));
+            return Some((Arc::clone(cached), cap));
         }
     }
-
-    // Auto-adjustment of iteration_max based on series skip ratio.
-    // Inspired by rust-fractal-core: if the series skips >25% of iterations,
-    // double iteration_max and recompute (up to 2 rounds, capped at 10M).
-    // This reveals detail hidden behind an insufficient iteration count.
-    const MAX_AUTO_ADJUST_ROUNDS: u32 = 2;
-    const SKIP_RATIO_INCREASE: f64 = 0.25;
-    const SKIP_RATIO_DECREASE: f64 = 0.125;
-    const MAX_ITERATION_CAP: u32 = 10_000_000;
 
     let mut adjusted_params = params.clone();
     // K/rotation du nucleus finder, propagées au cache (cf. `nucleus_transform`).
@@ -1601,37 +1854,9 @@ pub fn compute_reference_orbit_cached(
         }
     }
 
-    let pixel_count = (params.width as u64).saturating_mul(params.height as u64);
-    let small_image = params.width.max(params.height) <= 512;
-    let disable_series = match std::env::var("FRACTALL_PERTURB_DISABLE_SERIES") {
-        Ok(v) => matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
-        Err(_) => false,
-    };
-    let force_series = match std::env::var("FRACTALL_PERTURB_FORCE_SERIES") {
-        Ok(v) => matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
-        Err(_) => false,
-    };
-    let is_julia = params.fractal_type == FractalType::Julia;
-
-    // La série (Taylor HO) n'est CONSOMMÉE que par : (a) l'auto-adjust
-    // d'`iteration_max` (via `validated_skip`), et (b) le path perturbation
-    // LEGACY (`compute_series_skip` par pixel). Le path bytecode (BLA mat2 +
-    // rebase F3), qui rend Mandelbrot/Julia/BS/… par défaut, l'ignore
-    // totalement. Donc si le rendu passe par bytecode ET que l'auto-adjust est
-    // désactivé (parité F3 / `FRACTALL_NO_AUTO_ADJUST=1`), construire la série
-    // est du travail MORT — 0.77 s sur dragon (orbite 5 M, interval 10 →
-    // 500 k entrées order-4). On l'évite alors (zéro changement de sortie).
-    let auto_adjust_enabled = std::env::var("FRACTALL_NO_AUTO_ADJUST")
-        .ok()
-        .map(|v| v != "1" && v.to_lowercase() != "true")
-        .unwrap_or(true);
-    let series_will_be_used = auto_adjust_enabled || !super::uses_bytecode_path(params);
+    let policy = SeriesPolicy::new(params);
+    let pixel_count = policy.pixel_count;
+    let small_image = policy.small_image;
 
     // GMP dense (`z_ref_gmp`) requis par : (1) le rendu principal full-GMP
     // (`render_perturbation_gmp_path` → `iterate_pixel_gmp` sur TOUS les pixels)
@@ -1701,135 +1926,35 @@ pub fn compute_reference_orbit_cached(
             dt_orbit = t_orbit_start.elapsed();
         }
 
-        // Build series table for standalone series approximation (if enabled).
-        // `series_will_be_used` court-circuite le build mort sur le path bytecode
-        // sans auto-adjust (cf. définition plus haut). `force_series` (debug)
-        // reste prioritaire.
-        //
-        // Réf ATOM-TRONQUÉE + path bytecode : la série n'y sert QU'À
-        // l'heuristique auto-adjust (les pixels bytecode ne la lisent jamais),
-        // et cette heuristique ignore désormais les réfs atom-tronquées (cf.
-        // branche « increase ») → build 100 % mort. On le saute : dragon 96²
-        // série 0.59 s / total 1.98 s (30 %). Les réfs pleines/escape-truncated
-        // gardent la série (l'heuristique peut encore firer).
-        let series_dead_for_atom = orbit.atom_truncated
-            && crate::fractal::perturbation::delta::bytecode_path_label(&adjusted_params).is_some();
-        // G4 jalon 5b : la série Taylor est z²+c hardcodée → JAMAIS pour un
-        // hybride (coefficients faux pour [M,BS] ; et pour [M,M] son seul
-        // usage — l'heuristique auto-adjust — misfire : skip 32 % → doublement
-        // ×4 de iteration_max, re-rendus parasites, cf. e50 96²).
-        let series_is_hybrid = adjusted_params.is_hybrid_formula();
-        let should_build_series = !disable_series
-            && !series_is_hybrid
-            && (force_series
-                || (series_will_be_used
-                    && !series_dead_for_atom
-                    && adjusted_params.perturbation.series_standalone
-                    && matches!(
-                        adjusted_params.fractal_type,
-                        FractalType::Mandelbrot | FractalType::Julia
-                    )
-                    && (!small_image || adjusted_params.iteration_max >= 5000)
-                    && (pixel_count >= 16_384 || adjusted_params.iteration_max >= 10_000)));
-
         let t_series_start = Instant::now();
-        series_table = if should_build_series {
-            let pixel_size = (adjusted_params.span_x.abs() / adjusted_params.width.max(1) as f64)
-                .max(adjusted_params.span_y.abs() / adjusted_params.height.max(1) as f64);
-            let adaptive_order = compute_adaptive_series_order(
-                pixel_size,
-                adjusted_params.iteration_max,
-                adjusted_params.perturbation.series_order,
-            );
-            let series_order = adaptive_order.max(4);
-            let interval = if orbit.z_ref_f64.len() > 100_000 {
-                10
-            } else {
-                1
-            };
-            let mut table =
-                build_series_table_ho(&orbit.z_ref_f64, is_julia, series_order, interval);
-
-            if pixel_size > 0.0 && pixel_size.is_finite() {
-                let tiled = validate_series_with_probes_tiled(
-                    &table,
-                    &orbit.z_ref_f64,
-                    is_julia,
-                    pixel_size,
-                    adjusted_params.width as usize,
-                    adjusted_params.height as usize,
-                    4,
-                );
-                table.validated_skip = tiled.global_min;
-                table.tiled_validation = Some(tiled);
-            }
-
-            Some(table)
+        series_table = if policy.should_build(&adjusted_params, orbit.atom_truncated) {
+            Some(build_validated_series(&adjusted_params, &orbit.z_ref_f64, policy.is_julia))
         } else {
             None
         };
         dt_series = t_series_start.elapsed();
 
-        // Auto-adjust iteration_max based on series skip ratio
-        // (only on rounds before the last, and only if series is active).
-        //
-        // `auto_adjust_enabled` (hoisté plus haut, désactivable via
-        // `FRACTALL_NO_AUTO_ADJUST=1`) : utile pour les tests de parité
-        // Fraktaler-3 (F3 ne fait pas cet ajustement, donc l'avoir actif fait
-        // diverger iter_max → mismatch sur les coins évadés tardivement). À
-        // l'usage normal, l'auto-adjust révèle les détails masqués derrière un
-        // iter_max trop bas.
-        if round < MAX_AUTO_ADJUST_ROUNDS && auto_adjust_enabled {
-            if let Some(ref table) = series_table {
-                let skip = table.validated_skip as f64;
-                let max_iter = adjusted_params.iteration_max as f64;
-                if max_iter > 0.0 {
-                    let skip_ratio = skip / max_iter;
-                    // Réf ATOM-TRONQUÉE : `validated_skip` sature à la période
-                    // atom (ref_len ≪ iteration_max, intentionnel — le pixel
-                    // loop cycle par rebase-at-end). Ce n'est PAS un signal
-                    // « iter_max trop bas » : doubler recalculerait l'orbite
-                    // entière pour re-tronquer au même point (orbite payée 2×,
-                    // dragon 96² total 4.0→1.6 s) et gonflerait l'iter_max des
-                    // pixels intérieurs. L'heuristique ne vaut que pour les
-                    // réfs pleines/escape-truncated.
-                    if skip_ratio > SKIP_RATIO_INCREASE
-                        && !orbit.atom_truncated
-                        && adjusted_params.iteration_max < MAX_ITERATION_CAP
-                    {
-                        // Series skips >25% of iterations: double and recompute
-                        let new_max = (adjusted_params.iteration_max * 2).min(MAX_ITERATION_CAP);
-                        if perf {
-                            eprintln!(
-                                "[PERTURB AUTO-ADJUST] round={} skip_ratio={:.1}% ({}/{}) → doubling iteration_max {} → {}",
-                                round, skip_ratio * 100.0, table.validated_skip, adjusted_params.iteration_max,
-                                adjusted_params.iteration_max, new_max,
-                            );
-                        }
-                        adjusted_params.iteration_max = new_max;
-                        continue; // Recompute with higher iteration_max
-                    } else if skip_ratio < SKIP_RATIO_DECREASE
-                        && adjusted_params.iteration_max > params.iteration_max
-                    {
-                        // Series skips <12.5%: iteration_max may be too high (only reduce
-                        // back towards user's original value, never below it)
-                        let new_max = adjusted_params
-                            .iteration_max
-                            .min(adjusted_params.iteration_max / 2)
-                            .max(params.iteration_max);
-                        if new_max < adjusted_params.iteration_max {
-                            if perf {
-                                eprintln!(
-                                    "[PERTURB AUTO-ADJUST] round={} skip_ratio={:.1}% → reducing iteration_max {} → {}",
-                                    round, skip_ratio * 100.0, adjusted_params.iteration_max, new_max,
-                                );
-                            }
-                            adjusted_params.iteration_max = new_max;
-                            continue;
-                        }
-                    }
-                }
+        // Auto-ajustement d'iteration_max par le skip de la série — décision
+        // partagée avec la réutilisation du cache (`auto_adjusted_cap`).
+        if let Some(new_max) = auto_adjust_next(
+            &policy,
+            round,
+            adjusted_params.iteration_max,
+            params.iteration_max,
+            series_table.as_ref(),
+            orbit.atom_truncated,
+        ) {
+            if perf {
+                eprintln!(
+                    "[PERTURB AUTO-ADJUST] round={} skip={:?} iteration_max {} → {}",
+                    round,
+                    series_table.as_ref().map(|t| t.validated_skip),
+                    adjusted_params.iteration_max,
+                    new_max,
+                );
             }
+            adjusted_params.iteration_max = new_max;
+            continue;
         }
 
         break; // No adjustment needed, use current results
@@ -1890,7 +2015,8 @@ pub fn compute_reference_orbit_cached(
     cache.nucleus_transform = nucleus_transform;
     cache.nucleus_search = nucleus_search;
     cache.requested_iteration_max = params.iteration_max;
-    Some(Arc::new(cache))
+    let cap = cache.iteration_max;
+    Some((Arc::new(cache), cap))
 }
 
 /// Calcule l'orbite de référence haute précision au centre de l'image.
