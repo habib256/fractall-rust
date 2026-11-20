@@ -211,7 +211,8 @@ pub fn phoenix_f64(z0: Complex64, e0: f64, iteration_max: u32, bailout: f64) -> 
     let mut sr = z.re * z.re;
     let mut si = z.im * z.im;
     let mut n2 = sr + si;
-    let mut bad = false;
+    // Point de départ : sortie au pas 0 déterminée (cf. `start_undetermined`).
+    let mut bad = crate::render::scalar_reliability::start_undetermined(n2, e0, bailout);
     while i < iteration_max && n2 < b2 {
         let t = z.re * z.im;
         let z_temp = Complex64::new((sr - si + p1) + y.re * p2, (t + t) + y.im * p2);
