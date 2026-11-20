@@ -262,8 +262,81 @@ const TRACK_GAMMA: f64 = 4.0 * super::reliability::U;
 
 /// Boucle commune ; `TRACK` monomorphise le traqueur (à `false`, le code est
 /// celui d'avant le traqueur : aucune variable de suivi n'est lue).
+///
+/// Aiguillage à l'exécution (binaire baseline x86-64 des releases sur CPU à
+/// AVX2 + FMA, `eft::avx2_fma_dispatch`) vers une copie compilée avec
+/// `avx2,fma` : les 8 voies passent de 4 registres SSE2 à 2 registres `ymm`.
+/// Mêmes opérations IEEE dans le même ordre (aucune contraction implicite en
+/// Rust) : sorties identiques au bit près (verrou
+/// `avx2_batch_matches_baseline_batch_bit_for_bit`).
 #[allow(clippy::too_many_arguments)]
 fn iterate_batch_core<const TRACK: bool>(
+    phase: &Phase,
+    points: &[Complex64],
+    seed: Complex64,
+    is_julia: bool,
+    iteration_max: u32,
+    bailout: f64,
+    out_iter: &mut [u32],
+    out_z: &mut [Complex64],
+    cycle_shortcut: bool,
+    out_unreliable: &mut [bool],
+    runaway: f64,
+    margin: bool,
+) {
+    #[cfg(all(target_arch = "x86_64", not(all(target_feature = "avx2", target_feature = "fma"))))]
+    if crate::fractal::eft::avx2_fma_dispatch() {
+        // SAFETY : la variante n'exige que `avx2` et `fma`, présents
+        // (`avx2_fma_dispatch` = détection `cpuid`, lue une fois).
+        unsafe {
+            iterate_batch_core_avx2::<TRACK>(
+                phase, points, seed, is_julia, iteration_max, bailout, out_iter, out_z,
+                cycle_shortcut, out_unreliable, runaway, margin,
+            )
+        };
+        return;
+    }
+    iterate_batch_body::<TRACK>(
+        phase, points, seed, is_julia, iteration_max, bailout, out_iter, out_z, cycle_shortcut,
+        out_unreliable, runaway, margin,
+    );
+}
+
+/// [`iterate_batch_body`] compilée avec `avx2,fma` (cf. [`iterate_batch_core`]).
+/// N'existe que dans un binaire qui n'a pas déjà ces fonctionnalités.
+#[cfg(all(target_arch = "x86_64", not(all(target_feature = "avx2", target_feature = "fma"))))]
+#[target_feature(enable = "avx2,fma")]
+#[allow(clippy::too_many_arguments)]
+fn iterate_batch_core_avx2<const TRACK: bool>(
+    phase: &Phase,
+    points: &[Complex64],
+    seed: Complex64,
+    is_julia: bool,
+    iteration_max: u32,
+    bailout: f64,
+    out_iter: &mut [u32],
+    out_z: &mut [Complex64],
+    cycle_shortcut: bool,
+    out_unreliable: &mut [bool],
+    runaway: f64,
+    margin: bool,
+) {
+    iterate_batch_body::<TRACK>(
+        phase, points, seed, is_julia, iteration_max, bailout, out_iter, out_z, cycle_shortcut,
+        out_unreliable, runaway, margin,
+    );
+}
+
+///
+/// ⚠️ `inline(always)` SEULEMENT quand la copie `avx2,fma` existe (il faut
+/// fondre le corps dans la fonction à `target_feature` pour qu'il en
+/// profite). En `target-cpu=native`, le même attribut faisait tourner le
+/// noyau TRACÉ ×2 plus lentement (seahorse 1e7 256×160 mono-thread : 0,80 →
+/// 1,6 s), même derrière une frontière `inline(never)` : corps laissé à
+/// l'heuristique d'inlining, comme avant l'aiguillage.
+#[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(all(target_feature = "avx2", target_feature = "fma")), inline(always))]
+fn iterate_batch_body<const TRACK: bool>(
     phase: &Phase,
     points: &[Complex64],
     seed: Complex64,
@@ -837,6 +910,80 @@ mod tests {
             true,
         );
         (it, zs, fl)
+    }
+
+    /// Variante `avx2,fma` (aiguillage à l'exécution des binaires baseline)
+    /// == corps compilé pour la cible au bit près : comptes, z et drapeaux du
+    /// traqueur, toutes familles, Mandelbrot et Julia, avec et sans
+    /// raccourci des cycles. Sans objet (test vide) sur un CPU sans AVX2/FMA.
+    #[test]
+    fn avx2_batch_matches_baseline_batch_bit_for_bit() {
+        // Sans objet dans un binaire déjà compilé avec AVX2 + FMA (pas de copie).
+        #[cfg(all(target_arch = "x86_64", not(all(target_feature = "avx2", target_feature = "fma"))))]
+        {
+            if !(std::arch::is_x86_feature_detected!("avx2")
+                && std::arch::is_x86_feature_detected!("fma"))
+            {
+                return;
+            }
+            let mut forms: Vec<(String, Formula)> = [
+                FractalType::Mandelbrot,
+                FractalType::BurningShip,
+                FractalType::Tricorn,
+                FractalType::Celtic,
+                FractalType::Buffalo,
+                FractalType::PerpendicularBurningShip,
+            ]
+            .into_iter()
+            .map(|ty| (format!("{ty:?}"), compile_formula(ty, 2.0).expect("compilable")))
+            .collect();
+            forms.push(("Multibrot^5".into(), compile_formula(FractalType::Multibrot, 5.0).unwrap()));
+            forms.push(("rot30".into(), parse_opcodes_formula("negx sqr rot{30} absy add").unwrap()));
+            let points = probe_points(700, 0x51ED_2701_A1B2_C3D4);
+            for (name, formula) in &forms {
+                let phase = &formula.phases[0];
+                for (seed, julia) in [
+                    (Complex64::new(0.0, 0.0), false),
+                    (Complex64::new(-0.8, 0.156), true),
+                ] {
+                    for shortcut in [false, true] {
+                        for track in [false, true] {
+                            let n = points.len();
+                            let run = |avx: bool| {
+                                let mut it = vec![u32::MAX; n];
+                                let mut zs = vec![Complex64::new(f64::NAN, f64::NAN); n];
+                                let mut fl = vec![true; if track { n } else { 0 }];
+                                macro_rules! go {
+                                    ($f:ident, $t:literal) => {
+                                        $f::<$t>(
+                                            phase, &points, seed, julia, 3000, 25.0, &mut it,
+                                            &mut zs, shortcut, &mut fl, 1e30, true,
+                                        )
+                                    };
+                                }
+                                match (avx, track) {
+                                    // SAFETY : AVX2 + FMA détectés ci-dessus.
+                                    (true, true) => unsafe { go!(iterate_batch_core_avx2, true) },
+                                    (true, false) => unsafe { go!(iterate_batch_core_avx2, false) },
+                                    (false, true) => go!(iterate_batch_body, true),
+                                    (false, false) => go!(iterate_batch_body, false),
+                                }
+                                (it, zs, fl)
+                            };
+                            let (a, b) = (run(false), run(true));
+                            assert_eq!(a.0, b.0, "{name} julia={julia} track={track}");
+                            assert_eq!(a.2, b.2, "{name} julia={julia} drapeaux");
+                            for k in 0..n {
+                                assert!(
+                                    same(a.1[k].re, b.1[k].re) && same(a.1[k].im, b.1[k].im),
+                                    "{name} julia={julia} z[{k}]"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Le traqueur ne fait que LIRE l'état : comptes et z au bit près ceux

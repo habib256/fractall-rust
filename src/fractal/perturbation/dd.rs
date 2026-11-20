@@ -10,7 +10,8 @@
 //!
 //! Algorithmes : transformations sans erreur (Dekker `two_prod`, Knuth
 //! `two_sum`) telles qu'utilisées par la bibliothèque QD (Bailey et al.).
-//! `f64::mul_add` (FMA matériel) rend `two_prod` exact en deux opérations.
+//! `two_prod` : `crate::fractal::eft` (FMA matériel si compilé avec `fma`,
+//! sinon découpage de Dekker — mêmes bits, pas d'appel libm en baseline).
 //!
 //! Ce module est volontairement autonome et exhaustivement testé : il sera
 //! ensuite étendu en `DoubleDoubleExp` (mantisse double-double + exposant
@@ -21,34 +22,9 @@
 //! son câblage (P1.6.e étape 1/N).
 #![allow(dead_code)]
 
-/// Somme sans erreur de deux f64 (Knuth `two_sum`) : renvoie `(s, e)` tels que
-/// `s = fl(a + b)` et `a + b = s + e` exactement, sans hypothèse sur les
-/// magnitudes relatives.
-#[inline(always)]
-fn two_sum(a: f64, b: f64) -> (f64, f64) {
-    let s = a + b;
-    let bb = s - a;
-    let err = (a - (s - bb)) + (b - bb);
-    (s, err)
-}
-
-/// Somme sans erreur rapide (Dekker `fast_two_sum`) : exige `|a| >= |b|`.
-/// `s = fl(a + b)`, `a + b = s + e`.
-#[inline(always)]
-fn quick_two_sum(a: f64, b: f64) -> (f64, f64) {
-    let s = a + b;
-    let err = b - (s - a);
-    (s, err)
-}
-
-/// Produit sans erreur (Dekker `two_prod` via FMA) : `p = fl(a*b)`,
-/// `a*b = p + e` exactement.
-#[inline(always)]
-fn two_prod(a: f64, b: f64) -> (f64, f64) {
-    let p = a * b;
-    let err = a.mul_add(b, -p);
-    (p, err)
-}
+// Transformations sans erreur partagées (FMA si compilé avec `fma`, sinon
+// Dekker gardé — mêmes bits ; cf. `crate::fractal::eft`).
+use crate::fractal::eft::{quick_two_sum, two_prod, two_sum};
 
 /// Nombre double-double : valeur = `hi + lo`, avec `|lo| <= 0.5 ulp(hi)`.
 /// Donne ~106 bits de mantisse effective.
