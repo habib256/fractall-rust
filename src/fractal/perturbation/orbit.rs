@@ -779,6 +779,12 @@ pub struct ReferenceOrbitCache {
     pub fractal_type: FractalType,
     pub precision_bits: u32,
     pub iteration_max: u32,
+    /// Plafond DEMANDÉ par la vue qui a bâti ce cache, avant tout
+    /// auto-ajustement par la série (`iteration_max` ≥ celui-ci). Sert à
+    /// distinguer « plafond relevé par l'auto-ajustement » (à propager au
+    /// rendu) de « cache bâti pour un plafond utilisateur plus haut » (à ne
+    /// PAS imposer à une vue qui demande moins).
+    pub requested_iteration_max: u32,
     /// Julia seed (for Julia-type fractals)
     pub seed_re: f64,
     pub seed_im: f64,
@@ -991,6 +997,7 @@ impl ReferenceOrbitCache {
             fractal_type: params.fractal_type,
             precision_bits: computed_precision, // Stocker la précision calculée au lieu du preset
             iteration_max: params.iteration_max,
+            requested_iteration_max: params.iteration_max,
             seed_re: params.seed.re,
             seed_im: params.seed.im,
             bla_threshold: params.perturbation.bla_threshold,
@@ -1773,6 +1780,7 @@ pub fn compute_reference_orbit_cached(
         hybrid_refs,
     );
     cache.nucleus_transform = nucleus_transform;
+    cache.requested_iteration_max = params.iteration_max;
     Some(Arc::new(cache))
 }
 

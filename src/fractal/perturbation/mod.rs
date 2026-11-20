@@ -1107,9 +1107,18 @@ pub fn render_perturbation_with_cache(
     } else {
         None
     };
-    let params = if cache.iteration_max > params.iteration_max || nucleus_k.is_some() {
+    // ⚠️ Le relèvement ne vaut que pour l'auto-ajustement : un cache bâti pour
+    // un plafond UTILISATEUR plus haut (5000) puis réutilisé par une vue qui
+    // demande moins (2000) ne doit pas imposer son plafond — tous les pixels
+    // sortaient avec des comptes au-delà du plafond demandé.
+    let cache_lift = if params.iteration_max >= cache.requested_iteration_max {
+        cache.iteration_max
+    } else {
+        params.iteration_max
+    };
+    let params = if cache_lift > params.iteration_max || nucleus_k.is_some() {
         let mut adjusted = params.clone();
-        adjusted.iteration_max = adjusted.iteration_max.max(cache.iteration_max);
+        adjusted.iteration_max = adjusted.iteration_max.max(cache_lift);
         if let Some((k, rot_deg)) = nucleus_k {
             adjusted.transform_k = Some(k);
             adjusted.rotation = rot_deg;
@@ -2912,6 +2921,48 @@ mod tests {
             "vue zoomée à orbite réutilisée ≠ rendu frais : {ndiff}/{} pixels",
             fresh.0.len()
         );
+    }
+
+    /// Baisser le plafond d'itérations avec un cache d'orbite bâti pour un
+    /// plafond plus haut (GUI : 5000 puis 2000) rend la vue au plafond
+    /// DEMANDÉ, comme un rendu frais — le cache imposait le sien.
+    #[test]
+    fn lowering_the_cap_with_a_reused_orbit_matches_fresh_render() {
+        use super::{render_perturbation_with_cache, ReferenceOrbitCache};
+        let (w, h) = (64u32, 40u32);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let make = |iters: u32| -> FractalParams {
+            let mut p = default_params_for_type(FractalType::Mandelbrot, w, h);
+            p.engine.algorithm_mode = AlgorithmMode::Perturbation;
+            p.iteration_max = iters;
+            let span_x = 4.0e-25_f64;
+            let span_y = span_x * h as f64 / w as f64;
+            p.center_x = -0.743643887037158704752191506114774;
+            p.center_y = 0.131825904205311970493132056385139;
+            p.center_x_hp = Some("-0.743643887037158704752191506114774".into());
+            p.center_y_hp = Some("0.131825904205311970493132056385139".into());
+            p.span_x = span_x;
+            p.span_y = span_y;
+            p.span_x_hp = Some(format!("{span_x:.17e}"));
+            p.span_y_hp = Some(format!("{span_y:.17e}"));
+            p
+        };
+        let (_high, cache): (_, Arc<ReferenceOrbitCache>) =
+            render_perturbation_with_cache(&make(5000), &cancel, None, None, None, None)
+                .expect("plafond haut");
+        let low = make(2000);
+        let (reused, _) =
+            render_perturbation_with_cache(&low, &cancel, None, Some(&cache), None, None)
+                .expect("plafond bas, cache réutilisé");
+        let (fresh, _) = render_perturbation_with_cache(&low, &cancel, None, None, None, None)
+            .expect("plafond bas, rendu frais");
+        // Anti-vacuité : le plafond bas mord (des pixels y butent), sinon
+        // l'abaisser ne changerait rien.
+        let capped = fresh.0.iter().filter(|&&i| i >= 2000).count();
+        assert!(capped > 0, "le plafond bas ne mord pas");
+        assert!(reused.0.iter().all(|&i| i <= 2000), "compte au-delà du plafond demandé");
+        let ndiff = reused.0.iter().zip(&fresh.0).filter(|(a, b)| a != b).count();
+        assert!(ndiff <= 2, "plafond abaissé, cache réutilisé ≠ rendu frais : {ndiff} pixels");
     }
 
     #[test]
