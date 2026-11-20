@@ -68,14 +68,13 @@
 //! Son bord Mandelbrot est CHAOS (juge 256 b ≠ 512 b) : 99 % de pixels
 //! signalés, c'est la bonne réponse.
 //!
-//! **Phoenix** résiste (non suivi) : son erreur vit dans un état à deux
-//! composantes `(z, y)` de jacobien `[[2z, p2], [1, 0]]` ; une borne en
-//! modules majore ce jacobien par `[[2|z|, ½], [1, 0]]`, de rayon spectral
-//! `|z| + √(|z|² + ½) > 1` dès `|z| > ¼` — la borne s'emballe sur 100 % des
-//! pixels du bord (même en double-double), alors que le vrai jacobien
-//! contracte grâce aux phases. Il faudrait suivre la borne en coordonnées
-//! complexes (zonotopes) ou une orbite jumelle (×2 sur toute la frame pour
-//! 2 pixels faux sur 2560) : laissé ouvert.
+//! **Phoenix** (2026-11-20, [`scalar_phoenix`](crate::render::scalar_phoenix)) :
+//! son erreur vit dans un état à deux composantes `(z, y)` de jacobien
+//! `[[2z, p2], [1, 0]]` ; une borne en modules (rayon spectral
+//! `|z| + √(|z|² + ½) > 1` dès `|z| > ¼`) s'emballait sur 100 % du bord. Il
+//! est suivi par une borne ELLIPSOÏDALE (matrice hermitienne 2×2 transportée
+//! par le jacobien exact, phases comprises) : bord ×4096 2 → 0 pixel faux,
+//! 7,6 % signalés, étage dd dédié (état `(z, y)`).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -122,6 +121,7 @@ fn plan_for(params: &FractalParams, mode: ReliabilityMode, scope_off: bool) -> O
             | FractalType::MagnetMandelbrot
             | FractalType::MandelbrotSin
             | FractalType::JuliaSin
+            | FractalType::Phoenix
     ) {
         return None;
     }
@@ -194,6 +194,12 @@ pub fn iterate_tracked(params: &FractalParams, z_pixel: Complex64) -> (u32, Comp
             params.seed,
             pixel_error(params, z_pixel),
             0.0,
+            params.iteration_max,
+            params.bailout,
+        ),
+        FractalType::Phoenix => crate::render::scalar_phoenix::phoenix_f64(
+            z_pixel,
+            pixel_error(params, z_pixel),
             params.iteration_max,
             params.bailout,
         ),
@@ -930,6 +936,8 @@ fn dd_stage(params: &FractalParams, points: &[(Dd, Dd)]) -> Option<Vec<(u32, Com
             };
             Some(dd_lanes_par(&pts(), zero, false, n, r, step))
         }
+        // État à deux composantes (z, y) : étage dédié (`scalar_phoenix`).
+        FractalType::Phoenix => Some(crate::render::scalar_phoenix::dd_stage(points, n, r)),
         _ => None,
     }
 }
@@ -1101,6 +1109,10 @@ mod tests {
         (FractalType::MandelbrotSin, Some((-1.9899086401850268, -0.5337651978513115, 2607.5945876176133))),
         (FractalType::JuliaSin, None),
         (FractalType::JuliaSin, Some((4.7936899621426774e-05, -0.00012437648618453408, 2607.5945876176133))),
+        (FractalType::Phoenix, None),
+        // Bord Phoenix plus dur que la scène de l'axe (×4096 : 2 pixels faux
+        // à 64×40 seulement) : 5 pixels faux sans suivi.
+        (FractalType::Phoenix, Some((0.629583796356445, -0.523261146274227, 30907.369550505096))),
     ];
 
     fn scene_params(ft: FractalType, view: Option<(f64, f64, f64)>, w: usize, h: usize) -> FractalParams {
@@ -1182,6 +1194,10 @@ mod tests {
             let prod = crate::render::render_escape_time(&p);
             let mut g = p.clone();
             g.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
+            // Sans `use_gmp`, un type hors famille perturbation retombait sur
+            // le path f64 standard — suivi et corrigé : le « juge » était la
+            // production elle-même.
+            g.engine.use_gmp = true;
             let t = std::time::Instant::now();
             let gmp = crate::render::render_escape_time(&g);
             eprintln!("{ft:?} juge GMP : {:.1} s", t.elapsed().as_secs_f64());
