@@ -1428,7 +1428,8 @@ mod tests {
                     im: crate::fractal::perturbation::qd::Qd::from_f64(z.im),
                 })
                 .collect();
-            let qd = qd_stage(&p, &qpts).unwrap();
+            // Phoenix n'a pas d'étage qd (dd ellipsoïdal puis GMP).
+            let Some(qd) = qd_stage(&p, &qpts) else { continue };
             let mut gp = p.clone();
             gp.engine.precision_bits = 256;
             let g = crate::fractal::gmp::MpcParams::from_params(&gp);
@@ -1485,7 +1486,7 @@ mod tests {
                     .collect();
                 nb = beyond.len();
                 let t = std::time::Instant::now();
-                let q = pool.install(|| qd_stage(&p, &beyond)).unwrap();
+                let Some(q) = pool.install(|| qd_stage(&p, &beyond)) else { break };
                 tq = tq.min(t.elapsed().as_secs_f64());
                 qd_it = q.iter().map(|x| x.0 as u64).sum();
                 nq = q.iter().filter(|x| x.2).count();

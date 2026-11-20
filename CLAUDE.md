@@ -1023,9 +1023,21 @@ c'est le test d'évasion qui décide ; (4) la chaîne de dépendance de `g` ne
 doit pas être plus longue que celle de `z` (Alpha +114 % → +40 %) ; (5) le
 raccourci de cycle de l'étage dd compare AUSSI la borne ; (6) l'addition dd
 « rapide » a une erreur relative aux OPÉRANDES, pas au résultat. **Phoenix
-reste non suivi** (2 px) : toute borne en modules du couple (z, y) a un
-rayon spectral > 1 dès |z| > ¼ et s'emballe sur 100 % du bord alors que le
-vrai jacobien contracte par les phases. Verrous
+suivi depuis le 2026-11-20** (`render/scalar_phoenix.rs`) : toute borne en
+modules du couple (z, y) a un rayon spectral > 1 dès |z| > ¼ et s'emballe
+sur 100 % du bord ; la borne est donc ELLIPSOÏDALE — matrice hermitienne
+2×2 P avec e·eᴴ ⪯ P, transportée par le jacobien exact
+`P' = (1+δ)·J·P·Jᴴ + (1+1/δ)·|w|²·e₁e₁ᴴ`, phases comprises —, même borne
+en double-double (4 voies, raccourci de cycle sur z, y ET l'ellipsoïde),
+puis GMP. ~100 vues de bord : 283 px faux → 0 ; signalés 7,6 % au bord
+×4096. Coût : traqueur +55 % (au-dessus de la cible, boucle bornée par le
+débit), 720p accueil +24 %, bord +47 %. ⚠️ Ne pas linéariser le terme `a²`
+(100 % du bord signalé) ; majorer |y| par une constante : 7,6 → 9,3 %.
+⚠️ **Dans un test, `ReferenceGmp` sans `use_gmp` n'est PAS un juge GMP**
+pour un type hors famille perturbation (le rendu repasse par le path f64
+suivi) : `tracked_scalar_edges_match_gmp` comparait la production à
+elle-même jusqu'au 2026-11-20 (corrigé, ~50 s, tous types à 0 px faux).
+Verrous
 `tracked_scalar_loops_are_bit_identical_to_production_loops`,
 `dd_lanes_match_single_pixel_loop`, `tracked_scalar_edges_match_gmp`.
 **Magnet Mandelbrot, Mandelbrot Sin, Julia Sin suivis (2026-11-20)** — les
