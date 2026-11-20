@@ -186,6 +186,18 @@ pub struct DdV<const L: usize> {
     lo: V<L>,
 }
 
+impl<const L: usize> DdV<L> {
+    /// Composantes `(hi, lo)` (étages vectoriels de `render::scalar_lanes`).
+    #[inline(always)]
+    pub fn from_parts(hi: V<L>, lo: V<L>) -> Self {
+        DdV { hi, lo }
+    }
+    #[inline(always)]
+    pub fn lo(&self) -> V<L> {
+        self.lo
+    }
+}
+
 impl<const L: usize> LaneNum<L> for DdV<L> {
     type Scalar = Dd;
     const UNIT: f64 = DD_UNIT;
