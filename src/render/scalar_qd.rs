@@ -117,7 +117,7 @@ impl Cqd {
         (self.re.0[0] * self.re.0[0] + self.im.0[0] * self.im.0[0]).sqrt()
     }
     #[inline(always)]
-    fn hi(self) -> Complex64 {
+    pub(crate) fn hi(self) -> Complex64 {
         Complex64::new(self.re.0[0], self.im.0[0])
     }
 }
@@ -474,7 +474,7 @@ fn mandelbulb_qd_step(z: Cqd, e: f64, c: Cqd) -> (Cqd, f64, f64) {
 /// Magnet (cf. `magnet_dd_step`) ; arrondis relatifs aux OPÉRANDES (sommes
 /// sloppy : `n = z² + s₁` paie `|z|² + |s₁|`, pas `|n|`).
 #[inline(always)]
-fn magnet_qd_step(z: Cqd, e: f64, s1: Cqd, s2: Cqd, e_s: f64) -> (Cqd, f64, f64) {
+pub(crate) fn magnet_qd_step(z: Cqd, e: f64, s1: Cqd, s2: Cqd, e_s: f64) -> (Cqd, f64, f64) {
     let n = z.sqr().add(s1);
     let q = Cqd { re: z.re.mul_pow2(2.0), im: z.im.mul_pow2(2.0) }.add(s2);
     let qq = q.re.sqr().add(q.im.sqr());
