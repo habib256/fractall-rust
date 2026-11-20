@@ -6,10 +6,16 @@
 //! - `sin`/`cos` : réduction `x = k·π/64 + t` (`|t| ≤ π/128`), table de
 //!   `sin(kπ/64)`, `cos(kπ/64)` (k mod 128), séries de Taylor de `t` jusqu'à
 //!   `t¹³` / `t¹²` (reste < 10⁻³³) ;
-//! - `exp` : `a = m·ln 2 + j/256 + r` (`|r| ≤ 1/512`), table de
-//!   `exp(j/256)`, Taylor jusqu'à `r⁹` (reste < 10⁻³³), puis `2^m` exact ;
+//! - `exp` : `a = m·ln 2 + j₁/256 + j₂/65536 + r` (`|r| ≤ 2⁻¹⁷`, `ln 2`
+//!   découpé à la Cody-Waite : `m·ln2_hi` exact), tables de `exp(j₁/256)` et
+//!   `exp(j₂/65536)`, Taylor jusqu'à `r⁵` (reste < 2⁻¹¹¹) évalué en parties
+//!   PAIRE et IMPAIRE — `e^a` et `e^−a` sortent du même polynôme
+//!   (`E ± O`) sans division (2026-11-20 : la division `1/e^a` et la chaîne
+//!   de Horner à dix termes faisaient le chemin critique du pas Sin) ;
 //!   `sinh`/`cosh = (e^a ∓ e^−a)/2` — erreur ABSOLUE ≤ `CH·u·cosh`, qui suffit
 //!   au traqueur (la borne est absolue).
+//! - les polynômes de `sin`/`cos` sont évalués à la Estrin (chaînes de
+//!   dépendance plus courtes que Horner, même degré).
 //!
 //! Bornes d'erreur ([`SIN_ERR`], [`HYP_ERR`]) vérifiées contre MPFR 256 b
 //! avec une marge ×8 (verrou `dd_trig_matches_mpfr_within_bounds`).
@@ -30,8 +36,10 @@ pub const HYP_ERR: f64 = 16.0;
 /// Au-delà, pas de résultat (`None`) : le pixel part au GMP.
 const SIN_MAX_ARG: f64 = 1e9;
 const HYP_MAX_ARG: f64 = 700.0;
-/// `|s| ≤ ln 2 / 2` ⇒ `|j| = |round(256·s)| ≤ 89`.
+/// `|s| ≤ ln 2 / 2` ⇒ `|j₁| = |round(256·s)| ≤ 89`.
 const EXP_J: usize = 90;
+/// `|s₁| ≤ 1/512` ⇒ `|j₂| = |round(65536·s₁)| ≤ 128`.
+const EXP_J2: usize = 129;
 
 /// Addition double-double « rapide » (QD sloppy) : un seul `two_sum`, erreur
 /// ≤ 2⁻¹⁰⁴·(|a| + |b|) — relative aux OPÉRANDES, pas au résultat (contre
@@ -56,11 +64,16 @@ pub struct DdTrig {
     sin_coef: [Dd; 7],
     /// `(−1)ⁱ/(2i)!`, i = 0..=6.
     cos_coef: [Dd; 7],
-    ln2: Dd,
+    /// `ln 2 = ln2_hi + ln2_lo` : `ln2_hi` sur 40 bits (`m·ln2_hi` exact
+    /// pour `|m| < 2¹³`).
+    ln2_hi: f64,
+    ln2_lo: Dd,
     /// `exp(j/256)`, j = −EXP_J..=EXP_J.
     exp_tab: [Dd; 2 * EXP_J + 1],
-    /// `1/n!`, n = 0..=9.
-    exp_coef: [Dd; 10],
+    /// `exp(j/65536)`, j = −EXP_J2..=EXP_J2.
+    exp_tab2: [Dd; 2 * EXP_J2 + 1],
+    /// `1/n!`, n = 0..=5.
+    exp_coef: [Dd; 6],
 }
 
 impl DdTrig {
@@ -89,13 +102,30 @@ impl DdTrig {
         };
         let sin_coef = std::array::from_fn(|i| inv(2 * i as u32 + 1, i % 2 == 1));
         let cos_coef = std::array::from_fn(|i| inv(2 * i as u32, i % 2 == 1));
-        let exp_coef = std::array::from_fn(|n| inv(n as u32, false));
-        let ln2 = dd_from_gmp(&Float::with_val(P, Constant::Log2));
+        let exp_coef: [Dd; 6] = std::array::from_fn(|n| inv(n as u32, false));
+        let ln2 = Float::with_val(P, Constant::Log2);
+        let ln2_hi = Float::with_val(40, &ln2).to_f64();
+        let ln2_lo = dd_from_gmp(&Float::with_val(P, &ln2 - ln2_hi));
         let exp_tab = std::array::from_fn(|j| {
             let x = Float::with_val(P, j as i32 - EXP_J as i32) / 256u32;
             dd_from_gmp(&x.exp())
         });
-        DdTrig { pi64: dd_from_gmp(&pi64), sin_tab, cos_tab, sin_coef, cos_coef, ln2, exp_tab, exp_coef }
+        let exp_tab2 = std::array::from_fn(|j| {
+            let x = Float::with_val(P, j as i32 - EXP_J2 as i32) / 65536u32;
+            dd_from_gmp(&x.exp())
+        });
+        DdTrig {
+            pi64: dd_from_gmp(&pi64),
+            sin_tab,
+            cos_tab,
+            sin_coef,
+            cos_coef,
+            ln2_hi,
+            ln2_lo,
+            exp_tab,
+            exp_tab2,
+            exp_coef,
+        }
     }
 
     /// `(sin x, cos x)`, `None` si `|x| ≥ 1e9` ou non fini.
@@ -108,29 +138,43 @@ impl DdTrig {
         let t = x.sub(self.pi64.mul_f64(k));
         let j = (k as i64).rem_euclid(128) as usize;
         let t2 = t.sqr();
-        let mut s = self.sin_coef[6];
-        let mut c = self.cos_coef[6];
-        for i in (0..6).rev() {
-            s = dd_add_fast(s.mul(t2), self.sin_coef[i]);
-            c = dd_add_fast(c.mul(t2), self.cos_coef[i]);
-        }
-        let s = s.mul(t);
+        let t4 = t2.sqr();
+        let t8 = t4.sqr();
+        // Estrin : p(u) = (a0 + a1·u) + u²·(a2 + a3·u) + u⁴·((a4 + a5·u) + u²·a6).
+        let estrin = |a: &[Dd; 7]| -> Dd {
+            let p01 = dd_add_fast(a[0], a[1].mul(t2));
+            let p23 = dd_add_fast(a[2], a[3].mul(t2));
+            let p45 = dd_add_fast(a[4], a[5].mul(t2));
+            let p46 = dd_add_fast(p45, a[6].mul(t4));
+            dd_add_fast(dd_add_fast(p01, p23.mul(t4)), p46.mul(t8))
+        };
+        let s = estrin(&self.sin_coef).mul(t);
+        let c = estrin(&self.cos_coef);
         let (sj, cj) = (self.sin_tab[j], self.cos_tab[j]);
         Some((sj.mul(c).add(cj.mul(s)), cj.mul(c).sub(sj.mul(s))))
     }
 
-    /// `exp(a)` pour `0 ≤ a < 700`.
+    /// `(exp(a), exp(−a))` pour `0 ≤ a < 700`.
     #[inline(always)]
-    fn exp(&self, a: Dd) -> Dd {
+    fn exp_pm(&self, a: Dd) -> (Dd, Dd) {
         let m = (a.hi * std::f64::consts::LOG2_E).round();
-        let s = a.sub(self.ln2.mul_f64(m));
-        let j = (s.hi * 256.0).round().clamp(-(EXP_J as f64), EXP_J as f64);
-        let r = s.sub(Dd::from_f64(j / 256.0));
-        let mut e = self.exp_coef[9];
-        for n in (0..9).rev() {
-            e = dd_add_fast(e.mul(r), self.exp_coef[n]);
-        }
-        e.mul(self.exp_tab[(j as i32 + EXP_J as i32) as usize]).mul_f64(2f64.powi(m as i32))
+        let s = a.sub(Dd::from_f64(m * self.ln2_hi)).sub(self.ln2_lo.mul_f64(m));
+        let j1 = (s.hi * 256.0).round().clamp(-(EXP_J as f64), EXP_J as f64);
+        let s1 = s.sub(Dd::from_f64(j1 / 256.0));
+        let j2 = (s1.hi * 65536.0).round().clamp(-(EXP_J2 as f64), EXP_J2 as f64);
+        let r = s1.sub(Dd::from_f64(j2 / 65536.0));
+        let r2 = r.sqr();
+        let c = &self.exp_coef;
+        // Parties paire E = 1 + r²/2 + r⁴/24 et impaire O = r·(1 + r²/6 + r⁴/120).
+        let r4 = r2.sqr();
+        let ev = dd_add_fast(dd_add_fast(c[0], c[2].mul(r2)), c[4].mul(r4));
+        let od = dd_add_fast(dd_add_fast(c[1], c[3].mul(r2)), c[5].mul(r4)).mul(r);
+        let (j1, j2) = (j1 as i32, j2 as i32);
+        let (e1, e2) = (EXP_J as i32, EXP_J2 as i32);
+        let pos = ev.add(od).mul(self.exp_tab[(e1 + j1) as usize]).mul(self.exp_tab2[(e2 + j2) as usize]);
+        let neg = ev.sub(od).mul(self.exp_tab[(e1 - j1) as usize]).mul(self.exp_tab2[(e2 - j2) as usize]);
+        let mi = m as i32;
+        (pos.mul_f64(2f64.powi(mi)), neg.mul_f64(2f64.powi(-mi)))
     }
 
     /// `(sinh y, cosh y)` (sinh signé comme y), `None` si `|y| ≥ 700`.
@@ -143,8 +187,7 @@ impl DdTrig {
         if a.hi == 0.0 {
             return Some((y, Dd::from_f64(1.0)));
         }
-        let e = self.exp(a);
-        let ie = Dd::from_f64(1.0).div(e);
+        let (e, ie) = self.exp_pm(a);
         let sh = e.sub(ie).mul_f64(0.5);
         let ch = e.add(ie).mul_f64(0.5);
         Some((if y.hi < 0.0 { sh.neg() } else { sh }, ch))
@@ -198,6 +241,20 @@ mod tests {
             let bound = SIN_ERR * DD_UNIT * (1.0 + x.hi.abs());
             let e = err(s, &Float::with_val(256, gx.sin_ref())).max(err(c, &Float::with_val(256, gx.cos_ref())));
             worst_s = worst_s.max(e / bound);
+        }
+        // Grands arguments hyperboliques (Cody-Waite : erreur indépendante de m)
+        // et petits (sinh ≈ y).
+        for y in [50.25, -300.5, 699.0, 3e-5, -2e-9] {
+            let y = Dd::new(y, y * 1.1e-17);
+            let gy = to_gmp(y);
+            let (sh, ch) = t.sinh_cosh(y).unwrap();
+            let gch = Float::with_val(256, gy.cosh_ref());
+            let mut es = to_gmp(sh);
+            es -= &Float::with_val(256, gy.sinh_ref());
+            let mut ec = to_gmp(ch);
+            ec -= &gch;
+            let e = Float::with_val(256, es.abs().max(&ec.abs()) / &gch).to_f64();
+            worst_h = worst_h.max(e / (HYP_ERR * DD_UNIT));
         }
         eprintln!("dd trig : pire erreur / borne : sin_cos {worst_s:.4}, sinh_cosh {worst_h:.4}");
         assert!(worst_s < 0.125, "sin_cos : {worst_s}");

@@ -19,8 +19,12 @@
 //!    n'est pas déterminée (`||z| − R| ≤ E`) ;
 //! 2. pixels signalés : même boucle en **double-double** (point exact
 //!    recalculé depuis le centre HP), ~10× moins chère que le GMP ;
-//! 3. ce que le double-double ne garantit pas : GMP pur sous le budget du
-//!    path standard (`std_reliability::correct_std_pixels`, `GmpCapped`).
+//! 3. ce que le double-double ne garantit pas : **quad-double** tracé
+//!    ([`scalar_qd`](crate::render::scalar_qd), 2026-11-20 — Sin et Magnet en
+//!    voies vectorielles, [`scalar_lanes`](crate::render::scalar_lanes)),
+//!    seulement si le GMP aurait tourné ([`gmp_would_run`]) ;
+//! 4. le reste : GMP pur sous le budget du path standard
+//!    (`std_reliability::correct_std_pixels`, `GmpCapped`).
 //!
 //! Étendre à un autre type = sa boucle tracée f64 + double-double et une
 //! entrée dans [`plan`] ; le juge est la scène du type dans l'axe `types`.
@@ -83,7 +87,9 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 use rug::Float;
 
-use crate::fractal::bytecode::direct_dd::dd_from_gmp;
+use crate::fractal::bytecode::direct_dd::{dd_from_gmp, qd_from_gmp};
+use crate::render::scalar_qd::{qd_stage, Cqd};
+use crate::render::scalar_lanes::{self, LaneKind};
 use crate::render::dd_trig::{self, dd_add_fast, DdTrig};
 use crate::fractal::bytecode::reliability::{self as rel, ReliabilityMode};
 use crate::fractal::perturbation::dd::DoubleDouble as Dd;
@@ -604,13 +610,6 @@ impl Cdd {
     }
 }
 
-/// Fin d'un pas double-double : `(continuer, fiable)` — la borne `e` doit
-/// rester petite et l'évasion déterminée.
-#[inline(always)]
-fn dd_step_ok(n: f64, bailout: f64, e: f64) -> bool {
-    n.is_finite() && (n - bailout).abs() > e && e < E_MAX_NL
-}
-
 /// Un pas Alpha Mandelbrot double-double tracé : `(z', E', |z'|)`.
 #[inline(always)]
 fn alpha_dd_step(z: Cdd, e: f64, c: Cdd) -> (Cdd, f64, f64) {
@@ -740,7 +739,7 @@ fn dd_pixel(
         z = nz;
         e = ne;
         i += 1;
-        if !dd_step_ok(n, bailout, e) {
+        if !crate::render::scalar_qd::step_ok(n, bailout, e) {
             return (i, z.hi(), false);
         }
         cyc.observe(&mut i, iteration_max, dd_cycle_state(z, e));
@@ -767,6 +766,21 @@ fn mandelbulb_dd(seed: Cdd, c: Cdd, iteration_max: u32, bailout: f64) -> (u32, C
 /// `dd_lanes_match_single_pixel_loop`).
 const DD_LANES: usize = 4;
 
+impl crate::render::scalar_qd::LaneZ<5> for Cdd {
+    #[inline(always)]
+    fn hi_c(self) -> Complex64 {
+        self.hi()
+    }
+    #[inline(always)]
+    fn abs_h(self) -> f64 {
+        self.abs_hi()
+    }
+    #[inline(always)]
+    fn state(self, e: f64) -> [f64; 5] {
+        dd_cycle_state(self, e)
+    }
+}
+
 /// [`dd_lanes`] en parallèle par paquets (monomorphisé sur le pas : un
 /// appel indirect empêcherait l'entrelacement des voies).
 fn dd_lanes_par<F: Fn(Cdd, f64, Cdd) -> (Cdd, f64, f64) + Sync + Copy>(
@@ -784,6 +798,8 @@ fn dd_lanes_par<F: Fn(Cdd, f64, Cdd) -> (Cdd, f64, f64) + Sync + Copy>(
         .collect()
 }
 
+/// Voies entrelacées dd ([`scalar_qd::lanes`](crate::render::scalar_qd::lanes)
+/// générique, partagé avec l'étage qd).
 ///
 /// `julia` : le point du pixel est le `z` de départ (borne initiale = son
 /// arrondi en dd) et le pas ignore son troisième argument ; sinon `z` part de
@@ -796,70 +812,7 @@ fn dd_lanes(
     bailout: f64,
     step: impl Fn(Cdd, f64, Cdd) -> (Cdd, f64, f64),
 ) -> Vec<(u32, Complex64, bool)> {
-    const FREE: usize = usize::MAX;
-    let b2 = bailout * bailout;
-    let mut out = vec![(0u32, Complex64::new(0.0, 0.0), false); points.len()];
-    let mut next = 0usize;
-    let mut idx = [FREE; DD_LANES];
-    let mut z = [seed; DD_LANES];
-    let mut c = [seed; DD_LANES];
-    let mut e = [0.0f64; DD_LANES];
-    let mut n = [0.0f64; DD_LANES];
-    let mut it = [0u32; DD_LANES];
-    let mut cyc: [crate::fractal::cycle::CycleCut<5>; DD_LANES] =
-        std::array::from_fn(|_| crate::fractal::cycle::CycleCut::new());
-    loop {
-        // Sorties par la condition de boucle, puis recharge des voies libres.
-        for l in 0..DD_LANES {
-            loop {
-                if idx[l] != FREE {
-                    let zl = z[l];
-                    if it[l] < iteration_max && zl.re.hi * zl.re.hi + zl.im.hi * zl.im.hi < b2 {
-                        break;
-                    }
-                    out[idx[l]] = (it[l], zl.hi(), true);
-                    idx[l] = FREE;
-                }
-                if next == points.len() {
-                    break;
-                }
-                idx[l] = next;
-                c[l] = points[next];
-                cyc[l] = crate::fractal::cycle::CycleCut::new();
-                if julia {
-                    z[l] = points[next];
-                    e[l] = UDD * points[next].abs_hi();
-                } else {
-                    z[l] = seed;
-                    e[l] = 0.0;
-                }
-                it[l] = 0;
-                next += 1;
-            }
-        }
-        if idx.iter().all(|&k| k == FREE) {
-            break;
-        }
-        // Un pas sur toutes les voies (une voie libre calcule pour rien).
-        for l in 0..DD_LANES {
-            let (nz, ne, nn) = step(z[l], e[l], c[l]);
-            z[l] = nz;
-            e[l] = ne;
-            n[l] = nn;
-        }
-        for l in 0..DD_LANES {
-            if idx[l] != FREE {
-                it[l] += 1;
-                if !dd_step_ok(n[l], bailout, e[l]) {
-                    out[idx[l]] = (it[l], z[l].hi(), false);
-                    idx[l] = FREE;
-                } else {
-                    cyc[l].observe(&mut it[l], iteration_max, dd_cycle_state(z[l], e[l]));
-                }
-            }
-        }
-    }
-    out
+    crate::render::scalar_qd::lanes::<Cdd, 5, DD_LANES>(points, seed, julia, UDD, iteration_max, bailout, step)
 }
 
 /// Un pas Barnsley double-double tracé : `z' = (z ∓ 1)·c`, `(z', E', |z'|)`.
@@ -890,6 +843,15 @@ fn dd_stage(params: &FractalParams, points: &[(Dd, Dd)]) -> Option<Vec<(u32, Com
     let seed_c = Cdd { re: seed.0, im: seed.1 };
     let pts = || -> Vec<Cdd> { points.iter().map(|&(re, im)| Cdd { re, im }).collect() };
     match params.fractal_type {
+        // Sin : voies vectorielles (`scalar_lanes`, ×3 sur l'étage dd). PAS
+        // Magnet : son pas dd est court (~30 opérations dd) et la borne par
+        // voie (racines, division) domine — mesuré 26 → 46-52 ns/itération
+        // en voies ; il reste sur les voies entrelacées scalaires.
+        FractalType::MandelbrotSin | FractalType::JuliaSin if scalar_lanes::enabled() => {
+            use crate::fractal::bytecode::direct_simd::DdV;
+            let julia = params.fractal_type == FractalType::JuliaSin;
+            Some(scalar_lanes::lanes_par::<DdV<8>, 8>(LaneKind::Sin, points, seed, julia, n, r))
+        }
         // Barnsley : `z₀` = le point (julia = true) ; la variante Mandelbrot
         // reçoit aussi le point comme `c`, la Julia prend la graine exacte.
         FractalType::BarnsleyJulia => {
@@ -934,6 +896,35 @@ fn dd_stage(params: &FractalParams, points: &[(Dd, Dd)]) -> Option<Vec<(u32, Com
     }
 }
 
+/// Coordonnée HP du centre (repli f64) à `prec` bits.
+fn parse_at(prec: u32, hp: &Option<String>, f: f64) -> Float {
+    match hp.as_deref().map(Float::parse) {
+        Some(Ok(v)) => Float::with_val(prec, v),
+        _ => Float::with_val(prec, f),
+    }
+}
+
+/// La correction `GmpCapped` de `std_reliability::correct_std_pixels`
+/// recalculerait-elle ces pixels ? (Plafond en pixels OU budget de 5 % des
+/// itérations de la frame — mêmes règles, sur les comptes f64 courants.)
+fn gmp_would_run(rest: &[usize], iterations: &[u32]) -> bool {
+    let rest_iters: f64 = rest.iter().map(|&i| iterations[i] as f64).sum();
+    let frame_iters: f64 = iterations.iter().map(|&n| n as f64).sum();
+    rel::gmp_escalation_allowed(rest.len(), iterations.len(), rel::reliability_gmp_max_fraction())
+        || rest_iters <= STD_GMP_ITER_BUDGET * frame_iters
+}
+
+/// Copie de `std_reliability::STD_GMP_ITER_BUDGET` (privée là-bas) : à
+/// garder égale.
+const STD_GMP_ITER_BUDGET: f64 = 0.05;
+
+/// `FRACTALL_SCALAR_QD=0` : pas d'étage quad-double (pixels au-delà du dd
+/// droit au GMP pur — A/B). Lu une fois.
+fn scalar_qd_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("FRACTALL_SCALAR_QD").map_or(true, |v| v != "0"))
+}
+
 /// Précision minimale de l'étage GMP qui suit le double-double.
 const GMP_FLOOR_BITS: u32 = 256;
 
@@ -951,12 +942,8 @@ pub fn correct(
     }
     let t = std::time::Instant::now();
     let prec = compute_perturbation_precision_bits(params);
-    let parse = |hp: &Option<String>, f: f64| match hp.as_deref().map(Float::parse) {
-        Some(Ok(v)) => Float::with_val(prec, v),
-        _ => Float::with_val(prec, f),
-    };
-    let cx = parse(&params.center_x_hp, params.center_x);
-    let cy = parse(&params.center_y_hp, params.center_y);
+    let cx = parse_at(prec, &params.center_x_hp, params.center_x);
+    let cy = parse_at(prec, &params.center_y_hp, params.center_y);
     let dc_ctx = DcGmpContext::new(params, prec);
     let width = params.width.max(1) as usize;
     // Point exact de chaque pixel (centre HP + dc en GMP), arrondi en dd.
@@ -988,14 +975,58 @@ pub fn correct(
             rest.push(idx);
         }
     }
+    let t_dd = t.elapsed().as_secs_f64();
+    let beyond_dd = rest.len();
+    // Étage quad-double : ce que le dd ne détermine pas (cf. `scalar_qd`).
+    // Point exact recalculé à la précision de l'étage GMP qui suit. Il ne
+    // remplace QUE du GMP : il ne tourne que si le GMP aurait tourné (même
+    // plafond que `correct_std_pixels`, `GmpCapped`). Bord Barnsley
+    // Mandelbrot (CHAOS, 97 % de pixels au-delà du dd, GMP hors budget) :
+    // sans ce garde le qd coûtait 0,8 → 2,5 s pour des pixels qui restent
+    // ensuite en f64 et ne changeait rien de garanti.
+    if !rest.is_empty() && scalar_qd_enabled() && gmp_would_run(&rest, iterations) {
+        let qprec = prec.max(GMP_FLOOR_BITS);
+        let qcx = parse_at(qprec, &params.center_x_hp, params.center_x);
+        let qcy = parse_at(qprec, &params.center_y_hp, params.center_y);
+        let qctx = DcGmpContext::new(params, qprec);
+        let qpoints: Vec<Cqd> = rest
+            .par_iter()
+            .map(|&idx| {
+                let dc = qctx.compute_dc(idx % width, idx / width);
+                let mut re = qcx.clone();
+                re += dc.real();
+                let mut im = qcy.clone();
+                im += dc.imag();
+                Cqd { re: qd_from_gmp(&re), im: qd_from_gmp(&im) }
+            })
+            .collect();
+        if let Some(res) = qd_stage(params, &qpoints) {
+            let mut still = Vec::new();
+            for (&idx, (it, z, ok)) in rest.iter().zip(res) {
+                if ok {
+                    iterations[idx] = it;
+                    zs[idx] = z;
+                } else {
+                    still.push(idx);
+                }
+            }
+            rest = still;
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+    }
     if perf_enabled() {
         eprintln!(
-            "[RELIABILITY-SCALAR] flagged={} ({:.3} %) dd_fixed={} beyond_dd={} time={:.3}s",
+            "[RELIABILITY-SCALAR] flagged={} ({:.3} %) dd_fixed={} beyond_dd={} qd_fixed={} beyond_qd={} dd={:.3}s qd={:.3}s",
             flagged.len(),
             100.0 * flagged.len() as f64 / iterations.len().max(1) as f64,
-            flagged.len() - rest.len(),
+            flagged.len() - beyond_dd,
+            beyond_dd,
+            beyond_dd - rest.len(),
             rest.len(),
-            t.elapsed().as_secs_f64()
+            t_dd,
+            t.elapsed().as_secs_f64() - t_dd
         );
     }
     if !rest.is_empty() {
@@ -1336,6 +1367,102 @@ mod tests {
             (z, 0.0, nn)
         };
         dd_pixel(z0, c, n, r, step).0
+    }
+
+    /// Étage quad-double : sur les pixels de bord que le double-double ne
+    /// détermine pas, tout pixel que le qd déclare fiable a le compte du GMP
+    /// pur 256 b (juge convergé de l'axe `types`), et le qd en règle la
+    /// majorité (sinon l'étage ne sert à rien).
+    #[test]
+    fn qd_stage_agrees_with_gmp_beyond_dd() {
+        let judged = |ft: FractalType| !matches!(ft, FractalType::JuliaSin | FractalType::BarnsleyMandelbrot);
+        for &(ft, view) in SCENES.iter().filter(|s| s.1.is_some() && judged(s.0)) {
+            let (w, h) = (96usize, 60usize);
+            let mut p = scene_params(ft, view, w, h);
+            p.iteration_max = 5000;
+            let flagged: Vec<Complex64> =
+                scene_points(&p, w, h).into_iter().filter(|&zp| iterate_tracked(&p, zp).2).collect();
+            let dd = dd_stage(&p, &dd_points(&flagged)).unwrap();
+            let beyond: Vec<Complex64> =
+                flagged.iter().zip(&dd).filter(|(_, r)| !r.2).map(|(&zp, _)| zp).collect();
+            let qpts: Vec<Cqd> = beyond
+                .iter()
+                .map(|z| Cqd {
+                    re: crate::fractal::perturbation::qd::Qd::from_f64(z.re),
+                    im: crate::fractal::perturbation::qd::Qd::from_f64(z.im),
+                })
+                .collect();
+            let qd = qd_stage(&p, &qpts).unwrap();
+            let mut gp = p.clone();
+            gp.engine.precision_bits = 256;
+            let g = crate::fractal::gmp::MpcParams::from_params(&gp);
+            let (mut ok, mut wrong) = (0, 0);
+            for (&zp, &(it, _, rel)) in beyond.iter().zip(&qd) {
+                if !rel {
+                    continue;
+                }
+                ok += 1;
+                let (git, _) = crate::fractal::gmp::iterate_point_mpc(
+                    &g,
+                    &crate::fractal::gmp::complex_from_xy(256, Float::with_val(256, zp.re), Float::with_val(256, zp.im)),
+                );
+                wrong += (git != it) as usize;
+            }
+            eprintln!("{ft:?} : {} au-delà du dd, {ok} réglés par le qd, {wrong} ≠ GMP", beyond.len());
+            assert_eq!(wrong, 0, "{ft:?} : pixels qd « fiables » ≠ GMP");
+            assert!(2 * ok >= beyond.len(), "{ft:?} : le qd n'en règle que {ok}/{}", beyond.len());
+        }
+    }
+
+    /// Coût des étages dd et qd (mono-fil, min de 5) sur les bords :
+    /// `cargo test --release --lib bench_correction_stages -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_correction_stages() {
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+        let only = std::env::var("BENCH_TYPES").ok();
+        for &(ft, view) in SCENES.iter().filter(|s| s.1.is_some()) {
+            if only.as_deref().is_some_and(|o| !o.split(',').any(|t| format!("{ft:?}") == t)) {
+                continue;
+            }
+            let (w, h) = (128usize, 80usize);
+            let mut p = scene_params(ft, view, w, h);
+            p.iteration_max = 5000;
+            let flagged: Vec<Complex64> =
+                scene_points(&p, w, h).into_iter().filter(|&zp| iterate_tracked(&p, zp).2).collect();
+            let fp = dd_points(&flagged);
+            let (mut td, mut tq) = (f64::MAX, f64::MAX);
+            let (mut dd_it, mut qd_it, mut nb, mut nq) = (0u64, 0u64, 0usize, 0usize);
+            for _ in 0..5 {
+                let t = std::time::Instant::now();
+                let r = pool.install(|| dd_stage(&p, &fp)).unwrap();
+                td = td.min(t.elapsed().as_secs_f64());
+                dd_it = r.iter().map(|x| x.0 as u64).sum();
+                let beyond: Vec<Cqd> = flagged
+                    .iter()
+                    .zip(&r)
+                    .filter(|(_, x)| !x.2)
+                    .map(|(z, _)| Cqd {
+                        re: crate::fractal::perturbation::qd::Qd::from_f64(z.re),
+                        im: crate::fractal::perturbation::qd::Qd::from_f64(z.im),
+                    })
+                    .collect();
+                nb = beyond.len();
+                let t = std::time::Instant::now();
+                let q = pool.install(|| qd_stage(&p, &beyond)).unwrap();
+                tq = tq.min(t.elapsed().as_secs_f64());
+                qd_it = q.iter().map(|x| x.0 as u64).sum();
+                nq = q.iter().filter(|x| x.2).count();
+            }
+            eprintln!(
+                "{ft:?}: dd {} px {:.3}s {:.1} ns/it ; qd {nb} px ({nq} réglés) {:.3}s {:.1} ns/it",
+                flagged.len(),
+                td,
+                1e9 * td / dd_it.max(1) as f64,
+                tq,
+                1e9 * tq / qd_it.max(1) as f64
+            );
+        }
     }
 
     #[test]

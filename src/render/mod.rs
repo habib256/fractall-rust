@@ -1,4 +1,6 @@
 pub(crate) mod dd_trig;
+pub(crate) mod scalar_qd;
+pub(crate) mod scalar_lanes;
 pub mod escape_time;
 pub mod output;
 pub mod planned;
