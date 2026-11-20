@@ -7,6 +7,8 @@ pub mod planned;
 pub mod request;
 pub mod scalar_reliability;
 pub mod std_reliability;
+#[cfg(test)]
+mod stateful_tests;
 pub mod tiles;
 
 #[allow(unused_imports)]
