@@ -1673,6 +1673,7 @@ mod tests {
                 if w < 256 && !skip_gmp {
                     let mut g = p.clone();
                     g.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
+                    g.engine.use_gmp = true;
                     let gmp = crate::render::render_escape_time(&g);
                     let wrong = prod.iterations.iter().zip(&gmp.iterations).filter(|(a, b)| a != b).count();
                     line += &format!(" ≠GMP {wrong}");
