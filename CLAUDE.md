@@ -1079,8 +1079,17 @@ OPÉRANDES ; (3) réduction `m·ln 2` sans Cody-Waite : erreur ∝ m·2⁻¹⁰�
 borne fausse dès |y| ≳ 50 ; (4) les voies vectorielles ne paient que si le
 pas est long (Sin oui, Magnet dd non : 26 → 46-52 ns/it.) ; (5) un pas
 vectoriel n'a pas les bits du scalaire : ses constantes d'erreur se
-vérifient contre MPFR pour cette arithmétique-là. Reste : le traqueur
-Magnet est pessimiste (94 % des signalés déjà justes en f64).
+vérifient contre MPFR pour cette arithmétique-là. **Bornes f64 LINÉAIRES pour Magnet et Sin (2026-11-20)** — `magnet_f64` et
+`sin_f64` suivent `E` (racines hors de la chaîne de `E`), plus `E²` : la
+minoration au carré du dénominateur `(1−δ)|q̂|² − (1/δ)(2E+ρ_q)²` exigeait
+`|q̂| > 45·(2E+ρ_q)` et gonflait `E²` de `(1+δ)⁵/(1−δ)` par pas (×2·10⁶ en
+5000 pas d'un cycle presque neutre) — 91 % des signalements Magnet en
+venaient. Signalés au bord : Magnet M 39 → 29 %, Magnet J 3,8 → 2,1 %,
+Mandelbrot Sin 29 → 24 % ; comptes identiques, 0 px ≠ GMP. Le coût restant
+du bord Magnet M est l'étage qd (~la moitié du temps) sur des orbites
+bornées CHAOTIQUES menées au plafond : une sonde « disque invariant »
+démontrée n'y gagne rien (0-5 %, retirée). Outils `--ignored` :
+`diag_magnet_confusion`, `bench_magnet_scenes`.
 `FRACTALL_SCALAR_QD=0`, `FRACTALL_SIN_LANES=0`. Verrous
 `qd_stage_agrees_with_gmp_beyond_dd`, `qd_trig_matches_mpfr_within_bounds`,
 `sin_lanes_trig_matches_mpfr_within_bounds` ; banc `--ignored
