@@ -814,6 +814,12 @@ pub struct ReferenceOrbitCache {
     /// K était calculée puis perdue dans un clone local → minibrots non
     /// alignés rendus sans rotation.
     pub nucleus_transform: Option<([f64; 4], f64)>,
+    /// `find_nucleus` de la vue qui a bâti ce cache. Discriminant : une
+    /// orbite bâtie SANS nucleus au centre de la vue y est réutilisable au
+    /// sens du centre, mais une vue qui demande le nucleus doit relancer la
+    /// recherche (centre raffiné + matrice K) — sinon la case « nucleus »
+    /// cochée à vue constante était ignorée (GUI, 2532/2560 pixels ≠ frais).
+    pub find_nucleus: bool,
     /// Puissance Multibrot de la formule (discriminant : Multibrot est dans la
     /// famille perturbation, une orbite z³+c ≠ z²+c au même centre).
     pub multibrot_power: f64,
@@ -961,13 +967,22 @@ impl ReferenceOrbitCache {
             && self.hybrid_phases == params.formula.hybrid_phases
             && self.hybrid_opcodes == params.formula.hybrid_opcodes
             && self.multibrot_power.to_bits() == params.formula.multibrot_power.to_bits()
+            && self.find_nucleus == params.engine.find_nucleus
+            // Tier dd demandé : l'orbite dd (`z_ref_dd`) n'est bâtie qu'à la
+            // demande — une orbite f64 réutilisée faisait rendre la frame en
+            // f64 sans rien dire (`frame_dd` exige `has_dd()`).
+            && (!crate::fractal::wisdom::dd_requested(params) || self.orbit.has_dd())
             && gmp_ok
             && self.center_x_gmp == cx_str
             && self.center_y_gmp == cy_str
             && self.precision_bits >= required_prec  // Comparer précision calculée du cache avec précision calculée requise
             && self.iteration_max >= params.iteration_max
-            && (self.seed_re - params.seed.re).abs() < 1e-15
-            && (self.seed_im - params.seed.im).abs() < 1e-15
+            // Graine EXACTE (pas de tolérance) : une vue Julia profonde
+            // distingue des graines à quelques ulp — l'ancienne tolérance
+            // 1e-15 rendait la nouvelle graine avec l'orbite de l'ancienne
+            // (span 4e-15, 4 ulp : 2502/2560 pixels ≠ frais).
+            && self.seed_re == params.seed.re
+            && self.seed_im == params.seed.im
             && (self.bla_threshold - params.perturbation.bla_threshold).abs() < 1e-20
             && (self.bla_validity_scale - params.perturbation.bla_validity_scale).abs() < 1e-10
     }
@@ -1014,6 +1029,7 @@ impl ReferenceOrbitCache {
             hybrid_phases: params.formula.hybrid_phases.clone(),
             hybrid_opcodes: params.formula.hybrid_opcodes.clone(),
             nucleus_transform: None,
+            find_nucleus: params.engine.find_nucleus,
             multibrot_power: params.formula.multibrot_power,
         }
     }
@@ -1070,8 +1086,8 @@ impl ReferenceOrbitCache {
             && gmp_ok
             && self.precision_bits >= required_prec
             && self.iteration_max >= params.iteration_max
-            && (self.seed_re - params.seed.re).abs() < 1e-15
-            && (self.seed_im - params.seed.im).abs() < 1e-15
+            && self.seed_re == params.seed.re
+            && self.seed_im == params.seed.im
             && (self.bla_threshold - params.perturbation.bla_threshold).abs() < 1e-20
             && (self.bla_validity_scale - params.perturbation.bla_validity_scale).abs() < 1e-10)
         {

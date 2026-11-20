@@ -1023,9 +1023,21 @@ c'est le test d'évasion qui décide ; (4) la chaîne de dépendance de `g` ne
 doit pas être plus longue que celle de `z` (Alpha +114 % → +40 %) ; (5) le
 raccourci de cycle de l'étage dd compare AUSSI la borne ; (6) l'addition dd
 « rapide » a une erreur relative aux OPÉRANDES, pas au résultat. **Phoenix
-reste non suivi** (2 px) : toute borne en modules du couple (z, y) a un
-rayon spectral > 1 dès |z| > ¼ et s'emballe sur 100 % du bord alors que le
-vrai jacobien contracte par les phases. Verrous
+suivi depuis le 2026-11-20** (`render/scalar_phoenix.rs`) : toute borne en
+modules du couple (z, y) a un rayon spectral > 1 dès |z| > ¼ et s'emballe
+sur 100 % du bord ; la borne est donc ELLIPSOÏDALE — matrice hermitienne
+2×2 P avec e·eᴴ ⪯ P, transportée par le jacobien exact
+`P' = (1+δ)·J·P·Jᴴ + (1+1/δ)·|w|²·e₁e₁ᴴ`, phases comprises —, même borne
+en double-double (4 voies, raccourci de cycle sur z, y ET l'ellipsoïde),
+puis GMP. ~100 vues de bord : 283 px faux → 0 ; signalés 7,6 % au bord
+×4096. Coût : traqueur +55 % (au-dessus de la cible, boucle bornée par le
+débit), 720p accueil +24 %, bord +47 %. ⚠️ Ne pas linéariser le terme `a²`
+(100 % du bord signalé) ; majorer |y| par une constante : 7,6 → 9,3 %.
+⚠️ **Dans un test, `ReferenceGmp` sans `use_gmp` n'est PAS un juge GMP**
+pour un type hors famille perturbation (le rendu repasse par le path f64
+suivi) : `tracked_scalar_edges_match_gmp` comparait la production à
+elle-même jusqu'au 2026-11-20 (corrigé, ~50 s, tous types à 0 px faux).
+Verrous
 `tracked_scalar_loops_are_bit_identical_to_production_loops`,
 `dd_lanes_match_single_pixel_loop`, `tracked_scalar_edges_match_gmp`.
 **Magnet Mandelbrot, Mandelbrot Sin, Julia Sin suivis (2026-11-20)** — les
@@ -1052,6 +1064,36 @@ le dd, le mener à son terme sans borne (`dd_untracked`) ; (5) l'étage GMP qui
 arbitre le dd/qd ne descend JAMAIS sous 256 b (`GMP_FLOOR_BITS` ; avec
 `precision_bits` abaissé il tombait à 128 b : Mandelbulb 1667 « corrigé » au
 lieu de 1492 — même plancher dans `std_reliability`).
+**Étage quad-double des boucles scalaires + voies vectorielles du sinus
+(2026-11-20)** — `render/scalar_qd.rs` : étage qd tracé (unité 2⁻²⁰⁰) entre
+le dd et le GMP pour Alpha, Mandelbulb, Magnet, Sin, Barnsley ; point du
+pixel en GMP exact puis converti. `render/scalar_lanes.rs` : étages Sin
+dd/qd et Magnet qd sur `DdV`/`QdV` de `direct_simd` ; `dd_trig` réécrit
+(e^a et e^−a d'un seul polynôme, ln 2 façon Cody-Waite, Estrin). Bord
+256×160 : Mandelbrot Sin 11-16 → 5,6 s (GMP 6,5-9,6 s → 0), Magnet M
+≈ ×1,5, comptes d'itérations inchangés. ⚠️ Règles : (1) un étage plus
+précis avant le GMP ne tourne QUE si le GMP aurait tourné (`gmp_would_run`
+— sinon scène CHAOS : étage cher payé pour des pixels qui restent en f64) ;
+(2) en arithmétique « sloppy » l'arrondi d'une somme se compte sur ses
+OPÉRANDES ; (3) réduction `m·ln 2` sans Cody-Waite : erreur ∝ m·2⁻¹⁰⁶,
+borne fausse dès |y| ≳ 50 ; (4) les voies vectorielles ne paient que si le
+pas est long (Sin oui, Magnet dd non : 26 → 46-52 ns/it.) ; (5) un pas
+vectoriel n'a pas les bits du scalaire : ses constantes d'erreur se
+vérifient contre MPFR pour cette arithmétique-là. **Bornes f64 LINÉAIRES pour Magnet et Sin (2026-11-20)** — `magnet_f64` et
+`sin_f64` suivent `E` (racines hors de la chaîne de `E`), plus `E²` : la
+minoration au carré du dénominateur `(1−δ)|q̂|² − (1/δ)(2E+ρ_q)²` exigeait
+`|q̂| > 45·(2E+ρ_q)` et gonflait `E²` de `(1+δ)⁵/(1−δ)` par pas (×2·10⁶ en
+5000 pas d'un cycle presque neutre) — 91 % des signalements Magnet en
+venaient. Signalés au bord : Magnet M 39 → 29 %, Magnet J 3,8 → 2,1 %,
+Mandelbrot Sin 29 → 24 % ; comptes identiques, 0 px ≠ GMP. Le coût restant
+du bord Magnet M est l'étage qd (~la moitié du temps) sur des orbites
+bornées CHAOTIQUES menées au plafond : une sonde « disque invariant »
+démontrée n'y gagne rien (0-5 %, retirée). Outils `--ignored` :
+`diag_magnet_confusion`, `bench_magnet_scenes`.
+`FRACTALL_SCALAR_QD=0`, `FRACTALL_SIN_LANES=0`. Verrous
+`qd_stage_agrees_with_gmp_beyond_dd`, `qd_trig_matches_mpfr_within_bounds`,
+`sin_lanes_trig_matches_mpfr_within_bounds` ; banc `--ignored
+bench_correction_stages`.
 ⚠️ **L'emballement ne voit pas un bord PARABOLIQUE** (2026-11-19) : près
 d'un point parabolique l'erreur ne s'amplifie pas exponentiellement, elle
 déplace le temps de transit du goulot, et l'orbite s'évade quelques pas plus
@@ -1106,6 +1148,24 @@ directe avec frais généraux, et son traqueur ratait un décalage d'une
 itération au bord parabolique (éléphants : 6 → 2 px faux). Référence
 intérieure (seahorse) : l'étage f64 avec BLA reste 3-20× moins cher, gardé.
 `FRACTALL_SHALLOW_SKIP_F64=0`. Banc : test `--ignored bench_direct_simd`.
+**FMA / AVX2 choisis À L'EXÉCUTION dans les binaires baseline x86-64
+(`fractal/eft.rs`, 2026-11-20)** — `eft::two_prod` (partagée par `dd.rs`,
+`qd.rs`, `direct_simd`) : `mul_add` en ligne si FMA à la compilation,
+fonction `#[target_feature(enable="fma")]` si le CPU l'a (détection
+`OnceLock`), Dekker sinon. `eft::avx2_fma_dispatch()` aiguille vers des
+copies `#[target_feature(enable="avx2,fma")]` des noyaux chauds : étages
+directs dd/qd, noyau par lots f64 (`interp_batch`), boucles rapides de
+perturbation f64 (`pixel_loop`) — identiques au bit près (Rust ne contracte
+jamais `a*b+c`), seul `unsafe` = l'appel. Baseline ramené au natif :
+éléphants 4,40 → 2,20 s, seahorse lots 2,27 → 1,62 s, phase pixels e50
+×1,30. ⚠️ (1) En baseline `mul_add` appelle la glibc, qui passe par
+l'instruction matérielle (~4 ns) : Dekker scalaire est PLUS LENT sur un CPU
+à FMA, et Dekker vectorisé SSE2 pire encore (9,7 vs 5,6 s) — il ne sert
+qu'aux CPU sans FMA ; (2) `inline(always)` sur le corps du noyau par lots
+rend le natif ×2 plus lent : le poser par `cfg_attr(not(avx2+fma), …)` ;
+(3) sans SSE4.1 `floor/round/trunc/ceil` sont logiciels — hors des boucles
+chaudes. Reste : Lyapunov baseline ×1,2-1,4 ; MinGW et CPU sans AVX2 non
+mesurés. `FRACTALL_SIMD_DISPATCH=0` (A/B).
 ⚠️ **Ne pas chercher à resserrer le terme `l·ε` du saut BLA f64** : à
 ε = 2⁻⁵³ la troncature réelle est négligeable (borne du second ordre
 implémentée et testée : la substituer revient à retirer le terme) et c'est
@@ -1167,6 +1227,9 @@ Tous lus UNE fois (`OnceLock`). Défaut = comportement de production.
 
 | Variable | Effet |
 |---|---|
+| `FRACTALL_SIMD_DISPATCH=0` | binaire baseline x86-64 : pas de copies AVX2+FMA aiguillées à l'exécution |
+| `FRACTALL_SCALAR_QD=0` | boucles scalaires suivies : pas d'étage quad-double avant le GMP |
+| `FRACTALL_SIN_LANES=0` | étages dd/qd du sinus en boucle scalaire au lieu des voies vectorielles |
 | `FRACTALL_STD_BATCH=0` | path f64 standard : interpréteur scalaire au lieu du noyau par lots |
 | `FRACTALL_RELIABILITY_STD=0\|all` | path f64 standard : `0` coupe le traqueur et la correction ; défaut Mandelbrot + Julia (correction par perturbation) ; `all` ajoute BS / Tricorn / Celtic / Buffalo / PerpBS (GMP pur sous plafond) |
 | `FRACTALL_STD_MARGIN=0` | path f64 standard : pas de test de détermination à l'évasion (emballement seul — moitié moins de pixels signalés, ~15× plus de pixels faux résiduels sur le volet `std:*`) |
@@ -1325,7 +1388,19 @@ construction (`requested_iteration_max`) : le relèvement du plafond du rendu
 seulement si la vue demande au moins autant — un cache bâti à 5000 puis
 réutilisé à 2000 (GUI) rendait TOUS les pixels au plafond du cache (défaut
 ancien fermé le 2026-11-20, verrou
-`lowering_the_cap_with_a_reused_orbit_matches_fresh_render`). ⚠️ **Régime atom-domain** (`is_valid_for` +
+`lowering_the_cap_with_a_reused_orbit_matches_fresh_render`). **Séquences à
+état verrouillées** (`render/stateful_tests.rs`, 2026-11-20 : une séquence
+par le dispatcher avec le MÊME `orbit_cache`, dernière frame comparée à un
+rendu frais, juge GMP quand les références diffèrent) — trois défauts de
+`is_valid_for` fermés : `find_nucleus` basculé cache gardé (2532/2560 px
+faux : champ `find_nucleus` du cache), `use_dd_tier` basculé (frame rendue
+en f64 sans le dire : exige `has_dd()`), graine Julia décalée de quelques
+ulp (tolérance 1e-15 → comparaison EXACTE, aussi dans `can_subset_reuse`).
+⚠️ Un test de séquence sur une vue sans structure ne prouve rien :
+`assert_structured` (≥ 20 comptes distincts). ⚠️ Tout réglage qui change
+l'orbite ou ce qu'elle porte doit entrer dans `is_valid_for`. Ouvert : un
+cache bâti avec nucleus est rejeté à chaque passe (centre = nucleus ≠
+centre de vue) → nucleus + orbite refaits par passe progressive. ⚠️ **Régime atom-domain** (`is_valid_for` +
 `can_subset_reuse` → `atom_regime_scale_mismatch`) : la troncature atom-domain
 de la référence dépend de l'ÉCHELLE de vue (`atom_radius_sqr = span_vue²`), donc
 une référence est baked à son span de construction. En zoom profond

@@ -1,10 +1,15 @@
 pub(crate) mod dd_trig;
+pub(crate) mod scalar_qd;
+pub(crate) mod scalar_lanes;
 pub mod escape_time;
 pub mod output;
 pub mod planned;
 pub mod request;
+pub mod scalar_phoenix;
 pub mod scalar_reliability;
 pub mod std_reliability;
+#[cfg(test)]
+mod stateful_tests;
 pub mod tiles;
 
 #[allow(unused_imports)]

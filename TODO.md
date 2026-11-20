@@ -20,6 +20,25 @@ Deux relectures indépendantes du diff (aucun défaut dans la première moitié 
 deux défauts corrigés + un défaut ANCIEN trouvé dans la seconde). Détail des
 mécanismes et des pièges : CLAUDE.md (paragraphes datés 2026-11-19).
 
+**Second lot (matin du 20, scorecard micro `c25f508`) : AUCUN gap.** 660
+tests lib, goldens, navigation profonde verts.
+- *Qualité* : **Phoenix suivi** (borne ellipsoïdale, `scalar_phoenix.rs` :
+  ~100 vues de bord, 283 px faux → 0 ; coût +24 % accueil / +47 % bord en
+  720p, traqueur +55 % au-dessus de la cible) ; trois défauts de validité du
+  cache d'orbite fermés (`find_nucleus`, `use_dd_tier`, graine Julia à
+  quelques ulp) + 20 verrous de séquences à état (`stateful_tests.rs`) ; le
+  verrou `tracked_scalar_edges_match_gmp` juge enfin contre le VRAI GMP.
+- *Vitesse* : étage quad-double scalaire + voies vectorielles du sinus
+  (Mandelbrot Sin bord 256×160 11-16 → 5,6 s, micro 5,3 → 0,54 s) ; bornes
+  f64 linéaires Magnet/Sin (signalés −10 points) ; **binaires de release
+  baseline x86-64 ramenés au natif** par FMA/AVX2 aiguillés à l'exécution
+  (`eft.rs` : éléphants 4,40 → 2,20 s).
+- *Ouverts* : coût du traqueur Phoenix (voies ?) ; étage qd Magnet M sur
+  orbites bornées chaotiques (levier = vitesse du pas qd) ; Lyapunov
+  baseline ×1,2-1,4 ; MinGW / CPU sans AVX2 non mesurés ; cache à nucleus
+  rejeté à chaque passe progressive ; `cache_lift` après auto-ajustement de
+  la série non comparé au frais.
+
 *Qualité (pixels ≠ GMP pur, juge convergé)* :
 - Alpha Mandelbrot bord 116 → 0, Mandelbulb bord 101 → 0, Magnet Julia 8 → 0
   (`scalar_reliability` : boucles tracées en `g = E²`, dd à voies, GMP).

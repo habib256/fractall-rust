@@ -19,8 +19,12 @@
 //!    n'est pas déterminée (`||z| − R| ≤ E`) ;
 //! 2. pixels signalés : même boucle en **double-double** (point exact
 //!    recalculé depuis le centre HP), ~10× moins chère que le GMP ;
-//! 3. ce que le double-double ne garantit pas : GMP pur sous le budget du
-//!    path standard (`std_reliability::correct_std_pixels`, `GmpCapped`).
+//! 3. ce que le double-double ne garantit pas : **quad-double** tracé
+//!    ([`scalar_qd`](crate::render::scalar_qd), 2026-11-20 — Sin et Magnet en
+//!    voies vectorielles, [`scalar_lanes`](crate::render::scalar_lanes)),
+//!    seulement si le GMP aurait tourné ([`gmp_would_run`]) ;
+//! 4. le reste : GMP pur sous le budget du path standard
+//!    (`std_reliability::correct_std_pixels`, `GmpCapped`).
 //!
 //! Étendre à un autre type = sa boucle tracée f64 + double-double et une
 //! entrée dans [`plan`] ; le juge est la scène du type dans l'axe `types`.
@@ -62,20 +66,37 @@
 //!   du dd (vraiment : le dd y diverge du GMP) et le GMP pur de ces pixels
 //!   domine la correction.
 //!
+//! Puis (2026-11-20) bornes f64 **LINÉAIRES** pour Magnet et Sin (`E` et
+//! non `E²`, une à trois racines par pas hors de la chaîne de `E`) : la
+//! forme au carré payait `(1 + δ)ᵏ` par pas — ×2·10⁶ sur `E` en 5000 pas
+//! d'un cycle presque neutre — et, pour Magnet, minorait `|q*|²` par
+//! `(1 − δ)|q̂|² − (1/δ)(2E + ρ_q)²`, qui exige `|q̂| > 45·(2E + ρ_q)` :
+//! 91 % des signalements du bord Magnet Mandelbrot venaient de ce seul
+//! dénominateur (`diag_magnet_confusion`, juge GMP 256 b ≡ 512 b). Bords
+//! 128×80 : Magnet Mandelbrot 38,5 → 28,2 % de pixels signalés, Magnet
+//! Julia 3,8 → 2,0 %, Mandelbrot Sin 29 → 24 % ; comptes de sortie
+//! identiques, 0 pixel ≠ GMP. Ce qui reste signalé l'est par l'emballement
+//! de la borne (E ≥ 0,25), dont 39 % sont réellement faux en f64. Essayé et
+//! rejeté : une sonde « disque invariant » (borne propagée depuis un disque
+//! B(c, ρ) ; si `B(ẑ_{k+m}, P) ⊂ B(c, ρ)` l'orbite ne sort jamais) dans les
+//! étages dd et qd — rigoureuse, mais les pixels plafonnés au-delà du dd
+//! sont des orbites bornées CHAOTIQUES (pas de cycle attractif : écart
+//! d'une période à l'autre ~1e-2 au pas 5000) et ceux du dd sont déjà
+//! raccourcis par le cycle exact ; gain mesuré 0-5 %.
+//!
 //! Barnsley aligné sur les autres (même soir) : étage dd à voies entrelacées
 //! avec raccourci de cycle (plus de `hypot`), erreur du pixel span compris
 //! ([`pixel_error`]), arrondi du produit relatif aux OPÉRANDES `|w|₁·|c|₁`.
 //! Son bord Mandelbrot est CHAOS (juge 256 b ≠ 512 b) : 99 % de pixels
 //! signalés, c'est la bonne réponse.
 //!
-//! **Phoenix** résiste (non suivi) : son erreur vit dans un état à deux
-//! composantes `(z, y)` de jacobien `[[2z, p2], [1, 0]]` ; une borne en
-//! modules majore ce jacobien par `[[2|z|, ½], [1, 0]]`, de rayon spectral
-//! `|z| + √(|z|² + ½) > 1` dès `|z| > ¼` — la borne s'emballe sur 100 % des
-//! pixels du bord (même en double-double), alors que le vrai jacobien
-//! contracte grâce aux phases. Il faudrait suivre la borne en coordonnées
-//! complexes (zonotopes) ou une orbite jumelle (×2 sur toute la frame pour
-//! 2 pixels faux sur 2560) : laissé ouvert.
+//! **Phoenix** (2026-11-20, [`scalar_phoenix`](crate::render::scalar_phoenix)) :
+//! son erreur vit dans un état à deux composantes `(z, y)` de jacobien
+//! `[[2z, p2], [1, 0]]` ; une borne en modules (rayon spectral
+//! `|z| + √(|z|² + ½) > 1` dès `|z| > ¼`) s'emballait sur 100 % du bord. Il
+//! est suivi par une borne ELLIPSOÏDALE (matrice hermitienne 2×2 transportée
+//! par le jacobien exact, phases comprises) : bord ×4096 2 → 0 pixel faux,
+//! 7,6 % signalés, étage dd dédié (état `(z, y)`).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -83,7 +104,9 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 use rug::Float;
 
-use crate::fractal::bytecode::direct_dd::dd_from_gmp;
+use crate::fractal::bytecode::direct_dd::{dd_from_gmp, qd_from_gmp};
+use crate::render::scalar_qd::{qd_stage, Cqd};
+use crate::render::scalar_lanes::{self, LaneKind};
 use crate::render::dd_trig::{self, dd_add_fast, DdTrig};
 use crate::fractal::bytecode::reliability::{self as rel, ReliabilityMode};
 use crate::fractal::perturbation::dd::DoubleDouble as Dd;
@@ -122,6 +145,7 @@ fn plan_for(params: &FractalParams, mode: ReliabilityMode, scope_off: bool) -> O
             | FractalType::MagnetMandelbrot
             | FractalType::MandelbrotSin
             | FractalType::JuliaSin
+            | FractalType::Phoenix
     ) {
         return None;
     }
@@ -194,6 +218,12 @@ pub fn iterate_tracked(params: &FractalParams, z_pixel: Complex64) -> (u32, Comp
             params.seed,
             pixel_error(params, z_pixel),
             0.0,
+            params.iteration_max,
+            params.bailout,
+        ),
+        FractalType::Phoenix => crate::render::scalar_phoenix::phoenix_f64(
+            z_pixel,
+            pixel_error(params, z_pixel),
             params.iteration_max,
             params.bailout,
         ),
@@ -411,7 +441,16 @@ fn mandelbulb_f64(
 /// et `Δn = Δ(2z + Δ)`, `n* q̂ − n̂ q* = Δ·(2(z − r) + Δ)·q̂ + arrondis`, donc
 /// `|Δr| ≤ [E(2|z − r| + E) + ρ_n + |r|ρ_q + …] / (|q| − 2E − ρ_q)` — le
 /// facteur `|z − r|` est la dérivée exacte ; `1 + |r|` à la place
-/// signalerait tout l'intérieur. Bornes au carré, sans racine.
+/// signalerait tout l'intérieur.
+///
+/// Borne LINÉAIRE `E` (2026-11-20), comme les étages dd/qd, et non au carré
+/// comme Alpha / Mandelbulb : la version au carré payait `(1 + δ)⁵/(1 − δ)`
+/// sur `E²` à chaque pas (×2·10⁶ sur `E` en 5000 pas d'un cycle presque
+/// neutre) et minorait `|q*|²` par `(1 − δ)|q̂|² − (1/δ)(2E + ρ_q)²`, qui
+/// exige `|q̂| > 45·(2E + ρ_q)` : 94 % des pixels signalés du bord Magnet
+/// Mandelbrot avaient un compte f64 juste, signalés à 91 % par ce seul
+/// dénominateur (`diag_magnet_confusion`). Trois racines par pas, hors de
+/// la chaîne de `E` (elles ne dépendent que de `z`).
 ///
 /// Magnet MANDELBROT (même carte, `s` = le pixel, `z₀ = 0`) : l'erreur `e_s`
 /// du point entre dans les deux constantes `s − 1` et `s − 2` — additive,
@@ -432,12 +471,11 @@ fn magnet_f64(
     // le point exact du pixel), plus l'erreur du point lui-même.
     let s1 = U64 * (seed_minus_one.re.abs() + seed_minus_one.im.abs()) + e_s;
     let s2 = U64 * (seed_minus_two.re.abs() + seed_minus_two.im.abs()) + e_s;
-    let one_m_split = 1.0 - SPLIT;
     let mut z = z0;
     let mut n2 = z.norm_sqr();
     let mut i = 0u32;
     let mut cyc = crate::fractal::cycle::CycleCut::<2>::new();
-    let mut g = e0 * e0; // E²
+    let mut e = e0;
     let mut bad = false;
     while i < iteration_max && n2 < b2 {
         let n = z * z + seed_minus_one;
@@ -446,14 +484,14 @@ fn magnet_f64(
         // Eviter division par zero
         if qq < 1e-24 {
             // Le vrai |q|² est-il aussi sous le seuil ? |Δq| ≤ d = 2E + ρ_q,
-            // donc |q*|² ≤ (|q̂| + d)² ≤ (1+δ)|q̂|² + (1+1/δ)d² — c'est CETTE
-            // somme qu'il faut comparer au seuil, pas d² seul : un |q̂| juste
-            // sous 1e-12 avec une borne minuscule passait pour déterminé alors
-            // que le point exact était au-dessus (verrou
-            // `magnet_pole_exit_is_judged_on_q_plus_error`). Vaut pour les
-            // deux variantes (Magnet Mandelbrot : ρ_q porte l'erreur du pixel).
+            // donc |q*| ≤ |q̂| + d — c'est CETTE somme qu'il faut comparer au
+            // seuil, pas d seul : un |q̂| juste sous 1e-12 avec une borne
+            // minuscule passait pour déterminé alors que le point exact était
+            // au-dessus (verrou `magnet_pole_exit_is_judged_on_q_plus_error`).
+            // Vaut pour les deux variantes (Magnet Mandelbrot : ρ_q porte
+            // l'erreur du pixel). Marge relative : arrondis de la somme.
             let rho_q = U64 * (q.re.abs() + q.im.abs()) + s2;
-            if SPLIT_X * qq + SPLIT_Y * (8.0 * g + 2.0 * rho_q * rho_q) >= 1e-24 {
+            if (qq.sqrt() + 2.0 * e + rho_q) * (1.0 + 8.0 * U64) >= 1e-12 {
                 bad = true;
             }
             break;
@@ -470,18 +508,23 @@ fn magnet_f64(
             // Arrondis de n (carré + somme) et de q (somme ; 2z exact).
             let rho_n = 2.0 * U64 * n2p + U64 * (n.re.abs() + n.im.abs()) + s1;
             let rho_q = U64 * (q.re.abs() + q.im.abs()) + s2;
-            // |q*|² ≥ (1−δ)|q̂|² − (1/δ)(2E + ρ_q)², (2E + ρ_q)² ≤ 8E² + 2ρ_q².
-            let den = one_m_split * qq - SPLIT_Y * (8.0 * g + 2.0 * rho_q * rho_q);
+            // |q*| ≥ |q̂| − (2E + ρ_q) : minorant LINÉAIRE (cf. doc — la
+            // version au carré exigeait |q̂| > 45·(2E + ρ_q)). Arrondis du
+            // calcul : |q̂| minoré de 4u, la soustraction de 2u relatifs
+            // (opérandes positifs, résultat positif quand il compte).
+            let den = (qq.sqrt() * (1.0 - 4.0 * U64) - (2.0 * e + rho_q) * (1.0 + 4.0 * U64)) * (1.0 - 2.0 * U64);
             // Erreur de la division (normwise ≤ 6u) sur 2E + ρ_q, E < E_MAX_NL.
             let b = rho_n + r1 * rho_q + 4.0 * U64 * r1 * (2.0 * E_MAX_NL + rho_q);
             let (wr, wi) = (zp.re - ratio.re, zp.im - ratio.im);
-            let a2 = g * (SPLIT_X * 4.0 * (wr * wr + wi * wi) + SPLIT_Y * g);
+            let w = (wr * wr + wi * wi).sqrt();
             let er_div = 4.0 * U64 * r1;
-            let gr = SPLIT_X * (SPLIT_X * a2 + SPLIT_Y * b * b) / den + SPLIT_Y * er_div * er_div;
-            // z' = r² : Δz' = Δr(2r + Δr) + arrondi du carré.
-            let rq = 2.0 * U64 * rr;
-            g = SPLIT_X * gr * (4.0 * SPLIT_X * rr + SPLIT_Y * gr) + SPLIT_Y * rq * rq;
-            if !(den > 1e-20) || sq_bound_unreliable(n2, b2, two_r_emax_sq, g) {
+            // |Δr| ≤ (E(2|z − r| + E) + b) / |q*| + erreur de la division.
+            let er = (e * (2.0 * w + e) + b) / den + er_div;
+            // z' = r² : Δz' = Δr(2r + Δr) + arrondi du carré. Facteur final :
+            // arrondis de ce calcul de borne (~20 opérations sur des
+            // quantités positives, chacune ≤ u relatif ; racines ≤ u).
+            e = (er * (2.0 * rr.sqrt() + er) + 2.0 * U64 * rr) * (1.0 + 64.0 * U64);
+            if !(den > 1e-10) || sq_bound_unreliable(n2, b2, two_r_emax_sq, e * e) {
                 bad = true;
             }
         }
@@ -506,6 +549,12 @@ const SIN_FLOOR: f64 = 1e-60;
 /// emballerait la borne de tout l'intérieur. `cosh(|y| + E) ≤ cosh y·e^E`,
 /// `e^E ≤ 1,2841` sous [`E_MAX_NL`]. Arrondis : `csin` ≤ 8u par composante
 /// (sincos 1 ulp, `expm1` et ses deux roundings), produit complexe 2u·|k|₁.
+///
+/// Borne LINÉAIRE `E` depuis le 2026-11-20 (une racine par pas, `|cos ẑ|`,
+/// à côté d'un `sincos` et d'un `expm1`) : au carré, le découpage
+/// `(x + y)² ≤ (1 + δ)x² + (1 + 1/δ)y²` coûtait `(1 + δ)²` par pas et
+/// pesait 32× le terme en `E²` — bord Mandelbrot Sin 29 → 24 % de pixels
+/// signalés, comptes inchangés (juge GMP pur).
 fn sin_f64(
     z0: Complex64,
     k: Complex64,
@@ -520,15 +569,15 @@ fn sin_f64(
     let k_abs = k.norm();
     let k1 = k.re.abs() + k.im.abs();
     // Marges relatives (1e-12) : arrondis du calcul de la borne elle-même.
-    let kk = SPLIT_X * (k_abs + e_k) * (k_abs + e_k) * (1.0 + 1e-12);
+    let kk = (k_abs + e_k) * (1.0 + 1e-12);
     let a_coef = (e_k + 10.0 * U64 * k1) * (1.0 + 1e-12);
-    let kh = SPLIT_Y * 0.25 * 1.29 * 1.29;
-    let cos_margin = SPLIT_X * (1.0 + 16.0 * U64);
+    let kh = 0.5 * 1.29;
+    let cos_margin = 1.0 + 16.0 * U64;
     let mut z = z0;
     let mut n2 = z.norm_sqr();
     let mut i = 0u32;
     let mut cyc = crate::fractal::cycle::CycleCut::<2>::new();
-    let mut g = e0 * e0; // E²
+    let mut e = e0;
     let mut bad = false;
     while i < iteration_max && n2 < b2 {
         let (s, c, sh, ch) = csin_parts(z);
@@ -536,16 +585,17 @@ fn sin_f64(
         i += 1;
         n2 = z.norm_sqr();
         if !bad {
-            // |Δ'|² ≤ (1+δ)|k*|²·E²·((1+δ)|cos ẑ|² + (1+1/δ)·E²·(1,29·ch/2)²)
-            //        + (1+1/δ)·(a·|sin ẑ|₁)².
-            let cos2 = cos_margin * (c * c + sh * sh);
+            // |Δ'| ≤ |k*|·E·(|cos ẑ| + E·1,29·ch/2) + a·|sin ẑ|₁ (borne
+            // LINÉAIRE en E depuis 2026-11-20 : la version au carré payait
+            // (1+δ)² par pas et 32× le terme en E²).
+            let cos_abs = cos_margin * (c * c + sh * sh).sqrt();
             // Plancher (majorant, donc sûr) : vers le point fixe z = 0, |sin z|
             // et la borne décroissent géométriquement jusqu'aux SOUS-NORMAUX,
             // dont chaque opération coûte une assistance micro-code (+165 % sur
             // la vue d'accueil Mandelbrot Sin).
             let add = a_coef * (s.abs() * ch + c.abs() * sh.abs()).max(SIN_FLOOR);
-            g = kk * g * (cos2 + kh * ch * ch * g) + SPLIT_Y * add * add;
-            if sq_bound_unreliable(n2, b2, two_r_emax_sq, g) {
+            e = (kk * e * (cos_abs + kh * ch * e) + add) * (1.0 + 16.0 * U64);
+            if sq_bound_unreliable(n2, b2, two_r_emax_sq, e * e) {
                 bad = true;
             }
         }
@@ -602,13 +652,6 @@ impl Cdd {
     fn hi(self) -> Complex64 {
         Complex64::new(self.re.hi, self.im.hi)
     }
-}
-
-/// Fin d'un pas double-double : `(continuer, fiable)` — la borne `e` doit
-/// rester petite et l'évasion déterminée.
-#[inline(always)]
-fn dd_step_ok(n: f64, bailout: f64, e: f64) -> bool {
-    n.is_finite() && (n - bailout).abs() > e && e < E_MAX_NL
 }
 
 /// Un pas Alpha Mandelbrot double-double tracé : `(z', E', |z'|)`.
@@ -740,7 +783,7 @@ fn dd_pixel(
         z = nz;
         e = ne;
         i += 1;
-        if !dd_step_ok(n, bailout, e) {
+        if !crate::render::scalar_qd::step_ok(n, bailout, e) {
             return (i, z.hi(), false);
         }
         cyc.observe(&mut i, iteration_max, dd_cycle_state(z, e));
@@ -767,6 +810,21 @@ fn mandelbulb_dd(seed: Cdd, c: Cdd, iteration_max: u32, bailout: f64) -> (u32, C
 /// `dd_lanes_match_single_pixel_loop`).
 const DD_LANES: usize = 4;
 
+impl crate::render::scalar_qd::LaneZ<5> for Cdd {
+    #[inline(always)]
+    fn hi_c(self) -> Complex64 {
+        self.hi()
+    }
+    #[inline(always)]
+    fn abs_h(self) -> f64 {
+        self.abs_hi()
+    }
+    #[inline(always)]
+    fn state(self, e: f64) -> [f64; 5] {
+        dd_cycle_state(self, e)
+    }
+}
+
 /// [`dd_lanes`] en parallèle par paquets (monomorphisé sur le pas : un
 /// appel indirect empêcherait l'entrelacement des voies).
 fn dd_lanes_par<F: Fn(Cdd, f64, Cdd) -> (Cdd, f64, f64) + Sync + Copy>(
@@ -784,6 +842,8 @@ fn dd_lanes_par<F: Fn(Cdd, f64, Cdd) -> (Cdd, f64, f64) + Sync + Copy>(
         .collect()
 }
 
+/// Voies entrelacées dd ([`scalar_qd::lanes`](crate::render::scalar_qd::lanes)
+/// générique, partagé avec l'étage qd).
 ///
 /// `julia` : le point du pixel est le `z` de départ (borne initiale = son
 /// arrondi en dd) et le pas ignore son troisième argument ; sinon `z` part de
@@ -796,70 +856,7 @@ fn dd_lanes(
     bailout: f64,
     step: impl Fn(Cdd, f64, Cdd) -> (Cdd, f64, f64),
 ) -> Vec<(u32, Complex64, bool)> {
-    const FREE: usize = usize::MAX;
-    let b2 = bailout * bailout;
-    let mut out = vec![(0u32, Complex64::new(0.0, 0.0), false); points.len()];
-    let mut next = 0usize;
-    let mut idx = [FREE; DD_LANES];
-    let mut z = [seed; DD_LANES];
-    let mut c = [seed; DD_LANES];
-    let mut e = [0.0f64; DD_LANES];
-    let mut n = [0.0f64; DD_LANES];
-    let mut it = [0u32; DD_LANES];
-    let mut cyc: [crate::fractal::cycle::CycleCut<5>; DD_LANES] =
-        std::array::from_fn(|_| crate::fractal::cycle::CycleCut::new());
-    loop {
-        // Sorties par la condition de boucle, puis recharge des voies libres.
-        for l in 0..DD_LANES {
-            loop {
-                if idx[l] != FREE {
-                    let zl = z[l];
-                    if it[l] < iteration_max && zl.re.hi * zl.re.hi + zl.im.hi * zl.im.hi < b2 {
-                        break;
-                    }
-                    out[idx[l]] = (it[l], zl.hi(), true);
-                    idx[l] = FREE;
-                }
-                if next == points.len() {
-                    break;
-                }
-                idx[l] = next;
-                c[l] = points[next];
-                cyc[l] = crate::fractal::cycle::CycleCut::new();
-                if julia {
-                    z[l] = points[next];
-                    e[l] = UDD * points[next].abs_hi();
-                } else {
-                    z[l] = seed;
-                    e[l] = 0.0;
-                }
-                it[l] = 0;
-                next += 1;
-            }
-        }
-        if idx.iter().all(|&k| k == FREE) {
-            break;
-        }
-        // Un pas sur toutes les voies (une voie libre calcule pour rien).
-        for l in 0..DD_LANES {
-            let (nz, ne, nn) = step(z[l], e[l], c[l]);
-            z[l] = nz;
-            e[l] = ne;
-            n[l] = nn;
-        }
-        for l in 0..DD_LANES {
-            if idx[l] != FREE {
-                it[l] += 1;
-                if !dd_step_ok(n[l], bailout, e[l]) {
-                    out[idx[l]] = (it[l], z[l].hi(), false);
-                    idx[l] = FREE;
-                } else {
-                    cyc[l].observe(&mut it[l], iteration_max, dd_cycle_state(z[l], e[l]));
-                }
-            }
-        }
-    }
-    out
+    crate::render::scalar_qd::lanes::<Cdd, 5, DD_LANES>(points, seed, julia, UDD, iteration_max, bailout, step)
 }
 
 /// Un pas Barnsley double-double tracé : `z' = (z ∓ 1)·c`, `(z', E', |z'|)`.
@@ -890,6 +887,15 @@ fn dd_stage(params: &FractalParams, points: &[(Dd, Dd)]) -> Option<Vec<(u32, Com
     let seed_c = Cdd { re: seed.0, im: seed.1 };
     let pts = || -> Vec<Cdd> { points.iter().map(|&(re, im)| Cdd { re, im }).collect() };
     match params.fractal_type {
+        // Sin : voies vectorielles (`scalar_lanes`, ×3 sur l'étage dd). PAS
+        // Magnet : son pas dd est court (~30 opérations dd) et la borne par
+        // voie (racines, division) domine — mesuré 26 → 46-52 ns/itération
+        // en voies ; il reste sur les voies entrelacées scalaires.
+        FractalType::MandelbrotSin | FractalType::JuliaSin if scalar_lanes::enabled() => {
+            use crate::fractal::bytecode::direct_simd::DdV;
+            let julia = params.fractal_type == FractalType::JuliaSin;
+            Some(scalar_lanes::lanes_par::<DdV<8>, 8>(LaneKind::Sin, points, seed, julia, n, r))
+        }
         // Barnsley : `z₀` = le point (julia = true) ; la variante Mandelbrot
         // reçoit aussi le point comme `c`, la Julia prend la graine exacte.
         FractalType::BarnsleyJulia => {
@@ -930,8 +936,39 @@ fn dd_stage(params: &FractalParams, points: &[(Dd, Dd)]) -> Option<Vec<(u32, Com
             };
             Some(dd_lanes_par(&pts(), zero, false, n, r, step))
         }
+        // État à deux composantes (z, y) : étage dédié (`scalar_phoenix`).
+        FractalType::Phoenix => Some(crate::render::scalar_phoenix::dd_stage(points, n, r)),
         _ => None,
     }
+}
+
+/// Coordonnée HP du centre (repli f64) à `prec` bits.
+fn parse_at(prec: u32, hp: &Option<String>, f: f64) -> Float {
+    match hp.as_deref().map(Float::parse) {
+        Some(Ok(v)) => Float::with_val(prec, v),
+        _ => Float::with_val(prec, f),
+    }
+}
+
+/// La correction `GmpCapped` de `std_reliability::correct_std_pixels`
+/// recalculerait-elle ces pixels ? (Plafond en pixels OU budget de 5 % des
+/// itérations de la frame — mêmes règles, sur les comptes f64 courants.)
+fn gmp_would_run(rest: &[usize], iterations: &[u32]) -> bool {
+    let rest_iters: f64 = rest.iter().map(|&i| iterations[i] as f64).sum();
+    let frame_iters: f64 = iterations.iter().map(|&n| n as f64).sum();
+    rel::gmp_escalation_allowed(rest.len(), iterations.len(), rel::reliability_gmp_max_fraction())
+        || rest_iters <= STD_GMP_ITER_BUDGET * frame_iters
+}
+
+/// Copie de `std_reliability::STD_GMP_ITER_BUDGET` (privée là-bas) : à
+/// garder égale.
+const STD_GMP_ITER_BUDGET: f64 = 0.05;
+
+/// `FRACTALL_SCALAR_QD=0` : pas d'étage quad-double (pixels au-delà du dd
+/// droit au GMP pur — A/B). Lu une fois.
+fn scalar_qd_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("FRACTALL_SCALAR_QD").map_or(true, |v| v != "0"))
 }
 
 /// Précision minimale de l'étage GMP qui suit le double-double.
@@ -951,12 +988,8 @@ pub fn correct(
     }
     let t = std::time::Instant::now();
     let prec = compute_perturbation_precision_bits(params);
-    let parse = |hp: &Option<String>, f: f64| match hp.as_deref().map(Float::parse) {
-        Some(Ok(v)) => Float::with_val(prec, v),
-        _ => Float::with_val(prec, f),
-    };
-    let cx = parse(&params.center_x_hp, params.center_x);
-    let cy = parse(&params.center_y_hp, params.center_y);
+    let cx = parse_at(prec, &params.center_x_hp, params.center_x);
+    let cy = parse_at(prec, &params.center_y_hp, params.center_y);
     let dc_ctx = DcGmpContext::new(params, prec);
     let width = params.width.max(1) as usize;
     // Point exact de chaque pixel (centre HP + dc en GMP), arrondi en dd.
@@ -988,14 +1021,58 @@ pub fn correct(
             rest.push(idx);
         }
     }
+    let t_dd = t.elapsed().as_secs_f64();
+    let beyond_dd = rest.len();
+    // Étage quad-double : ce que le dd ne détermine pas (cf. `scalar_qd`).
+    // Point exact recalculé à la précision de l'étage GMP qui suit. Il ne
+    // remplace QUE du GMP : il ne tourne que si le GMP aurait tourné (même
+    // plafond que `correct_std_pixels`, `GmpCapped`). Bord Barnsley
+    // Mandelbrot (CHAOS, 97 % de pixels au-delà du dd, GMP hors budget) :
+    // sans ce garde le qd coûtait 0,8 → 2,5 s pour des pixels qui restent
+    // ensuite en f64 et ne changeait rien de garanti.
+    if !rest.is_empty() && scalar_qd_enabled() && gmp_would_run(&rest, iterations) {
+        let qprec = prec.max(GMP_FLOOR_BITS);
+        let qcx = parse_at(qprec, &params.center_x_hp, params.center_x);
+        let qcy = parse_at(qprec, &params.center_y_hp, params.center_y);
+        let qctx = DcGmpContext::new(params, qprec);
+        let qpoints: Vec<Cqd> = rest
+            .par_iter()
+            .map(|&idx| {
+                let dc = qctx.compute_dc(idx % width, idx / width);
+                let mut re = qcx.clone();
+                re += dc.real();
+                let mut im = qcy.clone();
+                im += dc.imag();
+                Cqd { re: qd_from_gmp(&re), im: qd_from_gmp(&im) }
+            })
+            .collect();
+        if let Some(res) = qd_stage(params, &qpoints) {
+            let mut still = Vec::new();
+            for (&idx, (it, z, ok)) in rest.iter().zip(res) {
+                if ok {
+                    iterations[idx] = it;
+                    zs[idx] = z;
+                } else {
+                    still.push(idx);
+                }
+            }
+            rest = still;
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+    }
     if perf_enabled() {
         eprintln!(
-            "[RELIABILITY-SCALAR] flagged={} ({:.3} %) dd_fixed={} beyond_dd={} time={:.3}s",
+            "[RELIABILITY-SCALAR] flagged={} ({:.3} %) dd_fixed={} beyond_dd={} qd_fixed={} beyond_qd={} dd={:.3}s qd={:.3}s",
             flagged.len(),
             100.0 * flagged.len() as f64 / iterations.len().max(1) as f64,
-            flagged.len() - rest.len(),
+            flagged.len() - beyond_dd,
+            beyond_dd,
+            beyond_dd - rest.len(),
             rest.len(),
-            t.elapsed().as_secs_f64()
+            t_dd,
+            t.elapsed().as_secs_f64() - t_dd
         );
     }
     if !rest.is_empty() {
@@ -1101,6 +1178,10 @@ mod tests {
         (FractalType::MandelbrotSin, Some((-1.9899086401850268, -0.5337651978513115, 2607.5945876176133))),
         (FractalType::JuliaSin, None),
         (FractalType::JuliaSin, Some((4.7936899621426774e-05, -0.00012437648618453408, 2607.5945876176133))),
+        (FractalType::Phoenix, None),
+        // Bord Phoenix plus dur que la scène de l'axe (×4096 : 2 pixels faux
+        // à 64×40 seulement) : 5 pixels faux sans suivi.
+        (FractalType::Phoenix, Some((0.629583796356445, -0.523261146274227, 30907.369550505096))),
     ];
 
     fn scene_params(ft: FractalType, view: Option<(f64, f64, f64)>, w: usize, h: usize) -> FractalParams {
@@ -1182,6 +1263,10 @@ mod tests {
             let prod = crate::render::render_escape_time(&p);
             let mut g = p.clone();
             g.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
+            // Sans `use_gmp`, un type hors famille perturbation retombait sur
+            // le path f64 standard — suivi et corrigé : le « juge » était la
+            // production elle-même.
+            g.engine.use_gmp = true;
             let t = std::time::Instant::now();
             let gmp = crate::render::render_escape_time(&g);
             eprintln!("{ft:?} juge GMP : {:.1} s", t.elapsed().as_secs_f64());
@@ -1338,6 +1423,103 @@ mod tests {
         dd_pixel(z0, c, n, r, step).0
     }
 
+    /// Étage quad-double : sur les pixels de bord que le double-double ne
+    /// détermine pas, tout pixel que le qd déclare fiable a le compte du GMP
+    /// pur 256 b (juge convergé de l'axe `types`), et le qd en règle la
+    /// majorité (sinon l'étage ne sert à rien).
+    #[test]
+    fn qd_stage_agrees_with_gmp_beyond_dd() {
+        let judged = |ft: FractalType| !matches!(ft, FractalType::JuliaSin | FractalType::BarnsleyMandelbrot);
+        for &(ft, view) in SCENES.iter().filter(|s| s.1.is_some() && judged(s.0)) {
+            let (w, h) = (96usize, 60usize);
+            let mut p = scene_params(ft, view, w, h);
+            p.iteration_max = 5000;
+            let flagged: Vec<Complex64> =
+                scene_points(&p, w, h).into_iter().filter(|&zp| iterate_tracked(&p, zp).2).collect();
+            let dd = dd_stage(&p, &dd_points(&flagged)).unwrap();
+            let beyond: Vec<Complex64> =
+                flagged.iter().zip(&dd).filter(|(_, r)| !r.2).map(|(&zp, _)| zp).collect();
+            let qpts: Vec<Cqd> = beyond
+                .iter()
+                .map(|z| Cqd {
+                    re: crate::fractal::perturbation::qd::Qd::from_f64(z.re),
+                    im: crate::fractal::perturbation::qd::Qd::from_f64(z.im),
+                })
+                .collect();
+            // Phoenix n'a pas d'étage qd (dd ellipsoïdal puis GMP).
+            let Some(qd) = qd_stage(&p, &qpts) else { continue };
+            let mut gp = p.clone();
+            gp.engine.precision_bits = 256;
+            let g = crate::fractal::gmp::MpcParams::from_params(&gp);
+            let (mut ok, mut wrong) = (0, 0);
+            for (&zp, &(it, _, rel)) in beyond.iter().zip(&qd) {
+                if !rel {
+                    continue;
+                }
+                ok += 1;
+                let (git, _) = crate::fractal::gmp::iterate_point_mpc(
+                    &g,
+                    &crate::fractal::gmp::complex_from_xy(256, Float::with_val(256, zp.re), Float::with_val(256, zp.im)),
+                );
+                wrong += (git != it) as usize;
+            }
+            eprintln!("{ft:?} : {} au-delà du dd, {ok} réglés par le qd, {wrong} ≠ GMP", beyond.len());
+            assert_eq!(wrong, 0, "{ft:?} : pixels qd « fiables » ≠ GMP");
+            assert!(2 * ok >= beyond.len(), "{ft:?} : le qd n'en règle que {ok}/{}", beyond.len());
+        }
+    }
+
+    /// Coût des étages dd et qd (mono-fil, min de 5) sur les bords :
+    /// `cargo test --release --lib bench_correction_stages -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_correction_stages() {
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+        let only = std::env::var("BENCH_TYPES").ok();
+        for &(ft, view) in SCENES.iter().filter(|s| s.1.is_some()) {
+            if only.as_deref().is_some_and(|o| !o.split(',').any(|t| format!("{ft:?}") == t)) {
+                continue;
+            }
+            let (w, h) = (128usize, 80usize);
+            let mut p = scene_params(ft, view, w, h);
+            p.iteration_max = 5000;
+            let flagged: Vec<Complex64> =
+                scene_points(&p, w, h).into_iter().filter(|&zp| iterate_tracked(&p, zp).2).collect();
+            let fp = dd_points(&flagged);
+            let (mut td, mut tq) = (f64::MAX, f64::MAX);
+            let (mut dd_it, mut qd_it, mut nb, mut nq) = (0u64, 0u64, 0usize, 0usize);
+            for _ in 0..5 {
+                let t = std::time::Instant::now();
+                let r = pool.install(|| dd_stage(&p, &fp)).unwrap();
+                td = td.min(t.elapsed().as_secs_f64());
+                dd_it = r.iter().map(|x| x.0 as u64).sum();
+                let beyond: Vec<Cqd> = flagged
+                    .iter()
+                    .zip(&r)
+                    .filter(|(_, x)| !x.2)
+                    .map(|(z, _)| Cqd {
+                        re: crate::fractal::perturbation::qd::Qd::from_f64(z.re),
+                        im: crate::fractal::perturbation::qd::Qd::from_f64(z.im),
+                    })
+                    .collect();
+                nb = beyond.len();
+                let t = std::time::Instant::now();
+                let Some(q) = pool.install(|| qd_stage(&p, &beyond)) else { break };
+                tq = tq.min(t.elapsed().as_secs_f64());
+                qd_it = q.iter().map(|x| x.0 as u64).sum();
+                nq = q.iter().filter(|x| x.2).count();
+            }
+            eprintln!(
+                "{ft:?}: dd {} px {:.3}s {:.1} ns/it ; qd {nb} px ({nq} réglés) {:.3}s {:.1} ns/it",
+                flagged.len(),
+                td,
+                1e9 * td / dd_it.max(1) as f64,
+                tq,
+                1e9 * tq / qd_it.max(1) as f64
+            );
+        }
+    }
+
     #[test]
     #[ignore]
     fn diag_flag_breakdown() {
@@ -1390,6 +1572,354 @@ mod tests {
             }
             eprintln!("{ft:?}: flagged capped={fc} escaped={fe} (log10 it hist {hist:?}) ; ok capped={nc} escaped={ne} ; flagged [diff,same]x[dd_bad,dd_ok] {agree:?} ; dd_bad vs gmp [diff,same] {beyond:?}");
         }
+    }
+
+    /// Matrice de confusion du traqueur Magnet (bords types 11 et 12, 128×80,
+    /// 5000 itérations) : signalé × réellement faux (f64 brut contre GMP pur
+    /// 256 b, convergence vérifiée à 512 b), par classe de sortie (évadé /
+    /// plafonné / pôle) et par motif du signalement (borne emballée, évasion
+    /// indéterminée, dénominateur). `MAGNET_DIAG_W=64` pour 64×40.
+    /// `cargo test --release --lib diag_magnet_confusion -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn diag_magnet_confusion() {
+        let w: usize = std::env::var("MAGNET_DIAG_W").ok().and_then(|v| v.parse().ok()).unwrap_or(128);
+        let h = w * 5 / 8;
+        for &(ft, view) in SCENES
+            .iter()
+            .filter(|s| matches!(s.0, FractalType::MagnetJulia | FractalType::MagnetMandelbrot))
+        {
+            let mut p = scene_params(ft, view, w, h);
+            p.iteration_max = 5000;
+            let pts = scene_points(&p, w, h);
+            let gmp_at = |prec: u32, zp: Complex64| {
+                let mut gp = p.clone();
+                gp.engine.precision_bits = prec;
+                let g = crate::fractal::gmp::MpcParams::from_params(&gp);
+                crate::fractal::gmp::iterate_point_mpc(
+                    &g,
+                    &crate::fractal::gmp::complex_from_xy(prec, Float::with_val(prec, zp.re), Float::with_val(prec, zp.im)),
+                )
+                .0
+            };
+            // (classe, motif) -> [signalé&juste, signalé&faux, chaos]
+            let rows: Vec<(u32, bool, u8, u32, f64, bool, bool)> = pts
+                .par_iter()
+                .map(|&zp| {
+                    let (it, z, bad) = iterate_tracked(&p, zp);
+                    let (_, _, _, fstep, why) = magnet_f64_diag(&p, zp);
+                    let g256 = gmp_at(256, zp);
+                    let chaos = gmp_at(512, zp) != g256;
+                    let class = if it >= p.iteration_max {
+                        0u8
+                    } else if z.norm_sqr() >= p.bailout * p.bailout {
+                        1
+                    } else {
+                        2
+                    };
+                    (it, bad, class, fstep, why, it != g256, chaos)
+                })
+                .collect();
+            let names = ["plafonné", "évadé", "pôle"];
+            let mut tab = std::collections::BTreeMap::<(u8, i64), [usize; 4]>::new();
+            let (mut flagged, mut wrong_unflagged, mut wrong) = (0, 0, 0);
+            let mut steps: Vec<u32> = Vec::new();
+            for &(_, bad, class, fstep, why, wr, chaos) in &rows {
+                wrong += wr as usize;
+                if bad {
+                    flagged += 1;
+                    steps.push(fstep);
+                    let e = tab.entry((class, why as i64)).or_default();
+                    e[wr as usize] += 1;
+                    e[2] += chaos as usize;
+                } else if wr {
+                    wrong_unflagged += 1;
+                }
+                let e = tab.entry((class, -1)).or_default();
+                e[3] += 1;
+            }
+            steps.sort_unstable();
+            let q = |f: f64| steps.get(((steps.len() as f64 - 1.0) * f) as usize).copied().unwrap_or(0);
+            eprintln!(
+                "{ft:?} {} {w}x{h} : {flagged} signalés ({:.1} %), {wrong} faux en f64 brut, {wrong_unflagged} faux NON signalés ; pas du signalement p10/p50/p90 = {}/{}/{}",
+                if view.is_some() { "edge" } else { "home" },
+                100.0 * flagged as f64 / rows.len() as f64,
+                q(0.1),
+                q(0.5),
+                q(0.9)
+            );
+            for ((class, why), v) in &tab {
+                if *why < 0 {
+                    eprintln!("   {:9} total {}", names[*class as usize], v[3]);
+                } else {
+                    let motif = ["emballée", "évasion indét.", "dénominateur", "pôle"][*why as usize];
+                    eprintln!("   {:9} {:15} juste {:5} faux {:5} (chaos {})", names[*class as usize], motif, v[0], v[1], v[2]);
+                }
+            }
+        }
+    }
+
+    /// Banc + juge des scènes Magnet (types 11/12, accueil et bord) : rendu
+    /// de production à 256×160 (min de 3), empreinte des comptes à 128×80 et
+    /// 256×160, pixels ≠ GMP pur à 64×40 et 128×80. Écrit les empreintes dans
+    /// `$MAGNET_BENCH_OUT` pour comparer deux versions.
+    /// `cargo test --release --lib bench_magnet_scenes -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_magnet_scenes() {
+        use std::hash::{Hash, Hasher};
+        let skip_gmp = std::env::var("MAGNET_SKIP_GMP").is_ok();
+        let mut out = String::new();
+        for &(ft, view) in SCENES
+            .iter()
+            .filter(|s| match std::env::var("MAGNET_BENCH_TYPES") {
+                Ok(t) => t.split(',').any(|x| format!("{:?}", s.0) == x),
+                Err(_) => matches!(s.0, FractalType::MagnetJulia | FractalType::MagnetMandelbrot),
+            })
+        {
+            let tag = format!("{ft:?} {}", if view.is_some() { "edge" } else { "home" });
+            for (w, h) in [(64usize, 40usize), (128, 80), (256, 160)] {
+                let mut p = scene_params(ft, view, w, h);
+                p.iteration_max = 5000;
+                let mut best = f64::MAX;
+                let mut prod = None;
+                let runs = if w == 256 { 3 } else { 1 };
+                for _ in 0..runs {
+                    let t = std::time::Instant::now();
+                    let r = crate::render::render_escape_time(&p);
+                    best = best.min(t.elapsed().as_secs_f64());
+                    prod = Some(r);
+                }
+                let prod = prod.unwrap();
+                let mut hs = std::collections::hash_map::DefaultHasher::new();
+                prod.iterations.hash(&mut hs);
+                let flagged = scene_points(&p, w, h).iter().filter(|&&zp| iterate_tracked(&p, zp).2).count();
+                let mut line = format!(
+                    "{tag} {w}x{h}: {best:.3}s signalés {flagged} ({:.1} %) empreinte {:016x}",
+                    100.0 * flagged as f64 / (w * h) as f64,
+                    hs.finish()
+                );
+                if w < 256 && !skip_gmp {
+                    let mut g = p.clone();
+                    g.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
+                    g.engine.use_gmp = true;
+                    let gmp = crate::render::render_escape_time(&g);
+                    let wrong = prod.iterations.iter().zip(&gmp.iterations).filter(|(a, b)| a != b).count();
+                    line += &format!(" ≠GMP {wrong}");
+                }
+                eprintln!("{line}");
+                out += &line;
+                out.push('\n');
+            }
+        }
+        if let Ok(f) = std::env::var("MAGNET_BENCH_OUT") {
+            std::fs::write(f, out).unwrap();
+        }
+    }
+
+    /// Pixels du bord Magnet que l'étage qd mène au plafond : à quel pas une
+    /// sonde « disque invariant » (rayons 1e-3..1e-12) les certifierait.
+    /// `cargo test --release --lib diag_magnet_qd_probe -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn diag_magnet_qd_probe() {
+        use crate::fractal::perturbation::qd::Qd;
+        for &(ft, view) in SCENES
+            .iter()
+            .filter(|s| matches!(s.0, FractalType::MagnetJulia | FractalType::MagnetMandelbrot) && s.1.is_some())
+        {
+            let (w, h) = (128usize, 80usize);
+            let mut p = scene_params(ft, view, w, h);
+            p.iteration_max = 5000;
+            let flagged: Vec<Complex64> =
+                scene_points(&p, w, h).into_iter().filter(|&zp| iterate_tracked(&p, zp).2).collect();
+            let dd = dd_stage(&p, &dd_points(&flagged)).unwrap();
+            let dd_capped = dd.iter().filter(|r| r.2 && r.0 >= p.iteration_max).count();
+            let beyond: Vec<Complex64> = if std::env::var("PROBE_SET").as_deref() == Ok("dd") {
+                flagged.iter().zip(&dd).filter(|(_, r)| r.2 && r.0 >= p.iteration_max).map(|(&zp, _)| zp).collect()
+            } else {
+                flagged.iter().zip(&dd).filter(|(_, r)| !r.2).map(|(&zp, _)| zp).collect()
+            };
+            let julia = ft == FractalType::MagnetJulia;
+            let radii = [1e-2, 1e-3, 1e-4, 1e-6, 1e-9];
+            let period: u32 = std::env::var("PROBE_K").ok().and_then(|v| v.parse().ok()).unwrap_or(128);
+            let rows: Vec<(u32, bool, Option<(u32, usize)>)> = beyond
+                .par_iter()
+                .map(|&zp| {
+                    let pt = Cqd { re: Qd::from_f64(zp.re), im: Qd::from_f64(zp.im) };
+                    let seed = Cqd { re: Qd::from_f64(p.seed.re), im: Qd::from_f64(p.seed.im) };
+                    let (s, e_s) = if julia { (seed, 0.0) } else { (pt, crate::render::scalar_qd::UQ * pt.abs_hi()) };
+                    let one = Qd::from_f64(1.0);
+                    let s1 = Cqd { re: s.re.sub(one), im: s.im };
+                    let s2 = Cqd { re: s.re.sub(Qd::from_f64(2.0)), im: s.im };
+                    let mut z = if julia { pt } else { Cqd::ZERO };
+                    let mut e = if julia { crate::render::scalar_qd::UQ * pt.abs_hi() } else { 0.0 };
+                    let mut i = 0u32;
+                    // sondes : (centre, rayon, P)
+                    let mut probes: Vec<(Complex64, f64, f64, usize)> = Vec::new();
+                    let mut next_ck = period;
+                    let mut cert = None;
+                    while i < p.iteration_max && z.abs_hi() < p.bailout {
+                        let (nz, ne, nn) = crate::render::scalar_qd::magnet_qd_step(z, e, s1, s2, e_s);
+                        let mut np = Vec::new();
+                        for &(c0, rho, pb, ri) in &probes {
+                            let (_, pp, _) = crate::render::scalar_qd::magnet_qd_step(z, pb, s1, s2, e_s);
+                            if crate::render::scalar_qd::step_ok(nn, p.bailout, pp) {
+                                np.push((c0, rho, pp, ri));
+                            }
+                        }
+                        z = nz;
+                        e = ne;
+                        i += 1;
+                        if !crate::render::scalar_qd::step_ok(nn, p.bailout, e) {
+                            break;
+                        }
+                        probes = np;
+                        for &(c0, rho, pb, ri) in &probes {
+                            let d = (z.hi() - c0).norm() * (1.0 + 1e-12) + 1e-300;
+                            if d + pb * (1.0 + 1e-12) <= rho {
+                                cert = Some((i, ri));
+                                break;
+                            }
+                        }
+                        if cert.is_some() {
+                            break;
+                        }
+                        if i == next_ck {
+                            next_ck += period;
+                            probes.clear();
+                            let c0 = z.hi();
+                            for (ri, &rho) in radii.iter().enumerate() {
+                                if e < rho * 0.5 {
+                                    probes.push((c0, rho, rho * (1.0 + 1e-12) + 1e-30, ri));
+                                }
+                            }
+                        }
+                    }
+                    (i, e.is_finite(), cert)
+                })
+                .collect();
+            let capped = rows.iter().filter(|r| r.0 >= p.iteration_max || r.2.is_some()).count();
+            let certs: Vec<_> = rows.iter().filter_map(|r| r.2).collect();
+            let mut by_r = [0usize; 5];
+            for c in &certs {
+                by_r[c.1] += 1;
+            }
+            let mut st: Vec<u32> = certs.iter().map(|c| c.0).collect();
+            st.sort_unstable();
+            // Pixels qd plafonnés : période, multiplicateur, distance au cycle.
+            if std::env::var("PROBE_ORBITS").is_ok() {
+                for (&zp, r) in beyond.iter().zip(&rows).take(400) {
+                    if r.0 < p.iteration_max {
+                        continue;
+                    }
+                    let pt = Cqd { re: Qd::from_f64(zp.re), im: Qd::from_f64(zp.im) };
+                    let one = Qd::from_f64(1.0);
+                    let s1 = Cqd { re: pt.re.sub(one), im: pt.im };
+                    let s2 = Cqd { re: pt.re.sub(Qd::from_f64(2.0)), im: pt.im };
+                    let mut z = if julia { pt } else { Cqd::ZERO };
+                    let mut hist = Vec::new();
+                    let mut first_near1 = None;
+                    for i in 0..p.iteration_max {
+                        let (nz, _, _) = crate::render::scalar_qd::magnet_qd_step(z, 0.0, s1, s2, 0.0);
+                        z = nz;
+                        let h = z.hi();
+                        if first_near1.is_none() && (h - Complex64::new(1.0, 0.0)).norm() < 1e-3 {
+                            first_near1 = Some(i);
+                        }
+                        hist.push(h);
+                    }
+                    let n = hist.len() - 1;
+                    let per = (1..200).min_by(|&a, &b| {
+                        (hist[n] - hist[n - a]).norm().partial_cmp(&(hist[n] - hist[n - b]).norm()).unwrap()
+                    });
+                    let per = per.unwrap();
+                    let d0 = (hist[n] - hist[n - per]).norm();
+                    let d1 = (hist[n - per] - hist[n - 2 * per]).norm();
+                    eprintln!(
+                        "   plafonné : z_fin {:.4} {:+.4} période {per} d0 {d0:.2e} λ≈{:.5} près de 1 au pas {first_near1:?}",
+                        hist[n].re,
+                        hist[n].im,
+                        d0 / d1
+                    );
+                }
+            }
+            let saved: u64 = certs.iter().map(|c| (p.iteration_max - c.0) as u64).sum();
+            let total: u64 = rows.iter().map(|r| r.0 as u64).sum::<u64>() + saved;
+            eprintln!("   pas qd économisés {saved} / {total}");
+            eprintln!(
+                "{ft:?}: {} signalés, dd plafonnés {dd_capped}, {} au-delà du dd, {capped} plafonnés/certifiés en qd, {} certifiés (par rayon {by_r:?}), pas médian {}",
+                flagged.len(),
+                beyond.len(),
+                certs.len(),
+                st.get(st.len() / 2).copied().unwrap_or(0)
+            );
+        }
+    }
+
+    /// Copie instrumentée de [`magnet_f64`] : `(it, z, bad, pas du
+    /// signalement, motif)` — motif 0 = borne emballée, 1 = évasion
+    /// indéterminée, 2 = dénominateur, 3 = sortie au pôle.
+    fn magnet_f64_diag(p: &FractalParams, zp: Complex64) -> (u32, Complex64, bool, u32, f64) {
+        let (z0, seed, e0, e_s) = if p.fractal_type == FractalType::MagnetJulia {
+            (zp, p.seed, pixel_error(p, zp), 0.0)
+        } else {
+            (Complex64::new(0.0, 0.0), zp, 0.0, pixel_error(p, zp))
+        };
+        let (iteration_max, bailout) = (p.iteration_max, p.bailout);
+        let b2 = bailout * bailout;
+        let two_r_emax_sq = (2.0 * bailout + E_MAX_NL) * (2.0 * bailout + E_MAX_NL);
+        let seed_minus_one = Complex64::new(seed.re - 1.0, seed.im);
+        let seed_minus_two = Complex64::new(seed.re - 2.0, seed.im);
+        let s1 = U64 * (seed_minus_one.re.abs() + seed_minus_one.im.abs()) + e_s;
+        let s2 = U64 * (seed_minus_two.re.abs() + seed_minus_two.im.abs()) + e_s;
+        let mut z = z0;
+        let mut n2 = z.norm_sqr();
+        let mut i = 0u32;
+        let mut cyc = crate::fractal::cycle::CycleCut::<2>::new();
+        let mut e = e0;
+        let (mut bad, mut fstep, mut why) = (false, 0u32, 0.0);
+        while i < iteration_max && n2 < b2 {
+            let n = z * z + seed_minus_one;
+            let q = Complex64::new(2.0, 0.0) * z + seed_minus_two;
+            let qq = q.norm_sqr();
+            if qq < 1e-24 {
+                let rho_q = U64 * (q.re.abs() + q.im.abs()) + s2;
+                if (qq.sqrt() + 2.0 * e + rho_q) * (1.0 + 8.0 * U64) >= 1e-12 && !bad {
+                    bad = true;
+                    fstep = i;
+                    why = 3.0;
+                }
+                break;
+            }
+            let ratio = n / q;
+            let zp = z;
+            let n2p = n2;
+            z = ratio * ratio;
+            i += 1;
+            n2 = z.norm_sqr();
+            if !bad {
+                let rr = ratio.norm_sqr();
+                let r1 = ratio.re.abs() + ratio.im.abs();
+                let rho_n = 2.0 * U64 * n2p + U64 * (n.re.abs() + n.im.abs()) + s1;
+                let rho_q = U64 * (q.re.abs() + q.im.abs()) + s2;
+                let den = (qq.sqrt() * (1.0 - 4.0 * U64) - (2.0 * e + rho_q) * (1.0 + 4.0 * U64)) * (1.0 - 2.0 * U64);
+                let b = rho_n + r1 * rho_q + 4.0 * U64 * r1 * (2.0 * E_MAX_NL + rho_q);
+                let (wr, wi) = (zp.re - ratio.re, zp.im - ratio.im);
+                let w = (wr * wr + wi * wi).sqrt();
+                let er_div = 4.0 * U64 * r1;
+                let er = (e * (2.0 * w + e) + b) / den + er_div;
+                e = (er * (2.0 * rr.sqrt() + er) + 2.0 * U64 * rr) * (1.0 + 64.0 * U64);
+                let (d_bad, runaway) = (!(den > 1e-10), !(e < E_MAX_NL));
+                if d_bad || sq_bound_unreliable(n2, b2, two_r_emax_sq, e * e) {
+                    bad = true;
+                    fstep = i;
+                    why = if d_bad { 2.0 } else if runaway { 0.0 } else { 1.0 };
+                }
+            }
+            cyc.observe_each(&mut i, iteration_max, [z.re, z.im]);
+        }
+        (i, z, bad, fstep, why)
     }
 
     /// Julia Sin, vues d'accueil et de bord : pixels faux sans / avec suivi.
