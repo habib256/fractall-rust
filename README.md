@@ -78,6 +78,7 @@ cargo run --release --bin fractall-gui     # or run a release package (see Insta
 ### Smart Session Management
 - **Drag & drop** any saved PNG to instantly restore your exact view
 - All parameters embedded in PNG metadata as JSON (coordinates including HP strings, zoom, colors, fractal type)
+- The `fractall-cli` command that re-renders the image is embedded too (`exiftool image.png` → `Fractall-command`)
 - Share your discoveries — recipients can continue exploring from where you left off
 - TOML parameter files for batch generation (see the `toml/` directory)
 

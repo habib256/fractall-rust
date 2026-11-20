@@ -5,7 +5,8 @@
 //! lit (`--zoom` = 4 / span_x, `--plane` par identifiant numérique, noms
 //! `cli_name()` des modes…), et seulement quand la valeur diffère de ce que le
 //! CLI prendrait par défaut pour ce type — sauf type, centre, zoom, itérations,
-//! taille et sortie, toujours présents. Ce que la ligne de commande ne sait pas
+//! taille et sortie, toujours présents (zoom omis pour le cadrage par défaut
+//! rendu à pixels non carrés, que `--zoom` ne sait pas décrire). Ce que la ligne de commande ne sait pas
 //! exprimer n'est jamais perdu en silence : listé dans `unexpressed` et ajouté
 //! en commentaire shell à la fin de la commande.
 
@@ -23,6 +24,13 @@ pub struct CliExtras {
     pub aa_samples: u32,
     /// Amplitude du jitter AA (px) ; le CLI vaut 1.0 par défaut.
     pub aa_jitter_scale: f64,
+    /// Centre émis tel quel (chaîne HP complète) au lieu d'être arrondi à la
+    /// résolution pixel. Le bouton GUI arrondit (lisibilité : ~300 chiffres
+    /// MPFR sinon) ; la commande embarquée dans un PNG ne le fait PAS — un
+    /// centre qui diffère au-delà du pixel change la référence de
+    /// perturbation, donc les pixels mal conditionnés (mesuré : 9 pixels sur
+    /// 230 400 à 5e13, 0 avec le centre exact).
+    pub exact_center: bool,
 }
 
 impl Default for CliExtras {
@@ -30,6 +38,7 @@ impl Default for CliExtras {
         Self {
             aa_samples: 1,
             aa_jitter_scale: 1.0,
+            exact_center: false,
         }
     }
 }
@@ -154,9 +163,35 @@ pub fn build_cli_command(params: &FractalParams, extras: CliExtras) -> CliComman
 
     // Vue : centre HP + zoom (span_x = 4 / zoom, span_y = span_x·h/w côté CLI).
     let (cx, cy) = coords::center_strings(params);
-    a.opt("center-x-hp", &cli_center_coordinate(&cx, params));
-    a.opt("center-y-hp", &cli_center_coordinate(&cy, params));
-    a.opt("zoom", &coords::zoom_string(params));
+    if extras.exact_center {
+        a.opt("center-x-hp", cx.trim());
+        a.opt("center-y-hp", cy.trim());
+    } else {
+        a.opt("center-x-hp", &cli_center_coordinate(&cx, params));
+        a.opt("center-y-hp", &cli_center_coordinate(&cy, params));
+    }
+    // `--zoom` impose des pixels carrés (span_y = span_x·h/w). Une vue qui ne
+    // l'est pas — typiquement le cadrage par défaut du type rendu à un autre
+    // rapport d'aspect, ce que fait le CLI sans `--zoom` — ne doit PAS le
+    // recevoir : sans l'option, le CLI garde les spans par défaut tels quels.
+    let (sx, sy) = (params.span_x, params.span_y);
+    // Preset Lyapunov non défaut : `--lyapunov-preset` remplace la vue, cas
+    // déjà signalé plus bas — pas de second avertissement ici.
+    let preset_view = t == FractalType::Lyapunov
+        && params.formula.lyapunov_preset != base.formula.lyapunov_preset;
+    let square = preset_view
+        || !(sx.is_normal() && sy.is_normal())
+        || (sy * width as f64 - sx * height as f64).abs() <= 1e-9 * (sx * height as f64).abs();
+    if square {
+        a.opt("zoom", &coords::zoom_string(params));
+    } else if sx != base.span_x || sy != base.span_y {
+        a.opt("zoom", &coords::zoom_string(params));
+        unexpressed.push(format!(
+            "non-square pixels (span {} x {})",
+            fmt_f64(sx),
+            fmt_f64(sy)
+        ));
+    }
     a.opt("iterations", &params.iteration_max.to_string());
 
     // Couleur.
@@ -401,6 +436,34 @@ mod tests {
         None
     }
 
+    /// Le CLI sans `--zoom` rend le cadrage par défaut du type tel quel, même
+    /// à un rapport d'aspect qui donne des pixels non carrés. `--zoom` les
+    /// rendrait carrés (autre image : 62 550 pixels sur 64 000 mesurés) —
+    /// donc omis ; une vue non carrée autre que le défaut est signalée.
+    #[test]
+    fn non_square_default_view_omits_zoom() {
+        let p = default_params_for_type(FractalType::Julia, 320, 200);
+        assert_ne!(p.span_y * 320.0, p.span_x * 200.0, "précondition : pixels non carrés");
+        let c = build_cli_command(&p, CliExtras::default());
+        assert!(value_of(&c.command, "zoom").is_none(), "{}", c.command);
+        assert!(c.unexpressed.is_empty(), "{:?}", c.unexpressed);
+
+        let mut odd = p.clone();
+        odd.span_x *= 0.5;
+        let c = build_cli_command(&odd, CliExtras::default());
+        assert!(value_of(&c.command, "zoom").is_some());
+        assert!(c.unexpressed.iter().any(|u| u.contains("non-square")), "{:?}", c.unexpressed);
+
+        // Centre exact (commande embarquée dans le PNG) : chaîne HP intacte.
+        let mut hp = gui_like(FractalType::Mandelbrot, 800, 600);
+        hp.center_x_hp = Some("0.0000065018695656308234292171447709786".into());
+        let exact = CliExtras { exact_center: true, ..CliExtras::default() };
+        assert_eq!(
+            value_of(&build_cli_command(&hp, exact).command, "center-x-hp"),
+            Some("0.0000065018695656308234292171447709786")
+        );
+    }
+
     #[test]
     fn default_mandelbrot_view_is_minimal() {
         let p = gui_like(FractalType::Mandelbrot, 800, 600);
@@ -462,6 +525,7 @@ mod tests {
             CliExtras {
                 aa_samples: 4,
                 aa_jitter_scale: 0.5,
+                exact_center: false,
             },
         );
         assert!(c.unexpressed.is_empty(), "{:?}", c.unexpressed);

@@ -432,6 +432,24 @@ Chunk `tEXt` clé `fractall-params` = JSON sérialisé de `FractalParams`
 (coordonnées HP incluses). API : `save_png_with_metadata()` /
 `load_png_metadata()`. **Drag-and-drop** GUI restaure l'état exact.
 
+**Chunk `iTXt` `fractall-command`** (2026-11-19, `io::png::COMMAND_KEY`,
+lecture `load_png_command`) : commande `fractall-cli` CANONIQUE qui re-rend
+l'image, lisible par `exiftool`. Reconstruite depuis les paramètres par
+`gui::cli_command::build_cli_command` (générateur du bouton « 📋 CLI »),
+⚠️ JAMAIS depuis `std::env::args()` (proposition d'origine d'un
+utilisateur) : faux pour une sauvegarde GUI, non reproductible avec
+`--iterations auto`/`--toml`/`--from-png`, guillemets perdus, chemins de la
+machine dans chaque image partagée. Purement informatif : la source de vérité
+reste `fractall-params`. Deux règles payées par des pixels faux :
+(1) `CliExtras::exact_center = true` côté PNG — le centre arrondi à la
+résolution pixel du bouton GUI déplace la référence de perturbation (9 pixels
+sur 230 400 à 5e13, 0 avec le centre exact) ; (2) `--zoom` impose des pixels
+carrés, donc il est OMIS pour le cadrage par défaut d'un type rendu à un autre
+rapport d'aspect (Julia 320×200 : 62 550 pixels différents sinon), et une vue
+non carrée autre que le défaut est listée dans `unexpressed`. `aa_samples`
+(non persisté) passe par `save_png_rgb_with_metadata_aa`. Verrous
+`saved_png_embeds_canonical_command`, `non_square_default_view_omits_zoom`.
+
 ## Dispatch rendu (`render/escape_time.rs`)
 
 ### ⚠️ Chemin de rendu UNIQUE CLI ↔ GUI (invariant)

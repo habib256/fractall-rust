@@ -1408,7 +1408,7 @@ fn main() {
             .iter()
             .map(|&s| (s * inv_n).round().clamp(0.0, 255.0) as u8)
             .collect();
-        save_png_rgb_with_metadata(
+        io::png::save_png_rgb_with_metadata_aa(
             &params,
             &avg,
             &output_path,
@@ -1416,6 +1416,7 @@ fn main() {
             &center_y_hp,
             &span_x_hp,
             &span_y_hp,
+            aa_samples,
         )
     } else {
         // Colorisation VÉRIFIÉE (G5) : les canaux annexes voyagent avec le
