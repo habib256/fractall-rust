@@ -37,11 +37,10 @@ tests lib, goldens, navigation profonde verts.
   fermées (évasion des étages dd/qd jugée sur une norme f64 sans marge
   d'arrondi ; sortie au pas 0 des boucles tracées Julia) ; cache à nucleus
   reconnu par les entrées de la recherche (2e rendu 0,60 → 0,14 s).
-- **OUVERT (correction, GUI à état)** : cache d'orbite dont la série s'est
-  auto-ajustée, ou bâti sans série, servi à un autre plafond ≠ rendu frais
-  (733/20 480 px, verrou ignoré `auto_adjusted_cache_serves_only_its_
-  requested_cap`). Piste : ne servir à un plafond L ≠ demandé que si
-  l'heuristique ne s'y déclencherait pas ; `cache_lift` au seul cas égal.
+- Cache d'orbite servi à un autre plafond que celui de sa construction :
+  le rendu rejoue la décision d'auto-ajustement du rendu frais
+  (`auto_adjusted_cap`, 733/20 480 px → 0). À mesurer : coût GUI de la
+  revalidation de la série ; chemins GPU / `std_reliability` non couverts.
 - *Ouverts* : coût du traqueur Phoenix (voies ?) ; étage qd Magnet M sur
   orbites bornées chaotiques (levier = vitesse du pas qd) ; Lyapunov
   baseline ×1,2-1,4 ; MinGW / CPU sans AVX2 non mesurés ; cache à nucleus

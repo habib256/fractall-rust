@@ -1413,13 +1413,17 @@ centre de vue en décimal complet, échelle exacte, précision, plafond,
 période trouvée) — son centre étant le nucleus, il était rejeté à chaque
 passe (2e rendu e30 : 0,60 → 0,14 s). Plafond : période p trouvée ⇒ tout
 plafond ≥ p ; rien trouvé ⇒ seulement ≤ celui de la recherche. PAS de
-tolérance sur le span (la période dépend de l'échelle). ⚠️ **OUVERT —
-auto-ajustement de la série et plafond** : un cache bâti à 200 sans
-ajustement puis servi à 40 diffère du frais (qui relève 40 → 160) : 733 /
-20 480 px sur la scène c = i, span 4e-10, 640×32, perturbation forcée
-(verrou `#[ignore]` `auto_adjusted_cache_serves_only_its_requested_cap`,
-diagnostic en commentaire ; la règle « servi au seul plafond demandé »
-casse `probe_orbit_cache_is_reusable_by_final_render`). ⚠️ **Régime atom-domain** (`is_valid_for` +
+tolérance sur le span (la période dépend de l'échelle). ⚠️ **Auto-ajustement
+de la série et plafond** (fermé le 2026-11-20) : un cache bâti à 200 sans
+ajustement puis servi à 40 différait du frais (qui relève 40 → 160) — 733 /
+20 480 px sur c = i, span 4e-10, 640×32. Le rendu sur cache REJOUE la
+décision du rendu frais (`orbit.rs::auto_adjusted_cap` sur le préfixe de
+l'orbite ; heuristique en un seul exemplaire : `SeriesPolicy`,
+`build_validated_series`, `auto_adjust_next`) et refuse le cache s'il ne
+couvre pas le plafond effectif ; `cache_lift` = ce plafond. Verrou
+`auto_adjusted_cache_serves_only_its_requested_cap`. Restent : la série est
+revalidée à chaque rendu sur cache dont plafond/géométrie ≠ build (coût GUI
+non mesuré) ; GPU et `std_reliability` gardent l'ancienne enveloppe. ⚠️ **Régime atom-domain** (`is_valid_for` +
 `can_subset_reuse` → `atom_regime_scale_mismatch`) : la troncature atom-domain
 de la référence dépend de l'ÉCHELLE de vue (`atom_radius_sqr = span_vue²`), donc
 une référence est baked à son span de construction. En zoom profond
