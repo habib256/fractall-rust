@@ -417,7 +417,16 @@ fn mandelbulb_f64(
 /// et `Δn = Δ(2z + Δ)`, `n* q̂ − n̂ q* = Δ·(2(z − r) + Δ)·q̂ + arrondis`, donc
 /// `|Δr| ≤ [E(2|z − r| + E) + ρ_n + |r|ρ_q + …] / (|q| − 2E − ρ_q)` — le
 /// facteur `|z − r|` est la dérivée exacte ; `1 + |r|` à la place
-/// signalerait tout l'intérieur. Bornes au carré, sans racine.
+/// signalerait tout l'intérieur.
+///
+/// Borne LINÉAIRE `E` (2026-11-20), comme les étages dd/qd, et non au carré
+/// comme Alpha / Mandelbulb : la version au carré payait `(1 + δ)⁵/(1 − δ)`
+/// sur `E²` à chaque pas (×2·10⁶ sur `E` en 5000 pas d'un cycle presque
+/// neutre) et minorait `|q*|²` par `(1 − δ)|q̂|² − (1/δ)(2E + ρ_q)²`, qui
+/// exige `|q̂| > 45·(2E + ρ_q)` : 94 % des pixels signalés du bord Magnet
+/// Mandelbrot avaient un compte f64 juste, signalés à 91 % par ce seul
+/// dénominateur (`diag_magnet_confusion`). Trois racines par pas, hors de
+/// la chaîne de `E` (elles ne dépendent que de `z`).
 ///
 /// Magnet MANDELBROT (même carte, `s` = le pixel, `z₀ = 0`) : l'erreur `e_s`
 /// du point entre dans les deux constantes `s − 1` et `s − 2` — additive,
@@ -438,12 +447,11 @@ fn magnet_f64(
     // le point exact du pixel), plus l'erreur du point lui-même.
     let s1 = U64 * (seed_minus_one.re.abs() + seed_minus_one.im.abs()) + e_s;
     let s2 = U64 * (seed_minus_two.re.abs() + seed_minus_two.im.abs()) + e_s;
-    let one_m_split = 1.0 - SPLIT;
     let mut z = z0;
     let mut n2 = z.norm_sqr();
     let mut i = 0u32;
     let mut cyc = crate::fractal::cycle::CycleCut::<2>::new();
-    let mut g = e0 * e0; // E²
+    let mut e = e0;
     let mut bad = false;
     while i < iteration_max && n2 < b2 {
         let n = z * z + seed_minus_one;
@@ -452,14 +460,14 @@ fn magnet_f64(
         // Eviter division par zero
         if qq < 1e-24 {
             // Le vrai |q|² est-il aussi sous le seuil ? |Δq| ≤ d = 2E + ρ_q,
-            // donc |q*|² ≤ (|q̂| + d)² ≤ (1+δ)|q̂|² + (1+1/δ)d² — c'est CETTE
-            // somme qu'il faut comparer au seuil, pas d² seul : un |q̂| juste
-            // sous 1e-12 avec une borne minuscule passait pour déterminé alors
-            // que le point exact était au-dessus (verrou
-            // `magnet_pole_exit_is_judged_on_q_plus_error`). Vaut pour les
-            // deux variantes (Magnet Mandelbrot : ρ_q porte l'erreur du pixel).
+            // donc |q*| ≤ |q̂| + d — c'est CETTE somme qu'il faut comparer au
+            // seuil, pas d seul : un |q̂| juste sous 1e-12 avec une borne
+            // minuscule passait pour déterminé alors que le point exact était
+            // au-dessus (verrou `magnet_pole_exit_is_judged_on_q_plus_error`).
+            // Vaut pour les deux variantes (Magnet Mandelbrot : ρ_q porte
+            // l'erreur du pixel). Marge relative : arrondis de la somme.
             let rho_q = U64 * (q.re.abs() + q.im.abs()) + s2;
-            if SPLIT_X * qq + SPLIT_Y * (8.0 * g + 2.0 * rho_q * rho_q) >= 1e-24 {
+            if (qq.sqrt() + 2.0 * e + rho_q) * (1.0 + 8.0 * U64) >= 1e-12 {
                 bad = true;
             }
             break;
@@ -476,18 +484,23 @@ fn magnet_f64(
             // Arrondis de n (carré + somme) et de q (somme ; 2z exact).
             let rho_n = 2.0 * U64 * n2p + U64 * (n.re.abs() + n.im.abs()) + s1;
             let rho_q = U64 * (q.re.abs() + q.im.abs()) + s2;
-            // |q*|² ≥ (1−δ)|q̂|² − (1/δ)(2E + ρ_q)², (2E + ρ_q)² ≤ 8E² + 2ρ_q².
-            let den = one_m_split * qq - SPLIT_Y * (8.0 * g + 2.0 * rho_q * rho_q);
+            // |q*| ≥ |q̂| − (2E + ρ_q) : minorant LINÉAIRE (cf. doc — la
+            // version au carré exigeait |q̂| > 45·(2E + ρ_q)). Arrondis du
+            // calcul : |q̂| minoré de 4u, la soustraction de 2u relatifs
+            // (opérandes positifs, résultat positif quand il compte).
+            let den = (qq.sqrt() * (1.0 - 4.0 * U64) - (2.0 * e + rho_q) * (1.0 + 4.0 * U64)) * (1.0 - 2.0 * U64);
             // Erreur de la division (normwise ≤ 6u) sur 2E + ρ_q, E < E_MAX_NL.
             let b = rho_n + r1 * rho_q + 4.0 * U64 * r1 * (2.0 * E_MAX_NL + rho_q);
             let (wr, wi) = (zp.re - ratio.re, zp.im - ratio.im);
-            let a2 = g * (SPLIT_X * 4.0 * (wr * wr + wi * wi) + SPLIT_Y * g);
+            let w = (wr * wr + wi * wi).sqrt();
             let er_div = 4.0 * U64 * r1;
-            let gr = SPLIT_X * (SPLIT_X * a2 + SPLIT_Y * b * b) / den + SPLIT_Y * er_div * er_div;
-            // z' = r² : Δz' = Δr(2r + Δr) + arrondi du carré.
-            let rq = 2.0 * U64 * rr;
-            g = SPLIT_X * gr * (4.0 * SPLIT_X * rr + SPLIT_Y * gr) + SPLIT_Y * rq * rq;
-            if !(den > 1e-20) || sq_bound_unreliable(n2, b2, two_r_emax_sq, g) {
+            // |Δr| ≤ (E(2|z − r| + E) + b) / |q*| + erreur de la division.
+            let er = (e * (2.0 * w + e) + b) / den + er_div;
+            // z' = r² : Δz' = Δr(2r + Δr) + arrondi du carré. Facteur final :
+            // arrondis de ce calcul de borne (~20 opérations sur des
+            // quantités positives, chacune ≤ u relatif ; racines ≤ u).
+            e = (er * (2.0 * rr.sqrt() + er) + 2.0 * U64 * rr) * (1.0 + 64.0 * U64);
+            if !(den > 1e-10) || sq_bound_unreliable(n2, b2, two_r_emax_sq, e * e) {
                 bad = true;
             }
         }
@@ -1679,7 +1692,8 @@ mod tests {
             let beyond: Vec<Complex64> =
                 flagged.iter().zip(&dd).filter(|(_, r)| !r.2).map(|(&zp, _)| zp).collect();
             let julia = ft == FractalType::MagnetJulia;
-            let radii = [1e-3, 1e-5, 1e-7, 1e-9, 1e-12];
+            let radii = [1e-2, 1e-3, 1e-4, 1e-6, 1e-9];
+            let period: u32 = std::env::var("PROBE_K").ok().and_then(|v| v.parse().ok()).unwrap_or(128);
             let rows: Vec<(u32, bool, Option<(u32, usize)>)> = beyond
                 .par_iter()
                 .map(|&zp| {
@@ -1694,7 +1708,7 @@ mod tests {
                     let mut i = 0u32;
                     // sondes : (centre, rayon, P)
                     let mut probes: Vec<(Complex64, f64, f64, usize)> = Vec::new();
-                    let mut next_ck = 64u32;
+                    let mut next_ck = period;
                     let mut cert = None;
                     while i < p.iteration_max && z.abs_hi() < p.bailout {
                         let (nz, ne, nn) = crate::render::scalar_qd::magnet_qd_step(z, e, s1, s2, e_s);
@@ -1723,7 +1737,7 @@ mod tests {
                             break;
                         }
                         if i == next_ck {
-                            next_ck *= 2;
+                            next_ck += period;
                             probes.clear();
                             let c0 = z.hi();
                             for (ri, &rho) in radii.iter().enumerate() {
@@ -1744,6 +1758,9 @@ mod tests {
             }
             let mut st: Vec<u32> = certs.iter().map(|c| c.0).collect();
             st.sort_unstable();
+            let saved: u64 = certs.iter().map(|c| (p.iteration_max - c.0) as u64).sum();
+            let total: u64 = rows.iter().map(|r| r.0 as u64).sum::<u64>() + saved;
+            eprintln!("   pas qd économisés {saved} / {total}");
             eprintln!(
                 "{ft:?}: {} signalés, dd plafonnés {dd_capped}, {} au-delà du dd, {capped} plafonnés/certifiés en qd, {} certifiés (par rayon {by_r:?}), pas médian {}",
                 flagged.len(),
@@ -1770,12 +1787,11 @@ mod tests {
         let seed_minus_two = Complex64::new(seed.re - 2.0, seed.im);
         let s1 = U64 * (seed_minus_one.re.abs() + seed_minus_one.im.abs()) + e_s;
         let s2 = U64 * (seed_minus_two.re.abs() + seed_minus_two.im.abs()) + e_s;
-        let one_m_split = 1.0 - SPLIT;
         let mut z = z0;
         let mut n2 = z.norm_sqr();
         let mut i = 0u32;
         let mut cyc = crate::fractal::cycle::CycleCut::<2>::new();
-        let mut g = e0 * e0;
+        let mut e = e0;
         let (mut bad, mut fstep, mut why) = (false, 0u32, 0.0);
         while i < iteration_max && n2 < b2 {
             let n = z * z + seed_minus_one;
@@ -1783,7 +1799,7 @@ mod tests {
             let qq = q.norm_sqr();
             if qq < 1e-24 {
                 let rho_q = U64 * (q.re.abs() + q.im.abs()) + s2;
-                if SPLIT_X * qq + SPLIT_Y * (8.0 * g + 2.0 * rho_q * rho_q) >= 1e-24 && !bad {
+                if (qq.sqrt() + 2.0 * e + rho_q) * (1.0 + 8.0 * U64) >= 1e-12 && !bad {
                     bad = true;
                     fstep = i;
                     why = 3.0;
@@ -1801,16 +1817,15 @@ mod tests {
                 let r1 = ratio.re.abs() + ratio.im.abs();
                 let rho_n = 2.0 * U64 * n2p + U64 * (n.re.abs() + n.im.abs()) + s1;
                 let rho_q = U64 * (q.re.abs() + q.im.abs()) + s2;
-                let den = one_m_split * qq - SPLIT_Y * (8.0 * g + 2.0 * rho_q * rho_q);
+                let den = (qq.sqrt() * (1.0 - 4.0 * U64) - (2.0 * e + rho_q) * (1.0 + 4.0 * U64)) * (1.0 - 2.0 * U64);
                 let b = rho_n + r1 * rho_q + 4.0 * U64 * r1 * (2.0 * E_MAX_NL + rho_q);
                 let (wr, wi) = (zp.re - ratio.re, zp.im - ratio.im);
-                let a2 = g * (SPLIT_X * 4.0 * (wr * wr + wi * wi) + SPLIT_Y * g);
+                let w = (wr * wr + wi * wi).sqrt();
                 let er_div = 4.0 * U64 * r1;
-                let gr = SPLIT_X * (SPLIT_X * a2 + SPLIT_Y * b * b) / den + SPLIT_Y * er_div * er_div;
-                let rq = 2.0 * U64 * rr;
-                g = SPLIT_X * gr * (4.0 * SPLIT_X * rr + SPLIT_Y * gr) + SPLIT_Y * rq * rq;
-                let (d_bad, runaway) = (!(den > 1e-20), !(g < E_MAX_NL * E_MAX_NL));
-                if d_bad || sq_bound_unreliable(n2, b2, two_r_emax_sq, g) {
+                let er = (e * (2.0 * w + e) + b) / den + er_div;
+                e = (er * (2.0 * rr.sqrt() + er) + 2.0 * U64 * rr) * (1.0 + 64.0 * U64);
+                let (d_bad, runaway) = (!(den > 1e-10), !(e < E_MAX_NL));
+                if d_bad || sq_bound_unreliable(n2, b2, two_r_emax_sq, e * e) {
                     bad = true;
                     fstep = i;
                     why = if d_bad { 2.0 } else if runaway { 0.0 } else { 1.0 };
