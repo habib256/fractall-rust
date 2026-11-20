@@ -66,6 +66,24 @@
 //!   du dd (vraiment : le dd y diverge du GMP) et le GMP pur de ces pixels
 //!   domine la correction.
 //!
+//! Puis (2026-11-20) bornes f64 **LINÉAIRES** pour Magnet et Sin (`E` et
+//! non `E²`, une à trois racines par pas hors de la chaîne de `E`) : la
+//! forme au carré payait `(1 + δ)ᵏ` par pas — ×2·10⁶ sur `E` en 5000 pas
+//! d'un cycle presque neutre — et, pour Magnet, minorait `|q*|²` par
+//! `(1 − δ)|q̂|² − (1/δ)(2E + ρ_q)²`, qui exige `|q̂| > 45·(2E + ρ_q)` :
+//! 91 % des signalements du bord Magnet Mandelbrot venaient de ce seul
+//! dénominateur (`diag_magnet_confusion`, juge GMP 256 b ≡ 512 b). Bords
+//! 128×80 : Magnet Mandelbrot 38,5 → 28,2 % de pixels signalés, Magnet
+//! Julia 3,8 → 2,0 %, Mandelbrot Sin 29 → 24 % ; comptes de sortie
+//! identiques, 0 pixel ≠ GMP. Ce qui reste signalé l'est par l'emballement
+//! de la borne (E ≥ 0,25), dont 39 % sont réellement faux en f64. Essayé et
+//! rejeté : une sonde « disque invariant » (borne propagée depuis un disque
+//! B(c, ρ) ; si `B(ẑ_{k+m}, P) ⊂ B(c, ρ)` l'orbite ne sort jamais) dans les
+//! étages dd et qd — rigoureuse, mais les pixels plafonnés au-delà du dd
+//! sont des orbites bornées CHAOTIQUES (pas de cycle attractif : écart
+//! d'une période à l'autre ~1e-2 au pas 5000) et ceux du dd sont déjà
+//! raccourcis par le cycle exact ; gain mesuré 0-5 %.
+//!
 //! Barnsley aligné sur les autres (même soir) : étage dd à voies entrelacées
 //! avec raccourci de cycle (plus de `hypot`), erreur du pixel span compris
 //! ([`pixel_error`]), arrondi du produit relatif aux OPÉRANDES `|w|₁·|c|₁`.
