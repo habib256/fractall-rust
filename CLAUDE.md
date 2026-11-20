@@ -1052,6 +1052,27 @@ le dd, le mener à son terme sans borne (`dd_untracked`) ; (5) l'étage GMP qui
 arbitre le dd/qd ne descend JAMAIS sous 256 b (`GMP_FLOOR_BITS` ; avec
 `precision_bits` abaissé il tombait à 128 b : Mandelbulb 1667 « corrigé » au
 lieu de 1492 — même plancher dans `std_reliability`).
+**Étage quad-double des boucles scalaires + voies vectorielles du sinus
+(2026-11-20)** — `render/scalar_qd.rs` : étage qd tracé (unité 2⁻²⁰⁰) entre
+le dd et le GMP pour Alpha, Mandelbulb, Magnet, Sin, Barnsley ; point du
+pixel en GMP exact puis converti. `render/scalar_lanes.rs` : étages Sin
+dd/qd et Magnet qd sur `DdV`/`QdV` de `direct_simd` ; `dd_trig` réécrit
+(e^a et e^−a d'un seul polynôme, ln 2 façon Cody-Waite, Estrin). Bord
+256×160 : Mandelbrot Sin 11-16 → 5,6 s (GMP 6,5-9,6 s → 0), Magnet M
+≈ ×1,5, comptes d'itérations inchangés. ⚠️ Règles : (1) un étage plus
+précis avant le GMP ne tourne QUE si le GMP aurait tourné (`gmp_would_run`
+— sinon scène CHAOS : étage cher payé pour des pixels qui restent en f64) ;
+(2) en arithmétique « sloppy » l'arrondi d'une somme se compte sur ses
+OPÉRANDES ; (3) réduction `m·ln 2` sans Cody-Waite : erreur ∝ m·2⁻¹⁰⁶,
+borne fausse dès |y| ≳ 50 ; (4) les voies vectorielles ne paient que si le
+pas est long (Sin oui, Magnet dd non : 26 → 46-52 ns/it.) ; (5) un pas
+vectoriel n'a pas les bits du scalaire : ses constantes d'erreur se
+vérifient contre MPFR pour cette arithmétique-là. Reste : le traqueur
+Magnet est pessimiste (94 % des signalés déjà justes en f64).
+`FRACTALL_SCALAR_QD=0`, `FRACTALL_SIN_LANES=0`. Verrous
+`qd_stage_agrees_with_gmp_beyond_dd`, `qd_trig_matches_mpfr_within_bounds`,
+`sin_lanes_trig_matches_mpfr_within_bounds` ; banc `--ignored
+bench_correction_stages`.
 ⚠️ **L'emballement ne voit pas un bord PARABOLIQUE** (2026-11-19) : près
 d'un point parabolique l'erreur ne s'amplifie pas exponentiellement, elle
 déplace le temps de transit du goulot, et l'orbite s'évade quelques pas plus
@@ -1106,6 +1127,24 @@ directe avec frais généraux, et son traqueur ratait un décalage d'une
 itération au bord parabolique (éléphants : 6 → 2 px faux). Référence
 intérieure (seahorse) : l'étage f64 avec BLA reste 3-20× moins cher, gardé.
 `FRACTALL_SHALLOW_SKIP_F64=0`. Banc : test `--ignored bench_direct_simd`.
+**FMA / AVX2 choisis À L'EXÉCUTION dans les binaires baseline x86-64
+(`fractal/eft.rs`, 2026-11-20)** — `eft::two_prod` (partagée par `dd.rs`,
+`qd.rs`, `direct_simd`) : `mul_add` en ligne si FMA à la compilation,
+fonction `#[target_feature(enable="fma")]` si le CPU l'a (détection
+`OnceLock`), Dekker sinon. `eft::avx2_fma_dispatch()` aiguille vers des
+copies `#[target_feature(enable="avx2,fma")]` des noyaux chauds : étages
+directs dd/qd, noyau par lots f64 (`interp_batch`), boucles rapides de
+perturbation f64 (`pixel_loop`) — identiques au bit près (Rust ne contracte
+jamais `a*b+c`), seul `unsafe` = l'appel. Baseline ramené au natif :
+éléphants 4,40 → 2,20 s, seahorse lots 2,27 → 1,62 s, phase pixels e50
+×1,30. ⚠️ (1) En baseline `mul_add` appelle la glibc, qui passe par
+l'instruction matérielle (~4 ns) : Dekker scalaire est PLUS LENT sur un CPU
+à FMA, et Dekker vectorisé SSE2 pire encore (9,7 vs 5,6 s) — il ne sert
+qu'aux CPU sans FMA ; (2) `inline(always)` sur le corps du noyau par lots
+rend le natif ×2 plus lent : le poser par `cfg_attr(not(avx2+fma), …)` ;
+(3) sans SSE4.1 `floor/round/trunc/ceil` sont logiciels — hors des boucles
+chaudes. Reste : Lyapunov baseline ×1,2-1,4 ; MinGW et CPU sans AVX2 non
+mesurés. `FRACTALL_SIMD_DISPATCH=0` (A/B).
 ⚠️ **Ne pas chercher à resserrer le terme `l·ε` du saut BLA f64** : à
 ε = 2⁻⁵³ la troncature réelle est négligeable (borne du second ordre
 implémentée et testée : la substituer revient à retirer le terme) et c'est
@@ -1167,6 +1206,9 @@ Tous lus UNE fois (`OnceLock`). Défaut = comportement de production.
 
 | Variable | Effet |
 |---|---|
+| `FRACTALL_SIMD_DISPATCH=0` | binaire baseline x86-64 : pas de copies AVX2+FMA aiguillées à l'exécution |
+| `FRACTALL_SCALAR_QD=0` | boucles scalaires suivies : pas d'étage quad-double avant le GMP |
+| `FRACTALL_SIN_LANES=0` | étages dd/qd du sinus en boucle scalaire au lieu des voies vectorielles |
 | `FRACTALL_STD_BATCH=0` | path f64 standard : interpréteur scalaire au lieu du noyau par lots |
 | `FRACTALL_RELIABILITY_STD=0\|all` | path f64 standard : `0` coupe le traqueur et la correction ; défaut Mandelbrot + Julia (correction par perturbation) ; `all` ajoute BS / Tricorn / Celtic / Buffalo / PerpBS (GMP pur sous plafond) |
 | `FRACTALL_STD_MARGIN=0` | path f64 standard : pas de test de détermination à l'évasion (emballement seul — moitié moins de pixels signalés, ~15× plus de pixels faux résiduels sur le volet `std:*`) |
