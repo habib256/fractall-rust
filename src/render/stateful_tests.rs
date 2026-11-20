@@ -280,6 +280,51 @@ fn toggling_find_nucleus_with_kept_cache_matches_fresh() {
     toggle_case("find_nucleus", |p| p.engine.find_nucleus = true);
 }
 
+/// Même vue avec `find_nucleus`, rendue deux fois avec le cache threadé (passes
+/// GUI, sonde puis rendu final) : le centre du cache est le NUCLEUS, pas celui
+/// de la vue — il était rejeté à chaque passe (recherche + orbite refaites).
+#[test]
+fn same_view_with_find_nucleus_reuses_orbit_and_matches_fresh() {
+    let mut p = e30(0.0, "4e-25", (64, 40), 20000);
+    p.engine.find_nucleus = true;
+    let mut cache: Cache = None;
+    let first = render(&p, &mut cache);
+    let built = cache.clone().unwrap();
+    let key = built.nucleus_search.clone().expect("recherche du nucleus enregistrée");
+    assert!(key.period.is_some(), "scène sans nucleus trouvé : test vide");
+    let second = render(&p, &mut cache);
+    assert!(
+        Arc::ptr_eq(&built, cache.as_ref().unwrap()),
+        "même vue + find_nucleus : orbite recalculée au lieu d'être réutilisée"
+    );
+    let f = fresh(&p);
+    assert_structured(&f, "frais");
+    assert_eq!(first.iterations, second.iterations, "second rendu ≠ premier");
+    assert_eq!(second.iterations, f.iterations, "rendu sur cache ≠ frais");
+}
+
+/// Pan / zoom après un rendu `find_nucleus` : la recherche dépend du centre
+/// et de l'échelle de vue — le cache ne doit pas être resservi tel quel.
+#[test]
+fn pan_or_zoom_after_find_nucleus_matches_fresh() {
+    let mut base = e30(0.0, "4e-25", (64, 40), 20000);
+    base.engine.find_nucleus = true;
+    for (label, mut p) in [
+        ("pan 5 px", e30(5.0, "4e-25", (64, 40), 20000)),
+        ("zoom ×2", e30(0.0, "2e-25", (64, 40), 20000)),
+    ] {
+        p.engine.find_nucleus = true;
+        let mut cache: Cache = None;
+        render(&base, &mut cache);
+        let built = cache.clone().unwrap();
+        let s = render(&p, &mut cache);
+        assert!(!Arc::ptr_eq(&built, cache.as_ref().unwrap()), "{label} : cache resservi");
+        let f = fresh(&p);
+        assert_structured(&f, label);
+        assert_eq!(s.iterations, f.iterations, "{label} : ≠ frais");
+    }
+}
+
 #[test]
 fn toggling_dd_tier_with_kept_cache_matches_fresh() {
     toggle_case("use_dd_tier", |p| p.engine.use_dd_tier = true);
@@ -575,5 +620,39 @@ fn scan_scenes() {
         let minesc = v[0];
         v.dedup();
         eprintln!("[SCAN] {n} span={:?} it={} distinct={} capped={} min={} maxesc={} t={:.2}s", p.span_x_hp, p.iteration_max, v.len(), capped, minesc, maxesc, t.elapsed().as_secs_f64());
+    }
+}
+
+/// Diagnostic : scènes où l'auto-ajustement de la série relève le plafond.
+#[test]
+#[ignore]
+fn scan_auto_adjust() {
+    use crate::fractal::perturbation::orbit::compute_reference_orbit_cached;
+    let centers = [
+        ("seahorse", SEAHORSE_X, SEAHORSE_Y, FractalType::Mandelbrot),
+        ("e30", E30_X, E30_Y, FractalType::Mandelbrot),
+        ("julia", JULIA_X, JULIA_Y, FractalType::Julia),
+    ];
+    for (name, x, y, ty) in centers {
+        for span in ["4e-4", "4e-6", "4e-8", "4e-10", "4e-11"] {
+            for size in [(64u32, 40u32), (160, 104), (640, 32)] {
+                for it in [200u32, 1000, 5000, 10000] {
+                    let mut p = view(ty, x, y, 0.0, 0.0, span, size, it);
+                    p.engine.algorithm_mode = AlgorithmMode::Perturbation;
+                    let mut op = p.clone();
+                    op.engine.precision_bits =
+                        crate::fractal::perturbation::compute_perturbation_precision_bits(&p);
+                    if let Some(c) = compute_reference_orbit_cached(&op, None, None, None, false) {
+                        if c.iteration_max != c.requested_iteration_max {
+                            eprintln!(
+                                "[SCAN-ADJ] {name} span={span} size={size:?} it={it} → {} (len {})",
+                                c.iteration_max,
+                                c.orbit.z_ref_f64.len()
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }

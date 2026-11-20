@@ -820,12 +820,100 @@ pub struct ReferenceOrbitCache {
     /// recherche (centre raffiné + matrice K) — sinon la case « nucleus »
     /// cochée à vue constante était ignorée (GUI, 2532/2560 pixels ≠ frais).
     pub find_nucleus: bool,
+    /// Entrées de la recherche du nucleus qui a FIXÉ le centre de ce cache
+    /// (`None` si elle n'a pas tourné). Le centre du cache est alors le
+    /// nucleus, pas celui de la vue : sans cette clé `is_valid_for` rejetait
+    /// le cache à chaque passe de la même vue (recherche + orbite refaites).
+    pub nucleus_search: Option<NucleusSearchKey>,
     /// Puissance Multibrot de la formule (discriminant : Multibrot est dans la
     /// famille perturbation, une orbite z³+c ≠ z²+c au même centre).
     pub multibrot_power: f64,
 }
 
+/// Ce dont dépend le résultat de la recherche du nucleus
+/// (`find_nucleus{,_formula}` + `hybrid_size*`) : centre de VUE et précision
+/// (point de départ de la recherche et de Newton), échelle `s` (critère
+/// atom-domain), plafond (la recherche s'arrête au premier atome ≤ plafond).
+/// La formule, elle, est déjà discriminée par le cache.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NucleusSearchKey {
+    /// Centre de vue lu à `prec`, en décimal complet (comme `center_*_gmp`).
+    pub view_cx: String,
+    pub view_cy: String,
+    /// Échelle de vue `s = max(span_x, span_y)` (FloatExp : bits de la
+    /// mantisse, exposant) — comparée EXACTEMENT : la période trouvée en
+    /// dépend, une tolérance rendrait un autre nucleus qu'un rendu frais.
+    pub scale: (u64, i32),
+    /// Précision de la recherche (= précision de perturbation de la vue).
+    pub prec: u32,
+    /// Plafond passé à la recherche.
+    pub search_cap: u32,
+    /// Période trouvée (`None` : aucun atome jusqu'au plafond, centre gardé).
+    pub period: Option<u32>,
+}
+
+impl NucleusSearchKey {
+    /// Échelle `s` de la recherche pour `params` (même calcul qu'au build).
+    pub(crate) fn scale_of(params: &FractalParams) -> crate::fractal::perturbation::types::FloatExp {
+        let (sx, sy) = crate::fractal::perturbation::effective_spans_fexp(params);
+        if sx > sy {
+            sx
+        } else {
+            sy
+        }
+    }
+
+    /// Une vue qui demande `find_nucleus` obtiendrait-elle, fraîche, le MÊME
+    /// résultat de recherche ? Le premier atome trouvé ne dépend du plafond
+    /// qu'à travers « période ≤ plafond » : trouvé (période p) ⇒ tout plafond
+    /// ≥ p redonne p ; non trouvé ⇒ seul un plafond ≤ celui de la recherche
+    /// est sûr de ne rien trouver non plus.
+    fn matches(&self, params: &FractalParams, required_prec: u32) -> bool {
+        if self.prec != required_prec {
+            return false;
+        }
+        let cap_ok = match self.period {
+            Some(p) => params.iteration_max >= p,
+            None => params.iteration_max <= self.search_cap,
+        };
+        if !cap_ok {
+            return false;
+        }
+        let s = Self::scale_of(params);
+        if (s.mantissa.to_bits(), s.exponent) != self.scale {
+            return false;
+        }
+        let (cx, cy) = view_center_strings(params, self.prec);
+        cx == self.view_cx && cy == self.view_cy
+    }
+}
+
+/// Centre de la vue lu à `prec` (chaînes HP sinon f64), en décimal complet.
+fn view_center_strings(params: &FractalParams, prec: u32) -> (String, String) {
+    let read = |hp: &Option<String>, f: f64| match hp.as_deref().map(Float::parse) {
+        Some(Ok(p)) => Float::with_val(prec, p),
+        _ => Float::with_val(prec, f),
+    };
+    (
+        read(&params.center_x_hp, params.center_x).to_string_radix(10, None),
+        read(&params.center_y_hp, params.center_y).to_string_radix(10, None),
+    )
+}
+
 impl ReferenceOrbitCache {
+    /// Le plafond de `params` est-il servi par ce cache comme par un rendu
+    /// frais ? Un cache AUTO-AJUSTÉ par la série (`iteration_max` >
+    /// `requested_iteration_max`) ne connaît que l'issue de l'ajustement
+    /// pour le plafond demandé à sa construction : un rendu frais à un autre
+    /// plafond refait l'heuristique depuis CE plafond (skip / plafond) et
+    /// peut s'arrêter ailleurs — servir le cache imposait le plafond relevé
+    /// (cf. `cache_lift`, mod.rs).
+    fn cap_compatible(&self, params: &FractalParams) -> bool {
+        self.iteration_max >= params.iteration_max
+            && (self.iteration_max == self.requested_iteration_max
+                || params.iteration_max == self.requested_iteration_max)
+    }
+
     /// Table BLA conformale de l'orbite du cache, construite au besoin.
     /// ⚠️ À lire AVANT `strip_orbit_arrays_for_compress` (qui vide
     /// `z_ref_f64`) : le strip la pré-construit pour cette raison.
@@ -950,6 +1038,14 @@ impl ReferenceOrbitCache {
         // Compare as GMP strings with full precision
         let cx_str = center_x.to_string_radix(10, None);
         let cy_str = center_y.to_string_radix(10, None);
+        // Centre fixé par la recherche du nucleus : le centre du cache est le
+        // nucleus, la vue est reconnue par les ENTRÉES de la recherche (centre
+        // de vue, échelle, précision, plafond) — mêmes entrées ⇒ même nucleus,
+        // même K, même orbite qu'un rendu frais.
+        let center_ok = match (&self.nucleus_search, params.engine.find_nucleus) {
+            (Some(key), true) => key.matches(params, required_prec),
+            _ => self.center_x_gmp == cx_str && self.center_y_gmp == cy_str,
+        };
 
         // Vérifier que la précision calculée nécessaire est <= précision du cache
         // self.precision_bits contient maintenant la précision calculée (pas le preset)
@@ -973,8 +1069,7 @@ impl ReferenceOrbitCache {
             // f64 sans rien dire (`frame_dd` exige `has_dd()`).
             && (!crate::fractal::wisdom::dd_requested(params) || self.orbit.has_dd())
             && gmp_ok
-            && self.center_x_gmp == cx_str
-            && self.center_y_gmp == cy_str
+            && center_ok
             && self.precision_bits >= required_prec  // Comparer précision calculée du cache avec précision calculée requise
             && self.iteration_max >= params.iteration_max
             // Graine EXACTE (pas de tolérance) : une vue Julia profonde
@@ -1030,6 +1125,7 @@ impl ReferenceOrbitCache {
             hybrid_opcodes: params.formula.hybrid_opcodes.clone(),
             nucleus_transform: None,
             find_nucleus: params.engine.find_nucleus,
+            nucleus_search: None,
             multibrot_power: params.formula.multibrot_power,
         }
     }
@@ -1313,6 +1409,7 @@ pub fn compute_reference_orbit_cached(
     let mut adjusted_params = params.clone();
     // K/rotation du nucleus finder, propagées au cache (cf. `nucleus_transform`).
     let mut nucleus_transform: Option<([f64; 4], f64)> = None;
+    let mut nucleus_search: Option<NucleusSearchKey> = None;
 
     // Nucleus finder (Mandelbrot only, opt-in via `find_nucleus`). À deep
     // zoom escape-time, l'utilisateur cible un point près d'un minibrot dont
@@ -1396,6 +1493,14 @@ pub fn compute_reference_orbit_cached(
                 prec,
             ),
         };
+        nucleus_search = Some(NucleusSearchKey {
+            view_cx: cx.to_string_radix(10, None),
+            view_cy: cy.to_string_radix(10, None),
+            scale: (view_scale_fexp.mantissa.to_bits(), view_scale_fexp.exponent),
+            prec,
+            search_cap: adjusted_params.iteration_max,
+            period: nucleus_result.as_ref().map(|r| r.period),
+        });
         if let Some(result) = nucleus_result {
             if perf {
                 // Centre raffiné imprimé à ~50 chiffres : reproductibilité
@@ -1796,6 +1901,7 @@ pub fn compute_reference_orbit_cached(
         hybrid_refs,
     );
     cache.nucleus_transform = nucleus_transform;
+    cache.nucleus_search = nucleus_search;
     cache.requested_iteration_max = params.iteration_max;
     Some(Arc::new(cache))
 }
