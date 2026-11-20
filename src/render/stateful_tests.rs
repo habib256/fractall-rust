@@ -290,6 +290,134 @@ fn toggling_distance_estimation_with_kept_cache_matches_fresh() {
     toggle_case("distance", |p| p.channels.enable_distance_estimation = true);
 }
 
+// ── 5. Sonde d'itérations puis rendu final avec le cache de la sonde ────────
+
+fn probe_then_render(p0: &FractalParams, label: &str) {
+    use crate::fractal::wisdom::{auto_iterations_with, AutoIterOptions};
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut cache: Cache = None;
+    let r = auto_iterations_with(p0, &cancel, AutoIterOptions::default(), &mut cache)
+        .expect("sonde");
+    let mut p = p0.clone();
+    p.iteration_max = r.iteration_max;
+    let s = render(&p, &mut cache);
+    let f = fresh(&p);
+    assert_structured(&f, label);
+    let d = diff_indices(&s, &f);
+    let bad = stateful_only_wrong(&p, &s, &f);
+    eprintln!("[STATEFUL] probe {label}: N={} diff={} stateful_only_wrong={bad}", p.iteration_max, d.len());
+    assert!(bad == 0 && d.len() <= 2, "{label} : sonde puis rendu ≠ frais ({} px, {bad} faux)", d.len());
+}
+
+#[test]
+fn probe_cache_then_final_render_matches_fresh_deep() {
+    let mut p = e30(0.0, "4e-25", (128, 80), 1000);
+    p.engine.algorithm_mode = AlgorithmMode::Auto;
+    probe_then_render(&p, "e30 4e-25");
+}
+
+#[test]
+fn probe_cache_then_final_render_matches_fresh_std_path() {
+    // Seahorse 1e8 : path f64 standard + correction par perturbation dont la
+    // référence passe par le cache d'orbite.
+    let mut p = seahorse(0.0, "4e-8", (128, 80), 1000);
+    p.engine.algorithm_mode = AlgorithmMode::Auto;
+    probe_then_render(&p, "seahorse 4e-8 std");
+}
+
+// ── 5b. Zoom arrière d'une vue profonde (perturbation) vers le path f64 ─────
+
+#[test]
+fn zoom_out_from_perturbation_to_std_path_with_kept_cache_matches_fresh() {
+    let size = (64, 40);
+    let mut cache: Cache = None;
+    // Vue profonde (régime atom-domain), même centre, puis zooms arrière
+    // jusqu'au path standard, plafond constant.
+    for span in ["4e-13", "4e-11", "4e-9"] {
+        let mut p = seahorse(0.0, span, size, 4000);
+        p.engine.algorithm_mode = AlgorithmMode::Auto;
+        render(&p, &mut cache);
+    }
+    let mut p = seahorse(0.0, "4e-8", size, 4000);
+    p.engine.algorithm_mode = AlgorithmMode::Auto;
+    let s = render(&p, &mut cache);
+    let f = fresh(&p);
+    assert_structured(&f, "seahorse 4e-8");
+    let d = diff_indices(&s, &f);
+    let bad = stateful_only_wrong(&p, &s, &f);
+    assert!(bad == 0 && d.len() <= 2, "zoom arrière vers std : {} px ≠ frais, {bad} faux", d.len());
+}
+
+// ── 5c. Écho XaoS (pan entier + zoom ×2 ancré) avec cache d'orbite ──────────
+
+fn xaos_sequence(mk: impl Fn(f64, &str) -> FractalParams, span: &str, half: &str, label: &str) {
+    use crate::fractal::xaos::{build_map, build_refine_map, params_fingerprint, view_strings, XaosSourceFrame};
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut cache: Cache = None;
+    let src_frame = |p: &FractalParams, o: &RenderOutput| {
+        XaosSourceFrame::exact(
+            Arc::new(o.iterations.clone()),
+            Arc::new(o.zs.clone()),
+            p.width,
+            p.height,
+            view_strings(p),
+            params_fingerprint(p),
+        )
+    };
+    let a = mk(0.0, span);
+    let oa = render(&a, &mut cache);
+    // Pan de 7 px exactement : copie des colonnes communes.
+    let b = mk(7.0, span);
+    let map = build_map(&src_frame(&a, &oa), &b).expect("map de pan");
+    assert!(map.any_reuse());
+    let ob = render_request(RenderRequest::new(&b, &cancel).with_xaos(&map), &mut cache).unwrap();
+    let fb = fresh(&b);
+    assert_structured(&fb, label);
+    let bad = stateful_only_wrong(&b, &ob, &fb);
+    let d = diff_indices(&ob, &fb).len();
+    assert!(bad == 0 && d <= 2, "{label} pan XaoS : {d} px ≠ frais, {bad} faux");
+    // Zoom ×2 ancré (écho) puis raffinement exact.
+    let c = mk(7.0 + 5.0, half);
+    let map = build_map(&src_frame(&b, &ob), &c).expect("map de zoom");
+    let oc = render_request(RenderRequest::new(&c, &cancel).with_xaos(&map), &mut cache).unwrap();
+    let src = XaosSourceFrame::from_map(
+        Arc::new(oc.iterations.clone()),
+        Arc::new(oc.zs.clone()),
+        c.width,
+        c.height,
+        view_strings(&c),
+        params_fingerprint(&c),
+        &map,
+    );
+    let refined = match build_refine_map(&src, &c) {
+        Some(m) => render_request(RenderRequest::new(&c, &cancel).with_xaos(&m), &mut cache).unwrap(),
+        None => oc,
+    };
+    let fc = fresh(&c);
+    let bad = stateful_only_wrong(&c, &refined, &fc);
+    let d = diff_indices(&refined, &fc).len();
+    eprintln!("[STATEFUL] xaos {label}: zoom+refine diff={d} bad={bad}");
+    assert!(bad == 0 && d <= 2, "{label} zoom XaoS + raffinement : {d} px ≠ frais, {bad} faux");
+}
+
+#[test]
+fn xaos_pan_and_zoom_with_orbit_cache_std_path() {
+    // `mk(dx, span)` : `dx` en pixels de la vue `span` ; zoom ancré traité
+    // comme un recentrage (centre décalé) — la carte XaoS gère la géométrie.
+    let mk = |dx: f64, span: &str| {
+        let mut p = seahorse(dx, span, (64, 40), 4000);
+        p.engine.algorithm_mode = AlgorithmMode::Auto;
+        p
+    };
+    xaos_sequence(mk, "4e-8", "2e-8", "seahorse std");
+}
+
+#[test]
+fn xaos_pan_and_zoom_with_orbit_cache_deep() {
+    let mk = |dx: f64, span: &str| e30(dx, span, (64, 40), 20000);
+    xaos_sequence(mk, "4e-25", "2e-25", "e30 profond");
+}
+
 // ── 6. Julia (Z[0] ≠ 0) : pan avec orbite réutilisée ────────────────────────
 
 #[test]
@@ -310,6 +438,31 @@ fn julia_pan_with_reused_orbit_is_correct() {
     assert_structured(&f, "frais");
     let bad = stateful_only_wrong(&p, &s, &f);
     assert!(bad <= 1, "Julia pan, orbite réutilisée : {bad} pixels faux (frais juste)");
+}
+
+/// Graine Julia changée de quelques ulp à vue profonde, cache gardé : la
+/// tolérance de 1e-15 du cache tenait les deux graines pour égales alors que
+/// la vue (span 4e-20) les distingue.
+#[test]
+fn julia_seed_nudge_with_kept_cache_matches_fresh() {
+    let mk = |seed_re: f64| {
+        let mut p = view(FractalType::Julia, JULIA_X, JULIA_Y, 0.0, 0.0, "4e-15", (64, 40), 8192);
+        p.seed.re = seed_re;
+        p.seed.im = 0.156;
+        p.engine.algorithm_mode = AlgorithmMode::Perturbation;
+        p
+    };
+    let a = mk(-0.8);
+    let mut cache: Cache = None;
+    let oa = render(&a, &mut cache);
+    let nudged = f64::from_bits((-0.8f64).to_bits() + 4); // ~4e-16 plus loin
+    let b = mk(nudged);
+    let s = render(&b, &mut cache);
+    let f = fresh(&b);
+    assert_structured(&f, "Julia 4e-15");
+    assert!(diff_indices(&f, &oa).len() > 100, "anti-vacuité : la graine décalée doit changer la vue");
+    let d = diff_indices(&s, &f).len();
+    assert!(d <= 2, "graine Julia décalée, cache gardé : {d} px ≠ frais");
 }
 
 // ── 7. Hybrides / opcodes : changement de séquence, cache gardé ─────────────

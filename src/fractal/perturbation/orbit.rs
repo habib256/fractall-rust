@@ -977,8 +977,12 @@ impl ReferenceOrbitCache {
             && self.center_y_gmp == cy_str
             && self.precision_bits >= required_prec  // Comparer précision calculée du cache avec précision calculée requise
             && self.iteration_max >= params.iteration_max
-            && (self.seed_re - params.seed.re).abs() < 1e-15
-            && (self.seed_im - params.seed.im).abs() < 1e-15
+            // Graine EXACTE (pas de tolérance) : une vue Julia profonde
+            // distingue des graines à quelques ulp — l'ancienne tolérance
+            // 1e-15 rendait la nouvelle graine avec l'orbite de l'ancienne
+            // (span 4e-15, 4 ulp : 2502/2560 pixels ≠ frais).
+            && self.seed_re == params.seed.re
+            && self.seed_im == params.seed.im
             && (self.bla_threshold - params.perturbation.bla_threshold).abs() < 1e-20
             && (self.bla_validity_scale - params.perturbation.bla_validity_scale).abs() < 1e-10
     }
@@ -1082,8 +1086,8 @@ impl ReferenceOrbitCache {
             && gmp_ok
             && self.precision_bits >= required_prec
             && self.iteration_max >= params.iteration_max
-            && (self.seed_re - params.seed.re).abs() < 1e-15
-            && (self.seed_im - params.seed.im).abs() < 1e-15
+            && self.seed_re == params.seed.re
+            && self.seed_im == params.seed.im
             && (self.bla_threshold - params.perturbation.bla_threshold).abs() < 1e-20
             && (self.bla_validity_scale - params.perturbation.bla_validity_scale).abs() < 1e-10)
         {
