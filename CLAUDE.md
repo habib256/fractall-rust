@@ -937,6 +937,15 @@ itérations de la frame (`FAMILY_GMP_ITER_BUDGET`), valeur f64 + avertissement
 au-delà. Burning Ship / Tricorn : opt-in `FRACTALL_RELIABILITY_FAMILY=all`
 (107 scènes sondées, aucun pixel faux adjudicable). **Sans suivi** :
 hybrides, DE, Julia au tier exp.
+⚠️ **Le test d'évasion d'un étage dd/qd se fait sur une norme f64**
+(parties hautes, arrondie à ~2⁻⁵²·R) : sa marge doit couvrir cet arrondi
+(`direct_dd::NORM_REL` = 8·2⁻⁵³ relatif), pas seulement la borne ~2⁻¹⁰³·R —
+sinon un point à 1e-16 du cercle d'évasion est déclaré fiable avec une
+itération d'écart (relecture 2026-11-20 ; étages directs, `scalar_qd`,
+voies, Phoenix). Même classe : une boucle tracée qui part du pixel (Julia)
+doit juger la sortie AU PAS 0 (`start_undetermined`). Verrous
+`direct_stages_escape_test_covers_f64_norm_rounding`,
+`julia_start_on_the_bailout_circle_is_not_declared_reliable`.
 ⚠️ **Path f64 STANDARD : suivi depuis le 2026-11-18** (chantier de
 correction n° 1). Il était faux sans rien signaler sur les bords chaotiques à
 fort plafond, bien avant d'être à court de mantisse (seahorse 1e10, 2500 it.,
@@ -1398,9 +1407,19 @@ en f64 sans le dire : exige `has_dd()`), graine Julia décalée de quelques
 ulp (tolérance 1e-15 → comparaison EXACTE, aussi dans `can_subset_reuse`).
 ⚠️ Un test de séquence sur une vue sans structure ne prouve rien :
 `assert_structured` (≥ 20 comptes distincts). ⚠️ Tout réglage qui change
-l'orbite ou ce qu'elle porte doit entrer dans `is_valid_for`. Ouvert : un
-cache bâti avec nucleus est rejeté à chaque passe (centre = nucleus ≠
-centre de vue) → nucleus + orbite refaits par passe progressive. ⚠️ **Régime atom-domain** (`is_valid_for` +
+l'orbite ou ce qu'elle porte doit entrer dans `is_valid_for`. **Cache à
+nucleus reconnu par les ENTRÉES de la recherche** (`NucleusSearchKey` :
+centre de vue en décimal complet, échelle exacte, précision, plafond,
+période trouvée) — son centre étant le nucleus, il était rejeté à chaque
+passe (2e rendu e30 : 0,60 → 0,14 s). Plafond : période p trouvée ⇒ tout
+plafond ≥ p ; rien trouvé ⇒ seulement ≤ celui de la recherche. PAS de
+tolérance sur le span (la période dépend de l'échelle). ⚠️ **OUVERT —
+auto-ajustement de la série et plafond** : un cache bâti à 200 sans
+ajustement puis servi à 40 diffère du frais (qui relève 40 → 160) : 733 /
+20 480 px sur la scène c = i, span 4e-10, 640×32, perturbation forcée
+(verrou `#[ignore]` `auto_adjusted_cache_serves_only_its_requested_cap`,
+diagnostic en commentaire ; la règle « servi au seul plafond demandé »
+casse `probe_orbit_cache_is_reusable_by_final_render`). ⚠️ **Régime atom-domain** (`is_valid_for` +
 `can_subset_reuse` → `atom_regime_scale_mismatch`) : la troncature atom-domain
 de la référence dépend de l'ÉCHELLE de vue (`atom_radius_sqr = span_vue²`), donc
 une référence est baked à son span de construction. En zoom profond
