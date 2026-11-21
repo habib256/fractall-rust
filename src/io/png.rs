@@ -12,6 +12,13 @@ use crate::fractal::{FractalParams, FractalType};
 
 /// Clé du chunk tEXt pour les métadonnées fractales.
 const METADATA_KEY: &str = "fractall-params";
+/// Chunk iTXt : commande `fractall-cli` CANONIQUE qui re-rend l'image, lisible
+/// telle quelle (`exiftool`, `pngcheck -t`). Reconstruite depuis les paramètres
+/// (même générateur que le bouton « 📋 CLI » de la GUI), JAMAIS depuis
+/// `std::env::args()` : correcte aussi pour une sauvegarde GUI, itérations
+/// résolues, sans chemin de la machine, identique pour deux images de la même
+/// vue. Purement informatif — la source de vérité reste `fractall-params`.
+pub const COMMAND_KEY: &str = "fractall-command";
 
 /// Génère une image RGB colorisée avec métadonnées fractales intégrées dans un chunk tEXt.
 ///
@@ -204,6 +211,26 @@ pub fn save_png_rgb_with_metadata(
     span_x_hp: &str,
     span_y_hp: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    save_png_rgb_with_metadata_aa(
+        params, buffer, output, center_x_hp, center_y_hp, span_x_hp, span_y_hp, 1,
+    )
+}
+
+/// Comme [`save_png_rgb_with_metadata`], pour un buffer issu de l'accumulation
+/// AA : `aa_samples` n'est pas un champ de `FractalParams` (non persisté), il
+/// n'est connu que de l'appelant et ne sert ici qu'à la commande embarquée
+/// (`--aa-samples`, `--jitter-scale` lu dans `params.sampling.jitter_scale`).
+#[allow(clippy::too_many_arguments)]
+pub fn save_png_rgb_with_metadata_aa(
+    params: &FractalParams,
+    buffer: &[u8],
+    output: &Path,
+    center_x_hp: &str,
+    center_y_hp: &str,
+    span_x_hp: &str,
+    span_y_hp: &str,
+    aa_samples: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
     let width = params.width;
     let height = params.height;
     assert_eq!(
@@ -239,11 +266,42 @@ pub fn save_png_rgb_with_metadata(
 
     // Ajouter le chunk tEXt avec les métadonnées
     encoder.add_text_chunk(METADATA_KEY.to_string(), metadata_json)?;
+    encoder.add_itxt_chunk(
+        COMMAND_KEY.to_string(),
+        canonical_command(&params_to_save, aa_samples),
+    )?;
 
     let mut png_writer = encoder.write_header()?;
     png_writer.write_image_data(buffer)?;
 
     Ok(())
+}
+
+/// Commande canonique embarquée dans le chunk [`COMMAND_KEY`].
+fn canonical_command(params: &FractalParams, aa_samples: u32) -> String {
+    use crate::gui::cli_command::{build_cli_command, CliExtras};
+    let jitter = params.sampling.jitter_scale;
+    let extras = CliExtras {
+        aa_samples: aa_samples.max(1),
+        aa_jitter_scale: if jitter > 0.0 { jitter } else { 1.0 },
+        // Centre EXACT : arrondi, il déplace la référence de perturbation et
+        // la commande ne redonnerait plus l'image au pixel près.
+        exact_center: true,
+    };
+    build_cli_command(params, extras).command
+}
+
+/// Commande `fractall-cli` embarquée dans un PNG fractall (`None` pour un PNG
+/// antérieur à ce chunk ou étranger).
+pub fn load_png_command(path: &Path) -> Option<String> {
+    let decoder = Decoder::new(BufReader::new(File::open(path).ok()?));
+    let reader = decoder.read_info().ok()?;
+    reader
+        .info()
+        .utf8_text
+        .iter()
+        .find(|chunk| chunk.keyword == COMMAND_KEY)
+        .and_then(|chunk| chunk.get_text().ok())
 }
 
 /// Charge les métadonnées fractales depuis un fichier PNG.
@@ -797,5 +855,45 @@ mod tests {
         let (path, _) = deep_png("zero");
         assert!(params_for_rerender(&path, Some(0), None).is_err());
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Le PNG embarque la commande CANONIQUE (générateur du bouton « 📋 CLI »),
+    /// pas la ligne de commande du processus : aucun chemin de la machine,
+    /// `--aa-samples` présent seulement pour une accumulation AA, et le chunk
+    /// `fractall-params` reste lisible à côté.
+    #[test]
+    fn saved_png_embeds_canonical_command() {
+        use crate::gui::cli_command::{build_cli_command, CliExtras};
+        let (w, h) = (8u32, 4u32);
+        let mut params = default_params_for_type(FractalType::Mandelbrot, w, h);
+        params.iteration_max = 777;
+        let rgb = vec![0u8; (w * h * 3) as usize];
+        let dir = std::env::temp_dir().join(format!("fractall-cmd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let hp = ("-0.75", "0.1", "0.004", "0.002");
+
+        let plain = dir.join("secret-user-dir-plain.png");
+        save_png_rgb_with_metadata(&params, &rgb, &plain, hp.0, hp.1, hp.2, hp.3).unwrap();
+        let cmd = load_png_command(&plain).expect("command chunk");
+        let mut saved = params.clone();
+        saved.center_x_hp = Some(hp.0.into());
+        saved.center_y_hp = Some(hp.1.into());
+        saved.span_x_hp = Some(hp.2.into());
+        saved.span_y_hp = Some(hp.3.into());
+        let exact = CliExtras { exact_center: true, ..CliExtras::default() };
+        assert_eq!(cmd, build_cli_command(&saved, exact).command);
+        assert!(cmd.starts_with("fractall-cli --type 3 "), "{cmd}");
+        assert!(cmd.contains("--iterations 777"), "{cmd}");
+        assert!(cmd.contains("--center-x-hp=-0.75"), "{cmd}");
+        assert!(!cmd.contains("secret-user-dir") && !cmd.contains("aa-samples"), "{cmd}");
+        assert_eq!(load_png_metadata(&plain).unwrap().iteration_max, 777);
+
+        let aa = dir.join("aa.png");
+        params.sampling.jitter_scale = 0.5;
+        save_png_rgb_with_metadata_aa(&params, &rgb, &aa, hp.0, hp.1, hp.2, hp.3, 4).unwrap();
+        let cmd = load_png_command(&aa).unwrap();
+        assert!(cmd.contains("--aa-samples 4 --jitter-scale 0.5"), "{cmd}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

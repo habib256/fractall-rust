@@ -3649,6 +3649,7 @@ impl eframe::App for FractallApp {
                         aa_jitter_scale: crate::gui::render_state::normalized_jitter_scale(
                             self.aa_jitter_scale,
                         ),
+                        exact_center: false,
                     },
                 );
                 let mut cli_hover = String::from(
