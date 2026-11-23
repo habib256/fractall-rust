@@ -1303,6 +1303,7 @@ impl FractallApp {
             // les passes — seules les dims changent, neutralisées).
             let (view_cx, view_cy, view_sx, view_sy) = xaos::view_strings(&params);
             let render_fingerprint = xaos::params_fingerprint(&params);
+            let mut centered_curve_aa = None;
 
             for (pass_index, &scale_divisor) in config.passes.iter().enumerate() {
                 // Vérifier l'annulation
@@ -1529,6 +1530,23 @@ impl FractallApp {
 
                 match result {
                     Some((out, effective_mode, precision_label, from_gpu)) => {
+                        // La passe CPU pleine résolution d’une courbe est le premier
+                        // échantillon AA (décalage global nul pour k = 0).
+                        if aa_samples > 1 && is_final_pass && !from_gpu && !use_gpu
+                            && (pass_width, pass_height) == (full_width, full_height)
+                            && xaos_map.is_none()
+                            && matches!(params.fractal_type, FractalType::VonKoch | FractalType::Dragon)
+                            && params.sampling.aa_subpixel_offset == [0.0, 0.0]
+                            && params.sampling.aa_jitter.is_none()
+                        {
+                            let mut accum = crate::io::png::AaAccumulator::new(&pass_params, true);
+                            if let Err(e) = accum.add(&pass_params, &out) {
+                                eprintln!("AA sample 1: {e}");
+                                let _ = sender.send(RenderMessage::Cancelled);
+                                return;
+                            }
+                            centered_curve_aa = Some(accum);
+                        }
                         // Sortie typée (G5) : les canaux annexes suivent
                         // iterations/zs jusqu'à la colorisation et l'état app.
                         let crate::render::RenderOutput {
@@ -1668,66 +1686,40 @@ impl FractallApp {
                 }
             }
 
-            // ─── Anti-aliasing multi-sample (per-frame jitter) ───
-            // Après les passes progressives (la dernière passe pleine résolution
-            // = sample 0, offset (0,0)), on rend N samples plein cadre avec un
-            // offset sous-pixel low-discrepancy et on moyenne en espace RGB.
-            // Le cache d'orbite est réutilisé entre samples CPU
-            // (même centre) → coût perturbation amorti. Affichage incrémental.
+            // Chaque moyenne intermédiaire est publiée pour l’affichage progressif.
             if aa_samples > 1 && !cancel.load(Ordering::Relaxed) {
-                let w = full_width;
-                let h = full_height;
-                let mut accum = vec![0f64; (w as usize) * (h as usize) * 3];
-                let mut done: u32 = 0;
-                for k in 0..aa_samples as u64 {
+                let reused_center = centered_curve_aa.is_some();
+                let mut accum = centered_curve_aa.unwrap_or_else(|| {
+                    crate::io::png::AaAccumulator::new(&params, !use_gpu)
+                });
+                let mut p = params.clone();
+                for k in 0..aa_samples {
                     if cancel.load(Ordering::Relaxed) {
-                        break;
+                        let _ = sender.send(RenderMessage::Cancelled);
+                        return;
                     }
-                    let mut p = params.clone();
-                    p.width = w;
-                    p.height = h;
-                    // Décorrélation Cranley-Patterson F3 par pixel (bas N sans
-                    // aliasing corrélé). La boucle rend déjà tous les samples
-                    // k=0..N (aucun réemploi de base à casser).
-                    p.sampling.aa_jitter = Some((k, aa_jitter_scale));
-
-                    // Même dispatcher unifié que le CLI (cache d'orbite réutilisé
-                    // entre samples, même centre).
-                    let mut cache = current_orbit_cache.take();
-                    let rendered = render_planned(
-                        PlannedRenderRequest::new(
-                            render_plan,
-                            RenderRequest::new(&p, &cancel),
-                        ),
-                        gpu_renderer.as_deref(),
-                        &mut cache,
-                    )
-                    .map(|result| result.output);
-                    current_orbit_cache = cache;
-                    let Some(sample) = rendered else { break };
-                    let rgb = colorize_buffer(
-                        &sample.iterations,
-                        &sample.zs,
-                        &sample.distances,
-                        &sample.orbits,
-                        &p,
-                        w,
-                        h,
-                    );
-                    for (a, &c) in accum.iter_mut().zip(rgb.iter()) {
-                        *a += c as f64;
+                    if k > 0 || !reused_center {
+                        p.sampling.aa_jitter = Some((u64::from(k), aa_jitter_scale));
+                        let rendered = render_planned(
+                            PlannedRenderRequest::new(render_plan, RenderRequest::new(&p, &cancel)),
+                            gpu_renderer.as_deref(),
+                            &mut current_orbit_cache,
+                        );
+                        let Some(sample) = rendered else {
+                            let _ = sender.send(RenderMessage::Cancelled);
+                            return;
+                        };
+                        if let Err(e) = accum.add(&p, &sample.output) {
+                            eprintln!("AA sample {}: {e}", k + 1);
+                            let _ = sender.send(RenderMessage::Cancelled);
+                            return;
+                        }
                     }
-                    done += 1;
-                    let inv = 1.0 / done as f64;
-                    let avg: Vec<u8> = accum
-                        .iter()
-                        .map(|&s| (s * inv).round().clamp(0.0, 255.0) as u8)
-                        .collect();
                     let _ = sender.send(RenderMessage::AaProgress {
-                        display_buffer: avg,
-                        width: w,
-                        height: h,
-                        sample: done,
+                        display_buffer: accum.average(),
+                        width: full_width,
+                        height: full_height,
+                        sample: k + 1,
                         total: aa_samples,
                     });
                 }
@@ -4313,6 +4305,47 @@ impl eframe::App for FractallApp {
 #[cfg(test)]
 mod screenshot_tests {
     use super::*;
+
+    #[test]
+    fn curve_aa_progress_matches_independent_full_resolution_samples() {
+        let ctx = Context::default();
+        let mut app = FractallApp::new(&eframe::CreationContext::_new_kittest(ctx));
+        app.aa_samples = 3;
+        app.aa_jitter_scale = 0.75;
+        for (kind, offset) in [
+            (FractalType::VonKoch, [0.0, 0.0]),
+            (FractalType::Dragon, [0.375, -0.25]),
+        ] {
+            let mut p = default_params_for_type(kind, 59, 37);
+            p.iteration_max = 6;
+            p.sampling.aa_subpixel_offset = offset;
+            app.params = p.clone();
+            app.start_render();
+            let rx = app.render_receiver.take().unwrap();
+            let mut reference = crate::io::png::AaAccumulator::new(&p, false);
+            let mut received = 0;
+            loop {
+                match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    RenderMessage::AaProgress { display_buffer, width, height, sample, total } => {
+                        received += 1;
+                        assert_eq!((width, height, sample, total), (59, 37, received, 3));
+                        p.sampling.aa_jitter = Some((u64::from(sample - 1), 0.75));
+                        let (it, z) = if kind == FractalType::VonKoch {
+                            crate::fractal::render_von_koch(&p)
+                        } else {
+                            crate::fractal::render_dragon(&p)
+                        };
+                        reference.add(&p, &crate::render::RenderOutput::without_extras(it, z)).unwrap();
+                        assert_eq!(display_buffer, reference.average());
+                    }
+                    RenderMessage::AllComplete { .. } => break,
+                    RenderMessage::Cancelled => panic!("unexpected cancellation"),
+                    _ => {}
+                }
+            }
+            assert_eq!(received, 3);
+        }
+    }
 
     #[test]
     fn aa_pixels_and_geometry_survive_late_passes_after_completion() {

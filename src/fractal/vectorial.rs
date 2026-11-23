@@ -39,6 +39,7 @@ struct Raster {
     ink: u32,
     radii: [f64; MAX_DRAGON_DEPTH as usize + 1],
     subpixel_depth: u32,
+    dragon_leaf_span: f64,
     iterations: Vec<u32>,
     zs: Vec<Complex64>,
 }
@@ -53,6 +54,7 @@ impl Raster {
             ink: params.iteration_max,
             radii: [0.0; MAX_DRAGON_DEPTH as usize + 1],
             subpixel_depth: 0,
+            dragon_leaf_span: f64::INFINITY,
             iterations: vec![0; width * height],
             zs: vec![Complex64::new(0.0, 0.0); width * height],
         }
@@ -99,6 +101,7 @@ impl Raster {
     /// deux constructions. Ensuite, la distance maximale des milieux enfants
     /// au milieu parent vaut L/3 pour Koch, L/(2√2) pour Dragon. Ajouter ce
     /// déplacement au rayon enfant borne donc tout le sous-arbre par induction.
+    /// Renvoie la marge d'arrondi utilisée pour un sommet.
     fn bound_subtrees(
         &mut self,
         a: Point,
@@ -106,7 +109,7 @@ impl Raster {
         depth: u32,
         child_scale: f64,
         child_midpoint: f64,
-    ) {
+    ) -> f64 {
         let root_length = (a.x - b.x).hypot(a.y - b.y);
         let magnitude = a.x.abs().max(a.y.abs()).max(b.x.abs()).max(b.y.abs()) + root_length;
         // Marge d'arrondi sur les coordonnées absolues pour les 20 subdivisions
@@ -128,6 +131,7 @@ impl Raster {
             self.subpixel_depth = level;
             length /= child_scale;
         }
+        margin
     }
 
     #[inline]
@@ -179,6 +183,23 @@ impl Raster {
             return;
         }
         let d = b.rotate(std::f64::consts::FRAC_PI_2, center);
+        if depth == 1 && self.dragon_leaf_span <= 2.0 {
+            for vertex in [a, d, b] {
+                self.pixel(vertex.x as i64, vertex.y as i64);
+            }
+            if self.dragon_leaf_span > 1.0 {
+                // À deux pas de Bresenham, le seul pixel intérieur avance
+                // d'une unité sur chaque axe non constant depuis le départ.
+                for start in [a, b] {
+                    let (x, y) = (start.x as i64, start.y as i64);
+                    let (dx, dy) = (d.x as i64 - x, d.y as i64 - y);
+                    if dx.abs() == 2 || dy.abs() == 2 {
+                        self.pixel(x + dx.signum(), y + dy.signum());
+                    }
+                }
+            }
+            return;
+        }
         self.dragon::<PRUNE>(a, d, depth - 1);
         self.dragon::<PRUNE>(b, d, depth - 1);
     }
@@ -229,7 +250,14 @@ pub fn render_dragon(params: &FractalParams) -> (Vec<u32>, Vec<Complex64>) {
         let b = Point::new(0.838 * w + origin.x, (h - 0.31 * h) + origin.y);
         let depth = params.iteration_max.min(MAX_DRAGON_DEPTH);
         let child_scale = std::f64::consts::FRAC_1_SQRT_2;
-        raster.bound_subtrees(a, b, depth, child_scale, 0.5 * child_scale);
+        let margin = raster.bound_subtrees(a, b, depth, child_scale, 0.5 * child_scale);
+        // Chaque pli tourne les segments de 45° modulo 90° et les réduit de
+        // √2. Après deux plis, le déplacement sur chaque axe est donc divisé
+        // par deux, à une permutation et un signe près.
+        let dx = (b.x - a.x).abs();
+        let dy = (b.y - a.y).abs();
+        let extent = if depth % 2 == 0 { dx.max(dy) } else { dx + dy };
+        raster.dragon_leaf_span = extent / (1u32 << depth.div_ceil(2)) as f64 + 2.0 * margin;
         // Tester deux feuilles à la dernière bifurcation seule coûte aussi
         // cher que les tracer. Amortir ce test sur au moins deux niveaux.
         if raster.subpixel_depth >= 2 {
@@ -273,6 +301,23 @@ mod tests {
                 assert_eq!(pruned.iterations, full.iterations);
                 assert_eq!(pruned.zs, full.zs);
             }
+        }
+    }
+
+    #[test]
+    fn short_dragon_segments_match_bresenham() {
+        let mut params = default_params_for_type(FractalType::Dragon, 80, 64);
+        params.sampling.aa_subpixel_offset = [0.375, -0.25];
+        let origin = sample_origin(&params);
+        let (w, h) = (params.width as f64, params.height as f64);
+        let a = Point::new(0.338 * w + origin.x, 0.208 * h + origin.y);
+        let b = Point::new(0.838 * w + origin.x, (h - 0.31 * h) + origin.y);
+        // Profondeurs paires et impaires, avec un ou deux pas par segment.
+        for depth in [10, 11, 12, 13] {
+            params.iteration_max = depth;
+            let mut reference = Raster::new(&params);
+            reference.dragon::<false>(a, b, depth);
+            assert_eq!(render_dragon(&params), (reference.iterations, reference.zs));
         }
     }
 

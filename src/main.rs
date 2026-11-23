@@ -1300,7 +1300,7 @@ fn main() {
         gpu_renderer.as_ref(),
         &mut orbit_cache,
     );
-    let (out, rendered_on_gpu): (render::RenderOutput, bool) = match planned {
+    let (mut out, rendered_on_gpu): (render::RenderOutput, bool) = match planned {
         Some(result) => {
             if result.fell_back_to_cpu {
                 eprintln!("GPU unavailable or incompatible, falling back to CPU");
@@ -1340,13 +1340,7 @@ fn main() {
     // Utiliser les strings HP si disponibles, sinon convertir f64
     let [center_x_hp, center_y_hp, span_x_hp, span_y_hp] = hp_strings(&params);
     let png_result = if aa_samples > 1 {
-        let n_bytes = params.width as usize * params.height as usize * 3;
-        let mut accum = vec![0f64; n_bytes];
-        let accumulate = |accum: &mut [f64], rgb: &[u8]| {
-            for (a, &c) in accum.iter_mut().zip(rgb.iter()) {
-                *a += c as f64;
-            }
-        };
+        let mut accum = io::png::AaAccumulator::new(&params, !rendered_on_gpu);
         // Koch et Dragon décalent toute la courbe. Leur premier échantillon
         // est centré et correspond exactement au rendu déjà disponible.
         // Le jitter par pixel peut, lui, déplacer même le premier échantillon.
@@ -1358,15 +1352,15 @@ fn main() {
         for k in 0..aa_samples as u64 {
             let mut p = params.clone();
             p.sampling.aa_jitter = Some((k, aa_jitter_scale));
-            let rendered;
-            let sample = if k == 0 && reuse_centered_curve {
-                &out
+            let rendered = if k == 0 && reuse_centered_curve {
+                // Les maps brutes sont exclusives du multi-échantillonnage.
+                Some(std::mem::take(&mut out))
             } else {
                 // Dispatcher COMPLET : les canaux distances/orbites sont requis par
                 // les modes Distance*/OrbitTraps/Wings (sinon retombée silencieuse
                 // sur Smooth — classe « colorisation unique », cf. CLAUDE.md).
                 let mut aa_cache = None;
-                rendered = if rendered_on_gpu {
+                if rendered_on_gpu {
                     render::render_planned(
                         render::PlannedRenderRequest::new(
                             final_plan,
@@ -1378,28 +1372,19 @@ fn main() {
                     .map(|r| r.output)
                 } else {
                     render::render_request(render::RenderRequest::new(&p, &cancel), &mut aa_cache)
-                };
-                let Some(sample) = rendered.as_ref() else {
-                    eprintln!("Error: AA render interrupted (sample {})", k + 1);
-                    std::process::exit(1);
-                };
-                sample
-            };
-            let rgb = match io::png::colorize_output(&p, sample) {
-                Ok(rgb) => rgb,
-                Err(e) => {
-                    eprintln!("Colouring error (sample {}): {e}", k + 1);
-                    std::process::exit(1);
                 }
             };
-            accumulate(&mut accum, &rgb);
+            let Some(sample) = rendered else {
+                eprintln!("Error: AA render interrupted (sample {})", k + 1);
+                std::process::exit(1);
+            };
+            if let Err(e) = accum.add(&p, &sample) {
+                eprintln!("Colouring error (sample {}): {e}", k + 1);
+                std::process::exit(1);
+            }
             println!("[AA] sample {}/{}", k + 1, aa_samples);
         }
-        let inv_n = 1.0 / aa_samples as f64;
-        let avg: Vec<u8> = accum
-            .iter()
-            .map(|&s| (s * inv_n).round().clamp(0.0, 255.0) as u8)
-            .collect();
+        let avg = accum.average();
         io::png::save_png_rgb_with_metadata_aa(
             &params,
             &avg,

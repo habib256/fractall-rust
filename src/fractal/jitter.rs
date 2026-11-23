@@ -114,14 +114,23 @@ pub fn sample_offset(k: u64) -> (f64, f64) {
 /// (point NaN de `triangle`) n'est jamais atteint.
 #[allow(dead_code)]
 pub fn pixel_offset(width: usize, i: usize, j: usize, k: u64, scale: f64) -> (f64, f64) {
-    // ix = (frame·height + j)·width + i, frame = 0 (F3 hybrid.h:64). Wrapping
-    // vers u32 comme le C++ (le hash opère sur 32 bits).
-    let ix = (j as u64).wrapping_mul(width as u64).wrapping_add(i as u64) as u32;
-    let h = burtle_hash(ix) as f64 / 4_294_967_296.0; // / 2³²
-    (
-        triangle(wrap(radical_inverse(k, 2) + h)) * scale,
-        triangle(wrap(radical_inverse(k, 3) + h)) * scale,
-    )
+    pixel_offsets(width, k, scale)(i, j)
+}
+
+/// Prépare les deux phases de Halton communes aux pixels d'une passe AA.
+pub(crate) fn pixel_offsets(width: usize, k: u64, scale: f64) -> impl Fn(usize, usize) -> (f64, f64) {
+    let x_phase = radical_inverse(k, 2);
+    let y_phase = radical_inverse(k, 3);
+    move |i, j| {
+        // ix = (frame·height + j)·width + i, frame = 0 (F3 hybrid.h:64). Wrapping
+        // vers u32 comme le C++ (le hash opère sur 32 bits).
+        let ix = (j as u64).wrapping_mul(width as u64).wrapping_add(i as u64) as u32;
+        let h = burtle_hash(ix) as f64 / 4_294_967_296.0; // / 2³²
+        (
+            triangle(wrap(x_phase + h)) * scale,
+            triangle(wrap(y_phase + h)) * scale,
+        )
+    }
 }
 
 #[cfg(test)]

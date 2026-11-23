@@ -1257,6 +1257,7 @@ fn newton_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
 
     let mut z = z_pixel.clone();
     let mut cyc = MpcCycle::new(&z);
+    let cut_fixed_points = crate::fractal::cycle::shortcut_enabled();
     let mut i = 0u32;
     let degree = g.seed.real().to_f64().round() as i32;
     let degree = if degree <= 0 { 3 } else { degree } as u32;
@@ -1300,7 +1301,13 @@ fn newton_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
             break;
         }
         numerator /= &denominator;
-        z -= &numerator;
+        // Le tampon des puissances a la précision de z, y compris si elle
+        // diffère de g.prec. Un état fixe exact reste sur la même racine.
+        base.assign(&z - &numerator);
+        if cut_fixed_points && base.as_ord() == z.as_ord() {
+            return (g.iteration_max, base);
+        }
+        std::mem::swap(&mut z, &mut base);
         i += 1;
         cyc.observe(&mut i, g.iteration_max, &z);
     }

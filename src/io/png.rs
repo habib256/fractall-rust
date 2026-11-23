@@ -20,6 +20,44 @@ const METADATA_KEY: &str = "fractall-params";
 /// vue. Purement informatif — la source de vérité reste `fractall-params`.
 pub const COMMAND_KEY: &str = "fractall-command";
 
+fn palette_color(
+    params: &FractalParams,
+    lut: Option<&PaletteLut>,
+    iter: u32,
+    z: Complex64,
+    orbit: Option<&OrbitData>,
+    distance: Option<f64>,
+) -> (u8, u8, u8) {
+    color_for_pixel_with_lut(
+        iter,
+        z,
+        params.iteration_max,
+        params.color.color_mode,
+        params.color.color_repeat,
+        params.color.color_offset,
+        params.color.out_coloring_mode,
+        params.color.color_space,
+        orbit,
+        distance,
+        params.channels.enable_interior_detection,
+        lut,
+    )
+}
+
+fn curve_colors(params: &FractalParams, lut: Option<&PaletteLut>) -> [(u8, u8, u8); 2] {
+    [
+        palette_color(params, lut, 0, Complex64::new(0.0, 0.0), None, None),
+        palette_color(
+            params,
+            lut,
+            params.iteration_max,
+            Complex64::new(2.0, 0.0),
+            None,
+            None,
+        ),
+    ]
+}
+
 /// Génère une image RGB colorisée avec métadonnées fractales intégrées dans un chunk tEXt.
 ///
 /// Les métadonnées permettent de restaurer exactement l'état de la fractale
@@ -53,36 +91,18 @@ pub fn colorize_buffers(
     let is_nebulabrot = params.fractal_type == FractalType::Nebulabrot;
     let is_buddhabrot = params.fractal_type == FractalType::Buddhabrot
         || params.fractal_type == FractalType::AntiBuddhabrot;
-    let interior_flag_encoded = params.channels.enable_interior_detection;
     let lut = if !is_nebulabrot && !is_buddhabrot {
         Some(PaletteLut::cached(params.color.color_mode, params.color.color_space))
     } else {
         None
     };
 
-    let palette_color = |iter, z, orbit: Option<&OrbitData>, distance| {
-        color_for_pixel_with_lut(
-            iter,
-            z,
-            params.iteration_max,
-            params.color.color_mode,
-            params.color.color_repeat,
-            params.color.color_offset,
-            params.color.out_coloring_mode,
-            params.color.color_space,
-            orbit,
-            distance,
-            interior_flag_encoded,
-            lut.as_deref(),
-        )
-    };
     if matches!(params.fractal_type, FractalType::VonKoch | FractalType::Dragon)
         && distances.is_empty() && orbits.is_empty()
     {
         // Le raster vectoriel émet ces deux couples (itération, z). Une .fmap
         // peut contenir d'autres valeurs : chacune conserve sa couleur usuelle.
-        let background = palette_color(0, Complex64::new(0.0, 0.0), None, None);
-        let stroke = palette_color(params.iteration_max, Complex64::new(2.0, 0.0), None, None);
+        let [background, stroke] = curve_colors(params, lut.as_deref());
         return colorize_rows(w, h, iterations, zs, |_, iter, z| {
             // atan2 (ColorDecomposition) distingue +0.0 de -0.0.
             if iter == 0 && z.re.to_bits() == 0 && z.im.to_bits() == 0 {
@@ -90,7 +110,7 @@ pub fn colorize_buffers(
             } else if iter == params.iteration_max && z.re == 2.0 && z.im.to_bits() == 0 {
                 stroke
             } else {
-                palette_color(iter, z, None, None)
+                palette_color(params, lut.as_deref(), iter, z, None, None)
             }
         });
     }
@@ -103,7 +123,7 @@ pub fn colorize_buffers(
         } else {
             let orbit = orbits.get(idx).and_then(|o| o.as_ref());
             let distance = distances.get(idx).copied().filter(|d| d.is_finite());
-            palette_color(iter, z, orbit, distance)
+            palette_color(params, lut.as_deref(), iter, z, orbit, distance)
         }
     })
 }
@@ -143,6 +163,22 @@ pub fn colorize_output(
     params: &FractalParams,
     out: &crate::render::output::RenderOutput,
 ) -> Result<Vec<u8>, String> {
+    validate_color_buffers(params, out)?;
+    Ok(colorize_buffers(
+        params,
+        &out.iterations,
+        &out.zs,
+        &out.distances,
+        &out.orbits,
+        params.width,
+        params.height,
+    ))
+}
+
+fn validate_color_buffers(
+    params: &FractalParams,
+    out: &crate::render::RenderOutput,
+) -> Result<(), String> {
     out.validate_channels(params)?;
     let n = params.width as usize * params.height as usize;
     if out.iterations.len() != n || out.zs.len() != n {
@@ -154,15 +190,123 @@ pub fn colorize_output(
             params.height
         ));
     }
-    Ok(colorize_buffers(
-        params,
-        &out.iterations,
-        &out.zs,
-        &out.distances,
-        &out.orbits,
-        params.width,
-        params.height,
-    ))
+    Ok(())
+}
+
+enum SampleSums {
+    Rgb(Vec<f64>),
+    Curve {
+        hits: Vec<u32>,
+        colors: [(u8, u8, u8); 2],
+    },
+}
+
+/// Moyenne RGB des rendus successifs d'une même vue et d'une même palette.
+pub struct AaAccumulator {
+    sums: SampleSums,
+    samples: u32,
+}
+
+impl AaAccumulator {
+    /// `cpu_vector_raster` réserve le comptage de couverture aux sorties fraîches
+    /// de Koch/Dragon, où chaque pixel porte exactement la couleur du fond ou du trait.
+    pub fn new(params: &FractalParams, cpu_vector_raster: bool) -> Self {
+        let n = params.width as usize * params.height as usize;
+        let sums = if cpu_vector_raster
+            && matches!(
+                params.fractal_type,
+                FractalType::VonKoch | FractalType::Dragon
+            ) {
+            let lut = PaletteLut::cached(params.color.color_mode, params.color.color_space);
+            SampleSums::Curve {
+                hits: vec![0; n],
+                colors: curve_colors(params, Some(&lut)),
+            }
+        } else {
+            SampleSums::Rgb(vec![0.0; n * 3])
+        };
+        Self { sums, samples: 0 }
+    }
+
+    pub fn add(
+        &mut self,
+        params: &FractalParams,
+        sample: &crate::render::RenderOutput,
+    ) -> Result<(), String> {
+        let samples = self.samples.checked_add(1).ok_or("too many AA samples")?;
+        match &mut self.sums {
+            SampleSums::Rgb(sums) => {
+                let rgb = colorize_output(params, sample)?;
+                if rgb.len() != sums.len() {
+                    return Err("inconsistent AA sample dimensions".into());
+                }
+                for (sum, c) in sums.iter_mut().zip(rgb) {
+                    *sum += f64::from(c);
+                }
+            }
+            SampleSums::Curve { hits, .. } => {
+                validate_color_buffers(params, sample)?;
+                if hits.len() != sample.iterations.len() {
+                    return Err("inconsistent AA sample dimensions".into());
+                }
+                // À profondeur zéro, fond et trait ont le même compteur
+                // d'itérations. Le canal z les distingue encore.
+                if params.iteration_max == 0 {
+                    for (hits, z) in hits.iter_mut().zip(&sample.zs) {
+                        *hits += u32::from(z.re == 2.0);
+                    }
+                } else {
+                    for (hits, &iter) in hits.iter_mut().zip(&sample.iterations) {
+                        *hits += u32::from(iter != 0);
+                    }
+                }
+            }
+        }
+        self.samples = samples;
+        Ok(())
+    }
+
+    pub fn average(&self) -> Vec<u8> {
+        let samples = self.samples;
+        let inv = 1.0 / f64::from(samples.max(1));
+        match &self.sums {
+            SampleSums::Rgb(sums) => sums
+                .iter()
+                .map(|&s| (s * inv).round().clamp(0.0, 255.0) as u8)
+                .collect(),
+            SampleSums::Curve {
+                hits,
+                colors: [background, stroke],
+            } => {
+                // Un total entier de u32::MAX échantillons RGB tient dans les
+                // 53 bits de f64. Garder le même produit par l'inverse que le
+                // mélange général, notamment pour ses arrondis à mi-chemin.
+                let mix = |n: u32| {
+                    let fg = f64::from(n);
+                    let bg = f64::from(samples - n);
+                    let channel =
+                        |a, b| ((bg * f64::from(a) + fg * f64::from(b)) * inv).round() as u8;
+                    [
+                        channel(background.0, stroke.0),
+                        channel(background.1, stroke.1),
+                        channel(background.2, stroke.2),
+                    ]
+                };
+                let mut rgb = vec![0; hits.len() * 3];
+                if samples <= 256 {
+                    let table: Vec<_> = (0..=samples).map(mix).collect();
+                    for (pixel, &n) in rgb.chunks_exact_mut(3).zip(hits) {
+                        pixel.copy_from_slice(&table[n as usize]);
+                    }
+                } else {
+                    for (pixel, &n) in rgb.chunks_exact_mut(3).zip(hits) {
+                        pixel.copy_from_slice(&mix(n));
+                    }
+                }
+                rgb
+            }
+        }
+    }
 }
 
 /// Colorise les buffers bruts (itérations + z final) en RGB entrelacé
@@ -470,6 +614,35 @@ mod tests {
                     let rgb = colorize_buffers(&params, &iterations, &zs, d, o, 3, 2);
                     let expected = colorize_buffers(&reference, &iterations, &zs, d, o, 3, 2);
                     assert_eq!(rgb, expected, "{kind:?}, {mode:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn curve_aa_matches_incremental_rgb_averages() {
+        for kind in [FractalType::VonKoch, FractalType::Dragon] {
+            let mut p = default_params_for_type(kind, 3, 1);
+            p.color.color_mode = 11;
+            p.color.color_repeat = 3;
+            for depth in [0, 7] {
+                p.iteration_max = depth;
+                for &mode in OutColoringMode::all() {
+                    p.color.out_coloring_mode = mode;
+                    let mut coverage = AaAccumulator::new(&p, true);
+                    let mut rgb = AaAccumulator::new(&p, false);
+                    for k in 0..257 {
+                        let ink = [false, true, k % 3 == 0];
+                        let sample = crate::render::RenderOutput::without_extras(
+                            ink.map(|v| if v { depth } else { 0 }).to_vec(),
+                            ink.map(|v| Complex64::new(if v { 2.0 } else { 0.0 }, 0.0)).to_vec(),
+                        );
+                        coverage.add(&p, &sample).unwrap();
+                        rgb.add(&p, &sample).unwrap();
+                        if matches!(k, 0 | 1 | 2 | 6 | 255 | 256) {
+                            assert_eq!(coverage.average(), rgb.average(), "{kind:?} {mode:?} {k}");
+                        }
+                    }
                 }
             }
         }

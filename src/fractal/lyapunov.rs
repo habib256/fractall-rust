@@ -18,7 +18,7 @@ use crate::fractal::FractalParams;
 pub enum LyapunovPreset {
     /// Standard (Swallow): séquence "AB", plage [2.0, 4.0] x [2.0, 4.0]
     Standard,
-    /// Zircon City: séquence "BBBBBBAAAAAA", plage A=[3.4, 4.0], B=[2.5, 3.4]
+    /// Zircon City: séquence "BBBBBBAAAAAA", plage A=[2.5, 3.4], B=[3.4, 4.0]
     #[default]
     ZirconCity,
     /// Jellyfish: séquence "AABAB", plage [3.4, 4.0] x [3.4, 4.0]
@@ -27,7 +27,7 @@ pub enum LyapunovPreset {
     Asymmetric,
     /// Spaceship: séquence "ABBBA", plage [3.5, 3.9] x [3.5, 3.9]
     Spaceship,
-    /// Heavy Blocks: séquence "BBBBBBBBAAAAAAAAA", plage A=[3.4, 4.0], B=[2.5, 3.4]
+    /// Heavy Blocks: séquence "BBBBBBBBAAAAAAAAA", plage A=[2.5, 3.4], B=[3.4, 4.0]
     HeavyBlocks,
 }
 
@@ -306,29 +306,70 @@ fn compute_lyapunov_exponent_mpc(
     // représentable et si la soustraction intermédiaire ne sous-flue pas.
     // L'écart non nul minimal près de 1/2 est 2^(-prec-1).
     let use_doubled = twice_a.is_finite() && twice_b.is_finite() && -i64::from(prec) >= min_exp;
-    for (r, twice_r) in parameters.take(iter_max as usize) {
+    let evaluate = |derivative: &mut Float, x: &Float, r: &Float, twice_r: &Float| {
         if use_doubled {
-            derivative.assign(&half - &x);
-            derivative *= twice_r;
+            derivative.assign(&half - x);
+            *derivative *= twice_r;
         } else {
-            derivative.assign(&x * -2);
-            derivative += &one;
-            derivative *= r;
+            derivative.assign(x * -2);
+            *derivative += &one;
+            *derivative *= r;
         }
-        if derivative.is_zero() {
-            return Float::with_val(prec, f64::NEG_INFINITY);
-        }
-        // Le produit de deux mantisses MPFR est dans [1/4, 1). Son
-        // exposant est donc e1 + e2 ou e1 + e2 - 1. Ne normaliser les
-        // facteurs que près des limites, avant toute perte d'information.
-        let exp = i64::from(product.get_exp().unwrap_or(0))
-            + i64::from(derivative.get_exp().unwrap_or(0));
+    };
+    let mut multiply = |product: &mut Float, derivative: &Float| {
+        // Le produit des deux mantisses est dans [1/4, 1). Ne séparer
+        // leurs exposants que si le produit risque de sortir du domaine MPFR.
+        let de = derivative.get_exp().unwrap_or(0);
+        let exp = i64::from(product.get_exp().unwrap_or(0)) + i64::from(de);
         if exp <= min_exp || exp >= max_exp {
-            binary_exponent += i64::from(product.frexp_mut());
-            binary_exponent += i64::from(derivative.frexp_mut());
+            binary_exponent += i64::from(product.frexp_mut()) + i64::from(de);
+            *product *= &*derivative.as_shr(de);
+        } else {
+            *product *= derivative;
         }
-        product *= &derivative;
-        advance(&mut x, r);
+    };
+    let mut remaining = iter_max as usize;
+    let period = if sequence.is_empty() {
+        ZIRCON_SEQUENCE.len()
+    } else {
+        sequence.len()
+    };
+    // Quatre passages de la séquence couvrent aussi les deux premiers
+    // doublements de période. Limiter le cache des séquences personnalisées
+    // à 128 facteurs et à 64 Kio de mantisses par orbite.
+    let block = if period <= 32 && 4 * period as u64 * u64::from(prec) <= 64 * 1024 * 8 {
+        4 * period
+    } else {
+        remaining
+    };
+    let mut checkpoint = Float::new(prec);
+    while remaining > 0 {
+        checkpoint.assign(&x);
+        let count = block.min(remaining);
+        for (r, twice_r) in parameters.by_ref().take(count) {
+            evaluate(&mut derivative, &x, r, twice_r);
+            if derivative.is_zero() {
+                return Float::with_val(prec, f64::NEG_INFINITY);
+            }
+            multiply(&mut product, &derivative);
+            advance(&mut x, r);
+        }
+        remaining -= count;
+        if remaining > block && x.as_ord() == checkpoint.as_ord() {
+            // Même état MPFR à la même phase A/B : toutes les dérivées
+            // suivantes se répètent exactement. Garder les multiplications
+            // dans l'ordre initial, même si le dernier bloc est partiel.
+            let mut cycle = Vec::with_capacity(block);
+            for (r, twice_r) in parameters.by_ref().take(block) {
+                evaluate(&mut derivative, &x, r, twice_r);
+                cycle.push(derivative.clone());
+                advance(&mut x, r);
+            }
+            for factor in cycle.iter().cycle().take(remaining) {
+                multiply(&mut product, factor);
+            }
+            break;
+        }
     }
     product.abs_mut();
     binary_exponent += i64::from(product.frexp_mut());
@@ -358,6 +399,9 @@ pub fn render_lyapunov_cancellable(
     let iter_max = params.iteration_max;
     let sequence = &params.formula.lyapunov_sequence;
     let [dx, dy] = params.sampling.aa_subpixel_offset;
+    let jitter = params.sampling.aa_jitter.map(|(k, scale)| {
+        crate::fractal::jitter::pixel_offsets(width, k, scale)
+    });
     let transform = params.transform_matrix();
 
     let cancelled = AtomicBool::new(false);
@@ -379,9 +423,7 @@ pub fn render_lyapunov_cancellable(
             }
 
             let point = |i: usize| {
-                let (jx, jy) = params.sampling.aa_jitter.map_or((dx, dy), |(k, scale)| {
-                    crate::fractal::jitter::pixel_offset(width, i, j, k, scale)
-                });
+                let (jx, jy) = jitter.as_ref().map_or((dx, dy), |offset| offset(i, j));
                 let x_ratio = (i as f64 + jx) / params.width as f64;
                 let y_ratio = (j as f64 + jy) / params.height as f64;
                 let dx = (x_ratio - 0.5) * params.span_x;
@@ -467,6 +509,9 @@ pub fn render_lyapunov_mpc_cancellable(
     let iter_max = params.iteration_max;
     let sequence = &params.formula.lyapunov_sequence;
     let [dx, dy] = params.sampling.aa_subpixel_offset;
+    let jitter = params.sampling.aa_jitter.map(|(k, scale)| {
+        crate::fractal::jitter::pixel_offsets(width, k, scale)
+    });
     let cancelled = AtomicBool::new(false);
 
     iterations
@@ -489,8 +534,8 @@ pub fn render_lyapunov_mpc_cancellable(
 
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
                 let jittered_delta;
-                let (jx, delta_y) = if let Some((k, scale)) = params.sampling.aa_jitter {
-                    let (jx, jy) = crate::fractal::jitter::pixel_offset(width, i, j, k, scale);
+                let (jx, delta_y) = if let Some(offset) = &jitter {
+                    let (jx, jy) = offset(i, j);
                     jittered_delta = pixel_delta(j, jy, &height_f, &span_y);
                     (jx, &jittered_delta)
                 } else {
@@ -506,7 +551,7 @@ pub fn render_lyapunov_mpc_cancellable(
                     a *= xx;
                     a += Float::with_val(prec, delta_y * xy);
                     &sample_b
-                } else if params.sampling.aa_jitter.is_some() {
+                } else if jitter.is_some() {
                     sample_b = Float::with_val(prec, delta_y + &center_y);
                     &sample_b
                 } else {
@@ -658,6 +703,27 @@ mod tests {
             let expected = b.clone().ln();
             let actual = compute_lyapunov_exponent_mpc(&small, b, 16, &seq, prec);
             assert_eq!(actual.to_f64(), expected.to_f64());
+        }
+    }
+
+    #[test]
+    fn mpc_replayed_derivatives_match_full_orbits_at_partial_periods() {
+        let prec = 128;
+        let sequence = sequence_from_str("AAB");
+        // Même phase A/B à chaque itération. La séquence longue force
+        // l'évaluation de toutes les dérivées, même après un retour exact.
+        let expanded = sequence.repeat(32);
+        let small = Float::with_val(prec, 1) << (rug::float::exp_min() + 4);
+        for (a, b) in [
+            (Float::with_val(prec, 3.2), Float::with_val(prec, 3.31)),
+            (Float::with_val(prec, 3.95), Float::with_val(prec, 3.81)),
+            (small.clone(), small),
+        ] {
+            for iterations in [1200, 1201, 1211] {
+                let short = compute_lyapunov_exponent_mpc(&a, &b, iterations, &sequence, prec);
+                let full = compute_lyapunov_exponent_mpc(&a, &b, iterations, &expanded, prec);
+                assert_eq!(short, full);
+            }
         }
     }
 

@@ -552,6 +552,8 @@ fn newton_orbit(
 ) -> FractalResult {
     let mut i = 0u32;
     let mut cyc = super::cycle::CycleCut::<2>::new();
+    let detect_short_cycles = super::cycle::shortcut_enabled();
+    let mut previous = z;
     let bailout_sqr = p.bailout * p.bailout;
     let one = Complex64::new(1.0, 0.0);
     let degree = Complex64::new(degree as f64, 0.0);
@@ -560,8 +562,23 @@ fn newton_orbit(
         let numerator = power * z - one;
         let denominator = degree * power;
         if denominator.norm_sqr() < 1e-24 { break; }
+        let current = z;
         z -= numerator / denominator;
         i += 1;
+        // Aux racines, l'arrondi fige souvent z ou le fait alterner entre
+        // deux valeurs. À égalité exacte avec z deux pas plus tôt, le
+        // dernier état dépend seulement de la parité des pas restants.
+        if detect_short_cycles
+            && z.re.to_bits() == previous.re.to_bits()
+            && z.im.to_bits() == previous.im.to_bits()
+        {
+            if (p.iteration_max - i) % 2 == 1 {
+                z = current;
+            }
+            i = p.iteration_max;
+            break;
+        }
+        previous = current;
         cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
     }
     FractalResult { iteration: i, z, orbit: None, distance: None }
