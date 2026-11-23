@@ -178,44 +178,76 @@ fn parameter_sequence(sequence: &[bool]) -> impl Iterator<Item = bool> + '_ {
     sequence.iter().copied().cycle()
 }
 
-/// Moyenne des logarithmes des dérivées après stabilisation de l’orbite.
+/// Huit orbites voisines partagent la séquence A/B. Leurs récurrences sont
+/// indépendantes, ce qui permet de vectoriser sans réordonner les produits.
+const LYAPUNOV_LANES: usize = 8;
+
 fn compute_lyapunov_exponent(a: f64, b: f64, iter_max: u32, sequence: &[bool]) -> f64 {
-    let mut parameters = parameter_sequence(sequence).map(|is_a| if is_a { a } else { b });
-    let mut x = 0.5;
+    compute_lyapunov_exponents([a], [b], iter_max, sequence)[0]
+}
+
+fn compute_lyapunov_exponents<const N: usize>(
+    a: [f64; N],
+    b: [f64; N],
+    iter_max: u32,
+    sequence: &[bool],
+) -> [f64; N] {
     // Pour 0 ≤ r ≤ 4, la carte préserve [0, 1]. Même à r = 4, le
     // complément est exact pour x ≥ 1/2 ; en dessous, son arrondi déplace
     // le produit de moins d'une demi-ulp de 1. Les vues hors de cet
     // intervalle conservent le contrôle à chaque pas.
-    let bounded = (0.0..=4.0).contains(&a) && (0.0..=4.0).contains(&b);
-    let advance = |x: f64, r: f64| {
-        let next = r * x * (1.0 - x);
-        if bounded || (0.0..=1.0).contains(&next) {
-            next
-        } else {
-            0.5
-        }
+    if a.iter().chain(&b).all(|v| (0.0..=4.0).contains(v)) {
+        iterate_logistic::<N, false>(a, b, iter_max, sequence)
+    } else {
+        iterate_logistic::<N, true>(a, b, iter_max, sequence)
+    }
+}
+
+fn iterate_logistic<const N: usize, const CHECK_DOMAIN: bool>(
+    a: [f64; N],
+    b: [f64; N],
+    iter_max: u32,
+    sequence: &[bool],
+) -> [f64; N] {
+    let mut parameters = parameter_sequence(sequence).map(|is_a| if is_a { a } else { b });
+    let mut x = [0.5; N];
+    let advance = |x: [f64; N], r: [f64; N]| {
+        std::array::from_fn(|i| {
+            let next = r[i] * x[i] * (1.0 - x[i]);
+            if CHECK_DOMAIN && !(0.0..=1.0).contains(&next) {
+                0.5
+            } else {
+                next
+            }
+        })
     };
 
     for r in parameters.by_ref().take(WARMUP_ITERATIONS) {
         x = advance(x, r);
     }
 
-    // Garder le produit tant qu'il est normal. Lorsqu'il sortirait de la
-    // plage f64, additionner les logarithmes des deux facteurs encore intacts.
-    let mut product = 1.0;
-    let mut sum = 0.0;
+    let mut product = [1.0_f64; N];
+    let mut sum = [0.0; N];
     for r in parameters.take(iter_max as usize) {
-        let derivative = (r * (1.0 - 2.0 * x)).abs();
-        let next_product = product * derivative;
-        if next_product.is_normal() {
-            product = next_product;
+        let derivative: [f64; N] = std::array::from_fn(|i| (r[i] * (1.0 - 2.0 * x[i])).abs());
+        let next: [f64; N] = std::array::from_fn(|i| product[i] * derivative[i]);
+        // Le ET sans court-circuit permet au compilateur de tester toutes
+        // les voies ensemble. Une voie hors plage reprend ses deux facteurs.
+        if next.iter().fold(true, |normal, v| normal & v.is_normal()) {
+            product = next;
         } else {
-            sum += product.ln() + derivative.ln();
-            product = 1.0;
+            for i in 0..N {
+                if next[i].is_normal() {
+                    product[i] = next[i];
+                } else {
+                    sum[i] += product[i].ln() + derivative[i].ln();
+                    product[i] = 1.0;
+                }
+            }
         }
         x = advance(x, r);
     }
-    (sum + product.ln()) / iter_max as f64
+    std::array::from_fn(|i| (sum[i] + product[i].ln()) / iter_max as f64)
 }
 
 /// Normalise l'exposant de Lyapunov vers [0, 1] pour la colorisation.
@@ -326,6 +358,7 @@ pub fn render_lyapunov_cancellable(
     let iter_max = params.iteration_max;
     let sequence = &params.formula.lyapunov_sequence;
     let [dx, dy] = params.sampling.aa_subpixel_offset;
+    let transform = params.transform_matrix();
 
     let cancelled = AtomicBool::new(false);
 
@@ -345,20 +378,41 @@ pub fn render_lyapunov_cancellable(
                 return;
             }
 
-            for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
+            let point = |i: usize| {
                 let (jx, jy) = params.sampling.aa_jitter.map_or((dx, dy), |(k, scale)| {
                     crate::fractal::jitter::pixel_offset(width, i, j, k, scale)
                 });
                 let x_ratio = (i as f64 + jx) / params.width as f64;
                 let y_ratio = (j as f64 + jy) / params.height as f64;
-                let a = params.center_x + (x_ratio - 0.5) * params.span_x;
-                let b = params.center_y + (y_ratio - 0.5) * params.span_y;
-
-                let lyap = compute_lyapunov_exponent(a, b, iter_max, sequence);
+                let dx = (x_ratio - 0.5) * params.span_x;
+                let dy = (y_ratio - 0.5) * params.span_y;
+                let (dx, dy) = match transform {
+                    Some((a, b, c, d)) => (a * dx + b * dy, c * dx + d * dy),
+                    None => (dx, dy),
+                };
+                (params.center_x + dx, params.center_y + dy)
+            };
+            let mut store = |i: usize, lyap| {
                 let norm = normalize_lyapunov(lyap);
-
-                *iter = (norm * iter_max as f64) as u32;
-                *z = Complex64::new(norm * 2.0, 0.0);
+                iter_row[i] = (norm * iter_max as f64) as u32;
+                z_row[i] = Complex64::new(norm * 2.0, 0.0);
+            };
+            let full_width = width / LYAPUNOV_LANES * LYAPUNOV_LANES;
+            for first in (0..full_width).step_by(LYAPUNOV_LANES) {
+                let points: [_; LYAPUNOV_LANES] = std::array::from_fn(|i| point(first + i));
+                let values = compute_lyapunov_exponents(
+                    points.map(|p| p.0),
+                    points.map(|p| p.1),
+                    iter_max,
+                    sequence,
+                );
+                for (i, lyap) in values.into_iter().enumerate() {
+                    store(first + i, lyap);
+                }
+            }
+            for i in full_width..width {
+                let (a, b) = point(i);
+                store(i, compute_lyapunov_exponent(a, b, iter_max, sequence));
             }
         });
 
@@ -400,13 +454,13 @@ pub fn render_lyapunov_mpc_cancellable(
 
     let width_f = Float::with_val(prec, params.width);
     let height_f = Float::with_val(prec, params.height);
-    let coordinate = |index: usize, offset: f64, size: &Float, span: &Float, center: &Float| {
+    let transform = params.transform_matrix();
+    let pixel_delta = |index: usize, offset: f64, size: &Float, span: &Float| {
         let mut value = Float::with_val(prec, index);
         value += offset;
         value /= size;
         value -= 0.5;
         value *= span;
-        value += center;
         value
     };
 
@@ -430,18 +484,35 @@ pub fn render_lyapunov_mpc_cancellable(
                 return;
             }
 
-            let uniform_b = coordinate(j, dy, &height_f, &span_y, &center_y);
+            let row_delta = pixel_delta(j, dy, &height_f, &span_y);
+            let row_b = Float::with_val(prec, &row_delta + &center_y);
 
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
-                let jittered_b;
-                let (jx, b) = if let Some((k, scale)) = params.sampling.aa_jitter {
+                let jittered_delta;
+                let (jx, delta_y) = if let Some((k, scale)) = params.sampling.aa_jitter {
                     let (jx, jy) = crate::fractal::jitter::pixel_offset(width, i, j, k, scale);
-                    jittered_b = coordinate(j, jy, &height_f, &span_y, &center_y);
-                    (jx, &jittered_b)
+                    jittered_delta = pixel_delta(j, jy, &height_f, &span_y);
+                    (jx, &jittered_delta)
                 } else {
-                    (dx, &uniform_b)
+                    (dx, &row_delta)
                 };
-                let a = coordinate(i, jx, &width_f, &span_x, &center_x);
+                let mut a = pixel_delta(i, jx, &width_f, &span_x);
+                let sample_b;
+                let b = if let Some((xx, xy, yx, yy)) = transform {
+                    // Transformer les écarts MPFR avant la translation préserve les
+                    // déplacements sub-pixel aux zooms où les miroirs f64 coïncident.
+                    sample_b = (Float::with_val(prec, &a * yx)
+                        + Float::with_val(prec, delta_y * yy)) + &center_y;
+                    a *= xx;
+                    a += Float::with_val(prec, delta_y * xy);
+                    &sample_b
+                } else if params.sampling.aa_jitter.is_some() {
+                    sample_b = Float::with_val(prec, delta_y + &center_y);
+                    &sample_b
+                } else {
+                    &row_b
+                };
+                a += &center_x;
                 let lyap = compute_lyapunov_exponent_mpc(&a, b, iter_max, sequence, prec);
                 let norm = normalize_lyapunov(lyap.to_f64());
 
@@ -501,33 +572,59 @@ mod tests {
     }
 
     #[test]
+    fn batched_exponents_match_single_pixels_at_phase_and_range_boundaries() {
+        let tiny = f64::from_bits(1);
+        let a = [3.7, 3.92, 2.0, tiny, 4.0, 2.000001, 3.65, 3.45];
+        for last_b in [3.97, 5.25] {
+            let b = [3.9, 3.74, 2.0, tiny, 4.0, 2.000001, 3.21, last_b];
+            for sequence in [&[][..], &[true, false, false][..]] {
+                for n in [0, 1, 17, 300, 4000] {
+                    let values = compute_lyapunov_exponents(a, b, n, sequence);
+                    for i in 0..LYAPUNOV_LANES {
+                        let single = compute_lyapunov_exponent(a[i], b[i], n, sequence);
+                        assert_eq!(values[i].to_bits(), single.to_bits(), "voie {i}, n={n}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn render_samples_the_requested_position_on_both_axes() {
         use crate::fractal::{default_params_for_type, FractalType};
-        let mut p = default_params_for_type(FractalType::Lyapunov, 7, 5);
+        let mut p = default_params_for_type(FractalType::Lyapunov, 11, 5);
         p.center_x = 3.14;
         p.center_y = 3.27;
         p.span_x = 0.17;
         p.span_y = 0.1;
         p.iteration_max = 73;
         let cancel = Arc::new(AtomicBool::new(false));
-        for (uniform, jitter) in [
-            ([0.0, 0.0], None),
-            ([0.25, -0.5], None),
-            ([0.25, -0.5], Some((3, 0.75))),
+        let identity = [1.0, 0.0, 0.0, 1.0];
+        let skew = [1.25, -0.5, 0.25, 0.75];
+        for (uniform, jitter, rotation, matrix, [xx, xy, yx, yy]) in [
+            ([0.0, 0.0], None, 0.0, None, identity),
+            ([0.25, -0.5], None, 0.0, None, identity),
+            ([0.25, -0.5], Some((3, 0.75)), 0.0, None, identity),
+            ([0.25, -0.5], None, 90.0, None, [0.0, -1.0, 1.0, 0.0]),
+            ([0.0, 0.0], Some((2, 0.5)), 90.0, Some(skew), skew),
         ] {
+            p.rotation = rotation;
+            p.transform_k = matrix;
             p.sampling.aa_subpixel_offset = uniform;
             p.sampling.aa_jitter = jitter;
             for render in [render_lyapunov_cancellable, render_lyapunov_mpc_cancellable] {
                 let (_, zs) = render(&p, &cancel).unwrap();
                 for (index, z) in zs.iter().enumerate() {
-                    let i = index % 7;
-                    let j = index / 7;
+                    let i = index % 11;
+                    let j = index / 11;
                     let (dx, dy) = match jitter {
-                        Some((k, scale)) => crate::fractal::jitter::pixel_offset(7, i, j, k, scale),
+                        Some((k, scale)) => crate::fractal::jitter::pixel_offset(11, i, j, k, scale),
                         None => (uniform[0], uniform[1]),
                     };
-                    let a = p.center_x + ((i as f64 + dx) / 7.0 - 0.5) * p.span_x;
-                    let b = p.center_y + ((j as f64 + dy) / 5.0 - 0.5) * p.span_y;
+                    let x = ((i as f64 + dx) / 11.0 - 0.5) * p.span_x;
+                    let y = ((j as f64 + dy) / 5.0 - 0.5) * p.span_y;
+                    let a = p.center_x + (xx * x + xy * y);
+                    let b = p.center_y + (yx * x + yy * y);
                     let expected =
                         reference_exponent(a, b, p.iteration_max, &p.formula.lyapunov_sequence);
                     assert!((z.re - 2.0 * normalize_lyapunov(expected)).abs() < 1e-11);

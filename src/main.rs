@@ -1357,9 +1357,6 @@ fn main() {
     // Utiliser les strings HP si disponibles, sinon convertir f64
     let [center_x_hp, center_y_hp, span_x_hp, span_y_hp] = hp_strings(&params);
     let png_result = if aa_samples > 1 {
-        // Anti-aliasing multi-sample (per-frame jitter) : sample 0 = le rendu de
-        // base déjà calculé (offset (0,0)), samples 1..N re-rendus avec un offset
-        // sous-pixel low-discrepancy, puis moyenne en espace RGB.
         let n_bytes = params.width as usize * params.height as usize * 3;
         let mut accum = vec![0f64; n_bytes];
         let accumulate = |accum: &mut [f64], rgb: &[u8]| {
@@ -1367,35 +1364,45 @@ fn main() {
                 *a += c as f64;
             }
         };
-        // Décorrélation Cranley-Patterson F3 par pixel (`jitter::pixel_offset`) :
-        // chaque sample (y compris k=0) est jitteré par pixel → pas de motif AA
-        // corrélé à bas N. Tous les samples sont re-rendus (k=0 n'est plus le
-        // centre exact ; le rendu de base ci-dessus n'est réutilisé qu'à N=1).
+        // Koch et Dragon décalent toute la courbe. Leur premier échantillon
+        // est centré et correspond exactement au rendu déjà disponible.
+        // Le jitter par pixel peut, lui, déplacer même le premier échantillon.
+        let reuse_centered_curve = matches!(
+            params.fractal_type, FractalType::VonKoch | FractalType::Dragon
+        ) && aa_jitter_scale.is_finite()
+            && params.sampling.aa_subpixel_offset == [0.0, 0.0]
+            && params.sampling.aa_jitter.is_none();
         for k in 0..aa_samples as u64 {
             let mut p = params.clone();
             p.sampling.aa_jitter = Some((k, aa_jitter_scale));
-            // Dispatcher COMPLET : les canaux distances/orbites sont requis par
-            // les modes Distance*/OrbitTraps/Wings (sinon retombée silencieuse
-            // sur Smooth — classe « colorisation unique », cf. CLAUDE.md).
-            let mut aa_cache = None;
-            let sample = if rendered_on_gpu {
-                render::render_planned(
-                    render::PlannedRenderRequest::new(
-                        final_plan,
-                        render::RenderRequest::new(&p, &cancel),
-                    ),
-                    gpu_renderer.as_ref(),
-                    &mut aa_cache,
-                )
-                .map(|r| r.output)
+            let rendered;
+            let sample = if k == 0 && reuse_centered_curve {
+                &out
             } else {
-                render::render_request(render::RenderRequest::new(&p, &cancel), &mut aa_cache)
+                // Dispatcher COMPLET : les canaux distances/orbites sont requis par
+                // les modes Distance*/OrbitTraps/Wings (sinon retombée silencieuse
+                // sur Smooth — classe « colorisation unique », cf. CLAUDE.md).
+                let mut aa_cache = None;
+                rendered = if rendered_on_gpu {
+                    render::render_planned(
+                        render::PlannedRenderRequest::new(
+                            final_plan,
+                            render::RenderRequest::new(&p, &cancel),
+                        ),
+                        gpu_renderer.as_ref(),
+                        &mut aa_cache,
+                    )
+                    .map(|r| r.output)
+                } else {
+                    render::render_request(render::RenderRequest::new(&p, &cancel), &mut aa_cache)
+                };
+                let Some(sample) = rendered.as_ref() else {
+                    eprintln!("Error: AA render interrupted (sample {})", k + 1);
+                    std::process::exit(1);
+                };
+                sample
             };
-            let Some(sample) = sample else {
-                eprintln!("Error: AA render interrupted (sample {})", k + 1);
-                std::process::exit(1);
-            };
-            let rgb = match io::png::colorize_output(&p, &sample) {
+            let rgb = match io::png::colorize_output(&p, sample) {
                 Ok(rgb) => rgb,
                 Err(e) => {
                     eprintln!("Colouring error (sample {}): {e}", k + 1);
