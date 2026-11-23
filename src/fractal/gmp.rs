@@ -1036,6 +1036,7 @@ fn mandelbrot_sin_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
 
 fn newton_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     let mut z = z_pixel.clone();
+    let mut cyc = MpcCycle::new(&z);
     let mut i = 0u32;
     let degree = g.seed.real().to_f64().round() as i32;
     let degree = if degree <= 0 { 3 } else { degree } as u32;
@@ -1044,46 +1045,50 @@ fn newton_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     let mut epsilon_sqr = epsilon.clone();
     epsilon_sqr *= &epsilon;
     while i < g.iteration_max && mpc_below_bailout(&z, g) {
-        let z_pow = pow_u32_mpc(&z, degree, g.prec);
-        let z_pow_deriv = pow_u32_mpc(&z, degree - 1, g.prec);
-        let mut numerator = z_pow.clone();
-        numerator -= Complex::with_val(g.prec, (1, 0));
-        let mut denom_re = z_pow_deriv.real().clone();
-        denom_re *= &degree_f;
-        let mut denom_im = z_pow_deriv.imag().clone();
-        denom_im *= &degree_f;
-        let denominator = complex_from_xy(g.prec, denom_re, denom_im);
+        let mut numerator = pow_u32_mpc(&z, degree, g.prec);
+        let mut denominator = pow_u32_mpc(&z, degree - 1, g.prec);
+        numerator -= 1;
+        let (re, im) = denominator.as_mut_real_imag();
+        *re *= &degree_f;
+        *im *= &degree_f;
         if complex_norm_sqr(&denominator, g.prec) < epsilon_sqr {
             break;
         }
         let z_quot = numerator / denominator;
         z -= &z_quot;
         i += 1;
+        cyc.observe(&mut i, g.iteration_max, &z);
     }
     (i, z)
 }
 
 fn phoenix_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    use rug::Assign;
+
     let mut z = z_pixel.clone();
-    let mut y = Complex::with_val(g.prec, (0, 0));
-    let mut i = 0u32;
+    let mut previous = Complex::with_val(g.prec, (0, 0));
+    let mut saved = Complex::new(z.prec());
+    let coord_prec = z_pixel.prec();
+    let mixed_precision = coord_prec != (g.prec, g.prec);
+    let scratch_prec = g.prec.max(coord_prec.0).max(coord_prec.1).saturating_mul(2);
+    let mut sq = (Float::new(scratch_prec), Float::new(scratch_prec));
     let p1 = Float::with_val(g.prec, 0.56667);
     let p2 = Float::with_val(g.prec, -0.5);
+    let mut i = 0u32;
     while i < g.iteration_max && mpc_below_bailout(&z, g) {
-        let mut z_sq = z.clone();
-        z_sq *= &z;
-        let mut re = z_sq.real().clone();
-        re += &p1;
-        let im = z_sq.imag().clone();
-        let mut z_temp = complex_from_xy(g.prec, re, im);
-        let mut zp_re = y.real().clone();
-        zp_re *= &p2;
-        let mut zp_im = y.imag().clone();
-        zp_im *= &p2;
-        let zp_temp = complex_from_xy(g.prec, zp_re, zp_im);
-        z_temp += zp_temp;
-        y = z;
-        z = z_temp;
+        saved.assign(&z);
+        sqr_in_place(&mut z, &mut sq);
+        *z.mut_real() += &p1;
+        *previous.mut_real() *= &p2;
+        *previous.mut_imag() *= &p2;
+        // Le pixel initial peut avoir sa propre précision. Les deux termes
+        // sont arrondis à g.prec avant leur somme, comme dans complex_from_xy.
+        if mixed_precision && i < 2 {
+            z.set_prec(g.prec);
+            previous.set_prec(g.prec);
+        }
+        z += &previous;
+        std::mem::swap(&mut previous, &mut saved);
         i += 1;
     }
     (i, z)
@@ -1369,47 +1374,44 @@ fn pickover_stalks_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
 }
 
 fn nova_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
-    let mut z = Complex::with_val(g.prec, (1.0, 0.0));
+    use rug::Assign;
+
+    let one = Complex::with_val(g.prec, (1, 0));
+    let mut z = one.clone();
+    let mut square = Complex::new(g.prec);
+    let mut step = Complex::new(g.prec);
+    let mut denominator = Complex::new(g.prec);
+    let mut prev = Complex::new(g.prec);
+    let conv_epsilon_sq = Float::with_val(g.prec, 1e-7f64).square();
+    let denom_epsilon_sq = Float::with_val(g.prec, 1e-10f64).square();
     let mut i = 0u32;
-    let a_relax = Complex::with_val(g.prec, (1.0, 0.0));
-    let p_poly = 3u32;
-    let conv_epsilon = Float::with_val(g.prec, 1e-7f64);
-    let mut conv_epsilon_sq = conv_epsilon.clone();
-    conv_epsilon_sq *= &conv_epsilon;
     while i < g.iteration_max {
-        let z_pow = pow_u32_mpc(&z, p_poly, g.prec);
-        let z_pow_deriv = pow_u32_mpc(&z, p_poly - 1, g.prec);
-        let mut numerator = z_pow.clone();
-        numerator -= Complex::with_val(g.prec, (1.0, 0.0));
-        let p_poly_f = Float::with_val(g.prec, p_poly);
-        let mut denom_re = z_pow_deriv.real().clone();
-        denom_re *= &p_poly_f;
-        let mut denom_im = z_pow_deriv.imag().clone();
-        denom_im *= &p_poly_f;
-        let denominator = complex_from_xy(g.prec, denom_re, denom_im);
-        let denom_epsilon = Float::with_val(g.prec, 1e-10f64);
-        let mut denom_epsilon_sqr = denom_epsilon.clone();
-        denom_epsilon_sqr *= &denom_epsilon;
-        if complex_norm_sqr(&denominator, g.prec) < denom_epsilon_sqr {
+        // z² sert au numérateur et au dénominateur. Les produits par 1+0i
+        // reprennent les signes des zéros de pow_u32_mpc et de la relaxation.
+        square.assign(&z * &z);
+        step.assign(&one * &z);
+        step *= &square;
+        step -= &one;
+        denominator.assign(&one * &square);
+        let (re, im) = denominator.as_mut_real_imag();
+        *re *= 3;
+        *im *= 3;
+        if complex_norm_sqr(&denominator, g.prec) < denom_epsilon_sq {
             break;
         }
-        let mut newton_step = numerator / denominator;
-        newton_step *= &a_relax;
-        let z_prev = z.clone();
-        let mut z_next = z - &newton_step;
-        z_next += z_pixel;
-        z = z_next;
-        let diff = z.clone() - z_prev;
-        let diff_sq = complex_norm_sqr(&diff, g.prec);
+        step /= &denominator;
+        step *= &one;
+        prev.assign(&z);
+        z -= &step;
+        z += z_pixel;
         let z_sq = complex_norm_sqr(&z, g.prec);
-        let one = Float::with_val(g.prec, 1.0);
-        let denom = if z_sq < one { one } else { z_sq };
-        let mut ratio = diff_sq;
-        ratio /= &denom;
-        if ratio < conv_epsilon_sq {
+        if z_sq > g.bailout_sqr {
             break;
         }
-        if complex_norm_sqr(&z, g.prec) > g.bailout_sqr {
+        step.assign(&z - &prev);
+        let diff_sq = complex_norm_sqr(&step, g.prec);
+        let ratio = if z_sq < 1 { diff_sq } else { diff_sq / z_sq };
+        if ratio < conv_epsilon_sq {
             break;
         }
         i += 1;
@@ -1658,6 +1660,124 @@ mod mpc_loop_tests {
                             );
                         }
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn phoenix_mpc_matches_two_state_recurrence() {
+        fn reference(g: &MpcParams, pixel: &Complex) -> (u32, Complex) {
+            let mut z = pixel.clone();
+            let mut previous = Complex::with_val(g.prec, (0, 0));
+            let p1 = Float::with_val(g.prec, 0.56667);
+            let p2 = Float::with_val(g.prec, -0.5);
+            let mut i = 0;
+            while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+                let mut square = z.clone() * &z;
+                *square.mut_real() += &p1;
+                let mut memory = previous;
+                *memory.mut_real() *= &p2;
+                *memory.mut_imag() *= &p2;
+                previous = z;
+                z = Complex::with_val(g.prec, square) + Complex::with_val(g.prec, memory);
+                i += 1;
+            }
+            (i, z)
+        }
+
+        let mut params = default_params_for_type(FractalType::Phoenix, 8, 8);
+        for prec in [64, 192, 512] {
+            params.engine.precision_bits = prec;
+            let mut g = MpcParams::from_params(&params);
+            for max in [0, 1, 2, 17, 1200] {
+                g.iteration_max = max;
+                for xy in [(0., -0.), (-0., 0.), (0.5, 0.25), (-0.4, 0.6), (1.5, 0.), (4., 0.)] {
+                    for coord_prec in [(g.prec, g.prec), (80, 110)] {
+                        let pixel = Complex::with_val(coord_prec, xy);
+                        let (i, z) = phoenix_mpc(&g, &pixel);
+                        let (ref_i, ref_z) = reference(&g, &pixel);
+                        assert_eq!(i, ref_i, "pixel {xy:?}, max {max}");
+                        assert!(same(&z, &ref_z), "pixel {xy:?}, max {max}, prec {coord_prec:?}");
+                        assert_eq!(z.real().is_sign_negative(), ref_z.real().is_sign_negative());
+                        assert_eq!(z.imag().is_sign_negative(), ref_z.imag().is_sign_negative());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn newton_mpc_cycles_match_full_iterations() {
+        use crate::fractal::cycle::FORCE_OFF;
+
+        for degree in [1., 2., 3., 8.] {
+            let mut p = default_params_for_type(FractalType::Newton, 8, 8);
+            p.seed.re = degree;
+            p.iteration_max = 257;
+            for prec in [64, 192] {
+                p.engine.precision_bits = prec;
+                let g = MpcParams::from_params(&p);
+                // Racines réelles et complexes, pôle, extérieur, bassin intérieur.
+                for xy in [(1., -0.), (-1., 0.), (0., 1.), (0., 0.), (4., 0.), (0.9, -0.4)] {
+                    let point = Complex::with_val(prec, xy);
+                    let (i, z) = newton_mpc(&g, &point);
+                    let (full_i, full_z) = FORCE_OFF.with(|off| {
+                        let prev = off.replace(true);
+                        let result = newton_mpc(&g, &point);
+                        off.set(prev);
+                        result
+                    });
+                    assert_eq!(i, full_i);
+                    assert_eq!(z, full_z);
+                    assert_eq!(z.real().is_sign_negative(), full_z.real().is_sign_negative());
+                    assert_eq!(z.imag().is_sign_negative(), full_z.imag().is_sign_negative());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nova_mpc_matches_separate_powers() {
+        // Référence MPC indépendante avec les deux puissances historiques.
+        fn reference_nova(g: &MpcParams, c: &Complex) -> (u32, Complex) {
+            let one = Complex::with_val(g.prec, (1, 0));
+            let mut z = one.clone();
+            let conv = Float::with_val(g.prec, 1e-7f64).square();
+            let pole = Float::with_val(g.prec, 1e-10f64).square();
+            for i in 0..g.iteration_max {
+                let num = pow_u32_mpc(&z, 3, g.prec) - &one;
+                let den = pow_u32_mpc(&z, 2, g.prec) * 3;
+                if complex_norm_sqr(&den, g.prec) < pole {
+                    return (i, z);
+                }
+                let next = z.clone() - (num / den) * &one + c;
+                let diff = next.clone() - z;
+                z = next;
+                let norm = complex_norm_sqr(&z, g.prec);
+                let denom = if norm < 1 { Float::with_val(g.prec, 1) } else { norm };
+                if complex_norm_sqr(&diff, g.prec) / denom < conv
+                    || complex_norm_sqr(&z, g.prec) > g.bailout_sqr
+                {
+                    return (i, z);
+                }
+            }
+            (g.iteration_max, z)
+        }
+        let mut p = default_params_for_type(FractalType::Nova, 8, 8);
+        for prec in [64, 256] {
+            p.engine.precision_bits = prec;
+            for max in [0, 1, 128] {
+                p.iteration_max = max;
+                let g = MpcParams::from_params(&p);
+                for xy in [(0., -0.), (-1., 0.), (-0.75, 0.1), (0.5, -0.8), (20., 0.)] {
+                    let c = Complex::with_val(g.prec, xy);
+                    let (i, z) = nova_mpc(&g, &c);
+                    let (ref_i, ref_z) = reference_nova(&g, &c);
+                    assert_eq!(i, ref_i);
+                    assert_eq!(z, ref_z);
+                    assert_eq!(z.real().is_sign_negative(), ref_z.real().is_sign_negative());
+                    assert_eq!(z.imag().is_sign_negative(), ref_z.imag().is_sign_negative());
                 }
             }
         }

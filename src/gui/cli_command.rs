@@ -11,7 +11,6 @@
 //! en commentaire shell à la fin de la commande.
 
 use crate::fractal::bytecode::Formula;
-use crate::fractal::lyapunov::LyapunovConfig;
 use crate::fractal::{
     default_params_for_type, AlgorithmMode, ColorSpace, FractalParams, FractalType,
     OutColoringMode, PlaneTransform,
@@ -143,7 +142,12 @@ pub fn build_cli_command(params: &FractalParams, extras: CliExtras) -> CliComman
     let t = params.fractal_type;
     let (width, height) = (params.width.max(1), params.height.max(1));
     // Ce que le CLI aurait sans option pour ce type et cette taille.
-    let base = default_params_for_type(t, width, height);
+    let mut base = default_params_for_type(t, width, height);
+    let preset = params.formula.lyapunov_preset;
+    let changed_preset = t == FractalType::Lyapunov && preset != base.formula.lyapunov_preset;
+    if changed_preset {
+        crate::fractal::apply_lyapunov_preset(&mut base, preset);
+    }
     let mut a = Args(vec!["fractall-cli".to_string()]);
     let mut unexpressed: Vec<String> = Vec::new();
 
@@ -175,12 +179,7 @@ pub fn build_cli_command(params: &FractalParams, extras: CliExtras) -> CliComman
     // rapport d'aspect, ce que fait le CLI sans `--zoom` — ne doit PAS le
     // recevoir : sans l'option, le CLI garde les spans par défaut tels quels.
     let (sx, sy) = (params.span_x, params.span_y);
-    // Preset Lyapunov non défaut : `--lyapunov-preset` remplace la vue, cas
-    // déjà signalé plus bas — pas de second avertissement ici.
-    let preset_view = t == FractalType::Lyapunov
-        && params.formula.lyapunov_preset != base.formula.lyapunov_preset;
-    let square = preset_view
-        || !(sx.is_normal() && sy.is_normal())
+    let square = !(sx.is_normal() && sy.is_normal())
         || (sy * width as f64 - sx * height as f64).abs() <= 1e-9 * (sx * height as f64).abs();
     if square {
         a.opt("zoom", &coords::zoom_string(params));
@@ -239,17 +238,10 @@ pub fn build_cli_command(params: &FractalParams, extras: CliExtras) -> CliComman
         }
     }
     if t == FractalType::Lyapunov {
-        let preset = params.formula.lyapunov_preset;
-        if preset != base.formula.lyapunov_preset {
+        if changed_preset {
             a.opt("lyapunov-preset", preset.cli_name());
-            // main.rs applique le preset APRÈS la vue : il remplace le centre
-            // et le span f64 par ceux du preset.
-            unexpressed.push(format!(
-                "the view: --lyapunov-preset {} resets the CLI view to the preset's own",
-                preset.cli_name()
-            ));
         }
-        if params.formula.lyapunov_sequence != LyapunovConfig::from_preset(preset).sequence {
+        if params.formula.lyapunov_sequence != base.formula.lyapunov_sequence {
             unexpressed.push("custom Lyapunov sequence".to_string());
         }
     }
@@ -578,12 +570,20 @@ mod tests {
     }
 
     #[test]
-    fn lyapunov_preset_change_is_emitted_with_caveat() {
+    fn lyapunov_command_keeps_preset_framing_and_explicit_zoom() {
         let mut p = gui_like(FractalType::Lyapunov, 320, 240);
         crate::fractal::apply_lyapunov_preset(&mut p, LyapunovPreset::Jellyfish);
         let c = build_cli_command(&p, CliExtras::default());
         assert_eq!(value_of(&c.command, "lyapunov-preset"), Some("jellyfish"));
-        assert_eq!(c.unexpressed.len(), 1);
+        assert!(c.unexpressed.is_empty());
+        assert_eq!(value_of(&c.command, "zoom"), None);
+        assert_eq!(value_of(&c.command, "center-x-hp"), Some("3.7"));
+
+        let zoomed = ViewHp::from_center_and_zoom("3.8", "3.9", "1e24", 320, 240, 256).unwrap();
+        zoomed.write_to_params(&mut p);
+        let c = build_cli_command(&p, CliExtras::default());
+        assert!(c.unexpressed.is_empty());
+        assert_eq!(value_of(&c.command, "zoom").unwrap().parse::<f64>().unwrap(), 1e24);
     }
 
     #[test]

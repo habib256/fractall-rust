@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use num_complex::Complex64;
 use rayon::prelude::*;
-use rug::Float;
+use rug::{Assign, Float};
 use serde::{Deserialize, Serialize};
 
 use crate::fractal::FractalParams;
@@ -167,101 +167,68 @@ const ZIRCON_SEQUENCE: &[bool] = &[
 ];
 
 /// Constantes pour l'algorithme
-const WARMUP_ITERATIONS: u32 = 50;
-const BLOCK_SIZE: u32 = 64;
-const MIN_DERIV: f64 = 1e-10;
-const MIN_X: f64 = 0.0001;
-const MAX_X: f64 = 0.9999;
+const WARMUP_ITERATIONS: usize = 50;
 
-/// Calcule l'exposant de Lyapunov pour un point (a, b) du plan des paramètres.
-///
-/// L'algorithme:
-/// 1. Phase de warmup: itère sans accumuler pour stabiliser
-/// 2. Phase de calcul: accumule log|dr/dx| par blocs pour éviter overflow/underflow
-/// 3. Normalise par le nombre d'itérations
-fn compute_lyapunov_exponent(a: f64, b: f64, iter_max: u32, sequence: &[bool]) -> f64 {
-    let seq = if sequence.is_empty() {
+fn parameter_sequence(sequence: &[bool]) -> impl Iterator<Item = bool> + '_ {
+    let sequence = if sequence.is_empty() {
         ZIRCON_SEQUENCE
     } else {
         sequence
     };
-    let seq_len = seq.len();
+    sequence.iter().copied().cycle()
+}
 
+/// Moyenne des logarithmes des dérivées après stabilisation de l’orbite.
+fn compute_lyapunov_exponent(a: f64, b: f64, iter_max: u32, sequence: &[bool]) -> f64 {
+    let mut parameters = parameter_sequence(sequence).map(|is_a| if is_a { a } else { b });
     let mut x = 0.5;
-    let mut seq_idx = 0usize;
-
-    // Phase de warmup: stabilise x sans accumuler
-    let warmup_cycles = WARMUP_ITERATIONS / seq_len as u32;
-    for _ in 0..warmup_cycles {
-        for &is_a in seq {
-            let r = if is_a { a } else { b };
-            x = r * x * (1.0 - x);
-
-            // Reset si x sort du domaine valide
-            if x < MIN_X || x > MAX_X || x.is_nan() {
-                x = 0.5;
-            }
+    // Pour 0 ≤ r ≤ 4, la carte préserve [0, 1]. Même à r = 4, le
+    // complément est exact pour x ≥ 1/2 ; en dessous, son arrondi déplace
+    // le produit de moins d'une demi-ulp de 1. Les vues hors de cet
+    // intervalle conservent le contrôle à chaque pas.
+    let bounded = (0.0..=4.0).contains(&a) && (0.0..=4.0).contains(&b);
+    let advance = |x: f64, r: f64| {
+        let next = r * x * (1.0 - x);
+        if bounded || (0.0..=1.0).contains(&next) {
+            next
+        } else {
+            0.5
         }
+    };
+
+    for r in parameters.by_ref().take(WARMUP_ITERATIONS) {
+        x = advance(x, r);
     }
 
-    // Phase de calcul: accumule l'exposant par blocs
-    let mut lyap = 0.0;
+    // Garder le produit tant qu'il est normal. Lorsqu'il sortirait de la
+    // plage f64, additionner les logarithmes des deux facteurs encore intacts.
     let mut product = 1.0;
-    let mut count_in_block = 0u32;
-
-    for _ in 0..iter_max {
-        let is_a = seq[seq_idx];
-        let r = if is_a { a } else { b };
-
-        // Dérivée: |r * (1 - 2x)| évaluée AVANT l'itération (à x_n, pas x_{n+1})
-        let deriv = (r * (1.0 - 2.0 * x)).abs();
-
-        // Itération de la carte logistique
-        x = r * x * (1.0 - x);
-
-        if deriv > MIN_DERIV {
-            product *= deriv;
-        }
-
-        count_in_block += 1;
-
-        // Flush du bloc pour éviter overflow/underflow
-        if count_in_block >= BLOCK_SIZE {
-            if product > 0.0 {
-                lyap += product.ln();
-            }
+    let mut sum = 0.0;
+    for r in parameters.take(iter_max as usize) {
+        let derivative = (r * (1.0 - 2.0 * x)).abs();
+        let next_product = product * derivative;
+        if next_product.is_normal() {
+            product = next_product;
+        } else {
+            sum += product.ln() + derivative.ln();
             product = 1.0;
-            count_in_block = 0;
         }
-
-        // Reset si x diverge
-        if x < MIN_X || x > MAX_X || x.is_nan() {
-            x = 0.5;
-        }
-
-        seq_idx = (seq_idx + 1) % seq_len;
+        x = advance(x, r);
     }
-
-    // Flush du dernier bloc partiel
-    if count_in_block > 0 && product > 0.0 {
-        lyap += product.ln();
-    }
-
-    // Normalisation
-    lyap / iter_max as f64
+    (sum + product.ln()) / iter_max as f64
 }
 
 /// Normalise l'exposant de Lyapunov vers [0, 1] pour la colorisation.
 ///
-/// - Exposants négatifs (chaos) -> [0, 0.85)
-/// - Exposants positifs (stabilité) -> [0.85, 1.0]
+/// - Exposants négatifs (stabilité) -> [0, 0.85)
+/// - Exposants positifs (chaos) -> [0.85, 1.0]
 fn normalize_lyapunov(lyap: f64) -> f64 {
     if lyap < 0.0 {
-        // Région chaotique
+        // Région stable
         let t = (-lyap).min(2.0);
         (t / 2.0) * 0.85
     } else {
-        // Région stable
+        // Région chaotique
         let t = lyap.min(1.0);
         0.85 + t * 0.15
     }
@@ -274,88 +241,71 @@ fn compute_lyapunov_exponent_mpc(
     sequence: &[bool],
     prec: u32,
 ) -> Float {
-    let seq = if sequence.is_empty() {
-        ZIRCON_SEQUENCE
-    } else {
-        sequence
-    };
-    let seq_len = seq.len();
+    let twice_a = a.as_shl(1);
+    let twice_b = b.as_shl(1);
+    let mut parameters =
+        parameter_sequence(sequence).map(|is_a| if is_a { (a, &*twice_a) } else { (b, &*twice_b) });
     let mut x = Float::with_val(prec, 0.5);
-    let one = Float::with_val(prec, 1.0);
-    let two = Float::with_val(prec, 2.0);
-    let min_x = Float::with_val(prec, MIN_X);
-    let max_x = Float::with_val(prec, MAX_X);
-    let min_deriv = Float::with_val(prec, MIN_DERIV);
-
-    let warmup_cycles = WARMUP_ITERATIONS / seq_len as u32;
-    for _ in 0..warmup_cycles {
-        for &is_a in seq {
-            let r = if is_a { a } else { b };
-            let mut one_minus_x = one.clone();
-            one_minus_x -= &x;
-            let mut x_next = x.clone();
-            x_next *= &one_minus_x;
-            x_next *= r;
-            x = x_next;
-
-            if x < min_x || x > max_x || x.is_nan() {
-                x = Float::with_val(prec, 0.5);
-            }
+    let half = x.clone();
+    let bounded = *a >= 0 && *a <= 4 && *b >= 0 && *b <= 4;
+    let one = Float::with_val(prec, 1);
+    let mut complement = Float::new(prec);
+    let mut advance = |x: &mut Float, r: &Float| {
+        complement.assign(&one - &*x);
+        *x *= &complement;
+        *x *= r;
+        if !bounded && !(*x >= 0 && *x <= 1) {
+            x.assign(0.5);
         }
+    };
+
+    for (r, _) in parameters.by_ref().take(WARMUP_ITERATIONS) {
+        advance(&mut x, r);
     }
 
-    let mut lyap = Float::with_val(prec, 0.0);
-    let mut product = Float::with_val(prec, 1.0);
-    let mut count_in_block = 0u32;
-    let mut seq_idx = 0usize;
-
-    for _ in 0..iter_max {
-        let is_a = seq[seq_idx];
-        let r = if is_a { a } else { b };
-
-        // Dérivée évaluée AVANT l'itération (à x_n, pas x_{n+1})
-        let mut two_x = x.clone();
-        two_x *= &two;
-        let mut term = one.clone();
-        term -= two_x;
-        term *= r;
-        let deriv = term.abs();
-
-        // Itération de la carte logistique: x_{n+1} = r * x * (1 - x)
-        let mut one_minus_x = one.clone();
-        one_minus_x -= &x;
-        let mut x_next = x.clone();
-        x_next *= &one_minus_x;
-        x_next *= r;
-        x = x_next;
-
-        if deriv > min_deriv {
-            product *= deriv;
+    // Séparer mantisse et exposant évite le sous-flux et ne demande qu’un
+    // logarithme multiprécision du produit, même pour les longues orbites.
+    let mut product = Float::with_val(prec, 1);
+    let mut binary_exponent = 0_i64;
+    let mut derivative = Float::new(prec);
+    let min_exp = i64::from(rug::float::exp_min());
+    let max_exp = i64::from(rug::float::exp_max());
+    // 2r·(1/2−x) a le même arrondi que r·(1−2x) si 2r est
+    // représentable et si la soustraction intermédiaire ne sous-flue pas.
+    // L'écart non nul minimal près de 1/2 est 2^(-prec-1).
+    let use_doubled = twice_a.is_finite() && twice_b.is_finite() && -i64::from(prec) >= min_exp;
+    for (r, twice_r) in parameters.take(iter_max as usize) {
+        if use_doubled {
+            derivative.assign(&half - &x);
+            derivative *= twice_r;
+        } else {
+            derivative.assign(&x * -2);
+            derivative += &one;
+            derivative *= r;
         }
-        count_in_block += 1;
-
-        if count_in_block >= BLOCK_SIZE {
-            if product > 0.0 {
-                lyap += product.clone().ln();
-            }
-            product = Float::with_val(prec, 1.0);
-            count_in_block = 0;
+        if derivative.is_zero() {
+            return Float::with_val(prec, f64::NEG_INFINITY);
         }
-
-        if x < min_x || x > max_x || x.is_nan() {
-            x = Float::with_val(prec, 0.5);
+        // Le produit de deux mantisses MPFR est dans [1/4, 1). Son
+        // exposant est donc e1 + e2 ou e1 + e2 - 1. Ne normaliser les
+        // facteurs que près des limites, avant toute perte d'information.
+        let exp = i64::from(product.get_exp().unwrap_or(0))
+            + i64::from(derivative.get_exp().unwrap_or(0));
+        if exp <= min_exp || exp >= max_exp {
+            binary_exponent += i64::from(product.frexp_mut());
+            binary_exponent += i64::from(derivative.frexp_mut());
         }
-
-        seq_idx = (seq_idx + 1) % seq_len;
+        product *= &derivative;
+        advance(&mut x, r);
     }
-
-    if count_in_block > 0 && product > 0.0 {
-        lyap += product.clone().ln();
-    }
-
-    let denom = Float::with_val(prec, iter_max);
-    lyap /= &denom;
-    lyap
+    product.abs_mut();
+    binary_exponent += i64::from(product.frexp_mut());
+    product.ln_mut();
+    let mut scale = Float::with_val(prec, rug::float::Constant::Log2);
+    scale *= binary_exponent;
+    product += scale;
+    product /= iter_max;
+    product
 }
 
 /// Version annulable du rendu Lyapunov.
@@ -374,7 +324,8 @@ pub fn render_lyapunov_cancellable(
 
     // Utiliser span directement au lieu de xmax-xmin pour éviter les problèmes de précision
     let iter_max = params.iteration_max;
-    let sequence: Vec<bool> = params.formula.lyapunov_sequence.clone();
+    let sequence = &params.formula.lyapunov_sequence;
+    let [dx, dy] = params.sampling.aa_subpixel_offset;
 
     let cancelled = AtomicBool::new(false);
 
@@ -394,15 +345,16 @@ pub fn render_lyapunov_cancellable(
                 return;
             }
 
-            // Utiliser center+span directement
-            let y_ratio = j as f64 / params.height as f64;
-            let b = params.center_y + (y_ratio - 0.5) * params.span_y;
-
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
-                let x_ratio = i as f64 / params.width as f64;
+                let (jx, jy) = params.sampling.aa_jitter.map_or((dx, dy), |(k, scale)| {
+                    crate::fractal::jitter::pixel_offset(width, i, j, k, scale)
+                });
+                let x_ratio = (i as f64 + jx) / params.width as f64;
+                let y_ratio = (j as f64 + jy) / params.height as f64;
                 let a = params.center_x + (x_ratio - 0.5) * params.span_x;
+                let b = params.center_y + (y_ratio - 0.5) * params.span_y;
 
-                let lyap = compute_lyapunov_exponent(a, b, iter_max, &sequence);
+                let lyap = compute_lyapunov_exponent(a, b, iter_max, sequence);
                 let norm = normalize_lyapunov(lyap);
 
                 *iter = (norm * iter_max as f64) as u32;
@@ -448,10 +400,19 @@ pub fn render_lyapunov_mpc_cancellable(
 
     let width_f = Float::with_val(prec, params.width);
     let height_f = Float::with_val(prec, params.height);
-    let half = Float::with_val(prec, 0.5);
+    let coordinate = |index: usize, offset: f64, size: &Float, span: &Float, center: &Float| {
+        let mut value = Float::with_val(prec, index);
+        value += offset;
+        value /= size;
+        value -= 0.5;
+        value *= span;
+        value += center;
+        value
+    };
 
     let iter_max = params.iteration_max;
-    let sequence: Vec<bool> = params.formula.lyapunov_sequence.clone();
+    let sequence = &params.formula.lyapunov_sequence;
+    let [dx, dy] = params.sampling.aa_subpixel_offset;
     let cancelled = AtomicBool::new(false);
 
     iterations
@@ -469,24 +430,19 @@ pub fn render_lyapunov_mpc_cancellable(
                 return;
             }
 
-            let j_f = Float::with_val(prec, j as u32);
-            let mut y_ratio = j_f.clone();
-            y_ratio /= &height_f;
-            y_ratio -= &half;
-            let mut b = span_y.clone();
-            b *= &y_ratio;
-            b += &center_y;
+            let uniform_b = coordinate(j, dy, &height_f, &span_y, &center_y);
 
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
-                let i_f = Float::with_val(prec, i as u32);
-                let mut x_ratio = i_f;
-                x_ratio /= &width_f;
-                x_ratio -= &half;
-                let mut a = span_x.clone();
-                a *= &x_ratio;
-                a += &center_x;
-
-                let lyap = compute_lyapunov_exponent_mpc(&a, &b, iter_max, &sequence, prec);
+                let jittered_b;
+                let (jx, b) = if let Some((k, scale)) = params.sampling.aa_jitter {
+                    let (jx, jy) = crate::fractal::jitter::pixel_offset(width, i, j, k, scale);
+                    jittered_b = coordinate(j, jy, &height_f, &span_y, &center_y);
+                    (jx, &jittered_b)
+                } else {
+                    (dx, &uniform_b)
+                };
+                let a = coordinate(i, jx, &width_f, &span_x, &center_x);
+                let lyap = compute_lyapunov_exponent_mpc(&a, b, iter_max, sequence, prec);
                 let norm = normalize_lyapunov(lyap.to_f64());
 
                 *iter = (norm * iter_max as f64) as u32;
@@ -505,11 +461,142 @@ pub fn render_lyapunov_mpc_cancellable(
 mod tests {
     use super::*;
 
+    // Référence indépendante : un logarithme par terme et un index de phase
+    // explicite. La carte conserve l'ordre des opérations du chemin f64.
+    fn reference_exponent(a: f64, b: f64, n: u32, sequence: &[bool]) -> f64 {
+        let mut x = 0.5;
+        let mut sum = 0.0;
+        for i in 0..WARMUP_ITERATIONS + n as usize {
+            let r = if sequence[i % sequence.len()] { a } else { b };
+            if i >= WARMUP_ITERATIONS {
+                sum += (r * (1.0 - 2.0 * x)).abs().ln();
+            }
+            let next = r * x * (1.0 - x);
+            x = if (0.0..=1.0).contains(&next) {
+                next
+            } else {
+                0.5
+            };
+        }
+        sum / n as f64
+    }
+
+    #[test]
+    fn products_match_individual_logs_across_the_float_range() {
+        let seq = sequence_from_str("AAB");
+        for (a, b) in [
+            (3.7, 3.95),
+            (2.000001, 2.000001),
+            (4.0, 4.0),
+            (f64::from_bits(4.0_f64.to_bits() - 1), 4.0),
+            (3.7, 5.25),
+            (f64::from_bits(1), f64::from_bits(1)),
+        ] {
+            let expected = reference_exponent(a, b, 4000, &seq);
+            let actual = compute_lyapunov_exponent(a, b, 4000, &seq);
+            assert!(
+                actual == expected || (actual - expected).abs() < 2e-13 * expected.abs().max(1.0)
+            );
+        }
+    }
+
+    #[test]
+    fn render_samples_the_requested_position_on_both_axes() {
+        use crate::fractal::{default_params_for_type, FractalType};
+        let mut p = default_params_for_type(FractalType::Lyapunov, 7, 5);
+        p.center_x = 3.14;
+        p.center_y = 3.27;
+        p.span_x = 0.17;
+        p.span_y = 0.1;
+        p.iteration_max = 73;
+        let cancel = Arc::new(AtomicBool::new(false));
+        for (uniform, jitter) in [
+            ([0.0, 0.0], None),
+            ([0.25, -0.5], None),
+            ([0.25, -0.5], Some((3, 0.75))),
+        ] {
+            p.sampling.aa_subpixel_offset = uniform;
+            p.sampling.aa_jitter = jitter;
+            for render in [render_lyapunov_cancellable, render_lyapunov_mpc_cancellable] {
+                let (_, zs) = render(&p, &cancel).unwrap();
+                for (index, z) in zs.iter().enumerate() {
+                    let i = index % 7;
+                    let j = index / 7;
+                    let (dx, dy) = match jitter {
+                        Some((k, scale)) => crate::fractal::jitter::pixel_offset(7, i, j, k, scale),
+                        None => (uniform[0], uniform[1]),
+                    };
+                    let a = p.center_x + ((i as f64 + dx) / 7.0 - 0.5) * p.span_x;
+                    let b = p.center_y + ((j as f64 + dy) / 5.0 - 0.5) * p.span_y;
+                    let expected =
+                        reference_exponent(a, b, p.iteration_max, &p.formula.lyapunov_sequence);
+                    assert!((z.re - 2.0 * normalize_lyapunov(expected)).abs() < 1e-11);
+                }
+            }
+        }
+    }
+
+    fn mpc_exponent(a: f64, b: f64, iterations: u32, sequence: &[bool]) -> f64 {
+        compute_lyapunov_exponent_mpc(
+            &Float::with_val(128, a),
+            &Float::with_val(128, b),
+            iterations,
+            sequence,
+            128,
+        )
+        .to_f64()
+    }
+
+    #[test]
+    fn mpc_products_preserve_derivatives_near_both_exponent_limits() {
+        let prec = 128;
+        let small = Float::with_val(prec, 1) << (rug::float::exp_min() + 4);
+        let large = Float::with_val(prec, 1) << (rug::float::exp_max() - 4);
+        let largest_power = Float::with_val(prec, 1) << (rug::float::exp_max() - 1);
+        // Le premier bloc amène x à zéro, un point fixe. Chaque dérivée
+        // mesurée dans le second bloc vaut donc exactement le paramètre b.
+        let mut seq = vec![true; WARMUP_ITERATIONS];
+        seq.extend([false; 16]);
+        for b in [&small, &large, &largest_power] {
+            let expected = b.clone().ln();
+            let actual = compute_lyapunov_exponent_mpc(&small, b, 16, &seq, prec);
+            assert_eq!(actual.to_f64(), expected.to_f64());
+        }
+    }
+
+    #[test]
+    fn repeating_a_sequence_preserves_its_phase() {
+        let seq = sequence_from_str("AAB");
+        let repeated = seq.repeat(18);
+        for exponent in [compute_lyapunov_exponent, mpc_exponent] {
+            assert_eq!(
+                exponent(3.75, 3.2, 64, &seq),
+                exponent(3.75, 3.2, 64, &repeated)
+            );
+        }
+    }
+
+    #[test]
+    fn stable_fixed_point_preserves_small_derivatives() {
+        let r = 2.000001_f64;
+        let expected = (2.0 - r).abs().ln();
+        for exponent in [compute_lyapunov_exponent, mpc_exponent] {
+            assert!((exponent(r, r, 65, &[]) - expected).abs() < 1e-8);
+            assert_eq!(exponent(2.0, 2.0, 65, &[]), f64::NEG_INFINITY);
+        }
+    }
+
+    #[test]
+    fn endpoint_orbit_remains_in_the_logistic_domain() {
+        for exponent in [compute_lyapunov_exponent, mpc_exponent] {
+            assert!((exponent(4.0, 4.0, 64, &[]) - 4.0_f64.ln()).abs() < 1e-12);
+        }
+    }
+
     #[test]
     fn test_lyapunov_exponent_chaotic() {
         // Point dans la région chaotique avec séquence par défaut
         let lyap = compute_lyapunov_exponent(3.0, 3.9, 1000, &[]);
-        // L'exposant devrait être négatif (chaos)
         assert!(lyap < 0.0 || lyap > 0.0); // Just check it computes
     }
 

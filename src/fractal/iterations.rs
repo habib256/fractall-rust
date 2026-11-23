@@ -441,58 +441,38 @@ fn mandelbrot_sin(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
 
 #[inline]
 fn newton(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
-    // Newton_Iteration
-    let mut z = z_pixel;
+    let degree = p.seed.re.round() as i32;
+    let degree = if degree <= 0 { 3 } else { degree as u32 };
+    // Spécialiser hors de la boucle le degré 8, valeur de la vue par défaut.
+    // powu(7) garde le même ordre d'arrondi que la puissance générique.
+    match degree {
+        2 => newton_orbit(p, z_pixel, degree, |z| z),
+        3 => newton_orbit(p, z_pixel, degree, |z| z * z),
+        8 => newton_orbit(p, z_pixel, degree, |z| z.powu(7)),
+        d => newton_orbit(p, z_pixel, d, |z| z.powu(d - 1)),
+    }
+}
+
+#[inline]
+fn newton_orbit(
+    p: &FractalParams,
+    mut z: Complex64,
+    degree: u32,
+    derivative_power: impl Fn(Complex64) -> Complex64,
+) -> FractalResult {
     let mut i = 0u32;
     let mut cyc = super::cycle::CycleCut::<2>::new();
     let bailout_sqr = p.bailout * p.bailout;
-    // Degree polynomial (pris sur la partie réelle du seed)
-    let degree = p.seed.re.round() as i32;
-    let degree = if degree <= 0 { 3 } else { degree }; // garde-fou
     let one = Complex64::new(1.0, 0.0);
-
-    if degree == 2 {
-        // Fast-path: z^2 - 1, derivative = 2*z
-        while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
-            let z_sq = z * z;
-            let numerator = z_sq - one;
-            let denominator = Complex64::new(2.0, 0.0) * z;
-            if denominator.norm_sqr() < 1e-24 { break; }
-            z = z - numerator / denominator;
-            i += 1;
-            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
-        }
-    } else if degree == 3 {
-        // Fast-path: z^3 - 1, derivative = 3*z^2
-        while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
-            let z_sq = z * z;
-            let z_cube = z_sq * z;
-            let numerator = z_cube - one;
-            let denominator = Complex64::new(3.0, 0.0) * z_sq;
-            if denominator.norm_sqr() < 1e-24 { break; }
-            z = z - numerator / denominator;
-            i += 1;
-            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
-        }
-    } else {
-        // Degré entier ≥ 4 (le défaut est 8) : puissances par multiplications
-        // (`powu`, élévation au carré), z^d = z^(d−1)·z. Les deux `powc`
-        // d'avant (exp ∘ log, ~700 instructions par itération) coûtaient
-        // 90 ns par pixel·itération ; les produits sont aussi plus exacts —
-        // c'est ce que fait la boucle GMP (`pow_u32`).
-        let d = degree as u32;
-        while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
-            let p_c = degree as f64;
-            let z_pow_deriv = z.powu(d - 1);
-            let z_pow = z_pow_deriv * z;
-
-            let numerator = z_pow - one;
-            let denominator = Complex64::new(p_c, 0.0) * z_pow_deriv;
-            if denominator.norm_sqr() < 1e-24 { break; }
-            z = z - numerator / denominator;
-            i += 1;
-            cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
-        }
+    let degree = Complex64::new(degree as f64, 0.0);
+    while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
+        let power = derivative_power(z);
+        let numerator = power * z - one;
+        let denominator = degree * power;
+        if denominator.norm_sqr() < 1e-24 { break; }
+        z -= numerator / denominator;
+        i += 1;
+        cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
     }
     FractalResult { iteration: i, z, orbit: None, distance: None }
 }

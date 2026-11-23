@@ -206,7 +206,13 @@ pub fn render_request(
             };
         }
         FractalType::Lyapunov => {
-            return if special_view_needs_mpc(params) {
+            use crate::fractal::AlgorithmMode;
+            let use_mpc = match params.engine.algorithm_mode {
+                AlgorithmMode::StandardF64 => false,
+                AlgorithmMode::ReferenceGmp => true,
+                _ => special_view_needs_mpc(params),
+            };
+            return if use_mpc {
                 render_lyapunov_mpc_cancellable(params, cancel)
                     .map(|(i, z)| RenderOutput::without_extras(i, z))
             } else {
@@ -992,6 +998,24 @@ mod tests {
             assert_eq!(out.iterations.len(), 12, "{fractal_type:?}");
             assert_eq!(out.zs.len(), 12, "{fractal_type:?}");
         }
+    }
+
+    #[test]
+    fn lyapunov_dispatch_honors_forced_precision() {
+        use crate::fractal::AlgorithmMode;
+        let mut p = default_params_for_type(FractalType::Lyapunov, 8, 6);
+        p.iteration_max = 200;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (_, standard) = render_lyapunov_cancellable(&p, &cancel).unwrap();
+        let (_, reference) = render_lyapunov_mpc_cancellable(&p, &cancel).unwrap();
+        assert_ne!(standard, reference);
+
+        p.engine.use_gmp = false;
+        p.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
+        assert_eq!(render_with_tiles(&p, None).zs, reference);
+        p.engine.use_gmp = true;
+        p.engine.algorithm_mode = AlgorithmMode::StandardF64;
+        assert_eq!(render_with_tiles(&p, None).zs, standard);
     }
 
     /// G5 `RenderOutput` : sémantique des canaux — un canal non demandé est
