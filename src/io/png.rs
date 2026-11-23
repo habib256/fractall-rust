@@ -60,55 +60,75 @@ pub fn colorize_buffers(
         None
     };
 
-    // Écriture DIRECTE dans le buffer de sortie (même patron que
-    // `video::lighting::shade_rgb` / `interpolate_frame`).
-    // ⚠️ Ne pas revenir à `flat_map(|x| vec![r, g, b]).collect()` : cette
-    // forme allouait un `Vec` de 3 octets PAR PIXEL, puis un `Vec` par ligne,
-    // puis concaténait le tout (cf. `examples/bench_colorize.rs`).
-    let row_body = |y: usize, row: &mut [u8]| {
-        for x in 0..w {
-            let idx = y * w + x;
-            let iter = iterations.get(idx).copied().unwrap_or(0);
-            let z = zs.get(idx).copied().unwrap_or(Complex64::new(0.0, 0.0));
+    let palette_color = |iter, z, orbit: Option<&OrbitData>, distance| {
+        color_for_pixel_with_lut(
+            iter,
+            z,
+            params.iteration_max,
+            params.color.color_mode,
+            params.color.color_repeat,
+            params.color.color_offset,
+            params.color.out_coloring_mode,
+            params.color.color_space,
+            orbit,
+            distance,
+            interior_flag_encoded,
+            lut.as_deref(),
+        )
+    };
+    if matches!(params.fractal_type, FractalType::VonKoch | FractalType::Dragon)
+        && distances.is_empty() && orbits.is_empty()
+    {
+        // Le raster vectoriel émet ces deux couples (itération, z). Une .fmap
+        // peut contenir d'autres valeurs : chacune conserve sa couleur usuelle.
+        let background = palette_color(0, Complex64::new(0.0, 0.0), None, None);
+        let stroke = palette_color(params.iteration_max, Complex64::new(2.0, 0.0), None, None);
+        return colorize_rows(w, h, iterations, zs, |_, iter, z| {
+            // atan2 (ColorDecomposition) distingue +0.0 de -0.0.
+            if iter == 0 && z.re.to_bits() == 0 && z.im.to_bits() == 0 {
+                background
+            } else if iter == params.iteration_max && z.re == 2.0 && z.im.to_bits() == 0 {
+                stroke
+            } else {
+                palette_color(iter, z, None, None)
+            }
+        });
+    }
+
+    colorize_rows(w, h, iterations, zs, |idx, iter, z| {
+        if is_nebulabrot {
+            color_for_nebulabrot_pixel(iter, z)
+        } else if is_buddhabrot {
+            color_for_buddhabrot_pixel(z, params.color.color_mode, params.color.color_repeat)
+        } else {
             let orbit = orbits.get(idx).and_then(|o| o.as_ref());
             let distance = distances.get(idx).copied().filter(|d| d.is_finite());
-
-            let (r, g, b) = if is_nebulabrot {
-                color_for_nebulabrot_pixel(iter, z)
-            } else if is_buddhabrot {
-                color_for_buddhabrot_pixel(z, params.color.color_mode, params.color.color_repeat)
-            } else {
-                color_for_pixel_with_lut(
-                    iter,
-                    z,
-                    params.iteration_max,
-                    params.color.color_mode,
-                    params.color.color_repeat,
-                    params.color.color_offset,
-                    params.color.out_coloring_mode,
-                    params.color.color_space,
-                    orbit,
-                    distance,
-                    interior_flag_encoded,
-                    lut.as_deref(),
-                )
-            };
-
-            let o = x * 3;
-            row[o] = r;
-            row[o + 1] = g;
-            row[o + 2] = b;
+            palette_color(iter, z, orbit, distance)
         }
-    };
+    })
+}
 
-    // Parallélisation par lignes, y compris pour les petites TUILES du
-    // streaming GUI : mesuré (`bench_colorize`, pool saturé) équivalent à une
-    // boucle série sur une passe complète (25.7 vs 25.9 ms / 240 tuiles), mais
-    // 3× plus rapide sur une tuile isolée (fin de passe, workers drainés).
+// Une seule boucle pour la grille complète et les tuiles GUI. Écrire par
+// lignes en parallèle, sans allocation par pixel (examples/bench_colorize.rs).
+fn colorize_rows(
+    w: usize,
+    h: usize,
+    iterations: &[u32],
+    zs: &[Complex64],
+    color: impl Fn(usize, u32, Complex64) -> (u8, u8, u8) + Sync,
+) -> Vec<u8> {
     let mut out = vec![0u8; w * h * 3];
-    out.par_chunks_mut(w * 3)
-        .enumerate()
-        .for_each(|(y, row)| row_body(y, row));
+    if !out.is_empty() {
+        out.par_chunks_mut(w * 3).enumerate().for_each(|(y, row)| {
+            for (x, rgb) in row.chunks_exact_mut(3).enumerate() {
+                let idx = y * w + x;
+                let iter = iterations.get(idx).copied().unwrap_or(0);
+                let z = zs.get(idx).copied().unwrap_or_default();
+                let (r, g, b) = color(idx, iter, z);
+                rgb.copy_from_slice(&[r, g, b]);
+            }
+        });
+    }
     out
 }
 
@@ -410,6 +430,49 @@ mod tests {
             (0..n).map(|i| (norm(i) * iter_max as f64) as u32).collect(),
             (0..n).map(|i| Complex64::new(norm(i) * 2.0, 0.0)).collect(),
         )
+    }
+
+    #[test]
+    fn vector_tiles_match_palette_for_raster_and_imported_pixels() {
+        use crate::fractal::orbit_traps::OrbitTrapType;
+        use crate::fractal::ColorSpace;
+
+        // Une tuile de 3×2 dans une vue plus grande. La map mélange fond,
+        // trait, zéro signé, pixel échappé quelconque et canaux tronqués.
+        let iterations = [0, 7, 0, 3, 7];
+        let zs = [
+            Complex64::new(0.0, 0.0),
+            Complex64::new(2.0, 0.0),
+            Complex64::new(-0.0, 0.0),
+            Complex64::new(2.5, -3.5),
+        ];
+        let distances = [0.02, 0.2, f64::NAN, 0.04];
+        let mut orbit = OrbitData::new(OrbitTrapType::Point);
+        orbit.add_point(Complex64::new(0.3, 0.8), 1);
+        let orbits = [Some(orbit)];
+        for kind in [FractalType::VonKoch, FractalType::Dragon] {
+            let mut params = default_params_for_type(kind, 48, 32);
+            params.iteration_max = 7;
+            params.color.color_mode = 11;
+            params.color.color_repeat = 7;
+            params.color.color_offset = -0.31;
+            params.color.color_space = ColorSpace::Lch;
+            for &mode in OutColoringMode::all() {
+                params.color.out_coloring_mode = mode;
+                // Même palette pixel par pixel que pour les autres types.
+                let mut reference = params.clone();
+                reference.fractal_type = FractalType::Newton;
+                for (d, o) in [
+                    (&[][..], &[][..]),
+                    (&distances[..], &[][..]),
+                    (&[][..], &orbits[..]),
+                ] {
+                    let rgb = colorize_buffers(&params, &iterations, &zs, d, o, 3, 2);
+                    let expected = colorize_buffers(&reference, &iterations, &zs, d, o, 3, 2);
+                    assert_eq!(rgb, expected, "{kind:?}, {mode:?}");
+                }
+            }
+        }
     }
 
     /// Régression : Anti-Buddhabrot est un rendu de DENSITÉ, comme Buddhabrot.

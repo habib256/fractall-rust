@@ -232,6 +232,29 @@ fn lyapunov_deep_navigation_consumes_the_high_precision_center() {
     );
 }
 
+/// L'échange des axes par une matrice exacte transpose le champ de Lyapunov,
+/// même quand toutes les coordonnées arrondies en f64 coïncident.
+#[test]
+fn lyapunov_deep_axis_swap_transposes_the_field() {
+    let side = 16;
+    let mut p = sized_params(FractalType::Lyapunov, side, side, 300);
+    let view = ViewHp::from_decimal_parts("3.9", "3.9", "1e-30", "1e-30", side, side, 256)
+        .unwrap();
+    view.write_to_params(&mut p);
+    assert!(f64_mirrors_are_frozen(&p));
+    let original = render(&p);
+    p.transform_k = Some([0.0, 1.0, 1.0, 0.0]);
+    let transposed = render(&p);
+    assert_ne!(original.zs, transposed.zs);
+    let n = side as usize;
+    for j in 0..n {
+        for i in 0..n {
+            assert_eq!(transposed.zs[j * n + i], original.zs[i * n + j]);
+            assert_eq!(transposed.iterations[j * n + i], original.iterations[i * n + j]);
+        }
+    }
+}
+
 /// La projection pixel du path MPC est EXACTE à la translation entière : panner
 /// de `k` pixels décale l'image de `k` pixels, sans dérive de mapping. Le verrou
 /// tourne dans une zone chaotique, où la moindre différence de dernier bit se

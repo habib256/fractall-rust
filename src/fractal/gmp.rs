@@ -243,6 +243,7 @@ pub fn complex_norm_sqr(value: &Complex, _prec: u32) -> Float {
     re2
 }
 
+#[cfg(test)]
 fn pow_u32_mpc(value: &Complex, mut exp: u32, prec: u32) -> Complex {
     let mut result = Complex::with_val(prec, (1, 0));
     let mut base = value.clone();
@@ -1252,27 +1253,54 @@ fn mandelbrot_sin_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
 }
 
 fn newton_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
+    use rug::Assign;
+
     let mut z = z_pixel.clone();
     let mut cyc = MpcCycle::new(&z);
     let mut i = 0u32;
     let degree = g.seed.real().to_f64().round() as i32;
     let degree = if degree <= 0 { 3 } else { degree } as u32;
     let degree_f = Float::with_val(g.prec, degree);
-    let epsilon = Float::with_val(g.prec, 1e-12f64);
-    let mut epsilon_sqr = epsilon.clone();
-    epsilon_sqr *= &epsilon;
+    let epsilon_sqr = Float::with_val(g.prec, 1e-12f64).square();
+    let mut numerator = Complex::new(g.prec);
+    let mut denominator = Complex::new(g.prec);
+    let mut base = Complex::new(z.prec());
+    let mut norm = Float::new(g.prec);
+    let mut im_sq = Float::new(g.prec);
     while i < g.iteration_max && mpc_below_bailout(&z, g) {
-        let mut numerator = pow_u32_mpc(&z, degree, g.prec);
-        let mut denominator = pow_u32_mpc(&z, degree - 1, g.prec);
+        // z^d et z^(d-1) partagent les carrés z², z⁴, … ; chaque
+        // accumulateur garde l'ordre des produits de pow_u32_mpc.
+        numerator.assign(1);
+        denominator.assign(1);
+        base.assign(&z);
+        let mut exp = degree;
+        let mut deriv_exp = degree - 1;
+        loop {
+            if exp & 1 != 0 {
+                numerator *= &base;
+            }
+            if deriv_exp & 1 != 0 {
+                denominator *= &base;
+            }
+            exp >>= 1;
+            if exp == 0 {
+                break;
+            }
+            deriv_exp >>= 1;
+            base.square_mut();
+        }
         numerator -= 1;
         let (re, im) = denominator.as_mut_real_imag();
         *re *= &degree_f;
         *im *= &degree_f;
-        if complex_norm_sqr(&denominator, g.prec) < epsilon_sqr {
+        norm.assign(re.square_ref());
+        im_sq.assign(im.square_ref());
+        norm += &im_sq;
+        if norm < epsilon_sqr {
             break;
         }
-        let z_quot = numerator / denominator;
-        z -= &z_quot;
+        numerator /= &denominator;
+        z -= &numerator;
         i += 1;
         cyc.observe(&mut i, g.iteration_max, &z);
     }
@@ -1956,30 +1984,44 @@ mod mpc_loop_tests {
     }
 
     #[test]
-    fn newton_mpc_cycles_match_full_iterations() {
-        use crate::fractal::cycle::FORCE_OFF;
+    fn newton_mpc_matches_separate_powers_and_full_iterations() {
+        fn reference_newton(g: &MpcParams, pixel: &Complex, degree: u32) -> (u32, Complex) {
+            let mut z = pixel.clone();
+            let degree_f = Float::with_val(g.prec, degree);
+            let epsilon_sqr = Float::with_val(g.prec, 1e-12f64).square();
+            let mut i = 0;
+            while i < g.iteration_max && complex_norm_sqr(&z, g.prec) < g.bailout_sqr {
+                let numerator = pow_u32_mpc(&z, degree, g.prec) - 1;
+                let mut denominator = pow_u32_mpc(&z, degree - 1, g.prec);
+                *denominator.mut_real() *= &degree_f;
+                *denominator.mut_imag() *= &degree_f;
+                if complex_norm_sqr(&denominator, g.prec) < epsilon_sqr {
+                    break;
+                }
+                z -= numerator / denominator;
+                i += 1;
+            }
+            (i, z)
+        }
 
-        for degree in [1., 2., 3., 8.] {
+        for degree in [1, 2, 3, 7, 8, 9, 16] {
             let mut p = default_params_for_type(FractalType::Newton, 8, 8);
-            p.seed.re = degree;
+            p.seed.re = f64::from(degree);
             p.iteration_max = 257;
             for prec in [64, 192] {
                 p.engine.precision_bits = prec;
                 let g = MpcParams::from_params(&p);
-                // Racines réelles et complexes, pôle, extérieur, bassin intérieur.
-                for xy in [(1., -0.), (-1., 0.), (0., 1.), (0., 0.), (4., 0.), (0.9, -0.4)] {
-                    let point = Complex::with_val(prec, xy);
-                    let (i, z) = newton_mpc(&g, &point);
-                    let (full_i, full_z) = FORCE_OFF.with(|off| {
-                        let prev = off.replace(true);
-                        let result = newton_mpc(&g, &point);
-                        off.set(prev);
-                        result
-                    });
-                    assert_eq!(i, full_i);
-                    assert_eq!(z, full_z);
-                    assert_eq!(z.real().is_sign_negative(), full_z.real().is_sign_negative());
-                    assert_eq!(z.imag().is_sign_negative(), full_z.imag().is_sign_negative());
+                // Racines, axes signés, pôle, extérieur et voisinage d'un bassin.
+                for xy in [(1., -0.), (-1., 0.), (0., 1.), (-0., -0.), (4., 0.), (0.9, -0.4)] {
+                    for coord_prec in [(g.prec, g.prec), (80, 110)] {
+                        let point = Complex::with_val(coord_prec, xy);
+                        let (i, z) = newton_mpc(&g, &point);
+                        let (full_i, full_z) = reference_newton(&g, &point, degree);
+                        assert_eq!(i, full_i);
+                        assert!(same(&z, &full_z));
+                        assert_eq!(z.real().is_sign_negative(), full_z.real().is_sign_negative());
+                        assert_eq!(z.imag().is_sign_negative(), full_z.imag().is_sign_negative());
+                    }
                 }
             }
         }
