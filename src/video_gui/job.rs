@@ -20,7 +20,7 @@ use crate::fractal::{default_params_for_type, ColorSpace, FractalParams, Fractal
 use crate::io::fmap::load_fmap;
 use crate::render::{render_request, RenderRequest};
 use crate::video::assemble::{
-    assemble_project_with_progress, colorize_keyframe, interpolate_frame, timeline,
+    assemble_project_with_progress, colorize_keyframe, interpolate_frame, timeline_sample_count,
     AssembleOptions, AssembleOutcome,
 };
 use crate::video::spline::Dynamic;
@@ -245,8 +245,8 @@ pub fn estimates(
     let n = video::keyframe_count(zoom)?;
     let velocity = Dynamic::parse(velocity)?;
     let fps = fps.max(1);
-    let positions = timeline(n, fps, &velocity)?;
-    let frames = positions.len();
+    let frames = timeline_sample_count(n, fps, &velocity)?;
+    let (w, h) = even_dims(w, h);
     let ss = ss.max(1) as u64;
     let render_w = (w as u64)
         .checked_mul(ss)
@@ -648,6 +648,13 @@ pub(crate) fn check_assemble_only(manifest: &Manifest, project: &Path) -> Result
             probe.video.keyframes, existing.video.keyframes
         ));
     }
+    if existing.fractal.iterations_growth != probe.fractal.iterations_growth
+        && (1..=probe.video.keyframes).any(|k| {
+            video::keyframe_iterations(&existing, k) != video::keyframe_iterations(&probe, k)
+        })
+    {
+        return Err("iteration growth differs from the rendered project — use Generate".into());
+    }
     let expected = keyframe_params(&probe, 0)?;
     match load_fmap(&keyframe_path(project, 0)) {
         Ok(map0) if map_fingerprint(&map0.params) == map_fingerprint(&expected) => Ok(()),
@@ -662,6 +669,7 @@ pub(crate) fn check_assemble_only(manifest: &Manifest, project: &Path) -> Result
 mod tests {
     use super::*;
     use std::time::Duration;
+    use crate::video::assemble::timeline;
 
     #[test]
     fn even_dims_rounds_down_with_floor() {
@@ -735,6 +743,9 @@ mod tests {
     #[test]
     fn estimates_match_pipeline_sources() {
         let e = estimates("8", 30, "1.0", 320, 180, 2).unwrap();
+        assert_eq!(e, estimates("8", 30, "1.0", 321, 181, 2).unwrap());
+        assert_eq!(estimates("1.0715086071862673e301", 120, "0.05", 16, 16, 1).unwrap().frames,
+                   video::keyframe_count("1.0715086071862673e301").unwrap() as usize * 2400 + 1);
         assert_eq!(e.keyframes, 3);
         assert_eq!(e.maps, 4);
         let expected_frames = timeline(3, 30, &Dynamic::Constant(1.0)).unwrap().len();
@@ -797,6 +808,9 @@ mod tests {
         let mut moved = t.clone();
         moved.real = "-0.5".into();
         assert!(check_assemble_only(&build_manifest(&s, &moved), &dir).is_err());
+        let mut changed_growth = m.clone();
+        changed_growth.fractal.iterations_growth += 10.0;
+        assert!(check_assemble_only(&changed_growth, &dir).is_err());
         // Couleurs différentes → OK (color-blind).
         let mut recolored = t.clone();
         recolored.palette = 2;

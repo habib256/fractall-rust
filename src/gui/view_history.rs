@@ -347,14 +347,20 @@ impl Session {
 }
 
 fn entry_is_sane(p: &FractalParams) -> bool {
+    let valid_span = |mirror: f64, hp: Option<&str>| {
+        if mirror == 0.0 {
+            return hp.and_then(|s| rug::Float::parse(s).ok())
+                .map(|v| rug::Float::with_val(64, v))
+                .is_some_and(|v| v > 0 && v.to_f64() == 0.0);
+        }
+        mirror.is_finite() && mirror > 0.0
+    };
     p.width > 0
         && p.height > 0
         && p.center_x.is_finite()
         && p.center_y.is_finite()
-        && p.span_x.is_finite()
-        && p.span_y.is_finite()
-        && p.span_x > 0.0
-        && p.span_y > 0.0
+        && valid_span(p.span_x, p.span_x_hp.as_deref())
+        && valid_span(p.span_y, p.span_y_hp.as_deref())
 }
 
 /// Lit une session depuis son texte JSON. `None` (jamais de panique) si le
@@ -654,6 +660,19 @@ mod tests {
         let h2 = ViewHistory::from_session(&back);
         assert_eq!(h2.cursor(), 2);
         assert_eq!(view_key(h2.current()), view_key(&e));
+    }
+
+    #[test]
+    fn session_restores_spans_that_underflow_f64() {
+        let mut p = base();
+        let view = ViewHp::from_decimal_parts("-0.5", "0", "1e-400", "1e-400", 800, 600, 256).unwrap();
+        view.write_to_params(&mut p);
+        assert_eq!(p.span_x, 0.0);
+        let text = serde_json::to_string(&ViewHistory::new(&p).to_session(true, None)).unwrap();
+        assert_eq!(parse_session(&text).unwrap().current().span_x_hp, p.span_x_hp);
+        p.span_x_hp = None;
+        let text = serde_json::to_string(&ViewHistory::new(&p).to_session(true, None)).unwrap();
+        assert!(parse_session(&text).is_none());
     }
 
     #[test]

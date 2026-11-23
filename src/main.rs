@@ -12,7 +12,7 @@ use fractal::{
     LyapunovPreset, OutColoringMode, PlaneTransform, ViewHp,
 };
 use gpu::GpuRenderer;
-use io::exr::save_iterations_exr;
+use io::exr::save_render_iterations_exr;
 use io::f3_toml::save_f3_toml;
 use io::png::save_png_rgb_with_metadata;
 
@@ -293,13 +293,14 @@ struct Cli {
     toml: Option<PathBuf>,
 
     /// Export the raw iterations as EXR in Fraktaler-3 format (channels
-    /// N0=uint32 iterations, NF=float smooth fraction), for apples-to-apples
+    /// N=biased uint32 iterations (N0/N1 for wide counts), NF=float smooth fraction), for apples-to-apples
     /// comparison via scripts/compare_f3.py. The --output PNG is still
     /// written.
     #[arg(long, value_name = "FILE.exr")]
     export_iterations: Option<PathBuf>,
 
     /// Export the resolved parameters as a native Fraktaler-3 3.1 TOML.
+    /// Requires a formula expressible in F3 opcodes with c set to the pixel.
     #[arg(long, value_name = "FILE.toml")]
     export_f3_toml: Option<PathBuf>,
 }
@@ -730,9 +731,11 @@ fn resolve_params(cli: &Cli) -> Result<Resolved, CliError> {
                 None => return Err(CliError::usage(format!("--phases: unknown type '{name}'"))),
             }
         }
-        if !phases.is_empty() {
-            params.formula.hybrid_phases = Some(phases);
+        if phases.is_empty() {
+            return Err(CliError::usage("--phases: specify at least one fractal type"));
         }
+        params.formula.hybrid_opcodes = None;
+        params.formula.hybrid_phases = Some(phases);
     }
 
     // Formule opcodes F3 (G4 Op::Rot) : --opcodes prioritaire sur --phases
@@ -796,7 +799,7 @@ fn resolve_params(cli: &Cli) -> Result<Resolved, CliError> {
 
         // Blocs [[formula]] F3 natifs (G4 Op::Rot) — un --opcodes CLI
         // explicite reste prioritaire.
-        if cli.opcodes.is_none() {
+        if cli.opcodes.is_none() && cli.phases.is_none() {
             if let Some(ref ops) = t.formula_opcodes {
                 if fractall_cli::fractal::bytecode::parse_opcodes_formula(ops).is_none() {
                     return Err(CliError::usage(format!(
@@ -885,17 +888,25 @@ fn resolve_params(cli: &Cli) -> Result<Resolved, CliError> {
     }
 
     // Coordonnées haute précision (HP) pour deep zooms.
-    if let Some(ref cx_hp) = cli.center_x_hp {
-        params.center_x_hp = Some(cx_hp.clone());
-        // Mettre à jour le f64 aussi (approximation pour les paths non-HP)
-        if let Ok(v) = cx_hp.parse::<f64>() {
-            params.center_x = v;
+    for (flag, input, exact, approx) in [
+        ("--center-x-hp", &cli.center_x_hp, &mut params.center_x_hp, &mut params.center_x),
+        ("--center-y-hp", &cli.center_y_hp, &mut params.center_y_hp, &mut params.center_y),
+    ] {
+        if let Some(input) = input {
+            *exact = Some(input.clone());
         }
-    }
-    if let Some(ref cy_hp) = cli.center_y_hp {
-        params.center_y_hp = Some(cy_hp.clone());
-        if let Ok(v) = cy_hp.parse::<f64>() {
-            params.center_y = v;
+        if let Some(value) = exact {
+            // MPFR accepts the same decimal strings as the high-precision renderer.
+            let parsed = rug::Float::parse(value.as_str())
+                .ok()
+                .map(|n| rug::Float::with_val(53, n).to_f64())
+                .filter(|n| n.is_finite())
+                .ok_or_else(|| {
+                    CliError::invalid(format!("{flag}: expected a finite coordinate, got '{value}'"))
+                })?;
+            if input.is_some() {
+                *approx = parsed;
+            }
         }
     }
 
@@ -1315,35 +1326,7 @@ fn main() {
 
     // Export EXR raw au format F3 si demandé (--export-iterations).
     if let Some(ref exr_path) = cli.export_iterations {
-        // Doit matcher l'escape radius effectif du renderer pour que NF soit cohérent
-        // — sinon les pixels qui viennent juste d'échapper (z² ≈ bailout²) tombent
-        // sous le seuil F3 et NF s'effondre à 0.
-        let bailout_sq = params.bailout * params.bailout;
-        // Degré de la formule dérivé du bytecode (aligné F3 `opcodes_degree`,
-        // `param.cc:970`). Pour Mandelbrot/BS/Tricorn/Celtic → 2, pour
-        // Multibrot puissance entière → la puissance, etc. Fallback sur
-        // `multibrot_power` quand la formule n'est pas compilable (types
-        // non-escape-time : Newton, Phoenix, Magnet, Lyapunov, …). Cf. P0
-        // parité F3 : sans ça, NF utilise degree=2.5 par défaut pour tous
-        // les types, ce qui décale le smooth iter de ~0.1-0.2 pour les
-        // pixels juste échappés.
-        let degree = match fractall_cli::fractal::bytecode::compile_formula(
-            params.fractal_type,
-            params.formula.multibrot_power,
-        ) {
-            Some(formula) => fractall_cli::fractal::bytecode::formula_last_degree(&formula) as f64,
-            None => params.formula.multibrot_power.max(2.0),
-        };
-        match save_iterations_exr(
-            exr_path,
-            params.width as usize,
-            params.height as usize,
-            &out.iterations,
-            &out.zs,
-            params.iteration_max,
-            bailout_sq,
-            degree,
-        ) {
+        match save_render_iterations_exr(exr_path, &params, &out.iterations, &out.zs) {
             Ok(()) => println!("Raw EXR written: {}", exr_path.display()),
             Err(e) => {
                 eprintln!("Error writing EXR {}: {}", exr_path.display(), e);
@@ -1517,6 +1500,34 @@ mod tests {
         let mut argv = vec!["fractall-cli"];
         argv.extend_from_slice(args);
         resolve_params(&Cli::parse_from(argv)).unwrap_or_else(|e| panic!("{}", e.msg)).params
+    }
+
+    #[test]
+    fn hp_center_rejects_invalid_input_without_zoom() {
+        for (axis, value) in [("--center-x-hp", "rubbish"), ("--center-y-hp", "NaN")] {
+            let cli = Cli::parse_from(["fractall-cli", "--type", "3", axis, value]);
+            let err = resolve_params(&cli).err().expect("invalid coordinate accepted");
+            assert!(err.msg.contains(axis));
+        }
+    }
+
+    #[test]
+    fn explicit_phases_replace_inherited_opcodes() {
+        let png = tmp("inherited_opcodes.png");
+        let toml = tmp("inherited_opcodes.toml");
+        let original = resolve(&[
+            "--type", "3", "--opcodes", "sqr sqr add", "--width", "8", "--height", "8",
+            "--iterations", "10",
+        ]);
+        render_to_png(&original, &png);
+        save_f3_toml(&toml, &original).unwrap();
+        for (source, path) in [("--from-png", &png), ("--toml", &toml)] {
+            let p = resolve(&[source, path.to_str().unwrap(), "--phases", "tricorn"]);
+            assert_eq!(p.formula.hybrid_phases, Some(vec![FractalType::Tricorn]));
+            assert_eq!(p.formula.hybrid_opcodes, None);
+        }
+        std::fs::remove_file(png).unwrap();
+        std::fs::remove_file(toml).unwrap();
     }
 
     #[test]

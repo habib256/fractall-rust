@@ -30,7 +30,7 @@ const HP_PRECISION: u32 = 256;
 /// Snapshot d'une vue (centre + span en HP strings) + axialité, pour le warp GPU
 /// de la dernière frame (G10.1). Les strings préservent la précision au deep zoom
 /// (le warp calcule `(cx_tex - cx_live)/span_live`, un ratio O(1), en HP puis f64).
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct ViewSnapshot {
     cx: String,
     cy: String,
@@ -130,6 +130,9 @@ pub struct FractallApp {
 
     // Texture egui pour l'affichage
     texture: Option<TextureHandle>,
+    displayed_frame: Option<DisplayedFrame>,
+    rendering_params: FractalParams,
+    raw_preview: bool,
     /// Overlay partiel de navigation (RGBA, transparent là où le rendu en cours
     /// n'a pas encore calculé) + la vue à laquelle il correspond. Composé
     /// PAR-DESSUS la texture principale warpée : port de la « dynamic
@@ -185,16 +188,8 @@ pub struct FractallApp {
     aa_jitter_scale: f64,
     /// Retour visuel bref après une copie presse-papiers (barre d'état).
     clipboard_feedback: Option<(&'static str, Instant)>,
-    /// Progression AA courante affichée dans le panneau (sample, total).
-    /// Couleurs (palette, repeat, mode, espace) figées au lancement du rendu :
-    /// les moyennes AA arrivent déjà colorisées avec elles — si l'utilisateur a
-    /// recoloré entre-temps, on n'écrase pas sa recolorisation (bug 2026-08-23).
-    render_color_key: (
-        u8,
-        u32,
-        crate::fractal::OutColoringMode,
-        crate::fractal::ColorSpace,
-    ),
+    /// Vrai pendant que la texture principale montre une accumulation AA de ce rendu.
+    showing_render_aa: bool,
 
     // Métriques
     last_render_time: Option<f64>, // en secondes
@@ -340,12 +335,42 @@ impl RenderResolutionPreset {
     }
 }
 
+fn same_colors(a: &FractalParams, b: &FractalParams) -> bool {
+    let a = &a.color;
+    let b = &b.color;
+    a.color_mode == b.color_mode
+        && a.color_repeat == b.color_repeat
+        && a.out_coloring_mode == b.out_coloring_mode
+        && a.color_space == b.color_space
+        && a.color_offset == b.color_offset
+}
+
+/// Pixels de la texture principale et paramètres qui les ont produits.
+struct DisplayedFrame {
+    image: RgbImage,
+    params: FractalParams,
+    aa_samples: u32,
+}
+
+impl DisplayedFrame {
+    fn save(&self, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+        let (cx, cy, sx, sy) = ViewHp::from_params(&self.params).decimal_parts();
+        crate::io::png::save_png_rgb_with_metadata_aa(
+            &self.params, self.image.as_raw(), path,
+            self.params.center_x_hp.as_deref().unwrap_or(&cx),
+            self.params.center_y_hp.as_deref().unwrap_or(&cy),
+            self.params.span_x_hp.as_deref().unwrap_or(&sx),
+            self.params.span_y_hp.as_deref().unwrap_or(&sy),
+            self.aa_samples,
+        )
+    }
+}
+
 /// Message envoyé par le thread de colorisation vers l'UI (évite de bloquer le thread principal).
 struct TextureReadyMessage {
+    params: FractalParams,
     pass_index: u8,
     display_buffer: Vec<u8>,
-    width: u32,
-    height: u32,
     // Arc (G10.3/G10.4) : assignés tels quels à l'état de l'app (pas de memcpy).
     iterations: Arc<Vec<u32>>,
     zs: Arc<Vec<Complex64>>,
@@ -359,10 +384,10 @@ struct TextureReadyMessage {
 /// Message pour les recolorisations asynchrones (changement palette/color_repeat).
 /// Plus simple que TextureReadyMessage car on ne change pas les données d'itération.
 struct RecolorReadyMessage {
+    params: FractalParams,
     display_buffer: Vec<u8>,
-    width: u32,
-    height: u32,
     version: u64,
+    preview: bool,
 }
 
 /// Message pour le rendu asynchrone de la preview Julia.
@@ -463,6 +488,9 @@ impl FractallApp {
             distances: Arc::new(Vec::new()),
             orbits: Arc::new(Vec::new()),
             texture: None,
+            displayed_frame: None,
+            rendering_params: params.clone(),
+            raw_preview: false,
             nav_overlay_texture: None,
             nav_overlay_view: None,
             texture_view: None,
@@ -493,12 +521,7 @@ impl FractallApp {
             aa_samples: 1,
             aa_jitter_scale: 1.0,
             clipboard_feedback: None,
-            render_color_key: (
-                6,
-                40,
-                crate::fractal::OutColoringMode::Smooth,
-                crate::fractal::ColorSpace::Rgb,
-            ),
+            showing_render_aa: false,
             last_render_time: None,
             render_start_time: None,
             last_render_device_label: None,
@@ -1243,13 +1266,11 @@ impl FractallApp {
         let aa_samples = self.aa_samples.max(1);
         let aa_jitter_scale =
             crate::gui::render_state::normalized_jitter_scale(self.aa_jitter_scale);
+        self.rendering_params = params.clone();
+        self.rendering_params.sampling.jitter_scale = aa_jitter_scale;
+        self.showing_render_aa = false;
+        self.recolor_version.issue();
         self.render_progress.begin(config.passes.len(), aa_samples);
-        self.render_color_key = (
-            params.color.color_mode,
-            params.color.color_repeat,
-            params.color.out_coloring_mode,
-            params.color.color_space,
-        );
 
         // G10.4 : frame source pour la réutilisation pixels inter-frame.
         // Désactivée en mode AA multi-sample (les échantillons doivent être
@@ -1728,7 +1749,7 @@ impl FractallApp {
         // Ignorer les messages obsolètes (version != version actuelle)
         while let Ok(msg) = self.recolor_receiver.try_recv() {
             if self.recolor_version.accepts(msg.version) {
-                self.load_texture_from_buffer(ctx, &msg.display_buffer, msg.width, msg.height);
+                self.load_texture_from_buffer(ctx, msg.display_buffer, msg.params, (!msg.preview).then_some(1));
                 ctx.request_repaint();
                 break;
             }
@@ -1738,6 +1759,10 @@ impl FractallApp {
         // Traiter d'abord une texture prête (calcul faite hors thread principal)
         if let Some(ref rx) = self.texture_ready_receiver {
             if let Ok(tex) = rx.try_recv() {
+                if !self.render_progress.accepts_pass(tex.pass_index) {
+                    ctx.request_repaint();
+                    return;
+                }
                 self.render_progress.pass_ready(tex.pass_index);
                 self.last_render_device_label = Some(tex.precision_label.clone());
                 self.last_render_method_label = Some(match tex.effective_mode {
@@ -1747,19 +1772,22 @@ impl FractallApp {
                 });
                 self.iterations = tex.iterations;
                 self.zs = tex.zs;
+                self.raw_preview = tex.is_preview;
                 self.distances = Arc::new(tex.distances);
                 self.orbits = Arc::new(tex.orbits);
-                self.is_preview = tex.is_preview;
-                // G10.1 : la texture représente désormais la vue du rendu en cours.
-                // Le warp devient l'identité (view_texture == view_live).
-                if self.rendering_view.is_some() {
-                    self.texture_view = self.rendering_view.clone();
-                    // L'image COMPLÈTE de cette vue est arrivée : l'overlay
-                    // partiel de navigation devient redondant.
-                    self.nav_overlay_texture = None;
-                    self.nav_overlay_view = None;
+                // Le brut reste disponible pour recoloriser, même quand la
+                // moyenne AA de cette vue est déjà affichée.
+                if self.showing_render_aa && same_colors(&self.params, &self.rendering_params) {
+                    ctx.request_repaint();
+                    return;
                 }
-                self.load_texture_from_buffer(ctx, &tex.display_buffer, tex.width, tex.height);
+                if !same_colors(&tex.params, &self.params) {
+                    self.update_texture(ctx);
+                } else {
+                    self.recolor_version.issue();
+                    self.is_preview = tex.is_preview;
+                    self.load_texture_from_buffer(ctx, tex.display_buffer, tex.params, (!tex.is_preview).then_some(1));
+                }
                 ctx.request_repaint();
                 return;
             }
@@ -1823,9 +1851,10 @@ impl FractallApp {
                     Some(t) => t.clone(),
                     None => return,
                 };
-                let params = self.params.clone();
-                let total_width = self.params.width;
-                let total_height = self.params.height;
+                let mut params = self.rendering_params.clone();
+                params.color = self.params.color.clone();
+                let repaint_ctx = ctx.clone();
+                let (total_width, total_height) = (params.width, params.height);
                 thread::spawn(move || {
                     let (iterations, zs, distances, orbits, disp_w, disp_h, is_preview) =
                         if scale_divisor > 1 {
@@ -1859,10 +1888,9 @@ impl FractallApp {
                         disp_h,
                     );
                     let _ = tx.send(TextureReadyMessage {
+                        params,
                         pass_index,
                         display_buffer,
-                        width: disp_w,
-                        height: disp_h,
                         iterations,
                         zs,
                         distances,
@@ -1871,6 +1899,7 @@ impl FractallApp {
                         effective_mode,
                         precision_label,
                     });
+                    repaint_ctx.request_repaint();
                 });
                 ctx.request_repaint();
             }
@@ -1880,20 +1909,10 @@ impl FractallApp {
                 width,
                 height,
             } => {
-                // G10.5 : progression intra-passe (tuiles priorité-curseur sur
-                // la base de la passe précédente). Le buffer est aligné sur la
-                // vue du rendu en cours → le warp G10.1 devient l'identité.
-                if self.rendering_view.is_some() {
-                    self.texture_view = self.rendering_view.clone();
-                    // L'image COMPLÈTE de cette vue est arrivée : l'overlay
-                    // partiel de navigation devient redondant.
-                    self.nav_overlay_texture = None;
-                    self.nav_overlay_view = None;
-                }
                 // Buffer à la taille de la PASSE : upscaler vers la vue pleine
                 // (comme PassComplete) — l'affichage dimensionne sur la texture
                 // (scale ≤ 1), une passe ¼ s'affichait rétrécie (bug 2026-08-23).
-                let (fw, fh) = (self.params.width, self.params.height);
+                let (fw, fh) = (self.rendering_params.width, self.rendering_params.height);
                 if (width, height) != (fw, fh) && width > 0 && height > 0 {
                     let up = crate::gui::progressive::upscale_rgb_nearest(
                         &display_buffer,
@@ -1902,9 +1921,9 @@ impl FractallApp {
                         fw,
                         fh,
                     );
-                    self.load_texture_from_buffer(ctx, &up, fw, fh);
+                    self.load_texture_from_buffer(ctx, up, self.rendering_params.clone(), None);
                 } else {
-                    self.load_texture_from_buffer(ctx, &display_buffer, width, height);
+                    self.load_texture_from_buffer(ctx, display_buffer, self.rendering_params.clone(), None);
                 }
                 ctx.request_repaint();
             }
@@ -1946,8 +1965,8 @@ impl FractallApp {
 
             RenderMessage::AaProgress {
                 display_buffer,
-                width,
-                height,
+                width: _,
+                height: _,
                 sample,
                 total,
             } => {
@@ -1956,59 +1975,17 @@ impl FractallApp {
                 // courante est la dernière → image nette, plus en preview.
                 self.is_preview = false;
                 self.render_progress.aa_ready(sample, total);
-                let current_key = (
-                    self.params.color.color_mode,
-                    self.params.color.color_repeat,
-                    self.params.color.out_coloring_mode,
-                    self.params.color.color_space,
-                );
-                if current_key == self.render_color_key {
-                    self.load_texture_from_buffer(ctx, &display_buffer, width, height);
+                if same_colors(&self.params, &self.rendering_params) {
+                    self.recolor_version.issue();
+                    self.load_texture_from_buffer(ctx, display_buffer, self.rendering_params.clone(), (sample > 1).then_some(sample));
+                    self.showing_render_aa = true;
                 } // sinon : couleurs changées depuis le lancement → garder la recolorisation
                 ctx.request_repaint();
             }
 
             RenderMessage::AllComplete { orbit_cache } => {
-                // Avant de fermer les canaux : récupérer toute texture déjà envoyée par le worker
-                // (ex. dernière passe pleine résolution), sinon attendre brièvement pour éviter
-                // que l'image reste pixellisée quand AllComplete arrive avant TextureReadyMessage.
-                if let Some(rx) = self.texture_ready_receiver.take() {
-                    let mut last_tex = None;
-                    while let Ok(tex) = rx.try_recv() {
-                        last_tex = Some(tex);
-                    }
-                    if last_tex.is_none() {
-                        // La texture finale n'est pas encore colorisée. NE PAS
-                        // bloquer le thread UI dessus (`recv_timeout` gelait
-                        // l'affichage jusqu'à 100 ms → à-coup en navigation) :
-                        // on garde le receiver vivant, la boucle de polling en
-                        // tête d'`update` la récupérera à une frame suivante
-                        // (elle tourne aussi quand `rendering == false`).
-                        self.texture_ready_receiver = Some(rx);
-                        ctx.request_repaint();
-                    }
-                    if let Some(tex) = last_tex {
-                        self.render_progress.pass_ready(tex.pass_index);
-                        self.last_render_device_label = Some(tex.precision_label.clone());
-                        self.last_render_method_label = Some(match tex.effective_mode {
-                            AlgorithmMode::ReferenceGmp => String::new(),
-                            AlgorithmMode::Perturbation => "Perturbation".to_string(),
-                            _ => "Standard".to_string(),
-                        });
-                        self.iterations = tex.iterations;
-                        self.zs = tex.zs;
-                        self.distances = Arc::new(tex.distances);
-                        self.orbits = Arc::new(tex.orbits);
-                        self.is_preview = tex.is_preview;
-                        self.load_texture_from_buffer(
-                            ctx,
-                            &tex.display_buffer,
-                            tex.width,
-                            tex.height,
-                        );
-                        ctx.request_repaint();
-                    }
-                }
+                // Les colorisations lancées peuvent encore arriver dans le désordre.
+                // Chaque worker réveille l’UI et passe par le même filtre de progression.
                 self.texture_ready_sender = None;
 
                 self.rendering = false;
@@ -2095,6 +2072,7 @@ impl FractallApp {
         self.zs = Arc::new(Vec::new());
         self.orbits = Arc::new(Vec::new());
         self.texture = None;
+        self.displayed_frame = None;
         self.start_render();
     }
 
@@ -2103,27 +2081,26 @@ impl FractallApp {
     fn load_texture_from_buffer(
         &mut self,
         ctx: &Context,
-        rgb_buffer: &[u8],
-        width: u32,
-        height: u32,
+        rgb_buffer: Vec<u8>,
+        params: FractalParams,
+        aa_samples: Option<u32>,
     ) {
-        let expected_size = (width as usize) * (height as usize) * 3;
-        if rgb_buffer.len() != expected_size {
-            eprintln!(
-                "Warning: RGB buffer size mismatch: got {}, expected {}",
-                rgb_buffer.len(),
-                expected_size
-            );
+        let (width, height) = (params.width, params.height);
+        if rgb_buffer.len() != width as usize * height as usize * 3 {
             return;
         }
-        let Some(img) = RgbImage::from_raw(width, height, rgb_buffer.to_vec()) else {
-            eprintln!("Warning: Failed to create RgbImage from buffer");
+        let Some(img) = RgbImage::from_raw(width, height, rgb_buffer) else {
             return;
         };
         if self.ui_trace {
             self.ui_frame_events.push(format!("tex:{width}x{height}"));
         }
         let color_image = rgb_image_to_color_image(&img);
+        self.showing_render_aa = false;
+        self.displayed_frame = aa_samples.map(|aa_samples| DisplayedFrame { image: img, params, aa_samples });
+        self.texture_view = self.rendering_view.clone();
+        self.nav_overlay_texture = None;
+        self.nav_overlay_view = None;
         // Mise à jour EN PLACE quand les dimensions sont inchangées : `load_texture`
         // ALLOUE une nouvelle texture GPU à chaque appel (le nom n'est qu'un label)
         // et libère l'ancienne. En navigation continue (dizaines d'images/s) ce
@@ -2144,10 +2121,12 @@ impl FractallApp {
     /// Utilisé pour les changements de palette/couleur (re-colorisation nécessaire).
     /// La colorisation est faite de manière asynchrone pour ne pas bloquer l'UI.
     fn update_texture(&mut self, ctx: &Context) {
-        let width = self.params.width;
-        let height = self.params.height;
-
-        if self.iterations.is_empty() || self.zs.is_empty() {
+        if self.render_progress.passes().0 == 0 {
+            return;
+        }
+        let mut params = self.rendering_params.clone();
+        let (width, height) = (params.width, params.height);
+        if self.iterations.len() != width as usize * height as usize || self.iterations.len() != self.zs.len() {
             return;
         }
 
@@ -2164,13 +2143,14 @@ impl FractallApp {
         let zs = Arc::clone(&self.zs);
         let distances = Arc::clone(&self.distances);
         let orbits = Arc::clone(&self.orbits);
-        let mut params = self.params.clone();
+        params.color = self.params.color.clone();
         // Mettre à jour les params avec les valeurs actuelles de l'UI
         params.color.color_mode = self.palette_index;
         params.color.color_repeat = self.color_repeat;
         params.color.out_coloring_mode = self.out_coloring_mode;
 
         let tx = self.recolor_sender.clone();
+        let preview = self.raw_preview;
 
         // Incrémenter la version pour ignorer les résultats obsolètes
         let version = self.recolor_version.issue();
@@ -2188,10 +2168,10 @@ impl FractallApp {
                 height,
             );
             let _ = tx.send(RecolorReadyMessage {
+                params,
                 display_buffer,
-                width,
-                height,
                 version,
+                preview,
             });
             repaint_ctx.request_repaint();
         });
@@ -2774,36 +2754,21 @@ impl eframe::App for FractallApp {
 
             // S pour screenshot avec métadonnées
             if i.key_pressed(egui::Key::S) {
-                use crate::io::png::{colorize_to_rgb_with_extras, save_png_rgb_with_metadata};
-                use std::path::Path;
-                let timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let filename = format!("fractal_{}.png", timestamp);
-                let (center_x_hp, center_y_hp, span_x_hp, span_y_hp) =
-                    self.view.decimal_parts();
-                // Mêmes canaux annexes que l'affichage : le screenshot doit
-                // reproduire l'écran (Distance*/OrbitTraps/Wings inclus).
-                let buffer = colorize_to_rgb_with_extras(
-                    &self.params,
-                    &self.iterations,
-                    &self.zs,
-                    &self.distances,
-                    &self.orbits,
-                );
-                if let Err(e) = save_png_rgb_with_metadata(
-                    &self.params,
-                    &buffer,
-                    Path::new(&filename),
-                    &center_x_hp,
-                    &center_y_hp,
-                    &span_x_hp,
-                    &span_y_hp,
-                ) {
-                    eprintln!("PNG export error: {}", e);
+                if let Some(frame) = self.displayed_frame.as_ref().filter(|_| {
+                    self.nav_overlay_texture.is_none()
+                        && self.texture_view.as_ref() == Some(&self.current_view_snapshot())
+                }) {
+                    let timestamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let filename = format!("fractal_{timestamp}.png");
+                    match frame.save(std::path::Path::new(&filename)) {
+                        Ok(()) => println!("Screenshot saved with metadata: {filename}"),
+                        Err(e) => eprintln!("PNG export error: {e}"),
+                    }
                 } else {
-                    println!("Screenshot saved with metadata: {}", filename);
+                    self.clipboard_feedback = Some(("Screenshot needs a complete frame of this view", Instant::now()));
                 }
             }
 
@@ -4342,6 +4307,68 @@ impl eframe::App for FractallApp {
         if let Err(e) = view_history::save_session(&path, &session) {
             eprintln!("Could not save the GUI session to {}: {e}", path.display());
         }
+    }
+}
+
+#[cfg(test)]
+mod screenshot_tests {
+    use super::*;
+
+    #[test]
+    fn aa_pixels_and_geometry_survive_late_passes_after_completion() {
+        let ctx = Context::default();
+        let mut app = FractallApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        let mut params = default_params_for_type(FractalType::Mandelbrot, 3, 2);
+        params.center_x_hp = Some("-0.12345678901234567890123456789".into());
+        params.sampling.jitter_scale = 0.25;
+        app.params = params.clone();
+        app.rendering_params = params.clone();
+        app.rendering_view = Some(app.current_view_snapshot());
+        app.rendering = true;
+        app.render_progress.begin(2, 4);
+        let (tx, rx) = mpsc::channel();
+        let (tex_tx, tex_rx) = mpsc::channel();
+        app.render_receiver = Some(rx);
+        app.texture_ready_receiver = Some(tex_rx);
+        tx.send(RenderMessage::TileProgress {
+            display_buffer: vec![1; 18], width: 3, height: 2,
+        }).unwrap();
+        app.check_render_complete(&ctx);
+        assert!(app.displayed_frame.is_none());
+        let rgb: Vec<u8> = (0..18).collect();
+        tx.send(RenderMessage::AaProgress {
+            display_buffer: rgb.clone(), width: 3, height: 2, sample: 4, total: 4,
+        }).unwrap();
+        tx.send(RenderMessage::AllComplete { orbit_cache: None }).unwrap();
+        app.check_render_complete(&ctx);
+        app.check_render_complete(&ctx);
+        for pass_index in [1, 0] {
+            tex_tx.send(TextureReadyMessage {
+                params: params.clone(), pass_index, display_buffer: vec![99; 18],
+                iterations: Arc::new(vec![pass_index as u32; 6]), zs: Arc::new(vec![Complex64::default(); 6]),
+                distances: Vec::new(), orbits: Vec::new(), is_preview: pass_index == 0,
+                effective_mode: AlgorithmMode::Auto, precision_label: String::new(),
+            }).unwrap();
+            app.check_render_complete(&ctx);
+        }
+        assert_eq!(app.iterations.as_slice(), &[1; 6]);
+        let path = std::env::temp_dir().join(format!("fractall_screenshot_{}.png", std::process::id()));
+        let frame = app.displayed_frame.as_ref().unwrap();
+        frame.save(&path).unwrap();
+        assert_eq!(image::open(&path).unwrap().to_rgb8().into_raw(), rgb);
+        let saved = crate::io::png::load_png_metadata(&path).unwrap();
+        assert_eq!(saved.center_x_hp, params.center_x_hp);
+        assert_eq!((saved.width, saved.height), (3, 2));
+        assert!(crate::io::png::load_png_command(&path).unwrap().contains("--aa-samples 4 --jitter-scale 0.25"));
+        std::fs::remove_file(path).unwrap();
+
+        // Changer la vue live avant la recolorisation conserve la géométrie du brut.
+        app.params.center_x_hp = Some("1".into());
+        app.params.width = 200;
+        app.update_texture(&ctx);
+        let recolor = app.recolor_receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(recolor.params.width, 3);
+        assert_eq!(recolor.params.center_x_hp, params.center_x_hp);
     }
 }
 
