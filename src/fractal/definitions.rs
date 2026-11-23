@@ -491,10 +491,13 @@ pub fn apply_lyapunov_preset(params: &mut FractalParams, preset: LyapunovPreset)
     let config = LyapunovConfig::from_preset(preset);
     params.formula.lyapunov_preset = preset;
     params.formula.lyapunov_sequence = config.sequence;
-    params.center_x = (config.xmin + config.xmax) * 0.5;
-    params.center_y = (config.ymin + config.ymax) * 0.5;
-    params.span_x = config.xmax - config.xmin;
-    params.span_y = config.ymax - config.ymin;
+    params.set_bounds(config.xmin, config.xmax, config.ymin, config.ymax);
+    // La GUI et le rendu multiprécision lisent ces chaînes en priorité.
+    // Le nouveau cadrage doit remplacer aussi la vue du preset précédent.
+    params.center_x_hp = None;
+    params.center_y_hp = None;
+    params.span_x_hp = None;
+    params.span_y_hp = None;
 }
 
 

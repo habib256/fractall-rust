@@ -156,7 +156,8 @@ struct Cli {
     julia_im: Option<f64>,
 
     /// Lyapunov preset (standard, zircon-city, jellyfish, asymmetric,
-    /// spaceship, heavy-blocks)
+    /// spaceship, heavy-blocks). Sets the sequence and initial view.
+    /// Explicit bounds, centre and zoom override that view.
     #[arg(long)]
     lyapunov_preset: Option<String>,
 
@@ -834,6 +835,20 @@ fn resolve_params(cli: &Cli) -> Result<Resolved, CliError> {
         }
     }
 
+    // Le preset fournit le cadrage initial. Les coordonnées explicites ci-dessous
+    // permettent ensuite de naviguer dans la séquence choisie.
+    if params.fractal_type == FractalType::Lyapunov {
+        if let Some(preset_name) = &cli.lyapunov_preset {
+            let preset = LyapunovPreset::from_cli_name(preset_name).ok_or_else(|| {
+                CliError::invalid(format!(
+                    "Invalid Lyapunov preset: '{preset_name}'. Options: standard, zircon-city, \
+                     jellyfish, asymmetric, spaceship, heavy-blocks"
+                ))
+            })?;
+            apply_lyapunov_preset(&mut params, preset);
+        }
+    }
+
     // Override des coordonnées si demandé (bornes xmin/xmax/ymin/ymax).
     // Les bornes CLI sont converties en centre + span.
     // Utiliser center+span comme source de vérité au lieu de xmin/xmax/ymin/ymax
@@ -1033,19 +1048,6 @@ fn resolve_params(cli: &Cli) -> Result<Resolved, CliError> {
         AlgorithmMode::ReferenceGmp => params.engine.use_gmp = true,
         AlgorithmMode::StandardF64 => params.engine.use_gmp = false,
         _ => {}
-    }
-
-    // Preset Lyapunov (si applicable).
-    if params.fractal_type == FractalType::Lyapunov {
-        if let Some(preset_name) = &cli.lyapunov_preset {
-            let preset = LyapunovPreset::from_cli_name(preset_name).ok_or_else(|| {
-                CliError::invalid(format!(
-                    "Invalid Lyapunov preset: '{preset_name}'. Options: standard, zircon-city, \
-                     jellyfish, asymmetric, spaceship, heavy-blocks"
-                ))
-            })?;
-            apply_lyapunov_preset(&mut params, preset);
-        }
     }
 
     // Mode de colorisation (outcoloring, défaut smooth ; avec --from-png,
@@ -1515,6 +1517,20 @@ mod tests {
         let mut argv = vec!["fractall-cli"];
         argv.extend_from_slice(args);
         resolve_params(&Cli::parse_from(argv)).unwrap_or_else(|e| panic!("{}", e.msg)).params
+    }
+
+    #[test]
+    fn lyapunov_preset_honors_explicit_view_in_both_precisions() {
+        let cx = "3.75000000000000000000000001";
+        let p = resolve(&[
+            "--type", "17", "--lyapunov-preset", "jellyfish",
+            "--center-x-hp", cx, "--zoom", "1e24",
+        ]);
+        assert_eq!(p.formula.lyapunov_preset, LyapunovPreset::Jellyfish);
+        assert_eq!(p.center_x_hp.as_deref(), Some(cx));
+        assert_eq!(p.center_x, 3.75);
+        assert_eq!(p.center_y, 3.7);
+        assert_eq!(p.span_x, 4e-24);
     }
 
     /// Rendu CPU + colorisation + PNG exactement comme `main` (hors AA).
