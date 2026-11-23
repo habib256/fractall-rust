@@ -196,8 +196,14 @@ impl MpcParams {
         // Pour perturbation, utiliser la précision calculée si disponible
         // Sinon utiliser params.precision_bits
         use crate::fractal::perturbation::compute_perturbation_precision_bits;
-        let prec = if params.engine.algorithm_mode == crate::fractal::AlgorithmMode::Perturbation 
-            || params.engine.algorithm_mode == crate::fractal::AlgorithmMode::ReferenceGmp {
+        let deep_newton = params.fractal_type == FractalType::Newton
+            && crate::fractal::view::f64_pixel_grid_collapses(params);
+        let prec = if deep_newton
+            || matches!(
+                params.engine.algorithm_mode,
+                crate::fractal::AlgorithmMode::Perturbation | crate::fractal::AlgorithmMode::ReferenceGmp
+            )
+        {
             compute_perturbation_precision_bits(params)
         } else {
             params.engine.precision_bits.max(64)
@@ -1266,6 +1272,10 @@ fn newton_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
     let mut numerator = Complex::new(g.prec);
     let mut denominator = Complex::new(g.prec);
     let mut base = Complex::new(z.prec());
+    let mut square_scratch = (degree > 1).then(|| sqr_scratch(&z));
+    let square_min = rug::float::exp_min() / 2 + 3;
+    let square_max = rug::float::exp_max() / 2 - 3;
+    let square_safe = |v: &Float| v.get_exp().is_some_and(|e| e > square_min && e < square_max);
     let mut norm = Float::new(g.prec);
     let mut im_sq = Float::new(g.prec);
     while i < g.iteration_max && mpc_below_bailout(&z, g) {
@@ -1288,7 +1298,16 @@ fn newton_mpc(g: &MpcParams, z_pixel: &Complex) -> (u32, Complex) {
                 break;
             }
             deriv_exp >>= 1;
-            base.square_mut();
+            // Les exposants garantissent que x², y² et 2xy restent dans la
+            // plage MPFR. MPC traite les extrêmes et les axes signés.
+            if let Some(sq) = square_scratch
+                .as_mut()
+                .filter(|_| square_safe(base.real()) && square_safe(base.imag()))
+            {
+                sqr_in_place(&mut base, sq);
+            } else {
+                base.square_mut();
+            }
         }
         numerator -= 1;
         let (re, im) = denominator.as_mut_real_imag();

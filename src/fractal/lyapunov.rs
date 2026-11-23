@@ -169,7 +169,7 @@ const ZIRCON_SEQUENCE: &[bool] = &[
 /// Constantes pour l'algorithme
 const WARMUP_ITERATIONS: usize = 50;
 
-fn parameter_sequence(sequence: &[bool]) -> impl Iterator<Item = bool> + '_ {
+fn parameter_sequence(sequence: &[bool]) -> impl Iterator<Item = bool> + Clone + '_ {
     let sequence = if sequence.is_empty() {
         ZIRCON_SEQUENCE
     } else {
@@ -228,13 +228,16 @@ fn iterate_logistic<const N: usize, const CHECK_DOMAIN: bool>(
 
     let mut product = [1.0_f64; N];
     let mut sum = [0.0; N];
-    for r in parameters.take(iter_max as usize) {
-        let derivative: [f64; N] = std::array::from_fn(|i| (r[i] * (1.0 - 2.0 * x[i])).abs());
+    let derivatives = |x: [f64; N], r: [f64; N]| -> [f64; N] {
+        std::array::from_fn(|i| (r[i] * (1.0 - 2.0 * x[i])).abs())
+    };
+    let checked_step = |x, r, product: &mut [f64; N], sum: &mut [f64; N]| {
+        let derivative = derivatives(x, r);
         let next: [f64; N] = std::array::from_fn(|i| product[i] * derivative[i]);
         // Le ET sans court-circuit permet au compilateur de tester toutes
         // les voies ensemble. Une voie hors plage reprend ses deux facteurs.
         if next.iter().fold(true, |normal, v| normal & v.is_normal()) {
-            product = next;
+            *product = next;
         } else {
             for i in 0..N {
                 if next[i].is_normal() {
@@ -245,6 +248,40 @@ fn iterate_logistic<const N: usize, const CHECK_DOMAIN: bool>(
                 }
             }
         }
+    };
+    // Dans [0, 4], |r·(1−2x)| ≤ 4 à tout pas. Un produit sous-normal
+    // ne peut donc pas remonter à MIN après au plus BLOCK multiplications,
+    // même arrondies (multiplier par 4 est exact). Un débordement reste
+    // infini ou NaN. Le test en fin de bloc couvre ainsi tous ses pas.
+    const BLOCK: usize = 16;
+    const MIN: f64 = f64::MIN_POSITIVE * (1u64 << (2 * BLOCK)) as f64;
+    let mut remaining = iter_max as usize;
+    if !CHECK_DOMAIN {
+        while remaining >= BLOCK {
+            let start = (x, product, parameters.clone());
+            for r in parameters.by_ref().take(BLOCK) {
+                let derivative = derivatives(x, r);
+                product = std::array::from_fn(|i| product[i] * derivative[i]);
+                x = advance(x, r);
+            }
+            if !product.iter().fold(true, |ok, v| ok & (*v >= MIN) & v.is_finite()) {
+                // Retrouver le pas précis qui nécessite le passage au logarithme.
+                let (mut prev_x, prev_product, steps) = start;
+                product = prev_product;
+                for r in steps.take(BLOCK) {
+                    checked_step(prev_x, r, &mut product, &mut sum);
+                    prev_x = advance(prev_x, r);
+                }
+                // Une dérivée exactement nulle fixe l'exposant à −∞.
+                if sum.iter().all(|&value| value == f64::NEG_INFINITY) {
+                    return [f64::NEG_INFINITY; N];
+                }
+            }
+            remaining -= BLOCK;
+        }
+    }
+    for r in parameters.take(remaining) {
+        checked_step(x, r, &mut product, &mut sum);
         x = advance(x, r);
     }
     std::array::from_fn(|i| (sum[i] + product[i].ln()) / iter_max as f64)
@@ -494,16 +531,13 @@ pub fn render_lyapunov_mpc_cancellable(
     let span_x = parse(params.span_x_hp.as_ref(), params.span_x);
     let span_y = parse(params.span_y_hp.as_ref(), params.span_y);
 
-    let width_f = Float::with_val(prec, params.width);
-    let height_f = Float::with_val(prec, params.height);
     let transform = params.transform_matrix();
-    let pixel_delta = |index: usize, offset: f64, size: &Float, span: &Float| {
-        let mut value = Float::with_val(prec, index);
-        value += offset;
-        value /= size;
-        value -= 0.5;
-        value *= span;
-        value
+    let pixel_delta = |value: &mut Float, index: usize, offset: f64, size: u32, span: &Float| {
+        value.assign(index);
+        *value += offset;
+        *value /= size;
+        *value -= 0.5;
+        *value *= span;
     };
 
     let iter_max = params.iteration_max;
@@ -512,6 +546,27 @@ pub fn render_lyapunov_mpc_cancellable(
     let jitter = params.sampling.aa_jitter.map(|(k, scale)| {
         crate::fractal::jitter::pixel_offsets(width, k, scale)
     });
+
+    // Sur une grille alignée, chaque ligne réutilise les mêmes abscisses.
+    // Limiter le cache des abscisses aux grilles où il reste de taille modeste.
+    let column_bytes = std::mem::size_of::<Float>() as u64 + u64::from(prec).div_ceil(8);
+    let columns = if transform.is_none() && jitter.is_none() && height > 1
+        && u64::from(params.width) <= (4 * 1024 * 1024) / column_bytes
+    {
+        let mut columns = Vec::with_capacity(width);
+        for i in 0..width {
+            if i % 256 == 0 && cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            let mut a = Float::new(prec);
+            pixel_delta(&mut a, i, dx, params.width, &span_x);
+            a += &center_x;
+            columns.push(a);
+        }
+        Some(columns)
+    } else {
+        None
+    };
     let cancelled = AtomicBool::new(false);
 
     iterations
@@ -529,38 +584,50 @@ pub fn render_lyapunov_mpc_cancellable(
                 return;
             }
 
-            let row_delta = pixel_delta(j, dy, &height_f, &span_y);
-            let row_b = Float::with_val(prec, &row_delta + &center_y);
-
+            let mut row_x = Float::new(prec);
+            let mut row_y = Float::new(prec);
+            let prepare_y = |row_x: &mut Float, row_y: &mut Float, offset| {
+                pixel_delta(row_y, j, offset, params.height, &span_y);
+                if let Some((_, xy, _, yy)) = transform {
+                    row_x.assign(&*row_y * xy);
+                    *row_y *= yy;
+                } else {
+                    *row_y += &center_y;
+                }
+            };
+            if jitter.is_none() {
+                prepare_y(&mut row_x, &mut row_y, dy);
+            }
+            let mut sample_x = Float::new(prec);
+            let mut sample_y = Float::new(prec);
             for (i, (iter, z)) in iter_row.iter_mut().zip(z_row.iter_mut()).enumerate() {
-                let jittered_delta;
-                let (jx, delta_y) = if let Some(offset) = &jitter {
-                    let (jx, jy) = offset(i, j);
-                    jittered_delta = pixel_delta(j, jy, &height_f, &span_y);
-                    (jx, &jittered_delta)
+                let (a, b) = if let Some(columns) = &columns {
+                    (&columns[i], &row_y)
                 } else {
-                    (dx, &row_delta)
+                    let jx = if let Some(offset) = &jitter {
+                        let (jx, jy) = offset(i, j);
+                        prepare_y(&mut row_x, &mut row_y, jy);
+                        jx
+                    } else {
+                        dx
+                    };
+                    pixel_delta(&mut sample_x, i, jx, params.width, &span_x);
+                    let b = if let Some((xx, _, yx, _)) = transform {
+                        // Les produits et sommes gardent leurs arrondis MPFR distincts.
+                        sample_y.assign(&sample_x * yx);
+                        sample_y += &row_y;
+                        sample_y += &center_y;
+                        sample_x *= xx;
+                        sample_x += &row_x;
+                        &sample_y
+                    } else {
+                        &row_y
+                    };
+                    sample_x += &center_x;
+                    (&sample_x, b)
                 };
-                let mut a = pixel_delta(i, jx, &width_f, &span_x);
-                let sample_b;
-                let b = if let Some((xx, xy, yx, yy)) = transform {
-                    // Transformer les écarts MPFR avant la translation préserve les
-                    // déplacements sub-pixel aux zooms où les miroirs f64 coïncident.
-                    sample_b = (Float::with_val(prec, &a * yx)
-                        + Float::with_val(prec, delta_y * yy)) + &center_y;
-                    a *= xx;
-                    a += Float::with_val(prec, delta_y * xy);
-                    &sample_b
-                } else if jitter.is_some() {
-                    sample_b = Float::with_val(prec, delta_y + &center_y);
-                    &sample_b
-                } else {
-                    &row_b
-                };
-                a += &center_x;
-                let lyap = compute_lyapunov_exponent_mpc(&a, b, iter_max, sequence, prec);
+                let lyap = compute_lyapunov_exponent_mpc(a, b, iter_max, sequence, prec);
                 let norm = normalize_lyapunov(lyap.to_f64());
-
                 *iter = (norm * iter_max as f64) as u32;
                 *z = Complex64::new(norm * 2.0, 0.0);
             }
@@ -613,6 +680,19 @@ mod tests {
             assert!(
                 actual == expected || (actual - expected).abs() < 2e-13 * expected.abs().max(1.0)
             );
+        }
+    }
+
+    #[test]
+    fn checked_blocks_match_per_step_products_on_range_transitions() {
+        let a = [4.0, 2.0, f64::MIN_POSITIVE, 3.99, 0.0, 2.000_001, 3.3, 4.0];
+        let b = [4.0, 2.0, 3.95, f64::from_bits(1), 2.0, 2.000_001, 3.7, 3.8];
+        for sequence in [&[true, false, true][..], &[]] {
+            for n in [15, 16, 17, 511, 512, 513, 4097] {
+                let block = iterate_logistic::<8, false>(a, b, n, sequence);
+                let checked = iterate_logistic::<8, true>(a, b, n, sequence);
+                assert_eq!(block.map(f64::to_bits), checked.map(f64::to_bits));
+            }
         }
     }
 
@@ -675,6 +755,35 @@ mod tests {
                     assert!((z.re - 2.0 * normalize_lyapunov(expected)).abs() < 1e-11);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn mpc_resolves_the_narrow_axis_at_the_logistic_domain_boundary() {
+        use crate::fractal::{default_params_for_type, FractalType, ViewHp};
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        for (use_a, width, height, span_x, span_y, next_pixel) in [
+            (true, 8, 2, "1e-100", "1", 1),
+            (false, 2, 8, "1", "1e-100", 2),
+        ] {
+            let mut p = default_params_for_type(FractalType::Lyapunov, width, height);
+            ViewHp::from_decimal_parts("4", "4", span_x, span_y, width, height, 128)
+                .unwrap()
+                .write_to_params(&mut p);
+            p.formula.lyapunov_sequence = vec![use_a];
+            p.iteration_max = 16;
+            p.engine.precision_bits = 128;
+            let rendered = render_lyapunov_mpc_cancellable(&p, &cancel).unwrap();
+            p.engine.precision_bits = 768;
+            let oracle = render_lyapunov_mpc_cancellable(&p, &cancel).unwrap();
+
+            // À r = 4, l'orbite atteint zéro. Juste au-dessus, elle quitte
+            // [0, 1] à chaque pas et revient à 0,5, où la dérivée est nulle.
+            let center = ((height / 2) * width + width / 2) as usize;
+            assert_eq!(oracle.1[center].re, 2.0);
+            assert_eq!(oracle.1[center + next_pixel].re, 1.7);
+            assert_eq!(rendered, oracle);
         }
     }
 

@@ -31,6 +31,27 @@ pub struct ViewTransform {
     pub offset_y: f64,
 }
 
+/// L'espacement f64 autour du centre permet-il de distinguer les pixels ?
+pub(crate) fn f64_pixel_grid_collapses(params: &FractalParams) -> bool {
+    let needs_distinct_samples = matches!(
+        params.fractal_type,
+        super::FractalType::Newton | super::FractalType::Lyapunov
+    );
+    let collapses = |center: f64, span: f64, extent: u32| {
+        let step = span / f64::from(extent.max(1));
+        if !step.is_finite() || step == 0.0 || center + step == center {
+            return true;
+        }
+        // Un pas entre une demi-ulp et une ulp peut déplacer le pixel
+        // central et pourtant confondre ses voisins. Aux puissances de deux
+        // les espacements diffèrent de part et d'autre du centre.
+        needs_distinct_samples
+            && step.abs() < (center.next_up() - center).max(center - center.next_down())
+    };
+    collapses(params.center_x, params.span_x, params.width)
+        || collapses(params.center_y, params.span_y, params.height)
+}
+
 impl ViewHp {
     /// Construit la vue CLI canonique depuis un centre décimal et une
     /// magnification (`span_x = 4 / zoom`).
@@ -140,13 +161,17 @@ impl ViewHp {
         })
     }
 
-    pub fn from_params(params: &FractalParams) -> Self {
-        let precision = params.engine.precision_bits.max(MIN_VIEW_PRECISION).max(
+    pub(crate) fn precision_for_params(params: &FractalParams) -> u32 {
+        params.engine.precision_bits.max(MIN_VIEW_PRECISION).max(
             required_precision(params.span_x_hp.as_deref(), params.span_x).max(required_precision(
                 params.span_y_hp.as_deref(),
                 params.span_y,
             )),
-        );
+        )
+    }
+
+    pub fn from_params(params: &FractalParams) -> Self {
+        let precision = Self::precision_for_params(params);
         Self {
             center_x: parse_or_f64(params.center_x_hp.as_deref(), params.center_x, precision),
             center_y: parse_or_f64(params.center_y_hp.as_deref(), params.center_y, precision),

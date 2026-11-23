@@ -25,17 +25,7 @@ use crate::render::request::RenderRequest;
 use crate::render::tiles::{self, TileGrid, TileOpts, TileUpdate};
 
 fn special_view_needs_mpc(params: &FractalParams) -> bool {
-    if params.engine.use_gmp {
-        return true;
-    }
-    let pixel_x = params.span_x / params.width.max(1) as f64;
-    let pixel_y = params.span_y / params.height.max(1) as f64;
-    !pixel_x.is_finite()
-        || !pixel_y.is_finite()
-        || pixel_x == 0.0
-        || pixel_y == 0.0
-        || params.center_x + pixel_x == params.center_x
-        || params.center_y + pixel_y == params.center_y
+    params.engine.use_gmp || crate::fractal::view::f64_pixel_grid_collapses(params)
 }
 
 /// Calcule la matrice d'itérations et la matrice des valeurs finales de z
@@ -72,6 +62,11 @@ fn build_reuse<'a>(
     params: &FractalParams,
     reuse: Option<(&'a [u32], &'a [Complex64], u32, u32)>,
 ) -> Option<ReuseData<'a>> {
+    // Coarse pixel centers are offset from the fine samples selected by the reuse
+    // mask. Even a small displacement can put a Newton sample in another basin.
+    if params.fractal_type == FractalType::Newton {
+        return None;
+    }
     // Disable pixel reuse for coloring modes that need per-pixel orbit/distance data,
     // since reused pixels don't carry this data and would create checkerboard artifacts.
     let needs_extra_data = matches!(
@@ -241,7 +236,9 @@ pub fn render_request(
         _ => {}
     }
 
-    if wisdom::perturbation_family(params.fractal_type) {
+    if params.fractal_type == FractalType::Newton
+        || wisdom::perturbation_family(params.fractal_type)
+    {
         // Sélection wisdom (source UNIQUE, G9.1) : le plan est l'INPUT du
         // dispatcher — la même fonction est consommée par le dispatch GPU
         // (`GpuRenderer::render_dispatch`, device Gpu) et les labels/passes
@@ -393,8 +390,10 @@ fn render_escape_time_f64_cancellable_with_reuse(
     let n = width * height;
     let mut iterations = vec![0u32; n];
     let mut zs = vec![Complex64::new(0.0, 0.0); n];
-    let mut orbits: Vec<Option<OrbitData>> = vec![None; n];
-    let mut distances: Vec<f64> = vec![f64::INFINITY; n]; // INFINITY = pas d'estimation
+    let need_orbits = params.channels.enable_orbit_traps;
+    let need_distances = params.channels.enable_distance_estimation;
+    let mut orbits: Vec<Option<OrbitData>> = if need_orbits { vec![None; n] } else { Vec::new() };
+    let mut distances = if need_distances { vec![f64::INFINITY; n] } else { Vec::new() };
 
     if width == 0 || height == 0 {
         return Some(RenderOutput::without_extras(iterations, zs));
@@ -404,8 +403,6 @@ fn render_escape_time_f64_cancellable_with_reuse(
     // consommé par l'axe profil du harness : sans lui un cas f64 standard
     // sortait `path=?` — on ne peut pas optimiser un path qu'on ne nomme pas).
     let t_render = std::time::Instant::now();
-    let need_orbits = params.channels.enable_orbit_traps;
-    let need_distances = params.channels.enable_distance_estimation;
     // Pré-calcul de la matrice de rotation (None si rotation == 0 → no-op).
     let rot = params.transform_matrix();
     // Offset sous-pixel AA per-frame (unités de pixel, [0,0] hors AA).
@@ -447,14 +444,16 @@ fn render_escape_time_f64_cancellable_with_reuse(
     let grid = TileGrid::new(width, height, priority);
     let it_g = grid.split(&mut iterations);
     let zs_g = grid.split(&mut zs);
-    let orb_g = grid.split(&mut orbits);
-    let dist_g = grid.split(&mut distances);
+    let mut orb_g = need_orbits.then(|| grid.split(&mut orbits)).into_iter().flatten();
+    let mut dist_g = need_distances.then(|| grid.split(&mut distances)).into_iter().flatten();
     let slots: Vec<_> = it_g
         .into_iter()
         .zip(zs_g)
-        .zip(orb_g)
-        .zip(dist_g)
-        .map(|(((it, z), orb), di)| std::sync::Mutex::new(Some((it, z, orb, di))))
+        .map(|(it, z)| {
+            let orb = orb_g.next().unwrap_or_default();
+            let dist = dist_g.next().unwrap_or_default();
+            std::sync::Mutex::new(Some((it, z, orb, dist)))
+        })
         .collect();
 
     let completed =
@@ -475,8 +474,8 @@ fn render_escape_time_f64_cancellable_with_reuse(
                 let dy = (y_ratio - 0.5) * params.span_y;
                 let iter_row = &mut it_rows[dj];
                 let z_row = &mut z_rows[dj];
-                let orbit_row = &mut orb_rows[dj];
-                let dist_row = &mut dist_rows[dj];
+                let mut orbit_row = orb_rows.get_mut(dj);
+                let mut dist_row = dist_rows.get_mut(dj);
                 for di in 0..tw {
                     let i = x0 + di;
                     let iter = &mut iter_row[di];
@@ -548,11 +547,11 @@ fn render_escape_time_f64_cancellable_with_reuse(
                     );
                     *iter = iteration;
                     *z = z_final;
-                    if need_orbits {
-                        orbit_row[di] = orbit;
+                    if let Some(row) = orbit_row.as_deref_mut() {
+                        row[di] = orbit;
                     }
-                    if need_distances {
-                        dist_row[di] = distance.unwrap_or(f64::INFINITY);
+                    if let Some(row) = dist_row.as_deref_mut() {
+                        row[di] = distance.unwrap_or(f64::INFINITY);
                     }
                 }
             }
@@ -667,14 +666,6 @@ fn render_escape_time_f64_cancellable_with_reuse(
                     100.0 * flagged.len() as f64 / n.max(1) as f64
                 );
             }
-        }
-        // Canal non demandé = canal ABSENT (Vec vide) : la colorisation
-        // vérifiée (`render::output`) distingue « produit » de « jeté ».
-        if !need_orbits {
-            orbits = Vec::new();
-        }
-        if !need_distances {
-            distances = Vec::new();
         }
         if perf_enabled() {
             let dt = t_render.elapsed();
@@ -969,6 +960,36 @@ mod tests {
     }
 
     #[test]
+    fn progressive_newton_matches_direct_pixel_centers() {
+        use crate::fractal::AlgorithmMode;
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        for mode in [AlgorithmMode::StandardF64, AlgorithmMode::ReferenceGmp] {
+            for jitter in [None, Some((2, 0.7))] {
+                let mut p = default_params_for_type(FractalType::Newton, 24, 16);
+                p.engine.algorithm_mode = mode;
+                p.iteration_max = 30;
+                p.sampling.aa_jitter = jitter;
+                let mut coarse_params = p.clone();
+                coarse_params.width /= 2;
+                coarse_params.height /= 2;
+                let coarse = render_with_tiles(&coarse_params, None);
+                let direct = render_with_tiles(&p, None);
+                let reuse = (
+                    coarse.iterations.as_slice(),
+                    coarse.zs.as_slice(),
+                    coarse_params.width,
+                    coarse_params.height,
+                );
+                let request = RenderRequest::new(&p, &cancel).with_progressive_reuse(reuse.into());
+                let progressive = render_request(request, &mut None).unwrap();
+                assert_eq!(progressive.iterations, direct.iterations);
+                assert_eq!(progressive.zs, direct.zs);
+            }
+        }
+    }
+
+    #[test]
     fn resolved_wisdom_plan_preserves_render_output() {
         let params = small_mandelbrot(24, 16);
         let cancel = Arc::new(AtomicBool::new(false));
@@ -1025,6 +1046,50 @@ mod tests {
         p.engine.use_gmp = true;
         p.engine.algorithm_mode = AlgorithmMode::StandardF64;
         assert_eq!(render_with_tiles(&p, None).zs, standard);
+    }
+
+    #[test]
+    fn newton_auto_preserves_pixels_on_a_deep_bailout_boundary() {
+        use crate::fractal::{AlgorithmMode, ViewHp};
+        let mut p = default_params_for_type(FractalType::Newton, 32, 8);
+        p.iteration_max = 1;
+        p.engine.precision_bits = 128;
+        for zoom in ["1e100", "1e400"] {
+            ViewHp::from_center_and_zoom("4", "0", zoom, 32, 8, 128)
+                .unwrap()
+                .write_to_params(&mut p);
+            p.engine.algorithm_mode = AlgorithmMode::Auto;
+            let auto = render_with_tiles(&p, None);
+            assert!(auto.iterations.chunks_exact(32).all(|row| {
+                row[..16].iter().all(|&n| n == 1) && row[16..].iter().all(|&n| n == 0)
+            }));
+            p.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
+            let reference = render_with_tiles(&p, None);
+            assert_eq!(auto.iterations, reference.iterations);
+            assert_eq!(auto.zs, reference.zs);
+            p.engine.algorithm_mode = AlgorithmMode::StandardF64;
+            assert!(render_with_tiles(&p, None).iterations.iter().all(|&n| n == 0));
+        }
+    }
+
+    #[test]
+    fn newton_auto_resolves_pixels_near_a_change_of_ulp() {
+        use crate::fractal::{AlgorithmMode, ViewHp};
+
+        let mut params = default_params_for_type(FractalType::Newton, 8, 4);
+        params.iteration_max = 1;
+        ViewHp::from_center_and_zoom("-4", "0", "2e15", 8, 4, 128)
+            .unwrap()
+            .write_to_params(&mut params);
+        params.engine.algorithm_mode = AlgorithmMode::ReferenceGmp;
+        let reference = render_with_tiles(&params, None);
+        for row in reference.iterations.chunks_exact(8) {
+            assert_eq!(row, [0, 0, 0, 0, 1, 1, 1, 1]);
+        }
+        params.engine.algorithm_mode = AlgorithmMode::Auto;
+        let auto = render_with_tiles(&params, None);
+        assert_eq!(auto.iterations, reference.iterations);
+        assert_eq!(auto.zs, reference.zs);
     }
 
     /// G5 `RenderOutput` : sémantique des canaux — un canal non demandé est

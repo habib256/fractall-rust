@@ -533,18 +533,27 @@ fn mandelbrot_sin(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
 fn newton(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
     let degree = p.seed.re.round() as i32;
     let degree = if degree <= 0 { 3 } else { degree as u32 };
-    // Spécialiser hors de la boucle le degré 8, valeur de la vue par défaut.
-    // powu(7) garde le même ordre d'arrondi que la puissance générique.
+    // Si |z| < 16 et d ≤ 64 tous les produits de la division tiennent dans f64.
+    if degree > 64 || p.bailout.abs() > 16.0 {
+        return newton_orbit::<true>(p, z_pixel, degree, |z| z.powu(degree - 1));
+    }
+    // Un exposant constant évite de le décomposer à chaque itération et
+    // conserve l'ordre des multiplications de powu.
     match degree {
-        2 => newton_orbit(p, z_pixel, degree, |z| z),
-        3 => newton_orbit(p, z_pixel, degree, |z| z * z),
-        8 => newton_orbit(p, z_pixel, degree, |z| z.powu(7)),
-        d => newton_orbit(p, z_pixel, d, |z| z.powu(d - 1)),
+        1 => newton_orbit::<false>(p, z_pixel, degree, |_| Complex64::new(1.0, 0.0)),
+        2 => newton_orbit::<false>(p, z_pixel, degree, |z| z),
+        3 => newton_orbit::<false>(p, z_pixel, degree, |z| z * z),
+        4 => newton_orbit::<false>(p, z_pixel, degree, |z| z.powu(3)),
+        5 => newton_orbit::<false>(p, z_pixel, degree, |z| z.powu(4)),
+        6 => newton_orbit::<false>(p, z_pixel, degree, |z| z.powu(5)),
+        7 => newton_orbit::<false>(p, z_pixel, degree, |z| z.powu(6)),
+        8 => newton_orbit::<false>(p, z_pixel, degree, |z| z.powu(7)),
+        d => newton_orbit::<false>(p, z_pixel, d, |z| z.powu(d - 1)),
     }
 }
 
 #[inline]
-fn newton_orbit(
+fn newton_orbit<const CHECK_RANGE: bool>(
     p: &FractalParams,
     mut z: Complex64,
     degree: u32,
@@ -556,14 +565,21 @@ fn newton_orbit(
     let mut previous = z;
     let bailout_sqr = p.bailout * p.bailout;
     let one = Complex64::new(1.0, 0.0);
-    let degree = Complex64::new(degree as f64, 0.0);
+    let degree_c = Complex64::new(f64::from(degree), 0.0);
     while i < p.iteration_max && z.norm_sqr() < bailout_sqr {
         let power = derivative_power(z);
         let numerator = power * z - one;
-        let denominator = degree * power;
-        if denominator.norm_sqr() < 1e-24 { break; }
+        let denominator = degree_c * power;
+        let norm = denominator.norm_sqr();
+        if norm < 1e-24 { break; }
         let current = z;
-        z -= numerator / denominator;
+        z -= if !CHECK_RANGE || norm <= 1e150 {
+            // |z|² est fini à l'entrée. Dans cette plage, les produits croisés
+            // sont bornés par |z|·norm/d + √norm et tiennent dans f64.
+            numerator / denominator
+        } else {
+            newton_large_step(z, degree, numerator, denominator, norm)
+        };
         i += 1;
         // Aux racines, l'arrondi fige souvent z ou le fait alterner entre
         // deux valeurs. À égalité exacte avec z deux pas plus tôt, le
@@ -582,6 +598,26 @@ fn newton_orbit(
         cyc.observe_each(&mut i, p.iteration_max, [z.re, z.im]);
     }
     FractalResult { iteration: i, z, orbit: None, distance: None }
+}
+
+#[cold]
+fn newton_large_step(
+    z: Complex64,
+    degree: u32,
+    numerator: Complex64,
+    denominator: Complex64,
+    norm: f64,
+) -> Complex64 {
+    if norm.is_finite() {
+        let step = numerator / denominator;
+        if step.is_finite() {
+            return step;
+        }
+    }
+    // (z^d − 1)/(d·z^(d−1)) = (z − (1/z)^(d−1))/d.
+    // Si le quotient déborde, |z| > 1 et la puissance de l'inverse reste bornée.
+    let inverse = z.conj() / z.norm_sqr();
+    (z - inverse.powu(degree - 1)) / f64::from(degree)
 }
 
 #[inline]
@@ -1225,6 +1261,39 @@ mod fast_complex_tests {
             assert_eq!(a.re.to_bits(), b.re.to_bits(), "{z}");
             assert_eq!(a.im.to_bits(), b.im.to_bits(), "{z}");
         }
+    }
+
+    #[test]
+    fn newton_overflowing_quotients_match_mpc() {
+        use crate::fractal::default_params_for_type;
+        use crate::fractal::gmp::{iterate_point_mpc, MpcParams};
+        use rug::Complex;
+        let mut p = default_params_for_type(FractalType::Newton, 1, 1);
+        p.iteration_max = 1;
+        p.engine.precision_bits = 256;
+        for (degree, start) in [
+            (384, Complex64::new(3.0, 0.0)),  // carré du dénominateur infini
+            (512, Complex64::new(-2.5, 1.25)),
+            (1024, Complex64::new(3.0, -0.0)), // la puissance elle-même déborde
+            (2, Complex64::new(1e105, 1e104)), // produits croisés infinis
+        ] {
+            p.seed.re = f64::from(degree);
+            p.bailout = (start.norm() * 2.0).max(4.0);
+            let (n, expected) = iterate_point_mpc(
+                &MpcParams::from_params(&p),
+                &Complex::with_val(256, (start.re, start.im)),
+            );
+            let actual = newton(&p, start);
+            assert_eq!((actual.iteration, n), (1, 1));
+            let expected = Complex64::new(expected.real().to_f64(), expected.imag().to_f64());
+            assert!(rel(actual.z, expected) <= 4.0 * f64::EPSILON, "d={degree} z={start}");
+        }
+        p.seed.re = 1024.0;
+        p.bailout = 4.0;
+        p.iteration_max = 2048;
+        let basin = newton(&p, Complex64::new(3.0, 0.000125));
+        assert_eq!(basin.iteration, p.iteration_max);
+        assert_eq!(basin.z, Complex64::new(1.0, 0.0));
     }
 
     /// `csin` = `Complex::sin` à quelques ulp près, signes des zéros compris.

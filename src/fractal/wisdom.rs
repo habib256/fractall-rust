@@ -56,6 +56,7 @@ use crate::fractal::perturbation::{
     compute_perturbation_precision_bits, effective_pixel_size, log2_zoom,
 };
 use crate::fractal::types::{FractalParams, FractalType, PlaneTransform};
+use crate::fractal::view::f64_pixel_grid_collapses;
 use crate::render::escape_time::{should_use_gmp_reference, should_use_perturbation};
 use crate::render::output::{required_channels, ChannelRequirements};
 
@@ -302,6 +303,20 @@ pub fn select_algorithm(params: &FractalParams, device: Device) -> Algorithm {
             return Algorithm::Perturbation;
         }
         return Algorithm::StandardF64;
+    }
+    if params.fractal_type == FractalType::Newton
+        && params.engine.algorithm_mode == AlgorithmMode::Auto
+    {
+        // Newton utilise directement la coordonnée du pixel comme point de départ.
+        // Le rendu MPC ne produit pas les canaux annexes du chemin scalaire.
+        let scalar_channels = params.channels.enable_orbit_traps
+            || params.channels.enable_distance_estimation
+            || !required_channels(params).none();
+        return if params.engine.use_gmp || (!scalar_channels && f64_pixel_grid_collapses(params)) {
+            Algorithm::ReferenceGmp
+        } else {
+            Algorithm::StandardF64
+        };
     }
     // Perturbation viable : famille escape-time supportée + plan Mu (le delta
     // ne commute pas avec les transformations de plan). Miroir exact de l'ancien
