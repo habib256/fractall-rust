@@ -418,34 +418,26 @@ fn julia(p: &FractalParams, z_pixel: Complex64) -> FractalResult {
 /// Sin l'appellent sous le rayon d'évasion).
 #[inline(always)]
 fn csin(z: Complex64) -> Complex64 {
-    const TINY_HYPERBOLIC: f64 = 1.0 / (1u64 << 28) as f64;
-    let (s, c) = z.re.sin_cos();
-    let a = z.im.abs();
-    if a < TINY_HYPERBOLIC {
-        // sinh y = y·(1 + y²/6), cosh y = 1 + y²/2 : à |y| < 2⁻²⁸ les
-        // corrections sont sous le demi-ulp, l'arrondi correct vaut `y` et 1
-        // (mêmes raccourcis que la libm, qui y répond sans exponentielle —
-        // l'intérieur des vues Sin vit souvent sur l'axe réel).
-        return Complex64::new(s, c * z.im);
-    }
-    let t = a.exp_m1();
-    let q = t / (t + 1.0);
-    let sh = 0.5 * (t + q);
-    let ch = 1.0 + 0.5 * t * q;
-    Complex64::new(s * ch, c * sh.copysign(z.im))
+    let (s, c, sh, ch) = csin_parts(z);
+    Complex64::new(s * ch, c * sh)
 }
 
-/// Composantes de [`csin`] pour le suivi de fiabilité
-/// (`render::scalar_reliability`) : `(sin x, cos x, sinh y, cosh y)`, `sinh`
-/// signé comme `y`. `Complex64::new(s·ch, c·sh)` rend EXACTEMENT les bits de
-/// `csin` (raccourci compris : `s·1 = s`, `sh = y`) — verrou
-/// `csin_parts_rebuild_csin_bit_for_bit`. Ne pas modifier l'un sans l'autre.
+// Garder les deux résultats dans le même appel : après inlining, LLVM peut
+// émettre sin et cos séparément dans une boucle et sincos dans l'autre.
+// Sur macOS ARM64, leurs arrondis divergent et changent l'orbite.
+#[inline(never)]
+fn orbit_sin_cos(x: f64) -> (f64, f64) {
+    x.sin_cos()
+}
+
+/// (sin x, cos x, sinh y, cosh y), communs au rendu et à sa borne d'erreur.
 #[inline(always)]
 pub(crate) fn csin_parts(z: Complex64) -> (f64, f64, f64, f64) {
     const TINY_HYPERBOLIC: f64 = 1.0 / (1u64 << 28) as f64;
-    let (s, c) = z.re.sin_cos();
+    let (s, c) = orbit_sin_cos(z.re);
     let a = z.im.abs();
     if a < TINY_HYPERBOLIC {
+        // À cette échelle, sinh(y) et cosh(y) s’arrondissent à y et 1.
         return (s, c, z.im, 1.0);
     }
     let t = a.exp_m1();
