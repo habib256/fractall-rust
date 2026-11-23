@@ -273,6 +273,7 @@ pub fn save_png_rgb_with_metadata_aa(
 
     let mut png_writer = encoder.write_header()?;
     png_writer.write_image_data(buffer)?;
+    png_writer.finish()?;
 
     Ok(())
 }
@@ -280,10 +281,9 @@ pub fn save_png_rgb_with_metadata_aa(
 /// Commande canonique embarquée dans le chunk [`COMMAND_KEY`].
 fn canonical_command(params: &FractalParams, aa_samples: u32) -> String {
     use crate::gui::cli_command::{build_cli_command, CliExtras};
-    let jitter = params.sampling.jitter_scale;
     let extras = CliExtras {
         aa_samples: aa_samples.max(1),
-        aa_jitter_scale: if jitter > 0.0 { jitter } else { 1.0 },
+        aa_jitter_scale: params.sampling.jitter_scale,
         // Centre EXACT : arrondi, il déplace la référence de perturbation et
         // la commande ne redonnerait plus l'image au pixel près.
         exact_center: true,
@@ -889,10 +889,12 @@ mod tests {
         assert_eq!(load_png_metadata(&plain).unwrap().iteration_max, 777);
 
         let aa = dir.join("aa.png");
-        params.sampling.jitter_scale = 0.5;
-        save_png_rgb_with_metadata_aa(&params, &rgb, &aa, hp.0, hp.1, hp.2, hp.3, 4).unwrap();
-        let cmd = load_png_command(&aa).unwrap();
-        assert!(cmd.contains("--aa-samples 4 --jitter-scale 0.5"), "{cmd}");
+        for jitter in [0.0, 0.5] {
+            params.sampling.jitter_scale = jitter;
+            save_png_rgb_with_metadata_aa(&params, &rgb, &aa, hp.0, hp.1, hp.2, hp.3, 4).unwrap();
+            let cmd = load_png_command(&aa).unwrap();
+            assert!(cmd.contains(&format!("--aa-samples 4 --jitter-scale {jitter}")), "{cmd}");
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }

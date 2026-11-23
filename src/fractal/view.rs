@@ -189,14 +189,40 @@ impl ViewHp {
         (Float::with_val(self.precision, 4) / &self.span_x).to_string_radix(10, None)
     }
 
+    // Augmenter la précision avant de déplacer le centre : après un grand
+    // zoom, l'arrondi de ce calcul doit rester inférieur au nouveau pixel.
+    fn prepare_zoom(&mut self, scale_exponent: i32) {
+        let span_exp = self
+            .span_x
+            .get_exp()
+            .min(self.span_y.get_exp())
+            .unwrap_or(0);
+        let depth = i64::from(scale_exponent) - i64::from(span_exp);
+        let required = (128 + depth).clamp(128, u32::MAX as i64) as u32;
+        // Garder au moins 64 bits de marge et amortir les réallocations
+        // lorsque plusieurs gestes successifs approfondissent le zoom.
+        if required.saturating_sub(64) > self.precision {
+            self.precision = required;
+            for value in [
+                &mut self.center_x,
+                &mut self.center_y,
+                &mut self.span_x,
+                &mut self.span_y,
+            ] {
+                value.set_prec(required);
+            }
+        }
+    }
+
     /// Zoom ancré sur `(rx, ry)` normalisé dans la vue. `factor > 1` zoome.
     pub fn zoom_at(&mut self, rx: f64, ry: f64, factor: f64) {
         if !factor.is_finite() || factor <= 0.0 {
             return;
         }
+        self.prepare_zoom(Float::with_val(53, factor).get_exp().unwrap_or(0));
         let fx = Float::with_val(self.precision, rx - 0.5);
         let fy = Float::with_val(self.precision, ry - 0.5);
-        let inv = Float::with_val(self.precision, 1.0 / factor);
+        let inv = Float::with_val(self.precision, factor).recip();
         let keep = Float::with_val(self.precision, 1.0 - &inv);
         self.center_x += Float::with_val(self.precision, &self.span_x * fx * &keep);
         self.center_y += Float::with_val(self.precision, &self.span_y * fy * &keep);
@@ -211,6 +237,7 @@ impl ViewHp {
         if !factor.is_finite() || factor <= 0.0 {
             return;
         }
+        self.prepare_zoom(Float::with_val(53, factor).get_exp().unwrap_or(0));
         self.center_x += Float::with_val(
             self.precision,
             &self.span_x * Float::with_val(self.precision, rx - 0.5),
@@ -219,7 +246,7 @@ impl ViewHp {
             self.precision,
             &self.span_y * Float::with_val(self.precision, ry - 0.5),
         );
-        let inv = Float::with_val(self.precision, 1.0 / factor);
+        let inv = Float::with_val(self.precision, factor).recip();
         self.span_x *= &inv;
         self.span_y *= inv;
     }
@@ -241,6 +268,8 @@ impl ViewHp {
         if x2 <= x1 || y2 <= y1 {
             return;
         }
+        let fraction = (x2 - x1).min(y2 - y1);
+        self.prepare_zoom(1 - Float::with_val(53, fraction).get_exp().unwrap_or(0));
         self.center_x += Float::with_val(
             self.precision,
             &self.span_x * Float::with_val(self.precision, (x1 + x2) * 0.5 - 0.5),
@@ -362,6 +391,21 @@ fn required_precision(value: Option<&str>, fallback: f64) -> u32 {
 mod tests {
     use super::*;
     use crate::fractal::{default_params_for_type, FractalType};
+
+    #[test]
+    fn navigation_grows_precision_before_subpixel_offsets_are_lost() {
+        let mut view = ViewHp::from_decimal_parts("-0.5", "0.25", "4", "4", 800, 800, 256).unwrap();
+        for _ in 0..300 {
+            view.zoom_at(0.5, 0.5, 2.0);
+        }
+        let original = view.clone();
+        view.pan_by(0.125, -0.125);
+        let transform = original.transform_to(&view);
+        assert_eq!((transform.offset_x, transform.offset_y), (0.125, -0.125));
+        view.focus_at(0.375, 0.625, 2.0);
+        assert_eq!(view.center_x(), original.center_x());
+        assert_eq!(view.center_y(), original.center_y());
+    }
 
     #[test]
     fn deep_zoom_anchor_does_not_pass_through_f64() {

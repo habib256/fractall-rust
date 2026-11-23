@@ -42,20 +42,33 @@ pub fn wrap(v: f64) -> f64 {
 
 /// Inverse radical (van der Corput) de `a` en base `base`, dans `[0, 1)`.
 /// Port de `radical_inverse` (F3 `hybrid.h:27`).
+///
+/// # Panics
+/// La base doit être supérieure ou égale à 2.
 #[allow(dead_code)]
 pub fn radical_inverse(mut a: u64, base: u64) -> f64 {
     const ONE_MINUS_EPSILON: f64 = 0.999_999_999_999_999_89;
+    assert!(base >= 2, "radical inverse base must be at least 2");
     let base1 = 1.0 / base as f64;
     let mut reversed: u64 = 0;
     let mut base1n = 1.0;
-    while a != 0 {
+    if a == 0 {
+        return 0.0;
+    }
+    // Jusqu’au dernier chiffre, le préfixe inversé a moins de chiffres
+    // que l’indice initial et tient donc dans u64.
+    while a >= base {
         let next = a / base;
         let digit = a - base * next;
         reversed = reversed * base + digit;
         base1n *= base1;
         a = next;
     }
-    (reversed as f64 * base1n).min(ONE_MINUS_EPSILON)
+    let numerator = match reversed.checked_mul(base).and_then(|v| v.checked_add(a)) {
+        Some(value) => value as f64,
+        None => (u128::from(reversed) * u128::from(base) + u128::from(a)) as f64,
+    };
+    (numerator * (base1n * base1)).min(ONE_MINUS_EPSILON)
 }
 
 /// Transforme une uniforme `[0, 1]` en distribution triangulaire `[-1, 1]`
@@ -114,6 +127,19 @@ pub fn pixel_offset(width: usize, i: usize, j: usize, k: u64, scale: f64) -> (f6
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[should_panic(expected = "base must be at least 2")]
+    fn radical_inverse_rejects_unary_base() {
+        radical_inverse(3, 1);
+    }
+
+    #[test]
+    fn radical_inverse_accepts_full_u64_indices() {
+        let k = 3_u64.pow(40) + 2;
+        let expected = 2.0 / 3.0 + 3.0_f64.powi(-41);
+        assert!((radical_inverse(k, 3) - expected).abs() < 2e-15);
+    }
 
     #[test]
     fn radical_inverse_basic() {

@@ -27,6 +27,10 @@ impl RenderProgress {
         self.aa = (aa_samples > 1).then_some((0, aa_samples));
     }
 
+    pub fn accepts_pass(self, pass_index: u8) -> bool {
+        pass_index >= self.completed_passes
+    }
+
     pub fn pass_ready(&mut self, pass_index: u8) {
         self.completed_passes = self
             .completed_passes
@@ -71,6 +75,8 @@ mod tests {
         p.begin(3, 1);
         p.pass_ready(0);
         assert_eq!(p.passes(), (1, 3));
+        assert!(!p.accepts_pass(0));
+        assert!(p.accepts_pass(2));
         p.pass_ready(u8::MAX);
         assert_eq!(p.passes(), (3, 3));
         p.pass_ready(0); // texture asynchrone ancienne arrivée en retard

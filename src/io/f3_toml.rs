@@ -1,25 +1,24 @@
 //! Export des paramètres résolus au format natif Fraktaler-3 3.1.
 
+use std::io::{Error, ErrorKind};
 use std::path::Path;
 
-use crate::fractal::{FractalParams, FractalType, ViewHp};
+use crate::fractal::bytecode::{formula_for_params, Formula, Op};
+use crate::fractal::{FractalParams, ViewHp};
 
 fn quoted(value: &str) -> String {
     toml::Value::String(value.to_owned()).to_string()
 }
 
-fn phase_opcodes(kind: FractalType) -> &'static str {
-    match kind {
-        FractalType::BurningShip => "absx absy sqr add",
-        FractalType::Tricorn => "sqr negy add",
-        FractalType::Celtic => "sqr absx add",
-        FractalType::Buffalo => "sqr absx absy add",
-        FractalType::PerpendicularBurningShip => "absx sqr add",
-        _ => "sqr add",
+pub fn to_f3_toml(params: &FractalParams) -> std::io::Result<String> {
+    let unsupported = || Error::new(
+        ErrorKind::InvalidInput,
+        format!("the formula for {:?} cannot be represented in this Fraktaler-3 export", params.fractal_type),
+    );
+    if Formula::is_julia_for(params.fractal_type) {
+        return Err(unsupported());
     }
-}
-
-pub fn to_f3_toml(params: &FractalParams) -> String {
+    let formula = formula_for_params(params).ok_or_else(unsupported)?;
     let view = ViewHp::from_params(params);
     let (view_real, view_imag, _, _) = view.decimal_parts();
     // Une saisie décimale HP est le contrat exact de l'utilisateur ; ne pas la
@@ -35,7 +34,7 @@ pub fn to_f3_toml(params: &FractalParams) -> String {
         params.width, params.height, params.rotation,
     );
 
-    if let Some(opcodes) = params.formula.hybrid_opcodes.as_deref() {
+    if let Some(opcodes) = params.formula.hybrid_opcodes.as_deref().filter(|ops| !ops.trim().is_empty()) {
         let mut phase = Vec::new();
         for word in opcodes.split_whitespace() {
             phase.push(word);
@@ -44,24 +43,50 @@ pub fn to_f3_toml(params: &FractalParams) -> String {
                 phase.clear();
             }
         }
-    } else if let Some(phases) = params.formula.hybrid_phases.as_deref() {
-        for &kind in phases {
-            text.push_str(&format!("\n[[formula]]\nopcodes = {}\n", quoted(phase_opcodes(kind))));
-        }
     } else {
-        text.push_str(&format!("\n[[formula]]\nopcodes = {}\n", quoted(phase_opcodes(params.fractal_type))));
+        for phase in &formula.phases {
+            let mut words = Vec::with_capacity(phase.ops.len());
+            for op in &phase.ops {
+                words.push(match op {
+                    Op::Add => "add",
+                    Op::Sqr => "sqr",
+                    Op::Mul => "mul",
+                    Op::Store => "store",
+                    Op::AbsX => "absx",
+                    Op::AbsY => "absy",
+                    Op::NegX => "negx",
+                    Op::NegY => "negy",
+                    // Rotations only occur in explicit opcodes, handled above
+                    // to retain the original angle before f32 rounding.
+                    Op::Rot { .. } => return Err(unsupported()),
+                });
+            }
+            text.push_str(&format!("\n[[formula]]\nopcodes = {}\n", quoted(&words.join(" "))));
+        }
     }
-    text
+    Ok(text)
 }
 
 pub fn save_f3_toml(path: &Path, params: &FractalParams) -> std::io::Result<()> {
-    std::fs::write(path, to_f3_toml(params))
+    std::fs::write(path, to_f3_toml(params)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fractal::default_params_for_type;
+    use crate::fractal::{default_params_for_type, FractalType};
+
+    #[test]
+    fn exported_builtin_phases_use_the_renderers_formula() {
+        let mut p = default_params_for_type(FractalType::Multibrot, 48, 32);
+        p.formula.multibrot_power = 3.0;
+        p.formula.hybrid_phases = Some(vec![FractalType::Multibrot, FractalType::PerpendicularBurningShip]);
+        let table: toml::Table = to_f3_toml(&p).unwrap().parse().unwrap();
+        assert_eq!(table["formula"][0]["opcodes"].as_str(), Some("store sqr mul add"));
+        assert_eq!(table["formula"][1]["opcodes"].as_str(), Some("absy negy sqr add"));
+        p.formula.multibrot_power = 2.5;
+        assert!(to_f3_toml(&p).is_err());
+    }
 
     #[test]
     fn native_export_round_trips_structural_fields() {
@@ -71,7 +96,7 @@ mod tests {
         p.iteration_max = 1200;
         p.rotation = 7.5;
         p.formula.hybrid_opcodes = Some("sqr add absx absy sqr add".into());
-        let text = to_f3_toml(&p);
+        let text = to_f3_toml(&p).unwrap();
         let table: toml::Table = text.parse().unwrap();
         assert_eq!(table["location"]["real"].as_str(), p.center_x_hp.as_deref());
         assert_eq!(table["bailout"]["iterations"].as_integer(), Some(1200));

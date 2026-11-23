@@ -355,14 +355,14 @@ enum FrameSink {
     /// Sous-processus ffmpeg + chemin du fichier de sortie (mémorisé pour
     /// pouvoir supprimer le .mp4 partiel en cas d'annulation — un x264 tué
     /// en cours d'écriture est illisible).
-    Ffmpeg(Child, PathBuf),
+    Ffmpeg(Child, PathBuf, PathBuf),
     Frames(PathBuf),
 }
 
 impl FrameSink {
     fn write(&mut self, index: usize, frame: &[u8], w: u32, h: u32) -> Result<(), String> {
         match self {
-            FrameSink::Ffmpeg(child, _) => child
+            FrameSink::Ffmpeg(child, _, _) => child
                 .stdin
                 .as_mut()
                 .expect("stdin ffmpeg piped")
@@ -379,16 +379,19 @@ impl FrameSink {
 
     fn finish(self) -> Result<(), String> {
         match self {
-            FrameSink::Ffmpeg(mut child, out) => {
+            FrameSink::Ffmpeg(mut child, tmp, out) => {
                 drop(child.stdin.take()); // EOF → ffmpeg finalise
                 match child.wait() {
-                    Ok(status) if status.success() => Ok(()),
+                    Ok(status) if status.success() => std::fs::rename(&tmp, &out).map_err(|e| {
+                        let _ = std::fs::remove_file(&tmp);
+                        format!("publishing {}: {e}", out.display())
+                    }),
                     Ok(status) => {
-                        let _ = std::fs::remove_file(&out);
+                        let _ = std::fs::remove_file(&tmp);
                         Err(format!("ffmpeg failed ({status})"))
                     }
                     Err(e) => {
-                        let _ = std::fs::remove_file(&out);
+                        let _ = std::fs::remove_file(&tmp);
                         Err(format!("waiting for ffmpeg: {e}"))
                     }
                 }
@@ -401,11 +404,11 @@ impl FrameSink {
     /// (illisible) ; les frames PNG déjà écrites restent (inoffensives).
     fn abort(self) {
         match self {
-            FrameSink::Ffmpeg(mut child, out) => {
+            FrameSink::Ffmpeg(mut child, tmp, _) => {
                 drop(child.stdin.take());
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = std::fs::remove_file(&out);
+                let _ = std::fs::remove_file(&tmp);
             }
             FrameSink::Frames(_) => {}
         }
@@ -430,7 +433,9 @@ fn remove_stale_frame_suffix(dir: &Path, frame_count: usize) -> Result<(), Strin
         else {
             continue;
         };
-        if index >= frame_count {
+        if index >= frame_count && name == format!("frame_{index:06}.png")
+            && entry.file_type().map_err(|e| e.to_string())?.is_file()
+        {
             std::fs::remove_file(entry.path())
                 .map_err(|e| format!("removing stale frame {name}: {e}"))?;
         }
@@ -554,7 +559,12 @@ pub fn assemble_project_with_progress(
 
     let mut sink = match (&opts.output, &opts.frames_dir) {
         (Some(out), None) => {
-            FrameSink::Ffmpeg(spawn_ffmpeg(opts, out, out_w, out_h, fps)?, out.clone())
+            let (file, tmp) = crate::io::atomic::reserve_temp(out, true)?;
+            drop(file);
+            let child = spawn_ffmpeg(opts, &tmp, out_w, out_h, fps).inspect_err(|_| {
+                let _ = std::fs::remove_file(&tmp);
+            })?;
+            FrameSink::Ffmpeg(child, tmp, out.clone())
         }
         (None, Some(dir)) => {
             std::fs::create_dir_all(dir)?;
@@ -629,6 +639,48 @@ pub fn assemble_project_with_progress(
 mod tests {
     use super::*;
     use crate::fractal::{default_params_for_type, ColorSpace, FractalType};
+
+    #[cfg(unix)]
+    #[test]
+    fn video_replacement_preserves_previous_export_until_success() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("fractall_video_publish_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut m = Manifest::default();
+        m.image.width = 16;
+        m.image.height = 16;
+        m.location.zoom = "2".into();
+        m.video.keyframes = 1;
+        m.video.fps = 2;
+        m.save(&dir.join("manifest.toml")).unwrap();
+        crate::video::render_project(&dir).unwrap();
+
+        let out = dir.join("export.mp4");
+        let encoder = dir.join("encoder");
+        let opts = AssembleOptions {
+            output: Some(out.clone()), frames_dir: None, ffmpeg: encoder.to_string_lossy().into(),
+        };
+        std::fs::write(&out, b"previous").unwrap();
+        for (cancel_after_frame, exit_code) in [(true, 0), (false, 1), (false, 0)] {
+            let script = format!("#!/bin/sh\nfor out do :; done\ncase \"$out\" in *.mp4) ;; *) exit 2;; esac\ncat >/dev/null\nprintf encoded >\"$out\"\nexit {exit_code}\n");
+            std::fs::write(&encoder, script).unwrap();
+            std::fs::set_permissions(&encoder, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let result = assemble_project_with_progress(&dir, &opts, &cancel, &mut |_| {
+                assert_eq!(std::fs::read(&out).unwrap(), b"previous");
+                cancel.store(cancel_after_frame, Ordering::Relaxed);
+            });
+            if cancel_after_frame {
+                assert!(matches!(result.unwrap(), AssembleOutcome::Cancelled { .. }));
+            } else {
+                assert_eq!(result.is_ok(), exit_code == 0);
+            }
+            let expected: &[u8] = if !cancel_after_frame && exit_code == 0 { b"encoded" } else { b"previous" };
+            assert_eq!(std::fs::read(&out).unwrap(), expected);
+            assert!(!std::fs::read_dir(&dir).unwrap().flatten().any(|e| e.file_name().to_string_lossy().contains(".tmp-")));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn checker(w: usize, h: usize, seed: u8) -> Vec<u8> {
         (0..w * h * 3)
@@ -777,9 +829,13 @@ mod tests {
         std::fs::create_dir_all(&frames_b).unwrap();
         std::fs::write(frames_b.join("frame_999999.png"), b"ancienne frame").unwrap();
         std::fs::write(frames_b.join("notes.txt"), b"keep").unwrap();
+        std::fs::write(frames_b.join("frame_42.png"), b"keep").unwrap();
+        std::fs::create_dir(frames_b.join("frame_888888.png")).unwrap();
         assemble_project(&dir, &opts_b).unwrap();
         assert!(!frames_b.join("frame_999999.png").exists(), "suffixe obsolète supprimé");
         assert!(frames_b.join("notes.txt").exists(), "fichier étranger conservé");
+        assert!(frames_b.join("frame_42.png").exists());
+        assert!(frames_b.join("frame_888888.png").is_dir());
         for f in [0usize, 4, 10] {
             let a = std::fs::read(frames_a.join(format!("frame_{f:06}.png"))).unwrap();
             let b = std::fs::read(frames_b.join(format!("frame_{f:06}.png"))).unwrap();
@@ -795,7 +851,7 @@ mod tests {
             .join(format!("fractall_failed_encoder_{}.mp4", std::process::id()));
         std::fs::write(&out, b"partial").unwrap();
         let child = Command::new("false").stdin(Stdio::piped()).spawn().unwrap();
-        let err = FrameSink::Ffmpeg(child, out.clone()).finish().unwrap_err();
+        let err = FrameSink::Ffmpeg(child, out.clone(), out.with_extension("final.mp4")).finish().unwrap_err();
         assert!(err.contains("failed"));
         assert!(!out.exists(), "sortie partielle supprimée");
     }

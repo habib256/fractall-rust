@@ -72,8 +72,74 @@ pub fn save_iterations_exr(
     bailout_sq: f64,
     degree: f64,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    debug_assert_eq!(iterations.len(), width * height);
-    debug_assert_eq!(zs.len(), width * height);
+    write_iterations_exr(
+        path,
+        width,
+        height,
+        iterations,
+        zs,
+        iter_max,
+        bailout_sq,
+        |_| degree,
+    )
+}
+
+/// Export using the degree of the phase that produced each pixel's escaping z.
+pub fn save_render_iterations_exr(
+    path: &Path,
+    params: &crate::fractal::FractalParams,
+    iterations: &[u32],
+    zs: &[Complex64],
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::fractal::bytecode::{formula_for_params, opcodes_degree};
+    let degrees = match formula_for_params(params) {
+        Some(formula) => formula
+            .phases
+            .iter()
+            .map(|phase| f64::from(opcodes_degree(phase)))
+            .collect(),
+        None if matches!(
+            params.fractal_type,
+            crate::fractal::FractalType::Multibrot | crate::fractal::FractalType::MultibrotJulia
+        ) =>
+        {
+            vec![params.formula.multibrot_power]
+        }
+        None => vec![params.formula.multibrot_power.max(2.0)],
+    };
+    write_iterations_exr(
+        path,
+        params.width as usize,
+        params.height as usize,
+        iterations,
+        zs,
+        params.iteration_max,
+        params.bailout * params.bailout,
+        |iter| {
+            // F3 initializes last_degree to 2 before applying any phase.
+            if iter == 0 {
+                2.0
+            } else {
+                degrees[(iter - 1) as usize % degrees.len()]
+            }
+        },
+    )
+}
+
+fn write_iterations_exr(
+    path: &Path,
+    width: usize,
+    height: usize,
+    iterations: &[u32],
+    zs: &[Complex64],
+    iter_max: u32,
+    bailout_sq: f64,
+    escape_degree: impl Fn(u32) -> f64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let pixels = width.checked_mul(height).ok_or("EXR dimensions overflow")?;
+    if pixels == 0 || iterations.len() != pixels || zs.len() != pixels {
+        return Err("EXR buffers must match nonzero image dimensions".into());
+    }
 
     // The `exr` crate writes FlatSamples in y-up order: buffer index 0 lands on
     // the BOTTOM-left pixel of the resulting EXR (mathematical convention),
@@ -98,6 +164,7 @@ pub fn save_iterations_exr(
             if wide_counts {
                 n1_buf.push(n1);
             }
+            let degree = escape_degree(iter);
             nf_buf.push(nf_f3(zs[idx], iter, iter_max, bailout_sq, degree));
         }
     }
@@ -147,8 +214,13 @@ pub fn save_iterations_exr(
     );
 
     let image = Image::from_layer(layer);
-    image.write().to_file(path)?;
-    Ok(())
+    crate::io::atomic::write_atomic(path, |file| {
+        use std::io::{BufWriter, Write};
+        let mut writer = BufWriter::new(file);
+        image.write().to_buffered(&mut writer)?;
+        writer.flush()?;
+        Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -166,6 +238,45 @@ mod tests {
         let iter = u32::MAX - 100;
         let biased = iter as u64 + NBIAS as u64;
         assert_eq!(encoded_count(iter, u32::MAX), (biased as u32, 1));
+    }
+
+    #[test]
+    fn invalid_exr_buffer_keeps_existing_output() {
+        let path =
+            std::env::temp_dir().join(format!("fractall-exr-length-{}.exr", std::process::id()));
+        std::fs::write(&path, b"previous output").unwrap();
+        assert!(save_iterations_exr(&path, 1, 1, &[1], &[], 20, 625.0, 2.0).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"previous output");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn exported_nf_uses_the_escaping_opcode_phase() {
+        use crate::fractal::{default_params_for_type, FractalType};
+        let mut params = default_params_for_type(FractalType::Mandelbrot, 4, 1);
+        params.formula.hybrid_opcodes = Some("sqr sqr add sqr add".into());
+        params.bailout = 25.0;
+        params.iteration_max = 20;
+        let path =
+            std::env::temp_dir().join(format!("fractall-hybrid-nf-{}.exr", std::process::id()));
+        let z = Complex64::new(100.0, 0.0);
+        save_render_iterations_exr(&path, &params, &[0, 1, 2, 3], &[z; 4]).unwrap();
+        let exr = exr::prelude::read_first_flat_layer_from_file(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let nf = exr
+            .layer_data
+            .channel_data
+            .list
+            .iter()
+            .find(|ch| ch.name.to_string() == "NF")
+            .unwrap();
+        let FlatSamples::F32(values) = &nf.sample_data else {
+            panic!("NF must be FLOAT")
+        };
+        let quadratic = nf_f3(z, 1, 20, 625.0, 2.0);
+        let quartic = nf_f3(z, 2, 20, 625.0, 4.0);
+        assert_ne!(quadratic, quartic);
+        assert_eq!(values, &[quadratic, quartic, quadratic, quartic]);
     }
 
     #[test]

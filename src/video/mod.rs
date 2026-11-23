@@ -289,6 +289,12 @@ pub(crate) fn render_dimensions(m: &Manifest) -> Result<(u32, u32), String> {
     Ok((w, h))
 }
 
+pub(crate) fn keyframe_iterations(m: &Manifest, k: u32) -> u32 {
+    (m.fractal.iterations as f64 + m.fractal.iterations_growth * k as f64)
+        .round()
+        .max(1.0) as u32
+}
+
 /// Paramètres COMPLETS de la keyframe `k` (0 = vue pleine, `k` = span/2^k).
 /// Centre fixe (= la cible), spans en progression ×2 exacte : `span_x(k) =
 /// 4/2^k` est une puissance de 2, donc **exacte en GMP à toute profondeur**.
@@ -342,9 +348,7 @@ pub fn keyframe_params(m: &Manifest, k: u32) -> Result<FractalParams, String> {
     p.span_x = span_x.to_f64();
     p.span_y = span_y.to_f64();
 
-    let iters = (m.fractal.iterations as f64 + m.fractal.iterations_growth * k as f64)
-        .round()
-        .max(1.0) as u32;
+    let iters = keyframe_iterations(m, k);
     p.iteration_max = iters;
     // Mirror la sémantique F3/loader TOML (main.rs) : caps = iterations,
     // sinon les pas directs sont tronqués à 1024 en deep (anneaux parasites).
